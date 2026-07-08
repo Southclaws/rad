@@ -1,13 +1,12 @@
-# Builds a mostly-static Linux binary of the rad demo: SlateDB's native
-# library is compiled from source at the pinned tag and statically linked
-# into the Go binary; only glibc and friends remain dynamic.
+# Builds the RAD server image: one mostly-static binary (SlateDB compiled
+# from source at the go.mod-pinned tag and statically linked; only glibc
+# stays dynamic). Configure storage with RAD_STORAGE / RAD_DATA_DIR /
+# RAD_S3_* and put a TLS-terminating reverse proxy in front for rads://.
 #
-#   task docker:build        # passes SLATEDB_TAG derived from go.mod
-#   docker run --rm rad-demo
-#
-# Stage 1 builds libslatedb_uniffi.a and records the exact system libs a
-# static link needs (rustc --print native-static-libs), so the Go link flags
-# track SlateDB's dependencies automatically across upgrades.
+#   task docker:build
+#   docker run --rm -p 7237:7237 -e RAD_STORAGE=memory rad
+#   docker run --rm -p 7237:7237 -v raddata:/data rad          # file storage
+#   docker run --rm -p 7237:7237 -e RAD_STORAGE=s3 -e RAD_S3_BUCKET=... rad
 
 ARG SLATEDB_TAG=bindings/go/v0.14.1
 
@@ -31,10 +30,13 @@ COPY --from=native /slatedb/target/release/libslatedb_uniffi.a /native/
 COPY --from=native /slatedb/native-static-libs.txt /native/
 RUN CGO_ENABLED=1 \
     CGO_LDFLAGS="-L/native $(cat /native/native-static-libs.txt)" \
-    go -C demo build -o /out/rad-demo . \
-    && ldd /out/rad-demo
+    go build -trimpath -ldflags "-s -w" -o /out/rad ./cmd/rad \
+    && ldd /out/rad
 
 FROM debian:bookworm-slim
-COPY --from=build /out/rad-demo /usr/local/bin/rad-demo
-WORKDIR /data
-ENTRYPOINT ["rad-demo"]
+COPY --from=build /out/rad /usr/local/bin/rad
+ENV RAD_STORAGE=file RAD_DATA_DIR=/data
+VOLUME /data
+EXPOSE 7237
+ENTRYPOINT ["rad"]
+CMD ["serve"]

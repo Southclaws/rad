@@ -1,0 +1,61 @@
+# RAD installer for Windows.
+#
+#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/deployferry/rad/main/install.ps1 | iex"
+#
+# Environment:
+#   $env:RAD_VERSION   install a specific version tag (default: latest release)
+#   $env:RAD_INSTALL   install directory (default: $HOME\.rad)
+#   $env:RAD_REPO      GitHub repo to download from (default: deployferry/rad)
+#
+# Installs the single rad.exe — the database server, the devtool, and the
+# codegen CLI in one.
+
+$ErrorActionPreference = "Stop"
+
+$Repo = if ($env:RAD_REPO) { $env:RAD_REPO } else { "deployferry/rad" }
+$InstallDir = if ($env:RAD_INSTALL) { $env:RAD_INSTALL } else { Join-Path $HOME ".rad" }
+$BinDir = Join-Path $InstallDir "bin"
+
+$Arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq "Arm64") { "arm64" } else { "amd64" }
+if ($Arch -ne "amd64") {
+  Write-Error "rad currently ships windows-amd64 builds only (detected $Arch)"
+}
+
+$Asset = "rad-windows-$Arch.zip"
+$Url = if ($env:RAD_VERSION) {
+  "https://github.com/$Repo/releases/download/$($env:RAD_VERSION)/$Asset"
+} else {
+  "https://github.com/$Repo/releases/latest/download/$Asset"
+}
+
+Write-Host "Downloading $Url"
+New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+$Tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("rad-install-" + [System.Guid]::NewGuid())
+New-Item -ItemType Directory -Force -Path $Tmp | Out-Null
+
+try {
+  $Zip = Join-Path $Tmp $Asset
+  Invoke-WebRequest -Uri $Url -OutFile $Zip -UseBasicParsing
+  Expand-Archive -Path $Zip -DestinationPath $Tmp -Force
+  Move-Item -Force (Join-Path $Tmp "rad.exe") (Join-Path $BinDir "rad.exe")
+} finally {
+  Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
+}
+
+Write-Host ""
+Write-Host "rad was installed to $BinDir\rad.exe"
+& (Join-Path $BinDir "rad.exe") --version
+
+# Add to the user PATH if missing.
+$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if (($UserPath -split ";") -notcontains $BinDir) {
+  [Environment]::SetEnvironmentVariable("Path", "$BinDir;$UserPath", "User")
+  $env:Path = "$BinDir;$env:Path"
+  Write-Host "Added $BinDir to your user PATH (restart other terminals to pick it up)."
+}
+
+Write-Host ""
+Write-Host "Get started:"
+Write-Host "  rad serve                 # start a database (RAD_STORAGE=memory|file|s3)"
+Write-Host "  rad migrate -u rad://localhost -f schema.rad"
+Write-Host "  rad generate -f schema.rad -o ./generated --pkg db"

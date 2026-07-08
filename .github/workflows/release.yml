@@ -1,0 +1,145 @@
+# Release: build the single `rad` binary for Linux, macOS, and Windows and
+# attach the archives to a GitHub release on every v* tag.
+#
+# The binary embeds the devtool UI (committed in cmd/rad/dist) and statically
+# links SlateDB's native library, built from source at the tag pinned by
+# go.mod — "as static as it gets": only the OS libc/frameworks stay dynamic
+# (macOS and glibc have no static libc; Windows links the usual system DLLs).
+#
+# Asset names are stable (no version) so install scripts can use
+# releases/latest/download/: rad-{os}-{arch}.tar.gz / rad-windows-amd64.zip.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: test (linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build SlateDB native library
+        run: |
+          TAG="bindings/go/$(go list -m slatedb.io/slatedb-go | cut -d' ' -f2 | sed 's/^v//' | sed 's/^/v/')"
+          git clone --depth 1 --branch "$TAG" https://github.com/slatedb/slatedb /tmp/slatedb
+          cargo rustc --release -p slatedb-uniffi --manifest-path /tmp/slatedb/Cargo.toml -- --print native-static-libs 2>&1 | tee /tmp/build.log
+          grep -o 'native-static-libs: .*' /tmp/build.log | head -1 | sed 's/native-static-libs: //' > /tmp/native-libs.txt
+      - name: Test
+        run: |
+          export CGO_ENABLED=1
+          export CGO_LDFLAGS="-L/tmp/slatedb/target/release $(cat /tmp/native-libs.txt)"
+          go test ./...
+          cd demo && go build -o /dev/null .
+
+  build:
+    name: build (${{ matrix.goos }}-${{ matrix.goarch }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04,     goos: linux,   goarch: amd64 }
+          - { runner: ubuntu-24.04-arm, goos: linux,   goarch: arm64 }
+          - { runner: macos-13,         goos: darwin,  goarch: amd64 }
+          - { runner: macos-14,         goos: darwin,  goarch: arm64 }
+          - { runner: windows-2022,     goos: windows, goarch: amd64, rust_target: x86_64-pc-windows-gnu }
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      # cgo on Windows needs a GNU toolchain; Rust must target windows-gnu so
+      # the static library is linkable by it.
+      - name: Set up MinGW (Windows)
+        if: matrix.goos == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+          path-type: inherit
+      - name: Add MinGW to PATH (Windows)
+        if: matrix.goos == 'windows'
+        run: echo "C:/msys64/mingw64/bin" >> "$GITHUB_PATH"
+
+      - name: Build SlateDB native library
+        run: |
+          TAG="bindings/go/$(go list -m slatedb.io/slatedb-go | cut -d' ' -f2)"
+          git clone --depth 1 --branch "$TAG" https://github.com/slatedb/slatedb slatedb-src
+          TARGET_FLAG=""
+          LIBDIR="slatedb-src/target/release"
+          if [ -n "${{ matrix.rust_target }}" ]; then
+            TARGET_FLAG="--target ${{ matrix.rust_target }}"
+            LIBDIR="slatedb-src/target/${{ matrix.rust_target }}/release"
+          fi
+          cargo rustc --release -p slatedb-uniffi --manifest-path slatedb-src/Cargo.toml $TARGET_FLAG -- --print native-static-libs 2>&1 | tee build.log
+          grep -o 'native-static-libs: .*' build.log | head -1 | sed 's/native-static-libs: //' > native-libs.txt
+          echo "LIBDIR=$PWD/$LIBDIR" >> "$GITHUB_ENV"
+          echo "NATIVE_LIBS=$(cat native-libs.txt)" >> "$GITHUB_ENV"
+
+      - name: Build rad
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          EXT=""
+          EXTRA_LDFLAGS=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
+          if [ "${{ matrix.goos }}" = "darwin" ]; then EXTRA_LDFLAGS="-Wl,-w"; fi
+          export CGO_ENABLED=1
+          export GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }}
+          export CGO_LDFLAGS="-L$LIBDIR $NATIVE_LIBS $EXTRA_LDFLAGS"
+          go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "rad$EXT" ./cmd/rad
+          ./rad$EXT --version
+
+      - name: Package
+        run: |
+          NAME="rad-${{ matrix.goos }}-${{ matrix.goarch }}"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            7z a "$NAME.zip" rad.exe
+          else
+            tar czf "$NAME.tar.gz" rad
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rad-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            rad-*.tar.gz
+            rad-*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum rad-* > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

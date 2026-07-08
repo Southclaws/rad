@@ -157,14 +157,14 @@ tasks:
       - go run ./cmd/rad serve {{.CLI_ARGS}}
 
   docker:build:
-    desc: Build the mostly-static Linux demo image (tag rad-demo)
+    desc: Build the RAD server image (tag rad)
     cmds:
-      - docker build --build-arg 'SLATEDB_TAG={{.SLATEDB_TAG}}' -t rad-demo .
+      - docker build --build-arg 'SLATEDB_TAG={{.SLATEDB_TAG}}' -t rad .
 
   docker:run:
-    desc: Run the demo container (fresh store each run)
+    desc: Run the RAD server container on :7237 (in-memory storage)
     cmds:
-      - docker run --rm rad-demo
+      - docker run --rm -p 7237:7237 -e RAD_STORAGE=memory rad
 
   slatedb:setup:
     desc: Clone and build the native SlateDB library (fresh machine bootstrap)
