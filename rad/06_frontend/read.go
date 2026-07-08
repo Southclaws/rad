@@ -63,6 +63,13 @@ func recordJSON(rec *exec.Record) map[string]any {
 		}
 		m[as] = arr
 	}
+	for as, scalars := range rec.Scalars {
+		obj := make(map[string]any, len(scalars))
+		for name, v := range scalars {
+			obj[name] = plainValue(v)
+		}
+		m[as] = obj
+	}
 	return m
 }
 

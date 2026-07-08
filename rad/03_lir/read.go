@@ -15,6 +15,12 @@ type Read struct {
 	Offset  int
 	Limit   int // 0 = unlimited
 	Include []Include
+
+	// Aggs, when set, folds the matching rows into one object of scalars
+	// instead of returning records — the same shape switch Include.Aggs makes
+	// for a child relation. Filter still applies; OrderBy/Offset/Limit/Include
+	// are meaningless against a single folded row and rejected at plan time.
+	Aggs []AggTerm
 }
 
 // OrderTerm sorts by one column. NULLs sort first ascending, last
@@ -49,4 +55,12 @@ type Include struct {
 	OrderBy []OrderTerm
 	Limit   int // 0 = unlimited
 	Include []Include
+
+	// Aggs, when set, folds the matching children into one object of scalars
+	// instead of a record array — the same shape switch as Read.Aggs, one
+	// level down. Mutually exclusive with OrderBy/Limit/Include (a fold covers
+	// the whole matching set); Filter still applies. Rejected on parent-
+	// direction includes: a parent relation has cardinality zero or one, so
+	// there is nothing to fold.
+	Aggs []AggTerm
 }

@@ -26,6 +26,10 @@ type ShapedRead struct {
 	Offset  int
 	Limit   int
 	Include []ShapedInclude
+	// Aggs, when set, means the executor folds the fetched-and-filtered rows
+	// into one scalar object rather than materialising records. The access
+	// path above is chosen from Filter exactly as for a record read.
+	Aggs []lir.AggTerm
 }
 
 // AccessKind is how the root rows are located.
@@ -66,6 +70,9 @@ type ShapedInclude struct {
 	OrderBy []lir.OrderTerm
 	Limit   int
 	Include []ShapedInclude
+	// Aggs, when set, folds the matched children into one scalar object under
+	// As instead of a record array.
+	Aggs []lir.AggTerm
 }
 
 // PlanRead lowers a shaped read against the catalog.
@@ -77,6 +84,14 @@ func PlanRead(ctx context.Context, cat *catalog.Catalog, r lir.Read) (*ShapedRea
 	if err := validateReadExprs(tbl, r.Filter, r.OrderBy); err != nil {
 		return nil, err
 	}
+	if len(r.Aggs) > 0 {
+		if len(r.OrderBy) > 0 || r.Offset != 0 || r.Limit != 0 || len(r.Include) > 0 {
+			return nil, fmt.Errorf("planner: an aggregate query folds every matching row into one result, so it can't also order, paginate, or include relations — drop those, or run a separate read")
+		}
+		if err := validateAggs(tbl, r.Aggs); err != nil {
+			return nil, err
+		}
+	}
 
 	plan := &ShapedRead{
 		Table:   tbl,
@@ -85,6 +100,7 @@ func PlanRead(ctx context.Context, cat *catalog.Catalog, r lir.Read) (*ShapedRea
 		OrderBy: r.OrderBy,
 		Offset:  r.Offset,
 		Limit:   r.Limit,
+		Aggs:    r.Aggs,
 	}
 	plan.Include, err = planIncludes(ctx, cat, tbl, r.Include)
 	if err != nil {
@@ -131,8 +147,11 @@ func planInclude(ctx context.Context, cat *catalog.Catalog, tbl catalog.Table, i
 		if !ok {
 			return ShapedInclude{}, fmt.Errorf("planner: foreign key %q references missing table %q", inc.FK, fk.RefTableID)
 		}
-		if inc.Filter != nil || len(inc.OrderBy) > 0 || inc.Limit != 0 {
-			return ShapedInclude{}, fmt.Errorf("planner: include %q: parent includes cannot filter, order, or limit", inc.As)
+		// A parent relation is at most one row, so filtering, ordering,
+		// limiting, or folding it is never useful in V0 — a plain include
+		// already gives you the single object (or null).
+		if inc.Filter != nil || len(inc.OrderBy) > 0 || inc.Limit != 0 || len(inc.Aggs) > 0 {
+			return ShapedInclude{}, fmt.Errorf("planner: include %q follows a parent relation, whose cardinality is zero-or-one, so filtering, ordering, limiting, or aggregating it does nothing — just include it", inc.As)
 		}
 		si.Child = parent
 		si.FK = fk
@@ -148,6 +167,15 @@ func planInclude(ctx context.Context, cat *catalog.Catalog, tbl catalog.Table, i
 		si.ChildIndex = indexCovering(child, fk.Columns)
 		if err := validateReadExprs(child, inc.Filter, inc.OrderBy); err != nil {
 			return ShapedInclude{}, err
+		}
+		if len(inc.Aggs) > 0 {
+			if len(inc.OrderBy) > 0 || inc.Limit != 0 || len(inc.Include) > 0 {
+				return ShapedInclude{}, fmt.Errorf("planner: include %q folds its matching rows into one result, so it can't also order, limit, or nest further includes — drop those, or use a separate record include", inc.As)
+			}
+			if err := validateAggs(child, inc.Aggs); err != nil {
+				return ShapedInclude{}, err
+			}
+			si.Aggs = inc.Aggs
 		}
 
 	default:

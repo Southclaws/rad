@@ -17,11 +17,14 @@ import (
 
 // Record is one result row with its included relations. Parents map include
 // names to a single record (nil when the foreign key is NULL); Children map
-// include names to arrays.
+// include names to arrays; Scalars map aggregate-include names to one folded
+// object of scalar values. A root aggregate query returns a single Record
+// whose Columns are the folded scalars and whose relation maps are empty.
 type Record struct {
 	Columns  lir.Row
 	Parents  map[string]*Record
 	Children map[string][]*Record
+	Scalars  map[string]lir.Row
 }
 
 // Read plans and executes a shaped read against committed state.
@@ -47,6 +50,21 @@ func (e *Engine) runShapedRead(ctx context.Context, view kv.KV, plan *planner.Sh
 	if err != nil {
 		return nil, err
 	}
+	// A root aggregate folds the filtered rows into one scalar record. Order,
+	// offset, limit, and includes are rejected at plan time, so filtering is
+	// the only shaping that applies.
+	if len(plan.Aggs) > 0 {
+		rows, err = applyShaping(rows, plan.Filter, nil, 0, 0)
+		if err != nil {
+			return nil, err
+		}
+		scalars, err := foldAggs(plan.Table, rows, plan.Aggs)
+		if err != nil {
+			return nil, err
+		}
+		return []*Record{{Columns: scalars}}, nil
+	}
+
 	rows, err = applyShaping(rows, plan.Filter, plan.OrderBy, plan.Offset, plan.Limit)
 	if err != nil {
 		return nil, err
@@ -54,7 +72,7 @@ func (e *Engine) runShapedRead(ctx context.Context, view kv.KV, plan *planner.Sh
 
 	records := make([]*Record, len(rows))
 	for i, row := range rows {
-		rec, err := e.attachIncludes(ctx, view, plan.Table, row, plan.Include)
+		rec, err := e.attachIncludes(ctx, view, row, plan.Include)
 		if err != nil {
 			return nil, err
 		}
@@ -147,7 +165,7 @@ func applyShaping(rows []lir.Row, filter lir.Expr, order []lir.OrderTerm, offset
 }
 
 // attachIncludes builds the record for row and fetches its relations.
-func (e *Engine) attachIncludes(ctx context.Context, view kv.KV, tbl catalog.Table, row lir.Row, includes []planner.ShapedInclude) (*Record, error) {
+func (e *Engine) attachIncludes(ctx context.Context, view kv.KV, row lir.Row, includes []planner.ShapedInclude) (*Record, error) {
 	rec := &Record{Columns: row}
 	for _, inc := range includes {
 		switch inc.Dir {
@@ -161,7 +179,18 @@ func (e *Engine) attachIncludes(ctx context.Context, view kv.KV, tbl catalog.Tab
 			}
 			rec.Parents[inc.As] = parent
 		case lir.ToChildren:
-			kids, err := e.fetchChildren(ctx, view, tbl, row, inc)
+			if len(inc.Aggs) > 0 {
+				scalars, err := e.foldChildren(ctx, view, row, inc)
+				if err != nil {
+					return nil, err
+				}
+				if rec.Scalars == nil {
+					rec.Scalars = map[string]lir.Row{}
+				}
+				rec.Scalars[inc.As] = scalars
+				continue
+			}
+			kids, err := e.fetchChildren(ctx, view, row, inc)
 			if err != nil {
 				return nil, err
 			}
@@ -189,40 +218,59 @@ func (e *Engine) fetchParent(ctx context.Context, view kv.KV, row lir.Row, inc p
 	if err != nil || parentRow == nil {
 		return nil, err
 	}
-	return e.attachIncludes(ctx, view, inc.Child, parentRow, inc.Include)
+	return e.attachIncludes(ctx, view, parentRow, inc.Include)
 }
 
-// fetchChildren collects the rows of the referencing table whose foreign
-// key points at row, then applies the include's shaping.
-func (e *Engine) fetchChildren(ctx context.Context, view kv.KV, parent catalog.Table, row lir.Row, inc planner.ShapedInclude) ([]*Record, error) {
+// childRows collects the rows of the referencing table whose foreign key
+// points at row, via the FK index when one exists, else a filtered scan.
+func (e *Engine) childRows(ctx context.Context, view kv.KV, row lir.Row, inc planner.ShapedInclude) ([]lir.Row, error) {
 	want := make(lir.Row, len(inc.FK.Columns))
 	for i, childCol := range inc.FK.Columns {
 		want[childCol] = row[inc.FK.RefColumns[i]]
 	}
 
-	var rows []lir.Row
-	var err error
 	if inc.ChildIndex != nil {
-		rows, err = scanIndex(ctx, view, inc.Child, *inc.ChildIndex, want)
-	} else {
-		rows, err = fetchRows(ctx, view, inc.Child, planner.Access{Kind: planner.AccessFullScan})
-		if err == nil {
-			kept := rows[:0]
-			for _, r := range rows {
-				match := true
-				for col, v := range want {
-					if !r[col].Equal(v) {
-						match = false
-						break
-					}
-				}
-				if match {
-					kept = append(kept, r)
-				}
+		return scanIndex(ctx, view, inc.Child, *inc.ChildIndex, want)
+	}
+	rows, err := fetchRows(ctx, view, inc.Child, planner.Access{Kind: planner.AccessFullScan})
+	if err != nil {
+		return nil, err
+	}
+	kept := rows[:0]
+	for _, r := range rows {
+		match := true
+		for col, v := range want {
+			if !r[col].Equal(v) {
+				match = false
+				break
 			}
-			rows = kept
+		}
+		if match {
+			kept = append(kept, r)
 		}
 	}
+	return kept, nil
+}
+
+// foldChildren folds the matching children into one scalar object — the
+// aggregate-include path. Only the include's filter applies; order/limit/
+// nested includes are rejected at plan time.
+func (e *Engine) foldChildren(ctx context.Context, view kv.KV, row lir.Row, inc planner.ShapedInclude) (lir.Row, error) {
+	rows, err := e.childRows(ctx, view, row, inc)
+	if err != nil {
+		return nil, err
+	}
+	rows, err = applyShaping(rows, inc.Filter, nil, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	return foldAggs(inc.Child, rows, inc.Aggs)
+}
+
+// fetchChildren collects the rows of the referencing table whose foreign
+// key points at row, then applies the include's shaping.
+func (e *Engine) fetchChildren(ctx context.Context, view kv.KV, row lir.Row, inc planner.ShapedInclude) ([]*Record, error) {
+	rows, err := e.childRows(ctx, view, row, inc)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +282,7 @@ func (e *Engine) fetchChildren(ctx context.Context, view kv.KV, parent catalog.T
 
 	kids := make([]*Record, len(rows))
 	for i, childRow := range rows {
-		rec, err := e.attachIncludes(ctx, view, inc.Child, childRow, inc.Include)
+		rec, err := e.attachIncludes(ctx, view, childRow, inc.Include)
 		if err != nil {
 			return nil, err
 		}
