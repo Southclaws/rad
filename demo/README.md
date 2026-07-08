@@ -16,27 +16,32 @@ main.go             the application — imports only ./generated
 edit schema.rad
    │
    ▼
-rad migrate  -f demo/schema.rad -d demo/data     # diff & reconcile the DB
+rad migrate  -u rad://localhost -f demo/schema.rad   # reconcile the server's DB
    │
    ▼
 rad generate -f demo/schema.rad -o demo/generated --pkg tracker
    │
    ▼
-go build .                                       # compiler catches schema drift
+go build .                                           # compiler catches schema drift
    │
    ▼
-typed app  →  QIR  →  planner  →  SlateDB  →  nested JSON
+typed app  →  rad:// wire QIR  →  planner  →  SlateDB  →  nested JSON
 ```
+
+The app is pure Go — no cgo, no native library; only the server needs
+SlateDB. Point it anywhere with RAD_URL (default rad://localhost:7237).
 
 No SQL is written anywhere — not by the app, not by the tools.
 
-Run it from the repo root (`task demo`) or here:
+Run it from the repo root (`task demo` starts a fresh server and the app),
+or against any running RAD server:
 
 ```
-CGO_LDFLAGS="-L$PWD/../lib -Wl,-rpath,$PWD/../lib" go run .
+RAD_URL=rad://your-server go run .
 ```
 
-The app migrates its own store on startup (the client embeds its schema),
+The app migrates the remote database on startup (the client embeds its
+schema),
 then walks through: signup/login with a unique username index, an atomic
 multi-table seed transaction, a three-level nested board view (tasks →
 assignee/comments→author/labels), typed queries (filters, ordering,

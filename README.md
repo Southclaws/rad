@@ -1,42 +1,82 @@
-# rad — an ORM-native relational database (POC)
+# rad — an ORM-native relational database (MVP)
 
-A proof-of-concept relational database in Go whose product is the developer
+A client/server relational database in Go whose product is the developer
 experience, not the SQL dialect:
 
 ```
-schema.rad → rad migrate → rad generate → typed Go client → QIR → planner → SlateDB → nested JSON
+schema.rad → rad migrate → rad generate → typed Go client → rad:// wire QIR → planner → SlateDB → nested JSON
 ```
 
-You declare a schema (YAML, JSON-Schema validated), reconcile the database
-against it, generate a typed client, and build applications that never
-touch SQL — evolving the schema regenerates the client and the Go compiler
-flags every place the application must adapt. See `demo/` for a complete
-product (a team task tracker) built this way, and `docs/v0-spec.md` for the
-goals and non-goals.
+One binary — `rad` — is the entire system: the database server (`rad
+serve`, HTTP on port **7237**), the migration tool (`rad migrate`), and the
+client codegen (`rad generate`). Applications link a pure-Go generated
+client (no cgo, no SQL) and connect with `rad://host:7237` (`rads://` behind
+a TLS-terminating reverse proxy). Storage is SlateDB in every mode —
+in-memory, local file, or S3 — selected by environment variables. One RAD
+instance is one database; two databases are two RADs.
 
-Underneath: typed tables, primary keys, secondary indexes, foreign keys,
-and unique constraints mapped CockroachDB-style onto order-preserving byte
-keys over [SlateDB](https://slatedb.io); optimistic transactions
-(SlateDB's SerializableSnapshot) make writes atomic and constraint checks
-sound under concurrency.
+See `demo/` for a complete product (a team task tracker) built this way,
+and `docs/v0-spec.md` for goals and non-goals. **Proof of concept** — no
+authentication yet; deploy behind a proxy you trust.
 
-**Not production-ready by design.**
-
-## Quickstart
+## Install
 
 ```
-task demo      # migrate + run the Tracker demo app (demo/data)
-task up        # demo + the devtool UI at http://127.0.0.1:7423
+curl -fsSL https://raw.githubusercontent.com/deployferry/rad/main/install.sh | sh    # linux/macOS
+powershell -ExecutionPolicy Bypass -c "irm .../install.ps1 | iex"                    # windows
+```
+
+Releases are built for linux (amd64/arm64), macOS (amd64/arm64, unsigned),
+and windows-amd64 by `.github/workflows/release.yml` on every `v*` tag.
+
+## Run a database
+
+```
+rad serve                                   # file storage in ./data, port 7237
+RAD_STORAGE=memory rad serve                # ephemeral
+RAD_STORAGE=s3 RAD_S3_BUCKET=my-bucket \
+  RAD_S3_REGION=eu-west-1 rad serve         # object storage (AWS_* creds)
+```
+
+| Variable          | Meaning                                | Default   |
+|-------------------|----------------------------------------|-----------|
+| `RAD_ADDR`        | listen address                         | `:7237`   |
+| `RAD_STORAGE`     | `memory` \| `file` \| `s3`             | `file`    |
+| `RAD_DATA_DIR`    | file-mode store directory              | `data`    |
+| `RAD_S3_BUCKET`   | s3 bucket (required for s3)            | —         |
+| `RAD_S3_PREFIX`   | s3 key prefix / db path                | `rad`     |
+| `RAD_S3_REGION`   | s3 region (or `AWS_REGION`)            | —         |
+| `RAD_S3_ENDPOINT` | custom endpoint (MinIO/R2)             | —         |
+
+The server follows standard HTTP practice (timeouts, body limits, panic
+recovery, request logs, graceful shutdown) and serves errors as RFC 7807
+problem+json. No TLS on purpose: terminate at your reverse proxy and speak
+`rads://`. Docker: `task docker:build && docker run -p 7237:7237 rad`.
+
+## Build an app
+
+```
+rad migrate  -u rad://localhost -f schema.rad          # reconcile schema over the wire
+rad generate -f schema.rad -o ./generated --pkg db     # emit the typed client
+```
+
+```go
+db, _ := db.Connect("rad://localhost")
+user, _ := db.Users.Create(ctx, db.UserCreate{Name: "ada"})
+boards, _ := db.Boards.Query().
+    IncludeTasks(func(t *db.TaskInclude) { t.DoneEq(false).IncludeAssignee() }).
+    All(ctx)   // nested JSON in, typed structs out — zero SQL
+```
+
+## Quickstart (this repo)
+
+```
+task demo      # fresh server + the Tracker demo app over rad://
+task up        # same, then keeps serving (devtool UI on :7237)
 ```
 
 First run on a fresh machine: `task slatedb:setup` once, to build the
-native SlateDB library. The full loop by hand:
-
-```
-rad migrate  -f demo/schema.rad -d demo/data
-rad generate -f demo/schema.rad -o demo/generated --pkg tracker
-cd demo && go run .
-```
+native SlateDB library (server builds only — client apps are pure Go).
 
 ## Architecture
 
