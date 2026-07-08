@@ -114,6 +114,23 @@ func (db *DB) Txn(ctx context.Context, fn func(tx *Tx) error) error {
 	})
 }
 
+// Begin starts an explicit transaction for callers that cannot use the Txn
+// callback (e.g. servers holding a transaction across requests). The caller
+// must Commit or Rollback.
+func (db *DB) Begin(ctx context.Context) (*Tx, error) {
+	etx, err := db.eng.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &Tx{tx: etx}, nil
+}
+
+// Commit atomically applies the transaction's writes.
+func (tx *Tx) Commit(ctx context.Context) error { return tx.tx.Commit(ctx) }
+
+// Rollback discards the transaction; safe after Commit.
+func (tx *Tx) Rollback() error { return tx.tx.Rollback() }
+
 // IsConflict reports whether err is a transaction conflict that can be
 // resolved by retrying the whole Txn.
 func IsConflict(err error) bool { return exec.IsConflict(err) }

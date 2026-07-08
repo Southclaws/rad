@@ -45,16 +45,34 @@ type Tx struct {
 // kv.ErrConflict; the caller can retry by calling Txn again (fn must be safe
 // to re-run). If fn returns an error the transaction is rolled back.
 func (e *Engine) Txn(ctx context.Context, fn func(tx *Tx) error) error {
-	txn, err := e.store.Begin(ctx, kv.SerializableSnapshot)
+	tx, err := e.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer txn.Rollback()
-	if err := fn(&Tx{e: e, txn: txn}); err != nil {
+	defer tx.Rollback()
+	if err := fn(tx); err != nil {
 		return err
 	}
-	return txn.Commit(ctx)
+	return tx.Commit(ctx)
 }
+
+// Begin starts an explicit transaction. Prefer Txn where a callback fits;
+// Begin exists for drivers (like the HTTP server) that hold a transaction
+// open across requests. The caller must Commit or Rollback.
+func (e *Engine) Begin(ctx context.Context) (*Tx, error) {
+	txn, err := e.store.Begin(ctx, kv.SerializableSnapshot)
+	if err != nil {
+		return nil, err
+	}
+	return &Tx{e: e, txn: txn}, nil
+}
+
+// Commit atomically applies the transaction's writes. The Tx is unusable
+// afterwards.
+func (tx *Tx) Commit(ctx context.Context) error { return tx.txn.Commit(ctx) }
+
+// Rollback discards the transaction; safe to call after Commit.
+func (tx *Tx) Rollback() error { return tx.txn.Rollback() }
 
 // IsConflict reports whether err is a transaction conflict that can be
 // resolved by retrying the whole Engine.Txn.

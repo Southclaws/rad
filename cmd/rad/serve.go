@@ -1,63 +1,102 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"rad/rad/02_catalog"
 	"rad/rad/05_exec"
+	frontend "rad/rad/06_frontend"
 )
 
-// serveCmd runs the devtool server: a REST API over the KV store and the
-// relational catalog, plus the embedded management SPA (ui/).
+// serveCmd runs the RAD server: the /v1 database API (what clients connect
+// to via rad://host:7237) plus the devtool UI and its /api endpoints, on a
+// single port. Storage comes from the environment (RAD_STORAGE et al; see
+// Config), with flags overriding.
 func serveCmd() *cobra.Command {
-	var addr, db string
+	cfg := LoadConfig()
+	var addr, storage, dataDir string
 	cmd := &cobra.Command{
 		Use:   "serve",
-		Short: "Serve the devtool UI and REST API over a database",
+		Short: "Run the RAD database server (API + devtool UI)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dir, err := filepath.Abs(db)
-			if err != nil {
-				return err
+			if addr != "" {
+				cfg.Addr = addr
 			}
-			if _, err := os.Stat(dir); err != nil {
-				return fmt.Errorf("store directory %s does not exist — run `rad migrate` or the demo first", dir)
+			if storage != "" {
+				cfg.Storage = storage
 			}
-			store, dir, err := openStore(dir)
+			if dataDir != "" {
+				cfg.DataDir = dataDir
+			}
+
+			store, location, err := cfg.OpenStorage()
 			if err != nil {
 				return err
 			}
 			defer store.Close()
 
 			cat := catalog.New(store)
-			srv := &server{
+			db := frontend.Open(store)
+
+			mux := http.NewServeMux()
+
+			// The database API.
+			newDBAPI(db, cat).register(mux)
+
+			// The devtool UI + inspection API ride along on the same port.
+			devtool := &server{
 				store:  store,
 				cat:    cat,
 				eng:    exec.New(store, cat),
-				dbPath: dir,
+				dbPath: location,
 			}
-
-			mux := http.NewServeMux()
-			mux.HandleFunc("GET /api/meta", srv.handleMeta)
-			mux.HandleFunc("GET /api/schema", srv.handleSchema)
-			mux.HandleFunc("GET /api/kv/scan", srv.handleKVScan)
-			mux.HandleFunc("GET /api/kv/get", srv.handleKVGet)
-			mux.HandleFunc("GET /api/tables/{table}/rows", srv.handleTableRows)
-			mux.HandleFunc("GET /api/tables/{table}/indexscan", srv.handleIndexScan)
+			mux.HandleFunc("GET /api/meta", devtool.handleMeta)
+			mux.HandleFunc("GET /api/schema", devtool.handleSchema)
+			mux.HandleFunc("GET /api/kv/scan", devtool.handleKVScan)
+			mux.HandleFunc("GET /api/kv/get", devtool.handleKVGet)
+			mux.HandleFunc("GET /api/tables/{table}/rows", devtool.handleTableRows)
+			mux.HandleFunc("GET /api/tables/{table}/indexscan", devtool.handleIndexScan)
 			mux.Handle("/", uiHandler())
 
-			log.Printf("rad devtool on http://%s (store: %s)", addr, dir)
-			return http.ListenAndServe(addr, withCORS(mux))
+			srv := newHTTPServer(cfg.Addr, withRecovery(withLogging(withCORS(mux))))
+
+			// Graceful shutdown on SIGINT/SIGTERM.
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			errCh := make(chan error, 1)
+			go func() {
+				log.Printf("rad %s serving on %s (storage: %s @ %s)", version, cfg.Addr, cfg.Storage, location)
+				errCh <- srv.ListenAndServe()
+			}()
+
+			select {
+			case err := <-errCh:
+				return err
+			case <-ctx.Done():
+				log.Printf("shutting down…")
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+					return err
+				}
+				return nil
+			}
 		},
 	}
-	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:7423", "listen address")
-	cmd.Flags().StringVarP(&db, "db", "d", "data", "path to the SlateDB store directory")
+	cmd.Flags().StringVar(&addr, "addr", "", "listen address (default RAD_ADDR or :7237)")
+	cmd.Flags().StringVar(&storage, "storage", "", "storage backend: memory, file, s3 (default RAD_STORAGE or file)")
+	cmd.Flags().StringVarP(&dataDir, "db", "d", "", "file storage directory (default RAD_DATA_DIR or data)")
 	return cmd
 }
 

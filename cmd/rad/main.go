@@ -18,10 +18,14 @@ import (
 	frontend "rad/rad/06_frontend"
 )
 
+// version is stamped by the release build via -ldflags "-X main.version=…".
+var version = "dev"
+
 func main() {
 	root := &cobra.Command{
 		Use:           "rad",
 		Short:         "RAD — an ORM-native relational database on an ordered KV store",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}
