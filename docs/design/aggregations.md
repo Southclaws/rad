@@ -1,6 +1,6 @@
 # Design: Aggregations
 
-Status: proposed (not yet implemented)
+Status: implemented (count/sum/avg/min/max)
 
 Basics only: `count`, `sum`, `avg`, `min`, `max`. No `GROUP BY`, no
 `HAVING`, no `DISTINCT`, no expressions inside aggregates, no window
@@ -12,22 +12,28 @@ demands them.
 The Tracker demo wants exactly two things today:
 
 1. Board cards showing task counts without fetching the tasks
-   (`open: 4 · done: 9`).
-2. "Stats" lines: average estimate, earliest due date, per assignee.
+   (`3 tasks · 3 open · 0 done`).
+2. Stats lines: average estimate, the next deadline.
 
-Both are also the cheapest HN criticism of the current system ("a task
-tracker that can't count tasks"). The design below covers them and nothing
+Both are also the cheapest criticism of the current system ("a task tracker
+that can't count tasks"). The design below covers them and nothing
 speculative.
 
-## Shape
+## Shape: a fold is a shape, not an operation
 
-Two forms, mirroring how reads already work:
+The first draft made `Aggregate` a *sibling* of `Read` — a distinct QIR node
+with its own `/aggregate` endpoint. That was SQL thinking in disguise
+(`SELECT ...` vs `SELECT count(*) ...` wearing two struct names), and it
+would have leaked an internal taxonomy into the public API.
 
-### 1. Root aggregation — a sibling of `Read`
+The child side of the IR already had the better instinct: an `Include` is
+"materialise this related thing," and its `Dir` (`parent` → one, `children`
+→ many) is a *cardinality*, not a verb. The parent doesn't care what the
+child resolves to. Aggregation is just a third cardinality of that same idea:
+fold to one object of scalars.
 
-An aggregate query is *not* a read that returns rows; it returns one record
-of scalars. Keep it a distinct QIR node and endpoint rather than a mode
-flag on `Read`:
+So there is no `Aggregate` node. Aggregation is a single `Aggs` field that
+appears **symmetrically** on the two relation-materialising IR nodes:
 
 ```go
 // 03_lir
@@ -35,18 +41,34 @@ type AggFn string // count | sum | avg | min | max
 
 type AggTerm struct {
     Fn     AggFn
-    Column string // empty for count (row count)
+    Column string // empty only for count() over rows
     As     string
 }
 
-type Aggregate struct {
-    Table  string
-    Filter Expr      // same expression language as Read
-    Aggs   []AggTerm // at least one
+type Read struct {
+    Table   string
+    Filter  Expr
+    // ... OrderBy, Offset, Limit, Include ...
+    Aggs    []AggTerm // present → fold the matching rows to one scalar object
+}
+
+type Include struct {
+    // ... FK, Dir, As, Filter, OrderBy, Limit, Include ...
+    Aggs    []AggTerm // present → fold the matching children to one scalar object
 }
 ```
 
-Wire (`POST /aggregate`):
+Present, the relation folds to scalars; absent, it yields records — the same
+switch `Include.Dir` already makes. `Aggs` is a shape annotation on a
+relation; it deliberately never becomes another arm of the `Expr` AST (this
+is not "JSON SQL").
+
+### Wire — one query operation
+
+Aggregation rides the existing `POST /query`. `protocol.Read` and
+`protocol.Include` each gain an optional `aggs`; asking for a fold is the
+same kind of request as asking for an include. There is no `/aggregate`
+endpoint and no `Aggregate` verb.
 
 ```json
 {
@@ -58,14 +80,11 @@ Wire (`POST /aggregate`):
     {"fn": "max", "column": "due_at", "as": "latest_due"}
   ]
 }
-→ {"result": {"total": 13, "avg_estimate": 2.75, "latest_due": 1783600000000}}
+→ {"records": [{"total": 13, "avg_estimate": 2.75, "latest_due": 1783600000000}]}
 ```
 
-### 2. Aggregate includes — scalars inside a nested read
-
-An `Include` whose `aggs` is set returns an object of scalars instead of a
-record array, under its `as` name — the "board with task counts" case in
-one round trip:
+A root aggregate comes back as a single scalar record. An aggregate include
+comes back as a scalar object under its `as` name:
 
 ```json
 {
@@ -76,12 +95,13 @@ one round trip:
      "aggs": [{"fn": "count", "as": "n"}]}
   ]
 }
-→ {"id": "b1", "name": "Launch", "open_tasks": {"n": 4}}
+→ {"records": [{"id": "b1", "name": "Launch", "open_tasks": {"n": 4}}]}
 ```
 
-`aggs` is mutually exclusive with `include`/`order_by`/`limit` on the same
-include (validated by the planner). Parent-direction includes cannot
-aggregate (they are at most one row).
+On an include, `aggs` is mutually exclusive with `include`/`order_by`/`limit`
+(a fold covers the whole matching set), and rejected on parent-direction
+includes — a parent relation's cardinality is zero-or-one, so there is
+nothing useful to fold.
 
 ## Semantics
 
@@ -89,65 +109,69 @@ SQL-standard where SQL is unambiguous:
 
 - `count` with no column counts rows; `count(col)` counts non-NULL values.
 - `sum`/`avg`/`min`/`max` skip NULLs entirely.
-- Typing: `count` → int64; `sum` → the column's type (int64 or float64);
-  `avg` → float64 always; `min`/`max` → the column's type (min/max on text
-  is lexicographic; on bool, false < true).
-- Empty input: `count` → 0; everything else → NULL. (`avg` of nothing is
-  NULL, not 0 — the classic trap.)
-- `sum`/`avg` require a numeric column; validated at plan time. Overflow is
-  not detected (POC).
+- Typing: `count` → int64; `sum` → the column's numeric type (`sum(int64)`
+  is int64, `sum(float64)` is float64); `avg` → float64 always; `min`/`max`
+  → the column's type (min/max on text is lexicographic; on bool, false <
+  true).
+- Empty input: `count` → 0 (never NULL); everything else → NULL. (`avg` of
+  nothing is NULL, not 0 — the classic trap.)
+- `sum`/`avg` require a numeric column and `avg` requires a column at all;
+  both validated at plan time. Overflow is not detected (POC).
 
 ## Planning & execution
 
 Nothing new below the IR:
 
-- **Planner** (`04_planner`): `PlanAggregate` reuses `chooseAccess` — the
-  filter's equality prefix picks PK lookup / index scan / full scan exactly
-  as for reads. It validates columns, types, and the include exclusivity
-  rules, and resolves `As` collisions.
-- **Executor** (`05_exec`): a fold, not a materialization. Stream rows from
-  the access path, apply the residual filter, accumulate
-  `{count, sum, min, max}` per term; `avg = sum/count` at the end. Never
-  builds a row slice — this is the first operator that is strictly cheaper
-  than the read it replaces.
-- **Aggregate includes**: `fetchChildren` already locates child rows per
-  parent (FK index or scan); with `aggs` set it folds them instead of
-  recursing into `attachIncludes`. Same N+1 shape as record includes — when
-  includes get batched, aggregate includes come along for free.
+- **Planner** (`04_planner`): aggregate planning is a validation pass, not a
+  new plan shape. A folded read reuses `chooseAccess` — the filter's equality
+  prefix picks PK lookup / index scan / full scan exactly as for records.
+  `validateAggs` checks columns, numeric-ness for sum/avg, and distinct `As`.
+  Combining `aggs` with `order_by`/`limit`/`include` is rejected with a
+  friendly, human-worded error.
+- **Executor** (`05_exec`): a fold over the fetched-and-filtered rows,
+  accumulating `{count, sum, min, max}` per term; `avg = sum/count` at the
+  end. Root aggregates return one `Record` whose `Columns` are the scalars;
+  aggregate includes fold children into `Record.Scalars`, rendered by the
+  frontend as a nested object. (The fetch still materialises the row slice it
+  folds — a genuinely streaming fold is a later optimisation, not a
+  correctness concern.)
 
 ## Surfaces
 
-- **Server**: `POST /aggregate` (+ `/tx/{id}/aggregate`), and `aggs` on
-  include objects inside `/query`.
-- **Go runtime** (`radclient`): `Aggregate(ctx, protocol.Aggregate) (protocol.Record, error)`.
-- **Generated Go** — sugar on the query builder, generated per column with
-  type-appropriate methods:
+- **Go runtime** (`radclient`): none needed — the generated code builds a
+  `protocol.Read` with `Aggs` and calls the existing `Query`.
+- **Generated Go** — terminal methods on the query builder, per column with
+  type-appropriate signatures:
 
   ```go
-  n, err := db.Tasks.Query().BoardIDEq(id).StatusNe("done").Count(ctx)      // int64
-  avg, err := db.Tasks.Query().BoardIDEq(id).AvgEstimate(ctx)               // *float64 (nil = no rows)
-  latest, err := db.Tasks.Query().MaxDueAt(ctx)                             // *int64
+  n, err   := db.Tasks.Query().BoardIDEq(id).StatusNe("done").Count(ctx)  // int64, never nil
+  avg, err := db.Tasks.Query().BoardIDEq(id).AvgEstimate(ctx)             // *float64 (nil = no rows)
+  next,err := db.Tasks.Query().BoardIDEq(id).MinDueAt(ctx)                // *int64
   ```
 
-  `Count` on every builder; `Sum{Col}`/`Avg{Col}` for numeric columns;
-  `Min{Col}`/`Max{Col}` for every comparable column. Include builders gain
-  `Count()` (yielding e.g. `Board.OpenTasksCount *int64`) as the first
-  aggregate-include surface.
+  `Count` on every builder (non-null `int64`); `Sum{Col}`/`Avg{Col}` for
+  numeric columns; `Min{Col}`/`Max{Col}` for every column. The fold methods
+  reuse the accumulated filter and drop ordering/pagination/includes.
 
-- **Generated TS**: `await db.tasks.query().boardIdEq(id).count()`,
-  `.avgEstimate()`, etc. — same derivation rules.
+- **Generated TS**: the same derivation — `await db.tasks.query()
+  .boardIdEq(id).count()` → `Promise<number>`; `.avgEstimate()` →
+  `Promise<number | null>`; `.minDueAt()`, etc.
 
-## Non-goals (this iteration)
+## Where this wants to go (not built)
 
-`GROUP BY` (the natural next step — it changes the result shape to rows and
-deserves its own design), `HAVING`, `DISTINCT`, multi-aggregate builder
-calls in generated code (compose via the runtime's `Aggregate` if needed),
-and any pushdown cleverness (index-only counts) — correctness first, the
+`Aggs`-as-a-shape is the minimal form of a bigger idea: one relation-
+materialising node whose *shape* (records / grouped rows / a scalar fold) and
+*cardinality* is explicit, so `Read` and `Include` stop being separate types
+at all. That unification is deliberately **not** built yet — the plan is to
+let it emerge from real demo pressure (a Tracker, a small forum, a Shopify-
+lite orders app) rather than design it in the abstract, the way an IR is
+shaped by the frontends it has to serve. `Aggs` is placed so it doesn't block
+that: it's an annotation on a relation, never an expression, and `GROUP BY`
+(which turns a scalar fold into grouped rows) is the obvious next shape to
+grow into the same node.
+
+Also out for this iteration: `HAVING`, `DISTINCT`, multi-aggregate builder
+sugar (compose via the runtime if needed), aggregate-include *codegen* (the
+wire and engine support it; the sugar that reshapes the parent model can wait
+for a demo that needs it), and pushdown cleverness (index-only counts) — the
 fold is already O(matching rows).
-
-## Order of work
-
-1. `lir.Aggregate` + planner validation + executor fold, with layer tests.
-2. Wire types + `/aggregate` endpoint + runtime methods (Go, TS).
-3. Codegen sugar (Go + TS) + demo: board cards with open/done counts and an
-   average-estimate stat line — the demo change that justifies the feature.

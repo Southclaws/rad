@@ -55,6 +55,15 @@ for (const task of view?.tasks ?? []) {
   console.log(`   [${task.priority}] ${task.title} → ${who} ${comments}`);
 }
 
+// Aggregates: board stats folded server-side, no rows fetched.
+const onBoard = () => db.tasks.query().boardIdEq(board.id);
+const totalTasks = await onBoard().count();
+const doneTasks = await onBoard().statusEq("done").count();
+const openTasks = await onBoard().statusNe("done").count();
+console.log(`   ${board.name}: ${totalTasks} tasks · ${openTasks} open · ${doneTasks} done`);
+const avgEst = await onBoard().avgEstimate(); // null when nothing estimated
+console.log(`   avg estimate: ${avgEst === null ? "— (none yet)" : `${avgEst.toFixed(1)}h`}`);
+
 // Typed filters, patch with clear-to-NULL, and a conflict retry.
 const mine = await db.tasks.query().assigneeIdEq(ada.id).statusNe("done").all();
 console.log(`   ada's open tasks: ${mine.length}`);

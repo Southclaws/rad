@@ -231,6 +231,44 @@ func run() error {
 	}
 	fmt.Printf("   due within 72h: %d\n\n", len(dueSoon))
 
+	// ── 4b. Aggregates: board stats without fetching the tasks. ─────────
+	// The card a Tracker board would show — counts by status, an average
+	// estimate, the next deadline — each one query that folds server-side.
+	fmt.Println("── board stats (aggregates, no rows fetched)")
+	onBoard := func() *tracker.TaskQuery { return db.Tasks.Query().BoardIDEq(board.ID) }
+	total, err := onBoard().Count(ctx)
+	if err != nil {
+		return err
+	}
+	done, err := onBoard().StatusEq("done").Count(ctx)
+	if err != nil {
+		return err
+	}
+	open, err := onBoard().StatusNe("done").Count(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("   Launch v0: %d tasks · %d open · %d done\n", total, open, done)
+
+	avgEst, err := onBoard().AvgEstimate(ctx)
+	if err != nil {
+		return err
+	}
+	nextDue, err := onBoard().MinDueAt(ctx)
+	if err != nil {
+		return err
+	}
+	// avg/min return nil when no rows have a value — no "0 of nothing" lie.
+	switch {
+	case avgEst == nil:
+		fmt.Println("   avg estimate: — (nothing estimated yet)")
+	default:
+		fmt.Printf("   avg estimate: %.1fh\n", *avgEst)
+	}
+	if nextDue != nil {
+		fmt.Printf("   next deadline: %s\n\n", time.UnixMilli(*nextDue).Format(time.RFC3339))
+	}
+
 	// ── 5. Mutations: patch, clear-to-NULL, delete-restrict. ────────────
 	fmt.Println("── mutations")
 	fix := unassigned[0]

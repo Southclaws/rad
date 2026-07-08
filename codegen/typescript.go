@@ -130,6 +130,12 @@ export interface Order {
   desc?: boolean;
 }
 
+export interface Agg {
+  fn: "count" | "sum" | "avg" | "min" | "max";
+  column?: string;
+  as: string;
+}
+
 export interface Include {
   fk: string;
   dir: "parent" | "children";
@@ -138,6 +144,7 @@ export interface Include {
   order_by?: Order[];
   limit?: number;
   include?: Include[];
+  aggs?: Agg[];
 }
 
 export interface Read {
@@ -147,6 +154,7 @@ export interface Read {
   offset?: number;
   limit?: number;
   include?: Include[];
+  aggs?: Agg[];
 }
 
 type Rec = Record<string, unknown>;
@@ -448,8 +456,45 @@ func emitTSQuery(p func(string, ...any), t *genTable) {
 	p("    const rows = await this.all();")
 	p("    return rows.length ? rows[0] : null;")
 	p("  }")
+	p("")
+	emitTSAggregates(p, t)
 	p("}")
 	p("")
+}
+
+// emitTSAggregates writes the terminal fold methods. They reuse the builder's
+// filter but not its ordering/pagination/includes (meaningless for a fold).
+// count() is always a number; the rest return null when no rows matched.
+func emitTSAggregates(p func(string, ...any), t *genTable) {
+	p("  private async fold(aggs: Agg[]): Promise<Rec> {")
+	p("    const read: Read = { table: this.read.table, filter: andExpr(this.filters), aggs };")
+	p("    const recs = await this.v.query(read);")
+	p("    return recs[0] ?? {};")
+	p("  }")
+	p("")
+	p("  /** How many rows match (never null: 0 when none). */")
+	p("  async count(): Promise<number> {")
+	p("    const rec = await this.fold([{ fn: \"count\", as: \"v\" }]);")
+	p("    return (rec[\"v\"] as number) ?? 0;")
+	p("  }")
+
+	fold := func(method, fn, col, ty, doc string) {
+		p("  /** %s */", doc)
+		p("  async %s(): Promise<%s | null> {", method, ty)
+		p("    const rec = await this.fold([{ fn: %q, column: %q, as: \"v\" }]);", fn, col)
+		p("    return (rec[\"v\"] as %s | null) ?? null;", ty)
+		p("  }")
+	}
+	for _, c := range t.Cols {
+		m := upperCamel(c.SQLName)
+		ty := tsType(c.GoType)
+		if c.GoType == "int64" || c.GoType == "float64" {
+			fold("sum"+m, "sum", c.SQLName, "number", fmt.Sprintf("Total of %q (null when no rows).", c.SQLName))
+			fold("avg"+m, "avg", c.SQLName, "number", fmt.Sprintf("Average of %q (null when no rows).", c.SQLName))
+		}
+		fold("min"+m, "min", c.SQLName, ty, fmt.Sprintf("Smallest %q (null when no rows).", c.SQLName))
+		fold("max"+m, "max", c.SQLName, ty, fmt.Sprintf("Largest %q (null when no rows).", c.SQLName))
+	}
 }
 
 func emitTSInclude(p func(string, ...any), t *genTable) {

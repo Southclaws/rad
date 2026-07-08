@@ -145,6 +145,12 @@ export interface Order {
   desc?: boolean;
 }
 
+export interface Agg {
+  fn: "count" | "sum" | "avg" | "min" | "max";
+  column?: string;
+  as: string;
+}
+
 export interface Include {
   fk: string;
   dir: "parent" | "children";
@@ -153,6 +159,7 @@ export interface Include {
   order_by?: Order[];
   limit?: number;
   include?: Include[];
+  aggs?: Agg[];
 }
 
 export interface Read {
@@ -162,6 +169,7 @@ export interface Read {
   offset?: number;
   limit?: number;
   include?: Include[];
+  aggs?: Agg[];
 }
 
 type Rec = Record<string, unknown>;
@@ -437,6 +445,88 @@ export class UserQuery {
     const rows = await this.all();
     return rows.length ? rows[0] : null;
   }
+
+  private async fold(aggs: Agg[]): Promise<Rec> {
+    const read: Read = { table: this.read.table, filter: andExpr(this.filters), aggs };
+    const recs = await this.v.query(read);
+    return recs[0] ?? {};
+  }
+
+  /** How many rows match (never null: 0 when none). */
+  async count(): Promise<number> {
+    const rec = await this.fold([{ fn: "count", as: "v" }]);
+    return (rec["v"] as number) ?? 0;
+  }
+  /** Smallest "id" (null when no rows). */
+  async minId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "id" (null when no rows). */
+  async maxId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "username" (null when no rows). */
+  async minUsername(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "username", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "username" (null when no rows). */
+  async maxUsername(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "username", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "display_name" (null when no rows). */
+  async minDisplayName(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "display_name", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "display_name" (null when no rows). */
+  async maxDisplayName(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "display_name", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "password_hash" (null when no rows). */
+  async minPasswordHash(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "password_hash", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "password_hash" (null when no rows). */
+  async maxPasswordHash(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "password_hash", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "email" (null when no rows). */
+  async minEmail(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "email", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "email" (null when no rows). */
+  async maxEmail(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "email", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Total of "created_at" (null when no rows). */
+  async sumCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "sum", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Average of "created_at" (null when no rows). */
+  async avgCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "avg", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Smallest "created_at" (null when no rows). */
+  async minCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "min", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Largest "created_at" (null when no rows). */
+  async maxCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "max", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
 }
 
 /** Refines an included "users" fetch. */
@@ -672,6 +762,78 @@ export class SessionQuery {
     const rows = await this.all();
     return rows.length ? rows[0] : null;
   }
+
+  private async fold(aggs: Agg[]): Promise<Rec> {
+    const read: Read = { table: this.read.table, filter: andExpr(this.filters), aggs };
+    const recs = await this.v.query(read);
+    return recs[0] ?? {};
+  }
+
+  /** How many rows match (never null: 0 when none). */
+  async count(): Promise<number> {
+    const rec = await this.fold([{ fn: "count", as: "v" }]);
+    return (rec["v"] as number) ?? 0;
+  }
+  /** Smallest "token" (null when no rows). */
+  async minToken(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "token", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "token" (null when no rows). */
+  async maxToken(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "token", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "user_id" (null when no rows). */
+  async minUserId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "user_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "user_id" (null when no rows). */
+  async maxUserId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "user_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Total of "created_at" (null when no rows). */
+  async sumCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "sum", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Average of "created_at" (null when no rows). */
+  async avgCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "avg", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Smallest "created_at" (null when no rows). */
+  async minCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "min", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Largest "created_at" (null when no rows). */
+  async maxCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "max", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Total of "expires_at" (null when no rows). */
+  async sumExpiresAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "sum", column: "expires_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Average of "expires_at" (null when no rows). */
+  async avgExpiresAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "avg", column: "expires_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Smallest "expires_at" (null when no rows). */
+  async minExpiresAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "min", column: "expires_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Largest "expires_at" (null when no rows). */
+  async maxExpiresAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "max", column: "expires_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
 }
 
 /** Refines an included "sessions" fetch. */
@@ -871,6 +1033,58 @@ export class TeamQuery {
     this.read.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
+  }
+
+  private async fold(aggs: Agg[]): Promise<Rec> {
+    const read: Read = { table: this.read.table, filter: andExpr(this.filters), aggs };
+    const recs = await this.v.query(read);
+    return recs[0] ?? {};
+  }
+
+  /** How many rows match (never null: 0 when none). */
+  async count(): Promise<number> {
+    const rec = await this.fold([{ fn: "count", as: "v" }]);
+    return (rec["v"] as number) ?? 0;
+  }
+  /** Smallest "id" (null when no rows). */
+  async minId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "id" (null when no rows). */
+  async maxId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "name" (null when no rows). */
+  async minName(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "name", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "name" (null when no rows). */
+  async maxName(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "name", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Total of "created_at" (null when no rows). */
+  async sumCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "sum", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Average of "created_at" (null when no rows). */
+  async avgCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "avg", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Smallest "created_at" (null when no rows). */
+  async minCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "min", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Largest "created_at" (null when no rows). */
+  async maxCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "max", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
   }
 }
 
@@ -1072,6 +1286,68 @@ export class TeamMemberQuery {
     this.read.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
+  }
+
+  private async fold(aggs: Agg[]): Promise<Rec> {
+    const read: Read = { table: this.read.table, filter: andExpr(this.filters), aggs };
+    const recs = await this.v.query(read);
+    return recs[0] ?? {};
+  }
+
+  /** How many rows match (never null: 0 when none). */
+  async count(): Promise<number> {
+    const rec = await this.fold([{ fn: "count", as: "v" }]);
+    return (rec["v"] as number) ?? 0;
+  }
+  /** Smallest "team_id" (null when no rows). */
+  async minTeamId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "team_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "team_id" (null when no rows). */
+  async maxTeamId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "team_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "user_id" (null when no rows). */
+  async minUserId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "user_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "user_id" (null when no rows). */
+  async maxUserId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "user_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "role" (null when no rows). */
+  async minRole(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "role", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "role" (null when no rows). */
+  async maxRole(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "role", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Total of "joined_at" (null when no rows). */
+  async sumJoinedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "sum", column: "joined_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Average of "joined_at" (null when no rows). */
+  async avgJoinedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "avg", column: "joined_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Smallest "joined_at" (null when no rows). */
+  async minJoinedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "min", column: "joined_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Largest "joined_at" (null when no rows). */
+  async maxJoinedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "max", column: "joined_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
   }
 }
 
@@ -1289,6 +1565,78 @@ export class BoardQuery {
     this.read.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
+  }
+
+  private async fold(aggs: Agg[]): Promise<Rec> {
+    const read: Read = { table: this.read.table, filter: andExpr(this.filters), aggs };
+    const recs = await this.v.query(read);
+    return recs[0] ?? {};
+  }
+
+  /** How many rows match (never null: 0 when none). */
+  async count(): Promise<number> {
+    const rec = await this.fold([{ fn: "count", as: "v" }]);
+    return (rec["v"] as number) ?? 0;
+  }
+  /** Smallest "id" (null when no rows). */
+  async minId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "id" (null when no rows). */
+  async maxId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "team_id" (null when no rows). */
+  async minTeamId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "team_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "team_id" (null when no rows). */
+  async maxTeamId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "team_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "name" (null when no rows). */
+  async minName(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "name", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "name" (null when no rows). */
+  async maxName(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "name", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "archived" (null when no rows). */
+  async minArchived(): Promise<boolean | null> {
+    const rec = await this.fold([{ fn: "min", column: "archived", as: "v" }]);
+    return (rec["v"] as boolean | null) ?? null;
+  }
+  /** Largest "archived" (null when no rows). */
+  async maxArchived(): Promise<boolean | null> {
+    const rec = await this.fold([{ fn: "max", column: "archived", as: "v" }]);
+    return (rec["v"] as boolean | null) ?? null;
+  }
+  /** Total of "created_at" (null when no rows). */
+  async sumCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "sum", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Average of "created_at" (null when no rows). */
+  async avgCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "avg", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Smallest "created_at" (null when no rows). */
+  async minCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "min", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Largest "created_at" (null when no rows). */
+  async maxCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "max", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
   }
 }
 
@@ -1631,6 +1979,178 @@ export class TaskQuery {
     const rows = await this.all();
     return rows.length ? rows[0] : null;
   }
+
+  private async fold(aggs: Agg[]): Promise<Rec> {
+    const read: Read = { table: this.read.table, filter: andExpr(this.filters), aggs };
+    const recs = await this.v.query(read);
+    return recs[0] ?? {};
+  }
+
+  /** How many rows match (never null: 0 when none). */
+  async count(): Promise<number> {
+    const rec = await this.fold([{ fn: "count", as: "v" }]);
+    return (rec["v"] as number) ?? 0;
+  }
+  /** Smallest "id" (null when no rows). */
+  async minId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "id" (null when no rows). */
+  async maxId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "board_id" (null when no rows). */
+  async minBoardId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "board_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "board_id" (null when no rows). */
+  async maxBoardId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "board_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "title" (null when no rows). */
+  async minTitle(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "title", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "title" (null when no rows). */
+  async maxTitle(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "title", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "description" (null when no rows). */
+  async minDescription(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "description", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "description" (null when no rows). */
+  async maxDescription(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "description", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "status" (null when no rows). */
+  async minStatus(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "status", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "status" (null when no rows). */
+  async maxStatus(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "status", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Total of "priority" (null when no rows). */
+  async sumPriority(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "sum", column: "priority", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Average of "priority" (null when no rows). */
+  async avgPriority(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "avg", column: "priority", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Smallest "priority" (null when no rows). */
+  async minPriority(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "min", column: "priority", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Largest "priority" (null when no rows). */
+  async maxPriority(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "max", column: "priority", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Total of "estimate" (null when no rows). */
+  async sumEstimate(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "sum", column: "estimate", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Average of "estimate" (null when no rows). */
+  async avgEstimate(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "avg", column: "estimate", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Smallest "estimate" (null when no rows). */
+  async minEstimate(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "min", column: "estimate", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Largest "estimate" (null when no rows). */
+  async maxEstimate(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "max", column: "estimate", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Smallest "assignee_id" (null when no rows). */
+  async minAssigneeId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "assignee_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "assignee_id" (null when no rows). */
+  async maxAssigneeId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "assignee_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "creator_id" (null when no rows). */
+  async minCreatorId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "creator_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "creator_id" (null when no rows). */
+  async maxCreatorId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "creator_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "parent_id" (null when no rows). */
+  async minParentId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "parent_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "parent_id" (null when no rows). */
+  async maxParentId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "parent_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Total of "due_at" (null when no rows). */
+  async sumDueAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "sum", column: "due_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Average of "due_at" (null when no rows). */
+  async avgDueAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "avg", column: "due_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Smallest "due_at" (null when no rows). */
+  async minDueAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "min", column: "due_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Largest "due_at" (null when no rows). */
+  async maxDueAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "max", column: "due_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Total of "created_at" (null when no rows). */
+  async sumCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "sum", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Average of "created_at" (null when no rows). */
+  async avgCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "avg", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Smallest "created_at" (null when no rows). */
+  async minCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "min", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Largest "created_at" (null when no rows). */
+  async maxCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "max", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
 }
 
 /** Refines an included "tasks" fetch. */
@@ -1950,6 +2470,78 @@ export class CommentQuery {
     const rows = await this.all();
     return rows.length ? rows[0] : null;
   }
+
+  private async fold(aggs: Agg[]): Promise<Rec> {
+    const read: Read = { table: this.read.table, filter: andExpr(this.filters), aggs };
+    const recs = await this.v.query(read);
+    return recs[0] ?? {};
+  }
+
+  /** How many rows match (never null: 0 when none). */
+  async count(): Promise<number> {
+    const rec = await this.fold([{ fn: "count", as: "v" }]);
+    return (rec["v"] as number) ?? 0;
+  }
+  /** Smallest "id" (null when no rows). */
+  async minId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "id" (null when no rows). */
+  async maxId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "task_id" (null when no rows). */
+  async minTaskId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "task_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "task_id" (null when no rows). */
+  async maxTaskId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "task_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "author_id" (null when no rows). */
+  async minAuthorId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "author_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "author_id" (null when no rows). */
+  async maxAuthorId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "author_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "body" (null when no rows). */
+  async minBody(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "body", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "body" (null when no rows). */
+  async maxBody(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "body", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Total of "created_at" (null when no rows). */
+  async sumCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "sum", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Average of "created_at" (null when no rows). */
+  async avgCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "avg", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Smallest "created_at" (null when no rows). */
+  async minCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "min", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
+  /** Largest "created_at" (null when no rows). */
+  async maxCreatedAt(): Promise<number | null> {
+    const rec = await this.fold([{ fn: "max", column: "created_at", as: "v" }]);
+    return (rec["v"] as number | null) ?? null;
+  }
 }
 
 /** Refines an included "comments" fetch. */
@@ -2168,6 +2760,58 @@ export class LabelQuery {
     const rows = await this.all();
     return rows.length ? rows[0] : null;
   }
+
+  private async fold(aggs: Agg[]): Promise<Rec> {
+    const read: Read = { table: this.read.table, filter: andExpr(this.filters), aggs };
+    const recs = await this.v.query(read);
+    return recs[0] ?? {};
+  }
+
+  /** How many rows match (never null: 0 when none). */
+  async count(): Promise<number> {
+    const rec = await this.fold([{ fn: "count", as: "v" }]);
+    return (rec["v"] as number) ?? 0;
+  }
+  /** Smallest "id" (null when no rows). */
+  async minId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "id" (null when no rows). */
+  async maxId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "team_id" (null when no rows). */
+  async minTeamId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "team_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "team_id" (null when no rows). */
+  async maxTeamId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "team_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "name" (null when no rows). */
+  async minName(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "name", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "name" (null when no rows). */
+  async maxName(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "name", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "hex_color" (null when no rows). */
+  async minHexColor(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "hex_color", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "hex_color" (null when no rows). */
+  async maxHexColor(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "hex_color", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
 }
 
 /** Refines an included "labels" fetch. */
@@ -2348,6 +2992,38 @@ export class TaskLabelQuery {
     this.read.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
+  }
+
+  private async fold(aggs: Agg[]): Promise<Rec> {
+    const read: Read = { table: this.read.table, filter: andExpr(this.filters), aggs };
+    const recs = await this.v.query(read);
+    return recs[0] ?? {};
+  }
+
+  /** How many rows match (never null: 0 when none). */
+  async count(): Promise<number> {
+    const rec = await this.fold([{ fn: "count", as: "v" }]);
+    return (rec["v"] as number) ?? 0;
+  }
+  /** Smallest "task_id" (null when no rows). */
+  async minTaskId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "task_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "task_id" (null when no rows). */
+  async maxTaskId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "task_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Smallest "label_id" (null when no rows). */
+  async minLabelId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "min", column: "label_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
+  }
+  /** Largest "label_id" (null when no rows). */
+  async maxLabelId(): Promise<string | null> {
+    const rec = await this.fold([{ fn: "max", column: "label_id", as: "v" }]);
+    return (rec["v"] as string | null) ?? null;
   }
 }
 

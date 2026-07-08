@@ -593,6 +593,155 @@ func (q *UserQuery) First(ctx context.Context) (User, bool, error) {
 	return rows[0], true, nil
 }
 
+// fold sends the builder's filter as an aggregate query and returns the
+// one scalar record the server produces.
+func (q *UserQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
+	read := q.read
+	read.Filter = andExpr(q.filters)
+	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
+	read.Aggs = aggs
+	recs, err := q.v.Query(ctx, read)
+	if err != nil || len(recs) == 0 {
+		return protocol.Record{}, err
+	}
+	return recs[0], nil
+}
+
+// Count returns how many rows match (never NULL: 0 when none).
+func (q *UserQuery) Count(ctx context.Context) (int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	if err != nil {
+		return 0, err
+	}
+	return recInt64(rec, "v"), nil
+}
+
+// MinID is the smallest "id" over matching rows (nil when none).
+func (q *UserQuery) MinID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxID is the largest "id" over matching rows (nil when none).
+func (q *UserQuery) MaxID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinUsername is the smallest "username" over matching rows (nil when none).
+func (q *UserQuery) MinUsername(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "username", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxUsername is the largest "username" over matching rows (nil when none).
+func (q *UserQuery) MaxUsername(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "username", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinDisplayName is the smallest "display_name" over matching rows (nil when none).
+func (q *UserQuery) MinDisplayName(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "display_name", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxDisplayName is the largest "display_name" over matching rows (nil when none).
+func (q *UserQuery) MaxDisplayName(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "display_name", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinPasswordHash is the smallest "password_hash" over matching rows (nil when none).
+func (q *UserQuery) MinPasswordHash(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "password_hash", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxPasswordHash is the largest "password_hash" over matching rows (nil when none).
+func (q *UserQuery) MaxPasswordHash(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "password_hash", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinEmail is the smallest "email" over matching rows (nil when none).
+func (q *UserQuery) MinEmail(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "email", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxEmail is the largest "email" over matching rows (nil when none).
+func (q *UserQuery) MaxEmail(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "email", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// SumCreatedAt totals "created_at" over matching rows (nil when none).
+func (q *UserQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// AvgCreatedAt averages "created_at" (nil when none).
+func (q *UserQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recFloat64Ptr(rec, "v"), nil
+}
+
+// MinCreatedAt is the smallest "created_at" over matching rows (nil when none).
+func (q *UserQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// MaxCreatedAt is the largest "created_at" over matching rows (nil when none).
+func (q *UserQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
 // UserInclude refines an included "users" fetch.
 type UserInclude struct {
 	inc     protocol.Include
@@ -1159,6 +1308,137 @@ func (q *SessionQuery) First(ctx context.Context) (Session, bool, error) {
 	return rows[0], true, nil
 }
 
+// fold sends the builder's filter as an aggregate query and returns the
+// one scalar record the server produces.
+func (q *SessionQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
+	read := q.read
+	read.Filter = andExpr(q.filters)
+	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
+	read.Aggs = aggs
+	recs, err := q.v.Query(ctx, read)
+	if err != nil || len(recs) == 0 {
+		return protocol.Record{}, err
+	}
+	return recs[0], nil
+}
+
+// Count returns how many rows match (never NULL: 0 when none).
+func (q *SessionQuery) Count(ctx context.Context) (int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	if err != nil {
+		return 0, err
+	}
+	return recInt64(rec, "v"), nil
+}
+
+// MinToken is the smallest "token" over matching rows (nil when none).
+func (q *SessionQuery) MinToken(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "token", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxToken is the largest "token" over matching rows (nil when none).
+func (q *SessionQuery) MaxToken(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "token", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinUserID is the smallest "user_id" over matching rows (nil when none).
+func (q *SessionQuery) MinUserID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "user_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxUserID is the largest "user_id" over matching rows (nil when none).
+func (q *SessionQuery) MaxUserID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "user_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// SumCreatedAt totals "created_at" over matching rows (nil when none).
+func (q *SessionQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// AvgCreatedAt averages "created_at" (nil when none).
+func (q *SessionQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recFloat64Ptr(rec, "v"), nil
+}
+
+// MinCreatedAt is the smallest "created_at" over matching rows (nil when none).
+func (q *SessionQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// MaxCreatedAt is the largest "created_at" over matching rows (nil when none).
+func (q *SessionQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// SumExpiresAt totals "expires_at" over matching rows (nil when none).
+func (q *SessionQuery) SumExpiresAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "expires_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// AvgExpiresAt averages "expires_at" (nil when none).
+func (q *SessionQuery) AvgExpiresAt(ctx context.Context) (*float64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "expires_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recFloat64Ptr(rec, "v"), nil
+}
+
+// MinExpiresAt is the smallest "expires_at" over matching rows (nil when none).
+func (q *SessionQuery) MinExpiresAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "expires_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// MaxExpiresAt is the largest "expires_at" over matching rows (nil when none).
+func (q *SessionQuery) MaxExpiresAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "expires_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
 // SessionInclude refines an included "sessions" fetch.
 type SessionInclude struct {
 	inc     protocol.Include
@@ -1572,6 +1852,101 @@ func (q *TeamQuery) First(ctx context.Context) (Team, bool, error) {
 		return Team{}, false, err
 	}
 	return rows[0], true, nil
+}
+
+// fold sends the builder's filter as an aggregate query and returns the
+// one scalar record the server produces.
+func (q *TeamQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
+	read := q.read
+	read.Filter = andExpr(q.filters)
+	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
+	read.Aggs = aggs
+	recs, err := q.v.Query(ctx, read)
+	if err != nil || len(recs) == 0 {
+		return protocol.Record{}, err
+	}
+	return recs[0], nil
+}
+
+// Count returns how many rows match (never NULL: 0 when none).
+func (q *TeamQuery) Count(ctx context.Context) (int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	if err != nil {
+		return 0, err
+	}
+	return recInt64(rec, "v"), nil
+}
+
+// MinID is the smallest "id" over matching rows (nil when none).
+func (q *TeamQuery) MinID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxID is the largest "id" over matching rows (nil when none).
+func (q *TeamQuery) MaxID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinName is the smallest "name" over matching rows (nil when none).
+func (q *TeamQuery) MinName(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "name", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxName is the largest "name" over matching rows (nil when none).
+func (q *TeamQuery) MaxName(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "name", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// SumCreatedAt totals "created_at" over matching rows (nil when none).
+func (q *TeamQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// AvgCreatedAt averages "created_at" (nil when none).
+func (q *TeamQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recFloat64Ptr(rec, "v"), nil
+}
+
+// MinCreatedAt is the smallest "created_at" over matching rows (nil when none).
+func (q *TeamQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// MaxCreatedAt is the largest "created_at" over matching rows (nil when none).
+func (q *TeamQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
 }
 
 // TeamInclude refines an included "teams" fetch.
@@ -1999,6 +2374,119 @@ func (q *TeamMemberQuery) First(ctx context.Context) (TeamMember, bool, error) {
 		return TeamMember{}, false, err
 	}
 	return rows[0], true, nil
+}
+
+// fold sends the builder's filter as an aggregate query and returns the
+// one scalar record the server produces.
+func (q *TeamMemberQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
+	read := q.read
+	read.Filter = andExpr(q.filters)
+	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
+	read.Aggs = aggs
+	recs, err := q.v.Query(ctx, read)
+	if err != nil || len(recs) == 0 {
+		return protocol.Record{}, err
+	}
+	return recs[0], nil
+}
+
+// Count returns how many rows match (never NULL: 0 when none).
+func (q *TeamMemberQuery) Count(ctx context.Context) (int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	if err != nil {
+		return 0, err
+	}
+	return recInt64(rec, "v"), nil
+}
+
+// MinTeamID is the smallest "team_id" over matching rows (nil when none).
+func (q *TeamMemberQuery) MinTeamID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "team_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxTeamID is the largest "team_id" over matching rows (nil when none).
+func (q *TeamMemberQuery) MaxTeamID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "team_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinUserID is the smallest "user_id" over matching rows (nil when none).
+func (q *TeamMemberQuery) MinUserID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "user_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxUserID is the largest "user_id" over matching rows (nil when none).
+func (q *TeamMemberQuery) MaxUserID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "user_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinRole is the smallest "role" over matching rows (nil when none).
+func (q *TeamMemberQuery) MinRole(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "role", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxRole is the largest "role" over matching rows (nil when none).
+func (q *TeamMemberQuery) MaxRole(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "role", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// SumJoinedAt totals "joined_at" over matching rows (nil when none).
+func (q *TeamMemberQuery) SumJoinedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "joined_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// AvgJoinedAt averages "joined_at" (nil when none).
+func (q *TeamMemberQuery) AvgJoinedAt(ctx context.Context) (*float64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "joined_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recFloat64Ptr(rec, "v"), nil
+}
+
+// MinJoinedAt is the smallest "joined_at" over matching rows (nil when none).
+func (q *TeamMemberQuery) MinJoinedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "joined_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// MaxJoinedAt is the largest "joined_at" over matching rows (nil when none).
+func (q *TeamMemberQuery) MaxJoinedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "joined_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
 }
 
 // TeamMemberInclude refines an included "team_members" fetch.
@@ -2477,6 +2965,137 @@ func (q *BoardQuery) First(ctx context.Context) (Board, bool, error) {
 		return Board{}, false, err
 	}
 	return rows[0], true, nil
+}
+
+// fold sends the builder's filter as an aggregate query and returns the
+// one scalar record the server produces.
+func (q *BoardQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
+	read := q.read
+	read.Filter = andExpr(q.filters)
+	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
+	read.Aggs = aggs
+	recs, err := q.v.Query(ctx, read)
+	if err != nil || len(recs) == 0 {
+		return protocol.Record{}, err
+	}
+	return recs[0], nil
+}
+
+// Count returns how many rows match (never NULL: 0 when none).
+func (q *BoardQuery) Count(ctx context.Context) (int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	if err != nil {
+		return 0, err
+	}
+	return recInt64(rec, "v"), nil
+}
+
+// MinID is the smallest "id" over matching rows (nil when none).
+func (q *BoardQuery) MinID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxID is the largest "id" over matching rows (nil when none).
+func (q *BoardQuery) MaxID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinTeamID is the smallest "team_id" over matching rows (nil when none).
+func (q *BoardQuery) MinTeamID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "team_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxTeamID is the largest "team_id" over matching rows (nil when none).
+func (q *BoardQuery) MaxTeamID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "team_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinName is the smallest "name" over matching rows (nil when none).
+func (q *BoardQuery) MinName(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "name", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxName is the largest "name" over matching rows (nil when none).
+func (q *BoardQuery) MaxName(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "name", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinArchived is the smallest "archived" over matching rows (nil when none).
+func (q *BoardQuery) MinArchived(ctx context.Context) (*bool, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "archived", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recBoolPtr(rec, "v"), nil
+}
+
+// MaxArchived is the largest "archived" over matching rows (nil when none).
+func (q *BoardQuery) MaxArchived(ctx context.Context) (*bool, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "archived", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recBoolPtr(rec, "v"), nil
+}
+
+// SumCreatedAt totals "created_at" over matching rows (nil when none).
+func (q *BoardQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// AvgCreatedAt averages "created_at" (nil when none).
+func (q *BoardQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recFloat64Ptr(rec, "v"), nil
+}
+
+// MinCreatedAt is the smallest "created_at" over matching rows (nil when none).
+func (q *BoardQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// MaxCreatedAt is the largest "created_at" over matching rows (nil when none).
+func (q *BoardQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
 }
 
 // BoardInclude refines an included "boards" fetch.
@@ -3389,6 +4008,317 @@ func (q *TaskQuery) First(ctx context.Context) (Task, bool, error) {
 	return rows[0], true, nil
 }
 
+// fold sends the builder's filter as an aggregate query and returns the
+// one scalar record the server produces.
+func (q *TaskQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
+	read := q.read
+	read.Filter = andExpr(q.filters)
+	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
+	read.Aggs = aggs
+	recs, err := q.v.Query(ctx, read)
+	if err != nil || len(recs) == 0 {
+		return protocol.Record{}, err
+	}
+	return recs[0], nil
+}
+
+// Count returns how many rows match (never NULL: 0 when none).
+func (q *TaskQuery) Count(ctx context.Context) (int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	if err != nil {
+		return 0, err
+	}
+	return recInt64(rec, "v"), nil
+}
+
+// MinID is the smallest "id" over matching rows (nil when none).
+func (q *TaskQuery) MinID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxID is the largest "id" over matching rows (nil when none).
+func (q *TaskQuery) MaxID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinBoardID is the smallest "board_id" over matching rows (nil when none).
+func (q *TaskQuery) MinBoardID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "board_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxBoardID is the largest "board_id" over matching rows (nil when none).
+func (q *TaskQuery) MaxBoardID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "board_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinTitle is the smallest "title" over matching rows (nil when none).
+func (q *TaskQuery) MinTitle(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "title", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxTitle is the largest "title" over matching rows (nil when none).
+func (q *TaskQuery) MaxTitle(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "title", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinDescription is the smallest "description" over matching rows (nil when none).
+func (q *TaskQuery) MinDescription(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "description", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxDescription is the largest "description" over matching rows (nil when none).
+func (q *TaskQuery) MaxDescription(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "description", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinStatus is the smallest "status" over matching rows (nil when none).
+func (q *TaskQuery) MinStatus(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "status", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxStatus is the largest "status" over matching rows (nil when none).
+func (q *TaskQuery) MaxStatus(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "status", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// SumPriority totals "priority" over matching rows (nil when none).
+func (q *TaskQuery) SumPriority(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "priority", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// AvgPriority averages "priority" (nil when none).
+func (q *TaskQuery) AvgPriority(ctx context.Context) (*float64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "priority", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recFloat64Ptr(rec, "v"), nil
+}
+
+// MinPriority is the smallest "priority" over matching rows (nil when none).
+func (q *TaskQuery) MinPriority(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "priority", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// MaxPriority is the largest "priority" over matching rows (nil when none).
+func (q *TaskQuery) MaxPriority(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "priority", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// SumEstimate totals "estimate" over matching rows (nil when none).
+func (q *TaskQuery) SumEstimate(ctx context.Context) (*float64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "estimate", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recFloat64Ptr(rec, "v"), nil
+}
+
+// AvgEstimate averages "estimate" (nil when none).
+func (q *TaskQuery) AvgEstimate(ctx context.Context) (*float64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "estimate", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recFloat64Ptr(rec, "v"), nil
+}
+
+// MinEstimate is the smallest "estimate" over matching rows (nil when none).
+func (q *TaskQuery) MinEstimate(ctx context.Context) (*float64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "estimate", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recFloat64Ptr(rec, "v"), nil
+}
+
+// MaxEstimate is the largest "estimate" over matching rows (nil when none).
+func (q *TaskQuery) MaxEstimate(ctx context.Context) (*float64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "estimate", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recFloat64Ptr(rec, "v"), nil
+}
+
+// MinAssigneeID is the smallest "assignee_id" over matching rows (nil when none).
+func (q *TaskQuery) MinAssigneeID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "assignee_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxAssigneeID is the largest "assignee_id" over matching rows (nil when none).
+func (q *TaskQuery) MaxAssigneeID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "assignee_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinCreatorID is the smallest "creator_id" over matching rows (nil when none).
+func (q *TaskQuery) MinCreatorID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "creator_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxCreatorID is the largest "creator_id" over matching rows (nil when none).
+func (q *TaskQuery) MaxCreatorID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "creator_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinParentID is the smallest "parent_id" over matching rows (nil when none).
+func (q *TaskQuery) MinParentID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "parent_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxParentID is the largest "parent_id" over matching rows (nil when none).
+func (q *TaskQuery) MaxParentID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "parent_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// SumDueAt totals "due_at" over matching rows (nil when none).
+func (q *TaskQuery) SumDueAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "due_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// AvgDueAt averages "due_at" (nil when none).
+func (q *TaskQuery) AvgDueAt(ctx context.Context) (*float64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "due_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recFloat64Ptr(rec, "v"), nil
+}
+
+// MinDueAt is the smallest "due_at" over matching rows (nil when none).
+func (q *TaskQuery) MinDueAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "due_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// MaxDueAt is the largest "due_at" over matching rows (nil when none).
+func (q *TaskQuery) MaxDueAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "due_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// SumCreatedAt totals "created_at" over matching rows (nil when none).
+func (q *TaskQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// AvgCreatedAt averages "created_at" (nil when none).
+func (q *TaskQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recFloat64Ptr(rec, "v"), nil
+}
+
+// MinCreatedAt is the smallest "created_at" over matching rows (nil when none).
+func (q *TaskQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// MaxCreatedAt is the largest "created_at" over matching rows (nil when none).
+func (q *TaskQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
 // TaskInclude refines an included "tasks" fetch.
 type TaskInclude struct {
 	inc     protocol.Include
@@ -4244,6 +5174,137 @@ func (q *CommentQuery) First(ctx context.Context) (Comment, bool, error) {
 	return rows[0], true, nil
 }
 
+// fold sends the builder's filter as an aggregate query and returns the
+// one scalar record the server produces.
+func (q *CommentQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
+	read := q.read
+	read.Filter = andExpr(q.filters)
+	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
+	read.Aggs = aggs
+	recs, err := q.v.Query(ctx, read)
+	if err != nil || len(recs) == 0 {
+		return protocol.Record{}, err
+	}
+	return recs[0], nil
+}
+
+// Count returns how many rows match (never NULL: 0 when none).
+func (q *CommentQuery) Count(ctx context.Context) (int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	if err != nil {
+		return 0, err
+	}
+	return recInt64(rec, "v"), nil
+}
+
+// MinID is the smallest "id" over matching rows (nil when none).
+func (q *CommentQuery) MinID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxID is the largest "id" over matching rows (nil when none).
+func (q *CommentQuery) MaxID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinTaskID is the smallest "task_id" over matching rows (nil when none).
+func (q *CommentQuery) MinTaskID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "task_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxTaskID is the largest "task_id" over matching rows (nil when none).
+func (q *CommentQuery) MaxTaskID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "task_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinAuthorID is the smallest "author_id" over matching rows (nil when none).
+func (q *CommentQuery) MinAuthorID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "author_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxAuthorID is the largest "author_id" over matching rows (nil when none).
+func (q *CommentQuery) MaxAuthorID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "author_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinBody is the smallest "body" over matching rows (nil when none).
+func (q *CommentQuery) MinBody(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "body", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxBody is the largest "body" over matching rows (nil when none).
+func (q *CommentQuery) MaxBody(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "body", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// SumCreatedAt totals "created_at" over matching rows (nil when none).
+func (q *CommentQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// AvgCreatedAt averages "created_at" (nil when none).
+func (q *CommentQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recFloat64Ptr(rec, "v"), nil
+}
+
+// MinCreatedAt is the smallest "created_at" over matching rows (nil when none).
+func (q *CommentQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
+// MaxCreatedAt is the largest "created_at" over matching rows (nil when none).
+func (q *CommentQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "created_at", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recInt64Ptr(rec, "v"), nil
+}
+
 // CommentInclude refines an included "comments" fetch.
 type CommentInclude struct {
 	inc     protocol.Include
@@ -4730,6 +5791,101 @@ func (q *LabelQuery) First(ctx context.Context) (Label, bool, error) {
 	return rows[0], true, nil
 }
 
+// fold sends the builder's filter as an aggregate query and returns the
+// one scalar record the server produces.
+func (q *LabelQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
+	read := q.read
+	read.Filter = andExpr(q.filters)
+	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
+	read.Aggs = aggs
+	recs, err := q.v.Query(ctx, read)
+	if err != nil || len(recs) == 0 {
+		return protocol.Record{}, err
+	}
+	return recs[0], nil
+}
+
+// Count returns how many rows match (never NULL: 0 when none).
+func (q *LabelQuery) Count(ctx context.Context) (int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	if err != nil {
+		return 0, err
+	}
+	return recInt64(rec, "v"), nil
+}
+
+// MinID is the smallest "id" over matching rows (nil when none).
+func (q *LabelQuery) MinID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxID is the largest "id" over matching rows (nil when none).
+func (q *LabelQuery) MaxID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinTeamID is the smallest "team_id" over matching rows (nil when none).
+func (q *LabelQuery) MinTeamID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "team_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxTeamID is the largest "team_id" over matching rows (nil when none).
+func (q *LabelQuery) MaxTeamID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "team_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinName is the smallest "name" over matching rows (nil when none).
+func (q *LabelQuery) MinName(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "name", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxName is the largest "name" over matching rows (nil when none).
+func (q *LabelQuery) MaxName(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "name", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinHexColor is the smallest "hex_color" over matching rows (nil when none).
+func (q *LabelQuery) MinHexColor(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "hex_color", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxHexColor is the largest "hex_color" over matching rows (nil when none).
+func (q *LabelQuery) MaxHexColor(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "hex_color", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
 // LabelInclude refines an included "labels" fetch.
 type LabelInclude struct {
 	inc     protocol.Include
@@ -5086,6 +6242,65 @@ func (q *TaskLabelQuery) First(ctx context.Context) (TaskLabel, bool, error) {
 		return TaskLabel{}, false, err
 	}
 	return rows[0], true, nil
+}
+
+// fold sends the builder's filter as an aggregate query and returns the
+// one scalar record the server produces.
+func (q *TaskLabelQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
+	read := q.read
+	read.Filter = andExpr(q.filters)
+	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
+	read.Aggs = aggs
+	recs, err := q.v.Query(ctx, read)
+	if err != nil || len(recs) == 0 {
+		return protocol.Record{}, err
+	}
+	return recs[0], nil
+}
+
+// Count returns how many rows match (never NULL: 0 when none).
+func (q *TaskLabelQuery) Count(ctx context.Context) (int64, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	if err != nil {
+		return 0, err
+	}
+	return recInt64(rec, "v"), nil
+}
+
+// MinTaskID is the smallest "task_id" over matching rows (nil when none).
+func (q *TaskLabelQuery) MinTaskID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "task_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxTaskID is the largest "task_id" over matching rows (nil when none).
+func (q *TaskLabelQuery) MaxTaskID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "task_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MinLabelID is the smallest "label_id" over matching rows (nil when none).
+func (q *TaskLabelQuery) MinLabelID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "label_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
+}
+
+// MaxLabelID is the largest "label_id" over matching rows (nil when none).
+func (q *TaskLabelQuery) MaxLabelID(ctx context.Context) (*string, error) {
+	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "label_id", As: "v"}})
+	if err != nil {
+		return nil, err
+	}
+	return recStringPtr(rec, "v"), nil
 }
 
 // TaskLabelInclude refines an included "task_labels" fetch.

@@ -425,6 +425,69 @@ func emitQuery(p func(string, ...any), t *genTable) {
 	p("\treturn rows[0], true, nil")
 	p("}")
 	p("")
+
+	emitAggregates(p, t, q)
+}
+
+// emitAggregates writes the terminal fold methods on the query builder. They
+// reuse the builder's filter but drop ordering/pagination/includes, which are
+// meaningless for a fold (and rejected by the server). Count is non-null;
+// sum/avg/min/max return a pointer that is nil when no rows matched.
+func emitAggregates(p func(string, ...any), t *genTable, q string) {
+	// Shared runner: send the accumulated filter with the given fold terms and
+	// return the single scalar record.
+	p("// fold sends the builder's filter as an aggregate query and returns the")
+	p("// one scalar record the server produces.")
+	p("func (q *%s) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {", q)
+	p("\tread := q.read")
+	p("\tread.Filter = andExpr(q.filters)")
+	p("\tread.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0")
+	p("\tread.Aggs = aggs")
+	p("\trecs, err := q.v.Query(ctx, read)")
+	p("\tif err != nil || len(recs) == 0 {")
+	p("\t\treturn protocol.Record{}, err")
+	p("\t}")
+	p("\treturn recs[0], nil")
+	p("}")
+	p("")
+
+	// Count is always available and never NULL.
+	p("// Count returns how many rows match (never NULL: 0 when none).")
+	p("func (q *%s) Count(ctx context.Context) (int64, error) {", q)
+	p("\trec, err := q.fold(ctx, []protocol.Agg{{Fn: \"count\", As: \"v\"}})")
+	p("\tif err != nil {")
+	p("\t\treturn 0, err")
+	p("\t}")
+	p("\treturn recInt64(rec, \"v\"), nil")
+	p("}")
+	p("")
+
+	fold := func(method, fn, col, retType, helper, doc string) {
+		p("// %s", doc)
+		p("func (q *%s) %s(ctx context.Context) (%s, error) {", q, method, retType)
+		p("\trec, err := q.fold(ctx, []protocol.Agg{{Fn: %q, Column: %q, As: \"v\"}})", fn, col)
+		p("\tif err != nil {")
+		p("\t\treturn nil, err")
+		p("\t}")
+		p("\treturn %s(rec, \"v\"), nil", helper)
+		p("}")
+		p("")
+	}
+
+	for _, c := range t.Cols {
+		numeric := c.Type == "int64" || c.Type == "float64"
+		ptrHelper := "rec" + goHelper(c.GoType) + "Ptr"
+		if numeric {
+			fold("Sum"+c.Field, "sum", c.SQLName, "*"+c.GoType, ptrHelper,
+				fmt.Sprintf("Sum%s totals %q over matching rows (nil when none).", c.Field, c.SQLName))
+			fold("Avg"+c.Field, "avg", c.SQLName, "*float64", "recFloat64Ptr",
+				fmt.Sprintf("Avg%s averages %q (nil when none).", c.Field, c.SQLName))
+		}
+		fold("Min"+c.Field, "min", c.SQLName, "*"+c.GoType, ptrHelper,
+			fmt.Sprintf("Min%s is the smallest %q over matching rows (nil when none).", c.Field, c.SQLName))
+		fold("Max"+c.Field, "max", c.SQLName, "*"+c.GoType, ptrHelper,
+			fmt.Sprintf("Max%s is the largest %q over matching rows (nil when none).", c.Field, c.SQLName))
+	}
 }
 
 // emitFilterMethods writes typed column predicates onto builder type q with
