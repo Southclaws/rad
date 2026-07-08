@@ -404,7 +404,9 @@ func writeRecord(w http.ResponseWriter, rec protocol.Record, found bool) {
 }
 
 func writeError(w http.ResponseWriter, status int, code, msg string) {
-	writeJSONBody(w, status, protocol.ErrorResponse{Code: code, Message: msg})
+	w.Header().Set("Content-Type", protocol.ProblemContentType)
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(protocol.NewProblem(code, status, msg))
 }
 
 // writeErr maps engine and conversion errors onto protocol error codes.

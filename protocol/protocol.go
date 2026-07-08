@@ -27,8 +27,9 @@
 //	POST /v1/tx/{id}/commit             —               → empty
 //	POST /v1/tx/{id}/rollback           —               → empty
 //
-// Errors are HTTP status codes with an ErrorResponse body; Code
-// distinguishes retryable conflicts from constraint violations.
+// Errors are RFC 7807 Problem Details (application/problem+json). The
+// "code" extension member distinguishes retryable conflicts from
+// constraint violations; "type" is a stable URI per code.
 //
 // # Values
 //
@@ -73,18 +74,51 @@ func ParseURL(raw string) (string, error) {
 	return scheme + "://" + host, nil
 }
 
-// Error codes carried by ErrorResponse.
+// Error codes carried in the Problem "code" extension member.
 const (
-	CodeInvalid  = "invalid"  // malformed request, unknown table/column, constraint violation
+	CodeInvalid  = "invalid" // malformed request, unknown table/column, constraint violation
 	CodeNotFound = "not_found"
 	CodeConflict = "conflict" // optimistic transaction conflict — retry
 	CodeInternal = "internal"
 )
 
-// ErrorResponse is the body of every non-2xx response.
-type ErrorResponse struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+// ProblemContentType is the media type of error responses (RFC 7807).
+const ProblemContentType = "application/problem+json"
+
+// ProblemTypeBase prefixes the "type" URI of every problem; the code is
+// appended (e.g. https://rad.dev/problems/conflict).
+const ProblemTypeBase = "https://rad.dev/problems/"
+
+// Problem is an RFC 7807 Problem Details body — every non-2xx response.
+// Code is an extension member mirroring the last segment of Type so clients
+// can switch on it without URI parsing.
+type Problem struct {
+	Type   string `json:"type"`
+	Title  string `json:"title"`
+	Status int    `json:"status"`
+	Detail string `json:"detail,omitempty"`
+	Code   string `json:"code"`
+}
+
+// NewProblem builds a Problem for a code, status, and detail message.
+func NewProblem(code string, status int, detail string) Problem {
+	titles := map[string]string{
+		CodeInvalid:  "Invalid Request",
+		CodeNotFound: "Not Found",
+		CodeConflict: "Transaction Conflict",
+		CodeInternal: "Internal Server Error",
+	}
+	title := titles[code]
+	if title == "" {
+		title = code
+	}
+	return Problem{
+		Type:   ProblemTypeBase + code,
+		Title:  title,
+		Status: status,
+		Detail: detail,
+		Code:   code,
+	}
 }
 
 // Expr is a filter expression — a tagged union selected by Op.
@@ -109,11 +143,11 @@ type Order struct {
 
 // Include embeds a related relation in each result record.
 type Include struct {
-	FK  string `json:"fk"`            // foreign key name
-	Dir string `json:"dir"`           // "parent" or "children"
-	As  string `json:"as"`            // output field name
+	FK  string `json:"fk"`  // foreign key name
+	Dir string `json:"dir"` // "parent" or "children"
+	As  string `json:"as"`  // output field name
 
-	Filter  *Expr     `json:"filter,omitempty"`  // children only
+	Filter  *Expr     `json:"filter,omitempty"` // children only
 	OrderBy []Order   `json:"order_by,omitempty"`
 	Limit   int       `json:"limit,omitempty"`
 	Include []Include `json:"include,omitempty"`
