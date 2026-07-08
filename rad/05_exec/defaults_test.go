@@ -15,7 +15,7 @@ import (
 func setupWithDefaults(t *testing.T) (*Engine, string) {
 	t.Helper()
 	eng, ctx := setup(t)
-	_, err := eng.Catalog().CreateTable(ctx, "public", catalog.TableDef{
+	_, err := eng.Catalog().CreateTable(ctx, catalog.TableDef{
 		Name: "tickets",
 		Columns: []catalog.ColumnDef{
 			{Name: "id", Type: catalog.TypeText, Format: "uuid", Default: &catalog.Default{Func: catalog.DefaultUUID}},

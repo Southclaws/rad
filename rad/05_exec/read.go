@@ -35,7 +35,7 @@ func (tx *Tx) Read(ctx context.Context, r lir.Read) ([]*Record, error) {
 }
 
 func (e *Engine) read(ctx context.Context, view kv.KV, r lir.Read) ([]*Record, error) {
-	plan, err := planner.PlanRead(ctx, e.cat, e.schema, r)
+	plan, err := planner.PlanRead(ctx, e.cat, r)
 	if err != nil {
 		return nil, err
 	}

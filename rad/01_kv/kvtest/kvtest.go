@@ -1,6 +1,6 @@
 // Package kvtest is a conformance suite for kv.TransactionalKV
-// implementations. Both kvmem and kvslate run it, which keeps the pure-Go
-// test double honest against real SlateDB transaction semantics.
+// implementations — the executable definition of RAD's transaction
+// semantics, run by the SlateDB adapter.
 package kvtest
 
 import (

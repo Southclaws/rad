@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"rad/rad/01_kv/kvmem"
 	lir "rad/rad/03_lir"
 	frontend "rad/rad/06_frontend"
 )
@@ -19,7 +18,7 @@ import (
 func trackerDB(t *testing.T) (*frontend.DB, context.Context) {
 	t.Helper()
 	ctx := context.Background()
-	db := frontend.Open(kvmem.New(), "public")
+	db := frontend.Open(memStore(t))
 	if _, err := db.MigrateFile(ctx, "tracker.rad", []byte(`
 tables:
   - name: users

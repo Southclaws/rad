@@ -48,7 +48,7 @@ func openStore(db string) (*kvslate.Store, string, error) {
 }
 
 func migrateCmd() *cobra.Command {
-	var db, file, schemaName string
+	var db, file string
 	cmd := &cobra.Command{
 		Use:   "migrate",
 		Short: "Apply schema.rad changes to the database (diff + reconcile)",
@@ -64,7 +64,7 @@ func migrateCmd() *cobra.Command {
 			}
 			defer store.Close()
 
-			steps, err := frontend.Open(store, schemaName).MigrateFile(cmd.Context(), file, src)
+			steps, err := frontend.Open(store).MigrateFile(cmd.Context(), file, src)
 			if err != nil {
 				return err
 			}
@@ -81,6 +81,5 @@ func migrateCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&db, "db", "d", "data", "path to the SlateDB store directory")
 	cmd.Flags().StringVarP(&file, "file", "f", "schema.rad", "schema file")
-	cmd.Flags().StringVar(&schemaName, "schema", "public", "schema namespace")
 	return cmd
 }

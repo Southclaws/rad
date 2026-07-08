@@ -16,7 +16,7 @@ import (
 // serveCmd runs the devtool server: a REST API over the KV store and the
 // relational catalog, plus the embedded management SPA (ui/).
 func serveCmd() *cobra.Command {
-	var addr, db, schemaName string
+	var addr, db string
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Serve the devtool UI and REST API over a database",
@@ -39,8 +39,7 @@ func serveCmd() *cobra.Command {
 			srv := &server{
 				store:  store,
 				cat:    cat,
-				eng:    exec.New(store, cat, schemaName),
-				schema: schemaName,
+				eng:    exec.New(store, cat),
 				dbPath: dir,
 			}
 
@@ -59,7 +58,6 @@ func serveCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:7423", "listen address")
 	cmd.Flags().StringVarP(&db, "db", "d", "data", "path to the SlateDB store directory")
-	cmd.Flags().StringVar(&schemaName, "schema", "public", "schema used by the table endpoints")
 	return cmd
 }
 

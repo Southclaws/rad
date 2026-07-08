@@ -20,7 +20,6 @@ type server struct {
 	store  kv.KV
 	cat    *catalog.Catalog
 	eng    *exec.Engine
-	schema string
 	dbPath string
 }
 
@@ -44,7 +43,6 @@ func limitParam(r *http.Request) int {
 
 func (s *server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
-		"schema": s.schema,
 		"dbPath": s.dbPath,
 	})
 }
@@ -56,7 +54,7 @@ func (s *server) handleSchema(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 500, err)
 		return
 	}
-	writeJSON(w, map[string]any{"schema": s.schema, "tables": tables})
+	writeJSON(w, map[string]any{"tables": tables})
 }
 
 // tables loads all table definitions by scanning the catalog namespace.
@@ -223,7 +221,7 @@ func valueDisplay(v lir.Value) string {
 // scan on the data prefix (cursor = last data key).
 func (s *server) handleTableRows(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	tbl, ok, err := s.cat.GetTable(ctx, s.schema, r.PathValue("table"))
+	tbl, ok, err := s.cat.GetTable(ctx, r.PathValue("table"))
 	if err != nil {
 		httpError(w, 500, err)
 		return
@@ -290,7 +288,7 @@ func (s *server) handleTableRows(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleIndexScan(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tableName := r.PathValue("table")
-	tbl, ok, err := s.cat.GetTable(ctx, s.schema, tableName)
+	tbl, ok, err := s.cat.GetTable(ctx, tableName)
 	if err != nil {
 		httpError(w, 500, err)
 		return

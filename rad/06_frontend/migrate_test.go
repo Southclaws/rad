@@ -8,7 +8,6 @@ import (
 	"context"
 	"testing"
 
-	"rad/rad/01_kv/kvmem"
 	lir "rad/rad/03_lir"
 	frontend "rad/rad/06_frontend"
 )
@@ -64,7 +63,7 @@ func migrateTo(t *testing.T, db *frontend.DB, ctx context.Context, src string) [
 
 func TestMigrationWorkflow(t *testing.T) {
 	ctx := context.Background()
-	db := frontend.Open(kvmem.New(), "public")
+	db := frontend.Open(memStore(t))
 
 	// v1 on an empty store creates everything (including the schema).
 	steps := migrateTo(t, db, ctx, trackerV1)
@@ -131,7 +130,7 @@ func TestMigrationWorkflow(t *testing.T) {
 // A unique-index backfill over duplicate data is refused.
 func TestUniqueBackfillRejectsDuplicates(t *testing.T) {
 	ctx := context.Background()
-	db := frontend.Open(kvmem.New(), "public")
+	db := frontend.Open(memStore(t))
 	migrateTo(t, db, ctx, trackerV1)
 
 	for _, id := range []string{"u1", "u2"} {

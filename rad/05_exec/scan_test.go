@@ -17,7 +17,7 @@ import (
 // order).
 func TestCompositeIndexScan(t *testing.T) {
 	eng, ctx := setup(t)
-	if _, err := eng.Catalog().CreateTable(ctx, "public", catalog.TableDef{
+	if _, err := eng.Catalog().CreateTable(ctx, catalog.TableDef{
 		Name: "events",
 		Columns: []catalog.ColumnDef{
 			{Name: "id", Type: catalog.TypeInt64},

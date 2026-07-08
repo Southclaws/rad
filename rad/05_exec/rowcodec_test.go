@@ -17,7 +17,7 @@ func TestRenameColumnPreservesData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := eng.Catalog().RenameColumn(ctx, "public", "users", "name", "full_name"); err != nil {
+	if _, err := eng.Catalog().RenameColumn(ctx, "users", "name", "full_name"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -48,12 +48,12 @@ func TestAddColumnOldRowsReadDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := eng.Catalog().AddColumn(ctx, "public", "users", catalog.ColumnDef{
+	if _, err := eng.Catalog().AddColumn(ctx, "users", catalog.ColumnDef{
 		Name: "active", Type: catalog.TypeBool, Default: &catalog.Default{Bool: true},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := eng.Catalog().AddColumn(ctx, "public", "users", catalog.ColumnDef{
+	if _, err := eng.Catalog().AddColumn(ctx, "users", catalog.ColumnDef{
 		Name: "bio", Type: catalog.TypeText, Nullable: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -77,7 +77,7 @@ func TestDropColumnHidesData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := eng.Catalog().DropColumn(ctx, "public", "users", "age"); err != nil {
+	if _, err := eng.Catalog().DropColumn(ctx, "users", "age"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -89,7 +89,7 @@ func TestDropColumnHidesData(t *testing.T) {
 		t.Fatalf("dropped column still readable: %v", row)
 	}
 	// The name is reusable with a fresh ID; old data does not bleed in.
-	if _, err := eng.Catalog().AddColumn(ctx, "public", "users", catalog.ColumnDef{
+	if _, err := eng.Catalog().AddColumn(ctx, "users", catalog.ColumnDef{
 		Name: "age", Type: catalog.TypeInt64, Nullable: true,
 	}); err != nil {
 		t.Fatal(err)

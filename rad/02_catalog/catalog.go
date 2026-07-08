@@ -15,14 +15,8 @@ import (
 	kv "rad/rad/01_kv"
 )
 
-type Schema struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
 type Table struct {
 	ID          string       `json:"id"`
-	SchemaID    string       `json:"schema_id"`
 	Name        string       `json:"name"`
 	Columns     []Column     `json:"columns"`
 	PrimaryKey  []string     `json:"primary_key"`
@@ -107,10 +101,11 @@ type ForeignKeyDef struct {
 	RefColumns []string
 }
 
-// Catalog reads and writes table metadata in the KV store. DDL (CreateSchema,
-// CreateTable) runs in a SerializableSnapshot transaction, so the ID counter
-// and name-key writes commit atomically and concurrent DDL conflicts instead
-// of corrupting the counter.
+// Catalog reads and writes table metadata in the KV store. A RAD instance
+// is exactly one database — there is no schema or database hierarchy; two
+// databases are two RAD deployments. DDL runs in a SerializableSnapshot
+// transaction, so the ID counter and name-key writes commit atomically and
+// concurrent DDL conflicts instead of corrupting the counter.
 type Catalog struct {
 	store kv.TransactionalKV
 }
@@ -134,8 +129,6 @@ func (c *Catalog) ddl(ctx context.Context, fn func(view kv.KV) error) error {
 
 const (
 	nextIDKey       = "/rad/catalog/meta/next_id"
-	schemaPrefix    = "/rad/catalog/schema/"
-	schemaNameKey   = "/rad/catalog/schema_name/"
 	tablePrefix     = "/rad/catalog/table/"
 	tableNamePrefix = "/rad/catalog/table_name/"
 )
@@ -186,62 +179,11 @@ func validateDefault(cd ColumnDef) error {
 	return nil
 }
 
-func (c *Catalog) CreateSchema(ctx context.Context, name string) (Schema, error) {
-	var s Schema
-	err := c.ddl(ctx, func(view kv.KV) error {
-		if name == "" {
-			return fmt.Errorf("catalog: schema name is required")
-		}
-		if _, ok, err := view.Get(ctx, []byte(schemaNameKey+name)); err != nil {
-			return err
-		} else if ok {
-			return fmt.Errorf("catalog: schema %q already exists", name)
-		}
-		id, err := nextID(ctx, view, "s")
-		if err != nil {
-			return err
-		}
-		s = Schema{ID: id, Name: name}
-		raw, err := json.Marshal(s)
-		if err != nil {
-			return err
-		}
-		if err := view.Put(ctx, []byte(schemaPrefix+id), raw); err != nil {
-			return err
-		}
-		return view.Put(ctx, []byte(schemaNameKey+name), []byte(id))
-	})
-	if err != nil {
-		return Schema{}, err
-	}
-	return s, nil
-}
-
-func (c *Catalog) GetSchema(ctx context.Context, name string) (Schema, bool, error) {
-	return getSchema(ctx, c.store, name)
-}
-
-func getSchema(ctx context.Context, view kv.KV, name string) (Schema, bool, error) {
-	id, ok, err := view.Get(ctx, []byte(schemaNameKey+name))
-	if err != nil || !ok {
-		return Schema{}, false, err
-	}
-	raw, ok, err := view.Get(ctx, []byte(schemaPrefix+string(id)))
-	if err != nil || !ok {
-		return Schema{}, false, err
-	}
-	var s Schema
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return Schema{}, false, err
-	}
-	return s, true, nil
-}
-
-func (c *Catalog) CreateTable(ctx context.Context, schemaName string, def TableDef) (Table, error) {
+func (c *Catalog) CreateTable(ctx context.Context, def TableDef) (Table, error) {
 	var tbl Table
 	err := c.ddl(ctx, func(view kv.KV) error {
 		var err error
-		tbl, err = createTable(ctx, view, schemaName, def)
+		tbl, err = createTable(ctx, view, def)
 		return err
 	})
 	if err != nil {
@@ -250,25 +192,19 @@ func (c *Catalog) CreateTable(ctx context.Context, schemaName string, def TableD
 	return tbl, nil
 }
 
-func createTable(ctx context.Context, view kv.KV, schemaName string, def TableDef) (Table, error) {
-	schema, ok, err := getSchema(ctx, view, schemaName)
-	if err != nil {
-		return Table{}, err
-	}
-	if !ok {
-		return Table{}, fmt.Errorf("catalog: schema %q does not exist", schemaName)
-	}
+func createTable(ctx context.Context, view kv.KV, def TableDef) (Table, error) {
 	if def.Name == "" {
 		return Table{}, fmt.Errorf("catalog: table name is required")
 	}
-	nameKey := tableNamePrefix + schemaName + "/" + def.Name
+	nameKey := tableNamePrefix + def.Name
 	if _, ok, err := view.Get(ctx, []byte(nameKey)); err != nil {
 		return Table{}, err
 	} else if ok {
-		return Table{}, fmt.Errorf("catalog: table %q already exists in schema %q", def.Name, schemaName)
+		return Table{}, fmt.Errorf("catalog: table %q already exists", def.Name)
 	}
 
-	tbl := Table{SchemaID: schema.ID, Name: def.Name}
+	tbl := Table{Name: def.Name}
+	var err error
 	tbl.ID, err = nextID(ctx, view, "t")
 	if err != nil {
 		return Table{}, err
@@ -338,7 +274,7 @@ func createTable(ctx context.Context, view kv.KV, schemaName string, def TableDe
 		} else {
 			var ok bool
 			var err error
-			ref, ok, err = getTable(ctx, view, schemaName, fd.RefTable)
+			ref, ok, err = getTable(ctx, view, fd.RefTable)
 			if err != nil {
 				return Table{}, err
 			}
@@ -392,12 +328,12 @@ func createTable(ctx context.Context, view kv.KV, schemaName string, def TableDe
 	return tbl, nil
 }
 
-func (c *Catalog) GetTable(ctx context.Context, schemaName, tableName string) (Table, bool, error) {
-	return getTable(ctx, c.store, schemaName, tableName)
+func (c *Catalog) GetTable(ctx context.Context, tableName string) (Table, bool, error) {
+	return getTable(ctx, c.store, tableName)
 }
 
-func getTable(ctx context.Context, view kv.KV, schemaName, tableName string) (Table, bool, error) {
-	id, ok, err := view.Get(ctx, []byte(tableNamePrefix+schemaName+"/"+tableName))
+func getTable(ctx context.Context, view kv.KV, tableName string) (Table, bool, error) {
+	id, ok, err := view.Get(ctx, []byte(tableNamePrefix+tableName))
 	if err != nil || !ok {
 		return Table{}, false, err
 	}
@@ -408,15 +344,8 @@ func (c *Catalog) GetTableByID(ctx context.Context, id string) (Table, bool, err
 	return getTableByID(ctx, c.store, id)
 }
 
-// ListTables returns every table in the schema, sorted by name.
-func (c *Catalog) ListTables(ctx context.Context, schemaName string) ([]Table, error) {
-	sch, ok, err := c.GetSchema(ctx, schemaName)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, fmt.Errorf("catalog: schema %q does not exist", schemaName)
-	}
+// ListTables returns every table in the database, sorted by name.
+func (c *Catalog) ListTables(ctx context.Context) ([]Table, error) {
 	prefix := []byte(tablePrefix)
 	it, err := c.store.Scan(ctx, prefix, keyenc.PrefixEnd(prefix))
 	if err != nil {
@@ -430,9 +359,7 @@ func (c *Catalog) ListTables(ctx context.Context, schemaName string) ([]Table, e
 		if err := json.Unmarshal(it.Value(), &t); err != nil {
 			return nil, fmt.Errorf("catalog: corrupt table entry %q: %w", it.Key(), err)
 		}
-		if t.SchemaID == sch.ID {
-			tables = append(tables, t)
-		}
+		tables = append(tables, t)
 	}
 	if err := it.Err(); err != nil {
 		return nil, err

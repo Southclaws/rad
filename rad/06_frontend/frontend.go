@@ -14,43 +14,28 @@ import (
 	exec "rad/rad/05_exec"
 )
 
-// DB is a handle to one schema of a RAD database.
+// DB is a handle to a RAD database. A RAD instance is exactly one database
+// — no schema or database hierarchy exists.
 type DB struct {
-	cat    *catalog.Catalog
-	eng    *exec.Engine
-	schema string
+	cat *catalog.Catalog
+	eng *exec.Engine
 }
 
-// Open attaches to (without creating) the named schema on a store. Use
-// Init to create the schema first.
-func Open(store kv.TransactionalKV, schema string) *DB {
+// Open attaches to the database on a store.
+func Open(store kv.TransactionalKV) *DB {
 	cat := catalog.New(store)
 	return &DB{
-		cat:    cat,
-		eng:    exec.New(store, cat, schema),
-		schema: schema,
+		cat: cat,
+		eng: exec.New(store, cat),
 	}
 }
-
-// Init creates the schema and returns a handle to it. It fails if the
-// schema already exists.
-func Init(ctx context.Context, store kv.TransactionalKV, schema string) (*DB, error) {
-	db := Open(store, schema)
-	if _, err := db.cat.CreateSchema(ctx, schema); err != nil {
-		return nil, err
-	}
-	return db, nil
-}
-
-// Schema returns the schema name this handle is bound to.
-func (db *DB) Schema() string { return db.schema }
 
 // Catalog exposes schema metadata (table definitions, DDL).
 func (db *DB) Catalog() *catalog.Catalog { return db.cat }
 
-// CreateTable defines a new table in this schema.
+// CreateTable defines a new table.
 func (db *DB) CreateTable(ctx context.Context, def catalog.TableDef) (catalog.Table, error) {
-	return db.cat.CreateTable(ctx, db.schema, def)
+	return db.cat.CreateTable(ctx, def)
 }
 
 // Insert adds one row atomically (the row and its index entries commit

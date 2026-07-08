@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 
 	kv "rad/rad/01_kv"
-	"rad/rad/01_kv/kvmem"
 	"rad/rad/01_kv/kvslate"
 	lir "rad/rad/03_lir"
 	frontend "rad/rad/06_frontend"
@@ -58,14 +57,20 @@ func Open(dir string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := New(frontend.Open(store, "public"))
+	c := New(frontend.Open(store))
 	c.closer = store
 	return c, nil
 }
 
 // OpenMemory opens an in-memory database — handy for application tests.
-func OpenMemory() *Client {
-	return New(frontend.Open(kvmem.New(), "public"))
+func OpenMemory() (*Client, error) {
+	store, err := kvslate.Open("memdb", "memory:///")
+	if err != nil {
+		return nil, err
+	}
+	c := New(frontend.Open(store))
+	c.closer = store
+	return c, nil
 }
 
 func (c *Client) Close() error {
@@ -169,7 +174,7 @@ func boolPtr(v lir.Value) *bool {
 }
 
 // ensure imports are used even for degenerate schemas
-var _ kv.KV = (*kvmem.Store)(nil)
+var _ kv.KV = (*kvslate.Store)(nil)
 
 // User is one row of "users". Relation fields are populated only when the
 // corresponding Include* option was used on the query.

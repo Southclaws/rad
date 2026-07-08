@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"rad/rad/01_kv/kvmem"
+	"rad/rad/01_kv/kvslate"
 	catalog "rad/rad/02_catalog"
 	"rad/rad/02_catalog/migrate"
 	"rad/rad/02_catalog/schema"
@@ -19,17 +19,19 @@ import (
 func currentFrom(t *testing.T, src string) []catalog.Table {
 	t.Helper()
 	ctx := context.Background()
-	cat := catalog.New(kvmem.New())
-	if _, err := cat.CreateSchema(ctx, "public"); err != nil {
+	store, err := kvslate.Open("test-"+t.Name(), "memory:///")
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
+	cat := catalog.New(store)
 	s := parse(t, src)
 	for _, tb := range s.Tables {
-		if _, err := cat.CreateTable(ctx, "public", tb.Def); err != nil {
+		if _, err := cat.CreateTable(ctx, tb.Def); err != nil {
 			t.Fatal(err)
 		}
 	}
-	tables, err := cat.ListTables(ctx, "public")
+	tables, err := cat.ListTables(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

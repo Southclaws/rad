@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"rad/rad/01_kv/kvmem"
+	"rad/rad/01_kv/kvslate"
 	catalog "rad/rad/02_catalog"
 	lir "rad/rad/03_lir"
 	frontend "rad/rad/06_frontend"
@@ -13,14 +13,17 @@ import (
 
 // The complete lifecycle through the public API: initialize a database,
 // define related tables, write transactionally, and run a joined query.
-// Swap kvmem.New() for kvslate.Open(...) and the same code runs on SlateDB.
+// The store here is SlateDB's in-memory object store; swap the URL for
+// file:// or s3:// and nothing else changes.
 func Example() {
 	ctx := context.Background()
 
-	db, err := frontend.Init(ctx, kvmem.New(), "public")
+	store, err := kvslate.Open("example", "memory:///")
 	if err != nil {
 		panic(err)
 	}
+	defer store.Close()
+	db := frontend.Open(store)
 
 	if _, err := db.CreateTable(ctx, catalog.TableDef{
 		Name: "authors",

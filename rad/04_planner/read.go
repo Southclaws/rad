@@ -69,8 +69,8 @@ type ShapedInclude struct {
 }
 
 // PlanRead lowers a shaped read against the catalog.
-func PlanRead(ctx context.Context, cat *catalog.Catalog, schema string, r lir.Read) (*ShapedRead, error) {
-	tbl, err := resolveTable(ctx, cat, schema, r.Table)
+func PlanRead(ctx context.Context, cat *catalog.Catalog, r lir.Read) (*ShapedRead, error) {
+	tbl, err := resolveTable(ctx, cat, r.Table)
 	if err != nil {
 		return nil, err
 	}
@@ -86,14 +86,14 @@ func PlanRead(ctx context.Context, cat *catalog.Catalog, schema string, r lir.Re
 		Offset:  r.Offset,
 		Limit:   r.Limit,
 	}
-	plan.Include, err = planIncludes(ctx, cat, schema, tbl, r.Include)
+	plan.Include, err = planIncludes(ctx, cat, tbl, r.Include)
 	if err != nil {
 		return nil, err
 	}
 	return plan, nil
 }
 
-func planIncludes(ctx context.Context, cat *catalog.Catalog, schema string, tbl catalog.Table, includes []lir.Include) ([]ShapedInclude, error) {
+func planIncludes(ctx context.Context, cat *catalog.Catalog, tbl catalog.Table, includes []lir.Include) ([]ShapedInclude, error) {
 	var out []ShapedInclude
 	seen := map[string]bool{}
 	for _, inc := range includes {
@@ -105,7 +105,7 @@ func planIncludes(ctx context.Context, cat *catalog.Catalog, schema string, tbl 
 		}
 		seen[inc.As] = true
 
-		si, err := planInclude(ctx, cat, schema, tbl, inc)
+		si, err := planInclude(ctx, cat, tbl, inc)
 		if err != nil {
 			return nil, err
 		}
@@ -114,7 +114,7 @@ func planIncludes(ctx context.Context, cat *catalog.Catalog, schema string, tbl 
 	return out, nil
 }
 
-func planInclude(ctx context.Context, cat *catalog.Catalog, schema string, tbl catalog.Table, inc lir.Include) (ShapedInclude, error) {
+func planInclude(ctx context.Context, cat *catalog.Catalog, tbl catalog.Table, inc lir.Include) (ShapedInclude, error) {
 	si := ShapedInclude{As: inc.As, Dir: inc.Dir, Filter: inc.Filter, OrderBy: inc.OrderBy, Limit: inc.Limit}
 
 	switch inc.Dir {
@@ -139,7 +139,7 @@ func planInclude(ctx context.Context, cat *catalog.Catalog, schema string, tbl c
 
 	case lir.ToChildren:
 		// The FK lives on some other table and references tbl.
-		child, fk, err := findReferencingFK(ctx, cat, schema, tbl, inc.FK)
+		child, fk, err := findReferencingFK(ctx, cat, tbl, inc.FK)
 		if err != nil {
 			return ShapedInclude{}, err
 		}
@@ -155,7 +155,7 @@ func planInclude(ctx context.Context, cat *catalog.Catalog, schema string, tbl c
 	}
 
 	var err error
-	si.Include, err = planIncludes(ctx, cat, schema, si.Child, inc.Include)
+	si.Include, err = planIncludes(ctx, cat, si.Child, inc.Include)
 	if err != nil {
 		return ShapedInclude{}, err
 	}
@@ -171,8 +171,8 @@ func findFK(tbl catalog.Table, name string) (catalog.ForeignKey, bool) {
 	return catalog.ForeignKey{}, false
 }
 
-func findReferencingFK(ctx context.Context, cat *catalog.Catalog, schema string, tbl catalog.Table, fkName string) (catalog.Table, catalog.ForeignKey, error) {
-	tables, err := cat.ListTables(ctx, schema)
+func findReferencingFK(ctx context.Context, cat *catalog.Catalog, tbl catalog.Table, fkName string) (catalog.Table, catalog.ForeignKey, error) {
+	tables, err := cat.ListTables(ctx)
 	if err != nil {
 		return catalog.Table{}, catalog.ForeignKey{}, err
 	}

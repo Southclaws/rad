@@ -1,7 +1,7 @@
 // Package e2e runs the full stack (frontend/planner/executor over catalog
-// and KV) against both
-// backends. Building this package needs the SlateDB native library; run via
-// `task test`.
+// and KV) against SlateDB — memory:/// here; file:// and s3:// differ only
+// by object-store URL. Building this package needs the native library; run
+// via `task test`.
 package e2e
 
 import (
@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	kv "rad/rad/01_kv"
-	"rad/rad/01_kv/kvmem"
 	"rad/rad/01_kv/kvslate"
 	catalog "rad/rad/02_catalog"
 	lir "rad/rad/03_lir"
@@ -25,8 +24,7 @@ func backends(t *testing.T) map[string]kv.TransactionalKV {
 	}
 	t.Cleanup(func() { _ = slate.Close() })
 	return map[string]kv.TransactionalKV{
-		"kvmem":   kvmem.New(),
-		"kvslate": slate,
+		"slatedb-memory": slate,
 	}
 }
 
@@ -35,12 +33,9 @@ func TestRelationalStackOverBothBackends(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			cat := catalog.New(store)
-			if _, err := cat.CreateSchema(ctx, "public"); err != nil {
-				t.Fatal(err)
-			}
-			eng := exec.New(store, cat, "public")
+			eng := exec.New(store, cat)
 
-			if _, err := cat.CreateTable(ctx, "public", catalog.TableDef{
+			if _, err := cat.CreateTable(ctx, catalog.TableDef{
 				Name: "users",
 				Columns: []catalog.ColumnDef{
 					{Name: "id", Type: catalog.TypeInt64},
@@ -51,7 +46,7 @@ func TestRelationalStackOverBothBackends(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := cat.CreateTable(ctx, "public", catalog.TableDef{
+			if _, err := cat.CreateTable(ctx, catalog.TableDef{
 				Name: "orders",
 				Columns: []catalog.ColumnDef{
 					{Name: "id", Type: catalog.TypeInt64},
@@ -120,12 +115,9 @@ func TestTransactionsOverBothBackends(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			cat := catalog.New(store)
-			if _, err := cat.CreateSchema(ctx, "public"); err != nil {
-				t.Fatal(err)
-			}
-			eng := exec.New(store, cat, "public")
+			eng := exec.New(store, cat)
 
-			if _, err := cat.CreateTable(ctx, "public", catalog.TableDef{
+			if _, err := cat.CreateTable(ctx, catalog.TableDef{
 				Name: "users",
 				Columns: []catalog.ColumnDef{
 					{Name: "id", Type: catalog.TypeInt64},
@@ -136,7 +128,7 @@ func TestTransactionsOverBothBackends(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := cat.CreateTable(ctx, "public", catalog.TableDef{
+			if _, err := cat.CreateTable(ctx, catalog.TableDef{
 				Name: "orders",
 				Columns: []catalog.ColumnDef{
 					{Name: "id", Type: catalog.TypeInt64},

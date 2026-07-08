@@ -22,15 +22,14 @@ import (
 	planner "rad/rad/04_planner"
 )
 
-// Engine executes reads and writes against tables in a single schema.
+// Engine executes reads and writes against the database's tables.
 type Engine struct {
-	store  kv.TransactionalKV
-	cat    *catalog.Catalog
-	schema string
+	store kv.TransactionalKV
+	cat   *catalog.Catalog
 }
 
-func New(store kv.TransactionalKV, cat *catalog.Catalog, schema string) *Engine {
-	return &Engine{store: store, cat: cat, schema: schema}
+func New(store kv.TransactionalKV, cat *catalog.Catalog) *Engine {
+	return &Engine{store: store, cat: cat}
 }
 
 // Tx is a transaction-scoped view of the engine. All reads see the snapshot
@@ -74,7 +73,7 @@ func (tx *Tx) Query(ctx context.Context, q lir.Query) ([]lir.Row, error) {
 }
 
 func (e *Engine) query(ctx context.Context, view kv.KV, q lir.Query) ([]lir.Row, error) {
-	plan, err := planner.Plan(ctx, e.cat, e.schema, q)
+	plan, err := planner.Plan(ctx, e.cat, q)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +81,7 @@ func (e *Engine) query(ctx context.Context, view kv.KV, q lir.Query) ([]lir.Row,
 }
 
 func (e *Engine) table(ctx context.Context, name string) (catalog.Table, error) {
-	tbl, ok, err := e.cat.GetTable(ctx, e.schema, name)
+	tbl, ok, err := e.cat.GetTable(ctx, name)
 	if err != nil {
 		return catalog.Table{}, err
 	}

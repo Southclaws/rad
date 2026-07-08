@@ -31,15 +31,15 @@ func saveTable(ctx context.Context, view kv.KV, tbl Table) error {
 
 // mutateTable loads a table, applies fn, and saves the result, all in one
 // DDL transaction.
-func (c *Catalog) mutateTable(ctx context.Context, schemaName, tableName string, fn func(view kv.KV, tbl *Table) error) (Table, error) {
+func (c *Catalog) mutateTable(ctx context.Context, tableName string, fn func(view kv.KV, tbl *Table) error) (Table, error) {
 	var out Table
 	err := c.ddl(ctx, func(view kv.KV) error {
-		id, ok, err := view.Get(ctx, []byte(tableNamePrefix+schemaName+"/"+tableName))
+		id, ok, err := view.Get(ctx, []byte(tableNamePrefix+tableName))
 		if err != nil {
 			return err
 		}
 		if !ok {
-			return fmt.Errorf("catalog: table %q does not exist in schema %q", tableName, schemaName)
+			return fmt.Errorf("catalog: table %q does not exist", tableName)
 		}
 		raw, ok, err := view.Get(ctx, []byte(tablePrefix+string(id)))
 		if err != nil {
@@ -66,15 +66,15 @@ func (c *Catalog) mutateTable(ctx context.Context, schemaName, tableName string,
 
 // DropTable removes the table from the catalog. Row and index data become
 // unreachable garbage (IDs are never reused).
-func (c *Catalog) DropTable(ctx context.Context, schemaName, tableName string) error {
+func (c *Catalog) DropTable(ctx context.Context, tableName string) error {
 	return c.ddl(ctx, func(view kv.KV) error {
-		nameKey := []byte(tableNamePrefix + schemaName + "/" + tableName)
+		nameKey := []byte(tableNamePrefix + tableName)
 		id, ok, err := view.Get(ctx, nameKey)
 		if err != nil {
 			return err
 		}
 		if !ok {
-			return fmt.Errorf("catalog: table %q does not exist in schema %q", tableName, schemaName)
+			return fmt.Errorf("catalog: table %q does not exist", tableName)
 		}
 		if err := view.Delete(ctx, []byte(tablePrefix+string(id))); err != nil {
 			return err
@@ -85,24 +85,24 @@ func (c *Catalog) DropTable(ctx context.Context, schemaName, tableName string) e
 
 // RenameTable changes a table's name. Data keys use the table ID, so this
 // is metadata-only.
-func (c *Catalog) RenameTable(ctx context.Context, schemaName, oldName, newName string) error {
+func (c *Catalog) RenameTable(ctx context.Context, oldName, newName string) error {
 	if oldName == newName {
 		return nil
 	}
 	return c.ddl(ctx, func(view kv.KV) error {
-		oldKey := []byte(tableNamePrefix + schemaName + "/" + oldName)
-		newKey := []byte(tableNamePrefix + schemaName + "/" + newName)
+		oldKey := []byte(tableNamePrefix + oldName)
+		newKey := []byte(tableNamePrefix + newName)
 		id, ok, err := view.Get(ctx, oldKey)
 		if err != nil {
 			return err
 		}
 		if !ok {
-			return fmt.Errorf("catalog: table %q does not exist in schema %q", oldName, schemaName)
+			return fmt.Errorf("catalog: table %q does not exist", oldName)
 		}
 		if _, taken, err := view.Get(ctx, newKey); err != nil {
 			return err
 		} else if taken {
-			return fmt.Errorf("catalog: table %q already exists in schema %q", newName, schemaName)
+			return fmt.Errorf("catalog: table %q already exists", newName)
 		}
 
 		raw, ok, err := view.Get(ctx, []byte(tablePrefix+string(id)))
@@ -127,8 +127,8 @@ func (c *Catalog) RenameTable(ctx context.Context, schemaName, oldName, newName 
 // AddColumn appends a column. Because existing rows lack the column, it
 // must be nullable or carry a literal default (generator defaults would
 // yield a different value on every read of an old row).
-func (c *Catalog) AddColumn(ctx context.Context, schemaName, tableName string, def ColumnDef) (Table, error) {
-	return c.mutateTable(ctx, schemaName, tableName, func(view kv.KV, tbl *Table) error {
+func (c *Catalog) AddColumn(ctx context.Context, tableName string, def ColumnDef) (Table, error) {
+	return c.mutateTable(ctx, tableName, func(view kv.KV, tbl *Table) error {
 		if _, exists := tbl.Column(def.Name); exists {
 			return fmt.Errorf("catalog: column %q already exists in table %q", def.Name, tableName)
 		}
@@ -157,8 +157,8 @@ func (c *Catalog) AddColumn(ctx context.Context, schemaName, tableName string, d
 
 // DropColumn removes a column. The column must not be part of the primary
 // key, any index, or any foreign key — drop those first.
-func (c *Catalog) DropColumn(ctx context.Context, schemaName, tableName, colName string) (Table, error) {
-	return c.mutateTable(ctx, schemaName, tableName, func(view kv.KV, tbl *Table) error {
+func (c *Catalog) DropColumn(ctx context.Context, tableName, colName string) (Table, error) {
+	return c.mutateTable(ctx, tableName, func(view kv.KV, tbl *Table) error {
 		if _, ok := tbl.Column(colName); !ok {
 			return fmt.Errorf("catalog: column %q does not exist in table %q", colName, tableName)
 		}
@@ -183,8 +183,8 @@ func (c *Catalog) DropColumn(ctx context.Context, schemaName, tableName, colName
 // RenameColumn changes a column's name and rewrites every metadata
 // reference to it (primary key, indexes, foreign keys). Rows are keyed by
 // column ID, so no data is touched.
-func (c *Catalog) RenameColumn(ctx context.Context, schemaName, tableName, oldName, newName string) (Table, error) {
-	return c.mutateTable(ctx, schemaName, tableName, func(view kv.KV, tbl *Table) error {
+func (c *Catalog) RenameColumn(ctx context.Context, tableName, oldName, newName string) (Table, error) {
+	return c.mutateTable(ctx, tableName, func(view kv.KV, tbl *Table) error {
 		if oldName == newName {
 			return nil
 		}
@@ -220,9 +220,9 @@ func (c *Catalog) RenameColumn(ctx context.Context, schemaName, tableName, oldNa
 // AddIndex records a new index in the catalog and returns it. Entries for
 // existing rows are NOT written here — the executor backfills them (see the
 // migration engine), and until it does the index is incomplete.
-func (c *Catalog) AddIndex(ctx context.Context, schemaName, tableName string, def IndexDef) (Index, error) {
+func (c *Catalog) AddIndex(ctx context.Context, tableName string, def IndexDef) (Index, error) {
 	var added Index
-	_, err := c.mutateTable(ctx, schemaName, tableName, func(view kv.KV, tbl *Table) error {
+	_, err := c.mutateTable(ctx, tableName, func(view kv.KV, tbl *Table) error {
 		if _, exists := tbl.Index(def.Name); exists {
 			return fmt.Errorf("catalog: index %q already exists on table %q", def.Name, tableName)
 		}
@@ -250,8 +250,8 @@ func (c *Catalog) AddIndex(ctx context.Context, schemaName, tableName string, de
 
 // DropIndex removes an index from the catalog. Its entries become
 // unreachable garbage (index IDs are never reused).
-func (c *Catalog) DropIndex(ctx context.Context, schemaName, tableName, indexName string) error {
-	_, err := c.mutateTable(ctx, schemaName, tableName, func(view kv.KV, tbl *Table) error {
+func (c *Catalog) DropIndex(ctx context.Context, tableName, indexName string) error {
+	_, err := c.mutateTable(ctx, tableName, func(view kv.KV, tbl *Table) error {
 		if _, ok := tbl.Index(indexName); !ok {
 			return fmt.Errorf("catalog: index %q does not exist on table %q", indexName, tableName)
 		}

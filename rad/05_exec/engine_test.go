@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"rad/rad/01_kv/kvmem"
+	"rad/rad/01_kv/kvslate"
 	"rad/rad/02_catalog"
 	lir "rad/rad/03_lir"
 )
@@ -13,14 +13,15 @@ import (
 func setup(t *testing.T) (*Engine, context.Context) {
 	t.Helper()
 	ctx := context.Background()
-	store := kvmem.New()
-	cat := catalog.New(store)
-	if _, err := cat.CreateSchema(ctx, "public"); err != nil {
+	store, err := kvslate.Open("test-"+t.Name(), "memory:///")
+	if err != nil {
 		t.Fatal(err)
 	}
-	eng := New(store, cat, "public")
+	t.Cleanup(func() { _ = store.Close() })
+	cat := catalog.New(store)
+	eng := New(store, cat)
 
-	_, err := cat.CreateTable(ctx, "public", catalog.TableDef{
+	_, err = cat.CreateTable(ctx, catalog.TableDef{
 		Name: "users",
 		Columns: []catalog.ColumnDef{
 			{Name: "id", Type: catalog.TypeInt64},
@@ -36,7 +37,7 @@ func setup(t *testing.T) (*Engine, context.Context) {
 		t.Fatal(err)
 	}
 
-	_, err = cat.CreateTable(ctx, "public", catalog.TableDef{
+	_, err = cat.CreateTable(ctx, catalog.TableDef{
 		Name: "orders",
 		Columns: []catalog.ColumnDef{
 			{Name: "id", Type: catalog.TypeInt64},
@@ -124,7 +125,7 @@ func TestDuplicatePrimaryKeyRejected(t *testing.T) {
 
 func TestCompositePrimaryKey(t *testing.T) {
 	eng, ctx := setup(t)
-	_, err := eng.Catalog().CreateTable(ctx, "public", catalog.TableDef{
+	_, err := eng.Catalog().CreateTable(ctx, catalog.TableDef{
 		Name: "line_items",
 		Columns: []catalog.ColumnDef{
 			{Name: "order_id", Type: catalog.TypeInt64},
@@ -191,7 +192,7 @@ func TestSecondaryIndexScan(t *testing.T) {
 
 func TestUniqueIndexRejection(t *testing.T) {
 	eng, ctx := setup(t)
-	_, err := eng.Catalog().CreateTable(ctx, "public", catalog.TableDef{
+	_, err := eng.Catalog().CreateTable(ctx, catalog.TableDef{
 		Name: "accounts",
 		Columns: []catalog.ColumnDef{
 			{Name: "id", Type: catalog.TypeInt64},
@@ -303,7 +304,7 @@ func TestTxnConcurrentDuplicatePKConflict(t *testing.T) {
 // the phantom case that requires SerializableSnapshot.
 func TestTxnConcurrentUniqueInsertConflict(t *testing.T) {
 	eng, ctx := setup(t)
-	_, err := eng.Catalog().CreateTable(ctx, "public", catalog.TableDef{
+	_, err := eng.Catalog().CreateTable(ctx, catalog.TableDef{
 		Name: "accounts",
 		Columns: []catalog.ColumnDef{
 			{Name: "id", Type: catalog.TypeInt64},
@@ -358,7 +359,7 @@ func TestForeignKeys(t *testing.T) {
 
 	// NULL fk value skips the check (user_id is non-nullable here, so use a
 	// dedicated table).
-	_, err = eng.Catalog().CreateTable(ctx, "public", catalog.TableDef{
+	_, err = eng.Catalog().CreateTable(ctx, catalog.TableDef{
 		Name: "notes",
 		Columns: []catalog.ColumnDef{
 			{Name: "id", Type: catalog.TypeInt64},

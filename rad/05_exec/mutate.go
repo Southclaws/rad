@@ -216,7 +216,7 @@ func checkUniqueIndexesFor(ctx context.Context, view kv.KV, tbl catalog.Table, r
 // found through an index on the FK columns when one exists, falling back to
 // a full scan.
 func (e *Engine) checkNoReferences(ctx context.Context, view kv.KV, tbl catalog.Table, row lir.Row) error {
-	all, err := e.cat.ListTables(ctx, e.schema)
+	all, err := e.cat.ListTables(ctx)
 	if err != nil {
 		return err
 	}

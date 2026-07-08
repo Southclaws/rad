@@ -1,7 +1,6 @@
-// These tests document the catalog layer (02): schema and table definition,
-// ID assignment, name resolution, validation rules, and persistence. The
-// catalog is plain data in the KV store — everything here runs on the pure-Go
-// kvmem backend.
+// These tests document the catalog layer (02): table definition, ID
+// assignment, name resolution, validation rules, and persistence. The
+// catalog is plain data in the KV store, exercised on an in-memory SlateDB.
 package catalog_test
 
 import (
@@ -9,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"rad/rad/01_kv/kvmem"
+	"rad/rad/01_kv/kvslate"
 	catalog "rad/rad/02_catalog"
 )
 
@@ -28,51 +27,22 @@ func usersDef() catalog.TableDef {
 	}
 }
 
-func newCatalog(t *testing.T) (*catalog.Catalog, *kvmem.Store, context.Context) {
+func newCatalog(t *testing.T) (*catalog.Catalog, *kvslate.Store, context.Context) {
 	t.Helper()
-	store := kvmem.New()
-	return catalog.New(store), store, context.Background()
-}
-
-// Schemas are namespaces for tables. Creating one persists it and makes it
-// resolvable by name; names are unique.
-func TestSchemaLifecycle(t *testing.T) {
-	cat, _, ctx := newCatalog(t)
-
-	s, err := cat.CreateSchema(ctx, "public")
+	store, err := kvslate.Open("test-"+t.Name(), "memory:///")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Name != "public" || s.ID == "" {
-		t.Fatalf("unexpected schema %+v", s)
-	}
-
-	got, ok, err := cat.GetSchema(ctx, "public")
-	if err != nil || !ok || got.ID != s.ID {
-		t.Fatalf("GetSchema: %+v ok=%v err=%v", got, ok, err)
-	}
-
-	if _, ok, _ := cat.GetSchema(ctx, "nope"); ok {
-		t.Fatal("unknown schema resolved")
-	}
-
-	if _, err := cat.CreateSchema(ctx, "public"); err == nil {
-		t.Fatal("duplicate schema name accepted")
-	}
-	if _, err := cat.CreateSchema(ctx, ""); err == nil {
-		t.Fatal("empty schema name accepted")
-	}
+	t.Cleanup(func() { _ = store.Close() })
+	return catalog.New(store), store, context.Background()
 }
 
 // CreateTable assigns catalog-wide unique IDs to the table and each column
 // and index. IDs, not names, appear in data keys — renames stay cheap.
 func TestCreateTableAssignsIDs(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
-	if _, err := cat.CreateSchema(ctx, "public"); err != nil {
-		t.Fatal(err)
-	}
 
-	tbl, err := cat.CreateTable(ctx, "public", usersDef())
+	tbl, err := cat.CreateTable(ctx, usersDef())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,18 +79,15 @@ func TestCreateTableAssignsIDs(t *testing.T) {
 	}
 }
 
-// Tables resolve by (schema, name) and by ID; the two paths agree.
+// Tables resolve by name and by ID; the two paths agree.
 func TestTableLookup(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
-	if _, err := cat.CreateSchema(ctx, "public"); err != nil {
-		t.Fatal(err)
-	}
-	created, err := cat.CreateTable(ctx, "public", usersDef())
+	created, err := cat.CreateTable(ctx, usersDef())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	byName, ok, err := cat.GetTable(ctx, "public", "users")
+	byName, ok, err := cat.GetTable(ctx, "users")
 	if err != nil || !ok {
 		t.Fatalf("GetTable: ok=%v err=%v", ok, err)
 	}
@@ -132,21 +99,15 @@ func TestTableLookup(t *testing.T) {
 		t.Fatalf("lookups disagree: %+v vs %+v", byName, byID)
 	}
 
-	if _, ok, _ := cat.GetTable(ctx, "public", "nope"); ok {
+	if _, ok, _ := cat.GetTable(ctx, "nope"); ok {
 		t.Fatal("unknown table resolved")
-	}
-	if _, ok, _ := cat.GetTable(ctx, "other", "users"); ok {
-		t.Fatal("table resolved in wrong schema")
 	}
 }
 
 // The helper accessors resolve columns and indexes by name.
 func TestTableAccessors(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
-	if _, err := cat.CreateSchema(ctx, "public"); err != nil {
-		t.Fatal(err)
-	}
-	tbl, err := cat.CreateTable(ctx, "public", usersDef())
+	tbl, err := cat.CreateTable(ctx, usersDef())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,15 +134,12 @@ func TestTableAccessors(t *testing.T) {
 // types. The stored FK carries the referenced table's ID.
 func TestCreateTableForeignKeys(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
-	if _, err := cat.CreateSchema(ctx, "public"); err != nil {
-		t.Fatal(err)
-	}
-	users, err := cat.CreateTable(ctx, "public", usersDef())
+	users, err := cat.CreateTable(ctx, usersDef())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	orders, err := cat.CreateTable(ctx, "public", catalog.TableDef{
+	orders, err := cat.CreateTable(ctx, catalog.TableDef{
 		Name: "orders",
 		Columns: []catalog.ColumnDef{
 			{Name: "id", Type: catalog.TypeInt64},
@@ -205,15 +163,12 @@ func TestCreateTableForeignKeys(t *testing.T) {
 // same store sees everything the first one created.
 func TestPersistenceAcrossInstances(t *testing.T) {
 	cat, store, ctx := newCatalog(t)
-	if _, err := cat.CreateSchema(ctx, "public"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cat.CreateTable(ctx, "public", usersDef()); err != nil {
+	if _, err := cat.CreateTable(ctx, usersDef()); err != nil {
 		t.Fatal(err)
 	}
 
 	reopened := catalog.New(store)
-	tbl, ok, err := reopened.GetTable(ctx, "public", "users")
+	tbl, ok, err := reopened.GetTable(ctx, "users")
 	if err != nil || !ok {
 		t.Fatalf("reopened catalog: ok=%v err=%v", ok, err)
 	}
@@ -305,21 +260,18 @@ func TestCreateTableValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cat, _, ctx := newCatalog(t)
-			if _, err := cat.CreateSchema(ctx, "public"); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := cat.CreateTable(ctx, "public", usersDef()); err != nil {
+			if _, err := cat.CreateTable(ctx, usersDef()); err != nil {
 				t.Fatal(err)
 			}
 
-			_, err := cat.CreateTable(ctx, "public", tc.def)
+			_, err := cat.CreateTable(ctx, tc.def)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("got %v, want error containing %q", err, tc.wantErr)
 			}
 
 			// Rejection is atomic: nothing with that name was left behind.
 			if tc.def.Name != "" {
-				if _, ok, _ := cat.GetTable(ctx, "public", tc.def.Name); ok {
+				if _, ok, _ := cat.GetTable(ctx, tc.def.Name); ok {
 					t.Fatalf("rejected table %q exists", tc.def.Name)
 				}
 			}
@@ -327,21 +279,14 @@ func TestCreateTableValidation(t *testing.T) {
 	}
 }
 
-// Table names are unique per schema, and tables cannot be created in schemas
-// that do not exist.
+// Table names are unique across the database.
 func TestCreateTablePreconditions(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
-	if _, err := cat.CreateSchema(ctx, "public"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cat.CreateTable(ctx, "public", usersDef()); err != nil {
+	if _, err := cat.CreateTable(ctx, usersDef()); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := cat.CreateTable(ctx, "public", usersDef()); err == nil {
+	if _, err := cat.CreateTable(ctx, usersDef()); err == nil {
 		t.Fatal("duplicate table name accepted")
-	}
-	if _, err := cat.CreateTable(ctx, "ghost", usersDef()); err == nil {
-		t.Fatal("table created in nonexistent schema")
 	}
 }

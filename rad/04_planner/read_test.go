@@ -78,7 +78,7 @@ func TestChooseAccessPath(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			plan, err := planner.PlanRead(ctx, cat, "public", tc.read)
+			plan, err := planner.PlanRead(ctx, cat, tc.read)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -97,7 +97,7 @@ func TestChooseAccessPath(t *testing.T) {
 func TestPlanReadIncludes(t *testing.T) {
 	cat, ctx := setup(t)
 
-	plan, err := planner.PlanRead(ctx, cat, "public", lir.Read{
+	plan, err := planner.PlanRead(ctx, cat, lir.Read{
 		Table: "users",
 		Include: []lir.Include{
 			{FK: "orders_user_id_fk", Dir: lir.ToChildren, As: "orders"},

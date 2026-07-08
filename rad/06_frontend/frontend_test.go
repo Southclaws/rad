@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"testing"
 
-	"rad/rad/01_kv/kvmem"
 	catalog "rad/rad/02_catalog"
 	lir "rad/rad/03_lir"
 	frontend "rad/rad/06_frontend"
@@ -23,10 +22,7 @@ import (
 func newDB(t *testing.T) (*frontend.DB, context.Context) {
 	t.Helper()
 	ctx := context.Background()
-	db, err := frontend.Init(ctx, kvmem.New(), "public")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := frontend.Open(memStore(t))
 
 	if _, err := db.CreateTable(ctx, catalog.TableDef{
 		Name: "users",
@@ -73,28 +69,28 @@ func newDB(t *testing.T) (*frontend.DB, context.Context) {
 	return db, ctx
 }
 
-// Init creates the schema exactly once; a second Init on the same store is
-// an error. Open attaches without creating.
-func TestInitAndOpen(t *testing.T) {
+// Open attaches to a store; the database is the whole instance — there is
+// no schema or database hierarchy to create.
+func TestOpen(t *testing.T) {
 	ctx := context.Background()
-	store := kvmem.New()
+	store := memStore(t)
 
-	db, err := frontend.Init(ctx, store, "public")
-	if err != nil {
+	db := frontend.Open(store)
+	if _, err := db.Tables(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if db.Schema() != "public" {
-		t.Fatalf("Schema() = %q", db.Schema())
-	}
 
-	if _, err := frontend.Init(ctx, store, "public"); err == nil {
-		t.Fatal("second Init on the same schema succeeded")
+	// A second handle over the same store sees the same catalog.
+	if _, err := db.CreateTable(ctx, catalog.TableDef{
+		Name:       "things",
+		Columns:    []catalog.ColumnDef{{Name: "id", Type: catalog.TypeInt64}},
+		PrimaryKey: []string{"id"},
+	}); err != nil {
+		t.Fatal(err)
 	}
-
-	// Open sees what Init created.
-	reopened := frontend.Open(store, "public")
-	if _, ok, err := reopened.Catalog().GetSchema(ctx, "public"); err != nil || !ok {
-		t.Fatalf("reopened handle can't see schema: ok=%v err=%v", ok, err)
+	reopened := frontend.Open(store)
+	if _, ok, err := reopened.Catalog().GetTable(ctx, "things"); err != nil || !ok {
+		t.Fatalf("reopened handle can't see table: ok=%v err=%v", ok, err)
 	}
 }
 

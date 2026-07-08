@@ -79,7 +79,7 @@ func TestUpdateForeignKeyAndUniqueChecks(t *testing.T) {
 	}
 
 	// Unique index checks fire on update too.
-	if _, err := eng.Catalog().CreateTable(ctx, "public", catalog.TableDef{
+	if _, err := eng.Catalog().CreateTable(ctx, catalog.TableDef{
 		Name: "handles",
 		Columns: []catalog.ColumnDef{
 			{Name: "id", Type: catalog.TypeInt64},
@@ -153,7 +153,7 @@ func TestDeleteRestrict(t *testing.T) {
 // task with children must be restricted while a leaf task is deletable.
 func TestDeleteRestrictSelfReferential(t *testing.T) {
 	eng, ctx := setup(t)
-	if _, err := eng.Catalog().CreateTable(ctx, "public", catalog.TableDef{
+	if _, err := eng.Catalog().CreateTable(ctx, catalog.TableDef{
 		Name: "nodes",
 		Columns: []catalog.ColumnDef{
 			{Name: "id", Type: catalog.TypeInt64},

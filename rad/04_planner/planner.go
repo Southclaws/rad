@@ -79,17 +79,17 @@ func (Limit) node()          {}
 
 // Plan lowers a logical query into a physical plan, resolving table and
 // index names against the catalog.
-func Plan(ctx context.Context, cat *catalog.Catalog, schema string, q lir.Query) (Node, error) {
-	return lower(ctx, cat, schema, q.Root)
+func Plan(ctx context.Context, cat *catalog.Catalog, q lir.Query) (Node, error) {
+	return lower(ctx, cat, q.Root)
 }
 
-func lower(ctx context.Context, cat *catalog.Catalog, schema string, node lir.RelNode) (Node, error) {
+func lower(ctx context.Context, cat *catalog.Catalog, node lir.RelNode) (Node, error) {
 	switch n := node.(type) {
 	case lir.Scan:
 		if n.Alias == "" {
 			return nil, fmt.Errorf("planner: scan of %q needs an alias", n.Table)
 		}
-		tbl, err := resolveTable(ctx, cat, schema, n.Table)
+		tbl, err := resolveTable(ctx, cat, n.Table)
 		if err != nil {
 			return nil, err
 		}
@@ -99,7 +99,7 @@ func lower(ctx context.Context, cat *catalog.Catalog, schema string, node lir.Re
 		if n.Alias == "" {
 			return nil, fmt.Errorf("planner: index scan of %q needs an alias", n.Table)
 		}
-		tbl, err := resolveTable(ctx, cat, schema, n.Table)
+		tbl, err := resolveTable(ctx, cat, n.Table)
 		if err != nil {
 			return nil, err
 		}
@@ -113,14 +113,14 @@ func lower(ctx context.Context, cat *catalog.Catalog, schema string, node lir.Re
 		return IndexScan{Table: tbl, Index: idx, Alias: n.Alias, Prefix: n.Prefix}, nil
 
 	case lir.Filter:
-		in, err := lower(ctx, cat, schema, n.Input)
+		in, err := lower(ctx, cat, n.Input)
 		if err != nil {
 			return nil, err
 		}
 		return Filter{Input: in, Expr: n.Expr}, nil
 
 	case lir.Project:
-		in, err := lower(ctx, cat, schema, n.Input)
+		in, err := lower(ctx, cat, n.Input)
 		if err != nil {
 			return nil, err
 		}
@@ -135,18 +135,18 @@ func lower(ctx context.Context, cat *catalog.Catalog, schema string, node lir.Re
 		if n.Type != lir.InnerJoin {
 			return nil, fmt.Errorf("planner: unsupported join type %q", n.Type)
 		}
-		left, err := lower(ctx, cat, schema, n.Left)
+		left, err := lower(ctx, cat, n.Left)
 		if err != nil {
 			return nil, err
 		}
-		right, err := lower(ctx, cat, schema, n.Right)
+		right, err := lower(ctx, cat, n.Right)
 		if err != nil {
 			return nil, err
 		}
 		return NestedLoopJoin{Left: left, Right: right, On: n.On}, nil
 
 	case lir.Limit:
-		in, err := lower(ctx, cat, schema, n.Input)
+		in, err := lower(ctx, cat, n.Input)
 		if err != nil {
 			return nil, err
 		}
@@ -157,8 +157,8 @@ func lower(ctx context.Context, cat *catalog.Catalog, schema string, node lir.Re
 	}
 }
 
-func resolveTable(ctx context.Context, cat *catalog.Catalog, schema, name string) (catalog.Table, error) {
-	tbl, ok, err := cat.GetTable(ctx, schema, name)
+func resolveTable(ctx context.Context, cat *catalog.Catalog, name string) (catalog.Table, error) {
+	tbl, ok, err := cat.GetTable(ctx, name)
 	if err != nil {
 		return catalog.Table{}, err
 	}

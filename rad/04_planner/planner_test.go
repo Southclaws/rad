@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"rad/rad/01_kv/kvmem"
+	"rad/rad/01_kv/kvslate"
 	catalog "rad/rad/02_catalog"
 	lir "rad/rad/03_lir"
 	planner "rad/rad/04_planner"
@@ -19,11 +19,13 @@ import (
 func setup(t *testing.T) (*catalog.Catalog, context.Context) {
 	t.Helper()
 	ctx := context.Background()
-	cat := catalog.New(kvmem.New())
-	if _, err := cat.CreateSchema(ctx, "public"); err != nil {
+	store, err := kvslate.Open("test-"+t.Name(), "memory:///")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cat.CreateTable(ctx, "public", catalog.TableDef{
+	t.Cleanup(func() { _ = store.Close() })
+	cat := catalog.New(store)
+	if _, err := cat.CreateTable(ctx, catalog.TableDef{
 		Name: "users",
 		Columns: []catalog.ColumnDef{
 			{Name: "id", Type: catalog.TypeInt64},
@@ -34,7 +36,7 @@ func setup(t *testing.T) (*catalog.Catalog, context.Context) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cat.CreateTable(ctx, "public", catalog.TableDef{
+	if _, err := cat.CreateTable(ctx, catalog.TableDef{
 		Name: "orders",
 		Columns: []catalog.ColumnDef{
 			{Name: "id", Type: catalog.TypeInt64},
@@ -56,7 +58,7 @@ func setup(t *testing.T) (*catalog.Catalog, context.Context) {
 
 func plan(t *testing.T, cat *catalog.Catalog, ctx context.Context, root lir.RelNode) planner.Node {
 	t.Helper()
-	p, err := planner.Plan(ctx, cat, "public", lir.Query{Root: root})
+	p, err := planner.Plan(ctx, cat, lir.Query{Root: root})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +116,7 @@ func TestIndexScanPrefixRules(t *testing.T) {
 		{"region": lir.Text("eu"), "user_id": lir.Int64(1)},
 	}
 	for _, prefix := range ok {
-		if _, err := planner.Plan(ctx, cat, "public", lir.Query{Root: lir.IndexScan{
+		if _, err := planner.Plan(ctx, cat, lir.Query{Root: lir.IndexScan{
 			Table: "orders", Alias: "o", Index: "orders_region_user_idx", Prefix: prefix,
 		}}); err != nil {
 			t.Errorf("prefix %v rejected: %v", prefix, err)
@@ -122,7 +124,7 @@ func TestIndexScanPrefixRules(t *testing.T) {
 	}
 
 	// user_id without region skips the leading column.
-	_, err := planner.Plan(ctx, cat, "public", lir.Query{Root: lir.IndexScan{
+	_, err := planner.Plan(ctx, cat, lir.Query{Root: lir.IndexScan{
 		Table: "orders", Alias: "o", Index: "orders_region_user_idx",
 		Prefix: lir.Row{"user_id": lir.Int64(1)},
 	}})
@@ -212,7 +214,7 @@ func TestPlannerValidation(t *testing.T) {
 	cat, ctx := setup(t)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := planner.Plan(ctx, cat, "public", lir.Query{Root: tc.root})
+			_, err := planner.Plan(ctx, cat, lir.Query{Root: tc.root})
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("got %v, want error containing %q", err, tc.wantErr)
 			}

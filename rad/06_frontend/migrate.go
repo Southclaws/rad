@@ -14,15 +14,7 @@ import (
 // (catalog mutations, plus index backfills for added indexes). It returns
 // the steps it applied — an empty plan means the database already matches.
 func (db *DB) Migrate(ctx context.Context, desired *schema.Schema) ([]migrate.Step, error) {
-	if _, ok, err := db.cat.GetSchema(ctx, db.schema); err != nil {
-		return nil, err
-	} else if !ok {
-		if _, err := db.cat.CreateSchema(ctx, db.schema); err != nil {
-			return nil, err
-		}
-	}
-
-	current, err := db.cat.ListTables(ctx, db.schema)
+	current, err := db.cat.ListTables(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -42,32 +34,32 @@ func (db *DB) Migrate(ctx context.Context, desired *schema.Schema) ([]migrate.St
 func (db *DB) applyStep(ctx context.Context, step migrate.Step) error {
 	switch s := step.(type) {
 	case migrate.RenameTable:
-		return db.cat.RenameTable(ctx, db.schema, s.From, s.To)
+		return db.cat.RenameTable(ctx, s.From, s.To)
 	case migrate.RenameColumn:
-		_, err := db.cat.RenameColumn(ctx, db.schema, s.Table, s.From, s.To)
+		_, err := db.cat.RenameColumn(ctx, s.Table, s.From, s.To)
 		return err
 	case migrate.CreateTable:
-		_, err := db.cat.CreateTable(ctx, db.schema, s.Def)
+		_, err := db.cat.CreateTable(ctx, s.Def)
 		return err
 	case migrate.AddColumn:
-		_, err := db.cat.AddColumn(ctx, db.schema, s.Table, s.Def)
+		_, err := db.cat.AddColumn(ctx, s.Table, s.Def)
 		return err
 	case migrate.AddIndex:
 		// Metadata first, then backfill entries for existing rows. A failed
 		// backfill (e.g. duplicate values under a unique index) leaves the
 		// index registered but empty; rerunning the migration retries the
 		// backfill only after the data is fixed. POC trade-off.
-		if _, err := db.cat.AddIndex(ctx, db.schema, s.Table, s.Def); err != nil {
+		if _, err := db.cat.AddIndex(ctx, s.Table, s.Def); err != nil {
 			return err
 		}
 		return db.eng.BackfillIndex(ctx, s.Table, s.Def.Name)
 	case migrate.DropIndex:
-		return db.cat.DropIndex(ctx, db.schema, s.Table, s.Index)
+		return db.cat.DropIndex(ctx, s.Table, s.Index)
 	case migrate.DropColumn:
-		_, err := db.cat.DropColumn(ctx, db.schema, s.Table, s.Column)
+		_, err := db.cat.DropColumn(ctx, s.Table, s.Column)
 		return err
 	case migrate.DropTable:
-		return db.cat.DropTable(ctx, db.schema, s.Table)
+		return db.cat.DropTable(ctx, s.Table)
 	default:
 		return fmt.Errorf("unknown migration step %T", step)
 	}
@@ -85,5 +77,5 @@ func (db *DB) MigrateFile(ctx context.Context, filename string, src []byte) ([]m
 
 // Tables lists the schema's current table definitions.
 func (db *DB) Tables(ctx context.Context) ([]catalog.Table, error) {
-	return db.cat.ListTables(ctx, db.schema)
+	return db.cat.ListTables(ctx)
 }
