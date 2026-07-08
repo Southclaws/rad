@@ -1,0 +1,198 @@
+# Build/test/upgrade automation for rad.
+#
+# The SlateDB Go binding (slatedb.io/slatedb-go) is cgo-based and links
+# against the native slatedb_uniffi library, built from the pinned checkout
+# in third_party/slatedb. go.mod is the single source of truth for the
+# version: the checkout tag and native build are derived from it.
+#
+#   task slatedb:setup            clone + build native lib (fresh machine)
+#   task test                     go test ./... (dynamic linking, fast)
+#   task demo                     run the demo (dynamic linking)
+#   task build                    mostly-static single binary -> bin/rad-demo
+#   task slatedb:upgrade VERSION=v0.15.0
+#
+# Linking modes:
+#   dynamic  lib/libslatedb_uniffi.dylib, resolved at runtime via rpath.
+#            Used for tests/dev where link speed matters.
+#   static   lib/static/libslatedb_uniffi.a linked into the binary. The .a
+#            lives in its own directory because ld prefers a .dylib when both
+#            are in the same -L directory. Only system frameworks remain
+#            dynamically linked (macOS has no static libSystem).
+
+version: '3'
+
+vars:
+  # Binding version from go.mod, e.g. "v0.14.1".
+  SLATEDB_VERSION:
+    sh: go list -m slatedb.io/slatedb-go | cut -d' ' -f2
+  # Matching tag in the slatedb repo, e.g. "bindings/go/v0.14.1".
+  SLATEDB_TAG: bindings/go/{{.SLATEDB_VERSION}}
+  SLATEDB_REPO: https://github.com/slatedb/slatedb
+  SLATEDB_SRC: '{{.ROOT_DIR}}/third_party/slatedb'
+  LIB_DIR: '{{.ROOT_DIR}}/lib'
+  TARGET: '{{.SLATEDB_SRC}}/target/release'
+
+  # Dynamic linking flags (tests, dev).
+  DYN_LDFLAGS: '-L{{.LIB_DIR}} -Wl,-rpath,{{.LIB_DIR}}'
+  # Static linking flags. STATIC_SYS_LIBS is what `rustc --print
+  # native-static-libs` reports for slatedb-uniffi on macOS; re-check it
+  # after an upgrade (task slatedb:build prints it).
+  STATIC_SYS_LIBS: '-lobjc -framework IOKit -framework CoreFoundation -framework Security -liconv -lSystem -lc -lm'
+  # -Wl,-w silences ~800 harmless ld warnings: duplicate system libs and an
+  # SDK minor-version mismatch between the Rust objects and Go's link target.
+  STATIC_LDFLAGS: '-L{{.LIB_DIR}}/static {{.STATIC_SYS_LIBS}} -Wl,-w'
+
+tasks:
+  default:
+    silent: true
+    cmds:
+      - task --list-all
+
+  up:
+    desc: 'One-command demo: migrate + run the Tracker app, then serve the devtool UI'
+    deps: [ui:build]
+    env:
+      CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
+    cmds:
+      - rm -rf demo/data
+      - task: demo
+      # Open the browser once the server is actually listening, then keep
+      # rad in the foreground (Ctrl-C to stop).
+      - |
+        (until curl -s -m 1 -o /dev/null http://127.0.0.1:7423/api/meta; do sleep 0.3; done
+         open http://127.0.0.1:7423 || true) &
+        go run ./cmd/rad serve -d demo/data
+
+  test:
+    desc: Run all tests + build the demo app (dynamic linking)
+    env:
+      CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
+    cmds:
+      - go test ./... {{.CLI_ARGS}}
+      - cd demo && go build -o /dev/null .
+
+  vet:
+    desc: go vet all packages + enforce layer import direction
+    env:
+      CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
+    cmds:
+      - go vet ./...
+      - sh scripts/check_layers.sh
+
+  demo:
+    desc: Run the Tracker demo app (migrates its own store in demo/data)
+    dir: demo
+    env:
+      CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
+    cmds:
+      - go run .
+
+  generate:
+    desc: Regenerate the demo's typed client from demo/schema.rad
+    env:
+      CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
+    cmds:
+      - go run ./cmd/rad generate -f demo/schema.rad -o demo/generated --pkg tracker
+
+  migrate:
+    desc: Apply demo/schema.rad to the demo database
+    env:
+      CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
+    cmds:
+      - go run ./cmd/rad migrate -f demo/schema.rad -d demo/data
+
+  build:
+    desc: Build mostly-static binaries (SlateDB linked in) -> bin/
+    env:
+      CGO_LDFLAGS: '{{.STATIC_LDFLAGS}}'
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/rad ./cmd/rad
+      - cd demo && go build -o ../bin/tracker-demo .
+      - otool -L bin/tracker-demo
+
+  clean:
+    desc: Remove demo data, built binaries, and the cargo target dir
+    cmds:
+      - rm -rf data demo/data bin '{{.SLATEDB_SRC}}/target'
+
+  ui:install:
+    desc: Install UI dependencies
+    dir: ui
+    status:
+      - test -d node_modules
+    cmds:
+      - npm install
+
+  ui:build:
+    desc: Build the SPA into cmd/rad/dist (embedded by go:embed)
+    dir: ui
+    deps: [ui:install]
+    cmds:
+      - npm run build
+
+  ui:dev:
+    desc: Vite dev server with API proxy (run `task serve` in another shell)
+    dir: ui
+    deps: [ui:install]
+    cmds:
+      - npm run dev
+
+  serve:
+    desc: Build the UI and run the devtool server against ./data
+    deps: [ui:build]
+    env:
+      CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
+    cmds:
+      - go run ./cmd/rad serve -db data {{.CLI_ARGS}}
+
+  docker:build:
+    desc: Build the mostly-static Linux demo image (tag rad-demo)
+    cmds:
+      - docker build --build-arg 'SLATEDB_TAG={{.SLATEDB_TAG}}' -t rad-demo .
+
+  docker:run:
+    desc: Run the demo container (fresh store each run)
+    cmds:
+      - docker run --rm rad-demo
+
+  slatedb:setup:
+    desc: Clone and build the native SlateDB library (fresh machine bootstrap)
+    cmds:
+      - task: slatedb:clone
+      - task: slatedb:build
+
+  slatedb:clone:
+    desc: Clone the slatedb repo at the tag matching go.mod
+    status:
+      - test -d '{{.SLATEDB_SRC}}/.git'
+    cmds:
+      - git clone --depth 1 --branch '{{.SLATEDB_TAG}}' '{{.SLATEDB_REPO}}' '{{.SLATEDB_SRC}}'
+
+  slatedb:build:
+    desc: Build libslatedb_uniffi (.dylib for dynamic use, .a for static builds)
+    cmds:
+      # --print native-static-libs makes rustc report the system libs a
+      # static link needs; keep vars.STATIC_SYS_LIBS in sync with it.
+      - cargo rustc --release -p slatedb-uniffi --manifest-path '{{.SLATEDB_SRC}}/Cargo.toml' -- --print native-static-libs
+      - mkdir -p '{{.LIB_DIR}}/static'
+      - cp '{{.TARGET}}/libslatedb_uniffi.a' '{{.LIB_DIR}}/static/'
+      - cp '{{.TARGET}}/libslatedb_uniffi.dylib' '{{.LIB_DIR}}/'
+      # Cargo stamps the dylib with an absolute install name inside target/;
+      # rewrite to @rpath so binaries resolve it via -Wl,-rpath.
+      - install_name_tool -id @rpath/libslatedb_uniffi.dylib '{{.LIB_DIR}}/libslatedb_uniffi.dylib'
+      - codesign -f -s - '{{.LIB_DIR}}/libslatedb_uniffi.dylib'
+
+  slatedb:upgrade:
+    desc: 'Upgrade SlateDB: task slatedb:upgrade VERSION=v0.15.0'
+    requires:
+      vars: [VERSION]
+    cmds:
+      - go get slatedb.io/slatedb-go@{{.VERSION}}
+      - go mod tidy
+      - git -C '{{.SLATEDB_SRC}}' fetch --depth 1 origin tag 'bindings/go/{{.VERSION}}'
+      - git -C '{{.SLATEDB_SRC}}' checkout 'bindings/go/{{.VERSION}}'
+      # Rebuild with a task invocation so SLATEDB_VERSION is re-derived from
+      # the updated go.mod.
+      - task slatedb:build
+      - task test

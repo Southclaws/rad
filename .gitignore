@@ -1,0 +1,7 @@
+data/
+bin/
+lib/
+third_party/
+ui/node_modules/
+*.output
+.DS_Store

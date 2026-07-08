@@ -1,0 +1,8 @@
+third_party/
+lib/
+bin/
+data/
+references/
+ui/node_modules/
+Dockerfile
+.dockerignore

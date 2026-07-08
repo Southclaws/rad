@@ -1,0 +1,219 @@
+// Package e2e runs the full stack (frontend/planner/executor over catalog
+// and KV) against both
+// backends. Building this package needs the SlateDB native library; run via
+// `task test`.
+package e2e
+
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	kv "rad/rad/01_kv"
+	"rad/rad/01_kv/kvmem"
+	"rad/rad/01_kv/kvslate"
+	catalog "rad/rad/02_catalog"
+	lir "rad/rad/03_lir"
+	exec "rad/rad/05_exec"
+)
+
+func backends(t *testing.T) map[string]kv.TransactionalKV {
+	t.Helper()
+	slate, err := kvslate.Open(fmt.Sprintf("e2e-%s", t.Name()), "memory:///")
+	if err != nil {
+		t.Fatalf("open slatedb: %v", err)
+	}
+	t.Cleanup(func() { _ = slate.Close() })
+	return map[string]kv.TransactionalKV{
+		"kvmem":   kvmem.New(),
+		"kvslate": slate,
+	}
+}
+
+func TestRelationalStackOverBothBackends(t *testing.T) {
+	for name, store := range backends(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			cat := catalog.New(store)
+			if _, err := cat.CreateSchema(ctx, "public"); err != nil {
+				t.Fatal(err)
+			}
+			eng := exec.New(store, cat, "public")
+
+			if _, err := cat.CreateTable(ctx, "public", catalog.TableDef{
+				Name: "users",
+				Columns: []catalog.ColumnDef{
+					{Name: "id", Type: catalog.TypeInt64},
+					{Name: "name", Type: catalog.TypeText},
+				},
+				PrimaryKey: []string{"id"},
+				Indexes:    []catalog.IndexDef{{Name: "users_name_idx", Columns: []string{"name"}}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cat.CreateTable(ctx, "public", catalog.TableDef{
+				Name: "orders",
+				Columns: []catalog.ColumnDef{
+					{Name: "id", Type: catalog.TypeInt64},
+					{Name: "user_id", Type: catalog.TypeInt64},
+					{Name: "total", Type: catalog.TypeFloat64, Nullable: true},
+				},
+				PrimaryKey:  []string{"id"},
+				Indexes:     []catalog.IndexDef{{Name: "orders_user_id_idx", Columns: []string{"user_id"}}},
+				ForeignKeys: []catalog.ForeignKeyDef{{Name: "orders_user_fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			for i := int64(1); i <= 3; i++ {
+				if err := eng.Insert(ctx, "users", lir.Row{"id": lir.Int64(i), "name": lir.Text(fmt.Sprintf("user%d", i))}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i, uid := range []int64{1, 1, 2} {
+				if err := eng.Insert(ctx, "orders", lir.Row{
+					"id": lir.Int64(int64(100 + i)), "user_id": lir.Int64(uid), "total": lir.Float64(float64(i) + 0.5),
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			// Constraints hold on this backend.
+			if err := eng.Insert(ctx, "users", lir.Row{"id": lir.Int64(1), "name": lir.Text("dup")}); err == nil {
+				t.Fatal("expected duplicate pk error")
+			}
+			if err := eng.Insert(ctx, "orders", lir.Row{"id": lir.Int64(999), "user_id": lir.Int64(99)}); err == nil {
+				t.Fatal("expected fk violation")
+			}
+
+			// Join over an index scan returns each order with its user.
+			rows, err := eng.Query(ctx, lir.Query{Root: lir.Join{
+				Left:  lir.Scan{Table: "users", Alias: "u"},
+				Right: lir.IndexScan{Table: "orders", Alias: "o", Index: "orders_user_id_idx"},
+				Type:  lir.InnerJoin,
+				On: lir.Eq{
+					Left:  lir.ColRef{Alias: "u", Column: "id"},
+					Right: lir.ColRef{Alias: "o", Column: "user_id"},
+				},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 3 {
+				t.Fatalf("join returned %d rows, want 3", len(rows))
+			}
+			for _, r := range rows {
+				if !r["u.id"].Equal(r["o.user_id"]) {
+					t.Fatalf("join predicate violated: %v", r)
+				}
+			}
+		})
+	}
+}
+
+// TestTransactionsOverBothBackends exercises the transactional write path of
+// the full stack on both KV backends: atomic multi-table commit, rollback on
+// error, snapshot-consistent queries inside a transaction, and a
+// serializable conflict between two racing unique inserts.
+func TestTransactionsOverBothBackends(t *testing.T) {
+	for name, store := range backends(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			cat := catalog.New(store)
+			if _, err := cat.CreateSchema(ctx, "public"); err != nil {
+				t.Fatal(err)
+			}
+			eng := exec.New(store, cat, "public")
+
+			if _, err := cat.CreateTable(ctx, "public", catalog.TableDef{
+				Name: "users",
+				Columns: []catalog.ColumnDef{
+					{Name: "id", Type: catalog.TypeInt64},
+					{Name: "name", Type: catalog.TypeText},
+				},
+				PrimaryKey: []string{"id"},
+				Indexes:    []catalog.IndexDef{{Name: "users_name_uq", Columns: []string{"name"}, Unique: true}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cat.CreateTable(ctx, "public", catalog.TableDef{
+				Name: "orders",
+				Columns: []catalog.ColumnDef{
+					{Name: "id", Type: catalog.TypeInt64},
+					{Name: "user_id", Type: catalog.TypeInt64},
+				},
+				PrimaryKey:  []string{"id"},
+				ForeignKeys: []catalog.ForeignKeyDef{{Name: "orders_user_fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			// Atomic multi-table insert: the order's FK check sees the user
+			// inserted earlier in the same transaction.
+			err := eng.Txn(ctx, func(tx *exec.Tx) error {
+				if err := tx.Insert(ctx, "users", lir.Row{"id": lir.Int64(1), "name": lir.Text("Alice")}); err != nil {
+					return err
+				}
+				return tx.Insert(ctx, "orders", lir.Row{"id": lir.Int64(100), "user_id": lir.Int64(1)})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Rollback on error: neither row survives.
+			err = eng.Txn(ctx, func(tx *exec.Tx) error {
+				if err := tx.Insert(ctx, "users", lir.Row{"id": lir.Int64(2), "name": lir.Text("Bob")}); err != nil {
+					return err
+				}
+				return fmt.Errorf("application decided to abort")
+			})
+			if err == nil {
+				t.Fatal("expected fn error to propagate")
+			}
+			if _, ok, _ := eng.GetByPrimaryKey(ctx, "users", lir.Row{"id": lir.Int64(2)}); ok {
+				t.Fatal("rolled-back insert visible")
+			}
+
+			// Queries inside a transaction run against its snapshot: a row
+			// committed by another writer after Begin is invisible.
+			err = eng.Txn(ctx, func(tx *exec.Tx) error {
+				if err := eng.Insert(ctx, "users", lir.Row{"id": lir.Int64(3), "name": lir.Text("Carol")}); err != nil {
+					return err
+				}
+				rows, err := tx.Query(ctx, lir.Query{Root: lir.Scan{Table: "users", Alias: "u"}})
+				if err != nil {
+					return err
+				}
+				if len(rows) != 1 {
+					t.Fatalf("snapshot query saw %d users, want 1 (Carol committed after Begin)", len(rows))
+				}
+				return nil
+			})
+			// The read-only transaction may or may not conflict depending on
+			// scan-range overlap with Carol's insert; both outcomes are
+			// legitimate here.
+			if err != nil && !exec.IsConflict(err) {
+				t.Fatal(err)
+			}
+
+			// Racing unique inserts: disjoint write sets, conflict comes
+			// from the tracked unique-check range scan.
+			err = eng.Txn(ctx, func(tx *exec.Tx) error {
+				if err := tx.Insert(ctx, "users", lir.Row{"id": lir.Int64(10), "name": lir.Text("dup")}); err != nil {
+					return err
+				}
+				return eng.Insert(ctx, "users", lir.Row{"id": lir.Int64(11), "name": lir.Text("dup")})
+			})
+			if !exec.IsConflict(err) {
+				t.Fatalf("expected serializable conflict, got %v", err)
+			}
+			rows, err := eng.ScanIndex(ctx, "users", "users_name_uq", lir.Row{"name": lir.Text("dup")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 1 || !rows[0]["id"].Equal(lir.Int64(11)) {
+				t.Fatalf("unique index has %v, want just committed id=11", rows)
+			}
+		})
+	}
+}
