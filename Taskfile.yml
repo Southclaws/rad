@@ -49,19 +49,22 @@ tasks:
       - task --list-all
 
   up:
-    desc: 'One-command demo: migrate + run the Tracker app, then serve the devtool UI'
+    desc: 'One-command demo: fresh server, run the Tracker app, keep serving (UI on :7237)'
     deps: [ui:build]
     env:
       CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
     cmds:
       - rm -rf demo/data
-      - task: demo
-      # Open the browser once the server is actually listening, then keep
-      # rad in the foreground (Ctrl-C to stop).
+      - mkdir -p bin
+      - go build -o bin/rad ./cmd/rad
       - |
-        (until curl -s -m 1 -o /dev/null http://127.0.0.1:7423/api/meta; do sleep 0.3; done
-         open http://127.0.0.1:7423 || true) &
-        go run ./cmd/rad serve -d demo/data
+        RAD_STORAGE=file RAD_DATA_DIR=demo/data ./bin/rad serve &
+        SERVER_PID=$!
+        trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+        until curl -s -m 1 -o /dev/null http://127.0.0.1:7237/v1/health; do sleep 0.3; done
+        (cd demo && go run .)
+        open http://127.0.0.1:7237 || true
+        wait $SERVER_PID
 
   test:
     desc: Run all tests + build the demo app (dynamic linking)
@@ -80,12 +83,19 @@ tasks:
       - sh scripts/check_layers.sh
 
   demo:
-    desc: Run the Tracker demo app (migrates its own store in demo/data)
-    dir: demo
+    desc: 'Run the Tracker demo: fresh RAD server + the app over rad://'
     env:
       CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
     cmds:
-      - go run .
+      - rm -rf demo/data
+      - mkdir -p bin
+      - go build -o bin/rad ./cmd/rad
+      - |
+        RAD_STORAGE=file RAD_DATA_DIR=demo/data ./bin/rad serve > /tmp/rad-demo-serve.log 2>&1 &
+        SERVER_PID=$!
+        trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+        until curl -s -m 1 -o /dev/null http://127.0.0.1:7237/v1/health; do sleep 0.3; done
+        cd demo && go run .
 
   generate:
     desc: Regenerate the demo's typed client from demo/schema.rad
@@ -95,11 +105,11 @@ tasks:
       - go run ./cmd/rad generate -f demo/schema.rad -o demo/generated --pkg tracker
 
   migrate:
-    desc: Apply demo/schema.rad to the demo database
+    desc: Apply demo/schema.rad to the running RAD server
     env:
       CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
     cmds:
-      - go run ./cmd/rad migrate -f demo/schema.rad -d demo/data
+      - go run ./cmd/rad migrate -f demo/schema.rad -u rad://localhost
 
   build:
     desc: Build mostly-static binaries (SlateDB linked in) -> bin/
@@ -139,12 +149,12 @@ tasks:
       - npm run dev
 
   serve:
-    desc: Build the UI and run the devtool server against ./data
+    desc: Build the UI and run the RAD server (API + devtool UI on :7237)
     deps: [ui:build]
     env:
       CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
     cmds:
-      - go run ./cmd/rad serve -db data {{.CLI_ARGS}}
+      - go run ./cmd/rad serve {{.CLI_ARGS}}
 
   docker:build:
     desc: Build the mostly-static Linux demo image (tag rad-demo)

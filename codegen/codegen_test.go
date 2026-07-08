@@ -90,7 +90,7 @@ tables:
 // The generated client for the real demo schema parses as valid Go and
 // contains the expected surface. (The demo build compiles it for real.)
 func TestGenerateDemoSchema(t *testing.T) {
-	src, err := os.ReadFile("../../../demo/schema.rad")
+	src, err := os.ReadFile("../demo/schema.rad")
 	if err != nil {
 		t.Skipf("demo schema not available: %v", err)
 	}

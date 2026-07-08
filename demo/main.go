@@ -1,11 +1,14 @@
 // Tracker — a team task-tracking product built entirely on RAD's generated
-// client. This is the proof of the developer experience:
+// client, connected to a RAD server over the wire. This is the proof of the
+// developer experience:
 //
 //	schema.rad  →  rad migrate  →  rad generate  →  this file
 //
 // Everything below uses demo/generated (typed models, query builders,
-// transactions). No SQL, no IR, no keys — and when schema.rad evolves,
-// `rad migrate && rad generate` keeps this compiling.
+// transactions) speaking rad:// to a server — no SQL, no IR, no keys, and
+// no cgo in the application. Set RAD_URL to point elsewhere (default
+// rad://localhost:7237); when schema.rad evolves, `rad generate` keeps this
+// compiling.
 package main
 
 import (
@@ -34,14 +37,20 @@ func ptr[T any](v T) *T { return &v }
 func run() error {
 	ctx := context.Background()
 
-	db, err := tracker.Open("data")
+	url := os.Getenv("RAD_URL")
+	if url == "" {
+		url = "rad://localhost:7237"
+	}
+	db, err := tracker.Connect(url)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	if err := db.Ping(ctx); err != nil {
+		return fmt.Errorf("no RAD server at %s (start one with `rad serve`): %w", url, err)
+	}
+	fmt.Printf("connected to %s\n", url)
 
-	// The client carries its schema: migrate on startup. (Equivalent to
-	// `rad migrate -f schema.rad -d data`.)
+	// The client carries its schema: migrate the remote database on startup.
 	steps, err := db.Migrate(ctx)
 	if err != nil {
 		return err

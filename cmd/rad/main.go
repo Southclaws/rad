@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	radclient "rad/client"
 	"rad/rad/01_kv/kvslate"
 	frontend "rad/rad/06_frontend"
 )
@@ -52,38 +53,66 @@ func openStore(db string) (*kvslate.Store, string, error) {
 }
 
 func migrateCmd() *cobra.Command {
-	var db, file string
+	var db, file, url string
 	cmd := &cobra.Command{
 		Use:   "migrate",
-		Short: "Apply schema.rad changes to the database (diff + reconcile)",
-		Args:  cobra.NoArgs,
+		Short: "Apply schema.rad changes to a database (diff + reconcile)",
+		Long: `Apply schema.rad changes to a database.
+
+With --url (or RAD_URL), migrates a running RAD server over the wire — the
+normal mode, since a live server owns its store exclusively. With --db, opens
+a local store directory directly (the server must not be running on it).`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			src, err := os.ReadFile(file)
 			if err != nil {
 				return err
 			}
-			store, dir, err := openStore(db)
-			if err != nil {
-				return err
+			if url == "" {
+				url = os.Getenv("RAD_URL")
 			}
-			defer store.Close()
 
-			steps, err := frontend.Open(store).MigrateFile(cmd.Context(), file, src)
-			if err != nil {
-				return err
+			var steps []string
+			var target string
+			if url != "" {
+				c, err := radclient.Dial(url)
+				if err != nil {
+					return err
+				}
+				steps, err = c.Migrate(cmd.Context(), string(src))
+				if err != nil {
+					return err
+				}
+				target = url
+			} else {
+				store, dir, err := openStore(db)
+				if err != nil {
+					return err
+				}
+				defer store.Close()
+				applied, err := frontend.Open(store).MigrateFile(cmd.Context(), file, src)
+				if err != nil {
+					return err
+				}
+				for _, s := range applied {
+					steps = append(steps, s.String())
+				}
+				target = dir
 			}
+
 			if len(steps) == 0 {
-				fmt.Printf("%s: database at %s is up to date\n", file, dir)
+				fmt.Printf("%s: database at %s is up to date\n", file, target)
 				return nil
 			}
-			fmt.Printf("%s: applied %d steps to %s:\n", file, len(steps), dir)
+			fmt.Printf("%s: applied %d steps to %s:\n", file, len(steps), target)
 			for _, s := range steps {
 				fmt.Printf("  • %s\n", s)
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&db, "db", "d", "data", "path to the SlateDB store directory")
+	cmd.Flags().StringVarP(&url, "url", "u", "", "RAD server URL, e.g. rad://localhost (default RAD_URL; falls back to --db)")
+	cmd.Flags().StringVarP(&db, "db", "d", "data", "local store directory (offline mode)")
 	cmd.Flags().StringVarP(&file, "file", "f", "schema.rad", "schema file")
 	return cmd
 }

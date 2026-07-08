@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"rad/codegen"
 	"rad/rad/02_catalog/schema"
-	"rad/rad/06_frontend/codegen"
 )
 
 func generateCmd() *cobra.Command {
