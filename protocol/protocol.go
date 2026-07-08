@@ -46,7 +46,8 @@ import (
 	"net/url"
 )
 
-// DefaultPort is RAD's default port. Set in stone.
+// DefaultPort is RAD's default port. Override the listen address with
+// RAD_ADDR on the server; clients name a port in the URI.
 const DefaultPort = 7237
 
 // ParseURL parses a rad(s):// connection URI into an http(s) base URL.

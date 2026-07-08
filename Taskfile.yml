@@ -98,11 +98,26 @@ tasks:
         cd demo && go run .
 
   generate:
-    desc: Regenerate the demo's typed client from demo/schema.rad
+    desc: Regenerate the demo's typed clients (Go + TypeScript)
     env:
       CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
     cmds:
       - go run ./cmd/rad generate -f demo/schema.rad -o demo/generated --pkg tracker
+      - go run ./cmd/rad generate -f demo/schema.rad -o demo/generated --pkg tracker --lang ts
+
+  demo:ts:
+    desc: 'Run the TypeScript demo: fresh RAD server + node app over rad://'
+    env:
+      CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/rad ./cmd/rad
+      - |
+        RAD_STORAGE=memory ./bin/rad serve > /tmp/rad-ts-serve.log 2>&1 &
+        SERVER_PID=$!
+        trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+        until curl -s -m 1 -o /dev/null http://127.0.0.1:7237/health; do sleep 0.3; done
+        node demo/tracker-demo.ts
 
   migrate:
     desc: Apply demo/schema.rad to the running RAD server

@@ -87,6 +87,46 @@ tables:
 	}
 }
 
+// The generated TypeScript client mirrors the Go surface: models, create/
+// patch types, camelCase builders, includes in both directions, and tx.
+// (tsc --strict validates it for real in CI/dev via the demo.)
+func TestGenerateTypeScript(t *testing.T) {
+	src, err := os.ReadFile("../demo/schema.rad")
+	if err != nil {
+		t.Skipf("demo schema not available: %v", err)
+	}
+	sch, err := schema.Parse("demo/schema.rad", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := GenerateTS(sch, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"export interface Task {",
+		"export interface TaskCreate {",
+		"export interface TaskPatch {",
+		"assignee?: User | null;",
+		"comments?: Comment[];",
+		"statusEq(v: string): this",
+		"assigneeIdNull(): this",
+		"includeTasks(fn?: (b: TaskInclude) => void): this",
+		"async byUsername(username: string): Promise<User | null>",
+		"async get(teamId: string, userId: string): Promise<TeamMember | null>",
+		"async tx<T>(fn: (tx: Tx) => Promise<T>): Promise<T>",
+		"export function connect(url: string",
+	} {
+		if !strings.Contains(string(code), want) {
+			t.Errorf("generated TS lacks %q", want)
+		}
+	}
+	// No TS parameter properties — Node strip-only mode rejects them.
+	if strings.Contains(string(code), "constructor(private") || strings.Contains(string(code), "constructor(public") {
+		t.Error("generated TS uses parameter properties (breaks Node type stripping)")
+	}
+}
+
 // The generated client for the real demo schema parses as valid Go and
 // contains the expected surface. (The demo build compiles it for real.)
 func TestGenerateDemoSchema(t *testing.T) {

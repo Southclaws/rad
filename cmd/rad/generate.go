@@ -12,10 +12,10 @@ import (
 )
 
 func generateCmd() *cobra.Command {
-	var file, out, pkg string
+	var file, out, pkg, lang string
 	cmd := &cobra.Command{
 		Use:   "generate",
-		Short: "Generate the typed Go client for a schema.rad",
+		Short: "Generate a typed client (Go or TypeScript) for a schema.rad",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			src, err := os.ReadFile(file)
@@ -26,14 +26,25 @@ func generateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			code, err := codegen.Generate(pkg, sch, src)
+
+			var code []byte
+			var dest string
+			switch lang {
+			case "go":
+				code, err = codegen.Generate(pkg, sch, src)
+				dest = filepath.Join(out, pkg+".go")
+			case "ts", "typescript":
+				code, err = codegen.GenerateTS(sch, src)
+				dest = filepath.Join(out, pkg+".ts")
+			default:
+				return fmt.Errorf("unknown --lang %q (go, ts)", lang)
+			}
 			if err != nil {
 				return err
 			}
 			if err := os.MkdirAll(out, 0o755); err != nil {
 				return err
 			}
-			dest := filepath.Join(out, pkg+".go")
 			if err := os.WriteFile(dest, code, 0o644); err != nil {
 				return err
 			}
@@ -43,6 +54,7 @@ func generateCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&file, "file", "f", "schema.rad", "schema file")
 	cmd.Flags().StringVarP(&out, "out", "o", "generated", "output directory")
-	cmd.Flags().StringVar(&pkg, "pkg", "db", "generated package name")
+	cmd.Flags().StringVar(&pkg, "pkg", "db", "generated package (Go) / file basename")
+	cmd.Flags().StringVar(&lang, "lang", "go", "client language: go, ts")
 	return cmd
 }

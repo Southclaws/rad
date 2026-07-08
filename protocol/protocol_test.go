@@ -1,5 +1,5 @@
 // These tests document the rad:// connection URI: scheme mapping, the
-// default port (7237, set in stone), and what is rejected.
+// default port, and what is rejected.
 package protocol
 
 import (
@@ -48,8 +48,10 @@ func TestParseURLRejects(t *testing.T) {
 	}
 }
 
-func TestDefaultPortIsSetInStone(t *testing.T) {
+// Changing the default port breaks every existing rad:// URI; this test
+// makes that a deliberate act.
+func TestDefaultPort(t *testing.T) {
 	if DefaultPort != 7237 {
-		t.Fatalf("DefaultPort = %d — 7237 is set in stone", DefaultPort)
+		t.Fatalf("DefaultPort = %d, want 7237", DefaultPort)
 	}
 }
