@@ -122,7 +122,21 @@ func (c *wireConv) toRead(ctx context.Context, r protocol.Read) (lir.Read, error
 		Offset:  r.Offset,
 		Limit:   r.Limit,
 		Include: includes,
+		Aggs:    toAggs(r.Aggs),
 	}, nil
+}
+
+// toAggs converts wire aggregate terms into the IR. The planner validates
+// them against the target table; this is a pure structural mapping.
+func toAggs(in []protocol.Agg) []lir.AggTerm {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]lir.AggTerm, len(in))
+	for i, a := range in {
+		out[i] = lir.AggTerm{Fn: lir.AggFn(a.Fn), Column: a.Column, As: a.As}
+	}
+	return out
 }
 
 func toOrder(in []protocol.Order) []lir.OrderTerm {
@@ -151,7 +165,7 @@ func (c *wireConv) toIncludes(ctx context.Context, tbl catalog.Table, in []proto
 		out = append(out, lir.Include{
 			FK: inc.FK, Dir: dir, As: inc.As,
 			Filter: filter, OrderBy: toOrder(inc.OrderBy), Limit: inc.Limit,
-			Include: nested,
+			Include: nested, Aggs: toAggs(inc.Aggs),
 		})
 	}
 	return out, nil

@@ -205,6 +205,105 @@ func TestClientNestedQuery(t *testing.T) {
 	}
 }
 
+// Aggregation rides the query endpoint: a Read with Aggs returns one record
+// of scalars, and an aggregate include folds children in the same round trip.
+func TestClientAggregateOverTheWire(t *testing.T) {
+	c := migrated(t)
+	ctx := context.Background()
+
+	user, _ := c.Create(ctx, "users", map[string]any{"name": "ada"})
+	id := user["id"].(string)
+	for _, score := range []int64{10, 20, 30} {
+		if _, err := c.Create(ctx, "posts", map[string]any{
+			"user_id": id, "title": "t", "score": score,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Root aggregate: one record of scalars, no rows.
+	recs, err := c.Query(ctx, protocol.Read{
+		Table: "posts",
+		Aggs: []protocol.Agg{
+			{Fn: "count", As: "n"},
+			{Fn: "sum", Column: "score", As: "total"},
+			{Fn: "avg", Column: "score", As: "mean"},
+			{Fn: "max", Column: "score", As: "top"},
+		},
+	})
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("recs=%d err=%v", len(recs), err)
+	}
+	if got := jsonInt(t, recs[0]["n"]); got != 3 {
+		t.Errorf("count = %d, want 3", got)
+	}
+	if got := jsonInt(t, recs[0]["total"]); got != 60 {
+		t.Errorf("sum = %d, want 60", got)
+	}
+	if got := jsonFloat(t, recs[0]["mean"]); got != 20 {
+		t.Errorf("avg = %v, want 20", got)
+	}
+	if got := jsonInt(t, recs[0]["top"]); got != 30 {
+		t.Errorf("max = %d, want 30", got)
+	}
+
+	// Aggregate include: the board-card shape — a user with a post count.
+	recs, err = c.Query(ctx, protocol.Read{
+		Table:  "users",
+		Filter: &protocol.Expr{Op: "eq", Column: "name", Value: "ada"},
+		Include: []protocol.Include{{
+			FK: "posts_user_id_fk", Dir: "children", As: "post_stats",
+			Aggs: []protocol.Agg{{Fn: "count", As: "n"}},
+		}},
+	})
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("recs=%d err=%v", len(recs), err)
+	}
+	stats, ok := recs[0]["post_stats"].(map[string]any)
+	if !ok {
+		t.Fatalf("post_stats is not a scalar object: %T %v", recs[0]["post_stats"], recs[0]["post_stats"])
+	}
+	if got := jsonInt(t, stats["n"]); got != 3 {
+		t.Errorf("include count = %d, want 3", got)
+	}
+
+	// A friendly plan-time rejection surfaces as a 422 invalid problem.
+	_, err = c.Query(ctx, protocol.Read{
+		Table:   "posts",
+		OrderBy: []protocol.Order{{Column: "score"}},
+		Aggs:    []protocol.Agg{{Fn: "count", As: "n"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "can't also") {
+		t.Fatalf("expected a friendly aggregate+order rejection, got %v", err)
+	}
+}
+
+func jsonInt(t *testing.T, v any) int64 {
+	t.Helper()
+	n, ok := v.(interface{ Int64() (int64, error) })
+	if !ok {
+		t.Fatalf("not a json.Number: %T (%v)", v, v)
+	}
+	got, err := n.Int64()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func jsonFloat(t *testing.T, v any) float64 {
+	t.Helper()
+	n, ok := v.(interface{ Float64() (float64, error) })
+	if !ok {
+		t.Fatalf("not a json.Number: %T (%v)", v, v)
+	}
+	got, err := n.Float64()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
 // Transactions over the wire: rollback discards, commit persists, racing
 // writes conflict with a retryable code.
 func TestClientTransactions(t *testing.T) {

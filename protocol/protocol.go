@@ -146,7 +146,18 @@ type Order struct {
 	Desc   bool   `json:"desc,omitempty"`
 }
 
-// Include embeds a related relation in each result record.
+// Agg is one aggregate term: a fold over a column, named in the result. Fn
+// is count | sum | avg | min | max; Column is omitted for count() over rows.
+type Agg struct {
+	Fn     string `json:"fn"`
+	Column string `json:"column,omitempty"`
+	As     string `json:"as"`
+}
+
+// Include embeds a related relation in each result record. When Aggs is set,
+// the relation is folded into one object of scalars under As instead of a
+// record array (children only) — the same shape switch Read.Aggs makes at the
+// root.
 type Include struct {
 	FK  string `json:"fk"`  // foreign key name
 	Dir string `json:"dir"` // "parent" or "children"
@@ -156,9 +167,13 @@ type Include struct {
 	OrderBy []Order   `json:"order_by,omitempty"`
 	Limit   int       `json:"limit,omitempty"`
 	Include []Include `json:"include,omitempty"`
+	Aggs    []Agg     `json:"aggs,omitempty"`
 }
 
-// Read is a shaped read: the query form of RAD's QIR on the wire.
+// Read is a shaped read: the query form of RAD's QIR on the wire. It is the
+// single query operation — asking for Aggs folds the matching rows into one
+// scalar record rather than returning rows, so aggregation never needs its
+// own endpoint or verb.
 type Read struct {
 	Table   string    `json:"table"`
 	Filter  *Expr     `json:"filter,omitempty"`
@@ -166,6 +181,7 @@ type Read struct {
 	Offset  int       `json:"offset,omitempty"`
 	Limit   int       `json:"limit,omitempty"`
 	Include []Include `json:"include,omitempty"`
+	Aggs    []Agg     `json:"aggs,omitempty"`
 }
 
 // Record is one result row: column values plus nested includes (objects for
