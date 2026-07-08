@@ -22,7 +22,7 @@ authentication yet; deploy behind a proxy you trust.
 ## Install
 
 ```
-curl -fsSL https://raw.githubusercontent.com/deployferry/rad/main/install.sh | sh    # linux/macOS
+curl -fsSL https://raw.githubusercontent.com/Southclaws/rad/main/install.sh | sh    # linux/macOS
 powershell -ExecutionPolicy Bypass -c "irm .../install.ps1 | iex"                    # windows
 ```
 

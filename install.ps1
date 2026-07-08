@@ -1,18 +1,18 @@
 # RAD installer for Windows.
 #
-#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/deployferry/rad/main/install.ps1 | iex"
+#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/Southclaws/rad/main/install.ps1 | iex"
 #
 # Environment:
 #   $env:RAD_VERSION   install a specific version tag (default: latest release)
 #   $env:RAD_INSTALL   install directory (default: $HOME\.rad)
-#   $env:RAD_REPO      GitHub repo to download from (default: deployferry/rad)
+#   $env:RAD_REPO      GitHub repo to download from (default: Southclaws/rad)
 #
 # Installs the single rad.exe — the database server, the devtool, and the
 # codegen CLI in one.
 
 $ErrorActionPreference = "Stop"
 
-$Repo = if ($env:RAD_REPO) { $env:RAD_REPO } else { "deployferry/rad" }
+$Repo = if ($env:RAD_REPO) { $env:RAD_REPO } else { "Southclaws/rad" }
 $InstallDir = if ($env:RAD_INSTALL) { $env:RAD_INSTALL } else { Join-Path $HOME ".rad" }
 $BinDir = Join-Path $InstallDir "bin"
 

@@ -17,7 +17,7 @@ import (
 	frontend "rad/rad/06_frontend"
 )
 
-// serveCmd runs the RAD server: the /v1 database API (what clients connect
+// serveCmd runs the RAD server: the database API (what clients connect
 // to via rad://host:7237) plus the devtool UI and its /api endpoints, on a
 // single port. Storage comes from the environment (RAD_STORAGE et al; see
 // Config), with flags overriding.

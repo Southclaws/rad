@@ -1,6 +1,6 @@
 package main
 
-// Client ↔ server integration: the radclient runtime speaking the full /v1
+// Client ↔ server integration: the radclient runtime speaking the full wire
 // protocol against real handlers over real HTTP (httptest), on an in-memory
 // SlateDB. This is the wire-level contract test.
 

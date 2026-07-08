@@ -1,19 +1,19 @@
 #!/bin/sh
 # RAD installer for Linux and macOS.
 #
-#   curl -fsSL https://raw.githubusercontent.com/deployferry/rad/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Southclaws/rad/main/install.sh | sh
 #
 # Environment:
 #   RAD_VERSION   install a specific version tag (default: latest release)
 #   RAD_INSTALL   install directory (default: ~/.rad)
-#   RAD_REPO      GitHub repo to download from (default: deployferry/rad)
+#   RAD_REPO      GitHub repo to download from (default: Southclaws/rad)
 #
 # Installs the single `rad` binary — the database server, the devtool, and
 # the codegen CLI in one.
 set -eu
 
 main() {
-	repo="${RAD_REPO:-deployferry/rad}"
+	repo="${RAD_REPO:-Southclaws/rad}"
 	install_dir="${RAD_INSTALL:-$HOME/.rad}"
 	bin_dir="$install_dir/bin"
 

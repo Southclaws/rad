@@ -14,18 +14,21 @@
 //
 // # Endpoints
 //
-//	GET  /v1/health                     liveness
-//	GET  /v1/tables                     table definitions
-//	POST /v1/migrate                    MigrateRequest  → MigrateResponse
-//	POST /v1/query                      Read            → QueryResponse
-//	POST /v1/get                        GetRequest      → RecordResponse
-//	POST /v1/create                     CreateRequest   → RecordResponse
-//	POST /v1/update                     UpdateRequest   → RecordResponse
-//	POST /v1/delete                     DeleteRequest   → DeleteResponse
-//	POST /v1/tx                         —               → TxResponse
-//	POST /v1/tx/{id}/query|get|create|update|delete     as above
-//	POST /v1/tx/{id}/commit             —               → empty
-//	POST /v1/tx/{id}/rollback           —               → empty
+// Unversioned by design — this is a proof of concept with no compatibility
+// guarantees.
+//
+//	GET  /health                        liveness
+//	GET  /tables                        table definitions
+//	POST /migrate                       MigrateRequest  → MigrateResponse
+//	POST /query                         Read            → QueryResponse
+//	POST /get                           GetRequest      → RecordResponse
+//	POST /create                        CreateRequest   → RecordResponse
+//	POST /update                        UpdateRequest   → RecordResponse
+//	POST /delete                        DeleteRequest   → DeleteResponse
+//	POST /tx                            —               → TxResponse
+//	POST /tx/{id}/query|get|create|update|delete        as above
+//	POST /tx/{id}/commit                —               → empty
+//	POST /tx/{id}/rollback              —               → empty
 //
 // Errors are RFC 7807 Problem Details (application/problem+json). The
 // "code" extension member distinguishes retryable conflicts from
@@ -218,7 +221,7 @@ type TxResponse struct {
 	ID string `json:"id"`
 }
 
-// TableInfo describes one table for GET /v1/tables.
+// TableInfo describes one table for GET /tables.
 type TableInfo struct {
 	Name       string       `json:"name"`
 	Columns    []ColumnInfo `json:"columns"`

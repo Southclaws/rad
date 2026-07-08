@@ -1,6 +1,6 @@
 package main
 
-// The RAD database API: the /v1 endpoints the client runtime speaks
+// The RAD database API: the endpoints the client runtime speaks
 // (protocol package). HTTP concerns follow standard practice — panic
 // recovery, request logging, body limits, timeouts, graceful shutdown — but
 // there is deliberately no TLS (a reverse proxy terminates it) and no auth
@@ -29,7 +29,7 @@ const (
 	txIdleTimeout = 60 * time.Second
 )
 
-// dbAPI serves the /v1 protocol over one database.
+// dbAPI serves the wire protocol over one database.
 type dbAPI struct {
 	db  *frontend.DB
 	cat *catalog.Catalog
@@ -63,24 +63,24 @@ type view interface {
 }
 
 func (a *dbAPI) register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/health", a.handleHealth)
-	mux.HandleFunc("GET /v1/tables", a.handleTables)
-	mux.HandleFunc("POST /v1/migrate", a.handleMigrate)
+	mux.HandleFunc("GET /health", a.handleHealth)
+	mux.HandleFunc("GET /tables", a.handleTables)
+	mux.HandleFunc("POST /migrate", a.handleMigrate)
 
-	mux.HandleFunc("POST /v1/query", a.direct(a.handleQuery))
-	mux.HandleFunc("POST /v1/get", a.direct(a.handleGet))
-	mux.HandleFunc("POST /v1/create", a.direct(a.handleCreate))
-	mux.HandleFunc("POST /v1/update", a.direct(a.handleUpdate))
-	mux.HandleFunc("POST /v1/delete", a.direct(a.handleDelete))
+	mux.HandleFunc("POST /query", a.direct(a.handleQuery))
+	mux.HandleFunc("POST /get", a.direct(a.handleGet))
+	mux.HandleFunc("POST /create", a.direct(a.handleCreate))
+	mux.HandleFunc("POST /update", a.direct(a.handleUpdate))
+	mux.HandleFunc("POST /delete", a.direct(a.handleDelete))
 
-	mux.HandleFunc("POST /v1/tx", a.handleTxBegin)
-	mux.HandleFunc("POST /v1/tx/{id}/query", a.inTx(a.handleQuery))
-	mux.HandleFunc("POST /v1/tx/{id}/get", a.inTx(a.handleGet))
-	mux.HandleFunc("POST /v1/tx/{id}/create", a.inTx(a.handleCreate))
-	mux.HandleFunc("POST /v1/tx/{id}/update", a.inTx(a.handleUpdate))
-	mux.HandleFunc("POST /v1/tx/{id}/delete", a.inTx(a.handleDelete))
-	mux.HandleFunc("POST /v1/tx/{id}/commit", a.handleTxCommit)
-	mux.HandleFunc("POST /v1/tx/{id}/rollback", a.handleTxRollback)
+	mux.HandleFunc("POST /tx", a.handleTxBegin)
+	mux.HandleFunc("POST /tx/{id}/query", a.inTx(a.handleQuery))
+	mux.HandleFunc("POST /tx/{id}/get", a.inTx(a.handleGet))
+	mux.HandleFunc("POST /tx/{id}/create", a.inTx(a.handleCreate))
+	mux.HandleFunc("POST /tx/{id}/update", a.inTx(a.handleUpdate))
+	mux.HandleFunc("POST /tx/{id}/delete", a.inTx(a.handleDelete))
+	mux.HandleFunc("POST /tx/{id}/commit", a.handleTxCommit)
+	mux.HandleFunc("POST /tx/{id}/rollback", a.handleTxRollback)
 }
 
 // direct runs an operation against the database's committed state.

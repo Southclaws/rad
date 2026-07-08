@@ -120,7 +120,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 
 // Ping checks server liveness.
 func (c *Client) Ping(ctx context.Context) error {
-	return c.do(ctx, http.MethodGet, "/v1/health", nil, &struct{}{})
+	return c.do(ctx, http.MethodGet, "/health", nil, &struct{}{})
 }
 
 // Tables fetches the database's table definitions.
@@ -128,7 +128,7 @@ func (c *Client) Tables(ctx context.Context) ([]protocol.TableInfo, error) {
 	var resp struct {
 		Tables []protocol.TableInfo `json:"tables"`
 	}
-	if err := c.do(ctx, http.MethodGet, "/v1/tables", nil, &resp); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/tables", nil, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Tables, nil
@@ -138,7 +138,7 @@ func (c *Client) Tables(ctx context.Context) ([]protocol.TableInfo, error) {
 // returns the applied steps.
 func (c *Client) Migrate(ctx context.Context, schemaSrc string) ([]string, error) {
 	var resp protocol.MigrateResponse
-	if err := c.do(ctx, http.MethodPost, "/v1/migrate", protocol.MigrateRequest{Schema: schemaSrc}, &resp); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/migrate", protocol.MigrateRequest{Schema: schemaSrc}, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Steps, nil
@@ -180,11 +180,11 @@ func (c *Client) Delete(ctx context.Context, table string, key map[string]any) (
 }
 
 // shared op implementations, parameterized by the path prefix ("" for
-// autocommit, "/v1/tx/{id}" inside a transaction — minus the /v1).
+// autocommit, "/tx/{id}" inside a transaction).
 
 func query(ctx context.Context, c *Client, prefix string, r protocol.Read) ([]protocol.Record, error) {
 	var resp protocol.QueryResponse
-	if err := c.do(ctx, http.MethodPost, "/v1"+prefix+"/query", r, &resp); err != nil {
+	if err := c.do(ctx, http.MethodPost, prefix+"/query", r, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Records, nil
@@ -192,7 +192,7 @@ func query(ctx context.Context, c *Client, prefix string, r protocol.Read) ([]pr
 
 func get(ctx context.Context, c *Client, prefix, table string, key map[string]any) (protocol.Record, bool, error) {
 	var resp protocol.RecordResponse
-	if err := c.do(ctx, http.MethodPost, "/v1"+prefix+"/get", protocol.GetRequest{Table: table, Key: key}, &resp); err != nil {
+	if err := c.do(ctx, http.MethodPost, prefix+"/get", protocol.GetRequest{Table: table, Key: key}, &resp); err != nil {
 		return nil, false, err
 	}
 	return resp.Record, resp.Found, nil
@@ -200,7 +200,7 @@ func get(ctx context.Context, c *Client, prefix, table string, key map[string]an
 
 func create(ctx context.Context, c *Client, prefix, table string, values map[string]any) (protocol.Record, error) {
 	var resp protocol.RecordResponse
-	if err := c.do(ctx, http.MethodPost, "/v1"+prefix+"/create", protocol.CreateRequest{Table: table, Values: values}, &resp); err != nil {
+	if err := c.do(ctx, http.MethodPost, prefix+"/create", protocol.CreateRequest{Table: table, Values: values}, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Record, nil
@@ -209,7 +209,7 @@ func create(ctx context.Context, c *Client, prefix, table string, values map[str
 func update(ctx context.Context, c *Client, prefix, table string, key, set map[string]any, clear []string) (protocol.Record, bool, error) {
 	var resp protocol.RecordResponse
 	req := protocol.UpdateRequest{Table: table, Key: key, Set: set, Clear: clear}
-	if err := c.do(ctx, http.MethodPost, "/v1"+prefix+"/update", req, &resp); err != nil {
+	if err := c.do(ctx, http.MethodPost, prefix+"/update", req, &resp); err != nil {
 		return nil, false, err
 	}
 	return resp.Record, resp.Found, nil
@@ -217,7 +217,7 @@ func update(ctx context.Context, c *Client, prefix, table string, key, set map[s
 
 func del(ctx context.Context, c *Client, prefix, table string, key map[string]any) (bool, error) {
 	var resp protocol.DeleteResponse
-	if err := c.do(ctx, http.MethodPost, "/v1"+prefix+"/delete", protocol.DeleteRequest{Table: table, Key: key}, &resp); err != nil {
+	if err := c.do(ctx, http.MethodPost, prefix+"/delete", protocol.DeleteRequest{Table: table, Key: key}, &resp); err != nil {
 		return false, err
 	}
 	return resp.Found, nil
@@ -252,7 +252,7 @@ func (t *Tx) Delete(ctx context.Context, table string, key map[string]any) (bool
 // Begin starts a transaction session. Prefer Txn.
 func (c *Client) Begin(ctx context.Context) (*Tx, error) {
 	var resp protocol.TxResponse
-	if err := c.do(ctx, http.MethodPost, "/v1/tx", struct{}{}, &resp); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/tx", struct{}{}, &resp); err != nil {
 		return nil, err
 	}
 	return &Tx{c: c, prefix: "/tx/" + resp.ID}, nil
@@ -261,13 +261,13 @@ func (c *Client) Begin(ctx context.Context) (*Tx, error) {
 // Commit atomically applies the transaction's writes. A conflict error
 // (IsConflict) means the transaction lost an optimistic race — retry it.
 func (t *Tx) Commit(ctx context.Context) error {
-	return t.c.do(ctx, http.MethodPost, "/v1"+t.prefix+"/commit", struct{}{}, nil)
+	return t.c.do(ctx, http.MethodPost, t.prefix+"/commit", struct{}{}, nil)
 }
 
 // Rollback discards the transaction. Safe to call after Commit (the server
 // treats a completed session as gone; the error is swallowed).
 func (t *Tx) Rollback(ctx context.Context) error {
-	err := t.c.do(ctx, http.MethodPost, "/v1"+t.prefix+"/rollback", struct{}{}, nil)
+	err := t.c.do(ctx, http.MethodPost, t.prefix+"/rollback", struct{}{}, nil)
 	var ae *APIError
 	if errors.As(err, &ae) && (ae.Problem.Code == protocol.CodeNotFound || ae.Problem.Code == protocol.CodeInvalid) {
 		return nil
