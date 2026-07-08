@@ -89,8 +89,9 @@ const (
 const ProblemContentType = "application/problem+json"
 
 // ProblemTypeBase prefixes the "type" URI of every problem; the code is
-// appended (e.g. https://rad.dev/problems/conflict).
-const ProblemTypeBase = "https://rad.dev/problems/"
+// appended (e.g. urn:rad:problem:conflict). A URN, deliberately: RFC 7807
+// type URIs need not be dereferenceable, and RAD has no website.
+const ProblemTypeBase = "urn:rad:problem:"
 
 // Problem is an RFC 7807 Problem Details body — every non-2xx response.
 // Code is an extension member mirroring the last segment of Type so clients
