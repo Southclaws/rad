@@ -20,7 +20,7 @@ const sans = Hanken_Grotesk({
 
 const title = "Rad - rethink your relationship with rows";
 const description =
-  "An ORM-native relational database in Go — the schema, migrations, typed clients, and codegen in one toolkit. Durable, stateless storage on S3.";
+  "The relational database, redesigned. With one cohesive toolchain. From schema to application.";
 
 export const metadata: Metadata = {
   title,
