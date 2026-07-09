@@ -292,6 +292,8 @@ h3 {
   color: var(--on-green);
 }
 .btn--primary:hover {
+  /* keep dark text — beats the global a:hover green (which vanished here) */
+  color: var(--on-green);
   box-shadow:
     0 0 0 1px var(--green),
     0 8px 30px -8px var(--green-glow);
