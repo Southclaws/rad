@@ -1,6 +1,6 @@
 data/
 bin/
-lib/
+/lib/
 third_party/
 ui/node_modules/
 *.output
