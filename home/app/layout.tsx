@@ -18,7 +18,7 @@ const sans = Hanken_Grotesk({
   display: "swap",
 });
 
-const title = "Rad — the ORM-native database";
+const title = "Rad - rethink your relationship with rows";
 const description =
   "An ORM-native relational database in Go — the schema, migrations, typed clients, and codegen in one toolkit. Durable, stateless storage on S3.";
 
