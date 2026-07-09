@@ -1,0 +1,78 @@
+---
+title: Queries
+description: Fluent, nested, typed reads and writes — and aggregates that fold server-side.
+---
+
+Every query goes through the generated client. There is no query string to
+build and no result to hand-map; the builder is typed against your schema and
+the rows come back as typed structs.
+
+## Reads
+
+```go
+db, _ := tracker.Connect("rad://localhost:7237")
+
+board, _, _ := db.Boards.Query().
+    IDEq(id).
+    IncludeTasks(func(t *tracker.TaskInclude) {
+        t.OrderByPriority().IncludeAssignee()
+    }).
+    First(ctx)
+```
+
+Includes return nested data — a board with its tasks, each task with its
+assignee — as one round trip. The result is shaped like your data, not
+flattened into a join you have to unpick.
+
+## Aggregations
+
+Aggregates fold over matching rows on the server; not one row is shipped back.
+
+```go
+open, _ := db.Tasks.Query().
+    BoardIDEq(id).
+    StatusNe("done").
+    Count(ctx)              // int64
+
+avg, _ := db.Tasks.Query().
+    BoardIDEq(id).
+    AvgEstimate(ctx)        // *float64 — nil when there are no rows
+```
+
+`Count` is never null. `sum`, `avg`, `min`, and `max` return a pointer that is
+nil when nothing matched — an empty average is nothing, not zero.
+
+## Writes and transactions
+
+```go
+err := db.Tx(ctx, func(tx *tracker.Tx) error {
+    board, err := tx.Boards.Create(ctx, tracker.BoardCreate{Name: "Launch"})
+    if err != nil {
+        return err
+    }
+    _, err = tx.Tasks.Create(ctx, tracker.TaskCreate{
+        BoardID: board.ID, Title: "Ship it",
+    })
+    return err
+})
+```
+
+Transactions are serializable. When two of them race, the loser fails with a
+retryable conflict error — check `tracker.IsConflict(err)` and run the whole
+transaction again.
+
+## The same, in TypeScript
+
+```ts
+const db = connect("rad://localhost:7237");
+
+const board = await db.boards.query()
+  .idEq(id)
+  .includeTasks((t) => t.orderByPriority().includeAssignee())
+  .first();
+
+const open = await db.tasks.query()
+  .boardIdEq(id).statusNe("done").count();
+```
+
+Same wire, same shapes, same loop — just generated for a different language.
