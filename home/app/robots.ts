@@ -1,6 +1,6 @@
 import type { MetadataRoute } from "next";
 
-const BASE = "https://radstack.sh";
+const BASE = "https://www.radengine.dev";
 
 export default function robots(): MetadataRoute.Robots {
   return {

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://radstack.sh/schema.rad.json",
+  "$id": "https://radengine.dev/schema.rad.json",
   "title": "Rad declarative schema (schema.rad)",
   "type": "object",
   "required": [

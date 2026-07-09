@@ -25,7 +25,7 @@ const description =
 export const metadata: Metadata = {
   title,
   description,
-  metadataBase: new URL("https://radstack.sh"),
+  metadataBase: new URL("https://www.radengine.dev"),
   openGraph: { title, description, type: "website" },
   twitter: { card: "summary_large_image", title, description },
 };

@@ -21,7 +21,7 @@ const WORDMARK = "rad";
 const HEADLINE = "The relational database, redesigned.";
 const SUB = "One cohesive toolchain — from schema to application.";
 const PROMPT = "rad serve";
-const URLTAG = "radstack.sh";
+const URLTAG = "radengine.dev";
 
 // Satori needs TrueType/OpenType (not woff2). Google's css2 endpoint serves
 // truetype to a plain fetch (no woff2-capable UA), subset to `text`.

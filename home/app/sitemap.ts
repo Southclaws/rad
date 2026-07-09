@@ -1,7 +1,7 @@
 import type { MetadataRoute } from "next";
 import { blogSource, source } from "@/lib/source";
 
-const BASE = "https://radstack.sh";
+const BASE = "https://www.radengine.dev";
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const docs = source.getPages().map((page) => ({

@@ -107,7 +107,7 @@ export default async function Image({
             }}
           >
             <span style={{ color: MUTED }}>{meta}</span>
-            <span style={{ color: GREEN_MID }}>radstack.sh</span>
+            <span style={{ color: GREEN_MID }}>radengine.dev</span>
           </div>
         </div>
       </div>

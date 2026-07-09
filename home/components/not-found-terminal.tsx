@@ -20,7 +20,7 @@ export function NotFoundTerminal() {
       </div>
       <div className="term__body" aria-hidden="true">
         <div className="term__line term__cmd">
-          rad get rad://radstack.sh{path}
+          rad get rad://radengine.dev{path}
         </div>
         <div className="term__line term__err">
           404 · urn:rad:problem:not_found
