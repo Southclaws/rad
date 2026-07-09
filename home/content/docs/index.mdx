@@ -1,20 +1,20 @@
 ---
 title: Introduction
-description: What RAD is, and the one loop it is built around.
+description: What Rad is, and the one loop it is built around.
 ---
 
-RAD is an ORM-native relational database. It is written in Go, stores data on
+Rad is an ORM-native relational database. It is written in Go, stores data on
 [SlateDB](https://slatedb.io), and speaks a small HTTP protocol over
 `rad://`. What makes it different is not the storage engine — it is the
 workflow.
 
-You never write SQL. You describe your tables once, in YAML, and RAD gives you
+You never write SQL. You describe your tables once, in YAML, and Rad gives you
 a typed client for your language. When the schema changes, you regenerate the
 client, and your code stops compiling exactly where it needs your attention.
 
 ## The loop
 
-Everything in RAD is one workflow:
+Everything in Rad is one workflow:
 
 1. **define** — write `schema.rad`, a YAML description of your tables.
 2. **run** — `rad serve` boots the database, devtool, and API from one binary.
@@ -27,7 +27,7 @@ You go around it once to ship, and around the last two steps every time the
 shape of your data changes.
 
 <Callout>
-  RAD is a proof of concept, and honest about it. It exists to prove the
+  Rad is a proof of concept, and honest about it. It exists to prove the
   developer experience, not to run your production fleet.
 </Callout>
 

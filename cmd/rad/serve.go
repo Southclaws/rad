@@ -17,7 +17,7 @@ import (
 	frontend "rad/rad/06_frontend"
 )
 
-// serveCmd runs the RAD server: the database API (what clients connect
+// serveCmd runs the Rad server: the database API (what clients connect
 // to via rad://host:7237) plus the devtool UI and its /api endpoints, on a
 // single port. Storage comes from the environment (RAD_STORAGE et al; see
 // Config), with flags overriding.
@@ -26,7 +26,7 @@ func serveCmd() *cobra.Command {
 	var addr, storage, dataDir string
 	cmd := &cobra.Command{
 		Use:   "serve",
-		Short: "Run the RAD database server (API + devtool UI)",
+		Short: "Run the Rad database server (API + devtool UI)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if addr != "" {

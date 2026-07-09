@@ -1,7 +1,7 @@
-# RAD V0 — POC End Goal
+# Rad V0 — POC End Goal
 
 > The goal of the POC is **not** to build a database. The goal is to prove
-> the *developer experience*.
+> the _developer experience_.
 >
 > Success criterion: "I can define a schema, run the database, generate a
 > client, write an application against it, evolve the schema, regenerate the

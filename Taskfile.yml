@@ -19,7 +19,7 @@
 #            are in the same -L directory. Only system frameworks remain
 #            dynamically linked (macOS has no static libSystem).
 
-version: '3'
+version: "3"
 
 vars:
   # Binding version from go.mod, e.g. "v0.14.1".
@@ -28,19 +28,19 @@ vars:
   # Matching tag in the slatedb repo, e.g. "bindings/go/v0.14.1".
   SLATEDB_TAG: bindings/go/{{.SLATEDB_VERSION}}
   SLATEDB_REPO: https://github.com/slatedb/slatedb
-  SLATEDB_SRC: '{{.ROOT_DIR}}/third_party/slatedb'
-  LIB_DIR: '{{.ROOT_DIR}}/lib'
-  TARGET: '{{.SLATEDB_SRC}}/target/release'
+  SLATEDB_SRC: "{{.ROOT_DIR}}/third_party/slatedb"
+  LIB_DIR: "{{.ROOT_DIR}}/lib"
+  TARGET: "{{.SLATEDB_SRC}}/target/release"
 
   # Dynamic linking flags (tests, dev).
-  DYN_LDFLAGS: '-L{{.LIB_DIR}} -Wl,-rpath,{{.LIB_DIR}}'
+  DYN_LDFLAGS: "-L{{.LIB_DIR}} -Wl,-rpath,{{.LIB_DIR}}"
   # Static linking flags. STATIC_SYS_LIBS is what `rustc --print
   # native-static-libs` reports for slatedb-uniffi on macOS; re-check it
   # after an upgrade (task slatedb:build prints it).
-  STATIC_SYS_LIBS: '-lobjc -framework IOKit -framework CoreFoundation -framework Security -liconv -lSystem -lc -lm'
+  STATIC_SYS_LIBS: "-lobjc -framework IOKit -framework CoreFoundation -framework Security -liconv -lSystem -lc -lm"
   # -Wl,-w silences ~800 harmless ld warnings: duplicate system libs and an
   # SDK minor-version mismatch between the Rust objects and Go's link target.
-  STATIC_LDFLAGS: '-L{{.LIB_DIR}}/static {{.STATIC_SYS_LIBS}} -Wl,-w'
+  STATIC_LDFLAGS: "-L{{.LIB_DIR}}/static {{.STATIC_SYS_LIBS}} -Wl,-w"
 
 tasks:
   default:
@@ -49,10 +49,10 @@ tasks:
       - task --list-all
 
   up:
-    desc: 'One-command demo: fresh server, run the Tracker app, keep serving (UI on :7237)'
+    desc: "One-command demo: fresh server, run the Tracker app, keep serving (UI on :7237)"
     deps: [ui:build]
     env:
-      CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
       - rm -rf demo/data
       - mkdir -p bin
@@ -69,7 +69,7 @@ tasks:
   test:
     desc: Run all tests + build the demo app (dynamic linking)
     env:
-      CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
       - go test ./... {{.CLI_ARGS}}
       - cd demo && go build -o /dev/null .
@@ -77,15 +77,15 @@ tasks:
   vet:
     desc: go vet all packages + enforce layer import direction
     env:
-      CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
       - go vet ./...
       - sh scripts/check_layers.sh
 
   demo:
-    desc: 'Run the Tracker demo: fresh RAD server + the app over rad://'
+    desc: "Run the Tracker demo: fresh Rad server + the app over rad://"
     env:
-      CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
       - rm -rf demo/data
       - mkdir -p bin
@@ -100,15 +100,15 @@ tasks:
   generate:
     desc: Regenerate the demo's typed clients (Go + TypeScript)
     env:
-      CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
       - go run ./cmd/rad generate -f demo/schema.rad -o demo/generated --pkg tracker
       - go run ./cmd/rad generate -f demo/schema.rad -o demo/generated --pkg tracker --lang ts
 
   demo:ts:
-    desc: 'Run the TypeScript demo: fresh RAD server + node app over rad://'
+    desc: "Run the TypeScript demo: fresh Rad server + node app over rad://"
     env:
-      CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
       - mkdir -p bin
       - go build -o bin/rad ./cmd/rad
@@ -120,16 +120,16 @@ tasks:
         node demo/tracker-demo.ts
 
   migrate:
-    desc: Apply demo/schema.rad to the running RAD server
+    desc: Apply demo/schema.rad to the running Rad server
     env:
-      CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
       - go run ./cmd/rad migrate -f demo/schema.rad -u rad://localhost
 
   build:
     desc: Build mostly-static binaries (SlateDB linked in) -> bin/
     env:
-      CGO_LDFLAGS: '{{.STATIC_LDFLAGS}}'
+      CGO_LDFLAGS: "{{.STATIC_LDFLAGS}}"
     cmds:
       - mkdir -p bin
       - go build -o bin/rad ./cmd/rad
@@ -164,20 +164,20 @@ tasks:
       - npm run dev
 
   serve:
-    desc: Build the UI and run the RAD server (API + devtool UI on :7237)
+    desc: Build the UI and run the Rad server (API + devtool UI on :7237)
     deps: [ui:build]
     env:
-      CGO_LDFLAGS: '{{.DYN_LDFLAGS}}'
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
       - go run ./cmd/rad serve {{.CLI_ARGS}}
 
   docker:build:
-    desc: Build the RAD server image (tag rad)
+    desc: Build the Rad server image (tag rad)
     cmds:
       - docker build --build-arg 'SLATEDB_TAG={{.SLATEDB_TAG}}' -t rad .
 
   docker:run:
-    desc: Run the RAD server container on :7237 (in-memory storage)
+    desc: Run the Rad server container on :7237 (in-memory storage)
     cmds:
       - docker run --rm -p 7237:7237 -e RAD_STORAGE=memory rad
 
@@ -209,7 +209,7 @@ tasks:
       - codesign -f -s - '{{.LIB_DIR}}/libslatedb_uniffi.dylib'
 
   slatedb:upgrade:
-    desc: 'Upgrade SlateDB: task slatedb:upgrade VERSION=v0.15.0'
+    desc: "Upgrade SlateDB: task slatedb:upgrade VERSION=v0.15.0"
     requires:
       vars: [VERSION]
     cmds:

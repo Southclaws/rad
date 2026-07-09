@@ -1,4 +1,4 @@
-// Package lir is RAD's logical intermediate representation (RADLIR): the
+// Package lir is Rad's logical intermediate representation (RADLIR): the
 // structured, semantic query model that every frontend (Go structs today;
 // SQL, GraphQL, ORMs later) lowers into, and that the planner consumes.
 //

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-// RAD is an incomplete acronym: R is Relational, D is Database, and the A is
+// Rad is an incomplete acronym: R is Relational, D is Database, and the A is
 // forever undecided. And yes, Database is ONE WORD. We ain't no "DB" shop here.
 const WORDS = [
   "AAAAAAAAA",
@@ -149,7 +149,7 @@ export function Backronym() {
           type="button"
           className="flaps"
           onClick={next}
-          aria-label={`The A in RAD currently stands for ${WORDS[i]}. For now...`}
+          aria-label={`The A in Rad currently stands for ${WORDS[i]}. For now...`}
         >
           {word.split("").map((c, idx) => (
             <Flap key={idx} target={c} reduce={reduce} />

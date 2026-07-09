@@ -1,4 +1,4 @@
-// Package frontend is RAD's public interface. Callers hand it logical
+// Package frontend is Rad's public interface. Callers hand it logical
 // queries (03_lir) and rows; it drives the planner and executor and shapes
 // results. This is where future input codecs (SQL, GraphQL, ORM bindings)
 // will lower into the IR — nothing above this package needs to know how
@@ -14,7 +14,7 @@ import (
 	exec "rad/rad/05_exec"
 )
 
-// DB is a handle to a RAD database. A RAD instance is exactly one database
+// DB is a handle to a Rad database. A Rad instance is exactly one database
 // — no schema or database hierarchy exists.
 type DB struct {
 	cat *catalog.Catalog

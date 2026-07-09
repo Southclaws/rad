@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Spline_Sans_Mono, Hanken_Grotesk } from "next/font/google";
 import "./globals.css";
 
@@ -18,7 +18,7 @@ const sans = Hanken_Grotesk({
   display: "swap",
 });
 
-const title = "RAD — the ORM-native database";
+const title = "Rad — the ORM-native database";
 const description =
   "An ORM-native relational database in Go — the schema, migrations, typed clients, and codegen in one toolkit. Durable, stateless storage on S3.";
 
@@ -28,6 +28,11 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://radstack.sh"),
   openGraph: { title, description, type: "website" },
   twitter: { card: "summary_large_image", title, description },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0d1411",
+  colorScheme: "dark",
 };
 
 export default function RootLayout({

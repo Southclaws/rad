@@ -1,5 +1,5 @@
 // Package kvtest is a conformance suite for kv.TransactionalKV
-// implementations — the executable definition of RAD's transaction
+// implementations — the executable definition of Rad's transaction
 // semantics, run by the SlateDB adapter.
 package kvtest
 

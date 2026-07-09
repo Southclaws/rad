@@ -1,5 +1,5 @@
 /* ─────────────────────────────────────────────────────────────────────────
-   RAD — schematic terminal
+   Rad — schematic terminal
    A committed dark treatment: an engineering blueprint drawn in phosphor
    green on ink. Plain CSS, no framework. Tokens per DESIGN.md.
    ───────────────────────────────────────────────────────────────────────── */
@@ -413,12 +413,17 @@ main,
 
 .hero__lede {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: clamp(1.5rem, 4vw, 2.5rem);
   margin-top: clamp(1.5rem, 4vw, 3rem);
   align-items: end;
 }
-@media (min-width: 860px) {
+/* let the terminal (white-space: pre) scroll internally instead of forcing
+   the grid track wider than the viewport */
+.hero__lede > * {
+  min-width: 0;
+}
+@media (min-width: 1120px) {
   .hero__lede {
     grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
   }
@@ -514,22 +519,79 @@ main,
 .term__bar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 0.5rem;
-  padding: 0.55rem 0.85rem;
+  padding: 0.5rem 0.55rem 0.5rem 0.9rem;
   border-bottom: 1px solid var(--line);
   background: var(--surface-2);
   font-size: 0.8rem;
   color: var(--faint);
 }
-.term__dots {
-  display: inline-flex;
-  gap: 0.35rem;
-  color: var(--line-2);
-  letter-spacing: 0.1em;
-}
 .term__title {
-  margin-left: auto;
   color: var(--muted);
+}
+/* Windows-style window controls, top-right: minimize · maximize · close */
+.term__win {
+  display: inline-flex;
+  align-items: center;
+  color: var(--faint);
+}
+.term__win > * {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.25rem;
+  border-radius: 3px;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+.term__win svg {
+  display: block;
+}
+/* faux hover affordance — chrome is decorative, but a subtle lift sells it */
+.term__win > *:hover {
+  background: oklch(0.3 0.012 160 / 0.6);
+  color: var(--muted);
+}
+.term__win > *:last-child:hover {
+  background: var(--red);
+  color: var(--on-amber);
+}
+.term__x {
+  position: relative;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+/* the panic tooltip — pops down into the body so .term's overflow doesn't clip it */
+.term__tip {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  letter-spacing: 0;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  padding: 0.3rem 0.5rem;
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition:
+    opacity 0.16s var(--ease-out),
+    transform 0.16s var(--ease-out);
+  z-index: 5;
+}
+.term__x:hover .term__tip,
+.term__x:focus-visible .term__tip {
+  opacity: 1;
+  transform: none;
 }
 .term__body {
   padding: 1.1rem 1.15rem 1.35rem;
@@ -573,6 +635,86 @@ main,
   background: var(--green);
   box-shadow: 0 0 12px var(--green-glow);
   animation: blink 1.1s steps(1) infinite;
+}
+
+/* command menu (the `$ rad` listing) */
+.term__gap {
+  height: 0.85em;
+}
+.term__row {
+  padding-left: 2ch;
+  white-space: pre;
+}
+.term__cmdname {
+  display: inline-block;
+  width: 11ch;
+  color: var(--green);
+}
+.term__cmddesc {
+  color: var(--muted);
+}
+.term__comment {
+  color: var(--faint);
+}
+
+/* explode + respawn */
+.term-wrap {
+  position: relative;
+}
+.term[data-status="boom"] {
+  animation: termBoom 0.42s var(--ease-out) forwards;
+  pointer-events: none;
+}
+.term[data-status="respawn"] {
+  animation: termRespawn 0.5s var(--ease-out);
+}
+@keyframes termBoom {
+  40% {
+    transform: scale(1.04);
+  }
+  100% {
+    transform: scale(0.7);
+    opacity: 0;
+    filter: blur(8px);
+  }
+}
+@keyframes termRespawn {
+  0% {
+    transform: scale(0.9);
+    opacity: 0;
+    filter: blur(4px);
+  }
+  100% {
+    transform: none;
+    opacity: 1;
+    filter: none;
+  }
+}
+.sparks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+.spark {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border-radius: 2px;
+  box-shadow: 0 0 8px var(--green-glow);
+  animation: spark 0.85s var(--ease-out) forwards;
+  animation-delay: var(--d, 0ms);
+}
+@keyframes spark {
+  0% {
+    transform: translate(-50%, -50%) scale(1) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(calc(-50% + var(--tx)), calc(-50% + var(--ty)))
+      scale(0.2) rotate(190deg);
+    opacity: 0;
+  }
 }
 
 /* ── 404 ─────────────────────────────────────────────────────────────────── */
@@ -837,6 +979,46 @@ main,
   min-height: 5rem;
 }
 
+/* decorative filler — only exists once the grid has 3 columns, so it fills
+   the odd cell on desktop without leaving a stray gap on tablet/mobile */
+.cell--deco {
+  display: none;
+}
+@media (min-width: 980px) {
+  .cell--deco {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+.deco {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+.deco__svg {
+  width: min(80%, 220px);
+  height: auto;
+}
+.deco__label {
+  font-size: 0.8rem;
+  letter-spacing: 0.02em;
+  color: var(--faint);
+}
+.deco__node {
+  animation: deco-pulse 2.6s ease-in-out infinite;
+}
+@keyframes deco-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 /* ── closing / install ──────────────────────────────────────────────────── */
 
 .cta {
@@ -897,6 +1079,22 @@ main,
 .foot__port b {
   color: var(--green-mid);
   font-weight: 500;
+}
+.foot__type {
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.8rem;
+  color: var(--faint);
+}
+.foot__type a {
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--line-2);
+}
+.foot__type a:hover {
+  color: var(--green);
 }
 
 /* ── backronym split-flap (footer easter egg) ───────────────────────────── */
@@ -1004,9 +1202,14 @@ main,
 
 .docs {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 2rem;
   padding-block: 2.5rem 4.5rem;
+}
+/* keep code blocks (long pre lines) from forcing the grid wider than the
+   viewport; they scroll inside .doc__body pre instead */
+.docs > * {
+  min-width: 0;
 }
 @media (min-width: 900px) {
   .docs {
@@ -1064,9 +1267,12 @@ main,
 }
 .doc__grid {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 2.5rem;
   margin-top: 2.5rem;
+}
+.doc__grid > * {
+  min-width: 0;
 }
 @media (min-width: 1120px) {
   .doc__grid {
@@ -1215,6 +1421,81 @@ main,
   padding-top: 1.5rem;
   border-top: 1px solid var(--line);
   font-size: 0.9rem;
+}
+
+/* ── blog ────────────────────────────────────────────────────────────────── */
+
+.postlist {
+  list-style: none;
+  margin-top: 2.5rem;
+  border-top: 1px solid var(--line);
+}
+.postlist li {
+  border-bottom: 1px solid var(--line);
+}
+.post {
+  display: flex;
+  gap: clamp(1rem, 4vw, 3rem);
+  align-items: baseline;
+  padding: 1.5rem 0;
+  color: var(--ink);
+}
+.post__date {
+  flex: none;
+  width: 8rem;
+  font-size: 0.85rem;
+  color: var(--green-mid);
+}
+.post__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.post__title {
+  font-weight: 700;
+  font-size: 1.25rem;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  transition: color 0.15s ease;
+}
+.post:hover .post__title {
+  color: var(--green);
+}
+.post__desc {
+  font-family: var(--sans);
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  max-width: 60ch;
+}
+@media (max-width: 560px) {
+  .post {
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .post__date {
+    width: auto;
+  }
+}
+
+.post-article {
+  max-width: 72ch;
+  padding-block: 2.5rem 5rem;
+}
+.post-article__back {
+  display: inline-block;
+  font-size: 0.88rem;
+  color: var(--muted);
+  margin-bottom: 2.25rem;
+}
+.post-article__back:hover {
+  color: var(--green);
+}
+.post-article__meta {
+  font-size: 0.82rem;
+  color: var(--green-mid);
+  margin-bottom: 1rem;
 }
 
 /* ── reveal-on-scroll (enhances an already-visible default) ──────────────── */

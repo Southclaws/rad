@@ -1,4 +1,4 @@
-# Builds the RAD server image: one mostly-static binary (SlateDB compiled
+# Builds the Rad server image: one mostly-static binary (SlateDB compiled
 # from source at the go.mod-pinned tag and statically linked; only glibc
 # stays dynamic). Configure storage with RAD_STORAGE / RAD_DATA_DIR /
 # RAD_S3_* and put a TLS-terminating reverse proxy in front for rads://.

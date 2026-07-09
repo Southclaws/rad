@@ -9,7 +9,7 @@ import (
 	"rad/rad/01_kv/kvslate"
 )
 
-// Config is RAD's server configuration, sourced from environment variables
+// Config is Rad's server configuration, sourced from environment variables
 // (flags override where offered):
 //
 //	RAD_ADDR         listen address           (default ":7237")

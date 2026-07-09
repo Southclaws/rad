@@ -12,6 +12,64 @@ export function GitHubMark({ size = 18 }: { size?: number }) {
   );
 }
 
+// Windows-style titlebar controls: minimize · maximize · close. Usually pure
+// decoration (the terminal is aria-hidden / role=img). Pass `onClose` to make
+// the close button real — it renders as a <button> with an optional tooltip.
+export function WindowControls({
+  onClose,
+  tip,
+}: {
+  onClose?: () => void;
+  tip?: string;
+} = {}) {
+  const s = {
+    width: 11,
+    height: 11,
+    viewBox: "0 0 11 11",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.15,
+    "aria-hidden": true,
+  } as const;
+  const closeGlyph = (
+    <svg {...s} strokeLinecap="round">
+      <line x1="2.5" y1="2.5" x2="8.5" y2="8.5" />
+      <line x1="8.5" y1="2.5" x2="2.5" y2="8.5" />
+    </svg>
+  );
+  return (
+    <span className="term__win" aria-hidden={onClose ? undefined : true}>
+      <span aria-hidden="true">
+        <svg {...s}>
+          <line x1="1.5" y1="8" x2="9.5" y2="8" />
+        </svg>
+      </span>
+      <span aria-hidden="true">
+        <svg {...s}>
+          <rect x="2" y="2" width="7" height="7" rx="0.5" />
+        </svg>
+      </span>
+      {onClose ? (
+        <button
+          type="button"
+          className="term__x"
+          onClick={onClose}
+          aria-label={tip ?? "Close"}
+        >
+          {tip ? (
+            <span className="term__tip" role="tooltip">
+              {tip}
+            </span>
+          ) : null}
+          {closeGlyph}
+        </button>
+      ) : (
+        <span aria-hidden="true">{closeGlyph}</span>
+      )}
+    </span>
+  );
+}
+
 export function ArrowUpRight({ size = 16 }: { size?: number }) {
   return (
     <svg

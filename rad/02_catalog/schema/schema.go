@@ -1,4 +1,4 @@
-// Package schema parses RAD's declarative schema files (schema.rad) into
+// Package schema parses Rad's declarative schema files (schema.rad) into
 // catalog definitions.
 //
 // The format is YAML, structurally validated against an embedded JSON

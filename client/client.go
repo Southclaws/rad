@@ -1,4 +1,4 @@
-// Package radclient is RAD's Go client runtime: a thin, dependency-free
+// Package radclient is Rad's Go client runtime: a thin, dependency-free
 // HTTP client for the rad:// protocol. Generated clients (rad generate)
 // build on it; it can also be used directly for dynamic access.
 //
@@ -21,7 +21,7 @@ import (
 	"rad/protocol"
 )
 
-// Client talks to one RAD server. It is safe for concurrent use.
+// Client talks to one Rad server. It is safe for concurrent use.
 type Client struct {
 	base string
 	http *http.Client

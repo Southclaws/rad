@@ -12,7 +12,7 @@ serve`, HTTP on port **7237**), the migration tool (`rad migrate`), and the
 client codegen (`rad generate`). Applications link a pure-Go generated
 client (no cgo, no SQL) and connect with `rad://host:7237` (`rads://` behind
 a TLS-terminating reverse proxy). Storage is SlateDB in every mode —
-in-memory, local file, or S3 — selected by environment variables. One RAD
+in-memory, local file, or S3 — selected by environment variables. One Rad
 instance is one database; two databases are two RADs.
 
 See `demo/` for a complete product (a team task tracker) built this way,
@@ -38,15 +38,15 @@ RAD_STORAGE=s3 RAD_S3_BUCKET=my-bucket \
   RAD_S3_REGION=eu-west-1 rad serve         # object storage (AWS_* creds)
 ```
 
-| Variable          | Meaning                                | Default   |
-|-------------------|----------------------------------------|-----------|
-| `RAD_ADDR`        | listen address                         | `:7237`   |
-| `RAD_STORAGE`     | `memory` \| `file` \| `s3`             | `file`    |
-| `RAD_DATA_DIR`    | file-mode store directory              | `data`    |
-| `RAD_S3_BUCKET`   | s3 bucket (required for s3)            | —         |
-| `RAD_S3_PREFIX`   | s3 key prefix / db path                | `rad`     |
-| `RAD_S3_REGION`   | s3 region (or `AWS_REGION`)            | —         |
-| `RAD_S3_ENDPOINT` | custom endpoint (MinIO/R2)             | —         |
+| Variable          | Meaning                     | Default |
+| ----------------- | --------------------------- | ------- |
+| `RAD_ADDR`        | listen address              | `:7237` |
+| `RAD_STORAGE`     | `memory` \| `file` \| `s3`  | `file`  |
+| `RAD_DATA_DIR`    | file-mode store directory   | `data`  |
+| `RAD_S3_BUCKET`   | s3 bucket (required for s3) | —       |
+| `RAD_S3_PREFIX`   | s3 key prefix / db path     | `rad`   |
+| `RAD_S3_REGION`   | s3 region (or `AWS_REGION`) | —       |
+| `RAD_S3_ENDPOINT` | custom endpoint (MinIO/R2)  | —       |
 
 The server follows standard HTTP practice (timeouts, body limits, panic
 recovery, request logs, graceful shutdown) and serves errors as RFC 7807
@@ -80,7 +80,7 @@ native SlateDB library (server builds only — client apps are pure Go).
 
 ## Architecture
 
-RAD is composed of several logical layers:
+Rad is composed of several logical layers:
 
 ```text
 Frontend
@@ -118,7 +118,7 @@ The executor performs those plans against the underlying ordered key-value store
 
 ### Storage
 
-RAD is built on an ordered key-value abstraction.
+Rad is built on an ordered key-value abstraction.
 
 The storage layer provides only low-level primitives:
 
@@ -140,7 +140,7 @@ Schemas are declarative.
 
 Users do not issue DDL commands.
 
-Instead, users define the desired schema and RAD computes the required catalog changes.
+Instead, users define the desired schema and Rad computes the required catalog changes.
 
 The schema is the single source of truth for:
 
@@ -159,7 +159,7 @@ The schema may eventually become a versioned contract distributed to clients.
 
 Migrations are produced by diffing schema versions.
 
-RAD internally performs catalog operations such as:
+Rad internally performs catalog operations such as:
 
 - create table
 - add column
@@ -197,11 +197,11 @@ The QIR is the contract between frontends and the database.
 
 ### Result Shape
 
-RAD separates data access from result materialisation.
+Rad separates data access from result materialisation.
 
 Traditional SQL joins produce flat row sets requiring client-side reconstruction.
 
-RAD instead allows queries to describe nested result shapes matching application data structures.
+Rad instead allows queries to describe nested result shapes matching application data structures.
 
 The planner remains free to execute joins, batched lookups or index scans as appropriate.
 
@@ -211,7 +211,7 @@ Applications receive structured JSON.
 
 ### Commands
 
-RAD distinguishes between:
+Rad distinguishes between:
 
 - Queries (read operations)
 - Commands (mutating operations)

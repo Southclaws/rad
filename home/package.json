@@ -13,12 +13,16 @@
     "fumadocs-ui": "^16.11.1",
     "next": "16.2.10",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "png-to-ico": "^3.0.2",
+    "satori": "^0.26.0",
+    "sharp": "^0.35.3",
     "typescript": "^5"
   }
 }

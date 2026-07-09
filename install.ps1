@@ -1,4 +1,4 @@
-# RAD installer for Windows.
+# Rad installer for Windows.
 #
 #   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/Southclaws/rad/main/install.ps1 | iex"
 #

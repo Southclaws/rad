@@ -1,6 +1,6 @@
 package main
 
-// The RAD database API: the endpoints the client runtime speaks
+// The Rad database API: the endpoints the client runtime speaks
 // (protocol package). HTTP concerns follow standard practice — panic
 // recovery, request logging, body limits, timeouts, graceful shutdown — but
 // there is deliberately no TLS (a reverse proxy terminates it) and no auth

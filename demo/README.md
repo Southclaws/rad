@@ -1,7 +1,7 @@
-# Tracker — the RAD demo product
+# Tracker — the Rad demo product
 
 A team task tracker (accounts, teams, boards, tasks with subtasks, comments,
-labels) built **entirely** on RAD's generated client. This directory is the
+labels) built **entirely** on Rad's generated client. This directory is the
 proof of the developer experience:
 
 ```
@@ -34,7 +34,7 @@ SlateDB. Point it anywhere with RAD_URL (default rad://localhost:7237).
 No SQL is written anywhere — not by the app, not by the tools.
 
 Run it from the repo root (`task demo` starts a fresh server and the app),
-or against any running RAD server:
+or against any running Rad server:
 
 ```
 RAD_URL=rad://your-server go run .

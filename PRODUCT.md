@@ -10,13 +10,13 @@ Backend and full-stack developers evaluating how they talk to a database.
 They've written enough SQL and fought enough ORM impedance-mismatch to be
 skeptical of any tool that promises to fix it. Context: skimming a landing
 page on a laptop, mid-evaluation, with a terminal already open in the next
-window. The job to be done in the first 30 seconds: *understand what RAD is,
-decide whether it's real, and find out how to try it.* They respond to
+window. The job to be done in the first 30 seconds: _understand what Rad is,
+decide whether it's real, and find out how to try it._ They respond to
 verifiable claims and actual code, not adjectives.
 
 ## Product Purpose
 
-RAD is an ORM-native relational database — Go, built on SlateDB — where the
+Rad is an ORM-native relational database — Go, built on SlateDB — where the
 product is the developer experience, not the storage engine. The whole pitch
 is one loop:
 
@@ -26,8 +26,8 @@ is one loop:
 The landing page exists to make that loop legible and credible in one scroll,
 and to route the right people to install, docs, and the GitHub repo. Success
 is a skeptical engineer thinking "wait, that's actually the workflow I want"
-and running the install command. RAD is honest about being an early POC; the
-confidence is in the *idea and the ergonomics*, not in production maturity.
+and running the install command. Rad is honest about being an early POC; the
+confidence is in the _idea and the ergonomics_, not in production maturity.
 
 ## Brand Personality
 
@@ -45,7 +45,7 @@ someone who has the same complaints you do.
   screenshot, three identical icon-heading-text feature cards, a "trusted by"
   logo wall, cartoon-blob illustrations.
 - **Database-blue / enterprise.** Navy-and-cyan, corporate stock photography,
-  the Oracle/Mongo/enterprise-DB visual clichés. RAD is green-on-ink on
+  the Oracle/Mongo/enterprise-DB visual clichés. Rad is green-on-ink on
   purpose, to dodge the entire category reflex.
 - **AI-slop tells.** Tiny uppercase tracked eyebrows above every section,
   `01 / 02 / 03` numbered markers as scaffolding, gradient text, decorative
@@ -54,11 +54,11 @@ someone who has the same complaints you do.
 ## Design Principles
 
 1. **Show the actual thing.** Real `schema.rad`, the real generated client,
-   real `rad` CLI output. The DX *is* the pitch, so demonstrate it — never
+   real `rad` CLI output. The DX _is_ the pitch, so demonstrate it — never
    substitute a metaphor or an abstract diagram for the concrete artifact.
 2. **Speak to peers.** Precise, checkable claims over persuasion. If a line
    couldn't survive a skeptical engineer reading it, cut it.
-3. **The terminal is home.** The developer's environment is RAD's native
+3. **The terminal is home.** The developer's environment is Rad's native
    habitat; the page should look like it belongs on the same screen as the
    editor and the shell.
 4. **Dry wit, never loud.** Personality through restraint, precision, and one

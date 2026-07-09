@@ -101,9 +101,9 @@ type ForeignKeyDef struct {
 	RefColumns []string
 }
 
-// Catalog reads and writes table metadata in the KV store. A RAD instance
+// Catalog reads and writes table metadata in the KV store. A Rad instance
 // is exactly one database — there is no schema or database hierarchy; two
-// databases are two RAD deployments. DDL runs in a SerializableSnapshot
+// databases are two Rad deployments. DDL runs in a SerializableSnapshot
 // transaction, so the ID counter and name-key writes commit atomically and
 // concurrent DDL conflicts instead of corrupting the counter.
 type Catalog struct {

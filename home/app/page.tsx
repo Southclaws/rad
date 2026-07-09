@@ -3,6 +3,7 @@ import { Backronym } from "@/components/backronym";
 import { BootTerminal } from "@/components/boot-terminal";
 import { CopyCommand } from "@/components/copy-command";
 import { GitHubMark, ArrowUpRight } from "@/components/icons";
+import { RelationGlyph } from "@/components/relation-glyph";
 import { Reveal } from "@/components/reveal";
 import { SiteNav } from "@/components/site-nav";
 
@@ -67,8 +68,8 @@ type Feature = {
 const FEATURES: Feature[] = [
   {
     tag: "clients",
-    h: "Typed clients, not ORMs",
-    p: "Generated directly from your schema. Typed queries, typed rows and typed relationships. Rename a column and your compiler tells you first.",
+    h: "No need for an ORM",
+    p: "Generated directly from your schema. Typed queries, typed rows and typed relationships. More than just a layer on top, Rad defines and enforces a contract between your data and your code.",
     span2: true,
     code: (
       <>
@@ -79,7 +80,7 @@ const FEATURES: Feature[] = [
   },
   {
     tag: "reads",
-    h: "Nested reads, not joins",
+    h: "Joins that make sense",
     p: "Read data the way your application uses it. Parents, children and nested relationships without rebuilding from flattened results.",
   },
   {
@@ -211,7 +212,9 @@ export default function Home() {
           <div className="wrap">
             <Reveal>
               <p className="slabel">what you get</p>
-              <h2 className="stitle">Rethink your relationship with rows.</h2>
+              <h2 className="stitle">
+                Radically rethink your relationship with rows.
+              </h2>
               <p className="prose" style={{ marginTop: "1.25rem" }}>
                 The whole stack, from code to columns. Built for today, not
                 1973.
@@ -229,6 +232,9 @@ export default function Home() {
                   {f.code && <code className="cell__code">{f.code}</code>}
                 </div>
               ))}
+              <div className="cell cell--deco">
+                <RelationGlyph />
+              </div>
             </Reveal>
           </div>
         </section>
@@ -278,6 +284,11 @@ export default function Home() {
               rad <b>v0</b> — a proof of concept, and honest about it.
             </span>
           </div>
+        </div>
+        <div className="wrap foot__type">
+          Set in <a href="/licenses/SplineSansMono-OFL.txt">Spline Sans Mono</a>{" "}
+          &amp; <a href="/licenses/HankenGrotesk-OFL.txt">Hanken Grotesk</a> —
+          SIL OFL 1.1.
         </div>
       </footer>
     </div>

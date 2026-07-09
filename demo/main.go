@@ -1,5 +1,5 @@
-// Tracker — a team task-tracking product built entirely on RAD's generated
-// client, connected to a RAD server over the wire. This is the proof of the
+// Tracker — a team task-tracking product built entirely on Rad's generated
+// client, connected to a Rad server over the wire. This is the proof of the
 // developer experience:
 //
 //	schema.rad  →  rad migrate  →  rad generate  →  this file
@@ -46,7 +46,7 @@ func run() error {
 		return err
 	}
 	if err := db.Ping(ctx); err != nil {
-		return fmt.Errorf("no RAD server at %s (start one with `rad serve`): %w", url, err)
+		return fmt.Errorf("no Rad server at %s (start one with `rad serve`): %w", url, err)
 	}
 	fmt.Printf("connected to %s\n", url)
 

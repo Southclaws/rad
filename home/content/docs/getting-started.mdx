@@ -1,6 +1,6 @@
 ---
 title: Getting started
-description: Install RAD, define a schema, serve it, and generate a client.
+description: Install Rad, define a schema, serve it, and generate a client.
 ---
 
 ## Install
@@ -24,14 +24,14 @@ optional flags — `pk`, `unique`, `index`, `nullable`, `ref`, and `default`.
 tables:
   - name: boards
     columns:
-      - { name: id,      type: string, pk: true, default: uuid() }
-      - { name: name,    type: string }
+      - { name: id, type: string, pk: true, default: uuid() }
+      - { name: name, type: string }
   - name: tasks
     columns:
-      - { name: id,       type: string, pk: true, default: uuid() }
+      - { name: id, type: string, pk: true, default: uuid() }
       - { name: board_id, type: string, ref: boards.id, index: true }
-      - { name: title,    type: string }
-      - { name: status,   type: string, default: todo }
+      - { name: title, type: string }
+      - { name: status, type: string, default: todo }
     indexes:
       - { columns: [board_id, status] }
 ```
@@ -42,7 +42,7 @@ tables:
 rad serve
 ```
 
-RAD boots on `rad://0.0.0.0:7237`, migrates the database to match your schema,
+Rad boots on `rad://0.0.0.0:7237`, migrates the database to match your schema,
 and exposes a browser devtool on the same port. Storage is chosen by
 environment variable — in-memory, on the filesystem, or against S3.
 

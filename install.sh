@@ -1,5 +1,5 @@
 #!/bin/sh
-# RAD installer for Linux and macOS.
+# Rad installer for Linux and macOS.
 #
 #   curl -fsSL https://raw.githubusercontent.com/Southclaws/rad/main/install.sh | sh
 #

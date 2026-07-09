@@ -8,7 +8,7 @@ export function SiteNav() {
   return (
     <header className="nav">
       <div className="wrap nav__in">
-        <Link className="brand" href="/" aria-label="RAD home">
+        <Link className="brand" href="/" aria-label="Rad home">
           <b>rad</b>
           <span className="tag">v0</span>
         </Link>
@@ -20,7 +20,8 @@ export function SiteNav() {
             what you get
           </Link>
           <Link href="/docs">docs</Link>
-          <a className="nav__gh" href={GITHUB} aria-label="RAD on GitHub">
+          <Link href="/blog">blog</Link>
+          <a className="nav__gh" href={GITHUB} aria-label="Rad on GitHub">
             <GitHubMark />
           </a>
         </nav>

@@ -17,7 +17,7 @@ export async function generateMetadata({
   const page = source.getPage(slug);
   if (!page) return {};
   return {
-    title: `${page.data.title} — RAD docs`,
+    title: `${page.data.title} — Rad docs`,
     description: page.data.description,
   };
 }

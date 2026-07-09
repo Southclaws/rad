@@ -1,5 +1,5 @@
-// Package protocol defines RAD's wire protocol: the rad:// connection URI
-// and the JSON request/response types exchanged between clients and a RAD
+// Package protocol defines Rad's wire protocol: the rad:// connection URI
+// and the JSON request/response types exchanged between clients and a Rad
 // server over HTTP. It is shared vocabulary for the client runtime and the
 // server — pure data, stdlib only, no engine imports.
 //
@@ -9,7 +9,7 @@
 //	rad://db.internal:9000     → http://db.internal:9000
 //	rads://db.example.com      → https://db.example.com:7237
 //
-// rads is rad over TLS. RAD itself never terminates TLS — a reverse proxy
+// rads is rad over TLS. Rad itself never terminates TLS — a reverse proxy
 // in front of the server does.
 //
 // # Endpoints
@@ -46,7 +46,7 @@ import (
 	"net/url"
 )
 
-// DefaultPort is RAD's default port. Override the listen address with
+// DefaultPort is Rad's default port. Override the listen address with
 // RAD_ADDR on the server; clients name a port in the URI.
 const DefaultPort = 7237
 
@@ -91,7 +91,7 @@ const ProblemContentType = "application/problem+json"
 
 // ProblemTypeBase prefixes the "type" URI of every problem; the code is
 // appended (e.g. urn:rad:problem:conflict). A URN, deliberately: RFC 7807
-// type URIs need not be dereferenceable, and RAD has no website.
+// type URIs need not be dereferenceable, and Rad has no website.
 const ProblemTypeBase = "urn:rad:problem:"
 
 // Problem is an RFC 7807 Problem Details body — every non-2xx response.
@@ -170,7 +170,7 @@ type Include struct {
 	Aggs    []Agg     `json:"aggs,omitempty"`
 }
 
-// Read is a shaped read: the query form of RAD's QIR on the wire. It is the
+// Read is a shaped read: the query form of Rad's QIR on the wire. It is the
 // single query operation — asking for Aggs folds the matching rows into one
 // scalar record rather than returning rows, so aggregation never needs its
 // own endpoint or verb.
