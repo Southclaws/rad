@@ -339,6 +339,57 @@ func TestExecuteInsideTransaction(t *testing.T) {
 	}
 }
 
+// NULLs are distinct under unique indexes: any number of rows may leave a
+// unique column NULL, while non-NULL duplicates stay rejected — on insert,
+// on update, and through backfill.
+func TestUniqueIndexNullsDistinct(t *testing.T) {
+	eng, ctx, _, _ := qirSetup(t)
+
+	if _, err := eng.Catalog().CreateTable(ctx, catalog.TableDef{
+		Name: "invites",
+		Columns: []catalog.ColumnDef{
+			{Name: "id", Type: catalog.TypeText},
+			{Name: "email", Type: catalog.TypeText, Nullable: true},
+		},
+		PrimaryKey: []string{"id"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two pending invites with no email yet: fine.
+	for _, id := range []string{"i1", "i2"} {
+		if err := eng.Insert(ctx, "invites", qir.Row{"id": qir.Text(id)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Backfilling the unique index over the NULL pair succeeds.
+	if err := eng.AddIndexWithBackfill(ctx, "invites", catalog.IndexDef{
+		Name: "invites_email_uq", Columns: []string{"email"}, Unique: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A third NULL is still fine; a real duplicate is not.
+	if err := eng.Insert(ctx, "invites", qir.Row{"id": qir.Text("i3")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.Insert(ctx, "invites", qir.Row{"id": qir.Text("i4"), "email": qir.Text("a@b.co")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.Insert(ctx, "invites", qir.Row{"id": qir.Text("i5"), "email": qir.Text("a@b.co")}); err == nil {
+		t.Fatal("duplicate non-NULL unique value accepted")
+	}
+
+	// Updating a NULL into a taken value trips the constraint; updating into
+	// NULL never does.
+	if _, _, err := eng.Update(ctx, "invites", qir.Row{"id": qir.Text("i1")}, qir.Row{"email": qir.Text("a@b.co")}); err == nil {
+		t.Fatal("update into a taken unique value accepted")
+	}
+	if _, _, err := eng.Update(ctx, "invites", qir.Row{"id": qir.Text("i4")}, qir.Row{"email": qir.Null(catalog.TypeText)}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Three-valued logic at the row level: NOT (assignee = "bob") must NOT
 // match tasks with a NULL assignee.
 func TestExecuteThreeValuedNot(t *testing.T) {

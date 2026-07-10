@@ -53,7 +53,7 @@ func backfillIndexIn(ctx context.Context, view kv.KV, tbl catalog.Table, idx cat
 		if err != nil {
 			return err
 		}
-		if idx.Unique {
+		if idx.Unique && !anyNullComponent(row, idx.Columns) {
 			if prev, dup := seen[string(idxTuple)]; dup {
 				return fmt.Errorf("exec: cannot backfill unique index %q: rows %v and %v share a value", idx.Name, prev, row)
 			}

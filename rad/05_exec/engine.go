@@ -234,8 +234,9 @@ func checkForeignKeys(ctx context.Context, view kv.KV, tbl catalog.Table, row qi
 // scan on the full indexed tuple matches exactly the entries with equal
 // indexed values.
 //
-// POC deviation from SQL: NULLs participate in uniqueness like ordinary
-// values.
+// NULLs are distinct: a tuple with any NULL component is exempt from
+// uniqueness (its index entry is still written). NULL equals nothing,
+// including NULL.
 //
 // Inside a serializable transaction the *requested* prefix range is tracked
 // even when the scan returns nothing, so two concurrent inserts of the same
@@ -243,7 +244,7 @@ func checkForeignKeys(ctx context.Context, view kv.KV, tbl catalog.Table, row qi
 // commit instead of both succeeding.
 func checkUniqueIndexes(ctx context.Context, view kv.KV, tbl catalog.Table, row qir.Row, pkTuple []byte) error {
 	for _, idx := range tbl.Indexes {
-		if !idx.Unique {
+		if !idx.Unique || anyNullComponent(row, idx.Columns) {
 			continue
 		}
 		idxTuple, err := encodeRowTuple(row, idx.Columns)
@@ -270,6 +271,16 @@ func checkUniqueIndexes(ctx context.Context, view kv.KV, tbl catalog.Table, row 
 		}
 	}
 	return nil
+}
+
+// anyNullComponent reports whether any of the named columns is NULL in row.
+func anyNullComponent(row qir.Row, cols []string) bool {
+	for _, c := range cols {
+		if row[c].Null {
+			return true
+		}
+	}
+	return false
 }
 
 // GetByPrimaryKey fetches one row by its primary key values. key must contain
