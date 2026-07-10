@@ -65,7 +65,7 @@ func plan(rel bound.Relation, req []bound.OrderTerm) PhysNode {
 		return &AggregateExec{Input: plan(n.In, nil), Groups: n.Groups, Terms: n.Terms}
 
 	case *bound.Join:
-		return &NestedLoopJoinExec{L: plan(n.L, nil), R: plan(n.R, nil), Kind: n.Kind, On: n.On}
+		return &NestedLoopJoinExec{L: plan(n.L, nil), R: plan(n.R, nil), Kind: n.Kind, On: n.On, ROut: n.R.Output()}
 	}
 	panic("planner: unplannable relation") // sealed interface; unreachable
 }

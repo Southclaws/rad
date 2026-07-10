@@ -121,11 +121,13 @@ type SliceExec struct {
 }
 
 // NestedLoopJoinExec joins by materialising the right input and probing it
-// per left row. Inner and left only.
+// per left row. Inner and left only; ROut is the right side's row type, for
+// NULL-padding unmatched left rows.
 type NestedLoopJoinExec struct {
 	L, R PhysNode
 	Kind qir.JoinKind
 	On   bound.Expr
+	ROut qir.RowType
 }
 
 // AggregateExec folds its input: one row per distinct group, or exactly one
