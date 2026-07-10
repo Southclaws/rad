@@ -3,6 +3,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
+import {
+  QIRPipeline,
+  KeyLayoutDiagram,
+  AccessPathDiagram,
+  IndexScanDiagram,
+  IncludeTraversalDiagram,
+} from "@/components/qir-diagrams";
 
 export function generateStaticParams() {
   return source.generateParams();
@@ -35,7 +42,14 @@ function Callout({ children }: { children: ReactNode }) {
   );
 }
 
-const mdxComponents = { Callout };
+const mdxComponents = {
+  Callout,
+  QIRPipeline,
+  KeyLayoutDiagram,
+  AccessPathDiagram,
+  IndexScanDiagram,
+  IncludeTraversalDiagram,
+};
 
 export default async function Page({
   params,
