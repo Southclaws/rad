@@ -78,6 +78,31 @@ aggregate produced, exactly as it would reference a scanned column.
 sub-relation that references a slot it does not produce is *correlated*, as a
 derived property. The binder computes it; the planner exploits it.
 
+### The discipline
+
+Before adding any node to this IR, ask: **could this be expressed as an
+ordinary relation?** Every time the answer is yes, resist the special node.
+SQL is the cautionary tale — a different spelling for every variation of the
+same underlying problem. All of these are already expressible here:
+
+| SQL spelling | QIR expression |
+|---|---|
+| `EXISTS (subquery)` | `Exists(rel)` |
+| `x IN (subquery)` | `Exists(Filter(rel, col = x))` |
+| `x = ANY (...)` | same as `IN` |
+| `x < ALL (...)` | `Not(Exists(Filter(rel, Not(x < col))))` |
+| `LATERAL` / correlated subquery | any sub-relation with free slots |
+| `JOIN` | `Join` — already minimal |
+| `JSON_AGG` / `ARRAY_AGG` | `Array(rel)` in a projection field |
+| scalar subquery | `Scalar(rel)` |
+| `SELECT ... LIMIT 1` lookup | `First(rel)` / `Slice` |
+
+The IR converges on four primitives — relations, expressions, cardinality
+crossings, projection — and everything else must be a consequence of those.
+A proposed feature that cannot be phrased in them is either a genuinely new
+primitive (rare; argue for it in a design doc) or a frontend nicety that
+belongs in a compiler above the IR, not in the IR.
+
 ## Relation operators
 
 ```text
