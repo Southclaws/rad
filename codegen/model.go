@@ -1,7 +1,7 @@
-// Package codegen emits a typed Go client from a schema.rad file — models,
-// CRUD, query builders, relationship includes, and transactions. The
-// generated package speaks lir/frontend internally; applications built on
-// it never see the IR, keys, or SQL of any kind.
+// Package codegen emits typed Go and TypeScript clients from a schema.rad
+// file — models, CRUD, query builders, relationship includes, and
+// transactions. The generated packages speak the wire protocol internally;
+// applications built on them never see the IR, keys, or SQL of any kind.
 package codegen
 
 import (
@@ -164,35 +164,6 @@ func goType(t catalog.Type) string {
 	return "any"
 }
 
-// lirCtor returns the lir constructor for a base Go value of type t.
-func lirCtor(t catalog.Type) string {
-	switch t {
-	case catalog.TypeText:
-		return "lir.Text"
-	case catalog.TypeInt64:
-		return "lir.Int64"
-	case catalog.TypeFloat64:
-		return "lir.Float64"
-	case catalog.TypeBool:
-		return "lir.Bool"
-	}
-	return "lir.Text"
-}
-
-// lirField returns the lir.Value payload accessor for type t.
-func lirField(t catalog.Type) string {
-	switch t {
-	case catalog.TypeText:
-		return "Text"
-	case catalog.TypeInt64:
-		return "Int64"
-	case catalog.TypeFloat64:
-		return "Float64"
-	case catalog.TypeBool:
-		return "Bool"
-	}
-	return "Text"
-}
 
 // goName converts snake_case to exported CamelCase, uppercasing the id
 // initialism (board_id -> BoardID).

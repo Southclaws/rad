@@ -9,14 +9,14 @@ import (
 	kv "rad/rad/01_kv"
 	keyenc "rad/rad/01_kv/keyenc"
 	catalog "rad/rad/02_catalog"
-	lir "rad/rad/03_lir"
+	qir "rad/rad/03_qir"
 )
 
 // Update merges set into the row identified by key (exactly the primary key
 // columns) and rewrites affected index entries. Primary key columns cannot
 // be changed. It reports whether the row existed.
-func (e *Engine) Update(ctx context.Context, table string, key, set lir.Row) (lir.Row, bool, error) {
-	var stored lir.Row
+func (e *Engine) Update(ctx context.Context, table string, key, set qir.Row) (qir.Row, bool, error) {
+	var stored qir.Row
 	var found bool
 	err := e.Txn(ctx, func(tx *Tx) error {
 		var err error
@@ -29,11 +29,11 @@ func (e *Engine) Update(ctx context.Context, table string, key, set lir.Row) (li
 	return stored, found, nil
 }
 
-func (tx *Tx) Update(ctx context.Context, table string, key, set lir.Row) (lir.Row, bool, error) {
+func (tx *Tx) Update(ctx context.Context, table string, key, set qir.Row) (qir.Row, bool, error) {
 	return tx.e.update(ctx, tx.txn, table, key, set)
 }
 
-func (e *Engine) update(ctx context.Context, view kv.KV, table string, key, set lir.Row) (lir.Row, bool, error) {
+func (e *Engine) update(ctx context.Context, view kv.KV, table string, key, set qir.Row) (qir.Row, bool, error) {
 	tbl, err := e.table(ctx, table)
 	if err != nil {
 		return nil, false, err
@@ -53,7 +53,7 @@ func (e *Engine) update(ctx context.Context, view kv.KV, table string, key, set 
 		}
 	}
 
-	merged := make(lir.Row, len(current))
+	merged := make(qir.Row, len(current))
 	for k, v := range current {
 		merged[k] = v
 	}
@@ -111,7 +111,7 @@ func (e *Engine) update(ctx context.Context, view kv.KV, table string, key, set 
 // columns) along with its index entries. It fails if any other row
 // references it through a foreign key (restrict semantics — the POC has no
 // cascades). It reports whether the row existed.
-func (e *Engine) Delete(ctx context.Context, table string, key lir.Row) (bool, error) {
+func (e *Engine) Delete(ctx context.Context, table string, key qir.Row) (bool, error) {
 	var found bool
 	err := e.Txn(ctx, func(tx *Tx) error {
 		var err error
@@ -121,11 +121,11 @@ func (e *Engine) Delete(ctx context.Context, table string, key lir.Row) (bool, e
 	return found, err
 }
 
-func (tx *Tx) Delete(ctx context.Context, table string, key lir.Row) (bool, error) {
+func (tx *Tx) Delete(ctx context.Context, table string, key qir.Row) (bool, error) {
 	return tx.e.delete(ctx, tx.txn, table, key)
 }
 
-func (e *Engine) delete(ctx context.Context, view kv.KV, table string, key lir.Row) (bool, error) {
+func (e *Engine) delete(ctx context.Context, view kv.KV, table string, key qir.Row) (bool, error) {
 	tbl, err := e.table(ctx, table)
 	if err != nil {
 		return false, err
@@ -156,7 +156,7 @@ func (e *Engine) delete(ctx context.Context, view kv.KV, table string, key lir.R
 
 // loadByPK fetches a row and its encoded primary key tuple. A nil row means
 // not found.
-func loadByPK(ctx context.Context, view kv.KV, tbl catalog.Table, key lir.Row) (lir.Row, []byte, error) {
+func loadByPK(ctx context.Context, view kv.KV, tbl catalog.Table, key qir.Row) (qir.Row, []byte, error) {
 	if len(key) != len(tbl.PrimaryKey) {
 		return nil, nil, fmt.Errorf("exec: primary key of %q has %d columns, got %d values", tbl.Name, len(tbl.PrimaryKey), len(key))
 	}
@@ -176,7 +176,7 @@ func loadByPK(ctx context.Context, view kv.KV, tbl catalog.Table, key lir.Row) (
 }
 
 // touches reports whether the patch changes any of the named columns.
-func touches(columns []string, set lir.Row) bool {
+func touches(columns []string, set qir.Row) bool {
 	for _, c := range columns {
 		if _, ok := set[c]; ok {
 			return true
@@ -187,7 +187,7 @@ func touches(columns []string, set lir.Row) bool {
 
 // checkForeignKeysFor re-validates only the foreign keys whose columns the
 // patch touches.
-func checkForeignKeysFor(ctx context.Context, view kv.KV, tbl catalog.Table, row lir.Row, set lir.Row) error {
+func checkForeignKeysFor(ctx context.Context, view kv.KV, tbl catalog.Table, row qir.Row, set qir.Row) error {
 	scoped := tbl
 	scoped.ForeignKeys = nil
 	for _, fk := range tbl.ForeignKeys {
@@ -200,7 +200,7 @@ func checkForeignKeysFor(ctx context.Context, view kv.KV, tbl catalog.Table, row
 
 // checkUniqueIndexesFor re-validates only the unique indexes whose columns
 // the patch touches.
-func checkUniqueIndexesFor(ctx context.Context, view kv.KV, tbl catalog.Table, row lir.Row, pkTuple []byte, set lir.Row) error {
+func checkUniqueIndexesFor(ctx context.Context, view kv.KV, tbl catalog.Table, row qir.Row, pkTuple []byte, set qir.Row) error {
 	scoped := tbl
 	scoped.Indexes = nil
 	for _, idx := range tbl.Indexes {
@@ -215,7 +215,7 @@ func checkUniqueIndexesFor(ctx context.Context, view kv.KV, tbl catalog.Table, r
 // a foreign key pointing at the row being deleted. Referencing rows are
 // found through an index on the FK columns when one exists, falling back to
 // a full scan.
-func (e *Engine) checkNoReferences(ctx context.Context, view kv.KV, tbl catalog.Table, row lir.Row) error {
+func (e *Engine) checkNoReferences(ctx context.Context, view kv.KV, tbl catalog.Table, row qir.Row) error {
 	all, err := e.cat.ListTables(ctx)
 	if err != nil {
 		return err
@@ -226,7 +226,7 @@ func (e *Engine) checkNoReferences(ctx context.Context, view kv.KV, tbl catalog.
 				continue
 			}
 			// The parent values the child would reference.
-			want := make(lir.Row, len(fk.Columns))
+			want := make(qir.Row, len(fk.Columns))
 			for i, childCol := range fk.Columns {
 				want[childCol] = row[fk.RefColumns[i]]
 			}
@@ -244,7 +244,7 @@ func (e *Engine) checkNoReferences(ctx context.Context, view kv.KV, tbl catalog.
 
 // anyRowMatching reports whether child has any row whose cols equal want.
 // Self-referential checks skip the row being deleted itself.
-func (e *Engine) anyRowMatching(ctx context.Context, view kv.KV, child catalog.Table, cols []string, want lir.Row, parent catalog.Table, parentRow lir.Row) (bool, error) {
+func (e *Engine) anyRowMatching(ctx context.Context, view kv.KV, child catalog.Table, cols []string, want qir.Row, parent catalog.Table, parentRow qir.Row) (bool, error) {
 	selfPK := []byte(nil)
 	if child.ID == parent.ID {
 		pk, err := encodeRowTuple(parentRow, parent.PrimaryKey)

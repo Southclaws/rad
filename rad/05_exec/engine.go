@@ -18,8 +18,7 @@ import (
 	kv "rad/rad/01_kv"
 	keyenc "rad/rad/01_kv/keyenc"
 	catalog "rad/rad/02_catalog"
-	lir "rad/rad/03_lir"
-	planner "rad/rad/04_planner"
+	qir "rad/rad/03_qir"
 )
 
 // Engine executes reads and writes against the database's tables.
@@ -80,24 +79,6 @@ func IsConflict(err error) bool { return errors.Is(err, kv.ErrConflict) }
 
 func (e *Engine) Catalog() *catalog.Catalog { return e.cat }
 
-// Query plans and executes a logical query against the committed state.
-func (e *Engine) Query(ctx context.Context, q lir.Query) ([]lir.Row, error) {
-	return e.query(ctx, e.store, q)
-}
-
-// Query inside a transaction runs against its snapshot plus its own writes.
-func (tx *Tx) Query(ctx context.Context, q lir.Query) ([]lir.Row, error) {
-	return tx.e.query(ctx, tx.txn, q)
-}
-
-func (e *Engine) query(ctx context.Context, view kv.KV, q lir.Query) ([]lir.Row, error) {
-	plan, err := planner.Plan(ctx, e.cat, q)
-	if err != nil {
-		return nil, err
-	}
-	return Run(ctx, view, plan)
-}
-
 func (e *Engine) table(ctx context.Context, name string) (catalog.Table, error) {
 	tbl, ok, err := e.cat.GetTable(ctx, name)
 	if err != nil {
@@ -111,20 +92,20 @@ func (e *Engine) table(ctx context.Context, name string) (catalog.Table, error) 
 
 // normalizeRow validates row against the table definition and returns a copy
 // with every column present (absent nullable columns become explicit NULLs).
-func normalizeRow(tbl catalog.Table, row lir.Row) (lir.Row, error) {
+func normalizeRow(tbl catalog.Table, row qir.Row) (qir.Row, error) {
 	for name := range row {
 		if _, ok := tbl.Column(name); !ok {
 			return nil, fmt.Errorf("exec: table %q has no column %q", tbl.Name, name)
 		}
 	}
-	out := make(lir.Row, len(tbl.Columns))
+	out := make(qir.Row, len(tbl.Columns))
 	for _, col := range tbl.Columns {
 		v, ok := row[col.Name]
 		if !ok || v.Null {
 			if !col.Nullable {
 				return nil, fmt.Errorf("exec: column %q is not nullable", col.Name)
 			}
-			out[col.Name] = lir.Null(col.Type)
+			out[col.Name] = qir.Null(col.Type)
 			continue
 		}
 		if v.Type != col.Type {
@@ -137,20 +118,20 @@ func normalizeRow(tbl catalog.Table, row lir.Row) (lir.Row, error) {
 
 // Insert adds one row in its own transaction. For multi-row atomicity use
 // Engine.Txn with Tx.Insert.
-func (e *Engine) Insert(ctx context.Context, table string, row lir.Row) error {
+func (e *Engine) Insert(ctx context.Context, table string, row qir.Row) error {
 	_, err := e.Create(ctx, table, row)
 	return err
 }
 
-func (tx *Tx) Insert(ctx context.Context, table string, row lir.Row) error {
+func (tx *Tx) Insert(ctx context.Context, table string, row qir.Row) error {
 	_, err := tx.Create(ctx, table, row)
 	return err
 }
 
 // Create is Insert returning the stored row — the caller's values plus
 // applied defaults (generated IDs, timestamps).
-func (e *Engine) Create(ctx context.Context, table string, row lir.Row) (lir.Row, error) {
-	var stored lir.Row
+func (e *Engine) Create(ctx context.Context, table string, row qir.Row) (qir.Row, error) {
+	var stored qir.Row
 	err := e.Txn(ctx, func(tx *Tx) error {
 		var err error
 		stored, err = tx.Create(ctx, table, row)
@@ -162,11 +143,11 @@ func (e *Engine) Create(ctx context.Context, table string, row lir.Row) (lir.Row
 	return stored, nil
 }
 
-func (tx *Tx) Create(ctx context.Context, table string, row lir.Row) (lir.Row, error) {
+func (tx *Tx) Create(ctx context.Context, table string, row qir.Row) (qir.Row, error) {
 	return tx.e.insert(ctx, tx.txn, table, row)
 }
 
-func (e *Engine) insert(ctx context.Context, view kv.KV, table string, row lir.Row) (lir.Row, error) {
+func (e *Engine) insert(ctx context.Context, view kv.KV, table string, row qir.Row) (qir.Row, error) {
 	tbl, err := e.table(ctx, table)
 	if err != nil {
 		return nil, err
@@ -221,9 +202,9 @@ func (e *Engine) insert(ctx context.Context, view kv.KV, table string, row lir.R
 // column is NULL the constraint is not checked (matches SQL semantics).
 // Inside a serializable transaction the parent read is tracked, so a
 // concurrent delete of the parent conflicts at commit.
-func checkForeignKeys(ctx context.Context, view kv.KV, tbl catalog.Table, row lir.Row) error {
+func checkForeignKeys(ctx context.Context, view kv.KV, tbl catalog.Table, row qir.Row) error {
 	for _, fk := range tbl.ForeignKeys {
-		vals := make([]lir.Value, len(fk.Columns))
+		vals := make([]qir.Value, len(fk.Columns))
 		null := false
 		for i, name := range fk.Columns {
 			vals[i] = row[name]
@@ -260,7 +241,7 @@ func checkForeignKeys(ctx context.Context, view kv.KV, tbl catalog.Table, row li
 // even when the scan returns nothing, so two concurrent inserts of the same
 // unique value (different PKs, hence different index keys) conflict at
 // commit instead of both succeeding.
-func checkUniqueIndexes(ctx context.Context, view kv.KV, tbl catalog.Table, row lir.Row, pkTuple []byte) error {
+func checkUniqueIndexes(ctx context.Context, view kv.KV, tbl catalog.Table, row qir.Row, pkTuple []byte) error {
 	for _, idx := range tbl.Indexes {
 		if !idx.Unique {
 			continue
@@ -293,15 +274,15 @@ func checkUniqueIndexes(ctx context.Context, view kv.KV, tbl catalog.Table, row 
 
 // GetByPrimaryKey fetches one row by its primary key values. key must contain
 // exactly the primary key columns.
-func (e *Engine) GetByPrimaryKey(ctx context.Context, table string, key lir.Row) (lir.Row, bool, error) {
+func (e *Engine) GetByPrimaryKey(ctx context.Context, table string, key qir.Row) (qir.Row, bool, error) {
 	return e.getByPrimaryKey(ctx, e.store, table, key)
 }
 
-func (tx *Tx) GetByPrimaryKey(ctx context.Context, table string, key lir.Row) (lir.Row, bool, error) {
+func (tx *Tx) GetByPrimaryKey(ctx context.Context, table string, key qir.Row) (qir.Row, bool, error) {
 	return tx.e.getByPrimaryKey(ctx, tx.txn, table, key)
 }
 
-func (e *Engine) getByPrimaryKey(ctx context.Context, view kv.KV, table string, key lir.Row) (lir.Row, bool, error) {
+func (e *Engine) getByPrimaryKey(ctx context.Context, view kv.KV, table string, key qir.Row) (qir.Row, bool, error) {
 	tbl, err := e.table(ctx, table)
 	if err != nil {
 		return nil, false, err
@@ -327,7 +308,7 @@ func (e *Engine) getByPrimaryKey(ctx context.Context, view kv.KV, table string, 
 // RowIterator streams rows from a scan.
 type RowIterator interface {
 	// Next returns the next row, or ok=false when the scan is exhausted.
-	Next() (lir.Row, bool, error)
+	Next() (qir.Row, bool, error)
 	Close() error
 }
 
@@ -336,7 +317,7 @@ type kvRowIterator struct {
 	tbl catalog.Table
 }
 
-func (r *kvRowIterator) Next() (lir.Row, bool, error) {
+func (r *kvRowIterator) Next() (qir.Row, bool, error) {
 	if !r.it.Next() {
 		return nil, false, r.it.Err()
 	}
@@ -377,88 +358,3 @@ func scanTable(ctx context.Context, view kv.KV, tbl catalog.Table) (RowIterator,
 	return &kvRowIterator{it: it, tbl: tbl}, nil
 }
 
-// ScanIndex returns the base rows whose indexed values match prefix. The
-// prefix row must populate a leading subset of the index's columns (all
-// columns for an exact match, fewer for a range of the leading columns).
-func (e *Engine) ScanIndex(ctx context.Context, table string, index string, prefix lir.Row) ([]lir.Row, error) {
-	tbl, idx, err := e.resolveIndex(ctx, table, index)
-	if err != nil {
-		return nil, err
-	}
-	return scanIndex(ctx, e.store, tbl, idx, prefix)
-}
-
-func (tx *Tx) ScanIndex(ctx context.Context, table string, index string, prefix lir.Row) ([]lir.Row, error) {
-	tbl, idx, err := tx.e.resolveIndex(ctx, table, index)
-	if err != nil {
-		return nil, err
-	}
-	return scanIndex(ctx, tx.txn, tbl, idx, prefix)
-}
-
-func (e *Engine) resolveIndex(ctx context.Context, table, index string) (catalog.Table, catalog.Index, error) {
-	tbl, err := e.table(ctx, table)
-	if err != nil {
-		return catalog.Table{}, catalog.Index{}, err
-	}
-	idx, ok := tbl.Index(index)
-	if !ok {
-		return catalog.Table{}, catalog.Index{}, fmt.Errorf("exec: table %q has no index %q", table, index)
-	}
-	return tbl, idx, nil
-}
-
-// scanIndex range-scans the index prefix, then fetches base rows by the
-// primary key tuples stored in the index values.
-func scanIndex(ctx context.Context, view kv.KV, tbl catalog.Table, idx catalog.Index, prefix lir.Row) ([]lir.Row, error) {
-	var leading []string
-	for _, name := range idx.Columns {
-		if _, ok := prefix[name]; !ok {
-			break
-		}
-		leading = append(leading, name)
-	}
-	if len(prefix) != len(leading) {
-		return nil, fmt.Errorf("exec: index scan prefix must cover a leading subset of index %q columns %v", idx.Name, idx.Columns)
-	}
-	keyPrefix := IndexPrefix(tbl.ID, idx.ID)
-	if len(leading) > 0 {
-		tuple, err := encodeRowTuple(prefix, leading)
-		if err != nil {
-			return nil, err
-		}
-		keyPrefix = append(keyPrefix, tuple...)
-	}
-
-	it, err := view.Scan(ctx, keyPrefix, keyenc.PrefixEnd(keyPrefix))
-	if err != nil {
-		return nil, err
-	}
-	defer it.Close()
-
-	// Collect primary key tuples first, then fetch base rows.
-	var pkTuples [][]byte
-	for it.Next() {
-		pkTuples = append(pkTuples, bytes.Clone(it.Value()))
-	}
-	if err := it.Err(); err != nil {
-		return nil, err
-	}
-
-	rows := make([]lir.Row, 0, len(pkTuples))
-	for _, pk := range pkTuples {
-		raw, ok, err := view.Get(ctx, DataKey(tbl.ID, pk))
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, fmt.Errorf("exec: index %q points at missing row", idx.Name)
-		}
-		row, err := UnmarshalRow(tbl, raw)
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, row)
-	}
-	return rows, nil
-}

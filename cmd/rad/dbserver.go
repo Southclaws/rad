@@ -27,7 +27,7 @@ import (
 	"rad/protocol"
 	"rad/protocol/oas"
 	catalog "rad/rad/02_catalog"
-	lir "rad/rad/03_lir"
+	qir "rad/rad/03_qir"
 	frontend "rad/rad/06_frontend"
 )
 
@@ -78,11 +78,11 @@ func (a *dbAPI) httpHandler(notFound http.Handler) (http.Handler, error) {
 
 // view is the shared read/write surface of *frontend.DB and *frontend.Tx.
 type view interface {
-	Create(ctx context.Context, table string, row lir.Row) (lir.Row, error)
-	Update(ctx context.Context, table string, key, set lir.Row) (lir.Row, bool, error)
-	Delete(ctx context.Context, table string, key lir.Row) (bool, error)
-	Get(ctx context.Context, table string, key lir.Row) (lir.Row, bool, error)
-	Read(ctx context.Context, r lir.Read) ([]*frontend.Record, error)
+	Create(ctx context.Context, table string, row qir.Row) (qir.Row, error)
+	Update(ctx context.Context, table string, key, set qir.Row) (qir.Row, bool, error)
+	Delete(ctx context.Context, table string, key qir.Row) (bool, error)
+	Get(ctx context.Context, table string, key qir.Row) (qir.Row, bool, error)
+	Execute(ctx context.Context, q qir.Query) (qir.Datum, error)
 }
 
 // ── core operations (transport free) ─────────────────────────────────────
@@ -92,20 +92,34 @@ type view interface {
 // verbatim by the autocommit and transaction handlers below.
 
 func (a *dbAPI) doQuery(ctx context.Context, v view, r protocol.Read) ([]protocol.Record, error) {
-	conv := &wireConv{cat: a.cat}
-	read, err := conv.toRead(ctx, r)
+	q, err := compileRead(ctx, a.cat, r)
 	if err != nil {
 		return nil, err
 	}
-	recs, err := v.Read(ctx, read)
+	d, err := v.Execute(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	rows := frontend.RecordsJSON(recs)
-	if rows == nil {
-		rows = []protocol.Record{}
+	return datumRecords(d), nil
+}
+
+// datumRecords renders a result as the wire's record list: an array yields
+// its objects, a single object (a root fold) yields one record.
+func datumRecords(d qir.Datum) []protocol.Record {
+	toRecord := func(el qir.Datum) protocol.Record {
+		if m, ok := frontend.DatumJSON(el).(map[string]any); ok {
+			return m
+		}
+		return protocol.Record{}
 	}
-	return rows, nil
+	if d.Kind == qir.DatumArray {
+		out := make([]protocol.Record, len(d.Elems))
+		for i, el := range d.Elems {
+			out[i] = toRecord(el)
+		}
+		return out
+	}
+	return []protocol.Record{toRecord(d)}
 }
 
 func (a *dbAPI) doCreate(ctx context.Context, v view, table string, values map[string]any) (protocol.Record, error) {
@@ -144,7 +158,7 @@ func (a *dbAPI) doUpdate(ctx context.Context, v view, table string, key, set map
 		if !ok {
 			return nil, false, wireErrf("table %q has no column %q", tbl.Name, name)
 		}
-		srow[name] = lir.Null(col.Type)
+		srow[name] = qir.Null(col.Type)
 	}
 	stored, found, err := v.Update(ctx, table, krow, srow)
 	if err != nil {
@@ -556,12 +570,11 @@ func problemErrorHandler(ctx context.Context, w http.ResponseWriter, r *http.Req
 	_ = json.NewEncoder(w).Encode(protocol.NewProblem(protocol.CodeInvalid, status, err.Error()))
 }
 
-func rowJSON(row lir.Row) protocol.Record {
+func rowJSON(row qir.Row) protocol.Record {
 	if row == nil {
 		return nil
 	}
-	rec := &frontend.Record{Columns: row}
-	return frontend.RecordsJSON([]*frontend.Record{rec})[0]
+	return frontend.RowJSON(row)
 }
 
 // ── middleware ──────────────────────────────────────────────────────────

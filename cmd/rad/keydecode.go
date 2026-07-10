@@ -9,7 +9,7 @@ import (
 	"unicode"
 
 	"rad/rad/02_catalog"
-	lir "rad/rad/03_lir"
+	qir "rad/rad/03_qir"
 	exec "rad/rad/05_exec"
 )
 
@@ -120,7 +120,7 @@ func (d *keyDecoder) renderIndexTuple(tableID, indexID string, buf []byte) strin
 		return renderTuple(buf)
 	}
 
-	var indexed []lir.Value
+	var indexed []qir.Value
 	rest := buf
 	for range idx.Columns {
 		v, n, err := exec.DecodeValue(rest)
@@ -166,7 +166,7 @@ func renderTuple(buf []byte) string {
 	return renderValues(vals)
 }
 
-func renderValues(vals []lir.Value) string {
+func renderValues(vals []qir.Value) string {
 	parts := make([]string, len(vals))
 	for i, v := range vals {
 		parts[i] = v.String()

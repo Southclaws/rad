@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	catalog "rad/rad/02_catalog"
-	lir "rad/rad/03_lir"
+	qir "rad/rad/03_qir"
 )
 
 // Row storage format: rows persist as JSON objects keyed by *column ID*, not
@@ -19,8 +19,8 @@ import (
 
 // MarshalRow encodes a name-keyed row for storage. Exported for tooling
 // (cmd/rad); the engine handles this internally.
-func MarshalRow(tbl catalog.Table, row lir.Row) ([]byte, error) {
-	byID := make(map[string]lir.Value, len(row))
+func MarshalRow(tbl catalog.Table, row qir.Row) ([]byte, error) {
+	byID := make(map[string]qir.Value, len(row))
 	for name, v := range row {
 		col, ok := tbl.Column(name)
 		if !ok {
@@ -34,12 +34,12 @@ func MarshalRow(tbl catalog.Table, row lir.Row) ([]byte, error) {
 // UnmarshalRow decodes a stored row into a name-keyed row according to the
 // current table definition. Unknown column IDs (dropped columns) are
 // discarded; missing columns get their literal default or NULL.
-func UnmarshalRow(tbl catalog.Table, raw []byte) (lir.Row, error) {
-	var byID map[string]lir.Value
+func UnmarshalRow(tbl catalog.Table, raw []byte) (qir.Row, error) {
+	var byID map[string]qir.Value
 	if err := json.Unmarshal(raw, &byID); err != nil {
 		return nil, err
 	}
-	row := make(lir.Row, len(tbl.Columns))
+	row := make(qir.Row, len(tbl.Columns))
 	for _, col := range tbl.Columns {
 		if v, ok := byID[col.ID]; ok {
 			row[col.Name] = v
@@ -50,12 +50,12 @@ func UnmarshalRow(tbl catalog.Table, raw []byte) (lir.Row, error) {
 	return row, nil
 }
 
-func missingColumnValue(col catalog.Column) lir.Value {
+func missingColumnValue(col catalog.Column) qir.Value {
 	if d := col.Default; d != nil && d.Func == "" {
 		v, err := defaultValue(col)
 		if err == nil {
 			return v
 		}
 	}
-	return lir.Null(col.Type)
+	return qir.Null(col.Type)
 }
