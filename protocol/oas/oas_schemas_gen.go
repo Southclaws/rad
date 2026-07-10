@@ -17,7 +17,7 @@ func (s *InternalServerErrorStatusCode) Error() string {
 // no `column` counts rows; `count` with a column counts non null values. `sum` and `avg` require a
 // numeric column, `min` and `max` accept any comparable column. Folds skip nulls, and an empty input
 // yields `0` for `count` and `null` for the rest.
-// Ref: #/components/schemas/Aggregate
+// Ref: #/$defs/Aggregate
 type Aggregate struct {
 	Fn AggregateFn `json:"fn"`
 	// The column to fold. Omitted only for `count` over rows.
@@ -209,7 +209,7 @@ func (*DeleteResult) transactionRowDeleteRes() {}
 // sub expression in `expr`. The comparisons `eq`, `ne`, `lt`, `lte`, `gt`, and `gte` take a `column`
 // and a `value`. `is_null` takes just a `column`. A comparison against `null` never matches, following
 // SQL three valued logic.
-// Ref: #/components/schemas/Expr
+// Ref: #/$defs/Expr
 type Expr struct {
 	Op ExprOp `json:"op"`
 	// The operands of `and` or `or`.
@@ -392,7 +392,7 @@ func (s *Health) SetStatus(val string) {
 // Setting `aggs` folds the matched children into one object of scalars instead of returning them as an
 // array, and is mutually exclusive with `order_by`, `limit`, and nested `include`. Parent includes
 // take no refinements, since a parent is at most one row.
-// Ref: #/components/schemas/Include
+// Ref: #/$defs/Include
 type Include struct {
 	// The foreign key name that defines the relation.
 	Fk  string     `json:"fk"`
@@ -1057,7 +1057,7 @@ func (o OptString) Or(d string) string {
 }
 
 // One ordering term. Rows sort by these terms in list order.
-// Ref: #/components/schemas/Order
+// Ref: #/$defs/Order
 type Order struct {
 	Column string `json:"column"`
 	// Sort descending instead of the default ascending.
@@ -1215,7 +1215,7 @@ func (s *ProblemCode) UnmarshalText(data []byte) error {
 // A shaped read against one table. Without `aggs` it returns matching rows, optionally filtered,
 // ordered, paginated, and with related rows embedded. With `aggs` it returns a single record of folded
 // scalars, in which case `order_by`, `offset`, `limit`, and `include` are not allowed.
-// Ref: #/components/schemas/Query
+// Ref: #/$defs/Query
 type Query struct {
 	// The table to read from.
 	Table   string  `json:"table"`

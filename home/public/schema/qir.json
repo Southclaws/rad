@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.radengine.dev/schema/qir.json",
+  "title": "Rad Query IR",
+  "description": "Rad's query intermediate representation: the shaped-read form of the relational algebra that clients send and the engine plans. It is defined as JSON Schema so it can be shared across the wire contract, code generators, and documentation without being tied to any one transport. Every operation that reads data speaks this shape.",
+  "$defs": {
+    "Value": {
+      "title": "Value",
+      "description": "A single column value. It is a plain JSON scalar: a string, a number, a boolean, or `null`. Numbers are decoded so that 64 bit integers keep full precision, and the server coerces each value to its column's declared type."
+    },
+    "Expr": {
+      "title": "Expr",
+      "description": "A filter expression, expressed as a tagged union selected by `op`.\n\nThe logical operators `and` and `or` take a list of sub expressions in `exprs`. `not` takes a single sub expression in `expr`. The comparisons `eq`, `ne`, `lt`, `lte`, `gt`, and `gte` take a `column` and a `value`. `is_null` takes just a `column`. A comparison against `null` never matches, following SQL three valued logic.",
+      "type": "object",
+      "required": ["op"],
+      "properties": {
+        "op": {
+          "type": "string",
+          "enum": ["and", "or", "not", "eq", "ne", "lt", "lte", "gt", "gte", "is_null"]
+        },
+        "exprs": {
+          "description": "The operands of `and` or `or`.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/Expr" }
+        },
+        "expr": { "$ref": "#/$defs/Expr" },
+        "column": {
+          "description": "The column a comparison or `is_null` tests.",
+          "type": "string"
+        },
+        "value": { "$ref": "#/$defs/Value" }
+      }
+    },
+    "Order": {
+      "title": "Order",
+      "description": "One ordering term. Rows sort by these terms in list order.",
+      "type": "object",
+      "required": ["column"],
+      "properties": {
+        "column": { "type": "string" },
+        "desc": {
+          "description": "Sort descending instead of the default ascending.",
+          "type": "boolean"
+        }
+      }
+    },
+    "Aggregate": {
+      "title": "Aggregate",
+      "description": "One aggregate fold over the matching rows, written into the result under the name `as`. `count` with no `column` counts rows; `count` with a column counts non null values. `sum` and `avg` require a numeric column, `min` and `max` accept any comparable column. Folds skip nulls, and an empty input yields `0` for `count` and `null` for the rest.",
+      "type": "object",
+      "required": ["fn", "as"],
+      "properties": {
+        "fn": {
+          "type": "string",
+          "enum": ["count", "sum", "avg", "min", "max"]
+        },
+        "column": {
+          "description": "The column to fold. Omitted only for `count` over rows.",
+          "type": "string"
+        },
+        "as": {
+          "description": "The name this fold takes in the result record.",
+          "type": "string"
+        }
+      }
+    },
+    "Include": {
+      "title": "Include",
+      "description": "Embed a related relation in each result record under the name `as`. The relation is identified by the foreign key name in `fk` and the direction in `dir`: `parent` follows a foreign key on this table to the single row it references, `children` follows a foreign key on another table back to the rows that reference this one.\n\nChildren includes may be refined with `filter`, `order_by`, `limit`, and further nested `include`s. Setting `aggs` folds the matched children into one object of scalars instead of returning them as an array, and is mutually exclusive with `order_by`, `limit`, and nested `include`. Parent includes take no refinements, since a parent is at most one row.",
+      "type": "object",
+      "required": ["fk", "dir", "as"],
+      "properties": {
+        "fk": {
+          "description": "The foreign key name that defines the relation.",
+          "type": "string"
+        },
+        "dir": {
+          "type": "string",
+          "enum": ["parent", "children"]
+        },
+        "as": {
+          "description": "The field name the embedded relation takes in each record.",
+          "type": "string"
+        },
+        "filter": { "$ref": "#/$defs/Expr" },
+        "order_by": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Order" }
+        },
+        "limit": { "type": "integer" },
+        "include": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Include" }
+        },
+        "aggs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Aggregate" }
+        }
+      }
+    },
+    "Query": {
+      "title": "Query",
+      "description": "A shaped read against one table. Without `aggs` it returns matching rows, optionally filtered, ordered, paginated, and with related rows embedded. With `aggs` it returns a single record of folded scalars, in which case `order_by`, `offset`, `limit`, and `include` are not allowed.",
+      "type": "object",
+      "required": ["table"],
+      "properties": {
+        "table": {
+          "description": "The table to read from.",
+          "type": "string"
+        },
+        "filter": { "$ref": "#/$defs/Expr" },
+        "order_by": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Order" }
+        },
+        "offset": {
+          "description": "Skip this many rows before returning.",
+          "type": "integer"
+        },
+        "limit": {
+          "description": "Return at most this many rows. Zero means no limit.",
+          "type": "integer"
+        },
+        "include": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Include" }
+        },
+        "aggs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Aggregate" }
+        }
+      }
+    }
+  }
+}

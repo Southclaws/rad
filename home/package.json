@@ -4,8 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "fumadocs-mdx && next build",
+    "build": "node scripts/sync-schemas.mjs && fumadocs-mdx && next build",
     "start": "next start",
+    "sync-schemas": "node scripts/sync-schemas.mjs",
     "postinstall": "fumadocs-mdx"
   },
   "dependencies": {

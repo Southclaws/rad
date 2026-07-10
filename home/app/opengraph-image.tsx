@@ -4,7 +4,7 @@ import { ImageResponse } from "next/og";
 // system, translated to a 1200×630 still: phosphor green on ink, the extruded
 // wordmark, the hero line, and a prompt/URL footer under a hairline.
 export const alt =
-  "rad — the relational database, redesigned. One cohesive toolchain, from schema to application.";
+  "rad. Rethink your relationship with rows. The relational database, redesigned. With one cohesive toolchain. From schema to application.";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -18,8 +18,9 @@ const GREEN_DEEP = "#123a26";
 const LINE = "#333e39";
 
 const WORDMARK = "rad";
-const HEADLINE = "The relational database, redesigned.";
-const SUB = "One cohesive toolchain — from schema to application.";
+const HEADLINE = "Rethink your relationship with rows.";
+const SUB =
+  "The relational database, redesigned. With one cohesive toolchain. From schema to application.";
 const PROMPT = "rad serve";
 const URLTAG = "radengine.dev";
 
