@@ -49,6 +49,7 @@ func emitHeader(p func(string, ...any), m *genModel, schemaSrc []byte) {
 	p("import (")
 	p("\t\"context\"")
 	p("\t\"encoding/json\"")
+	p("\t\"fmt\"")
 	p("")
 	p("\tradclient \"rad/client\"")
 	p("\t\"rad/protocol\"")
@@ -120,19 +121,8 @@ func emitHeader(p func(string, ...any), m *genModel, schemaSrc []byte) {
 	p("}")
 	p("")
 
-	// Expression combinators + record decoding helpers (json.Number-aware).
-	p("// andExpr folds filters into a single expression (nil when empty).")
-	p("func andExpr(filters []protocol.Expr) *protocol.Expr {")
-	p("\tswitch len(filters) {")
-	p("\tcase 0:")
-	p("\t\treturn nil")
-	p("\tcase 1:")
-	p("\t\treturn &filters[0]")
-	p("\tdefault:")
-	p("\t\treturn &protocol.Expr{Op: \"and\", Exprs: filters}")
-	p("\t}")
-	p("}")
-	p("")
+	// The query-graph builder runtime + record decoding helpers.
+	p("%s", goQueryRuntime)
 	for _, h := range []struct{ name, typ, cast string }{
 		{"recString", "string", "s, _ := m[k].(string)\n\treturn s"},
 		{"recBool", "bool", "b, _ := m[k].(bool)\n\treturn b"},
@@ -350,11 +340,11 @@ func emitTableHandle(p func(string, ...any), t *genTable) {
 		}
 		p("// %s finds the row by the unique index on (%s).", name, uqCols(uq))
 		p("func (t %s) %s(ctx context.Context, %s) (%s, bool, error) {", h, name, params, t.Model)
-		p("\trecs, err := t.v.Query(ctx, protocol.Read{Table: %q, Filter: andExpr([]protocol.Expr{", t.SQLName)
+		p("\trecs, err := t.v.Query(ctx, assemble(querySpec{table: %q, limit: 1, limitSet: true, filters: []*protocol.Expr{", t.SQLName)
 		for _, c := range uq {
-			p("\t\t{Op: \"eq\", Column: %q, Value: %s},", c.SQLName, lowerFirst(c.Field))
+			p("\t\tprotocol.Eq(protocol.Col(\"\", %q), protocol.Lit(%s)),", c.SQLName, lowerFirst(c.Field))
 		}
-		p("\t}), Limit: 1})")
+		p("\t}}))")
 		p("\tif err != nil || len(recs) == 0 {")
 		p("\t\treturn %s{}, false, err", t.Model)
 		p("\t}")
@@ -365,9 +355,21 @@ func emitTableHandle(p func(string, ...any), t *genTable) {
 
 	// Query entry point.
 	p("func (t %s) Query() *%sQuery {", h, t.Model)
-	p("\treturn &%sQuery{v: t.v, read: protocol.Read{Table: %q}}", t.Model, t.SQLName)
+	p("\treturn &%sQuery{v: t.v, spec: querySpec{table: %q}}", t.Model, t.SQLName)
 	p("}")
 	p("")
+}
+
+// pairsLit renders a genRel's correlation pairs as a Go literal.
+func pairsLit(pairs [][2]string) string {
+	out := "[][2]string{"
+	for i, pr := range pairs {
+		if i > 0 {
+			out += ", "
+		}
+		out += fmt.Sprintf("{%q, %q}", pr[0], pr[1])
+	}
+	return out + "}"
 }
 
 func uqCols(uq []genCol) string {
@@ -384,27 +386,25 @@ func uqCols(uq []genCol) string {
 // emitQuery writes the fluent query builder.
 func emitQuery(p func(string, ...any), t *genTable) {
 	q := t.Model + "Query"
-	p("// %s is a fluent shaped-read builder for %q. Conditions AND together.", q, t.SQLName)
+	p("// %s is a fluent query builder for %q. Conditions AND together.", q, t.SQLName)
 	p("type %s struct {", q)
 	p("\tv radclient.View")
-	p("\tread protocol.Read")
-	p("\tfilters []protocol.Expr")
+	p("\tspec querySpec")
 	p("}")
 	p("")
 
-	emitFilterMethods(p, t, q, "q", "q.filters = append(q.filters, %s)")
-	emitOrderMethods(p, t, q)
+	emitFilterMethods(p, t, q, "q", "q.spec.filters = append(q.spec.filters, %s)")
+	emitOrderMethods(p, t, q, "q", "q.spec.orders")
 
-	p("func (q *%s) Limit(n int) *%s { q.read.Limit = n; return q }", q, q)
-	p("func (q *%s) Offset(n int) *%s { q.read.Offset = n; return q }", q, q)
+	p("func (q *%s) Limit(n int) *%s { q.spec.limit, q.spec.limitSet = n, true; return q }", q, q)
+	p("func (q *%s) Offset(n int) *%s { q.spec.offset = n; return q }", q, q)
 	p("")
 
-	emitIncludeMethods(p, t, q, "q.read.Include = append(q.read.Include, inc)")
+	emitIncludeMethods(p, t, q, "q.spec.includes = append(q.spec.includes, inc)")
 
 	p("// All executes the query.")
 	p("func (q *%s) All(ctx context.Context) ([]%s, error) {", q, t.Model)
-	p("\tq.read.Filter = andExpr(q.filters)")
-	p("\trecs, err := q.v.Query(ctx, q.read)")
+	p("\trecs, err := q.v.Query(ctx, assemble(q.spec))")
 	p("\tif err != nil {")
 	p("\t\treturn nil, err")
 	p("\t}")
@@ -417,7 +417,7 @@ func emitQuery(p func(string, ...any), t *genTable) {
 	p("")
 	p("// First executes the query with limit 1.")
 	p("func (q *%s) First(ctx context.Context) (%s, bool, error) {", q, t.Model)
-	p("\tq.read.Limit = 1")
+	p("\tq.spec.limit, q.spec.limitSet = 1, true")
 	p("\trows, err := q.All(ctx)")
 	p("\tif err != nil || len(rows) == 0 {")
 	p("\t\treturn %s{}, false, err", t.Model)
@@ -438,12 +438,11 @@ func emitAggregates(p func(string, ...any), t *genTable, q string) {
 	// return the single scalar record.
 	p("// fold sends the builder's filter as an aggregate query and returns the")
 	p("// one scalar record the server produces.")
-	p("func (q *%s) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {", q)
-	p("\tread := q.read")
-	p("\tread.Filter = andExpr(q.filters)")
-	p("\tread.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0")
-	p("\tread.Aggs = aggs")
-	p("\trecs, err := q.v.Query(ctx, read)")
+	p("func (q *%s) fold(ctx context.Context, aggs []protocol.AggTerm) (protocol.Record, error) {", q)
+	p("\tspec := q.spec")
+	p("\tspec.orders, spec.includes, spec.limit, spec.limitSet, spec.offset = nil, nil, 0, false, 0")
+	p("\tspec.aggs = aggs")
+	p("\trecs, err := q.v.Query(ctx, assemble(spec))")
 	p("\tif err != nil || len(recs) == 0 {")
 	p("\t\treturn protocol.Record{}, err")
 	p("\t}")
@@ -454,7 +453,7 @@ func emitAggregates(p func(string, ...any), t *genTable, q string) {
 	// Count is always available and never NULL.
 	p("// Count returns how many rows match (never NULL: 0 when none).")
 	p("func (q *%s) Count(ctx context.Context) (int64, error) {", q)
-	p("\trec, err := q.fold(ctx, []protocol.Agg{{Fn: \"count\", As: \"v\"}})")
+	p("\trec, err := q.fold(ctx, []protocol.AggTerm{{Fn: \"count\", As: \"v\"}})")
 	p("\tif err != nil {")
 	p("\t\treturn 0, err")
 	p("\t}")
@@ -465,7 +464,7 @@ func emitAggregates(p func(string, ...any), t *genTable, q string) {
 	fold := func(method, fn, col, retType, helper, doc string) {
 		p("// %s", doc)
 		p("func (q *%s) %s(ctx context.Context) (%s, error) {", q, method, retType)
-		p("\trec, err := q.fold(ctx, []protocol.Agg{{Fn: %q, Column: %q, As: \"v\"}})", fn, col)
+		p("\trec, err := q.fold(ctx, []protocol.AggTerm{{Fn: %q, Arg: protocol.Col(\"\", %q), As: \"v\"}})", fn, col)
 		p("\tif err != nil {")
 		p("\t\treturn nil, err")
 		p("\t}")
@@ -501,118 +500,101 @@ func emitFilterMethods(p func(string, ...any), t *genTable, q, recv, appendStmt 
 	}
 	for _, c := range t.Cols {
 		add(fmt.Sprintf("%sEq(v %s)", c.Field, c.GoType),
-			fmt.Sprintf("protocol.Expr{Op: \"eq\", Column: %q, Value: v}", c.SQLName))
+			fmt.Sprintf("protocol.Eq(protocol.Col(\"\", %q), protocol.Lit(v))", c.SQLName))
 		add(fmt.Sprintf("%sNe(v %s)", c.Field, c.GoType),
-			fmt.Sprintf("protocol.Expr{Op: \"ne\", Column: %q, Value: v}", c.SQLName))
+			fmt.Sprintf("protocol.Ne(protocol.Col(\"\", %q), protocol.Lit(v))", c.SQLName))
 		if c.Type != "bool" {
-			for _, op := range []struct{ suffix, op string }{
-				{"Lt", "lt"}, {"Lte", "lte"}, {"Gt", "gt"}, {"Gte", "gte"},
+			for _, op := range []struct{ suffix, ctor string }{
+				{"Lt", "Lt"}, {"Lte", "Lte"}, {"Gt", "Gt"}, {"Gte", "Gte"},
 			} {
 				add(fmt.Sprintf("%s%s(v %s)", c.Field, op.suffix, c.GoType),
-					fmt.Sprintf("protocol.Expr{Op: %q, Column: %q, Value: v}", op.op, c.SQLName))
+					fmt.Sprintf("protocol.%s(protocol.Col(\"\", %q), protocol.Lit(v))", op.ctor, c.SQLName))
 			}
 		}
 		if c.Nullable {
 			add(fmt.Sprintf("%sNull()", c.Field),
-				fmt.Sprintf("protocol.Expr{Op: \"is_null\", Column: %q}", c.SQLName))
+				fmt.Sprintf("protocol.IsNull(protocol.Col(\"\", %q))", c.SQLName))
 			add(fmt.Sprintf("%sNotNull()", c.Field),
-				fmt.Sprintf("protocol.Expr{Op: \"not\", Expr: &protocol.Expr{Op: \"is_null\", Column: %q}}", c.SQLName))
+				fmt.Sprintf("protocol.IsNotNull(protocol.Col(\"\", %q))", c.SQLName))
 		}
 	}
 	p("")
 }
 
-func emitOrderMethods(p func(string, ...any), t *genTable, q string) {
+func emitOrderMethods(p func(string, ...any), t *genTable, q, recv, target string) {
 	for _, c := range t.Cols {
-		p("func (q *%s) OrderBy%s() *%s {", q, c.Field, q)
-		p("\tq.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: %q})", c.SQLName)
-		p("\treturn q")
+		p("func (%s *%s) OrderBy%s() *%s {", recv, q, c.Field, q)
+		p("\t%s = append(%s, protocol.OrderTerm{Expr: *protocol.Col(\"\", %q)})", target, target, c.SQLName)
+		p("\treturn %s", recv)
 		p("}")
-		p("func (q *%s) OrderBy%sDesc() *%s {", q, c.Field, q)
-		p("\tq.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: %q, Desc: true})", c.SQLName)
-		p("\treturn q")
+		p("func (%s *%s) OrderBy%sDesc() *%s {", recv, q, c.Field, q)
+		p("\t%s = append(%s, protocol.OrderTerm{Expr: *protocol.Col(\"\", %q), Desc: true})", target, target, c.SQLName)
+		p("\treturn %s", recv)
 		p("}")
 	}
 	p("")
 }
 
-// emitIncludeMethods writes Include* methods for both relation directions.
+// emitIncludeMethods writes Include* methods for both relation directions:
+// a forward relation materialises as a nested object (first), a reverse one
+// as an array.
 func emitIncludeMethods(p func(string, ...any), t *genTable, q, appendStmt string) {
-	for _, r := range t.Forward {
-		p("// Include%s embeds the referenced %s (nil when the FK is NULL).", r.Field, r.Target.Model)
+	emit := func(r genRel, kind string) {
 		p("func (q *%s) Include%s(opts ...func(*%sInclude)) *%s {", q, r.Field, r.Target.Model, q)
-		p("\tb := &%sInclude{inc: protocol.Include{FK: %q, Dir: \"parent\", As: %q}}", r.Target.Model, r.FKName, r.As)
+		p("\tb := &%sInclude{spec: includeSpec{table: %q, pairs: %s, as: %q, kind: %q}}",
+			r.Target.Model, r.Target.SQLName, pairsLit(r.Pairs), r.As, kind)
 		p("\tfor _, o := range opts {")
 		p("\t\to(b)")
 		p("\t}")
-		p("\tinc := b.inc")
+		p("\tinc := b.spec")
 		p("\t" + appendStmt)
 		p("\treturn q")
 		p("}")
+	}
+	for _, r := range t.Forward {
+		p("// Include%s embeds the referenced %s (nil when the FK is NULL).", r.Field, r.Target.Model)
+		emit(r, "first")
 	}
 	for _, r := range t.Reverse {
 		p("// Include%s embeds the %s rows referencing this row.", r.Field, r.Target.Model)
-		p("func (q *%s) Include%s(opts ...func(*%sInclude)) *%s {", q, r.Field, r.Target.Model, q)
-		p("\tb := &%sInclude{inc: protocol.Include{FK: %q, Dir: \"children\", As: %q}}", r.Target.Model, r.FKName, r.As)
-		p("\tfor _, o := range opts {")
-		p("\t\to(b)")
-		p("\t}")
-		p("\tb.inc.Filter = andExpr(b.filters)")
-		p("\tinc := b.inc")
-		p("\t" + appendStmt)
-		p("\treturn q")
-		p("}")
+		emit(r, "array")
 	}
 	p("")
 }
 
-// emitInclude writes the include builder used to refine child fetches
+// emitInclude writes the include builder used to refine relation fetches
 // (filter, order, limit, nested includes).
 func emitInclude(p func(string, ...any), t *genTable) {
 	q := t.Model + "Include"
 	p("// %s refines an included %q fetch.", q, t.SQLName)
 	p("type %s struct {", q)
-	p("\tinc protocol.Include")
-	p("\tfilters []protocol.Expr")
+	p("\tspec includeSpec")
 	p("}")
 	p("")
 
-	emitFilterMethods(p, t, q, "b", "b.filters = append(b.filters, %s)")
+	emitFilterMethods(p, t, q, "b", "b.spec.filters = append(b.spec.filters, %s)")
+	emitOrderMethods(p, t, q, "b", "b.spec.orders")
 
-	for _, c := range t.Cols {
-		p("func (b *%s) OrderBy%s() *%s {", q, c.Field, q)
-		p("\tb.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: %q})", c.SQLName)
-		p("\treturn b")
-		p("}")
-		p("func (b *%s) OrderBy%sDesc() *%s {", q, c.Field, q)
-		p("\tb.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: %q, Desc: true})", c.SQLName)
-		p("\treturn b")
-		p("}")
-	}
-	p("func (b *%s) Limit(n int) *%s { b.inc.Limit = n; return b }", q, q)
+	p("func (b *%s) Limit(n int) *%s { b.spec.limit, b.spec.limitSet = n, true; return b }", q, q)
 	p("")
 
 	// Nested includes on include builders.
-	for _, r := range t.Forward {
+	nested := func(r genRel, kind string) {
 		p("func (b *%s) Include%s(opts ...func(*%sInclude)) *%s {", q, r.Field, r.Target.Model, q)
-		p("\tnested := &%sInclude{inc: protocol.Include{FK: %q, Dir: \"parent\", As: %q}}", r.Target.Model, r.FKName, r.As)
+		p("\tn := &%sInclude{spec: includeSpec{table: %q, pairs: %s, as: %q, kind: %q}}",
+			r.Target.Model, r.Target.SQLName, pairsLit(r.Pairs), r.As, kind)
 		p("\tfor _, o := range opts {")
-		p("\t\to(nested)")
+		p("\t\to(n)")
 		p("\t}")
-		p("\tb.inc.Include = append(b.inc.Include, nested.inc)")
+		p("\tb.spec.nested = append(b.spec.nested, n.spec)")
 		p("\treturn b")
 		p("}")
 	}
+	for _, r := range t.Forward {
+		nested(r, "first")
+	}
 	for _, r := range t.Reverse {
-		p("func (b *%s) Include%s(opts ...func(*%sInclude)) *%s {", q, r.Field, r.Target.Model, q)
-		p("\tnested := &%sInclude{inc: protocol.Include{FK: %q, Dir: \"children\", As: %q}}", r.Target.Model, r.FKName, r.As)
-		p("\tfor _, o := range opts {")
-		p("\t\to(nested)")
-		p("\t}")
-		p("\tnested.inc.Filter = andExpr(nested.filters)")
-		p("\tb.inc.Include = append(b.inc.Include, nested.inc)")
-		p("\treturn b")
-		p("}")
+		nested(r, "array")
 	}
 	p("")
 }

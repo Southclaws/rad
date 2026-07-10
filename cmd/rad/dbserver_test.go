@@ -58,6 +58,25 @@ func testServer(t *testing.T) *radclient.Client {
 	return c
 }
 
+// tableQ is the simplest graph: scan every row of one table.
+func tableQ(table string) protocol.Query {
+	return protocol.Query{
+		Nodes: map[string]protocol.Node{"t": {Kind: "scan", Table: table, Scope: "t"}},
+		Root:  protocol.Root{Node: "t", Cardinality: "many"},
+	}
+}
+
+// filteredQ scans a table and filters it.
+func filteredQ(table string, pred *protocol.Expr) protocol.Query {
+	return protocol.Query{
+		Nodes: map[string]protocol.Node{
+			"t": {Kind: "scan", Table: table, Scope: "t"},
+			"f": {Kind: "filter", Input: "t", Predicate: pred},
+		},
+		Root: protocol.Root{Node: "f", Cardinality: "many"},
+	}
+}
+
 func migrated(t *testing.T) *radclient.Client {
 	t.Helper()
 	c := testServer(t)
@@ -111,7 +130,7 @@ func TestClientCRUDOverTheWire(t *testing.T) {
 	if _, err := c.Create(ctx, "posts", map[string]any{"user_id": id, "title": "t", "score": big}); err != nil {
 		t.Fatal(err)
 	}
-	recs, err := c.Query(ctx, protocol.Read{Table: "posts"})
+	recs, err := c.Query(ctx, tableQ("posts"))
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("recs=%v err=%v", recs, err)
 	}
@@ -161,14 +180,11 @@ func TestClientExprOpsOverTheWire(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Two conjuncts fold into an `and` — an expr with no value of its own.
-	recs, err := c.Query(ctx, protocol.Read{Table: "users", Filter: &protocol.Expr{
-		Op: "and",
-		Exprs: []protocol.Expr{
-			{Op: "eq", Column: "name", Value: "ada"},
-			{Op: "gte", Column: "age", Value: 18},
-		},
-	}})
+	// A binary `and` — an expr with no value of its own.
+	recs, err := c.Query(ctx, filteredQ("users", protocol.AndAll([]*protocol.Expr{
+		protocol.Eq(protocol.Col("t", "name"), protocol.Lit("ada")),
+		protocol.Gte(protocol.Col("t", "age"), protocol.Lit(18)),
+	})))
 	if err != nil {
 		t.Fatalf("and filter: %v", err)
 	}
@@ -176,10 +192,9 @@ func TestClientExprOpsOverTheWire(t *testing.T) {
 		t.Fatalf("and filter recs = %v", recs)
 	}
 
-	// is_null carries only a column.
-	recs, err = c.Query(ctx, protocol.Read{Table: "users", Filter: &protocol.Expr{
-		Op: "is_null", Column: "age",
-	}})
+	// is_null carries only its operand.
+	recs, err = c.Query(ctx, filteredQ("users",
+		protocol.IsNull(protocol.Col("t", "age"))))
 	if err != nil {
 		t.Fatalf("is_null filter: %v", err)
 	}
@@ -188,10 +203,8 @@ func TestClientExprOpsOverTheWire(t *testing.T) {
 	}
 
 	// not wraps a sub-expression and has no value either.
-	recs, err = c.Query(ctx, protocol.Read{Table: "users", Filter: &protocol.Expr{
-		Op:   "not",
-		Expr: &protocol.Expr{Op: "is_null", Column: "age"},
-	}})
+	recs, err = c.Query(ctx, filteredQ("users",
+		protocol.Not(protocol.IsNull(protocol.Col("t", "age")))))
 	if err != nil {
 		t.Fatalf("not filter: %v", err)
 	}
@@ -223,7 +236,7 @@ func TestClientProblemDetails(t *testing.T) {
 	}
 
 	// Unknown table → invalid; unknown tx → not_found.
-	if _, err := c.Query(ctx, protocol.Read{Table: "ghost"}); err == nil {
+	if _, err := c.Query(ctx, tableQ("ghost")); err == nil {
 		t.Fatal("unknown table accepted")
 	}
 }
@@ -240,13 +253,20 @@ func TestClientNestedQuery(t *testing.T) {
 		}
 	}
 
-	recs, err := c.Query(ctx, protocol.Read{
-		Table:  "users",
-		Filter: &protocol.Expr{Op: "eq", Column: "name", Value: "ada"},
-		Include: []protocol.Include{{
-			FK: "posts_user_id_fk", Dir: "children", As: "posts",
-			OrderBy: []protocol.Order{{Column: "title"}},
-		}},
+	recs, err := c.Query(ctx, protocol.Query{
+		Nodes: map[string]protocol.Node{
+			"users": {Kind: "scan", Table: "users", Scope: "u"},
+			"ada": {Kind: "filter", Input: "users",
+				Predicate: protocol.Eq(protocol.Col("u", "name"), protocol.Lit("ada"))},
+			"posts": {Kind: "scan", Table: "posts", Scope: "p"},
+			"theirs": {Kind: "filter", Input: "posts",
+				Predicate: protocol.Eq(protocol.Col("p", "user_id"), protocol.Col("u", "id"))},
+			"sorted": {Kind: "order", Input: "theirs",
+				Terms: []protocol.OrderTerm{{Expr: *protocol.Col("p", "title")}}},
+			"out": {Kind: "project", Input: "ada", Spread: []string{"u"},
+				Fields: []protocol.Field{{As: "posts", Expr: *protocol.ArrayOf("sorted")}}},
+		},
+		Root: protocol.Root{Node: "out", Cardinality: "many"},
 	})
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("recs=%d err=%v", len(recs), err)
@@ -277,15 +297,18 @@ func TestClientAggregateOverTheWire(t *testing.T) {
 		}
 	}
 
-	// Root aggregate: one record of scalars, no rows.
-	recs, err := c.Query(ctx, protocol.Read{
-		Table: "posts",
-		Aggs: []protocol.Agg{
-			{Fn: "count", As: "n"},
-			{Fn: "sum", Column: "score", As: "total"},
-			{Fn: "avg", Column: "score", As: "mean"},
-			{Fn: "max", Column: "score", As: "top"},
+	// A global fold: one record of scalars, no rows shipped.
+	recs, err := c.Query(ctx, protocol.Query{
+		Nodes: map[string]protocol.Node{
+			"posts": {Kind: "scan", Table: "posts", Scope: "p"},
+			"stats": {Kind: "aggregate", Input: "posts", Aggs: []protocol.AggTerm{
+				{Fn: "count", As: "n"},
+				{Fn: "sum", Arg: protocol.Col("p", "score"), As: "total"},
+				{Fn: "avg", Arg: protocol.Col("p", "score"), As: "mean"},
+				{Fn: "max", Arg: protocol.Col("p", "score"), As: "top"},
+			}},
 		},
+		Root: protocol.Root{Node: "stats", Cardinality: "exactly_one"},
 	})
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("recs=%d err=%v", len(recs), err)
@@ -303,14 +326,22 @@ func TestClientAggregateOverTheWire(t *testing.T) {
 		t.Errorf("max = %d, want 30", got)
 	}
 
-	// Aggregate include: the board-card shape — a user with a post count.
-	recs, err = c.Query(ctx, protocol.Read{
-		Table:  "users",
-		Filter: &protocol.Expr{Op: "eq", Column: "name", Value: "ada"},
-		Include: []protocol.Include{{
-			FK: "posts_user_id_fk", Dir: "children", As: "post_stats",
-			Aggs: []protocol.Agg{{Fn: "count", As: "n"}},
-		}},
+	// A folded relation as a field: the board-card shape — a user with a
+	// nested object of post statistics.
+	recs, err = c.Query(ctx, protocol.Query{
+		Nodes: map[string]protocol.Node{
+			"users": {Kind: "scan", Table: "users", Scope: "u"},
+			"ada": {Kind: "filter", Input: "users",
+				Predicate: protocol.Eq(protocol.Col("u", "name"), protocol.Lit("ada"))},
+			"posts": {Kind: "scan", Table: "posts", Scope: "p"},
+			"theirs": {Kind: "filter", Input: "posts",
+				Predicate: protocol.Eq(protocol.Col("p", "user_id"), protocol.Col("u", "id"))},
+			"folded": {Kind: "aggregate", Input: "theirs",
+				Aggs: []protocol.AggTerm{{Fn: "count", As: "n"}}},
+			"out": {Kind: "project", Input: "ada", Spread: []string{"u"},
+				Fields: []protocol.Field{{As: "post_stats", Expr: *protocol.FirstOf("folded")}}},
+		},
+		Root: protocol.Root{Node: "out", Cardinality: "many"},
 	})
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("recs=%d err=%v", len(recs), err)
@@ -323,14 +354,25 @@ func TestClientAggregateOverTheWire(t *testing.T) {
 		t.Errorf("include count = %d, want 3", got)
 	}
 
-	// A friendly plan-time rejection surfaces as a 422 invalid problem.
-	_, err = c.Query(ctx, protocol.Read{
-		Table:   "posts",
-		OrderBy: []protocol.Order{{Column: "score"}},
-		Aggs:    []protocol.Agg{{Fn: "count", As: "n"}},
+	// Bind-time rejections surface as 422 invalid problems: a dangling node
+	// reference, and a fold over a non-numeric argument.
+	_, err = c.Query(ctx, protocol.Query{
+		Nodes: map[string]protocol.Node{"posts": {Kind: "scan", Table: "posts", Scope: "p"}},
+		Root:  protocol.Root{Node: "ghost", Cardinality: "many"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "can't also") {
-		t.Fatalf("expected a friendly aggregate+order rejection, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), `unknown node "ghost"`) {
+		t.Fatalf("dangling node reference accepted: %v", err)
+	}
+	_, err = c.Query(ctx, protocol.Query{
+		Nodes: map[string]protocol.Node{
+			"posts": {Kind: "scan", Table: "posts", Scope: "p"},
+			"bad": {Kind: "aggregate", Input: "posts",
+				Aggs: []protocol.AggTerm{{Fn: "sum", Arg: protocol.Col("p", "title"), As: "s"}}},
+		},
+		Root: protocol.Root{Node: "bad", Cardinality: "exactly_one"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "numeric") {
+		t.Fatalf("sum over text accepted: %v", err)
 	}
 }
 
@@ -371,7 +413,7 @@ func TestClientTransactions(t *testing.T) {
 			return err
 		}
 		// Read-your-writes inside the session.
-		recs, err := tx.Query(ctx, protocol.Read{Table: "users"})
+		recs, err := tx.Query(ctx, tableQ("users"))
 		if err != nil {
 			return err
 		}
@@ -383,7 +425,7 @@ func TestClientTransactions(t *testing.T) {
 	if err != errAbort {
 		t.Fatalf("fn error not propagated: %v", err)
 	}
-	if recs, _ := c.Query(ctx, protocol.Read{Table: "users"}); len(recs) != 0 {
+	if recs, _ := c.Query(ctx, tableQ("users")); len(recs) != 0 {
 		t.Fatal("rolled-back write visible")
 	}
 
@@ -393,7 +435,7 @@ func TestClientTransactions(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if recs, _ := c.Query(ctx, protocol.Read{Table: "users"}); len(recs) != 1 {
+	if recs, _ := c.Query(ctx, tableQ("users")); len(recs) != 1 {
 		t.Fatal("committed write missing")
 	}
 

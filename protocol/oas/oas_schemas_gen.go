@@ -13,82 +13,79 @@ func (s *InternalServerErrorStatusCode) Error() string {
 	return fmt.Sprintf("code %d: %+v", s.StatusCode, s.Response)
 }
 
-// One aggregate fold over the matching rows, written into the result under the name `as`. `count` with
-// no `column` counts rows; `count` with a column counts non null values. `sum` and `avg` require a
-// numeric column, `min` and `max` accept any comparable column. Folds skip nulls, and an empty input
-// yields `0` for `count` and `null` for the rest.
-// Ref: #/$defs/Aggregate
-type Aggregate struct {
-	Fn AggregateFn `json:"fn"`
-	// The column to fold. Omitted only for `count` over rows.
-	Column OptString `json:"column"`
-	// The name this fold takes in the result record.
-	As string `json:"as"`
+// One fold, named `as` in the output. `count` with no `arg` counts rows, with an `arg` counts non-null
+// values; `sum` and `avg` need a numeric argument; `min` and `max` accept any scalar. Folds skip
+// NULLs; over nothing, count is 0 and every other fold is null.
+// Ref: #/$defs/AggTerm
+type AggTerm struct {
+	Fn  AggTermFn `json:"fn"`
+	Arg *Expr     `json:"arg"`
+	As  string    `json:"as"`
 }
 
 // GetFn returns the value of Fn.
-func (s *Aggregate) GetFn() AggregateFn {
+func (s *AggTerm) GetFn() AggTermFn {
 	return s.Fn
 }
 
-// GetColumn returns the value of Column.
-func (s *Aggregate) GetColumn() OptString {
-	return s.Column
+// GetArg returns the value of Arg.
+func (s *AggTerm) GetArg() *Expr {
+	return s.Arg
 }
 
 // GetAs returns the value of As.
-func (s *Aggregate) GetAs() string {
+func (s *AggTerm) GetAs() string {
 	return s.As
 }
 
 // SetFn sets the value of Fn.
-func (s *Aggregate) SetFn(val AggregateFn) {
+func (s *AggTerm) SetFn(val AggTermFn) {
 	s.Fn = val
 }
 
-// SetColumn sets the value of Column.
-func (s *Aggregate) SetColumn(val OptString) {
-	s.Column = val
+// SetArg sets the value of Arg.
+func (s *AggTerm) SetArg(val *Expr) {
+	s.Arg = val
 }
 
 // SetAs sets the value of As.
-func (s *Aggregate) SetAs(val string) {
+func (s *AggTerm) SetAs(val string) {
 	s.As = val
 }
 
-type AggregateFn string
+type AggTermFn string
 
 const (
-	AggregateFnCount AggregateFn = "count"
-	AggregateFnSum   AggregateFn = "sum"
-	AggregateFnAvg   AggregateFn = "avg"
-	AggregateFnMin   AggregateFn = "min"
-	AggregateFnMax   AggregateFn = "max"
+	AggTermFnCount AggTermFn = "count"
+	AggTermFnSum   AggTermFn = "sum"
+	AggTermFnAvg   AggTermFn = "avg"
+	AggTermFnMin   AggTermFn = "min"
+	AggTermFnMax   AggTermFn = "max"
 )
 
-// AllValues returns all AggregateFn values.
-func (AggregateFn) AllValues() []AggregateFn {
-	return []AggregateFn{
-		AggregateFnCount,
-		AggregateFnSum,
-		AggregateFnAvg,
-		AggregateFnMin,
-		AggregateFnMax,
+// AllValues returns all AggTermFn values.
+func (AggTermFn) AllValues() []AggTermFn {
+	return []AggTermFn{
+		AggTermFnCount,
+		AggTermFnSum,
+		AggTermFnAvg,
+		AggTermFnMin,
+		AggTermFnMax,
 	}
 }
 
 // MarshalText implements encoding.TextMarshaler.
-func (s AggregateFn) MarshalText() ([]byte, error) {
+func (s AggTermFn) MarshalText() ([]byte, error) {
 	switch s {
-	case AggregateFnCount:
+	case AggTermFnCount:
 		return []byte(s), nil
-	case AggregateFnSum:
+	case AggTermFnSum:
 		return []byte(s), nil
-	case AggregateFnAvg:
+	case AggTermFnAvg:
 		return []byte(s), nil
-	case AggregateFnMin:
+	case AggTermFnMin:
 		return []byte(s), nil
-	case AggregateFnMax:
+	case AggTermFnMax:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -96,22 +93,22 @@ func (s AggregateFn) MarshalText() ([]byte, error) {
 }
 
 // UnmarshalText implements encoding.TextUnmarshaler.
-func (s *AggregateFn) UnmarshalText(data []byte) error {
-	switch AggregateFn(data) {
-	case AggregateFnCount:
-		*s = AggregateFnCount
+func (s *AggTermFn) UnmarshalText(data []byte) error {
+	switch AggTermFn(data) {
+	case AggTermFnCount:
+		*s = AggTermFnCount
 		return nil
-	case AggregateFnSum:
-		*s = AggregateFnSum
+	case AggTermFnSum:
+		*s = AggTermFnSum
 		return nil
-	case AggregateFnAvg:
-		*s = AggregateFnAvg
+	case AggTermFnAvg:
+		*s = AggTermFnAvg
 		return nil
-	case AggregateFnMin:
-		*s = AggregateFnMin
+	case AggTermFnMin:
+		*s = AggTermFnMin
 		return nil
-	case AggregateFnMax:
-		*s = AggregateFnMax
+	case AggTermFnMax:
+		*s = AggTermFnMax
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -203,41 +200,34 @@ func (s *DeleteResult) SetFound(val bool) {
 func (*DeleteResult) rowDeleteRes()            {}
 func (*DeleteResult) transactionRowDeleteRes() {}
 
-// A filter expression, expressed as a tagged union selected by `op`.
-//
-// The logical operators `and` and `or` take a list of sub expressions in `exprs`. `not` takes a single
-// sub expression in `expr`. The comparisons `eq`, `ne`, `lt`, `lte`, `gt`, and `gte` take a `column`
-// and a `value`. `is_null` takes just a `column`. A comparison against `null` never matches, following
-// SQL three valued logic.
+// A scalar expression, a flat tagged union selected by `kind`. `lit` carries a raw value; `col` names
+// a `scope`'s `column`; `unary` applies `op` (not, negate, is_null, is_not_null) to `expr`; `binary`
+// applies `op` (eq ne lt lte gt gte, and or, add sub mul div) to `left` and `right` — and/or are
+// binary, longer chains left-fold; `cast` converts `expr` `to` a scalar type. The cardinality
+// crossings — `exists`, `first`, `scalar`, `array` — reference a relation `node` and are the only
+// doors from relations into expressions: exists is a never-null boolean, first materialises the row as
+// a nested object or null, scalar asserts a single-column at-most-one relation and yields its value,
+// array materialises every row as a nested array. Comparisons with NULL are UNKNOWN; is_null is the
+// only NULL match.
 // Ref: #/$defs/Expr
 type Expr struct {
-	Op ExprOp `json:"op"`
-	// The operands of `and` or `or`.
-	Exprs []Expr `json:"exprs"`
-	Expr  *Expr  `json:"expr"`
-	// The column a comparison or `is_null` tests.
-	Column OptString `json:"column"`
+	Kind   ExprKind  `json:"kind"`
 	Value  Value     `json:"value"`
+	Scope  OptString `json:"scope"`
+	Column OptString `json:"column"`
+	Op     OptString `json:"op"`
+	Expr   *Expr     `json:"expr"`
+	Left   *Expr     `json:"left"`
+	Right  *Expr     `json:"right"`
+	Fn     OptString `json:"fn"`
+	Args   []Expr    `json:"args"`
+	To     OptString `json:"to"`
+	Node   OptString `json:"node"`
 }
 
-// GetOp returns the value of Op.
-func (s *Expr) GetOp() ExprOp {
-	return s.Op
-}
-
-// GetExprs returns the value of Exprs.
-func (s *Expr) GetExprs() []Expr {
-	return s.Exprs
-}
-
-// GetExpr returns the value of Expr.
-func (s *Expr) GetExpr() *Expr {
-	return s.Expr
-}
-
-// GetColumn returns the value of Column.
-func (s *Expr) GetColumn() OptString {
-	return s.Column
+// GetKind returns the value of Kind.
+func (s *Expr) GetKind() ExprKind {
+	return s.Kind
 }
 
 // GetValue returns the value of Value.
@@ -245,24 +235,59 @@ func (s *Expr) GetValue() Value {
 	return s.Value
 }
 
-// SetOp sets the value of Op.
-func (s *Expr) SetOp(val ExprOp) {
-	s.Op = val
+// GetScope returns the value of Scope.
+func (s *Expr) GetScope() OptString {
+	return s.Scope
 }
 
-// SetExprs sets the value of Exprs.
-func (s *Expr) SetExprs(val []Expr) {
-	s.Exprs = val
+// GetColumn returns the value of Column.
+func (s *Expr) GetColumn() OptString {
+	return s.Column
 }
 
-// SetExpr sets the value of Expr.
-func (s *Expr) SetExpr(val *Expr) {
-	s.Expr = val
+// GetOp returns the value of Op.
+func (s *Expr) GetOp() OptString {
+	return s.Op
 }
 
-// SetColumn sets the value of Column.
-func (s *Expr) SetColumn(val OptString) {
-	s.Column = val
+// GetExpr returns the value of Expr.
+func (s *Expr) GetExpr() *Expr {
+	return s.Expr
+}
+
+// GetLeft returns the value of Left.
+func (s *Expr) GetLeft() *Expr {
+	return s.Left
+}
+
+// GetRight returns the value of Right.
+func (s *Expr) GetRight() *Expr {
+	return s.Right
+}
+
+// GetFn returns the value of Fn.
+func (s *Expr) GetFn() OptString {
+	return s.Fn
+}
+
+// GetArgs returns the value of Args.
+func (s *Expr) GetArgs() []Expr {
+	return s.Args
+}
+
+// GetTo returns the value of To.
+func (s *Expr) GetTo() OptString {
+	return s.To
+}
+
+// GetNode returns the value of Node.
+func (s *Expr) GetNode() OptString {
+	return s.Node
+}
+
+// SetKind sets the value of Kind.
+func (s *Expr) SetKind(val ExprKind) {
+	s.Kind = val
 }
 
 // SetValue sets the value of Value.
@@ -270,59 +295,109 @@ func (s *Expr) SetValue(val Value) {
 	s.Value = val
 }
 
-type ExprOp string
+// SetScope sets the value of Scope.
+func (s *Expr) SetScope(val OptString) {
+	s.Scope = val
+}
+
+// SetColumn sets the value of Column.
+func (s *Expr) SetColumn(val OptString) {
+	s.Column = val
+}
+
+// SetOp sets the value of Op.
+func (s *Expr) SetOp(val OptString) {
+	s.Op = val
+}
+
+// SetExpr sets the value of Expr.
+func (s *Expr) SetExpr(val *Expr) {
+	s.Expr = val
+}
+
+// SetLeft sets the value of Left.
+func (s *Expr) SetLeft(val *Expr) {
+	s.Left = val
+}
+
+// SetRight sets the value of Right.
+func (s *Expr) SetRight(val *Expr) {
+	s.Right = val
+}
+
+// SetFn sets the value of Fn.
+func (s *Expr) SetFn(val OptString) {
+	s.Fn = val
+}
+
+// SetArgs sets the value of Args.
+func (s *Expr) SetArgs(val []Expr) {
+	s.Args = val
+}
+
+// SetTo sets the value of To.
+func (s *Expr) SetTo(val OptString) {
+	s.To = val
+}
+
+// SetNode sets the value of Node.
+func (s *Expr) SetNode(val OptString) {
+	s.Node = val
+}
+
+type ExprKind string
 
 const (
-	ExprOpAnd    ExprOp = "and"
-	ExprOpOr     ExprOp = "or"
-	ExprOpNot    ExprOp = "not"
-	ExprOpEq     ExprOp = "eq"
-	ExprOpNe     ExprOp = "ne"
-	ExprOpLt     ExprOp = "lt"
-	ExprOpLte    ExprOp = "lte"
-	ExprOpGt     ExprOp = "gt"
-	ExprOpGte    ExprOp = "gte"
-	ExprOpIsNull ExprOp = "is_null"
+	ExprKindLit    ExprKind = "lit"
+	ExprKindCol    ExprKind = "col"
+	ExprKindUnary  ExprKind = "unary"
+	ExprKindBinary ExprKind = "binary"
+	ExprKindCall   ExprKind = "call"
+	ExprKindCast   ExprKind = "cast"
+	ExprKindExists ExprKind = "exists"
+	ExprKindFirst  ExprKind = "first"
+	ExprKindScalar ExprKind = "scalar"
+	ExprKindArray  ExprKind = "array"
 )
 
-// AllValues returns all ExprOp values.
-func (ExprOp) AllValues() []ExprOp {
-	return []ExprOp{
-		ExprOpAnd,
-		ExprOpOr,
-		ExprOpNot,
-		ExprOpEq,
-		ExprOpNe,
-		ExprOpLt,
-		ExprOpLte,
-		ExprOpGt,
-		ExprOpGte,
-		ExprOpIsNull,
+// AllValues returns all ExprKind values.
+func (ExprKind) AllValues() []ExprKind {
+	return []ExprKind{
+		ExprKindLit,
+		ExprKindCol,
+		ExprKindUnary,
+		ExprKindBinary,
+		ExprKindCall,
+		ExprKindCast,
+		ExprKindExists,
+		ExprKindFirst,
+		ExprKindScalar,
+		ExprKindArray,
 	}
 }
 
 // MarshalText implements encoding.TextMarshaler.
-func (s ExprOp) MarshalText() ([]byte, error) {
+func (s ExprKind) MarshalText() ([]byte, error) {
 	switch s {
-	case ExprOpAnd:
+	case ExprKindLit:
 		return []byte(s), nil
-	case ExprOpOr:
+	case ExprKindCol:
 		return []byte(s), nil
-	case ExprOpNot:
+	case ExprKindUnary:
 		return []byte(s), nil
-	case ExprOpEq:
+	case ExprKindBinary:
 		return []byte(s), nil
-	case ExprOpNe:
+	case ExprKindCall:
 		return []byte(s), nil
-	case ExprOpLt:
+	case ExprKindCast:
 		return []byte(s), nil
-	case ExprOpLte:
+	case ExprKindExists:
 		return []byte(s), nil
-	case ExprOpGt:
+	case ExprKindFirst:
 		return []byte(s), nil
-	case ExprOpGte:
+	case ExprKindScalar:
 		return []byte(s), nil
-	case ExprOpIsNull:
+	case ExprKindArray:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -330,41 +405,96 @@ func (s ExprOp) MarshalText() ([]byte, error) {
 }
 
 // UnmarshalText implements encoding.TextUnmarshaler.
-func (s *ExprOp) UnmarshalText(data []byte) error {
-	switch ExprOp(data) {
-	case ExprOpAnd:
-		*s = ExprOpAnd
+func (s *ExprKind) UnmarshalText(data []byte) error {
+	switch ExprKind(data) {
+	case ExprKindLit:
+		*s = ExprKindLit
 		return nil
-	case ExprOpOr:
-		*s = ExprOpOr
+	case ExprKindCol:
+		*s = ExprKindCol
 		return nil
-	case ExprOpNot:
-		*s = ExprOpNot
+	case ExprKindUnary:
+		*s = ExprKindUnary
 		return nil
-	case ExprOpEq:
-		*s = ExprOpEq
+	case ExprKindBinary:
+		*s = ExprKindBinary
 		return nil
-	case ExprOpNe:
-		*s = ExprOpNe
+	case ExprKindCall:
+		*s = ExprKindCall
 		return nil
-	case ExprOpLt:
-		*s = ExprOpLt
+	case ExprKindCast:
+		*s = ExprKindCast
 		return nil
-	case ExprOpLte:
-		*s = ExprOpLte
+	case ExprKindExists:
+		*s = ExprKindExists
 		return nil
-	case ExprOpGt:
-		*s = ExprOpGt
+	case ExprKindFirst:
+		*s = ExprKindFirst
 		return nil
-	case ExprOpGte:
-		*s = ExprOpGte
+	case ExprKindScalar:
+		*s = ExprKindScalar
 		return nil
-	case ExprOpIsNull:
-		*s = ExprOpIsNull
+	case ExprKindArray:
+		*s = ExprKindArray
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
 	}
+}
+
+// One projected attribute: a crossing expression renders as a nested object, array, scalar, or boolean
+// under `as`.
+// Ref: #/$defs/Field
+type Field struct {
+	As   string `json:"as"`
+	Expr Expr   `json:"expr"`
+}
+
+// GetAs returns the value of As.
+func (s *Field) GetAs() string {
+	return s.As
+}
+
+// GetExpr returns the value of Expr.
+func (s *Field) GetExpr() Expr {
+	return s.Expr
+}
+
+// SetAs sets the value of As.
+func (s *Field) SetAs(val string) {
+	s.As = val
+}
+
+// SetExpr sets the value of Expr.
+func (s *Field) SetExpr(val Expr) {
+	s.Expr = val
+}
+
+// One grouping attribute. `as` names the output; omitted, a bare column reference's name is used.
+// Ref: #/$defs/GroupTerm
+type GroupTerm struct {
+	As   OptString `json:"as"`
+	Expr Expr      `json:"expr"`
+}
+
+// GetAs returns the value of As.
+func (s *GroupTerm) GetAs() OptString {
+	return s.As
+}
+
+// GetExpr returns the value of Expr.
+func (s *GroupTerm) GetExpr() Expr {
+	return s.Expr
+}
+
+// SetAs sets the value of As.
+func (s *GroupTerm) SetAs(val OptString) {
+	s.As = val
+}
+
+// SetExpr sets the value of Expr.
+func (s *GroupTerm) SetExpr(val Expr) {
+	s.Expr = val
 }
 
 // The liveness status of the server.
@@ -381,150 +511,6 @@ func (s *Health) GetStatus() string {
 // SetStatus sets the value of Status.
 func (s *Health) SetStatus(val string) {
 	s.Status = val
-}
-
-// Embed a related relation in each result record under the name `as`. The relation is identified by
-// the foreign key name in `fk` and the direction in `dir`: `parent` follows a foreign key on this
-// table to the single row it references, `children` follows a foreign key on another table back to the
-// rows that reference this one.
-//
-// Children includes may be refined with `filter`, `order_by`, `limit`, and further nested `include`s.
-// Setting `aggs` folds the matched children into one object of scalars instead of returning them as an
-// array, and is mutually exclusive with `order_by`, `limit`, and nested `include`. Parent includes
-// take no refinements, since a parent is at most one row.
-// Ref: #/$defs/Include
-type Include struct {
-	// The foreign key name that defines the relation.
-	Fk  string     `json:"fk"`
-	Dir IncludeDir `json:"dir"`
-	// The field name the embedded relation takes in each record.
-	As      string      `json:"as"`
-	Filter  OptExpr     `json:"filter"`
-	OrderBy []Order     `json:"order_by"`
-	Limit   OptInt      `json:"limit"`
-	Include []Include   `json:"include"`
-	Aggs    []Aggregate `json:"aggs"`
-}
-
-// GetFk returns the value of Fk.
-func (s *Include) GetFk() string {
-	return s.Fk
-}
-
-// GetDir returns the value of Dir.
-func (s *Include) GetDir() IncludeDir {
-	return s.Dir
-}
-
-// GetAs returns the value of As.
-func (s *Include) GetAs() string {
-	return s.As
-}
-
-// GetFilter returns the value of Filter.
-func (s *Include) GetFilter() OptExpr {
-	return s.Filter
-}
-
-// GetOrderBy returns the value of OrderBy.
-func (s *Include) GetOrderBy() []Order {
-	return s.OrderBy
-}
-
-// GetLimit returns the value of Limit.
-func (s *Include) GetLimit() OptInt {
-	return s.Limit
-}
-
-// GetInclude returns the value of Include.
-func (s *Include) GetInclude() []Include {
-	return s.Include
-}
-
-// GetAggs returns the value of Aggs.
-func (s *Include) GetAggs() []Aggregate {
-	return s.Aggs
-}
-
-// SetFk sets the value of Fk.
-func (s *Include) SetFk(val string) {
-	s.Fk = val
-}
-
-// SetDir sets the value of Dir.
-func (s *Include) SetDir(val IncludeDir) {
-	s.Dir = val
-}
-
-// SetAs sets the value of As.
-func (s *Include) SetAs(val string) {
-	s.As = val
-}
-
-// SetFilter sets the value of Filter.
-func (s *Include) SetFilter(val OptExpr) {
-	s.Filter = val
-}
-
-// SetOrderBy sets the value of OrderBy.
-func (s *Include) SetOrderBy(val []Order) {
-	s.OrderBy = val
-}
-
-// SetLimit sets the value of Limit.
-func (s *Include) SetLimit(val OptInt) {
-	s.Limit = val
-}
-
-// SetInclude sets the value of Include.
-func (s *Include) SetInclude(val []Include) {
-	s.Include = val
-}
-
-// SetAggs sets the value of Aggs.
-func (s *Include) SetAggs(val []Aggregate) {
-	s.Aggs = val
-}
-
-type IncludeDir string
-
-const (
-	IncludeDirParent   IncludeDir = "parent"
-	IncludeDirChildren IncludeDir = "children"
-)
-
-// AllValues returns all IncludeDir values.
-func (IncludeDir) AllValues() []IncludeDir {
-	return []IncludeDir{
-		IncludeDirParent,
-		IncludeDirChildren,
-	}
-}
-
-// MarshalText implements encoding.TextMarshaler.
-func (s IncludeDir) MarshalText() ([]byte, error) {
-	switch s {
-	case IncludeDirParent:
-		return []byte(s), nil
-	case IncludeDirChildren:
-		return []byte(s), nil
-	default:
-		return nil, errors.Errorf("invalid value: %q", s)
-	}
-}
-
-// UnmarshalText implements encoding.TextUnmarshaler.
-func (s *IncludeDir) UnmarshalText(data []byte) error {
-	switch IncludeDir(data) {
-	case IncludeDirParent:
-		*s = IncludeDirParent
-		return nil
-	case IncludeDirChildren:
-		*s = IncludeDirChildren
-		return nil
-	default:
-		return errors.Errorf("invalid value: %q", data)
-	}
 }
 
 // InternalServerErrorStatusCode wraps Problem with StatusCode.
@@ -595,6 +581,312 @@ type NoContent struct{}
 
 func (*NoContent) transactionCommitRes()   {}
 func (*NoContent) transactionRollbackRes() {}
+
+// One relation operator, a flat tagged union selected by `kind`. `scan` introduces a table and binds
+// its `scope` label (required, unique per query); `filter` keeps rows whose `predicate` is TRUE under
+// three-valued logic; `project` establishes a new row type from `spread` scopes and computed `fields`,
+// optionally binding an output `scope`; `join` combines `left` and `right` on a boolean condition;
+// `aggregate` folds its input per distinct `groups` (none means exactly one row), optionally binding a
+// `scope`; `order` gives a logical ordering; `slice` pages — `limit` omitted is unlimited, an
+// explicit 0 keeps no rows.
+// Ref: #/$defs/Node
+type Node struct {
+	Kind      NodeKind    `json:"kind"`
+	Table     OptString   `json:"table"`
+	Scope     OptString   `json:"scope"`
+	Input     OptString   `json:"input"`
+	Left      OptString   `json:"left"`
+	Right     OptString   `json:"right"`
+	Join      OptNodeJoin `json:"join"`
+	On        OptExpr     `json:"on"`
+	Predicate OptExpr     `json:"predicate"`
+	// Scopes whose columns the projection re-exposes, before its computed fields. Name collisions are
+	// rejected.
+	Spread []string    `json:"spread"`
+	Fields []Field     `json:"fields"`
+	Groups []GroupTerm `json:"groups"`
+	Aggs   []AggTerm   `json:"aggs"`
+	Terms  []OrderTerm `json:"terms"`
+	Offset OptInt      `json:"offset"`
+	Limit  OptInt      `json:"limit"`
+}
+
+// GetKind returns the value of Kind.
+func (s *Node) GetKind() NodeKind {
+	return s.Kind
+}
+
+// GetTable returns the value of Table.
+func (s *Node) GetTable() OptString {
+	return s.Table
+}
+
+// GetScope returns the value of Scope.
+func (s *Node) GetScope() OptString {
+	return s.Scope
+}
+
+// GetInput returns the value of Input.
+func (s *Node) GetInput() OptString {
+	return s.Input
+}
+
+// GetLeft returns the value of Left.
+func (s *Node) GetLeft() OptString {
+	return s.Left
+}
+
+// GetRight returns the value of Right.
+func (s *Node) GetRight() OptString {
+	return s.Right
+}
+
+// GetJoin returns the value of Join.
+func (s *Node) GetJoin() OptNodeJoin {
+	return s.Join
+}
+
+// GetOn returns the value of On.
+func (s *Node) GetOn() OptExpr {
+	return s.On
+}
+
+// GetPredicate returns the value of Predicate.
+func (s *Node) GetPredicate() OptExpr {
+	return s.Predicate
+}
+
+// GetSpread returns the value of Spread.
+func (s *Node) GetSpread() []string {
+	return s.Spread
+}
+
+// GetFields returns the value of Fields.
+func (s *Node) GetFields() []Field {
+	return s.Fields
+}
+
+// GetGroups returns the value of Groups.
+func (s *Node) GetGroups() []GroupTerm {
+	return s.Groups
+}
+
+// GetAggs returns the value of Aggs.
+func (s *Node) GetAggs() []AggTerm {
+	return s.Aggs
+}
+
+// GetTerms returns the value of Terms.
+func (s *Node) GetTerms() []OrderTerm {
+	return s.Terms
+}
+
+// GetOffset returns the value of Offset.
+func (s *Node) GetOffset() OptInt {
+	return s.Offset
+}
+
+// GetLimit returns the value of Limit.
+func (s *Node) GetLimit() OptInt {
+	return s.Limit
+}
+
+// SetKind sets the value of Kind.
+func (s *Node) SetKind(val NodeKind) {
+	s.Kind = val
+}
+
+// SetTable sets the value of Table.
+func (s *Node) SetTable(val OptString) {
+	s.Table = val
+}
+
+// SetScope sets the value of Scope.
+func (s *Node) SetScope(val OptString) {
+	s.Scope = val
+}
+
+// SetInput sets the value of Input.
+func (s *Node) SetInput(val OptString) {
+	s.Input = val
+}
+
+// SetLeft sets the value of Left.
+func (s *Node) SetLeft(val OptString) {
+	s.Left = val
+}
+
+// SetRight sets the value of Right.
+func (s *Node) SetRight(val OptString) {
+	s.Right = val
+}
+
+// SetJoin sets the value of Join.
+func (s *Node) SetJoin(val OptNodeJoin) {
+	s.Join = val
+}
+
+// SetOn sets the value of On.
+func (s *Node) SetOn(val OptExpr) {
+	s.On = val
+}
+
+// SetPredicate sets the value of Predicate.
+func (s *Node) SetPredicate(val OptExpr) {
+	s.Predicate = val
+}
+
+// SetSpread sets the value of Spread.
+func (s *Node) SetSpread(val []string) {
+	s.Spread = val
+}
+
+// SetFields sets the value of Fields.
+func (s *Node) SetFields(val []Field) {
+	s.Fields = val
+}
+
+// SetGroups sets the value of Groups.
+func (s *Node) SetGroups(val []GroupTerm) {
+	s.Groups = val
+}
+
+// SetAggs sets the value of Aggs.
+func (s *Node) SetAggs(val []AggTerm) {
+	s.Aggs = val
+}
+
+// SetTerms sets the value of Terms.
+func (s *Node) SetTerms(val []OrderTerm) {
+	s.Terms = val
+}
+
+// SetOffset sets the value of Offset.
+func (s *Node) SetOffset(val OptInt) {
+	s.Offset = val
+}
+
+// SetLimit sets the value of Limit.
+func (s *Node) SetLimit(val OptInt) {
+	s.Limit = val
+}
+
+type NodeJoin string
+
+const (
+	NodeJoinInner NodeJoin = "inner"
+	NodeJoinLeft  NodeJoin = "left"
+)
+
+// AllValues returns all NodeJoin values.
+func (NodeJoin) AllValues() []NodeJoin {
+	return []NodeJoin{
+		NodeJoinInner,
+		NodeJoinLeft,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s NodeJoin) MarshalText() ([]byte, error) {
+	switch s {
+	case NodeJoinInner:
+		return []byte(s), nil
+	case NodeJoinLeft:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *NodeJoin) UnmarshalText(data []byte) error {
+	switch NodeJoin(data) {
+	case NodeJoinInner:
+		*s = NodeJoinInner
+		return nil
+	case NodeJoinLeft:
+		*s = NodeJoinLeft
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type NodeKind string
+
+const (
+	NodeKindScan      NodeKind = "scan"
+	NodeKindFilter    NodeKind = "filter"
+	NodeKindProject   NodeKind = "project"
+	NodeKindJoin      NodeKind = "join"
+	NodeKindAggregate NodeKind = "aggregate"
+	NodeKindOrder     NodeKind = "order"
+	NodeKindSlice     NodeKind = "slice"
+)
+
+// AllValues returns all NodeKind values.
+func (NodeKind) AllValues() []NodeKind {
+	return []NodeKind{
+		NodeKindScan,
+		NodeKindFilter,
+		NodeKindProject,
+		NodeKindJoin,
+		NodeKindAggregate,
+		NodeKindOrder,
+		NodeKindSlice,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s NodeKind) MarshalText() ([]byte, error) {
+	switch s {
+	case NodeKindScan:
+		return []byte(s), nil
+	case NodeKindFilter:
+		return []byte(s), nil
+	case NodeKindProject:
+		return []byte(s), nil
+	case NodeKindJoin:
+		return []byte(s), nil
+	case NodeKindAggregate:
+		return []byte(s), nil
+	case NodeKindOrder:
+		return []byte(s), nil
+	case NodeKindSlice:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *NodeKind) UnmarshalText(data []byte) error {
+	switch NodeKind(data) {
+	case NodeKindScan:
+		*s = NodeKindScan
+		return nil
+	case NodeKindFilter:
+		*s = NodeKindFilter
+		return nil
+	case NodeKindProject:
+		*s = NodeKindProject
+		return nil
+	case NodeKindJoin:
+		*s = NodeKindJoin
+		return nil
+	case NodeKindAggregate:
+		*s = NodeKindAggregate
+		return nil
+	case NodeKindOrder:
+		*s = NodeKindOrder
+		return nil
+	case NodeKindSlice:
+		*s = NodeKindSlice
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 // NewOptBool returns new OptBool with value set to v.
 func NewOptBool(v bool) OptBool {
@@ -774,6 +1066,52 @@ func (o OptMigrateProps) Get() (v MigrateProps, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptMigrateProps) Or(d MigrateProps) MigrateProps {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNodeJoin returns new OptNodeJoin with value set to v.
+func NewOptNodeJoin(v NodeJoin) OptNodeJoin {
+	return OptNodeJoin{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNodeJoin is optional NodeJoin.
+type OptNodeJoin struct {
+	Value NodeJoin
+	Set   bool
+}
+
+// IsSet returns true if OptNodeJoin was set.
+func (o OptNodeJoin) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNodeJoin) Reset() {
+	var v NodeJoin
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptNodeJoin) SetTo(v NodeJoin) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNodeJoin) Get() (v NodeJoin, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNodeJoin) Or(d NodeJoin) NodeJoin {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -1056,31 +1394,31 @@ func (o OptString) Or(d string) string {
 	return d
 }
 
-// One ordering term. Rows sort by these terms in list order.
-// Ref: #/$defs/Order
-type Order struct {
-	Column string `json:"column"`
-	// Sort descending instead of the default ascending.
+// One ordering term; NULLs sort first ascending, last descending. A known unique key of the output is
+// appended as a deterministic tie-breaker.
+// Ref: #/$defs/OrderTerm
+type OrderTerm struct {
+	Expr Expr    `json:"expr"`
 	Desc OptBool `json:"desc"`
 }
 
-// GetColumn returns the value of Column.
-func (s *Order) GetColumn() string {
-	return s.Column
+// GetExpr returns the value of Expr.
+func (s *OrderTerm) GetExpr() Expr {
+	return s.Expr
 }
 
 // GetDesc returns the value of Desc.
-func (s *Order) GetDesc() OptBool {
+func (s *OrderTerm) GetDesc() OptBool {
 	return s.Desc
 }
 
-// SetColumn sets the value of Column.
-func (s *Order) SetColumn(val string) {
-	s.Column = val
+// SetExpr sets the value of Expr.
+func (s *OrderTerm) SetExpr(val Expr) {
+	s.Expr = val
 }
 
 // SetDesc sets the value of Desc.
-func (s *Order) SetDesc(val OptBool) {
+func (s *OrderTerm) SetDesc(val OptBool) {
 	s.Desc = val
 }
 
@@ -1212,91 +1550,45 @@ func (s *ProblemCode) UnmarshalText(data []byte) error {
 	}
 }
 
-// A shaped read against one table. Without `aggs` it returns matching rows, optionally filtered,
-// ordered, paginated, and with related rows embedded. With `aggs` it returns a single record of folded
-// scalars, in which case `order_by`, `offset`, `limit`, and `include` are not allowed.
+// A query graph: relation nodes keyed by caller-chosen names, and a root selector. Node references are
+// plain strings; the graph must be acyclic and each node feeds exactly one consumer.
 // Ref: #/$defs/Query
 type Query struct {
-	// The table to read from.
-	Table   string  `json:"table"`
-	Filter  OptExpr `json:"filter"`
-	OrderBy []Order `json:"order_by"`
-	// Skip this many rows before returning.
-	Offset OptInt `json:"offset"`
-	// Return at most this many rows. Zero means no limit.
-	Limit   OptInt      `json:"limit"`
-	Include []Include   `json:"include"`
-	Aggs    []Aggregate `json:"aggs"`
+	// The relation nodes of the graph, keyed by name.
+	Nodes QueryNodes `json:"nodes"`
+	Root  Root       `json:"root"`
 }
 
-// GetTable returns the value of Table.
-func (s *Query) GetTable() string {
-	return s.Table
+// GetNodes returns the value of Nodes.
+func (s *Query) GetNodes() QueryNodes {
+	return s.Nodes
 }
 
-// GetFilter returns the value of Filter.
-func (s *Query) GetFilter() OptExpr {
-	return s.Filter
+// GetRoot returns the value of Root.
+func (s *Query) GetRoot() Root {
+	return s.Root
 }
 
-// GetOrderBy returns the value of OrderBy.
-func (s *Query) GetOrderBy() []Order {
-	return s.OrderBy
+// SetNodes sets the value of Nodes.
+func (s *Query) SetNodes(val QueryNodes) {
+	s.Nodes = val
 }
 
-// GetOffset returns the value of Offset.
-func (s *Query) GetOffset() OptInt {
-	return s.Offset
+// SetRoot sets the value of Root.
+func (s *Query) SetRoot(val Root) {
+	s.Root = val
 }
 
-// GetLimit returns the value of Limit.
-func (s *Query) GetLimit() OptInt {
-	return s.Limit
-}
+// The relation nodes of the graph, keyed by name.
+type QueryNodes map[string]Node
 
-// GetInclude returns the value of Include.
-func (s *Query) GetInclude() []Include {
-	return s.Include
-}
-
-// GetAggs returns the value of Aggs.
-func (s *Query) GetAggs() []Aggregate {
-	return s.Aggs
-}
-
-// SetTable sets the value of Table.
-func (s *Query) SetTable(val string) {
-	s.Table = val
-}
-
-// SetFilter sets the value of Filter.
-func (s *Query) SetFilter(val OptExpr) {
-	s.Filter = val
-}
-
-// SetOrderBy sets the value of OrderBy.
-func (s *Query) SetOrderBy(val []Order) {
-	s.OrderBy = val
-}
-
-// SetOffset sets the value of Offset.
-func (s *Query) SetOffset(val OptInt) {
-	s.Offset = val
-}
-
-// SetLimit sets the value of Limit.
-func (s *Query) SetLimit(val OptInt) {
-	s.Limit = val
-}
-
-// SetInclude sets the value of Include.
-func (s *Query) SetInclude(val []Include) {
-	s.Include = val
-}
-
-// SetAggs sets the value of Aggs.
-func (s *Query) SetAggs(val []Aggregate) {
-	s.Aggs = val
+func (s *QueryNodes) init() QueryNodes {
+	m := *s
+	if m == nil {
+		m = map[string]Node{}
+		*s = m
+	}
+	return m
 }
 
 // The result of a shaped read: a list of records. A row read returns the matching rows. An aggregate
@@ -1319,9 +1611,9 @@ func (s *QueryResult) SetRecords(val []Record) {
 func (*QueryResult) queryRes()            {}
 func (*QueryResult) transactionQueryRes() {}
 
-// One result row as a JSON object keyed by column name. Beyond scalar columns a record may also carry
-// included relations: a parent include appears as a nested object (or `null`), a children include as
-// an array of records, and an aggregate include as an object of scalars.
+// One result row as a JSON object keyed by output name. Beyond scalar attributes a record may carry
+// nested relations: a `first` field is a nested object (or `null`), an `array` field an array of
+// records, and a folded relation an object of scalars.
 // Ref: #/components/schemas/Record
 type Record map[string]jx.Raw
 
@@ -1366,6 +1658,90 @@ func (*RecordResult) rowCreateRes()            {}
 func (*RecordResult) rowUpdateRes()            {}
 func (*RecordResult) transactionRowCreateRes() {}
 func (*RecordResult) transactionRowUpdateRes() {}
+
+// Selects the result node and how it materialises: `many` is an array of records, `first` is zero or
+// one, `exactly_one` errors unless exactly one row exists, and `scalar` unwraps a single-column row to
+// its value.
+// Ref: #/$defs/Root
+type Root struct {
+	Node        string          `json:"node"`
+	Cardinality RootCardinality `json:"cardinality"`
+}
+
+// GetNode returns the value of Node.
+func (s *Root) GetNode() string {
+	return s.Node
+}
+
+// GetCardinality returns the value of Cardinality.
+func (s *Root) GetCardinality() RootCardinality {
+	return s.Cardinality
+}
+
+// SetNode sets the value of Node.
+func (s *Root) SetNode(val string) {
+	s.Node = val
+}
+
+// SetCardinality sets the value of Cardinality.
+func (s *Root) SetCardinality(val RootCardinality) {
+	s.Cardinality = val
+}
+
+type RootCardinality string
+
+const (
+	RootCardinalityMany       RootCardinality = "many"
+	RootCardinalityFirst      RootCardinality = "first"
+	RootCardinalityExactlyOne RootCardinality = "exactly_one"
+	RootCardinalityScalar     RootCardinality = "scalar"
+)
+
+// AllValues returns all RootCardinality values.
+func (RootCardinality) AllValues() []RootCardinality {
+	return []RootCardinality{
+		RootCardinalityMany,
+		RootCardinalityFirst,
+		RootCardinalityExactlyOne,
+		RootCardinalityScalar,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RootCardinality) MarshalText() ([]byte, error) {
+	switch s {
+	case RootCardinalityMany:
+		return []byte(s), nil
+	case RootCardinalityFirst:
+		return []byte(s), nil
+	case RootCardinalityExactlyOne:
+		return []byte(s), nil
+	case RootCardinalityScalar:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RootCardinality) UnmarshalText(data []byte) error {
+	switch RootCardinality(data) {
+	case RootCardinalityMany:
+		*s = RootCardinalityMany
+		return nil
+	case RootCardinalityFirst:
+		*s = RootCardinalityFirst
+		return nil
+	case RootCardinalityExactlyOne:
+		*s = RootCardinalityExactlyOne
+		return nil
+	case RootCardinalityScalar:
+		*s = RootCardinalityScalar
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 type RowCreateConflict Problem
 

@@ -18,17 +18,19 @@ type Handler interface {
 	GetHealth(ctx context.Context) (*Health, error)
 	// Query implements Query operation.
 	//
-	// Read rows from a table, optionally filtered, ordered, paginated, and with related rows embedded
-	// through `include`. The result is a list of records shaped like the request: parent includes appear
-	// as nested objects (or `null`), children includes as nested arrays.
+	// Execute a query graph: named relation nodes — scans, filters, projections, joins, aggregates,
+	// ordering, slicing — plus a root selector. Relationships need no dedicated verb: a projection field
+	// whose expression is a cardinality crossing (`exists`, `first`, `scalar`, `array`) materialises a
+	// correlated sub-relation as a nested boolean, object, value, or array. Aggregation is the `aggregate`
+	// node, grouped or global, and rides this one operation.
 	//
-	// Setting `aggs` folds the matching rows into a single record of scalar values (count, sum, avg, min,
-	// max) instead of returning the rows themselves, so aggregation reuses this operation rather than
-	// having its own endpoint. When `aggs` is set at the root, `order_by`, `offset`, `limit`, and
-	// `include` are not permitted together with it.
+	// The result is `records`: an array of objects shaped like the root projection. A root cardinality of
+	// `first` yields zero or one record, `exactly_one` errors unless exactly one row exists, and `scalar`
+	// unwraps a single value.
 	//
-	// Filters and values are validated against the catalog's column types. A reference to an unknown table
-	// or column, or a value of the wrong type, is rejected with an `invalid` problem.
+	// The graph is bound against the catalog before planning: unknown tables, columns, or scopes, type
+	// mismatches, cyclic or dangling node references, and nondeterministic crossings (a `first` over an
+	// unordered multi-row relation) are rejected with an `invalid` problem.
 	//
 	// POST /query
 	Query(ctx context.Context, req OptQuery) (QueryRes, error)

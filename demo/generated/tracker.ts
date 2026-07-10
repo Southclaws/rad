@@ -140,54 +140,81 @@ export function isConflict(err: unknown): boolean {
 
 export type Scalar = string | number | boolean | null;
 
+/** A scalar expression: a flat tagged union selected by kind. */
 export interface Expr {
-  op:
-    | "and"
-    | "or"
-    | "not"
-    | "eq"
-    | "ne"
-    | "lt"
-    | "lte"
-    | "gt"
-    | "gte"
-    | "is_null";
-  exprs?: Expr[];
-  expr?: Expr;
-  column?: string;
+  kind:
+    | "lit"
+    | "col"
+    | "unary"
+    | "binary"
+    | "call"
+    | "cast"
+    | "exists"
+    | "first"
+    | "scalar"
+    | "array";
   value?: Scalar;
+  scope?: string;
+  column?: string;
+  op?: string;
+  expr?: Expr;
+  left?: Expr;
+  right?: Expr;
+  fn?: string;
+  args?: Expr[];
+  to?: string;
+  node?: string;
 }
 
-export interface Order {
-  column: string;
+/** One relation operator: a flat tagged union selected by kind. */
+export interface Node {
+  kind:
+    "scan" | "filter" | "project" | "join" | "aggregate" | "order" | "slice";
+  table?: string;
+  scope?: string;
+  input?: string;
+  left?: string;
+  right?: string;
+  join?: "inner" | "left";
+  on?: Expr;
+  predicate?: Expr;
+  spread?: string[];
+  fields?: Field[];
+  groups?: GroupTerm[];
+  aggs?: AggTerm[];
+  terms?: OrderTerm[];
+  offset?: number;
+  limit?: number;
+}
+
+export interface Field {
+  as: string;
+  expr: Expr;
+}
+
+export interface GroupTerm {
+  as?: string;
+  expr: Expr;
+}
+
+export interface AggTerm {
+  fn: "count" | "sum" | "avg" | "min" | "max";
+  arg?: Expr;
+  as: string;
+}
+
+export interface OrderTerm {
+  expr: Expr;
   desc?: boolean;
 }
 
-export interface Agg {
-  fn: "count" | "sum" | "avg" | "min" | "max";
-  column?: string;
-  as: string;
-}
-
-export interface Include {
-  fk: string;
-  dir: "parent" | "children";
-  as: string;
-  filter?: Expr;
-  order_by?: Order[];
-  limit?: number;
-  include?: Include[];
-  aggs?: Agg[];
-}
-
-export interface Read {
-  table: string;
-  filter?: Expr;
-  order_by?: Order[];
-  offset?: number;
-  limit?: number;
-  include?: Include[];
-  aggs?: Agg[];
+/** The relation graph on the wire: named nodes plus a root selector. */
+export interface GraphQuery {
+  nodes: Record<string, Node>;
+  root: {
+    node: string;
+    cardinality: "many" | "first" | "exactly_one" | "scalar";
+  };
 }
 
 type Rec = Record<string, unknown>;
@@ -230,12 +257,13 @@ class Rpc {
       }
       throw new RadError(problem);
     }
-    return (await res.json()) as T;
+    const text = await res.text();
+    return (text ? JSON.parse(text) : undefined) as T;
   }
 }
 
 interface View {
-  query(r: Read): Promise<Rec[]>;
+  query(q: GraphQuery): Promise<Rec[]>;
   get(table: string, key: Rec): Promise<Rec | null>;
   create(table: string, values: Rec): Promise<Rec>;
   update(
@@ -255,24 +283,27 @@ class WireView implements View {
     this.prefix = prefix;
   }
 
-  async query(r: Read): Promise<Rec[]> {
+  async query(q: GraphQuery): Promise<Rec[]> {
     const res = await this.rpc.req<{ records: Rec[] }>(
       this.prefix + "/query",
-      r,
+      q,
     );
     return res.records;
   }
   async get(table: string, key: Rec): Promise<Rec | null> {
-    // A point read is just a /query filtered to the key columns, limit 1 —
-    // there is no dedicated get endpoint.
-    const filter = andExpr(
-      Object.entries(key).map(([column, value]): Expr => ({
-        op: "eq",
-        column,
-        value,
-      })),
+    // A point read is a three-node graph — scan, filter on the key columns,
+    // slice of one; there is no dedicated get endpoint.
+    const preds = Object.entries(key).map(([column, value]): Expr =>
+      eq(col("s", column), lit(value as Scalar)),
     );
-    const recs = await this.query({ table, filter, limit: 1 });
+    const recs = await this.query({
+      nodes: {
+        s: { kind: "scan", table, scope: "s" },
+        keyed: { kind: "filter", input: "s", predicate: andAll(preds) },
+        one: { kind: "slice", input: "keyed", limit: 1 },
+      },
+      root: { node: "one", cardinality: "many" },
+    });
     return recs.length ? recs[0] : null;
   }
   async create(table: string, values: Rec): Promise<Rec> {
@@ -315,10 +346,191 @@ function splitPatch(patch: Rec): { set: Rec; clear: string[] } {
   return { set, clear };
 }
 
-function andExpr(filters: Expr[]): Expr | undefined {
-  if (filters.length === 0) return undefined;
-  if (filters.length === 1) return filters[0];
-  return { op: "and", exprs: filters };
+// ── graph assembly ──────────────────────────────────────────────────────
+
+function col(scope: string, column: string): Expr {
+  return { kind: "col", scope, column };
+}
+function lit(value: Scalar): Expr {
+  return { kind: "lit", value };
+}
+function eq(left: Expr, right: Expr): Expr {
+  return { kind: "binary", op: "eq", left, right };
+}
+function bin(op: string, left: Expr, right: Expr): Expr {
+  return { kind: "binary", op, left, right };
+}
+function un(op: string, expr: Expr): Expr {
+  return { kind: "unary", op, expr };
+}
+function andAll(preds: Expr[]): Expr | undefined {
+  let out: Expr | undefined;
+  for (const p of preds) out = out ? bin("and", out, p) : p;
+  return out;
+}
+
+/** A fluent builder's accumulated state; assemble compiles it to the graph. */
+interface QuerySpec {
+  table: string;
+  filters: Expr[];
+  orders: OrderTerm[];
+  offset?: number;
+  limit?: number;
+  includes: IncludeSpec[];
+  aggs?: AggTerm[];
+}
+
+interface IncludeSpec {
+  table: string;
+  pairs: [string, string][]; // scanned-side column = outer-scope column
+  as: string;
+  kind: "first" | "array" | "fold";
+  filters: Expr[];
+  orders: OrderTerm[];
+  limit?: number;
+  nested: IncludeSpec[];
+  aggs?: AggTerm[];
+}
+
+/** Fills unscoped column references with the relation's scope. */
+function scopeExpr(e: Expr, scope: string): Expr {
+  const c: Expr = { ...e };
+  if (c.kind === "col" && !c.scope) c.scope = scope;
+  if (c.expr) c.expr = scopeExpr(c.expr, scope);
+  if (c.left) c.left = scopeExpr(c.left, scope);
+  if (c.right) c.right = scopeExpr(c.right, scope);
+  if (c.args) c.args = c.args.map((a) => scopeExpr(a, scope));
+  return c;
+}
+
+function scopeAggs(aggs: AggTerm[], scope: string): AggTerm[] {
+  return aggs.map((a) => ({
+    fn: a.fn,
+    arg: a.arg ? scopeExpr(a.arg, scope) : undefined,
+    as: a.as,
+  }));
+}
+
+/** Compiles a spec into the wire graph with deterministic node ids: a
+ * preorder walk, each scan's id doubling as its scope label. */
+function assemble(s: QuerySpec): GraphQuery {
+  const nodes: Record<string, Node> = {};
+  let n = 0;
+  const next = () => "n" + n++;
+
+  const chain = (
+    table: string,
+    pairs: [string, string][],
+    outerScope: string,
+    filters: Expr[],
+    orders: OrderTerm[],
+    offset?: number,
+    limit?: number,
+  ): [string, string] => {
+    const scope = next();
+    nodes[scope] = { kind: "scan", table, scope };
+    let last = scope;
+    const preds = pairs.map(([local, outer]) =>
+      eq(col(scope, local), col(outerScope, outer)),
+    );
+    for (const f of filters) preds.push(scopeExpr(f, scope));
+    const pred = andAll(preds);
+    if (pred) {
+      const id = next();
+      nodes[id] = { kind: "filter", input: last, predicate: pred };
+      last = id;
+    }
+    if (orders.length) {
+      const id = next();
+      nodes[id] = {
+        kind: "order",
+        input: last,
+        terms: orders.map((t) => ({
+          expr: scopeExpr(t.expr, scope),
+          desc: t.desc,
+        })),
+      };
+      last = id;
+    }
+    if ((offset ?? 0) > 0 || limit !== undefined) {
+      const id = next();
+      const node: Node = { kind: "slice", input: last };
+      if ((offset ?? 0) > 0) node.offset = offset;
+      if (limit !== undefined) node.limit = limit;
+      nodes[id] = node;
+      last = id;
+    }
+    return [last, scope];
+  };
+
+  const include = (inc: IncludeSpec, outerScope: string): Field => {
+    if (inc.kind === "fold") {
+      const [last, scope] = chain(
+        inc.table,
+        inc.pairs,
+        outerScope,
+        inc.filters,
+        [],
+      );
+      const id = next();
+      nodes[id] = {
+        kind: "aggregate",
+        input: last,
+        aggs: scopeAggs(inc.aggs ?? [], scope),
+      };
+      return { as: inc.as, expr: { kind: "first", node: id } };
+    }
+    let [last, scope] = chain(
+      inc.table,
+      inc.pairs,
+      outerScope,
+      inc.filters,
+      inc.orders,
+      0,
+      inc.limit,
+    );
+    if (inc.nested.length) {
+      const id = next();
+      nodes[id] = {
+        kind: "project",
+        input: last,
+        spread: [scope],
+        fields: inc.nested.map((x) => include(x, scope)),
+      };
+      last = id;
+    }
+    return { as: inc.as, expr: { kind: inc.kind, node: last } };
+  };
+
+  let [last, scope] = chain(
+    s.table,
+    [],
+    "",
+    s.filters,
+    s.orders,
+    s.offset,
+    s.limit,
+  );
+  if (s.aggs && s.aggs.length) {
+    const id = next();
+    nodes[id] = {
+      kind: "aggregate",
+      input: last,
+      aggs: scopeAggs(s.aggs, scope),
+    };
+    return { nodes, root: { node: id, cardinality: "exactly_one" } };
+  }
+  if (s.includes.length) {
+    const id = next();
+    nodes[id] = {
+      kind: "project",
+      input: last,
+      spread: [scope],
+      fields: s.includes.map((x) => include(x, scope)),
+    };
+    last = id;
+  }
+  return { nodes, root: { node: last, cardinality: "many" } };
 }
 
 // ── users ──────────────────────────────────────────────────────────────
@@ -391,11 +603,15 @@ export class UserTable {
 
   /** Finds the row by the unique index on (username). */
   async byUsername(username: string): Promise<User | null> {
-    const recs = await this.v.query({
-      table: "users",
-      filter: andExpr([{ op: "eq", column: "username", value: username }]),
-      limit: 1,
-    });
+    const recs = await this.v.query(
+      assemble({
+        table: "users",
+        filters: [eq(col("", "username"), lit(username))],
+        orders: [],
+        includes: [],
+        limit: 1,
+      }),
+    );
     return recs.length ? (recs[0] as unknown as User) : null;
   }
 
@@ -404,304 +620,316 @@ export class UserTable {
   }
 }
 
-/** Fluent shaped-read builder for "users"; conditions AND together. */
+/** Fluent query builder for "users"; conditions AND together. */
 export class UserQuery {
   private filters: Expr[] = [];
-  private read: Read = { table: "users" };
+  private spec: QuerySpec = {
+    table: "users",
+    filters: [],
+    orders: [],
+    includes: [],
+  };
   private v: View;
   constructor(v: View) {
     this.v = v;
-    this.read.order_by = [];
-    this.read.include = [];
+    this.spec.filters = this.filters;
   }
 
   idEq(v: string): this {
-    this.filters.push({ op: "eq", column: "id", value: v });
+    this.filters.push(bin("eq", col("", "id"), lit(v)));
     return this;
   }
   idNe(v: string): this {
-    this.filters.push({ op: "ne", column: "id", value: v });
+    this.filters.push(bin("ne", col("", "id"), lit(v)));
     return this;
   }
   idLt(v: string): this {
-    this.filters.push({ op: "lt", column: "id", value: v });
+    this.filters.push(bin("lt", col("", "id"), lit(v)));
     return this;
   }
   idLte(v: string): this {
-    this.filters.push({ op: "lte", column: "id", value: v });
+    this.filters.push(bin("lte", col("", "id"), lit(v)));
     return this;
   }
   idGt(v: string): this {
-    this.filters.push({ op: "gt", column: "id", value: v });
+    this.filters.push(bin("gt", col("", "id"), lit(v)));
     return this;
   }
   idGte(v: string): this {
-    this.filters.push({ op: "gte", column: "id", value: v });
+    this.filters.push(bin("gte", col("", "id"), lit(v)));
     return this;
   }
   usernameEq(v: string): this {
-    this.filters.push({ op: "eq", column: "username", value: v });
+    this.filters.push(bin("eq", col("", "username"), lit(v)));
     return this;
   }
   usernameNe(v: string): this {
-    this.filters.push({ op: "ne", column: "username", value: v });
+    this.filters.push(bin("ne", col("", "username"), lit(v)));
     return this;
   }
   usernameLt(v: string): this {
-    this.filters.push({ op: "lt", column: "username", value: v });
+    this.filters.push(bin("lt", col("", "username"), lit(v)));
     return this;
   }
   usernameLte(v: string): this {
-    this.filters.push({ op: "lte", column: "username", value: v });
+    this.filters.push(bin("lte", col("", "username"), lit(v)));
     return this;
   }
   usernameGt(v: string): this {
-    this.filters.push({ op: "gt", column: "username", value: v });
+    this.filters.push(bin("gt", col("", "username"), lit(v)));
     return this;
   }
   usernameGte(v: string): this {
-    this.filters.push({ op: "gte", column: "username", value: v });
+    this.filters.push(bin("gte", col("", "username"), lit(v)));
     return this;
   }
   displayNameEq(v: string): this {
-    this.filters.push({ op: "eq", column: "display_name", value: v });
+    this.filters.push(bin("eq", col("", "display_name"), lit(v)));
     return this;
   }
   displayNameNe(v: string): this {
-    this.filters.push({ op: "ne", column: "display_name", value: v });
+    this.filters.push(bin("ne", col("", "display_name"), lit(v)));
     return this;
   }
   displayNameLt(v: string): this {
-    this.filters.push({ op: "lt", column: "display_name", value: v });
+    this.filters.push(bin("lt", col("", "display_name"), lit(v)));
     return this;
   }
   displayNameLte(v: string): this {
-    this.filters.push({ op: "lte", column: "display_name", value: v });
+    this.filters.push(bin("lte", col("", "display_name"), lit(v)));
     return this;
   }
   displayNameGt(v: string): this {
-    this.filters.push({ op: "gt", column: "display_name", value: v });
+    this.filters.push(bin("gt", col("", "display_name"), lit(v)));
     return this;
   }
   displayNameGte(v: string): this {
-    this.filters.push({ op: "gte", column: "display_name", value: v });
+    this.filters.push(bin("gte", col("", "display_name"), lit(v)));
     return this;
   }
   displayNameNull(): this {
-    this.filters.push({ op: "is_null", column: "display_name" });
+    this.filters.push(un("is_null", col("", "display_name")));
     return this;
   }
   displayNameNotNull(): this {
-    this.filters.push({
-      op: "not",
-      expr: { op: "is_null", column: "display_name" },
-    });
+    this.filters.push(un("is_not_null", col("", "display_name")));
     return this;
   }
   passwordHashEq(v: string): this {
-    this.filters.push({ op: "eq", column: "password_hash", value: v });
+    this.filters.push(bin("eq", col("", "password_hash"), lit(v)));
     return this;
   }
   passwordHashNe(v: string): this {
-    this.filters.push({ op: "ne", column: "password_hash", value: v });
+    this.filters.push(bin("ne", col("", "password_hash"), lit(v)));
     return this;
   }
   passwordHashLt(v: string): this {
-    this.filters.push({ op: "lt", column: "password_hash", value: v });
+    this.filters.push(bin("lt", col("", "password_hash"), lit(v)));
     return this;
   }
   passwordHashLte(v: string): this {
-    this.filters.push({ op: "lte", column: "password_hash", value: v });
+    this.filters.push(bin("lte", col("", "password_hash"), lit(v)));
     return this;
   }
   passwordHashGt(v: string): this {
-    this.filters.push({ op: "gt", column: "password_hash", value: v });
+    this.filters.push(bin("gt", col("", "password_hash"), lit(v)));
     return this;
   }
   passwordHashGte(v: string): this {
-    this.filters.push({ op: "gte", column: "password_hash", value: v });
+    this.filters.push(bin("gte", col("", "password_hash"), lit(v)));
     return this;
   }
   emailEq(v: string): this {
-    this.filters.push({ op: "eq", column: "email", value: v });
+    this.filters.push(bin("eq", col("", "email"), lit(v)));
     return this;
   }
   emailNe(v: string): this {
-    this.filters.push({ op: "ne", column: "email", value: v });
+    this.filters.push(bin("ne", col("", "email"), lit(v)));
     return this;
   }
   emailLt(v: string): this {
-    this.filters.push({ op: "lt", column: "email", value: v });
+    this.filters.push(bin("lt", col("", "email"), lit(v)));
     return this;
   }
   emailLte(v: string): this {
-    this.filters.push({ op: "lte", column: "email", value: v });
+    this.filters.push(bin("lte", col("", "email"), lit(v)));
     return this;
   }
   emailGt(v: string): this {
-    this.filters.push({ op: "gt", column: "email", value: v });
+    this.filters.push(bin("gt", col("", "email"), lit(v)));
     return this;
   }
   emailGte(v: string): this {
-    this.filters.push({ op: "gte", column: "email", value: v });
+    this.filters.push(bin("gte", col("", "email"), lit(v)));
     return this;
   }
   emailNull(): this {
-    this.filters.push({ op: "is_null", column: "email" });
+    this.filters.push(un("is_null", col("", "email")));
     return this;
   }
   emailNotNull(): this {
-    this.filters.push({ op: "not", expr: { op: "is_null", column: "email" } });
+    this.filters.push(un("is_not_null", col("", "email")));
     return this;
   }
   createdAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "created_at", value: v });
+    this.filters.push(bin("eq", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "created_at", value: v });
+    this.filters.push(bin("ne", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "created_at", value: v });
+    this.filters.push(bin("lt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "created_at", value: v });
+    this.filters.push(bin("lte", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "created_at", value: v });
+    this.filters.push(bin("gt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "created_at", value: v });
+    this.filters.push(bin("gte", col("", "created_at"), lit(v)));
     return this;
   }
 
   orderById(): this {
-    this.read.order_by!.push({ column: "id" });
+    this.spec.orders.push({ expr: col("", "id") });
     return this;
   }
   orderByIdDesc(): this {
-    this.read.order_by!.push({ column: "id", desc: true });
+    this.spec.orders.push({ expr: col("", "id"), desc: true });
     return this;
   }
   orderByUsername(): this {
-    this.read.order_by!.push({ column: "username" });
+    this.spec.orders.push({ expr: col("", "username") });
     return this;
   }
   orderByUsernameDesc(): this {
-    this.read.order_by!.push({ column: "username", desc: true });
+    this.spec.orders.push({ expr: col("", "username"), desc: true });
     return this;
   }
   orderByDisplayName(): this {
-    this.read.order_by!.push({ column: "display_name" });
+    this.spec.orders.push({ expr: col("", "display_name") });
     return this;
   }
   orderByDisplayNameDesc(): this {
-    this.read.order_by!.push({ column: "display_name", desc: true });
+    this.spec.orders.push({ expr: col("", "display_name"), desc: true });
     return this;
   }
   orderByPasswordHash(): this {
-    this.read.order_by!.push({ column: "password_hash" });
+    this.spec.orders.push({ expr: col("", "password_hash") });
     return this;
   }
   orderByPasswordHashDesc(): this {
-    this.read.order_by!.push({ column: "password_hash", desc: true });
+    this.spec.orders.push({ expr: col("", "password_hash"), desc: true });
     return this;
   }
   orderByEmail(): this {
-    this.read.order_by!.push({ column: "email" });
+    this.spec.orders.push({ expr: col("", "email") });
     return this;
   }
   orderByEmailDesc(): this {
-    this.read.order_by!.push({ column: "email", desc: true });
+    this.spec.orders.push({ expr: col("", "email"), desc: true });
     return this;
   }
   orderByCreatedAt(): this {
-    this.read.order_by!.push({ column: "created_at" });
+    this.spec.orders.push({ expr: col("", "created_at") });
     return this;
   }
   orderByCreatedAtDesc(): this {
-    this.read.order_by!.push({ column: "created_at", desc: true });
+    this.spec.orders.push({ expr: col("", "created_at"), desc: true });
     return this;
   }
 
   limit(n: number): this {
-    this.read.limit = n;
+    this.spec.limit = n;
     return this;
   }
   offset(n: number): this {
-    this.read.offset = n;
+    this.spec.offset = n;
     return this;
   }
 
   includeSessions(fn?: (b: SessionInclude) => void): this {
-    const b = new SessionInclude("sessions_user_id_fk", "children", "sessions");
+    const b = new SessionInclude(
+      "sessions",
+      [["user_id", "id"]],
+      "sessions",
+      "array",
+    );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeTeamMembers(fn?: (b: TeamMemberInclude) => void): this {
     const b = new TeamMemberInclude(
-      "team_members_user_id_fk",
-      "children",
       "team_members",
+      [["user_id", "id"]],
+      "team_members",
+      "array",
     );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeTasksByAssignee(fn?: (b: TaskInclude) => void): this {
     const b = new TaskInclude(
-      "tasks_assignee_id_fk",
-      "children",
+      "tasks",
+      [["assignee_id", "id"]],
       "tasks_by_assignee",
+      "array",
     );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeTasksByCreator(fn?: (b: TaskInclude) => void): this {
     const b = new TaskInclude(
-      "tasks_creator_id_fk",
-      "children",
+      "tasks",
+      [["creator_id", "id"]],
       "tasks_by_creator",
+      "array",
     );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeComments(fn?: (b: CommentInclude) => void): this {
     const b = new CommentInclude(
-      "comments_author_id_fk",
-      "children",
       "comments",
+      [["author_id", "id"]],
+      "comments",
+      "array",
     );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
 
   async all(): Promise<User[]> {
-    this.read.filter = andExpr(this.filters);
-    return (await this.v.query(this.read)) as unknown as User[];
+    return (await this.v.query(assemble(this.spec))) as unknown as User[];
   }
 
   async first(): Promise<User | null> {
-    this.read.limit = 1;
+    this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
   }
 
-  private async fold(aggs: Agg[]): Promise<Rec> {
-    const read: Read = {
-      table: this.read.table,
-      filter: andExpr(this.filters),
-      aggs,
-    };
-    const recs = await this.v.query(read);
+  private async fold(aggs: AggTerm[]): Promise<Rec> {
+    const recs = await this.v.query(
+      assemble({
+        table: this.spec.table,
+        filters: this.filters,
+        orders: [],
+        includes: [],
+        aggs,
+      }),
+    );
     return recs[0] ?? {};
   }
 
@@ -712,80 +940,96 @@ export class UserQuery {
   }
   /** Smallest "id" (null when no rows). */
   async minId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "id", as: "v" }]);
+    const rec = await this.fold([{ fn: "min", arg: col("", "id"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "id" (null when no rows). */
   async maxId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "id", as: "v" }]);
+    const rec = await this.fold([{ fn: "max", arg: col("", "id"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "username" (null when no rows). */
   async minUsername(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "username", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "username"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "username" (null when no rows). */
   async maxUsername(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "username", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "username"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "display_name" (null when no rows). */
   async minDisplayName(): Promise<string | null> {
     const rec = await this.fold([
-      { fn: "min", column: "display_name", as: "v" },
+      { fn: "min", arg: col("", "display_name"), as: "v" },
     ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "display_name" (null when no rows). */
   async maxDisplayName(): Promise<string | null> {
     const rec = await this.fold([
-      { fn: "max", column: "display_name", as: "v" },
+      { fn: "max", arg: col("", "display_name"), as: "v" },
     ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "password_hash" (null when no rows). */
   async minPasswordHash(): Promise<string | null> {
     const rec = await this.fold([
-      { fn: "min", column: "password_hash", as: "v" },
+      { fn: "min", arg: col("", "password_hash"), as: "v" },
     ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "password_hash" (null when no rows). */
   async maxPasswordHash(): Promise<string | null> {
     const rec = await this.fold([
-      { fn: "max", column: "password_hash", as: "v" },
+      { fn: "max", arg: col("", "password_hash"), as: "v" },
     ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "email" (null when no rows). */
   async minEmail(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "email", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "email"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "email" (null when no rows). */
   async maxEmail(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "email", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "email"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Total of "created_at" (null when no rows). */
   async sumCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "sum", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "sum", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Average of "created_at" (null when no rows). */
   async avgCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "avg", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "avg", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Smallest "created_at" (null when no rows). */
   async minCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "min", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Largest "created_at" (null when no rows). */
   async maxCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "max", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
 }
@@ -793,228 +1037,232 @@ export class UserQuery {
 /** Refines an included "users" fetch. */
 export class UserInclude {
   private filters: Expr[] = [];
-  private orders: Order[] = [];
-  private nested: Include[] = [];
-  private max = 0;
-  private fk: string;
-  private dir: "parent" | "children";
+  private orders: OrderTerm[] = [];
+  private nested: IncludeSpec[] = [];
+  private max?: number;
+  private table: string;
+  private pairs: [string, string][];
   private as: string;
-  constructor(fk: string, dir: "parent" | "children", as_: string) {
-    this.fk = fk;
-    this.dir = dir;
+  private kind: "first" | "array";
+  constructor(
+    table: string,
+    pairs: [string, string][],
+    as_: string,
+    kind: "first" | "array",
+  ) {
+    this.table = table;
+    this.pairs = pairs;
     this.as = as_;
+    this.kind = kind;
   }
 
   idEq(v: string): this {
-    this.filters.push({ op: "eq", column: "id", value: v });
+    this.filters.push(bin("eq", col("", "id"), lit(v)));
     return this;
   }
   idNe(v: string): this {
-    this.filters.push({ op: "ne", column: "id", value: v });
+    this.filters.push(bin("ne", col("", "id"), lit(v)));
     return this;
   }
   idLt(v: string): this {
-    this.filters.push({ op: "lt", column: "id", value: v });
+    this.filters.push(bin("lt", col("", "id"), lit(v)));
     return this;
   }
   idLte(v: string): this {
-    this.filters.push({ op: "lte", column: "id", value: v });
+    this.filters.push(bin("lte", col("", "id"), lit(v)));
     return this;
   }
   idGt(v: string): this {
-    this.filters.push({ op: "gt", column: "id", value: v });
+    this.filters.push(bin("gt", col("", "id"), lit(v)));
     return this;
   }
   idGte(v: string): this {
-    this.filters.push({ op: "gte", column: "id", value: v });
+    this.filters.push(bin("gte", col("", "id"), lit(v)));
     return this;
   }
   usernameEq(v: string): this {
-    this.filters.push({ op: "eq", column: "username", value: v });
+    this.filters.push(bin("eq", col("", "username"), lit(v)));
     return this;
   }
   usernameNe(v: string): this {
-    this.filters.push({ op: "ne", column: "username", value: v });
+    this.filters.push(bin("ne", col("", "username"), lit(v)));
     return this;
   }
   usernameLt(v: string): this {
-    this.filters.push({ op: "lt", column: "username", value: v });
+    this.filters.push(bin("lt", col("", "username"), lit(v)));
     return this;
   }
   usernameLte(v: string): this {
-    this.filters.push({ op: "lte", column: "username", value: v });
+    this.filters.push(bin("lte", col("", "username"), lit(v)));
     return this;
   }
   usernameGt(v: string): this {
-    this.filters.push({ op: "gt", column: "username", value: v });
+    this.filters.push(bin("gt", col("", "username"), lit(v)));
     return this;
   }
   usernameGte(v: string): this {
-    this.filters.push({ op: "gte", column: "username", value: v });
+    this.filters.push(bin("gte", col("", "username"), lit(v)));
     return this;
   }
   displayNameEq(v: string): this {
-    this.filters.push({ op: "eq", column: "display_name", value: v });
+    this.filters.push(bin("eq", col("", "display_name"), lit(v)));
     return this;
   }
   displayNameNe(v: string): this {
-    this.filters.push({ op: "ne", column: "display_name", value: v });
+    this.filters.push(bin("ne", col("", "display_name"), lit(v)));
     return this;
   }
   displayNameLt(v: string): this {
-    this.filters.push({ op: "lt", column: "display_name", value: v });
+    this.filters.push(bin("lt", col("", "display_name"), lit(v)));
     return this;
   }
   displayNameLte(v: string): this {
-    this.filters.push({ op: "lte", column: "display_name", value: v });
+    this.filters.push(bin("lte", col("", "display_name"), lit(v)));
     return this;
   }
   displayNameGt(v: string): this {
-    this.filters.push({ op: "gt", column: "display_name", value: v });
+    this.filters.push(bin("gt", col("", "display_name"), lit(v)));
     return this;
   }
   displayNameGte(v: string): this {
-    this.filters.push({ op: "gte", column: "display_name", value: v });
+    this.filters.push(bin("gte", col("", "display_name"), lit(v)));
     return this;
   }
   displayNameNull(): this {
-    this.filters.push({ op: "is_null", column: "display_name" });
+    this.filters.push(un("is_null", col("", "display_name")));
     return this;
   }
   displayNameNotNull(): this {
-    this.filters.push({
-      op: "not",
-      expr: { op: "is_null", column: "display_name" },
-    });
+    this.filters.push(un("is_not_null", col("", "display_name")));
     return this;
   }
   passwordHashEq(v: string): this {
-    this.filters.push({ op: "eq", column: "password_hash", value: v });
+    this.filters.push(bin("eq", col("", "password_hash"), lit(v)));
     return this;
   }
   passwordHashNe(v: string): this {
-    this.filters.push({ op: "ne", column: "password_hash", value: v });
+    this.filters.push(bin("ne", col("", "password_hash"), lit(v)));
     return this;
   }
   passwordHashLt(v: string): this {
-    this.filters.push({ op: "lt", column: "password_hash", value: v });
+    this.filters.push(bin("lt", col("", "password_hash"), lit(v)));
     return this;
   }
   passwordHashLte(v: string): this {
-    this.filters.push({ op: "lte", column: "password_hash", value: v });
+    this.filters.push(bin("lte", col("", "password_hash"), lit(v)));
     return this;
   }
   passwordHashGt(v: string): this {
-    this.filters.push({ op: "gt", column: "password_hash", value: v });
+    this.filters.push(bin("gt", col("", "password_hash"), lit(v)));
     return this;
   }
   passwordHashGte(v: string): this {
-    this.filters.push({ op: "gte", column: "password_hash", value: v });
+    this.filters.push(bin("gte", col("", "password_hash"), lit(v)));
     return this;
   }
   emailEq(v: string): this {
-    this.filters.push({ op: "eq", column: "email", value: v });
+    this.filters.push(bin("eq", col("", "email"), lit(v)));
     return this;
   }
   emailNe(v: string): this {
-    this.filters.push({ op: "ne", column: "email", value: v });
+    this.filters.push(bin("ne", col("", "email"), lit(v)));
     return this;
   }
   emailLt(v: string): this {
-    this.filters.push({ op: "lt", column: "email", value: v });
+    this.filters.push(bin("lt", col("", "email"), lit(v)));
     return this;
   }
   emailLte(v: string): this {
-    this.filters.push({ op: "lte", column: "email", value: v });
+    this.filters.push(bin("lte", col("", "email"), lit(v)));
     return this;
   }
   emailGt(v: string): this {
-    this.filters.push({ op: "gt", column: "email", value: v });
+    this.filters.push(bin("gt", col("", "email"), lit(v)));
     return this;
   }
   emailGte(v: string): this {
-    this.filters.push({ op: "gte", column: "email", value: v });
+    this.filters.push(bin("gte", col("", "email"), lit(v)));
     return this;
   }
   emailNull(): this {
-    this.filters.push({ op: "is_null", column: "email" });
+    this.filters.push(un("is_null", col("", "email")));
     return this;
   }
   emailNotNull(): this {
-    this.filters.push({ op: "not", expr: { op: "is_null", column: "email" } });
+    this.filters.push(un("is_not_null", col("", "email")));
     return this;
   }
   createdAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "created_at", value: v });
+    this.filters.push(bin("eq", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "created_at", value: v });
+    this.filters.push(bin("ne", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "created_at", value: v });
+    this.filters.push(bin("lt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "created_at", value: v });
+    this.filters.push(bin("lte", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "created_at", value: v });
+    this.filters.push(bin("gt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "created_at", value: v });
+    this.filters.push(bin("gte", col("", "created_at"), lit(v)));
     return this;
   }
 
   orderById(): this {
-    this.orders.push({ column: "id" });
+    this.orders.push({ expr: col("", "id") });
     return this;
   }
   orderByIdDesc(): this {
-    this.orders.push({ column: "id", desc: true });
+    this.orders.push({ expr: col("", "id"), desc: true });
     return this;
   }
   orderByUsername(): this {
-    this.orders.push({ column: "username" });
+    this.orders.push({ expr: col("", "username") });
     return this;
   }
   orderByUsernameDesc(): this {
-    this.orders.push({ column: "username", desc: true });
+    this.orders.push({ expr: col("", "username"), desc: true });
     return this;
   }
   orderByDisplayName(): this {
-    this.orders.push({ column: "display_name" });
+    this.orders.push({ expr: col("", "display_name") });
     return this;
   }
   orderByDisplayNameDesc(): this {
-    this.orders.push({ column: "display_name", desc: true });
+    this.orders.push({ expr: col("", "display_name"), desc: true });
     return this;
   }
   orderByPasswordHash(): this {
-    this.orders.push({ column: "password_hash" });
+    this.orders.push({ expr: col("", "password_hash") });
     return this;
   }
   orderByPasswordHashDesc(): this {
-    this.orders.push({ column: "password_hash", desc: true });
+    this.orders.push({ expr: col("", "password_hash"), desc: true });
     return this;
   }
   orderByEmail(): this {
-    this.orders.push({ column: "email" });
+    this.orders.push({ expr: col("", "email") });
     return this;
   }
   orderByEmailDesc(): this {
-    this.orders.push({ column: "email", desc: true });
+    this.orders.push({ expr: col("", "email"), desc: true });
     return this;
   }
   orderByCreatedAt(): this {
-    this.orders.push({ column: "created_at" });
+    this.orders.push({ expr: col("", "created_at") });
     return this;
   }
   orderByCreatedAtDesc(): this {
-    this.orders.push({ column: "created_at", desc: true });
+    this.orders.push({ expr: col("", "created_at"), desc: true });
     return this;
   }
 
@@ -1024,16 +1272,22 @@ export class UserInclude {
   }
 
   includeSessions(fn?: (b: SessionInclude) => void): this {
-    const b = new SessionInclude("sessions_user_id_fk", "children", "sessions");
+    const b = new SessionInclude(
+      "sessions",
+      [["user_id", "id"]],
+      "sessions",
+      "array",
+    );
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
   includeTeamMembers(fn?: (b: TeamMemberInclude) => void): this {
     const b = new TeamMemberInclude(
-      "team_members_user_id_fk",
-      "children",
       "team_members",
+      [["user_id", "id"]],
+      "team_members",
+      "array",
     );
     fn?.(b);
     this.nested.push(b.build());
@@ -1041,9 +1295,10 @@ export class UserInclude {
   }
   includeTasksByAssignee(fn?: (b: TaskInclude) => void): this {
     const b = new TaskInclude(
-      "tasks_assignee_id_fk",
-      "children",
+      "tasks",
+      [["assignee_id", "id"]],
       "tasks_by_assignee",
+      "array",
     );
     fn?.(b);
     this.nested.push(b.build());
@@ -1051,9 +1306,10 @@ export class UserInclude {
   }
   includeTasksByCreator(fn?: (b: TaskInclude) => void): this {
     const b = new TaskInclude(
-      "tasks_creator_id_fk",
-      "children",
+      "tasks",
+      [["creator_id", "id"]],
       "tasks_by_creator",
+      "array",
     );
     fn?.(b);
     this.nested.push(b.build());
@@ -1061,24 +1317,26 @@ export class UserInclude {
   }
   includeComments(fn?: (b: CommentInclude) => void): this {
     const b = new CommentInclude(
-      "comments_author_id_fk",
-      "children",
       "comments",
+      [["author_id", "id"]],
+      "comments",
+      "array",
     );
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
 
-  build(): Include {
+  build(): IncludeSpec {
     return {
-      fk: this.fk,
-      dir: this.dir,
+      table: this.table,
+      pairs: this.pairs,
       as: this.as,
-      filter: andExpr(this.filters),
-      order_by: this.orders.length ? this.orders : undefined,
-      limit: this.max || undefined,
-      include: this.nested.length ? this.nested : undefined,
+      kind: this.kind,
+      filters: this.filters,
+      orders: this.orders,
+      limit: this.max,
+      nested: this.nested,
     };
   }
 }
@@ -1146,181 +1404,187 @@ export class SessionTable {
   }
 }
 
-/** Fluent shaped-read builder for "sessions"; conditions AND together. */
+/** Fluent query builder for "sessions"; conditions AND together. */
 export class SessionQuery {
   private filters: Expr[] = [];
-  private read: Read = { table: "sessions" };
+  private spec: QuerySpec = {
+    table: "sessions",
+    filters: [],
+    orders: [],
+    includes: [],
+  };
   private v: View;
   constructor(v: View) {
     this.v = v;
-    this.read.order_by = [];
-    this.read.include = [];
+    this.spec.filters = this.filters;
   }
 
   tokenEq(v: string): this {
-    this.filters.push({ op: "eq", column: "token", value: v });
+    this.filters.push(bin("eq", col("", "token"), lit(v)));
     return this;
   }
   tokenNe(v: string): this {
-    this.filters.push({ op: "ne", column: "token", value: v });
+    this.filters.push(bin("ne", col("", "token"), lit(v)));
     return this;
   }
   tokenLt(v: string): this {
-    this.filters.push({ op: "lt", column: "token", value: v });
+    this.filters.push(bin("lt", col("", "token"), lit(v)));
     return this;
   }
   tokenLte(v: string): this {
-    this.filters.push({ op: "lte", column: "token", value: v });
+    this.filters.push(bin("lte", col("", "token"), lit(v)));
     return this;
   }
   tokenGt(v: string): this {
-    this.filters.push({ op: "gt", column: "token", value: v });
+    this.filters.push(bin("gt", col("", "token"), lit(v)));
     return this;
   }
   tokenGte(v: string): this {
-    this.filters.push({ op: "gte", column: "token", value: v });
+    this.filters.push(bin("gte", col("", "token"), lit(v)));
     return this;
   }
   userIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "user_id", value: v });
+    this.filters.push(bin("eq", col("", "user_id"), lit(v)));
     return this;
   }
   userIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "user_id", value: v });
+    this.filters.push(bin("ne", col("", "user_id"), lit(v)));
     return this;
   }
   userIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "user_id", value: v });
+    this.filters.push(bin("lt", col("", "user_id"), lit(v)));
     return this;
   }
   userIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "user_id", value: v });
+    this.filters.push(bin("lte", col("", "user_id"), lit(v)));
     return this;
   }
   userIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "user_id", value: v });
+    this.filters.push(bin("gt", col("", "user_id"), lit(v)));
     return this;
   }
   userIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "user_id", value: v });
+    this.filters.push(bin("gte", col("", "user_id"), lit(v)));
     return this;
   }
   createdAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "created_at", value: v });
+    this.filters.push(bin("eq", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "created_at", value: v });
+    this.filters.push(bin("ne", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "created_at", value: v });
+    this.filters.push(bin("lt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "created_at", value: v });
+    this.filters.push(bin("lte", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "created_at", value: v });
+    this.filters.push(bin("gt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "created_at", value: v });
+    this.filters.push(bin("gte", col("", "created_at"), lit(v)));
     return this;
   }
   expiresAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "expires_at", value: v });
+    this.filters.push(bin("eq", col("", "expires_at"), lit(v)));
     return this;
   }
   expiresAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "expires_at", value: v });
+    this.filters.push(bin("ne", col("", "expires_at"), lit(v)));
     return this;
   }
   expiresAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "expires_at", value: v });
+    this.filters.push(bin("lt", col("", "expires_at"), lit(v)));
     return this;
   }
   expiresAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "expires_at", value: v });
+    this.filters.push(bin("lte", col("", "expires_at"), lit(v)));
     return this;
   }
   expiresAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "expires_at", value: v });
+    this.filters.push(bin("gt", col("", "expires_at"), lit(v)));
     return this;
   }
   expiresAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "expires_at", value: v });
+    this.filters.push(bin("gte", col("", "expires_at"), lit(v)));
     return this;
   }
 
   orderByToken(): this {
-    this.read.order_by!.push({ column: "token" });
+    this.spec.orders.push({ expr: col("", "token") });
     return this;
   }
   orderByTokenDesc(): this {
-    this.read.order_by!.push({ column: "token", desc: true });
+    this.spec.orders.push({ expr: col("", "token"), desc: true });
     return this;
   }
   orderByUserId(): this {
-    this.read.order_by!.push({ column: "user_id" });
+    this.spec.orders.push({ expr: col("", "user_id") });
     return this;
   }
   orderByUserIdDesc(): this {
-    this.read.order_by!.push({ column: "user_id", desc: true });
+    this.spec.orders.push({ expr: col("", "user_id"), desc: true });
     return this;
   }
   orderByCreatedAt(): this {
-    this.read.order_by!.push({ column: "created_at" });
+    this.spec.orders.push({ expr: col("", "created_at") });
     return this;
   }
   orderByCreatedAtDesc(): this {
-    this.read.order_by!.push({ column: "created_at", desc: true });
+    this.spec.orders.push({ expr: col("", "created_at"), desc: true });
     return this;
   }
   orderByExpiresAt(): this {
-    this.read.order_by!.push({ column: "expires_at" });
+    this.spec.orders.push({ expr: col("", "expires_at") });
     return this;
   }
   orderByExpiresAtDesc(): this {
-    this.read.order_by!.push({ column: "expires_at", desc: true });
+    this.spec.orders.push({ expr: col("", "expires_at"), desc: true });
     return this;
   }
 
   limit(n: number): this {
-    this.read.limit = n;
+    this.spec.limit = n;
     return this;
   }
   offset(n: number): this {
-    this.read.offset = n;
+    this.spec.offset = n;
     return this;
   }
 
   includeUser(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("sessions_user_id_fk", "parent", "user");
+    const b = new UserInclude("users", [["id", "user_id"]], "user", "first");
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
 
   async all(): Promise<Session[]> {
-    this.read.filter = andExpr(this.filters);
-    return (await this.v.query(this.read)) as unknown as Session[];
+    return (await this.v.query(assemble(this.spec))) as unknown as Session[];
   }
 
   async first(): Promise<Session | null> {
-    this.read.limit = 1;
+    this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
   }
 
-  private async fold(aggs: Agg[]): Promise<Rec> {
-    const read: Read = {
-      table: this.read.table,
-      filter: andExpr(this.filters),
-      aggs,
-    };
-    const recs = await this.v.query(read);
+  private async fold(aggs: AggTerm[]): Promise<Rec> {
+    const recs = await this.v.query(
+      assemble({
+        table: this.spec.table,
+        filters: this.filters,
+        orders: [],
+        includes: [],
+        aggs,
+      }),
+    );
     return recs[0] ?? {};
   }
 
@@ -1331,62 +1595,86 @@ export class SessionQuery {
   }
   /** Smallest "token" (null when no rows). */
   async minToken(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "token", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "token"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "token" (null when no rows). */
   async maxToken(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "token", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "token"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "user_id" (null when no rows). */
   async minUserId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "user_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "user_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "user_id" (null when no rows). */
   async maxUserId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "user_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "user_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Total of "created_at" (null when no rows). */
   async sumCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "sum", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "sum", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Average of "created_at" (null when no rows). */
   async avgCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "avg", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "avg", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Smallest "created_at" (null when no rows). */
   async minCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "min", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Largest "created_at" (null when no rows). */
   async maxCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "max", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Total of "expires_at" (null when no rows). */
   async sumExpiresAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "sum", column: "expires_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "sum", arg: col("", "expires_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Average of "expires_at" (null when no rows). */
   async avgExpiresAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "avg", column: "expires_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "avg", arg: col("", "expires_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Smallest "expires_at" (null when no rows). */
   async minExpiresAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "min", column: "expires_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "expires_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Largest "expires_at" (null when no rows). */
   async maxExpiresAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "max", column: "expires_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "expires_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
 }
@@ -1394,145 +1682,152 @@ export class SessionQuery {
 /** Refines an included "sessions" fetch. */
 export class SessionInclude {
   private filters: Expr[] = [];
-  private orders: Order[] = [];
-  private nested: Include[] = [];
-  private max = 0;
-  private fk: string;
-  private dir: "parent" | "children";
+  private orders: OrderTerm[] = [];
+  private nested: IncludeSpec[] = [];
+  private max?: number;
+  private table: string;
+  private pairs: [string, string][];
   private as: string;
-  constructor(fk: string, dir: "parent" | "children", as_: string) {
-    this.fk = fk;
-    this.dir = dir;
+  private kind: "first" | "array";
+  constructor(
+    table: string,
+    pairs: [string, string][],
+    as_: string,
+    kind: "first" | "array",
+  ) {
+    this.table = table;
+    this.pairs = pairs;
     this.as = as_;
+    this.kind = kind;
   }
 
   tokenEq(v: string): this {
-    this.filters.push({ op: "eq", column: "token", value: v });
+    this.filters.push(bin("eq", col("", "token"), lit(v)));
     return this;
   }
   tokenNe(v: string): this {
-    this.filters.push({ op: "ne", column: "token", value: v });
+    this.filters.push(bin("ne", col("", "token"), lit(v)));
     return this;
   }
   tokenLt(v: string): this {
-    this.filters.push({ op: "lt", column: "token", value: v });
+    this.filters.push(bin("lt", col("", "token"), lit(v)));
     return this;
   }
   tokenLte(v: string): this {
-    this.filters.push({ op: "lte", column: "token", value: v });
+    this.filters.push(bin("lte", col("", "token"), lit(v)));
     return this;
   }
   tokenGt(v: string): this {
-    this.filters.push({ op: "gt", column: "token", value: v });
+    this.filters.push(bin("gt", col("", "token"), lit(v)));
     return this;
   }
   tokenGte(v: string): this {
-    this.filters.push({ op: "gte", column: "token", value: v });
+    this.filters.push(bin("gte", col("", "token"), lit(v)));
     return this;
   }
   userIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "user_id", value: v });
+    this.filters.push(bin("eq", col("", "user_id"), lit(v)));
     return this;
   }
   userIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "user_id", value: v });
+    this.filters.push(bin("ne", col("", "user_id"), lit(v)));
     return this;
   }
   userIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "user_id", value: v });
+    this.filters.push(bin("lt", col("", "user_id"), lit(v)));
     return this;
   }
   userIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "user_id", value: v });
+    this.filters.push(bin("lte", col("", "user_id"), lit(v)));
     return this;
   }
   userIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "user_id", value: v });
+    this.filters.push(bin("gt", col("", "user_id"), lit(v)));
     return this;
   }
   userIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "user_id", value: v });
+    this.filters.push(bin("gte", col("", "user_id"), lit(v)));
     return this;
   }
   createdAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "created_at", value: v });
+    this.filters.push(bin("eq", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "created_at", value: v });
+    this.filters.push(bin("ne", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "created_at", value: v });
+    this.filters.push(bin("lt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "created_at", value: v });
+    this.filters.push(bin("lte", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "created_at", value: v });
+    this.filters.push(bin("gt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "created_at", value: v });
+    this.filters.push(bin("gte", col("", "created_at"), lit(v)));
     return this;
   }
   expiresAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "expires_at", value: v });
+    this.filters.push(bin("eq", col("", "expires_at"), lit(v)));
     return this;
   }
   expiresAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "expires_at", value: v });
+    this.filters.push(bin("ne", col("", "expires_at"), lit(v)));
     return this;
   }
   expiresAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "expires_at", value: v });
+    this.filters.push(bin("lt", col("", "expires_at"), lit(v)));
     return this;
   }
   expiresAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "expires_at", value: v });
+    this.filters.push(bin("lte", col("", "expires_at"), lit(v)));
     return this;
   }
   expiresAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "expires_at", value: v });
+    this.filters.push(bin("gt", col("", "expires_at"), lit(v)));
     return this;
   }
   expiresAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "expires_at", value: v });
+    this.filters.push(bin("gte", col("", "expires_at"), lit(v)));
     return this;
   }
 
   orderByToken(): this {
-    this.orders.push({ column: "token" });
+    this.orders.push({ expr: col("", "token") });
     return this;
   }
   orderByTokenDesc(): this {
-    this.orders.push({ column: "token", desc: true });
+    this.orders.push({ expr: col("", "token"), desc: true });
     return this;
   }
   orderByUserId(): this {
-    this.orders.push({ column: "user_id" });
+    this.orders.push({ expr: col("", "user_id") });
     return this;
   }
   orderByUserIdDesc(): this {
-    this.orders.push({ column: "user_id", desc: true });
+    this.orders.push({ expr: col("", "user_id"), desc: true });
     return this;
   }
   orderByCreatedAt(): this {
-    this.orders.push({ column: "created_at" });
+    this.orders.push({ expr: col("", "created_at") });
     return this;
   }
   orderByCreatedAtDesc(): this {
-    this.orders.push({ column: "created_at", desc: true });
+    this.orders.push({ expr: col("", "created_at"), desc: true });
     return this;
   }
   orderByExpiresAt(): this {
-    this.orders.push({ column: "expires_at" });
+    this.orders.push({ expr: col("", "expires_at") });
     return this;
   }
   orderByExpiresAtDesc(): this {
-    this.orders.push({ column: "expires_at", desc: true });
+    this.orders.push({ expr: col("", "expires_at"), desc: true });
     return this;
   }
 
@@ -1542,21 +1837,22 @@ export class SessionInclude {
   }
 
   includeUser(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("sessions_user_id_fk", "parent", "user");
+    const b = new UserInclude("users", [["id", "user_id"]], "user", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
 
-  build(): Include {
+  build(): IncludeSpec {
     return {
-      fk: this.fk,
-      dir: this.dir,
+      table: this.table,
+      pairs: this.pairs,
       as: this.as,
-      filter: andExpr(this.filters),
-      order_by: this.orders.length ? this.orders : undefined,
-      limit: this.max || undefined,
-      include: this.nested.length ? this.nested : undefined,
+      kind: this.kind,
+      filters: this.filters,
+      orders: this.orders,
+      limit: this.max,
+      nested: this.nested,
     };
   }
 }
@@ -1620,11 +1916,15 @@ export class TeamTable {
 
   /** Finds the row by the unique index on (name). */
   async byName(name: string): Promise<Team | null> {
-    const recs = await this.v.query({
-      table: "teams",
-      filter: andExpr([{ op: "eq", column: "name", value: name }]),
-      limit: 1,
-    });
+    const recs = await this.v.query(
+      assemble({
+        table: "teams",
+        filters: [eq(col("", "name"), lit(name))],
+        orders: [],
+        includes: [],
+        limit: 1,
+      }),
+    );
     return recs.length ? (recs[0] as unknown as Team) : null;
   }
 
@@ -1633,165 +1933,182 @@ export class TeamTable {
   }
 }
 
-/** Fluent shaped-read builder for "teams"; conditions AND together. */
+/** Fluent query builder for "teams"; conditions AND together. */
 export class TeamQuery {
   private filters: Expr[] = [];
-  private read: Read = { table: "teams" };
+  private spec: QuerySpec = {
+    table: "teams",
+    filters: [],
+    orders: [],
+    includes: [],
+  };
   private v: View;
   constructor(v: View) {
     this.v = v;
-    this.read.order_by = [];
-    this.read.include = [];
+    this.spec.filters = this.filters;
   }
 
   idEq(v: string): this {
-    this.filters.push({ op: "eq", column: "id", value: v });
+    this.filters.push(bin("eq", col("", "id"), lit(v)));
     return this;
   }
   idNe(v: string): this {
-    this.filters.push({ op: "ne", column: "id", value: v });
+    this.filters.push(bin("ne", col("", "id"), lit(v)));
     return this;
   }
   idLt(v: string): this {
-    this.filters.push({ op: "lt", column: "id", value: v });
+    this.filters.push(bin("lt", col("", "id"), lit(v)));
     return this;
   }
   idLte(v: string): this {
-    this.filters.push({ op: "lte", column: "id", value: v });
+    this.filters.push(bin("lte", col("", "id"), lit(v)));
     return this;
   }
   idGt(v: string): this {
-    this.filters.push({ op: "gt", column: "id", value: v });
+    this.filters.push(bin("gt", col("", "id"), lit(v)));
     return this;
   }
   idGte(v: string): this {
-    this.filters.push({ op: "gte", column: "id", value: v });
+    this.filters.push(bin("gte", col("", "id"), lit(v)));
     return this;
   }
   nameEq(v: string): this {
-    this.filters.push({ op: "eq", column: "name", value: v });
+    this.filters.push(bin("eq", col("", "name"), lit(v)));
     return this;
   }
   nameNe(v: string): this {
-    this.filters.push({ op: "ne", column: "name", value: v });
+    this.filters.push(bin("ne", col("", "name"), lit(v)));
     return this;
   }
   nameLt(v: string): this {
-    this.filters.push({ op: "lt", column: "name", value: v });
+    this.filters.push(bin("lt", col("", "name"), lit(v)));
     return this;
   }
   nameLte(v: string): this {
-    this.filters.push({ op: "lte", column: "name", value: v });
+    this.filters.push(bin("lte", col("", "name"), lit(v)));
     return this;
   }
   nameGt(v: string): this {
-    this.filters.push({ op: "gt", column: "name", value: v });
+    this.filters.push(bin("gt", col("", "name"), lit(v)));
     return this;
   }
   nameGte(v: string): this {
-    this.filters.push({ op: "gte", column: "name", value: v });
+    this.filters.push(bin("gte", col("", "name"), lit(v)));
     return this;
   }
   createdAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "created_at", value: v });
+    this.filters.push(bin("eq", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "created_at", value: v });
+    this.filters.push(bin("ne", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "created_at", value: v });
+    this.filters.push(bin("lt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "created_at", value: v });
+    this.filters.push(bin("lte", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "created_at", value: v });
+    this.filters.push(bin("gt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "created_at", value: v });
+    this.filters.push(bin("gte", col("", "created_at"), lit(v)));
     return this;
   }
 
   orderById(): this {
-    this.read.order_by!.push({ column: "id" });
+    this.spec.orders.push({ expr: col("", "id") });
     return this;
   }
   orderByIdDesc(): this {
-    this.read.order_by!.push({ column: "id", desc: true });
+    this.spec.orders.push({ expr: col("", "id"), desc: true });
     return this;
   }
   orderByName(): this {
-    this.read.order_by!.push({ column: "name" });
+    this.spec.orders.push({ expr: col("", "name") });
     return this;
   }
   orderByNameDesc(): this {
-    this.read.order_by!.push({ column: "name", desc: true });
+    this.spec.orders.push({ expr: col("", "name"), desc: true });
     return this;
   }
   orderByCreatedAt(): this {
-    this.read.order_by!.push({ column: "created_at" });
+    this.spec.orders.push({ expr: col("", "created_at") });
     return this;
   }
   orderByCreatedAtDesc(): this {
-    this.read.order_by!.push({ column: "created_at", desc: true });
+    this.spec.orders.push({ expr: col("", "created_at"), desc: true });
     return this;
   }
 
   limit(n: number): this {
-    this.read.limit = n;
+    this.spec.limit = n;
     return this;
   }
   offset(n: number): this {
-    this.read.offset = n;
+    this.spec.offset = n;
     return this;
   }
 
   includeTeamMembers(fn?: (b: TeamMemberInclude) => void): this {
     const b = new TeamMemberInclude(
-      "team_members_team_id_fk",
-      "children",
       "team_members",
+      [["team_id", "id"]],
+      "team_members",
+      "array",
     );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeBoards(fn?: (b: BoardInclude) => void): this {
-    const b = new BoardInclude("boards_team_id_fk", "children", "boards");
+    const b = new BoardInclude(
+      "boards",
+      [["team_id", "id"]],
+      "boards",
+      "array",
+    );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeLabels(fn?: (b: LabelInclude) => void): this {
-    const b = new LabelInclude("labels_team_id_fk", "children", "labels");
+    const b = new LabelInclude(
+      "labels",
+      [["team_id", "id"]],
+      "labels",
+      "array",
+    );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
 
   async all(): Promise<Team[]> {
-    this.read.filter = andExpr(this.filters);
-    return (await this.v.query(this.read)) as unknown as Team[];
+    return (await this.v.query(assemble(this.spec))) as unknown as Team[];
   }
 
   async first(): Promise<Team | null> {
-    this.read.limit = 1;
+    this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
   }
 
-  private async fold(aggs: Agg[]): Promise<Rec> {
-    const read: Read = {
-      table: this.read.table,
-      filter: andExpr(this.filters),
-      aggs,
-    };
-    const recs = await this.v.query(read);
+  private async fold(aggs: AggTerm[]): Promise<Rec> {
+    const recs = await this.v.query(
+      assemble({
+        table: this.spec.table,
+        filters: this.filters,
+        orders: [],
+        includes: [],
+        aggs,
+      }),
+    );
     return recs[0] ?? {};
   }
 
@@ -1802,42 +2119,50 @@ export class TeamQuery {
   }
   /** Smallest "id" (null when no rows). */
   async minId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "id", as: "v" }]);
+    const rec = await this.fold([{ fn: "min", arg: col("", "id"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "id" (null when no rows). */
   async maxId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "id", as: "v" }]);
+    const rec = await this.fold([{ fn: "max", arg: col("", "id"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "name" (null when no rows). */
   async minName(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "name", as: "v" }]);
+    const rec = await this.fold([{ fn: "min", arg: col("", "name"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "name" (null when no rows). */
   async maxName(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "name", as: "v" }]);
+    const rec = await this.fold([{ fn: "max", arg: col("", "name"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Total of "created_at" (null when no rows). */
   async sumCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "sum", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "sum", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Average of "created_at" (null when no rows). */
   async avgCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "avg", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "avg", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Smallest "created_at" (null when no rows). */
   async minCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "min", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Largest "created_at" (null when no rows). */
   async maxCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "max", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
 }
@@ -1845,113 +2170,120 @@ export class TeamQuery {
 /** Refines an included "teams" fetch. */
 export class TeamInclude {
   private filters: Expr[] = [];
-  private orders: Order[] = [];
-  private nested: Include[] = [];
-  private max = 0;
-  private fk: string;
-  private dir: "parent" | "children";
+  private orders: OrderTerm[] = [];
+  private nested: IncludeSpec[] = [];
+  private max?: number;
+  private table: string;
+  private pairs: [string, string][];
   private as: string;
-  constructor(fk: string, dir: "parent" | "children", as_: string) {
-    this.fk = fk;
-    this.dir = dir;
+  private kind: "first" | "array";
+  constructor(
+    table: string,
+    pairs: [string, string][],
+    as_: string,
+    kind: "first" | "array",
+  ) {
+    this.table = table;
+    this.pairs = pairs;
     this.as = as_;
+    this.kind = kind;
   }
 
   idEq(v: string): this {
-    this.filters.push({ op: "eq", column: "id", value: v });
+    this.filters.push(bin("eq", col("", "id"), lit(v)));
     return this;
   }
   idNe(v: string): this {
-    this.filters.push({ op: "ne", column: "id", value: v });
+    this.filters.push(bin("ne", col("", "id"), lit(v)));
     return this;
   }
   idLt(v: string): this {
-    this.filters.push({ op: "lt", column: "id", value: v });
+    this.filters.push(bin("lt", col("", "id"), lit(v)));
     return this;
   }
   idLte(v: string): this {
-    this.filters.push({ op: "lte", column: "id", value: v });
+    this.filters.push(bin("lte", col("", "id"), lit(v)));
     return this;
   }
   idGt(v: string): this {
-    this.filters.push({ op: "gt", column: "id", value: v });
+    this.filters.push(bin("gt", col("", "id"), lit(v)));
     return this;
   }
   idGte(v: string): this {
-    this.filters.push({ op: "gte", column: "id", value: v });
+    this.filters.push(bin("gte", col("", "id"), lit(v)));
     return this;
   }
   nameEq(v: string): this {
-    this.filters.push({ op: "eq", column: "name", value: v });
+    this.filters.push(bin("eq", col("", "name"), lit(v)));
     return this;
   }
   nameNe(v: string): this {
-    this.filters.push({ op: "ne", column: "name", value: v });
+    this.filters.push(bin("ne", col("", "name"), lit(v)));
     return this;
   }
   nameLt(v: string): this {
-    this.filters.push({ op: "lt", column: "name", value: v });
+    this.filters.push(bin("lt", col("", "name"), lit(v)));
     return this;
   }
   nameLte(v: string): this {
-    this.filters.push({ op: "lte", column: "name", value: v });
+    this.filters.push(bin("lte", col("", "name"), lit(v)));
     return this;
   }
   nameGt(v: string): this {
-    this.filters.push({ op: "gt", column: "name", value: v });
+    this.filters.push(bin("gt", col("", "name"), lit(v)));
     return this;
   }
   nameGte(v: string): this {
-    this.filters.push({ op: "gte", column: "name", value: v });
+    this.filters.push(bin("gte", col("", "name"), lit(v)));
     return this;
   }
   createdAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "created_at", value: v });
+    this.filters.push(bin("eq", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "created_at", value: v });
+    this.filters.push(bin("ne", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "created_at", value: v });
+    this.filters.push(bin("lt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "created_at", value: v });
+    this.filters.push(bin("lte", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "created_at", value: v });
+    this.filters.push(bin("gt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "created_at", value: v });
+    this.filters.push(bin("gte", col("", "created_at"), lit(v)));
     return this;
   }
 
   orderById(): this {
-    this.orders.push({ column: "id" });
+    this.orders.push({ expr: col("", "id") });
     return this;
   }
   orderByIdDesc(): this {
-    this.orders.push({ column: "id", desc: true });
+    this.orders.push({ expr: col("", "id"), desc: true });
     return this;
   }
   orderByName(): this {
-    this.orders.push({ column: "name" });
+    this.orders.push({ expr: col("", "name") });
     return this;
   }
   orderByNameDesc(): this {
-    this.orders.push({ column: "name", desc: true });
+    this.orders.push({ expr: col("", "name"), desc: true });
     return this;
   }
   orderByCreatedAt(): this {
-    this.orders.push({ column: "created_at" });
+    this.orders.push({ expr: col("", "created_at") });
     return this;
   }
   orderByCreatedAtDesc(): this {
-    this.orders.push({ column: "created_at", desc: true });
+    this.orders.push({ expr: col("", "created_at"), desc: true });
     return this;
   }
 
@@ -1962,36 +2294,48 @@ export class TeamInclude {
 
   includeTeamMembers(fn?: (b: TeamMemberInclude) => void): this {
     const b = new TeamMemberInclude(
-      "team_members_team_id_fk",
-      "children",
       "team_members",
+      [["team_id", "id"]],
+      "team_members",
+      "array",
     );
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
   includeBoards(fn?: (b: BoardInclude) => void): this {
-    const b = new BoardInclude("boards_team_id_fk", "children", "boards");
+    const b = new BoardInclude(
+      "boards",
+      [["team_id", "id"]],
+      "boards",
+      "array",
+    );
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
   includeLabels(fn?: (b: LabelInclude) => void): this {
-    const b = new LabelInclude("labels_team_id_fk", "children", "labels");
+    const b = new LabelInclude(
+      "labels",
+      [["team_id", "id"]],
+      "labels",
+      "array",
+    );
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
 
-  build(): Include {
+  build(): IncludeSpec {
     return {
-      fk: this.fk,
-      dir: this.dir,
+      table: this.table,
+      pairs: this.pairs,
       as: this.as,
-      filter: andExpr(this.filters),
-      order_by: this.orders.length ? this.orders : undefined,
-      limit: this.max || undefined,
-      include: this.nested.length ? this.nested : undefined,
+      kind: this.kind,
+      filters: this.filters,
+      orders: this.orders,
+      limit: this.max,
+      nested: this.nested,
     };
   }
 }
@@ -2066,187 +2410,193 @@ export class TeamMemberTable {
   }
 }
 
-/** Fluent shaped-read builder for "team_members"; conditions AND together. */
+/** Fluent query builder for "team_members"; conditions AND together. */
 export class TeamMemberQuery {
   private filters: Expr[] = [];
-  private read: Read = { table: "team_members" };
+  private spec: QuerySpec = {
+    table: "team_members",
+    filters: [],
+    orders: [],
+    includes: [],
+  };
   private v: View;
   constructor(v: View) {
     this.v = v;
-    this.read.order_by = [];
-    this.read.include = [];
+    this.spec.filters = this.filters;
   }
 
   teamIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "team_id", value: v });
+    this.filters.push(bin("eq", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "team_id", value: v });
+    this.filters.push(bin("ne", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "team_id", value: v });
+    this.filters.push(bin("lt", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "team_id", value: v });
+    this.filters.push(bin("lte", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "team_id", value: v });
+    this.filters.push(bin("gt", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "team_id", value: v });
+    this.filters.push(bin("gte", col("", "team_id"), lit(v)));
     return this;
   }
   userIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "user_id", value: v });
+    this.filters.push(bin("eq", col("", "user_id"), lit(v)));
     return this;
   }
   userIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "user_id", value: v });
+    this.filters.push(bin("ne", col("", "user_id"), lit(v)));
     return this;
   }
   userIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "user_id", value: v });
+    this.filters.push(bin("lt", col("", "user_id"), lit(v)));
     return this;
   }
   userIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "user_id", value: v });
+    this.filters.push(bin("lte", col("", "user_id"), lit(v)));
     return this;
   }
   userIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "user_id", value: v });
+    this.filters.push(bin("gt", col("", "user_id"), lit(v)));
     return this;
   }
   userIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "user_id", value: v });
+    this.filters.push(bin("gte", col("", "user_id"), lit(v)));
     return this;
   }
   roleEq(v: string): this {
-    this.filters.push({ op: "eq", column: "role", value: v });
+    this.filters.push(bin("eq", col("", "role"), lit(v)));
     return this;
   }
   roleNe(v: string): this {
-    this.filters.push({ op: "ne", column: "role", value: v });
+    this.filters.push(bin("ne", col("", "role"), lit(v)));
     return this;
   }
   roleLt(v: string): this {
-    this.filters.push({ op: "lt", column: "role", value: v });
+    this.filters.push(bin("lt", col("", "role"), lit(v)));
     return this;
   }
   roleLte(v: string): this {
-    this.filters.push({ op: "lte", column: "role", value: v });
+    this.filters.push(bin("lte", col("", "role"), lit(v)));
     return this;
   }
   roleGt(v: string): this {
-    this.filters.push({ op: "gt", column: "role", value: v });
+    this.filters.push(bin("gt", col("", "role"), lit(v)));
     return this;
   }
   roleGte(v: string): this {
-    this.filters.push({ op: "gte", column: "role", value: v });
+    this.filters.push(bin("gte", col("", "role"), lit(v)));
     return this;
   }
   joinedAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "joined_at", value: v });
+    this.filters.push(bin("eq", col("", "joined_at"), lit(v)));
     return this;
   }
   joinedAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "joined_at", value: v });
+    this.filters.push(bin("ne", col("", "joined_at"), lit(v)));
     return this;
   }
   joinedAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "joined_at", value: v });
+    this.filters.push(bin("lt", col("", "joined_at"), lit(v)));
     return this;
   }
   joinedAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "joined_at", value: v });
+    this.filters.push(bin("lte", col("", "joined_at"), lit(v)));
     return this;
   }
   joinedAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "joined_at", value: v });
+    this.filters.push(bin("gt", col("", "joined_at"), lit(v)));
     return this;
   }
   joinedAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "joined_at", value: v });
+    this.filters.push(bin("gte", col("", "joined_at"), lit(v)));
     return this;
   }
 
   orderByTeamId(): this {
-    this.read.order_by!.push({ column: "team_id" });
+    this.spec.orders.push({ expr: col("", "team_id") });
     return this;
   }
   orderByTeamIdDesc(): this {
-    this.read.order_by!.push({ column: "team_id", desc: true });
+    this.spec.orders.push({ expr: col("", "team_id"), desc: true });
     return this;
   }
   orderByUserId(): this {
-    this.read.order_by!.push({ column: "user_id" });
+    this.spec.orders.push({ expr: col("", "user_id") });
     return this;
   }
   orderByUserIdDesc(): this {
-    this.read.order_by!.push({ column: "user_id", desc: true });
+    this.spec.orders.push({ expr: col("", "user_id"), desc: true });
     return this;
   }
   orderByRole(): this {
-    this.read.order_by!.push({ column: "role" });
+    this.spec.orders.push({ expr: col("", "role") });
     return this;
   }
   orderByRoleDesc(): this {
-    this.read.order_by!.push({ column: "role", desc: true });
+    this.spec.orders.push({ expr: col("", "role"), desc: true });
     return this;
   }
   orderByJoinedAt(): this {
-    this.read.order_by!.push({ column: "joined_at" });
+    this.spec.orders.push({ expr: col("", "joined_at") });
     return this;
   }
   orderByJoinedAtDesc(): this {
-    this.read.order_by!.push({ column: "joined_at", desc: true });
+    this.spec.orders.push({ expr: col("", "joined_at"), desc: true });
     return this;
   }
 
   limit(n: number): this {
-    this.read.limit = n;
+    this.spec.limit = n;
     return this;
   }
   offset(n: number): this {
-    this.read.offset = n;
+    this.spec.offset = n;
     return this;
   }
 
   includeTeam(fn?: (b: TeamInclude) => void): this {
-    const b = new TeamInclude("team_members_team_id_fk", "parent", "team");
+    const b = new TeamInclude("teams", [["id", "team_id"]], "team", "first");
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeUser(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("team_members_user_id_fk", "parent", "user");
+    const b = new UserInclude("users", [["id", "user_id"]], "user", "first");
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
 
   async all(): Promise<TeamMember[]> {
-    this.read.filter = andExpr(this.filters);
-    return (await this.v.query(this.read)) as unknown as TeamMember[];
+    return (await this.v.query(assemble(this.spec))) as unknown as TeamMember[];
   }
 
   async first(): Promise<TeamMember | null> {
-    this.read.limit = 1;
+    this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
   }
 
-  private async fold(aggs: Agg[]): Promise<Rec> {
-    const read: Read = {
-      table: this.read.table,
-      filter: andExpr(this.filters),
-      aggs,
-    };
-    const recs = await this.v.query(read);
+  private async fold(aggs: AggTerm[]): Promise<Rec> {
+    const recs = await this.v.query(
+      assemble({
+        table: this.spec.table,
+        filters: this.filters,
+        orders: [],
+        includes: [],
+        aggs,
+      }),
+    );
     return recs[0] ?? {};
   }
 
@@ -2257,52 +2607,68 @@ export class TeamMemberQuery {
   }
   /** Smallest "team_id" (null when no rows). */
   async minTeamId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "team_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "team_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "team_id" (null when no rows). */
   async maxTeamId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "team_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "team_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "user_id" (null when no rows). */
   async minUserId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "user_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "user_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "user_id" (null when no rows). */
   async maxUserId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "user_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "user_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "role" (null when no rows). */
   async minRole(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "role", as: "v" }]);
+    const rec = await this.fold([{ fn: "min", arg: col("", "role"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "role" (null when no rows). */
   async maxRole(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "role", as: "v" }]);
+    const rec = await this.fold([{ fn: "max", arg: col("", "role"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Total of "joined_at" (null when no rows). */
   async sumJoinedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "sum", column: "joined_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "sum", arg: col("", "joined_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Average of "joined_at" (null when no rows). */
   async avgJoinedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "avg", column: "joined_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "avg", arg: col("", "joined_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Smallest "joined_at" (null when no rows). */
   async minJoinedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "min", column: "joined_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "joined_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Largest "joined_at" (null when no rows). */
   async maxJoinedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "max", column: "joined_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "joined_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
 }
@@ -2310,145 +2676,152 @@ export class TeamMemberQuery {
 /** Refines an included "team_members" fetch. */
 export class TeamMemberInclude {
   private filters: Expr[] = [];
-  private orders: Order[] = [];
-  private nested: Include[] = [];
-  private max = 0;
-  private fk: string;
-  private dir: "parent" | "children";
+  private orders: OrderTerm[] = [];
+  private nested: IncludeSpec[] = [];
+  private max?: number;
+  private table: string;
+  private pairs: [string, string][];
   private as: string;
-  constructor(fk: string, dir: "parent" | "children", as_: string) {
-    this.fk = fk;
-    this.dir = dir;
+  private kind: "first" | "array";
+  constructor(
+    table: string,
+    pairs: [string, string][],
+    as_: string,
+    kind: "first" | "array",
+  ) {
+    this.table = table;
+    this.pairs = pairs;
     this.as = as_;
+    this.kind = kind;
   }
 
   teamIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "team_id", value: v });
+    this.filters.push(bin("eq", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "team_id", value: v });
+    this.filters.push(bin("ne", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "team_id", value: v });
+    this.filters.push(bin("lt", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "team_id", value: v });
+    this.filters.push(bin("lte", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "team_id", value: v });
+    this.filters.push(bin("gt", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "team_id", value: v });
+    this.filters.push(bin("gte", col("", "team_id"), lit(v)));
     return this;
   }
   userIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "user_id", value: v });
+    this.filters.push(bin("eq", col("", "user_id"), lit(v)));
     return this;
   }
   userIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "user_id", value: v });
+    this.filters.push(bin("ne", col("", "user_id"), lit(v)));
     return this;
   }
   userIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "user_id", value: v });
+    this.filters.push(bin("lt", col("", "user_id"), lit(v)));
     return this;
   }
   userIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "user_id", value: v });
+    this.filters.push(bin("lte", col("", "user_id"), lit(v)));
     return this;
   }
   userIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "user_id", value: v });
+    this.filters.push(bin("gt", col("", "user_id"), lit(v)));
     return this;
   }
   userIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "user_id", value: v });
+    this.filters.push(bin("gte", col("", "user_id"), lit(v)));
     return this;
   }
   roleEq(v: string): this {
-    this.filters.push({ op: "eq", column: "role", value: v });
+    this.filters.push(bin("eq", col("", "role"), lit(v)));
     return this;
   }
   roleNe(v: string): this {
-    this.filters.push({ op: "ne", column: "role", value: v });
+    this.filters.push(bin("ne", col("", "role"), lit(v)));
     return this;
   }
   roleLt(v: string): this {
-    this.filters.push({ op: "lt", column: "role", value: v });
+    this.filters.push(bin("lt", col("", "role"), lit(v)));
     return this;
   }
   roleLte(v: string): this {
-    this.filters.push({ op: "lte", column: "role", value: v });
+    this.filters.push(bin("lte", col("", "role"), lit(v)));
     return this;
   }
   roleGt(v: string): this {
-    this.filters.push({ op: "gt", column: "role", value: v });
+    this.filters.push(bin("gt", col("", "role"), lit(v)));
     return this;
   }
   roleGte(v: string): this {
-    this.filters.push({ op: "gte", column: "role", value: v });
+    this.filters.push(bin("gte", col("", "role"), lit(v)));
     return this;
   }
   joinedAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "joined_at", value: v });
+    this.filters.push(bin("eq", col("", "joined_at"), lit(v)));
     return this;
   }
   joinedAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "joined_at", value: v });
+    this.filters.push(bin("ne", col("", "joined_at"), lit(v)));
     return this;
   }
   joinedAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "joined_at", value: v });
+    this.filters.push(bin("lt", col("", "joined_at"), lit(v)));
     return this;
   }
   joinedAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "joined_at", value: v });
+    this.filters.push(bin("lte", col("", "joined_at"), lit(v)));
     return this;
   }
   joinedAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "joined_at", value: v });
+    this.filters.push(bin("gt", col("", "joined_at"), lit(v)));
     return this;
   }
   joinedAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "joined_at", value: v });
+    this.filters.push(bin("gte", col("", "joined_at"), lit(v)));
     return this;
   }
 
   orderByTeamId(): this {
-    this.orders.push({ column: "team_id" });
+    this.orders.push({ expr: col("", "team_id") });
     return this;
   }
   orderByTeamIdDesc(): this {
-    this.orders.push({ column: "team_id", desc: true });
+    this.orders.push({ expr: col("", "team_id"), desc: true });
     return this;
   }
   orderByUserId(): this {
-    this.orders.push({ column: "user_id" });
+    this.orders.push({ expr: col("", "user_id") });
     return this;
   }
   orderByUserIdDesc(): this {
-    this.orders.push({ column: "user_id", desc: true });
+    this.orders.push({ expr: col("", "user_id"), desc: true });
     return this;
   }
   orderByRole(): this {
-    this.orders.push({ column: "role" });
+    this.orders.push({ expr: col("", "role") });
     return this;
   }
   orderByRoleDesc(): this {
-    this.orders.push({ column: "role", desc: true });
+    this.orders.push({ expr: col("", "role"), desc: true });
     return this;
   }
   orderByJoinedAt(): this {
-    this.orders.push({ column: "joined_at" });
+    this.orders.push({ expr: col("", "joined_at") });
     return this;
   }
   orderByJoinedAtDesc(): this {
-    this.orders.push({ column: "joined_at", desc: true });
+    this.orders.push({ expr: col("", "joined_at"), desc: true });
     return this;
   }
 
@@ -2458,27 +2831,28 @@ export class TeamMemberInclude {
   }
 
   includeTeam(fn?: (b: TeamInclude) => void): this {
-    const b = new TeamInclude("team_members_team_id_fk", "parent", "team");
+    const b = new TeamInclude("teams", [["id", "team_id"]], "team", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
   includeUser(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("team_members_user_id_fk", "parent", "user");
+    const b = new UserInclude("users", [["id", "user_id"]], "user", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
 
-  build(): Include {
+  build(): IncludeSpec {
     return {
-      fk: this.fk,
-      dir: this.dir,
+      table: this.table,
+      pairs: this.pairs,
       as: this.as,
-      filter: andExpr(this.filters),
-      order_by: this.orders.length ? this.orders : undefined,
-      limit: this.max || undefined,
-      include: this.nested.length ? this.nested : undefined,
+      kind: this.kind,
+      filters: this.filters,
+      orders: this.orders,
+      limit: this.max,
+      nested: this.nested,
     };
   }
 }
@@ -2547,14 +2921,18 @@ export class BoardTable {
 
   /** Finds the row by the unique index on (team_id, name). */
   async byTeamIdName(teamId: string, name: string): Promise<Board | null> {
-    const recs = await this.v.query({
-      table: "boards",
-      filter: andExpr([
-        { op: "eq", column: "team_id", value: teamId },
-        { op: "eq", column: "name", value: name },
-      ]),
-      limit: 1,
-    });
+    const recs = await this.v.query(
+      assemble({
+        table: "boards",
+        filters: [
+          eq(col("", "team_id"), lit(teamId)),
+          eq(col("", "name"), lit(name)),
+        ],
+        orders: [],
+        includes: [],
+        limit: 1,
+      }),
+    );
     return recs.length ? (recs[0] as unknown as Board) : null;
   }
 
@@ -2563,203 +2941,209 @@ export class BoardTable {
   }
 }
 
-/** Fluent shaped-read builder for "boards"; conditions AND together. */
+/** Fluent query builder for "boards"; conditions AND together. */
 export class BoardQuery {
   private filters: Expr[] = [];
-  private read: Read = { table: "boards" };
+  private spec: QuerySpec = {
+    table: "boards",
+    filters: [],
+    orders: [],
+    includes: [],
+  };
   private v: View;
   constructor(v: View) {
     this.v = v;
-    this.read.order_by = [];
-    this.read.include = [];
+    this.spec.filters = this.filters;
   }
 
   idEq(v: string): this {
-    this.filters.push({ op: "eq", column: "id", value: v });
+    this.filters.push(bin("eq", col("", "id"), lit(v)));
     return this;
   }
   idNe(v: string): this {
-    this.filters.push({ op: "ne", column: "id", value: v });
+    this.filters.push(bin("ne", col("", "id"), lit(v)));
     return this;
   }
   idLt(v: string): this {
-    this.filters.push({ op: "lt", column: "id", value: v });
+    this.filters.push(bin("lt", col("", "id"), lit(v)));
     return this;
   }
   idLte(v: string): this {
-    this.filters.push({ op: "lte", column: "id", value: v });
+    this.filters.push(bin("lte", col("", "id"), lit(v)));
     return this;
   }
   idGt(v: string): this {
-    this.filters.push({ op: "gt", column: "id", value: v });
+    this.filters.push(bin("gt", col("", "id"), lit(v)));
     return this;
   }
   idGte(v: string): this {
-    this.filters.push({ op: "gte", column: "id", value: v });
+    this.filters.push(bin("gte", col("", "id"), lit(v)));
     return this;
   }
   teamIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "team_id", value: v });
+    this.filters.push(bin("eq", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "team_id", value: v });
+    this.filters.push(bin("ne", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "team_id", value: v });
+    this.filters.push(bin("lt", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "team_id", value: v });
+    this.filters.push(bin("lte", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "team_id", value: v });
+    this.filters.push(bin("gt", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "team_id", value: v });
+    this.filters.push(bin("gte", col("", "team_id"), lit(v)));
     return this;
   }
   nameEq(v: string): this {
-    this.filters.push({ op: "eq", column: "name", value: v });
+    this.filters.push(bin("eq", col("", "name"), lit(v)));
     return this;
   }
   nameNe(v: string): this {
-    this.filters.push({ op: "ne", column: "name", value: v });
+    this.filters.push(bin("ne", col("", "name"), lit(v)));
     return this;
   }
   nameLt(v: string): this {
-    this.filters.push({ op: "lt", column: "name", value: v });
+    this.filters.push(bin("lt", col("", "name"), lit(v)));
     return this;
   }
   nameLte(v: string): this {
-    this.filters.push({ op: "lte", column: "name", value: v });
+    this.filters.push(bin("lte", col("", "name"), lit(v)));
     return this;
   }
   nameGt(v: string): this {
-    this.filters.push({ op: "gt", column: "name", value: v });
+    this.filters.push(bin("gt", col("", "name"), lit(v)));
     return this;
   }
   nameGte(v: string): this {
-    this.filters.push({ op: "gte", column: "name", value: v });
+    this.filters.push(bin("gte", col("", "name"), lit(v)));
     return this;
   }
   archivedEq(v: boolean): this {
-    this.filters.push({ op: "eq", column: "archived", value: v });
+    this.filters.push(bin("eq", col("", "archived"), lit(v)));
     return this;
   }
   archivedNe(v: boolean): this {
-    this.filters.push({ op: "ne", column: "archived", value: v });
+    this.filters.push(bin("ne", col("", "archived"), lit(v)));
     return this;
   }
   createdAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "created_at", value: v });
+    this.filters.push(bin("eq", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "created_at", value: v });
+    this.filters.push(bin("ne", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "created_at", value: v });
+    this.filters.push(bin("lt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "created_at", value: v });
+    this.filters.push(bin("lte", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "created_at", value: v });
+    this.filters.push(bin("gt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "created_at", value: v });
+    this.filters.push(bin("gte", col("", "created_at"), lit(v)));
     return this;
   }
 
   orderById(): this {
-    this.read.order_by!.push({ column: "id" });
+    this.spec.orders.push({ expr: col("", "id") });
     return this;
   }
   orderByIdDesc(): this {
-    this.read.order_by!.push({ column: "id", desc: true });
+    this.spec.orders.push({ expr: col("", "id"), desc: true });
     return this;
   }
   orderByTeamId(): this {
-    this.read.order_by!.push({ column: "team_id" });
+    this.spec.orders.push({ expr: col("", "team_id") });
     return this;
   }
   orderByTeamIdDesc(): this {
-    this.read.order_by!.push({ column: "team_id", desc: true });
+    this.spec.orders.push({ expr: col("", "team_id"), desc: true });
     return this;
   }
   orderByName(): this {
-    this.read.order_by!.push({ column: "name" });
+    this.spec.orders.push({ expr: col("", "name") });
     return this;
   }
   orderByNameDesc(): this {
-    this.read.order_by!.push({ column: "name", desc: true });
+    this.spec.orders.push({ expr: col("", "name"), desc: true });
     return this;
   }
   orderByArchived(): this {
-    this.read.order_by!.push({ column: "archived" });
+    this.spec.orders.push({ expr: col("", "archived") });
     return this;
   }
   orderByArchivedDesc(): this {
-    this.read.order_by!.push({ column: "archived", desc: true });
+    this.spec.orders.push({ expr: col("", "archived"), desc: true });
     return this;
   }
   orderByCreatedAt(): this {
-    this.read.order_by!.push({ column: "created_at" });
+    this.spec.orders.push({ expr: col("", "created_at") });
     return this;
   }
   orderByCreatedAtDesc(): this {
-    this.read.order_by!.push({ column: "created_at", desc: true });
+    this.spec.orders.push({ expr: col("", "created_at"), desc: true });
     return this;
   }
 
   limit(n: number): this {
-    this.read.limit = n;
+    this.spec.limit = n;
     return this;
   }
   offset(n: number): this {
-    this.read.offset = n;
+    this.spec.offset = n;
     return this;
   }
 
   includeTeam(fn?: (b: TeamInclude) => void): this {
-    const b = new TeamInclude("boards_team_id_fk", "parent", "team");
+    const b = new TeamInclude("teams", [["id", "team_id"]], "team", "first");
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeTasks(fn?: (b: TaskInclude) => void): this {
-    const b = new TaskInclude("tasks_board_id_fk", "children", "tasks");
+    const b = new TaskInclude("tasks", [["board_id", "id"]], "tasks", "array");
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
 
   async all(): Promise<Board[]> {
-    this.read.filter = andExpr(this.filters);
-    return (await this.v.query(this.read)) as unknown as Board[];
+    return (await this.v.query(assemble(this.spec))) as unknown as Board[];
   }
 
   async first(): Promise<Board | null> {
-    this.read.limit = 1;
+    this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
   }
 
-  private async fold(aggs: Agg[]): Promise<Rec> {
-    const read: Read = {
-      table: this.read.table,
-      filter: andExpr(this.filters),
-      aggs,
-    };
-    const recs = await this.v.query(read);
+  private async fold(aggs: AggTerm[]): Promise<Rec> {
+    const recs = await this.v.query(
+      assemble({
+        table: this.spec.table,
+        filters: this.filters,
+        orders: [],
+        includes: [],
+        aggs,
+      }),
+    );
     return recs[0] ?? {};
   }
 
@@ -2770,62 +3154,78 @@ export class BoardQuery {
   }
   /** Smallest "id" (null when no rows). */
   async minId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "id", as: "v" }]);
+    const rec = await this.fold([{ fn: "min", arg: col("", "id"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "id" (null when no rows). */
   async maxId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "id", as: "v" }]);
+    const rec = await this.fold([{ fn: "max", arg: col("", "id"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "team_id" (null when no rows). */
   async minTeamId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "team_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "team_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "team_id" (null when no rows). */
   async maxTeamId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "team_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "team_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "name" (null when no rows). */
   async minName(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "name", as: "v" }]);
+    const rec = await this.fold([{ fn: "min", arg: col("", "name"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "name" (null when no rows). */
   async maxName(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "name", as: "v" }]);
+    const rec = await this.fold([{ fn: "max", arg: col("", "name"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "archived" (null when no rows). */
   async minArchived(): Promise<boolean | null> {
-    const rec = await this.fold([{ fn: "min", column: "archived", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "archived"), as: "v" },
+    ]);
     return (rec["v"] as boolean | null) ?? null;
   }
   /** Largest "archived" (null when no rows). */
   async maxArchived(): Promise<boolean | null> {
-    const rec = await this.fold([{ fn: "max", column: "archived", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "archived"), as: "v" },
+    ]);
     return (rec["v"] as boolean | null) ?? null;
   }
   /** Total of "created_at" (null when no rows). */
   async sumCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "sum", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "sum", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Average of "created_at" (null when no rows). */
   async avgCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "avg", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "avg", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Smallest "created_at" (null when no rows). */
   async minCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "min", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Largest "created_at" (null when no rows). */
   async maxCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "max", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
 }
@@ -2833,161 +3233,168 @@ export class BoardQuery {
 /** Refines an included "boards" fetch. */
 export class BoardInclude {
   private filters: Expr[] = [];
-  private orders: Order[] = [];
-  private nested: Include[] = [];
-  private max = 0;
-  private fk: string;
-  private dir: "parent" | "children";
+  private orders: OrderTerm[] = [];
+  private nested: IncludeSpec[] = [];
+  private max?: number;
+  private table: string;
+  private pairs: [string, string][];
   private as: string;
-  constructor(fk: string, dir: "parent" | "children", as_: string) {
-    this.fk = fk;
-    this.dir = dir;
+  private kind: "first" | "array";
+  constructor(
+    table: string,
+    pairs: [string, string][],
+    as_: string,
+    kind: "first" | "array",
+  ) {
+    this.table = table;
+    this.pairs = pairs;
     this.as = as_;
+    this.kind = kind;
   }
 
   idEq(v: string): this {
-    this.filters.push({ op: "eq", column: "id", value: v });
+    this.filters.push(bin("eq", col("", "id"), lit(v)));
     return this;
   }
   idNe(v: string): this {
-    this.filters.push({ op: "ne", column: "id", value: v });
+    this.filters.push(bin("ne", col("", "id"), lit(v)));
     return this;
   }
   idLt(v: string): this {
-    this.filters.push({ op: "lt", column: "id", value: v });
+    this.filters.push(bin("lt", col("", "id"), lit(v)));
     return this;
   }
   idLte(v: string): this {
-    this.filters.push({ op: "lte", column: "id", value: v });
+    this.filters.push(bin("lte", col("", "id"), lit(v)));
     return this;
   }
   idGt(v: string): this {
-    this.filters.push({ op: "gt", column: "id", value: v });
+    this.filters.push(bin("gt", col("", "id"), lit(v)));
     return this;
   }
   idGte(v: string): this {
-    this.filters.push({ op: "gte", column: "id", value: v });
+    this.filters.push(bin("gte", col("", "id"), lit(v)));
     return this;
   }
   teamIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "team_id", value: v });
+    this.filters.push(bin("eq", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "team_id", value: v });
+    this.filters.push(bin("ne", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "team_id", value: v });
+    this.filters.push(bin("lt", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "team_id", value: v });
+    this.filters.push(bin("lte", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "team_id", value: v });
+    this.filters.push(bin("gt", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "team_id", value: v });
+    this.filters.push(bin("gte", col("", "team_id"), lit(v)));
     return this;
   }
   nameEq(v: string): this {
-    this.filters.push({ op: "eq", column: "name", value: v });
+    this.filters.push(bin("eq", col("", "name"), lit(v)));
     return this;
   }
   nameNe(v: string): this {
-    this.filters.push({ op: "ne", column: "name", value: v });
+    this.filters.push(bin("ne", col("", "name"), lit(v)));
     return this;
   }
   nameLt(v: string): this {
-    this.filters.push({ op: "lt", column: "name", value: v });
+    this.filters.push(bin("lt", col("", "name"), lit(v)));
     return this;
   }
   nameLte(v: string): this {
-    this.filters.push({ op: "lte", column: "name", value: v });
+    this.filters.push(bin("lte", col("", "name"), lit(v)));
     return this;
   }
   nameGt(v: string): this {
-    this.filters.push({ op: "gt", column: "name", value: v });
+    this.filters.push(bin("gt", col("", "name"), lit(v)));
     return this;
   }
   nameGte(v: string): this {
-    this.filters.push({ op: "gte", column: "name", value: v });
+    this.filters.push(bin("gte", col("", "name"), lit(v)));
     return this;
   }
   archivedEq(v: boolean): this {
-    this.filters.push({ op: "eq", column: "archived", value: v });
+    this.filters.push(bin("eq", col("", "archived"), lit(v)));
     return this;
   }
   archivedNe(v: boolean): this {
-    this.filters.push({ op: "ne", column: "archived", value: v });
+    this.filters.push(bin("ne", col("", "archived"), lit(v)));
     return this;
   }
   createdAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "created_at", value: v });
+    this.filters.push(bin("eq", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "created_at", value: v });
+    this.filters.push(bin("ne", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "created_at", value: v });
+    this.filters.push(bin("lt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "created_at", value: v });
+    this.filters.push(bin("lte", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "created_at", value: v });
+    this.filters.push(bin("gt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "created_at", value: v });
+    this.filters.push(bin("gte", col("", "created_at"), lit(v)));
     return this;
   }
 
   orderById(): this {
-    this.orders.push({ column: "id" });
+    this.orders.push({ expr: col("", "id") });
     return this;
   }
   orderByIdDesc(): this {
-    this.orders.push({ column: "id", desc: true });
+    this.orders.push({ expr: col("", "id"), desc: true });
     return this;
   }
   orderByTeamId(): this {
-    this.orders.push({ column: "team_id" });
+    this.orders.push({ expr: col("", "team_id") });
     return this;
   }
   orderByTeamIdDesc(): this {
-    this.orders.push({ column: "team_id", desc: true });
+    this.orders.push({ expr: col("", "team_id"), desc: true });
     return this;
   }
   orderByName(): this {
-    this.orders.push({ column: "name" });
+    this.orders.push({ expr: col("", "name") });
     return this;
   }
   orderByNameDesc(): this {
-    this.orders.push({ column: "name", desc: true });
+    this.orders.push({ expr: col("", "name"), desc: true });
     return this;
   }
   orderByArchived(): this {
-    this.orders.push({ column: "archived" });
+    this.orders.push({ expr: col("", "archived") });
     return this;
   }
   orderByArchivedDesc(): this {
-    this.orders.push({ column: "archived", desc: true });
+    this.orders.push({ expr: col("", "archived"), desc: true });
     return this;
   }
   orderByCreatedAt(): this {
-    this.orders.push({ column: "created_at" });
+    this.orders.push({ expr: col("", "created_at") });
     return this;
   }
   orderByCreatedAtDesc(): this {
-    this.orders.push({ column: "created_at", desc: true });
+    this.orders.push({ expr: col("", "created_at"), desc: true });
     return this;
   }
 
@@ -2997,27 +3404,28 @@ export class BoardInclude {
   }
 
   includeTeam(fn?: (b: TeamInclude) => void): this {
-    const b = new TeamInclude("boards_team_id_fk", "parent", "team");
+    const b = new TeamInclude("teams", [["id", "team_id"]], "team", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
   includeTasks(fn?: (b: TaskInclude) => void): this {
-    const b = new TaskInclude("tasks_board_id_fk", "children", "tasks");
+    const b = new TaskInclude("tasks", [["board_id", "id"]], "tasks", "array");
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
 
-  build(): Include {
+  build(): IncludeSpec {
     return {
-      fk: this.fk,
-      dir: this.dir,
+      table: this.table,
+      pairs: this.pairs,
       as: this.as,
-      filter: andExpr(this.filters),
-      order_by: this.orders.length ? this.orders : undefined,
-      limit: this.max || undefined,
-      include: this.nested.length ? this.nested : undefined,
+      kind: this.kind,
+      filters: this.filters,
+      orders: this.orders,
+      limit: this.max,
+      nested: this.nested,
     };
   }
 }
@@ -3115,529 +3523,549 @@ export class TaskTable {
   }
 }
 
-/** Fluent shaped-read builder for "tasks"; conditions AND together. */
+/** Fluent query builder for "tasks"; conditions AND together. */
 export class TaskQuery {
   private filters: Expr[] = [];
-  private read: Read = { table: "tasks" };
+  private spec: QuerySpec = {
+    table: "tasks",
+    filters: [],
+    orders: [],
+    includes: [],
+  };
   private v: View;
   constructor(v: View) {
     this.v = v;
-    this.read.order_by = [];
-    this.read.include = [];
+    this.spec.filters = this.filters;
   }
 
   idEq(v: string): this {
-    this.filters.push({ op: "eq", column: "id", value: v });
+    this.filters.push(bin("eq", col("", "id"), lit(v)));
     return this;
   }
   idNe(v: string): this {
-    this.filters.push({ op: "ne", column: "id", value: v });
+    this.filters.push(bin("ne", col("", "id"), lit(v)));
     return this;
   }
   idLt(v: string): this {
-    this.filters.push({ op: "lt", column: "id", value: v });
+    this.filters.push(bin("lt", col("", "id"), lit(v)));
     return this;
   }
   idLte(v: string): this {
-    this.filters.push({ op: "lte", column: "id", value: v });
+    this.filters.push(bin("lte", col("", "id"), lit(v)));
     return this;
   }
   idGt(v: string): this {
-    this.filters.push({ op: "gt", column: "id", value: v });
+    this.filters.push(bin("gt", col("", "id"), lit(v)));
     return this;
   }
   idGte(v: string): this {
-    this.filters.push({ op: "gte", column: "id", value: v });
+    this.filters.push(bin("gte", col("", "id"), lit(v)));
     return this;
   }
   boardIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "board_id", value: v });
+    this.filters.push(bin("eq", col("", "board_id"), lit(v)));
     return this;
   }
   boardIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "board_id", value: v });
+    this.filters.push(bin("ne", col("", "board_id"), lit(v)));
     return this;
   }
   boardIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "board_id", value: v });
+    this.filters.push(bin("lt", col("", "board_id"), lit(v)));
     return this;
   }
   boardIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "board_id", value: v });
+    this.filters.push(bin("lte", col("", "board_id"), lit(v)));
     return this;
   }
   boardIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "board_id", value: v });
+    this.filters.push(bin("gt", col("", "board_id"), lit(v)));
     return this;
   }
   boardIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "board_id", value: v });
+    this.filters.push(bin("gte", col("", "board_id"), lit(v)));
     return this;
   }
   titleEq(v: string): this {
-    this.filters.push({ op: "eq", column: "title", value: v });
+    this.filters.push(bin("eq", col("", "title"), lit(v)));
     return this;
   }
   titleNe(v: string): this {
-    this.filters.push({ op: "ne", column: "title", value: v });
+    this.filters.push(bin("ne", col("", "title"), lit(v)));
     return this;
   }
   titleLt(v: string): this {
-    this.filters.push({ op: "lt", column: "title", value: v });
+    this.filters.push(bin("lt", col("", "title"), lit(v)));
     return this;
   }
   titleLte(v: string): this {
-    this.filters.push({ op: "lte", column: "title", value: v });
+    this.filters.push(bin("lte", col("", "title"), lit(v)));
     return this;
   }
   titleGt(v: string): this {
-    this.filters.push({ op: "gt", column: "title", value: v });
+    this.filters.push(bin("gt", col("", "title"), lit(v)));
     return this;
   }
   titleGte(v: string): this {
-    this.filters.push({ op: "gte", column: "title", value: v });
+    this.filters.push(bin("gte", col("", "title"), lit(v)));
     return this;
   }
   descriptionEq(v: string): this {
-    this.filters.push({ op: "eq", column: "description", value: v });
+    this.filters.push(bin("eq", col("", "description"), lit(v)));
     return this;
   }
   descriptionNe(v: string): this {
-    this.filters.push({ op: "ne", column: "description", value: v });
+    this.filters.push(bin("ne", col("", "description"), lit(v)));
     return this;
   }
   descriptionLt(v: string): this {
-    this.filters.push({ op: "lt", column: "description", value: v });
+    this.filters.push(bin("lt", col("", "description"), lit(v)));
     return this;
   }
   descriptionLte(v: string): this {
-    this.filters.push({ op: "lte", column: "description", value: v });
+    this.filters.push(bin("lte", col("", "description"), lit(v)));
     return this;
   }
   descriptionGt(v: string): this {
-    this.filters.push({ op: "gt", column: "description", value: v });
+    this.filters.push(bin("gt", col("", "description"), lit(v)));
     return this;
   }
   descriptionGte(v: string): this {
-    this.filters.push({ op: "gte", column: "description", value: v });
+    this.filters.push(bin("gte", col("", "description"), lit(v)));
     return this;
   }
   descriptionNull(): this {
-    this.filters.push({ op: "is_null", column: "description" });
+    this.filters.push(un("is_null", col("", "description")));
     return this;
   }
   descriptionNotNull(): this {
-    this.filters.push({
-      op: "not",
-      expr: { op: "is_null", column: "description" },
-    });
+    this.filters.push(un("is_not_null", col("", "description")));
     return this;
   }
   statusEq(v: string): this {
-    this.filters.push({ op: "eq", column: "status", value: v });
+    this.filters.push(bin("eq", col("", "status"), lit(v)));
     return this;
   }
   statusNe(v: string): this {
-    this.filters.push({ op: "ne", column: "status", value: v });
+    this.filters.push(bin("ne", col("", "status"), lit(v)));
     return this;
   }
   statusLt(v: string): this {
-    this.filters.push({ op: "lt", column: "status", value: v });
+    this.filters.push(bin("lt", col("", "status"), lit(v)));
     return this;
   }
   statusLte(v: string): this {
-    this.filters.push({ op: "lte", column: "status", value: v });
+    this.filters.push(bin("lte", col("", "status"), lit(v)));
     return this;
   }
   statusGt(v: string): this {
-    this.filters.push({ op: "gt", column: "status", value: v });
+    this.filters.push(bin("gt", col("", "status"), lit(v)));
     return this;
   }
   statusGte(v: string): this {
-    this.filters.push({ op: "gte", column: "status", value: v });
+    this.filters.push(bin("gte", col("", "status"), lit(v)));
     return this;
   }
   priorityEq(v: number): this {
-    this.filters.push({ op: "eq", column: "priority", value: v });
+    this.filters.push(bin("eq", col("", "priority"), lit(v)));
     return this;
   }
   priorityNe(v: number): this {
-    this.filters.push({ op: "ne", column: "priority", value: v });
+    this.filters.push(bin("ne", col("", "priority"), lit(v)));
     return this;
   }
   priorityLt(v: number): this {
-    this.filters.push({ op: "lt", column: "priority", value: v });
+    this.filters.push(bin("lt", col("", "priority"), lit(v)));
     return this;
   }
   priorityLte(v: number): this {
-    this.filters.push({ op: "lte", column: "priority", value: v });
+    this.filters.push(bin("lte", col("", "priority"), lit(v)));
     return this;
   }
   priorityGt(v: number): this {
-    this.filters.push({ op: "gt", column: "priority", value: v });
+    this.filters.push(bin("gt", col("", "priority"), lit(v)));
     return this;
   }
   priorityGte(v: number): this {
-    this.filters.push({ op: "gte", column: "priority", value: v });
+    this.filters.push(bin("gte", col("", "priority"), lit(v)));
     return this;
   }
   estimateEq(v: number): this {
-    this.filters.push({ op: "eq", column: "estimate", value: v });
+    this.filters.push(bin("eq", col("", "estimate"), lit(v)));
     return this;
   }
   estimateNe(v: number): this {
-    this.filters.push({ op: "ne", column: "estimate", value: v });
+    this.filters.push(bin("ne", col("", "estimate"), lit(v)));
     return this;
   }
   estimateLt(v: number): this {
-    this.filters.push({ op: "lt", column: "estimate", value: v });
+    this.filters.push(bin("lt", col("", "estimate"), lit(v)));
     return this;
   }
   estimateLte(v: number): this {
-    this.filters.push({ op: "lte", column: "estimate", value: v });
+    this.filters.push(bin("lte", col("", "estimate"), lit(v)));
     return this;
   }
   estimateGt(v: number): this {
-    this.filters.push({ op: "gt", column: "estimate", value: v });
+    this.filters.push(bin("gt", col("", "estimate"), lit(v)));
     return this;
   }
   estimateGte(v: number): this {
-    this.filters.push({ op: "gte", column: "estimate", value: v });
+    this.filters.push(bin("gte", col("", "estimate"), lit(v)));
     return this;
   }
   estimateNull(): this {
-    this.filters.push({ op: "is_null", column: "estimate" });
+    this.filters.push(un("is_null", col("", "estimate")));
     return this;
   }
   estimateNotNull(): this {
-    this.filters.push({
-      op: "not",
-      expr: { op: "is_null", column: "estimate" },
-    });
+    this.filters.push(un("is_not_null", col("", "estimate")));
     return this;
   }
   assigneeIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "assignee_id", value: v });
+    this.filters.push(bin("eq", col("", "assignee_id"), lit(v)));
     return this;
   }
   assigneeIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "assignee_id", value: v });
+    this.filters.push(bin("ne", col("", "assignee_id"), lit(v)));
     return this;
   }
   assigneeIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "assignee_id", value: v });
+    this.filters.push(bin("lt", col("", "assignee_id"), lit(v)));
     return this;
   }
   assigneeIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "assignee_id", value: v });
+    this.filters.push(bin("lte", col("", "assignee_id"), lit(v)));
     return this;
   }
   assigneeIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "assignee_id", value: v });
+    this.filters.push(bin("gt", col("", "assignee_id"), lit(v)));
     return this;
   }
   assigneeIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "assignee_id", value: v });
+    this.filters.push(bin("gte", col("", "assignee_id"), lit(v)));
     return this;
   }
   assigneeIdNull(): this {
-    this.filters.push({ op: "is_null", column: "assignee_id" });
+    this.filters.push(un("is_null", col("", "assignee_id")));
     return this;
   }
   assigneeIdNotNull(): this {
-    this.filters.push({
-      op: "not",
-      expr: { op: "is_null", column: "assignee_id" },
-    });
+    this.filters.push(un("is_not_null", col("", "assignee_id")));
     return this;
   }
   creatorIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "creator_id", value: v });
+    this.filters.push(bin("eq", col("", "creator_id"), lit(v)));
     return this;
   }
   creatorIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "creator_id", value: v });
+    this.filters.push(bin("ne", col("", "creator_id"), lit(v)));
     return this;
   }
   creatorIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "creator_id", value: v });
+    this.filters.push(bin("lt", col("", "creator_id"), lit(v)));
     return this;
   }
   creatorIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "creator_id", value: v });
+    this.filters.push(bin("lte", col("", "creator_id"), lit(v)));
     return this;
   }
   creatorIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "creator_id", value: v });
+    this.filters.push(bin("gt", col("", "creator_id"), lit(v)));
     return this;
   }
   creatorIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "creator_id", value: v });
+    this.filters.push(bin("gte", col("", "creator_id"), lit(v)));
     return this;
   }
   parentIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "parent_id", value: v });
+    this.filters.push(bin("eq", col("", "parent_id"), lit(v)));
     return this;
   }
   parentIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "parent_id", value: v });
+    this.filters.push(bin("ne", col("", "parent_id"), lit(v)));
     return this;
   }
   parentIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "parent_id", value: v });
+    this.filters.push(bin("lt", col("", "parent_id"), lit(v)));
     return this;
   }
   parentIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "parent_id", value: v });
+    this.filters.push(bin("lte", col("", "parent_id"), lit(v)));
     return this;
   }
   parentIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "parent_id", value: v });
+    this.filters.push(bin("gt", col("", "parent_id"), lit(v)));
     return this;
   }
   parentIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "parent_id", value: v });
+    this.filters.push(bin("gte", col("", "parent_id"), lit(v)));
     return this;
   }
   parentIdNull(): this {
-    this.filters.push({ op: "is_null", column: "parent_id" });
+    this.filters.push(un("is_null", col("", "parent_id")));
     return this;
   }
   parentIdNotNull(): this {
-    this.filters.push({
-      op: "not",
-      expr: { op: "is_null", column: "parent_id" },
-    });
+    this.filters.push(un("is_not_null", col("", "parent_id")));
     return this;
   }
   dueAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "due_at", value: v });
+    this.filters.push(bin("eq", col("", "due_at"), lit(v)));
     return this;
   }
   dueAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "due_at", value: v });
+    this.filters.push(bin("ne", col("", "due_at"), lit(v)));
     return this;
   }
   dueAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "due_at", value: v });
+    this.filters.push(bin("lt", col("", "due_at"), lit(v)));
     return this;
   }
   dueAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "due_at", value: v });
+    this.filters.push(bin("lte", col("", "due_at"), lit(v)));
     return this;
   }
   dueAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "due_at", value: v });
+    this.filters.push(bin("gt", col("", "due_at"), lit(v)));
     return this;
   }
   dueAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "due_at", value: v });
+    this.filters.push(bin("gte", col("", "due_at"), lit(v)));
     return this;
   }
   dueAtNull(): this {
-    this.filters.push({ op: "is_null", column: "due_at" });
+    this.filters.push(un("is_null", col("", "due_at")));
     return this;
   }
   dueAtNotNull(): this {
-    this.filters.push({ op: "not", expr: { op: "is_null", column: "due_at" } });
+    this.filters.push(un("is_not_null", col("", "due_at")));
     return this;
   }
   createdAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "created_at", value: v });
+    this.filters.push(bin("eq", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "created_at", value: v });
+    this.filters.push(bin("ne", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "created_at", value: v });
+    this.filters.push(bin("lt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "created_at", value: v });
+    this.filters.push(bin("lte", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "created_at", value: v });
+    this.filters.push(bin("gt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "created_at", value: v });
+    this.filters.push(bin("gte", col("", "created_at"), lit(v)));
     return this;
   }
 
   orderById(): this {
-    this.read.order_by!.push({ column: "id" });
+    this.spec.orders.push({ expr: col("", "id") });
     return this;
   }
   orderByIdDesc(): this {
-    this.read.order_by!.push({ column: "id", desc: true });
+    this.spec.orders.push({ expr: col("", "id"), desc: true });
     return this;
   }
   orderByBoardId(): this {
-    this.read.order_by!.push({ column: "board_id" });
+    this.spec.orders.push({ expr: col("", "board_id") });
     return this;
   }
   orderByBoardIdDesc(): this {
-    this.read.order_by!.push({ column: "board_id", desc: true });
+    this.spec.orders.push({ expr: col("", "board_id"), desc: true });
     return this;
   }
   orderByTitle(): this {
-    this.read.order_by!.push({ column: "title" });
+    this.spec.orders.push({ expr: col("", "title") });
     return this;
   }
   orderByTitleDesc(): this {
-    this.read.order_by!.push({ column: "title", desc: true });
+    this.spec.orders.push({ expr: col("", "title"), desc: true });
     return this;
   }
   orderByDescription(): this {
-    this.read.order_by!.push({ column: "description" });
+    this.spec.orders.push({ expr: col("", "description") });
     return this;
   }
   orderByDescriptionDesc(): this {
-    this.read.order_by!.push({ column: "description", desc: true });
+    this.spec.orders.push({ expr: col("", "description"), desc: true });
     return this;
   }
   orderByStatus(): this {
-    this.read.order_by!.push({ column: "status" });
+    this.spec.orders.push({ expr: col("", "status") });
     return this;
   }
   orderByStatusDesc(): this {
-    this.read.order_by!.push({ column: "status", desc: true });
+    this.spec.orders.push({ expr: col("", "status"), desc: true });
     return this;
   }
   orderByPriority(): this {
-    this.read.order_by!.push({ column: "priority" });
+    this.spec.orders.push({ expr: col("", "priority") });
     return this;
   }
   orderByPriorityDesc(): this {
-    this.read.order_by!.push({ column: "priority", desc: true });
+    this.spec.orders.push({ expr: col("", "priority"), desc: true });
     return this;
   }
   orderByEstimate(): this {
-    this.read.order_by!.push({ column: "estimate" });
+    this.spec.orders.push({ expr: col("", "estimate") });
     return this;
   }
   orderByEstimateDesc(): this {
-    this.read.order_by!.push({ column: "estimate", desc: true });
+    this.spec.orders.push({ expr: col("", "estimate"), desc: true });
     return this;
   }
   orderByAssigneeId(): this {
-    this.read.order_by!.push({ column: "assignee_id" });
+    this.spec.orders.push({ expr: col("", "assignee_id") });
     return this;
   }
   orderByAssigneeIdDesc(): this {
-    this.read.order_by!.push({ column: "assignee_id", desc: true });
+    this.spec.orders.push({ expr: col("", "assignee_id"), desc: true });
     return this;
   }
   orderByCreatorId(): this {
-    this.read.order_by!.push({ column: "creator_id" });
+    this.spec.orders.push({ expr: col("", "creator_id") });
     return this;
   }
   orderByCreatorIdDesc(): this {
-    this.read.order_by!.push({ column: "creator_id", desc: true });
+    this.spec.orders.push({ expr: col("", "creator_id"), desc: true });
     return this;
   }
   orderByParentId(): this {
-    this.read.order_by!.push({ column: "parent_id" });
+    this.spec.orders.push({ expr: col("", "parent_id") });
     return this;
   }
   orderByParentIdDesc(): this {
-    this.read.order_by!.push({ column: "parent_id", desc: true });
+    this.spec.orders.push({ expr: col("", "parent_id"), desc: true });
     return this;
   }
   orderByDueAt(): this {
-    this.read.order_by!.push({ column: "due_at" });
+    this.spec.orders.push({ expr: col("", "due_at") });
     return this;
   }
   orderByDueAtDesc(): this {
-    this.read.order_by!.push({ column: "due_at", desc: true });
+    this.spec.orders.push({ expr: col("", "due_at"), desc: true });
     return this;
   }
   orderByCreatedAt(): this {
-    this.read.order_by!.push({ column: "created_at" });
+    this.spec.orders.push({ expr: col("", "created_at") });
     return this;
   }
   orderByCreatedAtDesc(): this {
-    this.read.order_by!.push({ column: "created_at", desc: true });
+    this.spec.orders.push({ expr: col("", "created_at"), desc: true });
     return this;
   }
 
   limit(n: number): this {
-    this.read.limit = n;
+    this.spec.limit = n;
     return this;
   }
   offset(n: number): this {
-    this.read.offset = n;
+    this.spec.offset = n;
     return this;
   }
 
   includeBoard(fn?: (b: BoardInclude) => void): this {
-    const b = new BoardInclude("tasks_board_id_fk", "parent", "board");
+    const b = new BoardInclude(
+      "boards",
+      [["id", "board_id"]],
+      "board",
+      "first",
+    );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeAssignee(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("tasks_assignee_id_fk", "parent", "assignee");
+    const b = new UserInclude(
+      "users",
+      [["id", "assignee_id"]],
+      "assignee",
+      "first",
+    );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeCreator(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("tasks_creator_id_fk", "parent", "creator");
+    const b = new UserInclude(
+      "users",
+      [["id", "creator_id"]],
+      "creator",
+      "first",
+    );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeParent(fn?: (b: TaskInclude) => void): this {
-    const b = new TaskInclude("tasks_parent_id_fk", "parent", "parent");
+    const b = new TaskInclude(
+      "tasks",
+      [["id", "parent_id"]],
+      "parent",
+      "first",
+    );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeTasks(fn?: (b: TaskInclude) => void): this {
-    const b = new TaskInclude("tasks_parent_id_fk", "children", "tasks");
+    const b = new TaskInclude("tasks", [["parent_id", "id"]], "tasks", "array");
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeComments(fn?: (b: CommentInclude) => void): this {
-    const b = new CommentInclude("comments_task_id_fk", "children", "comments");
+    const b = new CommentInclude(
+      "comments",
+      [["task_id", "id"]],
+      "comments",
+      "array",
+    );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeTaskLabels(fn?: (b: TaskLabelInclude) => void): this {
     const b = new TaskLabelInclude(
-      "task_labels_task_id_fk",
-      "children",
       "task_labels",
+      [["task_id", "id"]],
+      "task_labels",
+      "array",
     );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
 
   async all(): Promise<Task[]> {
-    this.read.filter = andExpr(this.filters);
-    return (await this.v.query(this.read)) as unknown as Task[];
+    return (await this.v.query(assemble(this.spec))) as unknown as Task[];
   }
 
   async first(): Promise<Task | null> {
-    this.read.limit = 1;
+    this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
   }
 
-  private async fold(aggs: Agg[]): Promise<Rec> {
-    const read: Read = {
-      table: this.read.table,
-      filter: andExpr(this.filters),
-      aggs,
-    };
-    const recs = await this.v.query(read);
+  private async fold(aggs: AggTerm[]): Promise<Rec> {
+    const recs = await this.v.query(
+      assemble({
+        table: this.spec.table,
+        filters: this.filters,
+        orders: [],
+        includes: [],
+        aggs,
+      }),
+    );
     return recs[0] ?? {};
   }
 
@@ -3648,170 +4076,222 @@ export class TaskQuery {
   }
   /** Smallest "id" (null when no rows). */
   async minId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "id", as: "v" }]);
+    const rec = await this.fold([{ fn: "min", arg: col("", "id"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "id" (null when no rows). */
   async maxId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "id", as: "v" }]);
+    const rec = await this.fold([{ fn: "max", arg: col("", "id"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "board_id" (null when no rows). */
   async minBoardId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "board_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "board_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "board_id" (null when no rows). */
   async maxBoardId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "board_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "board_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "title" (null when no rows). */
   async minTitle(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "title", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "title"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "title" (null when no rows). */
   async maxTitle(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "title", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "title"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "description" (null when no rows). */
   async minDescription(): Promise<string | null> {
     const rec = await this.fold([
-      { fn: "min", column: "description", as: "v" },
+      { fn: "min", arg: col("", "description"), as: "v" },
     ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "description" (null when no rows). */
   async maxDescription(): Promise<string | null> {
     const rec = await this.fold([
-      { fn: "max", column: "description", as: "v" },
+      { fn: "max", arg: col("", "description"), as: "v" },
     ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "status" (null when no rows). */
   async minStatus(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "status", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "status"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "status" (null when no rows). */
   async maxStatus(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "status", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "status"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Total of "priority" (null when no rows). */
   async sumPriority(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "sum", column: "priority", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "sum", arg: col("", "priority"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Average of "priority" (null when no rows). */
   async avgPriority(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "avg", column: "priority", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "avg", arg: col("", "priority"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Smallest "priority" (null when no rows). */
   async minPriority(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "min", column: "priority", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "priority"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Largest "priority" (null when no rows). */
   async maxPriority(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "max", column: "priority", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "priority"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Total of "estimate" (null when no rows). */
   async sumEstimate(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "sum", column: "estimate", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "sum", arg: col("", "estimate"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Average of "estimate" (null when no rows). */
   async avgEstimate(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "avg", column: "estimate", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "avg", arg: col("", "estimate"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Smallest "estimate" (null when no rows). */
   async minEstimate(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "min", column: "estimate", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "estimate"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Largest "estimate" (null when no rows). */
   async maxEstimate(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "max", column: "estimate", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "estimate"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Smallest "assignee_id" (null when no rows). */
   async minAssigneeId(): Promise<string | null> {
     const rec = await this.fold([
-      { fn: "min", column: "assignee_id", as: "v" },
+      { fn: "min", arg: col("", "assignee_id"), as: "v" },
     ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "assignee_id" (null when no rows). */
   async maxAssigneeId(): Promise<string | null> {
     const rec = await this.fold([
-      { fn: "max", column: "assignee_id", as: "v" },
+      { fn: "max", arg: col("", "assignee_id"), as: "v" },
     ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "creator_id" (null when no rows). */
   async minCreatorId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "creator_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "creator_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "creator_id" (null when no rows). */
   async maxCreatorId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "creator_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "creator_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "parent_id" (null when no rows). */
   async minParentId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "parent_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "parent_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "parent_id" (null when no rows). */
   async maxParentId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "parent_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "parent_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Total of "due_at" (null when no rows). */
   async sumDueAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "sum", column: "due_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "sum", arg: col("", "due_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Average of "due_at" (null when no rows). */
   async avgDueAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "avg", column: "due_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "avg", arg: col("", "due_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Smallest "due_at" (null when no rows). */
   async minDueAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "min", column: "due_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "due_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Largest "due_at" (null when no rows). */
   async maxDueAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "max", column: "due_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "due_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Total of "created_at" (null when no rows). */
   async sumCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "sum", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "sum", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Average of "created_at" (null when no rows). */
   async avgCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "avg", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "avg", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Smallest "created_at" (null when no rows). */
   async minCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "min", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Largest "created_at" (null when no rows). */
   async maxCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "max", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
 }
@@ -3819,453 +4299,448 @@ export class TaskQuery {
 /** Refines an included "tasks" fetch. */
 export class TaskInclude {
   private filters: Expr[] = [];
-  private orders: Order[] = [];
-  private nested: Include[] = [];
-  private max = 0;
-  private fk: string;
-  private dir: "parent" | "children";
+  private orders: OrderTerm[] = [];
+  private nested: IncludeSpec[] = [];
+  private max?: number;
+  private table: string;
+  private pairs: [string, string][];
   private as: string;
-  constructor(fk: string, dir: "parent" | "children", as_: string) {
-    this.fk = fk;
-    this.dir = dir;
+  private kind: "first" | "array";
+  constructor(
+    table: string,
+    pairs: [string, string][],
+    as_: string,
+    kind: "first" | "array",
+  ) {
+    this.table = table;
+    this.pairs = pairs;
     this.as = as_;
+    this.kind = kind;
   }
 
   idEq(v: string): this {
-    this.filters.push({ op: "eq", column: "id", value: v });
+    this.filters.push(bin("eq", col("", "id"), lit(v)));
     return this;
   }
   idNe(v: string): this {
-    this.filters.push({ op: "ne", column: "id", value: v });
+    this.filters.push(bin("ne", col("", "id"), lit(v)));
     return this;
   }
   idLt(v: string): this {
-    this.filters.push({ op: "lt", column: "id", value: v });
+    this.filters.push(bin("lt", col("", "id"), lit(v)));
     return this;
   }
   idLte(v: string): this {
-    this.filters.push({ op: "lte", column: "id", value: v });
+    this.filters.push(bin("lte", col("", "id"), lit(v)));
     return this;
   }
   idGt(v: string): this {
-    this.filters.push({ op: "gt", column: "id", value: v });
+    this.filters.push(bin("gt", col("", "id"), lit(v)));
     return this;
   }
   idGte(v: string): this {
-    this.filters.push({ op: "gte", column: "id", value: v });
+    this.filters.push(bin("gte", col("", "id"), lit(v)));
     return this;
   }
   boardIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "board_id", value: v });
+    this.filters.push(bin("eq", col("", "board_id"), lit(v)));
     return this;
   }
   boardIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "board_id", value: v });
+    this.filters.push(bin("ne", col("", "board_id"), lit(v)));
     return this;
   }
   boardIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "board_id", value: v });
+    this.filters.push(bin("lt", col("", "board_id"), lit(v)));
     return this;
   }
   boardIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "board_id", value: v });
+    this.filters.push(bin("lte", col("", "board_id"), lit(v)));
     return this;
   }
   boardIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "board_id", value: v });
+    this.filters.push(bin("gt", col("", "board_id"), lit(v)));
     return this;
   }
   boardIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "board_id", value: v });
+    this.filters.push(bin("gte", col("", "board_id"), lit(v)));
     return this;
   }
   titleEq(v: string): this {
-    this.filters.push({ op: "eq", column: "title", value: v });
+    this.filters.push(bin("eq", col("", "title"), lit(v)));
     return this;
   }
   titleNe(v: string): this {
-    this.filters.push({ op: "ne", column: "title", value: v });
+    this.filters.push(bin("ne", col("", "title"), lit(v)));
     return this;
   }
   titleLt(v: string): this {
-    this.filters.push({ op: "lt", column: "title", value: v });
+    this.filters.push(bin("lt", col("", "title"), lit(v)));
     return this;
   }
   titleLte(v: string): this {
-    this.filters.push({ op: "lte", column: "title", value: v });
+    this.filters.push(bin("lte", col("", "title"), lit(v)));
     return this;
   }
   titleGt(v: string): this {
-    this.filters.push({ op: "gt", column: "title", value: v });
+    this.filters.push(bin("gt", col("", "title"), lit(v)));
     return this;
   }
   titleGte(v: string): this {
-    this.filters.push({ op: "gte", column: "title", value: v });
+    this.filters.push(bin("gte", col("", "title"), lit(v)));
     return this;
   }
   descriptionEq(v: string): this {
-    this.filters.push({ op: "eq", column: "description", value: v });
+    this.filters.push(bin("eq", col("", "description"), lit(v)));
     return this;
   }
   descriptionNe(v: string): this {
-    this.filters.push({ op: "ne", column: "description", value: v });
+    this.filters.push(bin("ne", col("", "description"), lit(v)));
     return this;
   }
   descriptionLt(v: string): this {
-    this.filters.push({ op: "lt", column: "description", value: v });
+    this.filters.push(bin("lt", col("", "description"), lit(v)));
     return this;
   }
   descriptionLte(v: string): this {
-    this.filters.push({ op: "lte", column: "description", value: v });
+    this.filters.push(bin("lte", col("", "description"), lit(v)));
     return this;
   }
   descriptionGt(v: string): this {
-    this.filters.push({ op: "gt", column: "description", value: v });
+    this.filters.push(bin("gt", col("", "description"), lit(v)));
     return this;
   }
   descriptionGte(v: string): this {
-    this.filters.push({ op: "gte", column: "description", value: v });
+    this.filters.push(bin("gte", col("", "description"), lit(v)));
     return this;
   }
   descriptionNull(): this {
-    this.filters.push({ op: "is_null", column: "description" });
+    this.filters.push(un("is_null", col("", "description")));
     return this;
   }
   descriptionNotNull(): this {
-    this.filters.push({
-      op: "not",
-      expr: { op: "is_null", column: "description" },
-    });
+    this.filters.push(un("is_not_null", col("", "description")));
     return this;
   }
   statusEq(v: string): this {
-    this.filters.push({ op: "eq", column: "status", value: v });
+    this.filters.push(bin("eq", col("", "status"), lit(v)));
     return this;
   }
   statusNe(v: string): this {
-    this.filters.push({ op: "ne", column: "status", value: v });
+    this.filters.push(bin("ne", col("", "status"), lit(v)));
     return this;
   }
   statusLt(v: string): this {
-    this.filters.push({ op: "lt", column: "status", value: v });
+    this.filters.push(bin("lt", col("", "status"), lit(v)));
     return this;
   }
   statusLte(v: string): this {
-    this.filters.push({ op: "lte", column: "status", value: v });
+    this.filters.push(bin("lte", col("", "status"), lit(v)));
     return this;
   }
   statusGt(v: string): this {
-    this.filters.push({ op: "gt", column: "status", value: v });
+    this.filters.push(bin("gt", col("", "status"), lit(v)));
     return this;
   }
   statusGte(v: string): this {
-    this.filters.push({ op: "gte", column: "status", value: v });
+    this.filters.push(bin("gte", col("", "status"), lit(v)));
     return this;
   }
   priorityEq(v: number): this {
-    this.filters.push({ op: "eq", column: "priority", value: v });
+    this.filters.push(bin("eq", col("", "priority"), lit(v)));
     return this;
   }
   priorityNe(v: number): this {
-    this.filters.push({ op: "ne", column: "priority", value: v });
+    this.filters.push(bin("ne", col("", "priority"), lit(v)));
     return this;
   }
   priorityLt(v: number): this {
-    this.filters.push({ op: "lt", column: "priority", value: v });
+    this.filters.push(bin("lt", col("", "priority"), lit(v)));
     return this;
   }
   priorityLte(v: number): this {
-    this.filters.push({ op: "lte", column: "priority", value: v });
+    this.filters.push(bin("lte", col("", "priority"), lit(v)));
     return this;
   }
   priorityGt(v: number): this {
-    this.filters.push({ op: "gt", column: "priority", value: v });
+    this.filters.push(bin("gt", col("", "priority"), lit(v)));
     return this;
   }
   priorityGte(v: number): this {
-    this.filters.push({ op: "gte", column: "priority", value: v });
+    this.filters.push(bin("gte", col("", "priority"), lit(v)));
     return this;
   }
   estimateEq(v: number): this {
-    this.filters.push({ op: "eq", column: "estimate", value: v });
+    this.filters.push(bin("eq", col("", "estimate"), lit(v)));
     return this;
   }
   estimateNe(v: number): this {
-    this.filters.push({ op: "ne", column: "estimate", value: v });
+    this.filters.push(bin("ne", col("", "estimate"), lit(v)));
     return this;
   }
   estimateLt(v: number): this {
-    this.filters.push({ op: "lt", column: "estimate", value: v });
+    this.filters.push(bin("lt", col("", "estimate"), lit(v)));
     return this;
   }
   estimateLte(v: number): this {
-    this.filters.push({ op: "lte", column: "estimate", value: v });
+    this.filters.push(bin("lte", col("", "estimate"), lit(v)));
     return this;
   }
   estimateGt(v: number): this {
-    this.filters.push({ op: "gt", column: "estimate", value: v });
+    this.filters.push(bin("gt", col("", "estimate"), lit(v)));
     return this;
   }
   estimateGte(v: number): this {
-    this.filters.push({ op: "gte", column: "estimate", value: v });
+    this.filters.push(bin("gte", col("", "estimate"), lit(v)));
     return this;
   }
   estimateNull(): this {
-    this.filters.push({ op: "is_null", column: "estimate" });
+    this.filters.push(un("is_null", col("", "estimate")));
     return this;
   }
   estimateNotNull(): this {
-    this.filters.push({
-      op: "not",
-      expr: { op: "is_null", column: "estimate" },
-    });
+    this.filters.push(un("is_not_null", col("", "estimate")));
     return this;
   }
   assigneeIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "assignee_id", value: v });
+    this.filters.push(bin("eq", col("", "assignee_id"), lit(v)));
     return this;
   }
   assigneeIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "assignee_id", value: v });
+    this.filters.push(bin("ne", col("", "assignee_id"), lit(v)));
     return this;
   }
   assigneeIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "assignee_id", value: v });
+    this.filters.push(bin("lt", col("", "assignee_id"), lit(v)));
     return this;
   }
   assigneeIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "assignee_id", value: v });
+    this.filters.push(bin("lte", col("", "assignee_id"), lit(v)));
     return this;
   }
   assigneeIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "assignee_id", value: v });
+    this.filters.push(bin("gt", col("", "assignee_id"), lit(v)));
     return this;
   }
   assigneeIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "assignee_id", value: v });
+    this.filters.push(bin("gte", col("", "assignee_id"), lit(v)));
     return this;
   }
   assigneeIdNull(): this {
-    this.filters.push({ op: "is_null", column: "assignee_id" });
+    this.filters.push(un("is_null", col("", "assignee_id")));
     return this;
   }
   assigneeIdNotNull(): this {
-    this.filters.push({
-      op: "not",
-      expr: { op: "is_null", column: "assignee_id" },
-    });
+    this.filters.push(un("is_not_null", col("", "assignee_id")));
     return this;
   }
   creatorIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "creator_id", value: v });
+    this.filters.push(bin("eq", col("", "creator_id"), lit(v)));
     return this;
   }
   creatorIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "creator_id", value: v });
+    this.filters.push(bin("ne", col("", "creator_id"), lit(v)));
     return this;
   }
   creatorIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "creator_id", value: v });
+    this.filters.push(bin("lt", col("", "creator_id"), lit(v)));
     return this;
   }
   creatorIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "creator_id", value: v });
+    this.filters.push(bin("lte", col("", "creator_id"), lit(v)));
     return this;
   }
   creatorIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "creator_id", value: v });
+    this.filters.push(bin("gt", col("", "creator_id"), lit(v)));
     return this;
   }
   creatorIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "creator_id", value: v });
+    this.filters.push(bin("gte", col("", "creator_id"), lit(v)));
     return this;
   }
   parentIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "parent_id", value: v });
+    this.filters.push(bin("eq", col("", "parent_id"), lit(v)));
     return this;
   }
   parentIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "parent_id", value: v });
+    this.filters.push(bin("ne", col("", "parent_id"), lit(v)));
     return this;
   }
   parentIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "parent_id", value: v });
+    this.filters.push(bin("lt", col("", "parent_id"), lit(v)));
     return this;
   }
   parentIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "parent_id", value: v });
+    this.filters.push(bin("lte", col("", "parent_id"), lit(v)));
     return this;
   }
   parentIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "parent_id", value: v });
+    this.filters.push(bin("gt", col("", "parent_id"), lit(v)));
     return this;
   }
   parentIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "parent_id", value: v });
+    this.filters.push(bin("gte", col("", "parent_id"), lit(v)));
     return this;
   }
   parentIdNull(): this {
-    this.filters.push({ op: "is_null", column: "parent_id" });
+    this.filters.push(un("is_null", col("", "parent_id")));
     return this;
   }
   parentIdNotNull(): this {
-    this.filters.push({
-      op: "not",
-      expr: { op: "is_null", column: "parent_id" },
-    });
+    this.filters.push(un("is_not_null", col("", "parent_id")));
     return this;
   }
   dueAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "due_at", value: v });
+    this.filters.push(bin("eq", col("", "due_at"), lit(v)));
     return this;
   }
   dueAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "due_at", value: v });
+    this.filters.push(bin("ne", col("", "due_at"), lit(v)));
     return this;
   }
   dueAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "due_at", value: v });
+    this.filters.push(bin("lt", col("", "due_at"), lit(v)));
     return this;
   }
   dueAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "due_at", value: v });
+    this.filters.push(bin("lte", col("", "due_at"), lit(v)));
     return this;
   }
   dueAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "due_at", value: v });
+    this.filters.push(bin("gt", col("", "due_at"), lit(v)));
     return this;
   }
   dueAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "due_at", value: v });
+    this.filters.push(bin("gte", col("", "due_at"), lit(v)));
     return this;
   }
   dueAtNull(): this {
-    this.filters.push({ op: "is_null", column: "due_at" });
+    this.filters.push(un("is_null", col("", "due_at")));
     return this;
   }
   dueAtNotNull(): this {
-    this.filters.push({ op: "not", expr: { op: "is_null", column: "due_at" } });
+    this.filters.push(un("is_not_null", col("", "due_at")));
     return this;
   }
   createdAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "created_at", value: v });
+    this.filters.push(bin("eq", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "created_at", value: v });
+    this.filters.push(bin("ne", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "created_at", value: v });
+    this.filters.push(bin("lt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "created_at", value: v });
+    this.filters.push(bin("lte", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "created_at", value: v });
+    this.filters.push(bin("gt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "created_at", value: v });
+    this.filters.push(bin("gte", col("", "created_at"), lit(v)));
     return this;
   }
 
   orderById(): this {
-    this.orders.push({ column: "id" });
+    this.orders.push({ expr: col("", "id") });
     return this;
   }
   orderByIdDesc(): this {
-    this.orders.push({ column: "id", desc: true });
+    this.orders.push({ expr: col("", "id"), desc: true });
     return this;
   }
   orderByBoardId(): this {
-    this.orders.push({ column: "board_id" });
+    this.orders.push({ expr: col("", "board_id") });
     return this;
   }
   orderByBoardIdDesc(): this {
-    this.orders.push({ column: "board_id", desc: true });
+    this.orders.push({ expr: col("", "board_id"), desc: true });
     return this;
   }
   orderByTitle(): this {
-    this.orders.push({ column: "title" });
+    this.orders.push({ expr: col("", "title") });
     return this;
   }
   orderByTitleDesc(): this {
-    this.orders.push({ column: "title", desc: true });
+    this.orders.push({ expr: col("", "title"), desc: true });
     return this;
   }
   orderByDescription(): this {
-    this.orders.push({ column: "description" });
+    this.orders.push({ expr: col("", "description") });
     return this;
   }
   orderByDescriptionDesc(): this {
-    this.orders.push({ column: "description", desc: true });
+    this.orders.push({ expr: col("", "description"), desc: true });
     return this;
   }
   orderByStatus(): this {
-    this.orders.push({ column: "status" });
+    this.orders.push({ expr: col("", "status") });
     return this;
   }
   orderByStatusDesc(): this {
-    this.orders.push({ column: "status", desc: true });
+    this.orders.push({ expr: col("", "status"), desc: true });
     return this;
   }
   orderByPriority(): this {
-    this.orders.push({ column: "priority" });
+    this.orders.push({ expr: col("", "priority") });
     return this;
   }
   orderByPriorityDesc(): this {
-    this.orders.push({ column: "priority", desc: true });
+    this.orders.push({ expr: col("", "priority"), desc: true });
     return this;
   }
   orderByEstimate(): this {
-    this.orders.push({ column: "estimate" });
+    this.orders.push({ expr: col("", "estimate") });
     return this;
   }
   orderByEstimateDesc(): this {
-    this.orders.push({ column: "estimate", desc: true });
+    this.orders.push({ expr: col("", "estimate"), desc: true });
     return this;
   }
   orderByAssigneeId(): this {
-    this.orders.push({ column: "assignee_id" });
+    this.orders.push({ expr: col("", "assignee_id") });
     return this;
   }
   orderByAssigneeIdDesc(): this {
-    this.orders.push({ column: "assignee_id", desc: true });
+    this.orders.push({ expr: col("", "assignee_id"), desc: true });
     return this;
   }
   orderByCreatorId(): this {
-    this.orders.push({ column: "creator_id" });
+    this.orders.push({ expr: col("", "creator_id") });
     return this;
   }
   orderByCreatorIdDesc(): this {
-    this.orders.push({ column: "creator_id", desc: true });
+    this.orders.push({ expr: col("", "creator_id"), desc: true });
     return this;
   }
   orderByParentId(): this {
-    this.orders.push({ column: "parent_id" });
+    this.orders.push({ expr: col("", "parent_id") });
     return this;
   }
   orderByParentIdDesc(): this {
-    this.orders.push({ column: "parent_id", desc: true });
+    this.orders.push({ expr: col("", "parent_id"), desc: true });
     return this;
   }
   orderByDueAt(): this {
-    this.orders.push({ column: "due_at" });
+    this.orders.push({ expr: col("", "due_at") });
     return this;
   }
   orderByDueAtDesc(): this {
-    this.orders.push({ column: "due_at", desc: true });
+    this.orders.push({ expr: col("", "due_at"), desc: true });
     return this;
   }
   orderByCreatedAt(): this {
-    this.orders.push({ column: "created_at" });
+    this.orders.push({ expr: col("", "created_at") });
     return this;
   }
   orderByCreatedAtDesc(): this {
-    this.orders.push({ column: "created_at", desc: true });
+    this.orders.push({ expr: col("", "created_at"), desc: true });
     return this;
   }
 
@@ -4275,61 +4750,88 @@ export class TaskInclude {
   }
 
   includeBoard(fn?: (b: BoardInclude) => void): this {
-    const b = new BoardInclude("tasks_board_id_fk", "parent", "board");
+    const b = new BoardInclude(
+      "boards",
+      [["id", "board_id"]],
+      "board",
+      "first",
+    );
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
   includeAssignee(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("tasks_assignee_id_fk", "parent", "assignee");
+    const b = new UserInclude(
+      "users",
+      [["id", "assignee_id"]],
+      "assignee",
+      "first",
+    );
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
   includeCreator(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("tasks_creator_id_fk", "parent", "creator");
+    const b = new UserInclude(
+      "users",
+      [["id", "creator_id"]],
+      "creator",
+      "first",
+    );
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
   includeParent(fn?: (b: TaskInclude) => void): this {
-    const b = new TaskInclude("tasks_parent_id_fk", "parent", "parent");
+    const b = new TaskInclude(
+      "tasks",
+      [["id", "parent_id"]],
+      "parent",
+      "first",
+    );
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
   includeTasks(fn?: (b: TaskInclude) => void): this {
-    const b = new TaskInclude("tasks_parent_id_fk", "children", "tasks");
+    const b = new TaskInclude("tasks", [["parent_id", "id"]], "tasks", "array");
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
   includeComments(fn?: (b: CommentInclude) => void): this {
-    const b = new CommentInclude("comments_task_id_fk", "children", "comments");
+    const b = new CommentInclude(
+      "comments",
+      [["task_id", "id"]],
+      "comments",
+      "array",
+    );
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
   includeTaskLabels(fn?: (b: TaskLabelInclude) => void): this {
     const b = new TaskLabelInclude(
-      "task_labels_task_id_fk",
-      "children",
       "task_labels",
+      [["task_id", "id"]],
+      "task_labels",
+      "array",
     );
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
 
-  build(): Include {
+  build(): IncludeSpec {
     return {
-      fk: this.fk,
-      dir: this.dir,
+      table: this.table,
+      pairs: this.pairs,
       as: this.as,
-      filter: andExpr(this.filters),
-      order_by: this.orders.length ? this.orders : undefined,
-      limit: this.max || undefined,
-      include: this.nested.length ? this.nested : undefined,
+      kind: this.kind,
+      filters: this.filters,
+      orders: this.orders,
+      limit: this.max,
+      nested: this.nested,
     };
   }
 }
@@ -4401,219 +4903,230 @@ export class CommentTable {
   }
 }
 
-/** Fluent shaped-read builder for "comments"; conditions AND together. */
+/** Fluent query builder for "comments"; conditions AND together. */
 export class CommentQuery {
   private filters: Expr[] = [];
-  private read: Read = { table: "comments" };
+  private spec: QuerySpec = {
+    table: "comments",
+    filters: [],
+    orders: [],
+    includes: [],
+  };
   private v: View;
   constructor(v: View) {
     this.v = v;
-    this.read.order_by = [];
-    this.read.include = [];
+    this.spec.filters = this.filters;
   }
 
   idEq(v: string): this {
-    this.filters.push({ op: "eq", column: "id", value: v });
+    this.filters.push(bin("eq", col("", "id"), lit(v)));
     return this;
   }
   idNe(v: string): this {
-    this.filters.push({ op: "ne", column: "id", value: v });
+    this.filters.push(bin("ne", col("", "id"), lit(v)));
     return this;
   }
   idLt(v: string): this {
-    this.filters.push({ op: "lt", column: "id", value: v });
+    this.filters.push(bin("lt", col("", "id"), lit(v)));
     return this;
   }
   idLte(v: string): this {
-    this.filters.push({ op: "lte", column: "id", value: v });
+    this.filters.push(bin("lte", col("", "id"), lit(v)));
     return this;
   }
   idGt(v: string): this {
-    this.filters.push({ op: "gt", column: "id", value: v });
+    this.filters.push(bin("gt", col("", "id"), lit(v)));
     return this;
   }
   idGte(v: string): this {
-    this.filters.push({ op: "gte", column: "id", value: v });
+    this.filters.push(bin("gte", col("", "id"), lit(v)));
     return this;
   }
   taskIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "task_id", value: v });
+    this.filters.push(bin("eq", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "task_id", value: v });
+    this.filters.push(bin("ne", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "task_id", value: v });
+    this.filters.push(bin("lt", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "task_id", value: v });
+    this.filters.push(bin("lte", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "task_id", value: v });
+    this.filters.push(bin("gt", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "task_id", value: v });
+    this.filters.push(bin("gte", col("", "task_id"), lit(v)));
     return this;
   }
   authorIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "author_id", value: v });
+    this.filters.push(bin("eq", col("", "author_id"), lit(v)));
     return this;
   }
   authorIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "author_id", value: v });
+    this.filters.push(bin("ne", col("", "author_id"), lit(v)));
     return this;
   }
   authorIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "author_id", value: v });
+    this.filters.push(bin("lt", col("", "author_id"), lit(v)));
     return this;
   }
   authorIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "author_id", value: v });
+    this.filters.push(bin("lte", col("", "author_id"), lit(v)));
     return this;
   }
   authorIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "author_id", value: v });
+    this.filters.push(bin("gt", col("", "author_id"), lit(v)));
     return this;
   }
   authorIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "author_id", value: v });
+    this.filters.push(bin("gte", col("", "author_id"), lit(v)));
     return this;
   }
   bodyEq(v: string): this {
-    this.filters.push({ op: "eq", column: "body", value: v });
+    this.filters.push(bin("eq", col("", "body"), lit(v)));
     return this;
   }
   bodyNe(v: string): this {
-    this.filters.push({ op: "ne", column: "body", value: v });
+    this.filters.push(bin("ne", col("", "body"), lit(v)));
     return this;
   }
   bodyLt(v: string): this {
-    this.filters.push({ op: "lt", column: "body", value: v });
+    this.filters.push(bin("lt", col("", "body"), lit(v)));
     return this;
   }
   bodyLte(v: string): this {
-    this.filters.push({ op: "lte", column: "body", value: v });
+    this.filters.push(bin("lte", col("", "body"), lit(v)));
     return this;
   }
   bodyGt(v: string): this {
-    this.filters.push({ op: "gt", column: "body", value: v });
+    this.filters.push(bin("gt", col("", "body"), lit(v)));
     return this;
   }
   bodyGte(v: string): this {
-    this.filters.push({ op: "gte", column: "body", value: v });
+    this.filters.push(bin("gte", col("", "body"), lit(v)));
     return this;
   }
   createdAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "created_at", value: v });
+    this.filters.push(bin("eq", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "created_at", value: v });
+    this.filters.push(bin("ne", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "created_at", value: v });
+    this.filters.push(bin("lt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "created_at", value: v });
+    this.filters.push(bin("lte", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "created_at", value: v });
+    this.filters.push(bin("gt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "created_at", value: v });
+    this.filters.push(bin("gte", col("", "created_at"), lit(v)));
     return this;
   }
 
   orderById(): this {
-    this.read.order_by!.push({ column: "id" });
+    this.spec.orders.push({ expr: col("", "id") });
     return this;
   }
   orderByIdDesc(): this {
-    this.read.order_by!.push({ column: "id", desc: true });
+    this.spec.orders.push({ expr: col("", "id"), desc: true });
     return this;
   }
   orderByTaskId(): this {
-    this.read.order_by!.push({ column: "task_id" });
+    this.spec.orders.push({ expr: col("", "task_id") });
     return this;
   }
   orderByTaskIdDesc(): this {
-    this.read.order_by!.push({ column: "task_id", desc: true });
+    this.spec.orders.push({ expr: col("", "task_id"), desc: true });
     return this;
   }
   orderByAuthorId(): this {
-    this.read.order_by!.push({ column: "author_id" });
+    this.spec.orders.push({ expr: col("", "author_id") });
     return this;
   }
   orderByAuthorIdDesc(): this {
-    this.read.order_by!.push({ column: "author_id", desc: true });
+    this.spec.orders.push({ expr: col("", "author_id"), desc: true });
     return this;
   }
   orderByBody(): this {
-    this.read.order_by!.push({ column: "body" });
+    this.spec.orders.push({ expr: col("", "body") });
     return this;
   }
   orderByBodyDesc(): this {
-    this.read.order_by!.push({ column: "body", desc: true });
+    this.spec.orders.push({ expr: col("", "body"), desc: true });
     return this;
   }
   orderByCreatedAt(): this {
-    this.read.order_by!.push({ column: "created_at" });
+    this.spec.orders.push({ expr: col("", "created_at") });
     return this;
   }
   orderByCreatedAtDesc(): this {
-    this.read.order_by!.push({ column: "created_at", desc: true });
+    this.spec.orders.push({ expr: col("", "created_at"), desc: true });
     return this;
   }
 
   limit(n: number): this {
-    this.read.limit = n;
+    this.spec.limit = n;
     return this;
   }
   offset(n: number): this {
-    this.read.offset = n;
+    this.spec.offset = n;
     return this;
   }
 
   includeTask(fn?: (b: TaskInclude) => void): this {
-    const b = new TaskInclude("comments_task_id_fk", "parent", "task");
+    const b = new TaskInclude("tasks", [["id", "task_id"]], "task", "first");
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeAuthor(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("comments_author_id_fk", "parent", "author");
+    const b = new UserInclude(
+      "users",
+      [["id", "author_id"]],
+      "author",
+      "first",
+    );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
 
   async all(): Promise<Comment[]> {
-    this.read.filter = andExpr(this.filters);
-    return (await this.v.query(this.read)) as unknown as Comment[];
+    return (await this.v.query(assemble(this.spec))) as unknown as Comment[];
   }
 
   async first(): Promise<Comment | null> {
-    this.read.limit = 1;
+    this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
   }
 
-  private async fold(aggs: Agg[]): Promise<Rec> {
-    const read: Read = {
-      table: this.read.table,
-      filter: andExpr(this.filters),
-      aggs,
-    };
-    const recs = await this.v.query(read);
+  private async fold(aggs: AggTerm[]): Promise<Rec> {
+    const recs = await this.v.query(
+      assemble({
+        table: this.spec.table,
+        filters: this.filters,
+        orders: [],
+        includes: [],
+        aggs,
+      }),
+    );
     return recs[0] ?? {};
   }
 
@@ -4624,62 +5137,78 @@ export class CommentQuery {
   }
   /** Smallest "id" (null when no rows). */
   async minId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "id", as: "v" }]);
+    const rec = await this.fold([{ fn: "min", arg: col("", "id"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "id" (null when no rows). */
   async maxId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "id", as: "v" }]);
+    const rec = await this.fold([{ fn: "max", arg: col("", "id"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "task_id" (null when no rows). */
   async minTaskId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "task_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "task_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "task_id" (null when no rows). */
   async maxTaskId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "task_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "task_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "author_id" (null when no rows). */
   async minAuthorId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "author_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "author_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "author_id" (null when no rows). */
   async maxAuthorId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "author_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "author_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "body" (null when no rows). */
   async minBody(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "body", as: "v" }]);
+    const rec = await this.fold([{ fn: "min", arg: col("", "body"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "body" (null when no rows). */
   async maxBody(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "body", as: "v" }]);
+    const rec = await this.fold([{ fn: "max", arg: col("", "body"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Total of "created_at" (null when no rows). */
   async sumCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "sum", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "sum", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Average of "created_at" (null when no rows). */
   async avgCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "avg", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "avg", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Smallest "created_at" (null when no rows). */
   async minCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "min", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
   /** Largest "created_at" (null when no rows). */
   async maxCreatedAt(): Promise<number | null> {
-    const rec = await this.fold([{ fn: "max", column: "created_at", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "created_at"), as: "v" },
+    ]);
     return (rec["v"] as number | null) ?? null;
   }
 }
@@ -4687,177 +5216,184 @@ export class CommentQuery {
 /** Refines an included "comments" fetch. */
 export class CommentInclude {
   private filters: Expr[] = [];
-  private orders: Order[] = [];
-  private nested: Include[] = [];
-  private max = 0;
-  private fk: string;
-  private dir: "parent" | "children";
+  private orders: OrderTerm[] = [];
+  private nested: IncludeSpec[] = [];
+  private max?: number;
+  private table: string;
+  private pairs: [string, string][];
   private as: string;
-  constructor(fk: string, dir: "parent" | "children", as_: string) {
-    this.fk = fk;
-    this.dir = dir;
+  private kind: "first" | "array";
+  constructor(
+    table: string,
+    pairs: [string, string][],
+    as_: string,
+    kind: "first" | "array",
+  ) {
+    this.table = table;
+    this.pairs = pairs;
     this.as = as_;
+    this.kind = kind;
   }
 
   idEq(v: string): this {
-    this.filters.push({ op: "eq", column: "id", value: v });
+    this.filters.push(bin("eq", col("", "id"), lit(v)));
     return this;
   }
   idNe(v: string): this {
-    this.filters.push({ op: "ne", column: "id", value: v });
+    this.filters.push(bin("ne", col("", "id"), lit(v)));
     return this;
   }
   idLt(v: string): this {
-    this.filters.push({ op: "lt", column: "id", value: v });
+    this.filters.push(bin("lt", col("", "id"), lit(v)));
     return this;
   }
   idLte(v: string): this {
-    this.filters.push({ op: "lte", column: "id", value: v });
+    this.filters.push(bin("lte", col("", "id"), lit(v)));
     return this;
   }
   idGt(v: string): this {
-    this.filters.push({ op: "gt", column: "id", value: v });
+    this.filters.push(bin("gt", col("", "id"), lit(v)));
     return this;
   }
   idGte(v: string): this {
-    this.filters.push({ op: "gte", column: "id", value: v });
+    this.filters.push(bin("gte", col("", "id"), lit(v)));
     return this;
   }
   taskIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "task_id", value: v });
+    this.filters.push(bin("eq", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "task_id", value: v });
+    this.filters.push(bin("ne", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "task_id", value: v });
+    this.filters.push(bin("lt", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "task_id", value: v });
+    this.filters.push(bin("lte", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "task_id", value: v });
+    this.filters.push(bin("gt", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "task_id", value: v });
+    this.filters.push(bin("gte", col("", "task_id"), lit(v)));
     return this;
   }
   authorIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "author_id", value: v });
+    this.filters.push(bin("eq", col("", "author_id"), lit(v)));
     return this;
   }
   authorIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "author_id", value: v });
+    this.filters.push(bin("ne", col("", "author_id"), lit(v)));
     return this;
   }
   authorIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "author_id", value: v });
+    this.filters.push(bin("lt", col("", "author_id"), lit(v)));
     return this;
   }
   authorIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "author_id", value: v });
+    this.filters.push(bin("lte", col("", "author_id"), lit(v)));
     return this;
   }
   authorIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "author_id", value: v });
+    this.filters.push(bin("gt", col("", "author_id"), lit(v)));
     return this;
   }
   authorIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "author_id", value: v });
+    this.filters.push(bin("gte", col("", "author_id"), lit(v)));
     return this;
   }
   bodyEq(v: string): this {
-    this.filters.push({ op: "eq", column: "body", value: v });
+    this.filters.push(bin("eq", col("", "body"), lit(v)));
     return this;
   }
   bodyNe(v: string): this {
-    this.filters.push({ op: "ne", column: "body", value: v });
+    this.filters.push(bin("ne", col("", "body"), lit(v)));
     return this;
   }
   bodyLt(v: string): this {
-    this.filters.push({ op: "lt", column: "body", value: v });
+    this.filters.push(bin("lt", col("", "body"), lit(v)));
     return this;
   }
   bodyLte(v: string): this {
-    this.filters.push({ op: "lte", column: "body", value: v });
+    this.filters.push(bin("lte", col("", "body"), lit(v)));
     return this;
   }
   bodyGt(v: string): this {
-    this.filters.push({ op: "gt", column: "body", value: v });
+    this.filters.push(bin("gt", col("", "body"), lit(v)));
     return this;
   }
   bodyGte(v: string): this {
-    this.filters.push({ op: "gte", column: "body", value: v });
+    this.filters.push(bin("gte", col("", "body"), lit(v)));
     return this;
   }
   createdAtEq(v: number): this {
-    this.filters.push({ op: "eq", column: "created_at", value: v });
+    this.filters.push(bin("eq", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtNe(v: number): this {
-    this.filters.push({ op: "ne", column: "created_at", value: v });
+    this.filters.push(bin("ne", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLt(v: number): this {
-    this.filters.push({ op: "lt", column: "created_at", value: v });
+    this.filters.push(bin("lt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtLte(v: number): this {
-    this.filters.push({ op: "lte", column: "created_at", value: v });
+    this.filters.push(bin("lte", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGt(v: number): this {
-    this.filters.push({ op: "gt", column: "created_at", value: v });
+    this.filters.push(bin("gt", col("", "created_at"), lit(v)));
     return this;
   }
   createdAtGte(v: number): this {
-    this.filters.push({ op: "gte", column: "created_at", value: v });
+    this.filters.push(bin("gte", col("", "created_at"), lit(v)));
     return this;
   }
 
   orderById(): this {
-    this.orders.push({ column: "id" });
+    this.orders.push({ expr: col("", "id") });
     return this;
   }
   orderByIdDesc(): this {
-    this.orders.push({ column: "id", desc: true });
+    this.orders.push({ expr: col("", "id"), desc: true });
     return this;
   }
   orderByTaskId(): this {
-    this.orders.push({ column: "task_id" });
+    this.orders.push({ expr: col("", "task_id") });
     return this;
   }
   orderByTaskIdDesc(): this {
-    this.orders.push({ column: "task_id", desc: true });
+    this.orders.push({ expr: col("", "task_id"), desc: true });
     return this;
   }
   orderByAuthorId(): this {
-    this.orders.push({ column: "author_id" });
+    this.orders.push({ expr: col("", "author_id") });
     return this;
   }
   orderByAuthorIdDesc(): this {
-    this.orders.push({ column: "author_id", desc: true });
+    this.orders.push({ expr: col("", "author_id"), desc: true });
     return this;
   }
   orderByBody(): this {
-    this.orders.push({ column: "body" });
+    this.orders.push({ expr: col("", "body") });
     return this;
   }
   orderByBodyDesc(): this {
-    this.orders.push({ column: "body", desc: true });
+    this.orders.push({ expr: col("", "body"), desc: true });
     return this;
   }
   orderByCreatedAt(): this {
-    this.orders.push({ column: "created_at" });
+    this.orders.push({ expr: col("", "created_at") });
     return this;
   }
   orderByCreatedAtDesc(): this {
-    this.orders.push({ column: "created_at", desc: true });
+    this.orders.push({ expr: col("", "created_at"), desc: true });
     return this;
   }
 
@@ -4867,27 +5403,33 @@ export class CommentInclude {
   }
 
   includeTask(fn?: (b: TaskInclude) => void): this {
-    const b = new TaskInclude("comments_task_id_fk", "parent", "task");
+    const b = new TaskInclude("tasks", [["id", "task_id"]], "task", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
   includeAuthor(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("comments_author_id_fk", "parent", "author");
+    const b = new UserInclude(
+      "users",
+      [["id", "author_id"]],
+      "author",
+      "first",
+    );
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
 
-  build(): Include {
+  build(): IncludeSpec {
     return {
-      fk: this.fk,
-      dir: this.dir,
+      table: this.table,
+      pairs: this.pairs,
       as: this.as,
-      filter: andExpr(this.filters),
-      order_by: this.orders.length ? this.orders : undefined,
-      limit: this.max || undefined,
-      include: this.nested.length ? this.nested : undefined,
+      kind: this.kind,
+      filters: this.filters,
+      orders: this.orders,
+      limit: this.max,
+      nested: this.nested,
     };
   }
 }
@@ -4953,14 +5495,18 @@ export class LabelTable {
 
   /** Finds the row by the unique index on (team_id, name). */
   async byTeamIdName(teamId: string, name: string): Promise<Label | null> {
-    const recs = await this.v.query({
-      table: "labels",
-      filter: andExpr([
-        { op: "eq", column: "team_id", value: teamId },
-        { op: "eq", column: "name", value: name },
-      ]),
-      limit: 1,
-    });
+    const recs = await this.v.query(
+      assemble({
+        table: "labels",
+        filters: [
+          eq(col("", "team_id"), lit(teamId)),
+          eq(col("", "name"), lit(name)),
+        ],
+        orders: [],
+        includes: [],
+        limit: 1,
+      }),
+    );
     return recs.length ? (recs[0] as unknown as Label) : null;
   }
 
@@ -4969,191 +5515,198 @@ export class LabelTable {
   }
 }
 
-/** Fluent shaped-read builder for "labels"; conditions AND together. */
+/** Fluent query builder for "labels"; conditions AND together. */
 export class LabelQuery {
   private filters: Expr[] = [];
-  private read: Read = { table: "labels" };
+  private spec: QuerySpec = {
+    table: "labels",
+    filters: [],
+    orders: [],
+    includes: [],
+  };
   private v: View;
   constructor(v: View) {
     this.v = v;
-    this.read.order_by = [];
-    this.read.include = [];
+    this.spec.filters = this.filters;
   }
 
   idEq(v: string): this {
-    this.filters.push({ op: "eq", column: "id", value: v });
+    this.filters.push(bin("eq", col("", "id"), lit(v)));
     return this;
   }
   idNe(v: string): this {
-    this.filters.push({ op: "ne", column: "id", value: v });
+    this.filters.push(bin("ne", col("", "id"), lit(v)));
     return this;
   }
   idLt(v: string): this {
-    this.filters.push({ op: "lt", column: "id", value: v });
+    this.filters.push(bin("lt", col("", "id"), lit(v)));
     return this;
   }
   idLte(v: string): this {
-    this.filters.push({ op: "lte", column: "id", value: v });
+    this.filters.push(bin("lte", col("", "id"), lit(v)));
     return this;
   }
   idGt(v: string): this {
-    this.filters.push({ op: "gt", column: "id", value: v });
+    this.filters.push(bin("gt", col("", "id"), lit(v)));
     return this;
   }
   idGte(v: string): this {
-    this.filters.push({ op: "gte", column: "id", value: v });
+    this.filters.push(bin("gte", col("", "id"), lit(v)));
     return this;
   }
   teamIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "team_id", value: v });
+    this.filters.push(bin("eq", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "team_id", value: v });
+    this.filters.push(bin("ne", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "team_id", value: v });
+    this.filters.push(bin("lt", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "team_id", value: v });
+    this.filters.push(bin("lte", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "team_id", value: v });
+    this.filters.push(bin("gt", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "team_id", value: v });
+    this.filters.push(bin("gte", col("", "team_id"), lit(v)));
     return this;
   }
   nameEq(v: string): this {
-    this.filters.push({ op: "eq", column: "name", value: v });
+    this.filters.push(bin("eq", col("", "name"), lit(v)));
     return this;
   }
   nameNe(v: string): this {
-    this.filters.push({ op: "ne", column: "name", value: v });
+    this.filters.push(bin("ne", col("", "name"), lit(v)));
     return this;
   }
   nameLt(v: string): this {
-    this.filters.push({ op: "lt", column: "name", value: v });
+    this.filters.push(bin("lt", col("", "name"), lit(v)));
     return this;
   }
   nameLte(v: string): this {
-    this.filters.push({ op: "lte", column: "name", value: v });
+    this.filters.push(bin("lte", col("", "name"), lit(v)));
     return this;
   }
   nameGt(v: string): this {
-    this.filters.push({ op: "gt", column: "name", value: v });
+    this.filters.push(bin("gt", col("", "name"), lit(v)));
     return this;
   }
   nameGte(v: string): this {
-    this.filters.push({ op: "gte", column: "name", value: v });
+    this.filters.push(bin("gte", col("", "name"), lit(v)));
     return this;
   }
   hexColorEq(v: string): this {
-    this.filters.push({ op: "eq", column: "hex_color", value: v });
+    this.filters.push(bin("eq", col("", "hex_color"), lit(v)));
     return this;
   }
   hexColorNe(v: string): this {
-    this.filters.push({ op: "ne", column: "hex_color", value: v });
+    this.filters.push(bin("ne", col("", "hex_color"), lit(v)));
     return this;
   }
   hexColorLt(v: string): this {
-    this.filters.push({ op: "lt", column: "hex_color", value: v });
+    this.filters.push(bin("lt", col("", "hex_color"), lit(v)));
     return this;
   }
   hexColorLte(v: string): this {
-    this.filters.push({ op: "lte", column: "hex_color", value: v });
+    this.filters.push(bin("lte", col("", "hex_color"), lit(v)));
     return this;
   }
   hexColorGt(v: string): this {
-    this.filters.push({ op: "gt", column: "hex_color", value: v });
+    this.filters.push(bin("gt", col("", "hex_color"), lit(v)));
     return this;
   }
   hexColorGte(v: string): this {
-    this.filters.push({ op: "gte", column: "hex_color", value: v });
+    this.filters.push(bin("gte", col("", "hex_color"), lit(v)));
     return this;
   }
 
   orderById(): this {
-    this.read.order_by!.push({ column: "id" });
+    this.spec.orders.push({ expr: col("", "id") });
     return this;
   }
   orderByIdDesc(): this {
-    this.read.order_by!.push({ column: "id", desc: true });
+    this.spec.orders.push({ expr: col("", "id"), desc: true });
     return this;
   }
   orderByTeamId(): this {
-    this.read.order_by!.push({ column: "team_id" });
+    this.spec.orders.push({ expr: col("", "team_id") });
     return this;
   }
   orderByTeamIdDesc(): this {
-    this.read.order_by!.push({ column: "team_id", desc: true });
+    this.spec.orders.push({ expr: col("", "team_id"), desc: true });
     return this;
   }
   orderByName(): this {
-    this.read.order_by!.push({ column: "name" });
+    this.spec.orders.push({ expr: col("", "name") });
     return this;
   }
   orderByNameDesc(): this {
-    this.read.order_by!.push({ column: "name", desc: true });
+    this.spec.orders.push({ expr: col("", "name"), desc: true });
     return this;
   }
   orderByHexColor(): this {
-    this.read.order_by!.push({ column: "hex_color" });
+    this.spec.orders.push({ expr: col("", "hex_color") });
     return this;
   }
   orderByHexColorDesc(): this {
-    this.read.order_by!.push({ column: "hex_color", desc: true });
+    this.spec.orders.push({ expr: col("", "hex_color"), desc: true });
     return this;
   }
 
   limit(n: number): this {
-    this.read.limit = n;
+    this.spec.limit = n;
     return this;
   }
   offset(n: number): this {
-    this.read.offset = n;
+    this.spec.offset = n;
     return this;
   }
 
   includeTeam(fn?: (b: TeamInclude) => void): this {
-    const b = new TeamInclude("labels_team_id_fk", "parent", "team");
+    const b = new TeamInclude("teams", [["id", "team_id"]], "team", "first");
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeTaskLabels(fn?: (b: TaskLabelInclude) => void): this {
     const b = new TaskLabelInclude(
-      "task_labels_label_id_fk",
-      "children",
       "task_labels",
+      [["label_id", "id"]],
+      "task_labels",
+      "array",
     );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
 
   async all(): Promise<Label[]> {
-    this.read.filter = andExpr(this.filters);
-    return (await this.v.query(this.read)) as unknown as Label[];
+    return (await this.v.query(assemble(this.spec))) as unknown as Label[];
   }
 
   async first(): Promise<Label | null> {
-    this.read.limit = 1;
+    this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
   }
 
-  private async fold(aggs: Agg[]): Promise<Rec> {
-    const read: Read = {
-      table: this.read.table,
-      filter: andExpr(this.filters),
-      aggs,
-    };
-    const recs = await this.v.query(read);
+  private async fold(aggs: AggTerm[]): Promise<Rec> {
+    const recs = await this.v.query(
+      assemble({
+        table: this.spec.table,
+        filters: this.filters,
+        orders: [],
+        includes: [],
+        aggs,
+      }),
+    );
     return recs[0] ?? {};
   }
 
@@ -5164,42 +5717,50 @@ export class LabelQuery {
   }
   /** Smallest "id" (null when no rows). */
   async minId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "id", as: "v" }]);
+    const rec = await this.fold([{ fn: "min", arg: col("", "id"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "id" (null when no rows). */
   async maxId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "id", as: "v" }]);
+    const rec = await this.fold([{ fn: "max", arg: col("", "id"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "team_id" (null when no rows). */
   async minTeamId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "team_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "team_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "team_id" (null when no rows). */
   async maxTeamId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "team_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "team_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "name" (null when no rows). */
   async minName(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "name", as: "v" }]);
+    const rec = await this.fold([{ fn: "min", arg: col("", "name"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "name" (null when no rows). */
   async maxName(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "name", as: "v" }]);
+    const rec = await this.fold([{ fn: "max", arg: col("", "name"), as: "v" }]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "hex_color" (null when no rows). */
   async minHexColor(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "hex_color", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "hex_color"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "hex_color" (null when no rows). */
   async maxHexColor(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "hex_color", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "hex_color"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
 }
@@ -5207,145 +5768,152 @@ export class LabelQuery {
 /** Refines an included "labels" fetch. */
 export class LabelInclude {
   private filters: Expr[] = [];
-  private orders: Order[] = [];
-  private nested: Include[] = [];
-  private max = 0;
-  private fk: string;
-  private dir: "parent" | "children";
+  private orders: OrderTerm[] = [];
+  private nested: IncludeSpec[] = [];
+  private max?: number;
+  private table: string;
+  private pairs: [string, string][];
   private as: string;
-  constructor(fk: string, dir: "parent" | "children", as_: string) {
-    this.fk = fk;
-    this.dir = dir;
+  private kind: "first" | "array";
+  constructor(
+    table: string,
+    pairs: [string, string][],
+    as_: string,
+    kind: "first" | "array",
+  ) {
+    this.table = table;
+    this.pairs = pairs;
     this.as = as_;
+    this.kind = kind;
   }
 
   idEq(v: string): this {
-    this.filters.push({ op: "eq", column: "id", value: v });
+    this.filters.push(bin("eq", col("", "id"), lit(v)));
     return this;
   }
   idNe(v: string): this {
-    this.filters.push({ op: "ne", column: "id", value: v });
+    this.filters.push(bin("ne", col("", "id"), lit(v)));
     return this;
   }
   idLt(v: string): this {
-    this.filters.push({ op: "lt", column: "id", value: v });
+    this.filters.push(bin("lt", col("", "id"), lit(v)));
     return this;
   }
   idLte(v: string): this {
-    this.filters.push({ op: "lte", column: "id", value: v });
+    this.filters.push(bin("lte", col("", "id"), lit(v)));
     return this;
   }
   idGt(v: string): this {
-    this.filters.push({ op: "gt", column: "id", value: v });
+    this.filters.push(bin("gt", col("", "id"), lit(v)));
     return this;
   }
   idGte(v: string): this {
-    this.filters.push({ op: "gte", column: "id", value: v });
+    this.filters.push(bin("gte", col("", "id"), lit(v)));
     return this;
   }
   teamIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "team_id", value: v });
+    this.filters.push(bin("eq", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "team_id", value: v });
+    this.filters.push(bin("ne", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "team_id", value: v });
+    this.filters.push(bin("lt", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "team_id", value: v });
+    this.filters.push(bin("lte", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "team_id", value: v });
+    this.filters.push(bin("gt", col("", "team_id"), lit(v)));
     return this;
   }
   teamIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "team_id", value: v });
+    this.filters.push(bin("gte", col("", "team_id"), lit(v)));
     return this;
   }
   nameEq(v: string): this {
-    this.filters.push({ op: "eq", column: "name", value: v });
+    this.filters.push(bin("eq", col("", "name"), lit(v)));
     return this;
   }
   nameNe(v: string): this {
-    this.filters.push({ op: "ne", column: "name", value: v });
+    this.filters.push(bin("ne", col("", "name"), lit(v)));
     return this;
   }
   nameLt(v: string): this {
-    this.filters.push({ op: "lt", column: "name", value: v });
+    this.filters.push(bin("lt", col("", "name"), lit(v)));
     return this;
   }
   nameLte(v: string): this {
-    this.filters.push({ op: "lte", column: "name", value: v });
+    this.filters.push(bin("lte", col("", "name"), lit(v)));
     return this;
   }
   nameGt(v: string): this {
-    this.filters.push({ op: "gt", column: "name", value: v });
+    this.filters.push(bin("gt", col("", "name"), lit(v)));
     return this;
   }
   nameGte(v: string): this {
-    this.filters.push({ op: "gte", column: "name", value: v });
+    this.filters.push(bin("gte", col("", "name"), lit(v)));
     return this;
   }
   hexColorEq(v: string): this {
-    this.filters.push({ op: "eq", column: "hex_color", value: v });
+    this.filters.push(bin("eq", col("", "hex_color"), lit(v)));
     return this;
   }
   hexColorNe(v: string): this {
-    this.filters.push({ op: "ne", column: "hex_color", value: v });
+    this.filters.push(bin("ne", col("", "hex_color"), lit(v)));
     return this;
   }
   hexColorLt(v: string): this {
-    this.filters.push({ op: "lt", column: "hex_color", value: v });
+    this.filters.push(bin("lt", col("", "hex_color"), lit(v)));
     return this;
   }
   hexColorLte(v: string): this {
-    this.filters.push({ op: "lte", column: "hex_color", value: v });
+    this.filters.push(bin("lte", col("", "hex_color"), lit(v)));
     return this;
   }
   hexColorGt(v: string): this {
-    this.filters.push({ op: "gt", column: "hex_color", value: v });
+    this.filters.push(bin("gt", col("", "hex_color"), lit(v)));
     return this;
   }
   hexColorGte(v: string): this {
-    this.filters.push({ op: "gte", column: "hex_color", value: v });
+    this.filters.push(bin("gte", col("", "hex_color"), lit(v)));
     return this;
   }
 
   orderById(): this {
-    this.orders.push({ column: "id" });
+    this.orders.push({ expr: col("", "id") });
     return this;
   }
   orderByIdDesc(): this {
-    this.orders.push({ column: "id", desc: true });
+    this.orders.push({ expr: col("", "id"), desc: true });
     return this;
   }
   orderByTeamId(): this {
-    this.orders.push({ column: "team_id" });
+    this.orders.push({ expr: col("", "team_id") });
     return this;
   }
   orderByTeamIdDesc(): this {
-    this.orders.push({ column: "team_id", desc: true });
+    this.orders.push({ expr: col("", "team_id"), desc: true });
     return this;
   }
   orderByName(): this {
-    this.orders.push({ column: "name" });
+    this.orders.push({ expr: col("", "name") });
     return this;
   }
   orderByNameDesc(): this {
-    this.orders.push({ column: "name", desc: true });
+    this.orders.push({ expr: col("", "name"), desc: true });
     return this;
   }
   orderByHexColor(): this {
-    this.orders.push({ column: "hex_color" });
+    this.orders.push({ expr: col("", "hex_color") });
     return this;
   }
   orderByHexColorDesc(): this {
-    this.orders.push({ column: "hex_color", desc: true });
+    this.orders.push({ expr: col("", "hex_color"), desc: true });
     return this;
   }
 
@@ -5355,31 +5923,33 @@ export class LabelInclude {
   }
 
   includeTeam(fn?: (b: TeamInclude) => void): this {
-    const b = new TeamInclude("labels_team_id_fk", "parent", "team");
+    const b = new TeamInclude("teams", [["id", "team_id"]], "team", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
   includeTaskLabels(fn?: (b: TaskLabelInclude) => void): this {
     const b = new TaskLabelInclude(
-      "task_labels_label_id_fk",
-      "children",
       "task_labels",
+      [["label_id", "id"]],
+      "task_labels",
+      "array",
     );
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
 
-  build(): Include {
+  build(): IncludeSpec {
     return {
-      fk: this.fk,
-      dir: this.dir,
+      table: this.table,
+      pairs: this.pairs,
       as: this.as,
-      filter: andExpr(this.filters),
-      order_by: this.orders.length ? this.orders : undefined,
-      limit: this.max || undefined,
-      include: this.nested.length ? this.nested : undefined,
+      kind: this.kind,
+      filters: this.filters,
+      orders: this.orders,
+      limit: this.max,
+      nested: this.nested,
     };
   }
 }
@@ -5447,123 +6017,134 @@ export class TaskLabelTable {
   }
 }
 
-/** Fluent shaped-read builder for "task_labels"; conditions AND together. */
+/** Fluent query builder for "task_labels"; conditions AND together. */
 export class TaskLabelQuery {
   private filters: Expr[] = [];
-  private read: Read = { table: "task_labels" };
+  private spec: QuerySpec = {
+    table: "task_labels",
+    filters: [],
+    orders: [],
+    includes: [],
+  };
   private v: View;
   constructor(v: View) {
     this.v = v;
-    this.read.order_by = [];
-    this.read.include = [];
+    this.spec.filters = this.filters;
   }
 
   taskIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "task_id", value: v });
+    this.filters.push(bin("eq", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "task_id", value: v });
+    this.filters.push(bin("ne", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "task_id", value: v });
+    this.filters.push(bin("lt", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "task_id", value: v });
+    this.filters.push(bin("lte", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "task_id", value: v });
+    this.filters.push(bin("gt", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "task_id", value: v });
+    this.filters.push(bin("gte", col("", "task_id"), lit(v)));
     return this;
   }
   labelIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "label_id", value: v });
+    this.filters.push(bin("eq", col("", "label_id"), lit(v)));
     return this;
   }
   labelIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "label_id", value: v });
+    this.filters.push(bin("ne", col("", "label_id"), lit(v)));
     return this;
   }
   labelIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "label_id", value: v });
+    this.filters.push(bin("lt", col("", "label_id"), lit(v)));
     return this;
   }
   labelIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "label_id", value: v });
+    this.filters.push(bin("lte", col("", "label_id"), lit(v)));
     return this;
   }
   labelIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "label_id", value: v });
+    this.filters.push(bin("gt", col("", "label_id"), lit(v)));
     return this;
   }
   labelIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "label_id", value: v });
+    this.filters.push(bin("gte", col("", "label_id"), lit(v)));
     return this;
   }
 
   orderByTaskId(): this {
-    this.read.order_by!.push({ column: "task_id" });
+    this.spec.orders.push({ expr: col("", "task_id") });
     return this;
   }
   orderByTaskIdDesc(): this {
-    this.read.order_by!.push({ column: "task_id", desc: true });
+    this.spec.orders.push({ expr: col("", "task_id"), desc: true });
     return this;
   }
   orderByLabelId(): this {
-    this.read.order_by!.push({ column: "label_id" });
+    this.spec.orders.push({ expr: col("", "label_id") });
     return this;
   }
   orderByLabelIdDesc(): this {
-    this.read.order_by!.push({ column: "label_id", desc: true });
+    this.spec.orders.push({ expr: col("", "label_id"), desc: true });
     return this;
   }
 
   limit(n: number): this {
-    this.read.limit = n;
+    this.spec.limit = n;
     return this;
   }
   offset(n: number): this {
-    this.read.offset = n;
+    this.spec.offset = n;
     return this;
   }
 
   includeTask(fn?: (b: TaskInclude) => void): this {
-    const b = new TaskInclude("task_labels_task_id_fk", "parent", "task");
+    const b = new TaskInclude("tasks", [["id", "task_id"]], "task", "first");
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
   includeLabel(fn?: (b: LabelInclude) => void): this {
-    const b = new LabelInclude("task_labels_label_id_fk", "parent", "label");
+    const b = new LabelInclude(
+      "labels",
+      [["id", "label_id"]],
+      "label",
+      "first",
+    );
     fn?.(b);
-    this.read.include!.push(b.build());
+    this.spec.includes.push(b.build());
     return this;
   }
 
   async all(): Promise<TaskLabel[]> {
-    this.read.filter = andExpr(this.filters);
-    return (await this.v.query(this.read)) as unknown as TaskLabel[];
+    return (await this.v.query(assemble(this.spec))) as unknown as TaskLabel[];
   }
 
   async first(): Promise<TaskLabel | null> {
-    this.read.limit = 1;
+    this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
   }
 
-  private async fold(aggs: Agg[]): Promise<Rec> {
-    const read: Read = {
-      table: this.read.table,
-      filter: andExpr(this.filters),
-      aggs,
-    };
-    const recs = await this.v.query(read);
+  private async fold(aggs: AggTerm[]): Promise<Rec> {
+    const recs = await this.v.query(
+      assemble({
+        table: this.spec.table,
+        filters: this.filters,
+        orders: [],
+        includes: [],
+        aggs,
+      }),
+    );
     return recs[0] ?? {};
   }
 
@@ -5574,22 +6155,30 @@ export class TaskLabelQuery {
   }
   /** Smallest "task_id" (null when no rows). */
   async minTaskId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "task_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "task_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "task_id" (null when no rows). */
   async maxTaskId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "task_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "task_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Smallest "label_id" (null when no rows). */
   async minLabelId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "min", column: "label_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "min", arg: col("", "label_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
   /** Largest "label_id" (null when no rows). */
   async maxLabelId(): Promise<string | null> {
-    const rec = await this.fold([{ fn: "max", column: "label_id", as: "v" }]);
+    const rec = await this.fold([
+      { fn: "max", arg: col("", "label_id"), as: "v" },
+    ]);
     return (rec["v"] as string | null) ?? null;
   }
 }
@@ -5597,81 +6186,88 @@ export class TaskLabelQuery {
 /** Refines an included "task_labels" fetch. */
 export class TaskLabelInclude {
   private filters: Expr[] = [];
-  private orders: Order[] = [];
-  private nested: Include[] = [];
-  private max = 0;
-  private fk: string;
-  private dir: "parent" | "children";
+  private orders: OrderTerm[] = [];
+  private nested: IncludeSpec[] = [];
+  private max?: number;
+  private table: string;
+  private pairs: [string, string][];
   private as: string;
-  constructor(fk: string, dir: "parent" | "children", as_: string) {
-    this.fk = fk;
-    this.dir = dir;
+  private kind: "first" | "array";
+  constructor(
+    table: string,
+    pairs: [string, string][],
+    as_: string,
+    kind: "first" | "array",
+  ) {
+    this.table = table;
+    this.pairs = pairs;
     this.as = as_;
+    this.kind = kind;
   }
 
   taskIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "task_id", value: v });
+    this.filters.push(bin("eq", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "task_id", value: v });
+    this.filters.push(bin("ne", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "task_id", value: v });
+    this.filters.push(bin("lt", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "task_id", value: v });
+    this.filters.push(bin("lte", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "task_id", value: v });
+    this.filters.push(bin("gt", col("", "task_id"), lit(v)));
     return this;
   }
   taskIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "task_id", value: v });
+    this.filters.push(bin("gte", col("", "task_id"), lit(v)));
     return this;
   }
   labelIdEq(v: string): this {
-    this.filters.push({ op: "eq", column: "label_id", value: v });
+    this.filters.push(bin("eq", col("", "label_id"), lit(v)));
     return this;
   }
   labelIdNe(v: string): this {
-    this.filters.push({ op: "ne", column: "label_id", value: v });
+    this.filters.push(bin("ne", col("", "label_id"), lit(v)));
     return this;
   }
   labelIdLt(v: string): this {
-    this.filters.push({ op: "lt", column: "label_id", value: v });
+    this.filters.push(bin("lt", col("", "label_id"), lit(v)));
     return this;
   }
   labelIdLte(v: string): this {
-    this.filters.push({ op: "lte", column: "label_id", value: v });
+    this.filters.push(bin("lte", col("", "label_id"), lit(v)));
     return this;
   }
   labelIdGt(v: string): this {
-    this.filters.push({ op: "gt", column: "label_id", value: v });
+    this.filters.push(bin("gt", col("", "label_id"), lit(v)));
     return this;
   }
   labelIdGte(v: string): this {
-    this.filters.push({ op: "gte", column: "label_id", value: v });
+    this.filters.push(bin("gte", col("", "label_id"), lit(v)));
     return this;
   }
 
   orderByTaskId(): this {
-    this.orders.push({ column: "task_id" });
+    this.orders.push({ expr: col("", "task_id") });
     return this;
   }
   orderByTaskIdDesc(): this {
-    this.orders.push({ column: "task_id", desc: true });
+    this.orders.push({ expr: col("", "task_id"), desc: true });
     return this;
   }
   orderByLabelId(): this {
-    this.orders.push({ column: "label_id" });
+    this.orders.push({ expr: col("", "label_id") });
     return this;
   }
   orderByLabelIdDesc(): this {
-    this.orders.push({ column: "label_id", desc: true });
+    this.orders.push({ expr: col("", "label_id"), desc: true });
     return this;
   }
 
@@ -5681,27 +6277,33 @@ export class TaskLabelInclude {
   }
 
   includeTask(fn?: (b: TaskInclude) => void): this {
-    const b = new TaskInclude("task_labels_task_id_fk", "parent", "task");
+    const b = new TaskInclude("tasks", [["id", "task_id"]], "task", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
   includeLabel(fn?: (b: LabelInclude) => void): this {
-    const b = new LabelInclude("task_labels_label_id_fk", "parent", "label");
+    const b = new LabelInclude(
+      "labels",
+      [["id", "label_id"]],
+      "label",
+      "first",
+    );
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
 
-  build(): Include {
+  build(): IncludeSpec {
     return {
-      fk: this.fk,
-      dir: this.dir,
+      table: this.table,
+      pairs: this.pairs,
       as: this.as,
-      filter: andExpr(this.filters),
-      order_by: this.orders.length ? this.orders : undefined,
-      limit: this.max || undefined,
-      include: this.nested.length ? this.nested : undefined,
+      kind: this.kind,
+      filters: this.filters,
+      orders: this.orders,
+      limit: this.max,
+      nested: this.nested,
     };
   }
 }

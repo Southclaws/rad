@@ -105,22 +105,25 @@ paths:
   /query:
     post:
       operationId: Query
-      summary: Run a shaped read.
+      summary: Run a relation-graph query.
       description: |
-        Read rows from a table, optionally filtered, ordered, paginated, and
-        with related rows embedded through `include`. The result is a list of
-        records shaped like the request: parent includes appear as nested
-        objects (or `null`), children includes as nested arrays.
+        Execute a query graph: named relation nodes — scans, filters,
+        projections, joins, aggregates, ordering, slicing — plus a root
+        selector. Relationships need no dedicated verb: a projection field
+        whose expression is a cardinality crossing (`exists`, `first`,
+        `scalar`, `array`) materialises a correlated sub-relation as a nested
+        boolean, object, value, or array. Aggregation is the `aggregate`
+        node, grouped or global, and rides this one operation.
 
-        Setting `aggs` folds the matching rows into a single record of scalar
-        values (count, sum, avg, min, max) instead of returning the rows
-        themselves, so aggregation reuses this operation rather than having its
-        own endpoint. When `aggs` is set at the root, `order_by`, `offset`,
-        `limit`, and `include` are not permitted together with it.
+        The result is `records`: an array of objects shaped like the root
+        projection. A root cardinality of `first` yields zero or one record,
+        `exactly_one` errors unless exactly one row exists, and `scalar`
+        unwraps a single value.
 
-        Filters and values are validated against the catalog's column types. A
-        reference to an unknown table or column, or a value of the wrong type,
-        is rejected with an `invalid` problem.
+        The graph is bound against the catalog before planning: unknown
+        tables, columns, or scopes, type mismatches, cyclic or dangling node
+        references, and nondeterministic crossings (a `first` over an
+        unordered multi-row relation) are rejected with an `invalid` problem.
       tags: [data]
       requestBody: { $ref: "#/components/requestBodies/Query" }
       responses:
@@ -460,19 +463,19 @@ components:
           type: string
           enum: [invalid, not_found, conflict, internal]
 
-    # The Query IR schemas (Value, Expr, Order, Aggregate, Include, Query) live
-    # once in qir.schema.json and are referenced here, so the wire contract and
-    # the IR share a single source of truth rather than duplicating it. ogen
-    # inlines them at generation time (parser.allow_remote, see ogen.yaml).
+    # The Query IR schemas live once in qir.schema.json and are referenced
+    # here, so the wire contract and the IR share a single source of truth
+    # rather than duplicating it. ogen inlines them at generation time
+    # (parser.allow_remote, see ogen.yaml).
     Value:
       $ref: "qir.schema.json#/$defs/Value"
 
     Record:
       description: |
-        One result row as a JSON object keyed by column name. Beyond scalar
-        columns a record may also carry included relations: a parent include
-        appears as a nested object (or `null`), a children include as an array
-        of records, and an aggregate include as an object of scalars.
+        One result row as a JSON object keyed by output name. Beyond scalar
+        attributes a record may carry nested relations: a `first` field is a
+        nested object (or `null`), an `array` field an array of records, and
+        a folded relation an object of scalars.
       type: object
       additionalProperties: true
 
@@ -483,20 +486,29 @@ components:
       type: object
       additionalProperties: { $ref: "#/components/schemas/Value" }
 
+    Query:
+      $ref: "qir.schema.json#/$defs/Query"
+
+    Node:
+      $ref: "qir.schema.json#/$defs/Node"
+
+    Root:
+      $ref: "qir.schema.json#/$defs/Root"
+
     Expr:
       $ref: "qir.schema.json#/$defs/Expr"
 
-    Order:
-      $ref: "qir.schema.json#/$defs/Order"
+    Field:
+      $ref: "qir.schema.json#/$defs/Field"
 
-    Aggregate:
-      $ref: "qir.schema.json#/$defs/Aggregate"
+    GroupTerm:
+      $ref: "qir.schema.json#/$defs/GroupTerm"
 
-    Include:
-      $ref: "qir.schema.json#/$defs/Include"
+    AggTerm:
+      $ref: "qir.schema.json#/$defs/AggTerm"
 
-    Query:
-      $ref: "qir.schema.json#/$defs/Query"
+    OrderTerm:
+      $ref: "qir.schema.json#/$defs/OrderTerm"
 
     ColumnInfo:
       description: One column of a table, as reported by introspection.

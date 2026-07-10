@@ -7,6 +7,7 @@ package tracker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	radclient "rad/client"
 	"rad/protocol"
@@ -100,16 +101,162 @@ type Tx struct {
 	TaskLabels  TaskLabelTable
 }
 
-// andExpr folds filters into a single expression (nil when empty).
-func andExpr(filters []protocol.Expr) *protocol.Expr {
-	switch len(filters) {
-	case 0:
-		return nil
-	case 1:
-		return &filters[0]
-	default:
-		return &protocol.Expr{Op: "and", Exprs: filters}
+// querySpec accumulates a fluent builder's state; assemble compiles it into
+// the wire's query graph.
+type querySpec struct {
+	table    string
+	filters  []*protocol.Expr
+	orders   []protocol.OrderTerm
+	offset   int
+	limit    int
+	limitSet bool
+	includes []includeSpec
+	aggs     []protocol.AggTerm
+}
+
+// includeSpec is one relation field: a correlated sub-query materialised as
+// a nested object (first), array, or folded scalar object.
+type includeSpec struct {
+	table    string
+	pairs    [][2]string // scanned-side column = outer-scope column
+	as       string
+	kind     string // first | array | fold
+	filters  []*protocol.Expr
+	orders   []protocol.OrderTerm
+	limit    int
+	limitSet bool
+	nested   []includeSpec
+	aggs     []protocol.AggTerm
+}
+
+func assemble(s querySpec) protocol.Query {
+	g := &graphBuilder{nodes: map[string]protocol.Node{}}
+	last, scope := g.chain(s.table, nil, "", s.filters, s.orders, s.offset, s.limit, s.limitSet)
+	if len(s.aggs) > 0 {
+		id := g.next()
+		g.nodes[id] = protocol.Node{Kind: "aggregate", Input: last, Aggs: scopeAggs(s.aggs, scope)}
+		return protocol.Query{Nodes: g.nodes, Root: protocol.Root{Node: id, Cardinality: "exactly_one"}}
 	}
+	if len(s.includes) > 0 {
+		fields := make([]protocol.Field, len(s.includes))
+		for i, inc := range s.includes {
+			fields[i] = g.include(inc, scope)
+		}
+		id := g.next()
+		g.nodes[id] = protocol.Node{Kind: "project", Input: last, Spread: []string{scope}, Fields: fields}
+		last = id
+	}
+	return protocol.Query{Nodes: g.nodes, Root: protocol.Root{Node: last, Cardinality: "many"}}
+}
+
+type graphBuilder struct {
+	nodes map[string]protocol.Node
+	n     int
+}
+
+func (g *graphBuilder) next() string {
+	id := fmt.Sprintf("n%d", g.n)
+	g.n++
+	return id
+}
+
+// chain emits scan → filter → order → slice as needed and returns the last
+// node id plus the scan's scope. pairs prepend correlation equalities
+// against outerScope.
+func (g *graphBuilder) chain(table string, pairs [][2]string, outerScope string, filters []*protocol.Expr, orders []protocol.OrderTerm, offset, limit int, limitSet bool) (string, string) {
+	scope := g.next()
+	g.nodes[scope] = protocol.Node{Kind: "scan", Table: table, Scope: scope}
+	last := scope
+
+	var preds []*protocol.Expr
+	for _, pr := range pairs {
+		preds = append(preds, protocol.Eq(protocol.Col(scope, pr[0]), protocol.Col(outerScope, pr[1])))
+	}
+	for _, f := range filters {
+		preds = append(preds, scopeExpr(f, scope))
+	}
+	if pred := protocol.AndAll(preds); pred != nil {
+		id := g.next()
+		g.nodes[id] = protocol.Node{Kind: "filter", Input: last, Predicate: pred}
+		last = id
+	}
+	if len(orders) > 0 {
+		terms := make([]protocol.OrderTerm, len(orders))
+		for i, t := range orders {
+			terms[i] = protocol.OrderTerm{Expr: *scopeExpr(&t.Expr, scope), Desc: t.Desc}
+		}
+		id := g.next()
+		g.nodes[id] = protocol.Node{Kind: "order", Input: last, Terms: terms}
+		last = id
+	}
+	if offset > 0 || limitSet {
+		node := protocol.Node{Kind: "slice", Input: last}
+		if offset > 0 {
+			o := offset
+			node.Offset = &o
+		}
+		if limitSet {
+			l := limit
+			node.Limit = &l
+		}
+		id := g.next()
+		g.nodes[id] = node
+		last = id
+	}
+	return last, scope
+}
+
+func (g *graphBuilder) include(inc includeSpec, outerScope string) protocol.Field {
+	if inc.kind == "fold" {
+		last, scope := g.chain(inc.table, inc.pairs, outerScope, inc.filters, nil, 0, 0, false)
+		id := g.next()
+		g.nodes[id] = protocol.Node{Kind: "aggregate", Input: last, Aggs: scopeAggs(inc.aggs, scope)}
+		return protocol.Field{As: inc.as, Expr: *protocol.FirstOf(id)}
+	}
+	last, scope := g.chain(inc.table, inc.pairs, outerScope, inc.filters, inc.orders, 0, inc.limit, inc.limitSet)
+	if len(inc.nested) > 0 {
+		fields := make([]protocol.Field, len(inc.nested))
+		for i, n := range inc.nested {
+			fields[i] = g.include(n, scope)
+		}
+		id := g.next()
+		g.nodes[id] = protocol.Node{Kind: "project", Input: last, Spread: []string{scope}, Fields: fields}
+		last = id
+	}
+	if inc.kind == "first" {
+		return protocol.Field{As: inc.as, Expr: *protocol.FirstOf(last)}
+	}
+	return protocol.Field{As: inc.as, Expr: *protocol.ArrayOf(last)}
+}
+
+// scopeExpr fills unscoped column references with the relation's scope.
+func scopeExpr(e *protocol.Expr, scope string) *protocol.Expr {
+	if e == nil {
+		return nil
+	}
+	c := *e
+	if c.Kind == "col" && c.Scope == "" {
+		c.Scope = scope
+	}
+	c.Expr = scopeExpr(c.Expr, scope)
+	c.Left = scopeExpr(c.Left, scope)
+	c.Right = scopeExpr(c.Right, scope)
+	if len(c.Args) > 0 {
+		args := make([]protocol.Expr, len(c.Args))
+		for i := range c.Args {
+			args[i] = *scopeExpr(&c.Args[i], scope)
+		}
+		c.Args = args
+	}
+	return &c
+}
+
+func scopeAggs(aggs []protocol.AggTerm, scope string) []protocol.AggTerm {
+	out := make([]protocol.AggTerm, len(aggs))
+	for i, a := range aggs {
+		out[i] = protocol.AggTerm{Fn: a.Fn, Arg: scopeExpr(a.Arg, scope), As: a.As}
+	}
+	return out
 }
 
 func recString(m protocol.Record, k string) string {
@@ -276,9 +423,9 @@ func (t UserTable) Delete(ctx context.Context, id string) (bool, error) {
 
 // ByUsername finds the row by the unique index on (username).
 func (t UserTable) ByUsername(ctx context.Context, username string) (User, bool, error) {
-	recs, err := t.v.Query(ctx, protocol.Read{Table: "users", Filter: andExpr([]protocol.Expr{
-		{Op: "eq", Column: "username", Value: username},
-	}), Limit: 1})
+	recs, err := t.v.Query(ctx, assemble(querySpec{table: "users", limit: 1, limitSet: true, filters: []*protocol.Expr{
+		protocol.Eq(protocol.Col("", "username"), protocol.Lit(username)),
+	}}))
 	if err != nil || len(recs) == 0 {
 		return User{}, false, err
 	}
@@ -286,293 +433,286 @@ func (t UserTable) ByUsername(ctx context.Context, username string) (User, bool,
 }
 
 func (t UserTable) Query() *UserQuery {
-	return &UserQuery{v: t.v, read: protocol.Read{Table: "users"}}
+	return &UserQuery{v: t.v, spec: querySpec{table: "users"}}
 }
 
-// UserQuery is a fluent shaped-read builder for "users". Conditions AND together.
+// UserQuery is a fluent query builder for "users". Conditions AND together.
 type UserQuery struct {
-	v       radclient.View
-	read    protocol.Read
-	filters []protocol.Expr
+	v    radclient.View
+	spec querySpec
 }
 
 func (q *UserQuery) IDEq(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) IDNe(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) IDLt(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) IDLte(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) IDGt(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) IDGte(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) UsernameEq(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "username", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "username"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) UsernameNe(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "username", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "username"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) UsernameLt(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "username", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "username"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) UsernameLte(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "username", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "username"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) UsernameGt(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "username", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "username"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) UsernameGte(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "username", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "username"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) DisplayNameEq(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "display_name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "display_name"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) DisplayNameNe(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "display_name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "display_name"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) DisplayNameLt(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "display_name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "display_name"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) DisplayNameLte(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "display_name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "display_name"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) DisplayNameGt(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "display_name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "display_name"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) DisplayNameGte(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "display_name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "display_name"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) DisplayNameNull() *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "is_null", Column: "display_name"})
+	q.spec.filters = append(q.spec.filters, protocol.IsNull(protocol.Col("", "display_name")))
 	return q
 }
 func (q *UserQuery) DisplayNameNotNull() *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "not", Expr: &protocol.Expr{Op: "is_null", Column: "display_name"}})
+	q.spec.filters = append(q.spec.filters, protocol.IsNotNull(protocol.Col("", "display_name")))
 	return q
 }
 func (q *UserQuery) PasswordHashEq(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "password_hash", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "password_hash"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) PasswordHashNe(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "password_hash", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "password_hash"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) PasswordHashLt(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "password_hash", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "password_hash"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) PasswordHashLte(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "password_hash", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "password_hash"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) PasswordHashGt(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "password_hash", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "password_hash"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) PasswordHashGte(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "password_hash", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "password_hash"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) EmailEq(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "email", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "email"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) EmailNe(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "email", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "email"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) EmailLt(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "email", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "email"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) EmailLte(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "email", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "email"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) EmailGt(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "email", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "email"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) EmailGte(v string) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "email", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "email"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) EmailNull() *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "is_null", Column: "email"})
+	q.spec.filters = append(q.spec.filters, protocol.IsNull(protocol.Col("", "email")))
 	return q
 }
 func (q *UserQuery) EmailNotNull() *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "not", Expr: &protocol.Expr{Op: "is_null", Column: "email"}})
+	q.spec.filters = append(q.spec.filters, protocol.IsNotNull(protocol.Col("", "email")))
 	return q
 }
 func (q *UserQuery) CreatedAtEq(v int64) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) CreatedAtNe(v int64) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) CreatedAtLt(v int64) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) CreatedAtLte(v int64) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) CreatedAtGt(v int64) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *UserQuery) CreatedAtGte(v int64) *UserQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 
 func (q *UserQuery) OrderByID() *UserQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id")})
 	return q
 }
 func (q *UserQuery) OrderByIDDesc() *UserQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id"), Desc: true})
 	return q
 }
 func (q *UserQuery) OrderByUsername() *UserQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "username"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "username")})
 	return q
 }
 func (q *UserQuery) OrderByUsernameDesc() *UserQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "username", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "username"), Desc: true})
 	return q
 }
 func (q *UserQuery) OrderByDisplayName() *UserQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "display_name"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "display_name")})
 	return q
 }
 func (q *UserQuery) OrderByDisplayNameDesc() *UserQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "display_name", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "display_name"), Desc: true})
 	return q
 }
 func (q *UserQuery) OrderByPasswordHash() *UserQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "password_hash"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "password_hash")})
 	return q
 }
 func (q *UserQuery) OrderByPasswordHashDesc() *UserQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "password_hash", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "password_hash"), Desc: true})
 	return q
 }
 func (q *UserQuery) OrderByEmail() *UserQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "email"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "email")})
 	return q
 }
 func (q *UserQuery) OrderByEmailDesc() *UserQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "email", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "email"), Desc: true})
 	return q
 }
 func (q *UserQuery) OrderByCreatedAt() *UserQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "created_at"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at")})
 	return q
 }
 func (q *UserQuery) OrderByCreatedAtDesc() *UserQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "created_at", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at"), Desc: true})
 	return q
 }
 
-func (q *UserQuery) Limit(n int) *UserQuery  { q.read.Limit = n; return q }
-func (q *UserQuery) Offset(n int) *UserQuery { q.read.Offset = n; return q }
+func (q *UserQuery) Limit(n int) *UserQuery  { q.spec.limit, q.spec.limitSet = n, true; return q }
+func (q *UserQuery) Offset(n int) *UserQuery { q.spec.offset = n; return q }
 
 // IncludeSessions embeds the Session rows referencing this row.
 func (q *UserQuery) IncludeSessions(opts ...func(*SessionInclude)) *UserQuery {
-	b := &SessionInclude{inc: protocol.Include{FK: "sessions_user_id_fk", Dir: "children", As: "sessions"}}
+	b := &SessionInclude{spec: includeSpec{table: "sessions", pairs: [][2]string{{"user_id", "id"}}, as: "sessions", kind: "array"}}
 	for _, o := range opts {
 		o(b)
 	}
-	b.inc.Filter = andExpr(b.filters)
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeTeamMembers embeds the TeamMember rows referencing this row.
 func (q *UserQuery) IncludeTeamMembers(opts ...func(*TeamMemberInclude)) *UserQuery {
-	b := &TeamMemberInclude{inc: protocol.Include{FK: "team_members_user_id_fk", Dir: "children", As: "team_members"}}
+	b := &TeamMemberInclude{spec: includeSpec{table: "team_members", pairs: [][2]string{{"user_id", "id"}}, as: "team_members", kind: "array"}}
 	for _, o := range opts {
 		o(b)
 	}
-	b.inc.Filter = andExpr(b.filters)
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeTasksByAssignee embeds the Task rows referencing this row.
 func (q *UserQuery) IncludeTasksByAssignee(opts ...func(*TaskInclude)) *UserQuery {
-	b := &TaskInclude{inc: protocol.Include{FK: "tasks_assignee_id_fk", Dir: "children", As: "tasks_by_assignee"}}
+	b := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"assignee_id", "id"}}, as: "tasks_by_assignee", kind: "array"}}
 	for _, o := range opts {
 		o(b)
 	}
-	b.inc.Filter = andExpr(b.filters)
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeTasksByCreator embeds the Task rows referencing this row.
 func (q *UserQuery) IncludeTasksByCreator(opts ...func(*TaskInclude)) *UserQuery {
-	b := &TaskInclude{inc: protocol.Include{FK: "tasks_creator_id_fk", Dir: "children", As: "tasks_by_creator"}}
+	b := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"creator_id", "id"}}, as: "tasks_by_creator", kind: "array"}}
 	for _, o := range opts {
 		o(b)
 	}
-	b.inc.Filter = andExpr(b.filters)
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeComments embeds the Comment rows referencing this row.
 func (q *UserQuery) IncludeComments(opts ...func(*CommentInclude)) *UserQuery {
-	b := &CommentInclude{inc: protocol.Include{FK: "comments_author_id_fk", Dir: "children", As: "comments"}}
+	b := &CommentInclude{spec: includeSpec{table: "comments", pairs: [][2]string{{"author_id", "id"}}, as: "comments", kind: "array"}}
 	for _, o := range opts {
 		o(b)
 	}
-	b.inc.Filter = andExpr(b.filters)
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // All executes the query.
 func (q *UserQuery) All(ctx context.Context) ([]User, error) {
-	q.read.Filter = andExpr(q.filters)
-	recs, err := q.v.Query(ctx, q.read)
+	recs, err := q.v.Query(ctx, assemble(q.spec))
 	if err != nil {
 		return nil, err
 	}
@@ -585,7 +725,7 @@ func (q *UserQuery) All(ctx context.Context) ([]User, error) {
 
 // First executes the query with limit 1.
 func (q *UserQuery) First(ctx context.Context) (User, bool, error) {
-	q.read.Limit = 1
+	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
 		return User{}, false, err
@@ -595,12 +735,11 @@ func (q *UserQuery) First(ctx context.Context) (User, bool, error) {
 
 // fold sends the builder's filter as an aggregate query and returns the
 // one scalar record the server produces.
-func (q *UserQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
-	read := q.read
-	read.Filter = andExpr(q.filters)
-	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
-	read.Aggs = aggs
-	recs, err := q.v.Query(ctx, read)
+func (q *UserQuery) fold(ctx context.Context, aggs []protocol.AggTerm) (protocol.Record, error) {
+	spec := q.spec
+	spec.orders, spec.includes, spec.limit, spec.limitSet, spec.offset = nil, nil, 0, false, 0
+	spec.aggs = aggs
+	recs, err := q.v.Query(ctx, assemble(spec))
 	if err != nil || len(recs) == 0 {
 		return protocol.Record{}, err
 	}
@@ -609,7 +748,7 @@ func (q *UserQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Rec
 
 // Count returns how many rows match (never NULL: 0 when none).
 func (q *UserQuery) Count(ctx context.Context) (int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "count", As: "v"}})
 	if err != nil {
 		return 0, err
 	}
@@ -618,7 +757,7 @@ func (q *UserQuery) Count(ctx context.Context) (int64, error) {
 
 // MinID is the smallest "id" over matching rows (nil when none).
 func (q *UserQuery) MinID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -627,7 +766,7 @@ func (q *UserQuery) MinID(ctx context.Context) (*string, error) {
 
 // MaxID is the largest "id" over matching rows (nil when none).
 func (q *UserQuery) MaxID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -636,7 +775,7 @@ func (q *UserQuery) MaxID(ctx context.Context) (*string, error) {
 
 // MinUsername is the smallest "username" over matching rows (nil when none).
 func (q *UserQuery) MinUsername(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "username", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "username"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -645,7 +784,7 @@ func (q *UserQuery) MinUsername(ctx context.Context) (*string, error) {
 
 // MaxUsername is the largest "username" over matching rows (nil when none).
 func (q *UserQuery) MaxUsername(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "username", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "username"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -654,7 +793,7 @@ func (q *UserQuery) MaxUsername(ctx context.Context) (*string, error) {
 
 // MinDisplayName is the smallest "display_name" over matching rows (nil when none).
 func (q *UserQuery) MinDisplayName(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "display_name", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "display_name"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -663,7 +802,7 @@ func (q *UserQuery) MinDisplayName(ctx context.Context) (*string, error) {
 
 // MaxDisplayName is the largest "display_name" over matching rows (nil when none).
 func (q *UserQuery) MaxDisplayName(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "display_name", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "display_name"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -672,7 +811,7 @@ func (q *UserQuery) MaxDisplayName(ctx context.Context) (*string, error) {
 
 // MinPasswordHash is the smallest "password_hash" over matching rows (nil when none).
 func (q *UserQuery) MinPasswordHash(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "password_hash", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "password_hash"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -681,7 +820,7 @@ func (q *UserQuery) MinPasswordHash(ctx context.Context) (*string, error) {
 
 // MaxPasswordHash is the largest "password_hash" over matching rows (nil when none).
 func (q *UserQuery) MaxPasswordHash(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "password_hash", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "password_hash"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -690,7 +829,7 @@ func (q *UserQuery) MaxPasswordHash(ctx context.Context) (*string, error) {
 
 // MinEmail is the smallest "email" over matching rows (nil when none).
 func (q *UserQuery) MinEmail(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "email", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "email"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -699,7 +838,7 @@ func (q *UserQuery) MinEmail(ctx context.Context) (*string, error) {
 
 // MaxEmail is the largest "email" over matching rows (nil when none).
 func (q *UserQuery) MaxEmail(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "email", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "email"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -708,7 +847,7 @@ func (q *UserQuery) MaxEmail(ctx context.Context) (*string, error) {
 
 // SumCreatedAt totals "created_at" over matching rows (nil when none).
 func (q *UserQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "sum", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -717,7 +856,7 @@ func (q *UserQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
 
 // AvgCreatedAt averages "created_at" (nil when none).
 func (q *UserQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "avg", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -726,7 +865,7 @@ func (q *UserQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
 
 // MinCreatedAt is the smallest "created_at" over matching rows (nil when none).
 func (q *UserQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -735,7 +874,7 @@ func (q *UserQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
 
 // MaxCreatedAt is the largest "created_at" over matching rows (nil when none).
 func (q *UserQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -744,264 +883,259 @@ func (q *UserQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 
 // UserInclude refines an included "users" fetch.
 type UserInclude struct {
-	inc     protocol.Include
-	filters []protocol.Expr
+	spec includeSpec
 }
 
 func (b *UserInclude) IDEq(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) IDNe(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) IDLt(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) IDLte(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) IDGt(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) IDGte(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) UsernameEq(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "username", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "username"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) UsernameNe(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "username", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "username"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) UsernameLt(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "username", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "username"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) UsernameLte(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "username", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "username"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) UsernameGt(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "username", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "username"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) UsernameGte(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "username", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "username"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) DisplayNameEq(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "display_name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "display_name"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) DisplayNameNe(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "display_name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "display_name"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) DisplayNameLt(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "display_name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "display_name"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) DisplayNameLte(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "display_name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "display_name"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) DisplayNameGt(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "display_name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "display_name"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) DisplayNameGte(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "display_name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "display_name"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) DisplayNameNull() *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "is_null", Column: "display_name"})
+	b.spec.filters = append(b.spec.filters, protocol.IsNull(protocol.Col("", "display_name")))
 	return b
 }
 func (b *UserInclude) DisplayNameNotNull() *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "not", Expr: &protocol.Expr{Op: "is_null", Column: "display_name"}})
+	b.spec.filters = append(b.spec.filters, protocol.IsNotNull(protocol.Col("", "display_name")))
 	return b
 }
 func (b *UserInclude) PasswordHashEq(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "password_hash", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "password_hash"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) PasswordHashNe(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "password_hash", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "password_hash"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) PasswordHashLt(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "password_hash", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "password_hash"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) PasswordHashLte(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "password_hash", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "password_hash"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) PasswordHashGt(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "password_hash", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "password_hash"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) PasswordHashGte(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "password_hash", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "password_hash"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) EmailEq(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "email", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "email"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) EmailNe(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "email", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "email"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) EmailLt(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "email", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "email"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) EmailLte(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "email", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "email"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) EmailGt(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "email", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "email"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) EmailGte(v string) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "email", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "email"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) EmailNull() *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "is_null", Column: "email"})
+	b.spec.filters = append(b.spec.filters, protocol.IsNull(protocol.Col("", "email")))
 	return b
 }
 func (b *UserInclude) EmailNotNull() *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "not", Expr: &protocol.Expr{Op: "is_null", Column: "email"}})
+	b.spec.filters = append(b.spec.filters, protocol.IsNotNull(protocol.Col("", "email")))
 	return b
 }
 func (b *UserInclude) CreatedAtEq(v int64) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) CreatedAtNe(v int64) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) CreatedAtLt(v int64) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) CreatedAtLte(v int64) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) CreatedAtGt(v int64) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *UserInclude) CreatedAtGte(v int64) *UserInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 
 func (b *UserInclude) OrderByID() *UserInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id")})
 	return b
 }
 func (b *UserInclude) OrderByIDDesc() *UserInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id"), Desc: true})
 	return b
 }
 func (b *UserInclude) OrderByUsername() *UserInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "username"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "username")})
 	return b
 }
 func (b *UserInclude) OrderByUsernameDesc() *UserInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "username", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "username"), Desc: true})
 	return b
 }
 func (b *UserInclude) OrderByDisplayName() *UserInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "display_name"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "display_name")})
 	return b
 }
 func (b *UserInclude) OrderByDisplayNameDesc() *UserInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "display_name", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "display_name"), Desc: true})
 	return b
 }
 func (b *UserInclude) OrderByPasswordHash() *UserInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "password_hash"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "password_hash")})
 	return b
 }
 func (b *UserInclude) OrderByPasswordHashDesc() *UserInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "password_hash", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "password_hash"), Desc: true})
 	return b
 }
 func (b *UserInclude) OrderByEmail() *UserInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "email"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "email")})
 	return b
 }
 func (b *UserInclude) OrderByEmailDesc() *UserInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "email", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "email"), Desc: true})
 	return b
 }
 func (b *UserInclude) OrderByCreatedAt() *UserInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "created_at"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at")})
 	return b
 }
 func (b *UserInclude) OrderByCreatedAtDesc() *UserInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "created_at", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at"), Desc: true})
 	return b
 }
-func (b *UserInclude) Limit(n int) *UserInclude { b.inc.Limit = n; return b }
+
+func (b *UserInclude) Limit(n int) *UserInclude { b.spec.limit, b.spec.limitSet = n, true; return b }
 
 func (b *UserInclude) IncludeSessions(opts ...func(*SessionInclude)) *UserInclude {
-	nested := &SessionInclude{inc: protocol.Include{FK: "sessions_user_id_fk", Dir: "children", As: "sessions"}}
+	n := &SessionInclude{spec: includeSpec{table: "sessions", pairs: [][2]string{{"user_id", "id"}}, as: "sessions", kind: "array"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	nested.inc.Filter = andExpr(nested.filters)
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *UserInclude) IncludeTeamMembers(opts ...func(*TeamMemberInclude)) *UserInclude {
-	nested := &TeamMemberInclude{inc: protocol.Include{FK: "team_members_user_id_fk", Dir: "children", As: "team_members"}}
+	n := &TeamMemberInclude{spec: includeSpec{table: "team_members", pairs: [][2]string{{"user_id", "id"}}, as: "team_members", kind: "array"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	nested.inc.Filter = andExpr(nested.filters)
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *UserInclude) IncludeTasksByAssignee(opts ...func(*TaskInclude)) *UserInclude {
-	nested := &TaskInclude{inc: protocol.Include{FK: "tasks_assignee_id_fk", Dir: "children", As: "tasks_by_assignee"}}
+	n := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"assignee_id", "id"}}, as: "tasks_by_assignee", kind: "array"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	nested.inc.Filter = andExpr(nested.filters)
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *UserInclude) IncludeTasksByCreator(opts ...func(*TaskInclude)) *UserInclude {
-	nested := &TaskInclude{inc: protocol.Include{FK: "tasks_creator_id_fk", Dir: "children", As: "tasks_by_creator"}}
+	n := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"creator_id", "id"}}, as: "tasks_by_creator", kind: "array"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	nested.inc.Filter = andExpr(nested.filters)
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *UserInclude) IncludeComments(opts ...func(*CommentInclude)) *UserInclude {
-	nested := &CommentInclude{inc: protocol.Include{FK: "comments_author_id_fk", Dir: "children", As: "comments"}}
+	n := &CommentInclude{spec: includeSpec{table: "comments", pairs: [][2]string{{"author_id", "id"}}, as: "comments", kind: "array"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	nested.inc.Filter = andExpr(nested.filters)
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 
@@ -1130,164 +1264,162 @@ func (t SessionTable) Delete(ctx context.Context, token string) (bool, error) {
 }
 
 func (t SessionTable) Query() *SessionQuery {
-	return &SessionQuery{v: t.v, read: protocol.Read{Table: "sessions"}}
+	return &SessionQuery{v: t.v, spec: querySpec{table: "sessions"}}
 }
 
-// SessionQuery is a fluent shaped-read builder for "sessions". Conditions AND together.
+// SessionQuery is a fluent query builder for "sessions". Conditions AND together.
 type SessionQuery struct {
-	v       radclient.View
-	read    protocol.Read
-	filters []protocol.Expr
+	v    radclient.View
+	spec querySpec
 }
 
 func (q *SessionQuery) TokenEq(v string) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "token", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "token"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) TokenNe(v string) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "token", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "token"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) TokenLt(v string) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "token", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "token"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) TokenLte(v string) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "token", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "token"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) TokenGt(v string) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "token", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "token"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) TokenGte(v string) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "token", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "token"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) UserIDEq(v string) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "user_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) UserIDNe(v string) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "user_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) UserIDLt(v string) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "user_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) UserIDLte(v string) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "user_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) UserIDGt(v string) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "user_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) UserIDGte(v string) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "user_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) CreatedAtEq(v int64) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) CreatedAtNe(v int64) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) CreatedAtLt(v int64) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) CreatedAtLte(v int64) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) CreatedAtGt(v int64) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) CreatedAtGte(v int64) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) ExpiresAtEq(v int64) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "expires_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "expires_at"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) ExpiresAtNe(v int64) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "expires_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "expires_at"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) ExpiresAtLt(v int64) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "expires_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "expires_at"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) ExpiresAtLte(v int64) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "expires_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "expires_at"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) ExpiresAtGt(v int64) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "expires_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "expires_at"), protocol.Lit(v)))
 	return q
 }
 func (q *SessionQuery) ExpiresAtGte(v int64) *SessionQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "expires_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "expires_at"), protocol.Lit(v)))
 	return q
 }
 
 func (q *SessionQuery) OrderByToken() *SessionQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "token"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "token")})
 	return q
 }
 func (q *SessionQuery) OrderByTokenDesc() *SessionQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "token", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "token"), Desc: true})
 	return q
 }
 func (q *SessionQuery) OrderByUserID() *SessionQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "user_id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "user_id")})
 	return q
 }
 func (q *SessionQuery) OrderByUserIDDesc() *SessionQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "user_id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "user_id"), Desc: true})
 	return q
 }
 func (q *SessionQuery) OrderByCreatedAt() *SessionQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "created_at"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at")})
 	return q
 }
 func (q *SessionQuery) OrderByCreatedAtDesc() *SessionQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "created_at", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at"), Desc: true})
 	return q
 }
 func (q *SessionQuery) OrderByExpiresAt() *SessionQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "expires_at"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "expires_at")})
 	return q
 }
 func (q *SessionQuery) OrderByExpiresAtDesc() *SessionQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "expires_at", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "expires_at"), Desc: true})
 	return q
 }
 
-func (q *SessionQuery) Limit(n int) *SessionQuery  { q.read.Limit = n; return q }
-func (q *SessionQuery) Offset(n int) *SessionQuery { q.read.Offset = n; return q }
+func (q *SessionQuery) Limit(n int) *SessionQuery  { q.spec.limit, q.spec.limitSet = n, true; return q }
+func (q *SessionQuery) Offset(n int) *SessionQuery { q.spec.offset = n; return q }
 
 // IncludeUser embeds the referenced User (nil when the FK is NULL).
 func (q *SessionQuery) IncludeUser(opts ...func(*UserInclude)) *SessionQuery {
-	b := &UserInclude{inc: protocol.Include{FK: "sessions_user_id_fk", Dir: "parent", As: "user"}}
+	b := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "user_id"}}, as: "user", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // All executes the query.
 func (q *SessionQuery) All(ctx context.Context) ([]Session, error) {
-	q.read.Filter = andExpr(q.filters)
-	recs, err := q.v.Query(ctx, q.read)
+	recs, err := q.v.Query(ctx, assemble(q.spec))
 	if err != nil {
 		return nil, err
 	}
@@ -1300,7 +1432,7 @@ func (q *SessionQuery) All(ctx context.Context) ([]Session, error) {
 
 // First executes the query with limit 1.
 func (q *SessionQuery) First(ctx context.Context) (Session, bool, error) {
-	q.read.Limit = 1
+	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
 		return Session{}, false, err
@@ -1310,12 +1442,11 @@ func (q *SessionQuery) First(ctx context.Context) (Session, bool, error) {
 
 // fold sends the builder's filter as an aggregate query and returns the
 // one scalar record the server produces.
-func (q *SessionQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
-	read := q.read
-	read.Filter = andExpr(q.filters)
-	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
-	read.Aggs = aggs
-	recs, err := q.v.Query(ctx, read)
+func (q *SessionQuery) fold(ctx context.Context, aggs []protocol.AggTerm) (protocol.Record, error) {
+	spec := q.spec
+	spec.orders, spec.includes, spec.limit, spec.limitSet, spec.offset = nil, nil, 0, false, 0
+	spec.aggs = aggs
+	recs, err := q.v.Query(ctx, assemble(spec))
 	if err != nil || len(recs) == 0 {
 		return protocol.Record{}, err
 	}
@@ -1324,7 +1455,7 @@ func (q *SessionQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.
 
 // Count returns how many rows match (never NULL: 0 when none).
 func (q *SessionQuery) Count(ctx context.Context) (int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "count", As: "v"}})
 	if err != nil {
 		return 0, err
 	}
@@ -1333,7 +1464,7 @@ func (q *SessionQuery) Count(ctx context.Context) (int64, error) {
 
 // MinToken is the smallest "token" over matching rows (nil when none).
 func (q *SessionQuery) MinToken(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "token", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "token"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1342,7 +1473,7 @@ func (q *SessionQuery) MinToken(ctx context.Context) (*string, error) {
 
 // MaxToken is the largest "token" over matching rows (nil when none).
 func (q *SessionQuery) MaxToken(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "token", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "token"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1351,7 +1482,7 @@ func (q *SessionQuery) MaxToken(ctx context.Context) (*string, error) {
 
 // MinUserID is the smallest "user_id" over matching rows (nil when none).
 func (q *SessionQuery) MinUserID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "user_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "user_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1360,7 +1491,7 @@ func (q *SessionQuery) MinUserID(ctx context.Context) (*string, error) {
 
 // MaxUserID is the largest "user_id" over matching rows (nil when none).
 func (q *SessionQuery) MaxUserID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "user_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "user_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1369,7 +1500,7 @@ func (q *SessionQuery) MaxUserID(ctx context.Context) (*string, error) {
 
 // SumCreatedAt totals "created_at" over matching rows (nil when none).
 func (q *SessionQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "sum", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1378,7 +1509,7 @@ func (q *SessionQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
 
 // AvgCreatedAt averages "created_at" (nil when none).
 func (q *SessionQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "avg", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1387,7 +1518,7 @@ func (q *SessionQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
 
 // MinCreatedAt is the smallest "created_at" over matching rows (nil when none).
 func (q *SessionQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1396,7 +1527,7 @@ func (q *SessionQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
 
 // MaxCreatedAt is the largest "created_at" over matching rows (nil when none).
 func (q *SessionQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1405,7 +1536,7 @@ func (q *SessionQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 
 // SumExpiresAt totals "expires_at" over matching rows (nil when none).
 func (q *SessionQuery) SumExpiresAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "expires_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "sum", Arg: protocol.Col("", "expires_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1414,7 +1545,7 @@ func (q *SessionQuery) SumExpiresAt(ctx context.Context) (*int64, error) {
 
 // AvgExpiresAt averages "expires_at" (nil when none).
 func (q *SessionQuery) AvgExpiresAt(ctx context.Context) (*float64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "expires_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "avg", Arg: protocol.Col("", "expires_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1423,7 +1554,7 @@ func (q *SessionQuery) AvgExpiresAt(ctx context.Context) (*float64, error) {
 
 // MinExpiresAt is the smallest "expires_at" over matching rows (nil when none).
 func (q *SessionQuery) MinExpiresAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "expires_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "expires_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1432,7 +1563,7 @@ func (q *SessionQuery) MinExpiresAt(ctx context.Context) (*int64, error) {
 
 // MaxExpiresAt is the largest "expires_at" over matching rows (nil when none).
 func (q *SessionQuery) MaxExpiresAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "expires_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "expires_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1441,147 +1572,150 @@ func (q *SessionQuery) MaxExpiresAt(ctx context.Context) (*int64, error) {
 
 // SessionInclude refines an included "sessions" fetch.
 type SessionInclude struct {
-	inc     protocol.Include
-	filters []protocol.Expr
+	spec includeSpec
 }
 
 func (b *SessionInclude) TokenEq(v string) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "token", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "token"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) TokenNe(v string) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "token", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "token"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) TokenLt(v string) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "token", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "token"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) TokenLte(v string) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "token", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "token"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) TokenGt(v string) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "token", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "token"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) TokenGte(v string) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "token", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "token"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) UserIDEq(v string) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "user_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) UserIDNe(v string) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "user_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) UserIDLt(v string) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "user_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) UserIDLte(v string) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "user_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) UserIDGt(v string) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "user_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) UserIDGte(v string) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "user_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) CreatedAtEq(v int64) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) CreatedAtNe(v int64) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) CreatedAtLt(v int64) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) CreatedAtLte(v int64) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) CreatedAtGt(v int64) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) CreatedAtGte(v int64) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) ExpiresAtEq(v int64) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "expires_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "expires_at"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) ExpiresAtNe(v int64) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "expires_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "expires_at"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) ExpiresAtLt(v int64) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "expires_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "expires_at"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) ExpiresAtLte(v int64) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "expires_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "expires_at"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) ExpiresAtGt(v int64) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "expires_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "expires_at"), protocol.Lit(v)))
 	return b
 }
 func (b *SessionInclude) ExpiresAtGte(v int64) *SessionInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "expires_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "expires_at"), protocol.Lit(v)))
 	return b
 }
 
 func (b *SessionInclude) OrderByToken() *SessionInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "token"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "token")})
 	return b
 }
 func (b *SessionInclude) OrderByTokenDesc() *SessionInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "token", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "token"), Desc: true})
 	return b
 }
 func (b *SessionInclude) OrderByUserID() *SessionInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "user_id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "user_id")})
 	return b
 }
 func (b *SessionInclude) OrderByUserIDDesc() *SessionInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "user_id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "user_id"), Desc: true})
 	return b
 }
 func (b *SessionInclude) OrderByCreatedAt() *SessionInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "created_at"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at")})
 	return b
 }
 func (b *SessionInclude) OrderByCreatedAtDesc() *SessionInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "created_at", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at"), Desc: true})
 	return b
 }
 func (b *SessionInclude) OrderByExpiresAt() *SessionInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "expires_at"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "expires_at")})
 	return b
 }
 func (b *SessionInclude) OrderByExpiresAtDesc() *SessionInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "expires_at", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "expires_at"), Desc: true})
 	return b
 }
-func (b *SessionInclude) Limit(n int) *SessionInclude { b.inc.Limit = n; return b }
+
+func (b *SessionInclude) Limit(n int) *SessionInclude {
+	b.spec.limit, b.spec.limitSet = n, true
+	return b
+}
 
 func (b *SessionInclude) IncludeUser(opts ...func(*UserInclude)) *SessionInclude {
-	nested := &UserInclude{inc: protocol.Include{FK: "sessions_user_id_fk", Dir: "parent", As: "user"}}
+	n := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "user_id"}}, as: "user", kind: "first"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 
@@ -1673,9 +1807,9 @@ func (t TeamTable) Delete(ctx context.Context, id string) (bool, error) {
 
 // ByName finds the row by the unique index on (name).
 func (t TeamTable) ByName(ctx context.Context, name string) (Team, bool, error) {
-	recs, err := t.v.Query(ctx, protocol.Read{Table: "teams", Filter: andExpr([]protocol.Expr{
-		{Op: "eq", Column: "name", Value: name},
-	}), Limit: 1})
+	recs, err := t.v.Query(ctx, assemble(querySpec{table: "teams", limit: 1, limitSet: true, filters: []*protocol.Expr{
+		protocol.Eq(protocol.Col("", "name"), protocol.Lit(name)),
+	}}))
 	if err != nil || len(recs) == 0 {
 		return Team{}, false, err
 	}
@@ -1683,157 +1817,152 @@ func (t TeamTable) ByName(ctx context.Context, name string) (Team, bool, error) 
 }
 
 func (t TeamTable) Query() *TeamQuery {
-	return &TeamQuery{v: t.v, read: protocol.Read{Table: "teams"}}
+	return &TeamQuery{v: t.v, spec: querySpec{table: "teams"}}
 }
 
-// TeamQuery is a fluent shaped-read builder for "teams". Conditions AND together.
+// TeamQuery is a fluent query builder for "teams". Conditions AND together.
 type TeamQuery struct {
-	v       radclient.View
-	read    protocol.Read
-	filters []protocol.Expr
+	v    radclient.View
+	spec querySpec
 }
 
 func (q *TeamQuery) IDEq(v string) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) IDNe(v string) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) IDLt(v string) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) IDLte(v string) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) IDGt(v string) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) IDGte(v string) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) NameEq(v string) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) NameNe(v string) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) NameLt(v string) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) NameLte(v string) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) NameGt(v string) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) NameGte(v string) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) CreatedAtEq(v int64) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) CreatedAtNe(v int64) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) CreatedAtLt(v int64) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) CreatedAtLte(v int64) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) CreatedAtGt(v int64) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamQuery) CreatedAtGte(v int64) *TeamQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 
 func (q *TeamQuery) OrderByID() *TeamQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id")})
 	return q
 }
 func (q *TeamQuery) OrderByIDDesc() *TeamQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id"), Desc: true})
 	return q
 }
 func (q *TeamQuery) OrderByName() *TeamQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "name"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "name")})
 	return q
 }
 func (q *TeamQuery) OrderByNameDesc() *TeamQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "name", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "name"), Desc: true})
 	return q
 }
 func (q *TeamQuery) OrderByCreatedAt() *TeamQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "created_at"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at")})
 	return q
 }
 func (q *TeamQuery) OrderByCreatedAtDesc() *TeamQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "created_at", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at"), Desc: true})
 	return q
 }
 
-func (q *TeamQuery) Limit(n int) *TeamQuery  { q.read.Limit = n; return q }
-func (q *TeamQuery) Offset(n int) *TeamQuery { q.read.Offset = n; return q }
+func (q *TeamQuery) Limit(n int) *TeamQuery  { q.spec.limit, q.spec.limitSet = n, true; return q }
+func (q *TeamQuery) Offset(n int) *TeamQuery { q.spec.offset = n; return q }
 
 // IncludeTeamMembers embeds the TeamMember rows referencing this row.
 func (q *TeamQuery) IncludeTeamMembers(opts ...func(*TeamMemberInclude)) *TeamQuery {
-	b := &TeamMemberInclude{inc: protocol.Include{FK: "team_members_team_id_fk", Dir: "children", As: "team_members"}}
+	b := &TeamMemberInclude{spec: includeSpec{table: "team_members", pairs: [][2]string{{"team_id", "id"}}, as: "team_members", kind: "array"}}
 	for _, o := range opts {
 		o(b)
 	}
-	b.inc.Filter = andExpr(b.filters)
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeBoards embeds the Board rows referencing this row.
 func (q *TeamQuery) IncludeBoards(opts ...func(*BoardInclude)) *TeamQuery {
-	b := &BoardInclude{inc: protocol.Include{FK: "boards_team_id_fk", Dir: "children", As: "boards"}}
+	b := &BoardInclude{spec: includeSpec{table: "boards", pairs: [][2]string{{"team_id", "id"}}, as: "boards", kind: "array"}}
 	for _, o := range opts {
 		o(b)
 	}
-	b.inc.Filter = andExpr(b.filters)
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeLabels embeds the Label rows referencing this row.
 func (q *TeamQuery) IncludeLabels(opts ...func(*LabelInclude)) *TeamQuery {
-	b := &LabelInclude{inc: protocol.Include{FK: "labels_team_id_fk", Dir: "children", As: "labels"}}
+	b := &LabelInclude{spec: includeSpec{table: "labels", pairs: [][2]string{{"team_id", "id"}}, as: "labels", kind: "array"}}
 	for _, o := range opts {
 		o(b)
 	}
-	b.inc.Filter = andExpr(b.filters)
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // All executes the query.
 func (q *TeamQuery) All(ctx context.Context) ([]Team, error) {
-	q.read.Filter = andExpr(q.filters)
-	recs, err := q.v.Query(ctx, q.read)
+	recs, err := q.v.Query(ctx, assemble(q.spec))
 	if err != nil {
 		return nil, err
 	}
@@ -1846,7 +1975,7 @@ func (q *TeamQuery) All(ctx context.Context) ([]Team, error) {
 
 // First executes the query with limit 1.
 func (q *TeamQuery) First(ctx context.Context) (Team, bool, error) {
-	q.read.Limit = 1
+	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
 		return Team{}, false, err
@@ -1856,12 +1985,11 @@ func (q *TeamQuery) First(ctx context.Context) (Team, bool, error) {
 
 // fold sends the builder's filter as an aggregate query and returns the
 // one scalar record the server produces.
-func (q *TeamQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
-	read := q.read
-	read.Filter = andExpr(q.filters)
-	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
-	read.Aggs = aggs
-	recs, err := q.v.Query(ctx, read)
+func (q *TeamQuery) fold(ctx context.Context, aggs []protocol.AggTerm) (protocol.Record, error) {
+	spec := q.spec
+	spec.orders, spec.includes, spec.limit, spec.limitSet, spec.offset = nil, nil, 0, false, 0
+	spec.aggs = aggs
+	recs, err := q.v.Query(ctx, assemble(spec))
 	if err != nil || len(recs) == 0 {
 		return protocol.Record{}, err
 	}
@@ -1870,7 +1998,7 @@ func (q *TeamQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Rec
 
 // Count returns how many rows match (never NULL: 0 when none).
 func (q *TeamQuery) Count(ctx context.Context) (int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "count", As: "v"}})
 	if err != nil {
 		return 0, err
 	}
@@ -1879,7 +2007,7 @@ func (q *TeamQuery) Count(ctx context.Context) (int64, error) {
 
 // MinID is the smallest "id" over matching rows (nil when none).
 func (q *TeamQuery) MinID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1888,7 +2016,7 @@ func (q *TeamQuery) MinID(ctx context.Context) (*string, error) {
 
 // MaxID is the largest "id" over matching rows (nil when none).
 func (q *TeamQuery) MaxID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1897,7 +2025,7 @@ func (q *TeamQuery) MaxID(ctx context.Context) (*string, error) {
 
 // MinName is the smallest "name" over matching rows (nil when none).
 func (q *TeamQuery) MinName(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "name", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "name"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1906,7 +2034,7 @@ func (q *TeamQuery) MinName(ctx context.Context) (*string, error) {
 
 // MaxName is the largest "name" over matching rows (nil when none).
 func (q *TeamQuery) MaxName(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "name", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "name"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1915,7 +2043,7 @@ func (q *TeamQuery) MaxName(ctx context.Context) (*string, error) {
 
 // SumCreatedAt totals "created_at" over matching rows (nil when none).
 func (q *TeamQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "sum", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1924,7 +2052,7 @@ func (q *TeamQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
 
 // AvgCreatedAt averages "created_at" (nil when none).
 func (q *TeamQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "avg", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1933,7 +2061,7 @@ func (q *TeamQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
 
 // MinCreatedAt is the smallest "created_at" over matching rows (nil when none).
 func (q *TeamQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1942,7 +2070,7 @@ func (q *TeamQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
 
 // MaxCreatedAt is the largest "created_at" over matching rows (nil when none).
 func (q *TeamQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1951,134 +2079,131 @@ func (q *TeamQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 
 // TeamInclude refines an included "teams" fetch.
 type TeamInclude struct {
-	inc     protocol.Include
-	filters []protocol.Expr
+	spec includeSpec
 }
 
 func (b *TeamInclude) IDEq(v string) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) IDNe(v string) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) IDLt(v string) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) IDLte(v string) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) IDGt(v string) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) IDGte(v string) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) NameEq(v string) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) NameNe(v string) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) NameLt(v string) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) NameLte(v string) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) NameGt(v string) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) NameGte(v string) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) CreatedAtEq(v int64) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) CreatedAtNe(v int64) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) CreatedAtLt(v int64) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) CreatedAtLte(v int64) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) CreatedAtGt(v int64) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamInclude) CreatedAtGte(v int64) *TeamInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 
 func (b *TeamInclude) OrderByID() *TeamInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id")})
 	return b
 }
 func (b *TeamInclude) OrderByIDDesc() *TeamInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id"), Desc: true})
 	return b
 }
 func (b *TeamInclude) OrderByName() *TeamInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "name"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "name")})
 	return b
 }
 func (b *TeamInclude) OrderByNameDesc() *TeamInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "name", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "name"), Desc: true})
 	return b
 }
 func (b *TeamInclude) OrderByCreatedAt() *TeamInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "created_at"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at")})
 	return b
 }
 func (b *TeamInclude) OrderByCreatedAtDesc() *TeamInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "created_at", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at"), Desc: true})
 	return b
 }
-func (b *TeamInclude) Limit(n int) *TeamInclude { b.inc.Limit = n; return b }
+
+func (b *TeamInclude) Limit(n int) *TeamInclude { b.spec.limit, b.spec.limitSet = n, true; return b }
 
 func (b *TeamInclude) IncludeTeamMembers(opts ...func(*TeamMemberInclude)) *TeamInclude {
-	nested := &TeamMemberInclude{inc: protocol.Include{FK: "team_members_team_id_fk", Dir: "children", As: "team_members"}}
+	n := &TeamMemberInclude{spec: includeSpec{table: "team_members", pairs: [][2]string{{"team_id", "id"}}, as: "team_members", kind: "array"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	nested.inc.Filter = andExpr(nested.filters)
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *TeamInclude) IncludeBoards(opts ...func(*BoardInclude)) *TeamInclude {
-	nested := &BoardInclude{inc: protocol.Include{FK: "boards_team_id_fk", Dir: "children", As: "boards"}}
+	n := &BoardInclude{spec: includeSpec{table: "boards", pairs: [][2]string{{"team_id", "id"}}, as: "boards", kind: "array"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	nested.inc.Filter = andExpr(nested.filters)
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *TeamInclude) IncludeLabels(opts ...func(*LabelInclude)) *TeamInclude {
-	nested := &LabelInclude{inc: protocol.Include{FK: "labels_team_id_fk", Dir: "children", As: "labels"}}
+	n := &LabelInclude{spec: includeSpec{table: "labels", pairs: [][2]string{{"team_id", "id"}}, as: "labels", kind: "array"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	nested.inc.Filter = andExpr(nested.filters)
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 
@@ -2187,175 +2312,176 @@ func (t TeamMemberTable) Delete(ctx context.Context, teamID string, userID strin
 }
 
 func (t TeamMemberTable) Query() *TeamMemberQuery {
-	return &TeamMemberQuery{v: t.v, read: protocol.Read{Table: "team_members"}}
+	return &TeamMemberQuery{v: t.v, spec: querySpec{table: "team_members"}}
 }
 
-// TeamMemberQuery is a fluent shaped-read builder for "team_members". Conditions AND together.
+// TeamMemberQuery is a fluent query builder for "team_members". Conditions AND together.
 type TeamMemberQuery struct {
-	v       radclient.View
-	read    protocol.Read
-	filters []protocol.Expr
+	v    radclient.View
+	spec querySpec
 }
 
 func (q *TeamMemberQuery) TeamIDEq(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) TeamIDNe(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) TeamIDLt(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) TeamIDLte(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) TeamIDGt(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) TeamIDGte(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) UserIDEq(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "user_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) UserIDNe(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "user_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) UserIDLt(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "user_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) UserIDLte(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "user_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) UserIDGt(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "user_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) UserIDGte(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "user_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) RoleEq(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "role", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "role"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) RoleNe(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "role", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "role"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) RoleLt(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "role", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "role"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) RoleLte(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "role", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "role"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) RoleGt(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "role", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "role"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) RoleGte(v string) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "role", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "role"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) JoinedAtEq(v int64) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "joined_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "joined_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) JoinedAtNe(v int64) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "joined_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "joined_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) JoinedAtLt(v int64) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "joined_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "joined_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) JoinedAtLte(v int64) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "joined_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "joined_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) JoinedAtGt(v int64) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "joined_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "joined_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TeamMemberQuery) JoinedAtGte(v int64) *TeamMemberQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "joined_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "joined_at"), protocol.Lit(v)))
 	return q
 }
 
 func (q *TeamMemberQuery) OrderByTeamID() *TeamMemberQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "team_id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "team_id")})
 	return q
 }
 func (q *TeamMemberQuery) OrderByTeamIDDesc() *TeamMemberQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "team_id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "team_id"), Desc: true})
 	return q
 }
 func (q *TeamMemberQuery) OrderByUserID() *TeamMemberQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "user_id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "user_id")})
 	return q
 }
 func (q *TeamMemberQuery) OrderByUserIDDesc() *TeamMemberQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "user_id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "user_id"), Desc: true})
 	return q
 }
 func (q *TeamMemberQuery) OrderByRole() *TeamMemberQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "role"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "role")})
 	return q
 }
 func (q *TeamMemberQuery) OrderByRoleDesc() *TeamMemberQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "role", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "role"), Desc: true})
 	return q
 }
 func (q *TeamMemberQuery) OrderByJoinedAt() *TeamMemberQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "joined_at"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "joined_at")})
 	return q
 }
 func (q *TeamMemberQuery) OrderByJoinedAtDesc() *TeamMemberQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "joined_at", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "joined_at"), Desc: true})
 	return q
 }
 
-func (q *TeamMemberQuery) Limit(n int) *TeamMemberQuery  { q.read.Limit = n; return q }
-func (q *TeamMemberQuery) Offset(n int) *TeamMemberQuery { q.read.Offset = n; return q }
+func (q *TeamMemberQuery) Limit(n int) *TeamMemberQuery {
+	q.spec.limit, q.spec.limitSet = n, true
+	return q
+}
+func (q *TeamMemberQuery) Offset(n int) *TeamMemberQuery { q.spec.offset = n; return q }
 
 // IncludeTeam embeds the referenced Team (nil when the FK is NULL).
 func (q *TeamMemberQuery) IncludeTeam(opts ...func(*TeamInclude)) *TeamMemberQuery {
-	b := &TeamInclude{inc: protocol.Include{FK: "team_members_team_id_fk", Dir: "parent", As: "team"}}
+	b := &TeamInclude{spec: includeSpec{table: "teams", pairs: [][2]string{{"id", "team_id"}}, as: "team", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeUser embeds the referenced User (nil when the FK is NULL).
 func (q *TeamMemberQuery) IncludeUser(opts ...func(*UserInclude)) *TeamMemberQuery {
-	b := &UserInclude{inc: protocol.Include{FK: "team_members_user_id_fk", Dir: "parent", As: "user"}}
+	b := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "user_id"}}, as: "user", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // All executes the query.
 func (q *TeamMemberQuery) All(ctx context.Context) ([]TeamMember, error) {
-	q.read.Filter = andExpr(q.filters)
-	recs, err := q.v.Query(ctx, q.read)
+	recs, err := q.v.Query(ctx, assemble(q.spec))
 	if err != nil {
 		return nil, err
 	}
@@ -2368,7 +2494,7 @@ func (q *TeamMemberQuery) All(ctx context.Context) ([]TeamMember, error) {
 
 // First executes the query with limit 1.
 func (q *TeamMemberQuery) First(ctx context.Context) (TeamMember, bool, error) {
-	q.read.Limit = 1
+	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
 		return TeamMember{}, false, err
@@ -2378,12 +2504,11 @@ func (q *TeamMemberQuery) First(ctx context.Context) (TeamMember, bool, error) {
 
 // fold sends the builder's filter as an aggregate query and returns the
 // one scalar record the server produces.
-func (q *TeamMemberQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
-	read := q.read
-	read.Filter = andExpr(q.filters)
-	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
-	read.Aggs = aggs
-	recs, err := q.v.Query(ctx, read)
+func (q *TeamMemberQuery) fold(ctx context.Context, aggs []protocol.AggTerm) (protocol.Record, error) {
+	spec := q.spec
+	spec.orders, spec.includes, spec.limit, spec.limitSet, spec.offset = nil, nil, 0, false, 0
+	spec.aggs = aggs
+	recs, err := q.v.Query(ctx, assemble(spec))
 	if err != nil || len(recs) == 0 {
 		return protocol.Record{}, err
 	}
@@ -2392,7 +2517,7 @@ func (q *TeamMemberQuery) fold(ctx context.Context, aggs []protocol.Agg) (protoc
 
 // Count returns how many rows match (never NULL: 0 when none).
 func (q *TeamMemberQuery) Count(ctx context.Context) (int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "count", As: "v"}})
 	if err != nil {
 		return 0, err
 	}
@@ -2401,7 +2526,7 @@ func (q *TeamMemberQuery) Count(ctx context.Context) (int64, error) {
 
 // MinTeamID is the smallest "team_id" over matching rows (nil when none).
 func (q *TeamMemberQuery) MinTeamID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "team_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "team_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -2410,7 +2535,7 @@ func (q *TeamMemberQuery) MinTeamID(ctx context.Context) (*string, error) {
 
 // MaxTeamID is the largest "team_id" over matching rows (nil when none).
 func (q *TeamMemberQuery) MaxTeamID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "team_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "team_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -2419,7 +2544,7 @@ func (q *TeamMemberQuery) MaxTeamID(ctx context.Context) (*string, error) {
 
 // MinUserID is the smallest "user_id" over matching rows (nil when none).
 func (q *TeamMemberQuery) MinUserID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "user_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "user_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -2428,7 +2553,7 @@ func (q *TeamMemberQuery) MinUserID(ctx context.Context) (*string, error) {
 
 // MaxUserID is the largest "user_id" over matching rows (nil when none).
 func (q *TeamMemberQuery) MaxUserID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "user_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "user_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -2437,7 +2562,7 @@ func (q *TeamMemberQuery) MaxUserID(ctx context.Context) (*string, error) {
 
 // MinRole is the smallest "role" over matching rows (nil when none).
 func (q *TeamMemberQuery) MinRole(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "role", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "role"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -2446,7 +2571,7 @@ func (q *TeamMemberQuery) MinRole(ctx context.Context) (*string, error) {
 
 // MaxRole is the largest "role" over matching rows (nil when none).
 func (q *TeamMemberQuery) MaxRole(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "role", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "role"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -2455,7 +2580,7 @@ func (q *TeamMemberQuery) MaxRole(ctx context.Context) (*string, error) {
 
 // SumJoinedAt totals "joined_at" over matching rows (nil when none).
 func (q *TeamMemberQuery) SumJoinedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "joined_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "sum", Arg: protocol.Col("", "joined_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -2464,7 +2589,7 @@ func (q *TeamMemberQuery) SumJoinedAt(ctx context.Context) (*int64, error) {
 
 // AvgJoinedAt averages "joined_at" (nil when none).
 func (q *TeamMemberQuery) AvgJoinedAt(ctx context.Context) (*float64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "joined_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "avg", Arg: protocol.Col("", "joined_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -2473,7 +2598,7 @@ func (q *TeamMemberQuery) AvgJoinedAt(ctx context.Context) (*float64, error) {
 
 // MinJoinedAt is the smallest "joined_at" over matching rows (nil when none).
 func (q *TeamMemberQuery) MinJoinedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "joined_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "joined_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -2482,7 +2607,7 @@ func (q *TeamMemberQuery) MinJoinedAt(ctx context.Context) (*int64, error) {
 
 // MaxJoinedAt is the largest "joined_at" over matching rows (nil when none).
 func (q *TeamMemberQuery) MaxJoinedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "joined_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "joined_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -2491,155 +2616,158 @@ func (q *TeamMemberQuery) MaxJoinedAt(ctx context.Context) (*int64, error) {
 
 // TeamMemberInclude refines an included "team_members" fetch.
 type TeamMemberInclude struct {
-	inc     protocol.Include
-	filters []protocol.Expr
+	spec includeSpec
 }
 
 func (b *TeamMemberInclude) TeamIDEq(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) TeamIDNe(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) TeamIDLt(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) TeamIDLte(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) TeamIDGt(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) TeamIDGte(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) UserIDEq(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "user_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) UserIDNe(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "user_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) UserIDLt(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "user_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) UserIDLte(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "user_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) UserIDGt(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "user_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) UserIDGte(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "user_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "user_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) RoleEq(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "role", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "role"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) RoleNe(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "role", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "role"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) RoleLt(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "role", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "role"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) RoleLte(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "role", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "role"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) RoleGt(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "role", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "role"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) RoleGte(v string) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "role", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "role"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) JoinedAtEq(v int64) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "joined_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "joined_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) JoinedAtNe(v int64) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "joined_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "joined_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) JoinedAtLt(v int64) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "joined_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "joined_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) JoinedAtLte(v int64) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "joined_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "joined_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) JoinedAtGt(v int64) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "joined_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "joined_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TeamMemberInclude) JoinedAtGte(v int64) *TeamMemberInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "joined_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "joined_at"), protocol.Lit(v)))
 	return b
 }
 
 func (b *TeamMemberInclude) OrderByTeamID() *TeamMemberInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "team_id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "team_id")})
 	return b
 }
 func (b *TeamMemberInclude) OrderByTeamIDDesc() *TeamMemberInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "team_id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "team_id"), Desc: true})
 	return b
 }
 func (b *TeamMemberInclude) OrderByUserID() *TeamMemberInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "user_id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "user_id")})
 	return b
 }
 func (b *TeamMemberInclude) OrderByUserIDDesc() *TeamMemberInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "user_id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "user_id"), Desc: true})
 	return b
 }
 func (b *TeamMemberInclude) OrderByRole() *TeamMemberInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "role"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "role")})
 	return b
 }
 func (b *TeamMemberInclude) OrderByRoleDesc() *TeamMemberInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "role", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "role"), Desc: true})
 	return b
 }
 func (b *TeamMemberInclude) OrderByJoinedAt() *TeamMemberInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "joined_at"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "joined_at")})
 	return b
 }
 func (b *TeamMemberInclude) OrderByJoinedAtDesc() *TeamMemberInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "joined_at", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "joined_at"), Desc: true})
 	return b
 }
-func (b *TeamMemberInclude) Limit(n int) *TeamMemberInclude { b.inc.Limit = n; return b }
+
+func (b *TeamMemberInclude) Limit(n int) *TeamMemberInclude {
+	b.spec.limit, b.spec.limitSet = n, true
+	return b
+}
 
 func (b *TeamMemberInclude) IncludeTeam(opts ...func(*TeamInclude)) *TeamMemberInclude {
-	nested := &TeamInclude{inc: protocol.Include{FK: "team_members_team_id_fk", Dir: "parent", As: "team"}}
+	n := &TeamInclude{spec: includeSpec{table: "teams", pairs: [][2]string{{"id", "team_id"}}, as: "team", kind: "first"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *TeamMemberInclude) IncludeUser(opts ...func(*UserInclude)) *TeamMemberInclude {
-	nested := &UserInclude{inc: protocol.Include{FK: "team_members_user_id_fk", Dir: "parent", As: "user"}}
+	n := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "user_id"}}, as: "user", kind: "first"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 
@@ -2750,10 +2878,10 @@ func (t BoardTable) Delete(ctx context.Context, id string) (bool, error) {
 
 // ByTeamIDName finds the row by the unique index on (team_id, name).
 func (t BoardTable) ByTeamIDName(ctx context.Context, teamID string, name string) (Board, bool, error) {
-	recs, err := t.v.Query(ctx, protocol.Read{Table: "boards", Filter: andExpr([]protocol.Expr{
-		{Op: "eq", Column: "team_id", Value: teamID},
-		{Op: "eq", Column: "name", Value: name},
-	}), Limit: 1})
+	recs, err := t.v.Query(ctx, assemble(querySpec{table: "boards", limit: 1, limitSet: true, filters: []*protocol.Expr{
+		protocol.Eq(protocol.Col("", "team_id"), protocol.Lit(teamID)),
+		protocol.Eq(protocol.Col("", "name"), protocol.Lit(name)),
+	}}))
 	if err != nil || len(recs) == 0 {
 		return Board{}, false, err
 	}
@@ -2761,192 +2889,189 @@ func (t BoardTable) ByTeamIDName(ctx context.Context, teamID string, name string
 }
 
 func (t BoardTable) Query() *BoardQuery {
-	return &BoardQuery{v: t.v, read: protocol.Read{Table: "boards"}}
+	return &BoardQuery{v: t.v, spec: querySpec{table: "boards"}}
 }
 
-// BoardQuery is a fluent shaped-read builder for "boards". Conditions AND together.
+// BoardQuery is a fluent query builder for "boards". Conditions AND together.
 type BoardQuery struct {
-	v       radclient.View
-	read    protocol.Read
-	filters []protocol.Expr
+	v    radclient.View
+	spec querySpec
 }
 
 func (q *BoardQuery) IDEq(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) IDNe(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) IDLt(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) IDLte(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) IDGt(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) IDGte(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) TeamIDEq(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) TeamIDNe(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) TeamIDLt(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) TeamIDLte(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) TeamIDGt(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) TeamIDGte(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) NameEq(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) NameNe(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) NameLt(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) NameLte(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) NameGt(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) NameGte(v string) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) ArchivedEq(v bool) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "archived", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "archived"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) ArchivedNe(v bool) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "archived", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "archived"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) CreatedAtEq(v int64) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) CreatedAtNe(v int64) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) CreatedAtLt(v int64) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) CreatedAtLte(v int64) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) CreatedAtGt(v int64) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *BoardQuery) CreatedAtGte(v int64) *BoardQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 
 func (q *BoardQuery) OrderByID() *BoardQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id")})
 	return q
 }
 func (q *BoardQuery) OrderByIDDesc() *BoardQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id"), Desc: true})
 	return q
 }
 func (q *BoardQuery) OrderByTeamID() *BoardQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "team_id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "team_id")})
 	return q
 }
 func (q *BoardQuery) OrderByTeamIDDesc() *BoardQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "team_id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "team_id"), Desc: true})
 	return q
 }
 func (q *BoardQuery) OrderByName() *BoardQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "name"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "name")})
 	return q
 }
 func (q *BoardQuery) OrderByNameDesc() *BoardQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "name", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "name"), Desc: true})
 	return q
 }
 func (q *BoardQuery) OrderByArchived() *BoardQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "archived"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "archived")})
 	return q
 }
 func (q *BoardQuery) OrderByArchivedDesc() *BoardQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "archived", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "archived"), Desc: true})
 	return q
 }
 func (q *BoardQuery) OrderByCreatedAt() *BoardQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "created_at"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at")})
 	return q
 }
 func (q *BoardQuery) OrderByCreatedAtDesc() *BoardQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "created_at", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at"), Desc: true})
 	return q
 }
 
-func (q *BoardQuery) Limit(n int) *BoardQuery  { q.read.Limit = n; return q }
-func (q *BoardQuery) Offset(n int) *BoardQuery { q.read.Offset = n; return q }
+func (q *BoardQuery) Limit(n int) *BoardQuery  { q.spec.limit, q.spec.limitSet = n, true; return q }
+func (q *BoardQuery) Offset(n int) *BoardQuery { q.spec.offset = n; return q }
 
 // IncludeTeam embeds the referenced Team (nil when the FK is NULL).
 func (q *BoardQuery) IncludeTeam(opts ...func(*TeamInclude)) *BoardQuery {
-	b := &TeamInclude{inc: protocol.Include{FK: "boards_team_id_fk", Dir: "parent", As: "team"}}
+	b := &TeamInclude{spec: includeSpec{table: "teams", pairs: [][2]string{{"id", "team_id"}}, as: "team", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeTasks embeds the Task rows referencing this row.
 func (q *BoardQuery) IncludeTasks(opts ...func(*TaskInclude)) *BoardQuery {
-	b := &TaskInclude{inc: protocol.Include{FK: "tasks_board_id_fk", Dir: "children", As: "tasks"}}
+	b := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"board_id", "id"}}, as: "tasks", kind: "array"}}
 	for _, o := range opts {
 		o(b)
 	}
-	b.inc.Filter = andExpr(b.filters)
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // All executes the query.
 func (q *BoardQuery) All(ctx context.Context) ([]Board, error) {
-	q.read.Filter = andExpr(q.filters)
-	recs, err := q.v.Query(ctx, q.read)
+	recs, err := q.v.Query(ctx, assemble(q.spec))
 	if err != nil {
 		return nil, err
 	}
@@ -2959,7 +3084,7 @@ func (q *BoardQuery) All(ctx context.Context) ([]Board, error) {
 
 // First executes the query with limit 1.
 func (q *BoardQuery) First(ctx context.Context) (Board, bool, error) {
-	q.read.Limit = 1
+	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
 		return Board{}, false, err
@@ -2969,12 +3094,11 @@ func (q *BoardQuery) First(ctx context.Context) (Board, bool, error) {
 
 // fold sends the builder's filter as an aggregate query and returns the
 // one scalar record the server produces.
-func (q *BoardQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
-	read := q.read
-	read.Filter = andExpr(q.filters)
-	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
-	read.Aggs = aggs
-	recs, err := q.v.Query(ctx, read)
+func (q *BoardQuery) fold(ctx context.Context, aggs []protocol.AggTerm) (protocol.Record, error) {
+	spec := q.spec
+	spec.orders, spec.includes, spec.limit, spec.limitSet, spec.offset = nil, nil, 0, false, 0
+	spec.aggs = aggs
+	recs, err := q.v.Query(ctx, assemble(spec))
 	if err != nil || len(recs) == 0 {
 		return protocol.Record{}, err
 	}
@@ -2983,7 +3107,7 @@ func (q *BoardQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Re
 
 // Count returns how many rows match (never NULL: 0 when none).
 func (q *BoardQuery) Count(ctx context.Context) (int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "count", As: "v"}})
 	if err != nil {
 		return 0, err
 	}
@@ -2992,7 +3116,7 @@ func (q *BoardQuery) Count(ctx context.Context) (int64, error) {
 
 // MinID is the smallest "id" over matching rows (nil when none).
 func (q *BoardQuery) MinID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -3001,7 +3125,7 @@ func (q *BoardQuery) MinID(ctx context.Context) (*string, error) {
 
 // MaxID is the largest "id" over matching rows (nil when none).
 func (q *BoardQuery) MaxID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -3010,7 +3134,7 @@ func (q *BoardQuery) MaxID(ctx context.Context) (*string, error) {
 
 // MinTeamID is the smallest "team_id" over matching rows (nil when none).
 func (q *BoardQuery) MinTeamID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "team_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "team_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -3019,7 +3143,7 @@ func (q *BoardQuery) MinTeamID(ctx context.Context) (*string, error) {
 
 // MaxTeamID is the largest "team_id" over matching rows (nil when none).
 func (q *BoardQuery) MaxTeamID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "team_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "team_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -3028,7 +3152,7 @@ func (q *BoardQuery) MaxTeamID(ctx context.Context) (*string, error) {
 
 // MinName is the smallest "name" over matching rows (nil when none).
 func (q *BoardQuery) MinName(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "name", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "name"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -3037,7 +3161,7 @@ func (q *BoardQuery) MinName(ctx context.Context) (*string, error) {
 
 // MaxName is the largest "name" over matching rows (nil when none).
 func (q *BoardQuery) MaxName(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "name", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "name"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -3046,7 +3170,7 @@ func (q *BoardQuery) MaxName(ctx context.Context) (*string, error) {
 
 // MinArchived is the smallest "archived" over matching rows (nil when none).
 func (q *BoardQuery) MinArchived(ctx context.Context) (*bool, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "archived", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "archived"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -3055,7 +3179,7 @@ func (q *BoardQuery) MinArchived(ctx context.Context) (*bool, error) {
 
 // MaxArchived is the largest "archived" over matching rows (nil when none).
 func (q *BoardQuery) MaxArchived(ctx context.Context) (*bool, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "archived", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "archived"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -3064,7 +3188,7 @@ func (q *BoardQuery) MaxArchived(ctx context.Context) (*bool, error) {
 
 // SumCreatedAt totals "created_at" over matching rows (nil when none).
 func (q *BoardQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "sum", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -3073,7 +3197,7 @@ func (q *BoardQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
 
 // AvgCreatedAt averages "created_at" (nil when none).
 func (q *BoardQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "avg", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -3082,7 +3206,7 @@ func (q *BoardQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
 
 // MinCreatedAt is the smallest "created_at" over matching rows (nil when none).
 func (q *BoardQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -3091,7 +3215,7 @@ func (q *BoardQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
 
 // MaxCreatedAt is the largest "created_at" over matching rows (nil when none).
 func (q *BoardQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -3100,172 +3224,171 @@ func (q *BoardQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 
 // BoardInclude refines an included "boards" fetch.
 type BoardInclude struct {
-	inc     protocol.Include
-	filters []protocol.Expr
+	spec includeSpec
 }
 
 func (b *BoardInclude) IDEq(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) IDNe(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) IDLt(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) IDLte(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) IDGt(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) IDGte(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) TeamIDEq(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) TeamIDNe(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) TeamIDLt(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) TeamIDLte(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) TeamIDGt(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) TeamIDGte(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) NameEq(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) NameNe(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) NameLt(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) NameLte(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) NameGt(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) NameGte(v string) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) ArchivedEq(v bool) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "archived", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "archived"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) ArchivedNe(v bool) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "archived", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "archived"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) CreatedAtEq(v int64) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) CreatedAtNe(v int64) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) CreatedAtLt(v int64) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) CreatedAtLte(v int64) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) CreatedAtGt(v int64) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *BoardInclude) CreatedAtGte(v int64) *BoardInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 
 func (b *BoardInclude) OrderByID() *BoardInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id")})
 	return b
 }
 func (b *BoardInclude) OrderByIDDesc() *BoardInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id"), Desc: true})
 	return b
 }
 func (b *BoardInclude) OrderByTeamID() *BoardInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "team_id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "team_id")})
 	return b
 }
 func (b *BoardInclude) OrderByTeamIDDesc() *BoardInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "team_id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "team_id"), Desc: true})
 	return b
 }
 func (b *BoardInclude) OrderByName() *BoardInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "name"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "name")})
 	return b
 }
 func (b *BoardInclude) OrderByNameDesc() *BoardInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "name", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "name"), Desc: true})
 	return b
 }
 func (b *BoardInclude) OrderByArchived() *BoardInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "archived"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "archived")})
 	return b
 }
 func (b *BoardInclude) OrderByArchivedDesc() *BoardInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "archived", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "archived"), Desc: true})
 	return b
 }
 func (b *BoardInclude) OrderByCreatedAt() *BoardInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "created_at"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at")})
 	return b
 }
 func (b *BoardInclude) OrderByCreatedAtDesc() *BoardInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "created_at", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at"), Desc: true})
 	return b
 }
-func (b *BoardInclude) Limit(n int) *BoardInclude { b.inc.Limit = n; return b }
+
+func (b *BoardInclude) Limit(n int) *BoardInclude { b.spec.limit, b.spec.limitSet = n, true; return b }
 
 func (b *BoardInclude) IncludeTeam(opts ...func(*TeamInclude)) *BoardInclude {
-	nested := &TeamInclude{inc: protocol.Include{FK: "boards_team_id_fk", Dir: "parent", As: "team"}}
+	n := &TeamInclude{spec: includeSpec{table: "teams", pairs: [][2]string{{"id", "team_id"}}, as: "team", kind: "first"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *BoardInclude) IncludeTasks(opts ...func(*TaskInclude)) *BoardInclude {
-	nested := &TaskInclude{inc: protocol.Include{FK: "tasks_board_id_fk", Dir: "children", As: "tasks"}}
+	n := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"board_id", "id"}}, as: "tasks", kind: "array"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	nested.inc.Filter = andExpr(nested.filters)
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 
@@ -3465,529 +3588,524 @@ func (t TaskTable) Delete(ctx context.Context, id string) (bool, error) {
 }
 
 func (t TaskTable) Query() *TaskQuery {
-	return &TaskQuery{v: t.v, read: protocol.Read{Table: "tasks"}}
+	return &TaskQuery{v: t.v, spec: querySpec{table: "tasks"}}
 }
 
-// TaskQuery is a fluent shaped-read builder for "tasks". Conditions AND together.
+// TaskQuery is a fluent query builder for "tasks". Conditions AND together.
 type TaskQuery struct {
-	v       radclient.View
-	read    protocol.Read
-	filters []protocol.Expr
+	v    radclient.View
+	spec querySpec
 }
 
 func (q *TaskQuery) IDEq(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) IDNe(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) IDLt(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) IDLte(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) IDGt(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) IDGte(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) BoardIDEq(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "board_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "board_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) BoardIDNe(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "board_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "board_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) BoardIDLt(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "board_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "board_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) BoardIDLte(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "board_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "board_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) BoardIDGt(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "board_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "board_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) BoardIDGte(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "board_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "board_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) TitleEq(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "title", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "title"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) TitleNe(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "title", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "title"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) TitleLt(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "title", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "title"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) TitleLte(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "title", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "title"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) TitleGt(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "title", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "title"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) TitleGte(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "title", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "title"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) DescriptionEq(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "description", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "description"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) DescriptionNe(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "description", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "description"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) DescriptionLt(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "description", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "description"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) DescriptionLte(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "description", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "description"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) DescriptionGt(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "description", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "description"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) DescriptionGte(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "description", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "description"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) DescriptionNull() *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "is_null", Column: "description"})
+	q.spec.filters = append(q.spec.filters, protocol.IsNull(protocol.Col("", "description")))
 	return q
 }
 func (q *TaskQuery) DescriptionNotNull() *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "not", Expr: &protocol.Expr{Op: "is_null", Column: "description"}})
+	q.spec.filters = append(q.spec.filters, protocol.IsNotNull(protocol.Col("", "description")))
 	return q
 }
 func (q *TaskQuery) StatusEq(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "status", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "status"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) StatusNe(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "status", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "status"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) StatusLt(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "status", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "status"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) StatusLte(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "status", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "status"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) StatusGt(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "status", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "status"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) StatusGte(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "status", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "status"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) PriorityEq(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "priority", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "priority"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) PriorityNe(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "priority", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "priority"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) PriorityLt(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "priority", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "priority"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) PriorityLte(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "priority", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "priority"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) PriorityGt(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "priority", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "priority"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) PriorityGte(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "priority", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "priority"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) EstimateEq(v float64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "estimate", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "estimate"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) EstimateNe(v float64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "estimate", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "estimate"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) EstimateLt(v float64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "estimate", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "estimate"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) EstimateLte(v float64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "estimate", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "estimate"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) EstimateGt(v float64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "estimate", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "estimate"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) EstimateGte(v float64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "estimate", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "estimate"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) EstimateNull() *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "is_null", Column: "estimate"})
+	q.spec.filters = append(q.spec.filters, protocol.IsNull(protocol.Col("", "estimate")))
 	return q
 }
 func (q *TaskQuery) EstimateNotNull() *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "not", Expr: &protocol.Expr{Op: "is_null", Column: "estimate"}})
+	q.spec.filters = append(q.spec.filters, protocol.IsNotNull(protocol.Col("", "estimate")))
 	return q
 }
 func (q *TaskQuery) AssigneeIDEq(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "assignee_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "assignee_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) AssigneeIDNe(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "assignee_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "assignee_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) AssigneeIDLt(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "assignee_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "assignee_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) AssigneeIDLte(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "assignee_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "assignee_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) AssigneeIDGt(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "assignee_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "assignee_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) AssigneeIDGte(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "assignee_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "assignee_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) AssigneeIDNull() *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "is_null", Column: "assignee_id"})
+	q.spec.filters = append(q.spec.filters, protocol.IsNull(protocol.Col("", "assignee_id")))
 	return q
 }
 func (q *TaskQuery) AssigneeIDNotNull() *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "not", Expr: &protocol.Expr{Op: "is_null", Column: "assignee_id"}})
+	q.spec.filters = append(q.spec.filters, protocol.IsNotNull(protocol.Col("", "assignee_id")))
 	return q
 }
 func (q *TaskQuery) CreatorIDEq(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "creator_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "creator_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) CreatorIDNe(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "creator_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "creator_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) CreatorIDLt(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "creator_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "creator_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) CreatorIDLte(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "creator_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "creator_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) CreatorIDGt(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "creator_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "creator_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) CreatorIDGte(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "creator_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "creator_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) ParentIDEq(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "parent_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "parent_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) ParentIDNe(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "parent_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "parent_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) ParentIDLt(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "parent_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "parent_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) ParentIDLte(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "parent_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "parent_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) ParentIDGt(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "parent_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "parent_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) ParentIDGte(v string) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "parent_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "parent_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) ParentIDNull() *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "is_null", Column: "parent_id"})
+	q.spec.filters = append(q.spec.filters, protocol.IsNull(protocol.Col("", "parent_id")))
 	return q
 }
 func (q *TaskQuery) ParentIDNotNull() *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "not", Expr: &protocol.Expr{Op: "is_null", Column: "parent_id"}})
+	q.spec.filters = append(q.spec.filters, protocol.IsNotNull(protocol.Col("", "parent_id")))
 	return q
 }
 func (q *TaskQuery) DueAtEq(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "due_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "due_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) DueAtNe(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "due_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "due_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) DueAtLt(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "due_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "due_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) DueAtLte(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "due_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "due_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) DueAtGt(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "due_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "due_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) DueAtGte(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "due_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "due_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) DueAtNull() *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "is_null", Column: "due_at"})
+	q.spec.filters = append(q.spec.filters, protocol.IsNull(protocol.Col("", "due_at")))
 	return q
 }
 func (q *TaskQuery) DueAtNotNull() *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "not", Expr: &protocol.Expr{Op: "is_null", Column: "due_at"}})
+	q.spec.filters = append(q.spec.filters, protocol.IsNotNull(protocol.Col("", "due_at")))
 	return q
 }
 func (q *TaskQuery) CreatedAtEq(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) CreatedAtNe(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) CreatedAtLt(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) CreatedAtLte(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) CreatedAtGt(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskQuery) CreatedAtGte(v int64) *TaskQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 
 func (q *TaskQuery) OrderByID() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id")})
 	return q
 }
 func (q *TaskQuery) OrderByIDDesc() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id"), Desc: true})
 	return q
 }
 func (q *TaskQuery) OrderByBoardID() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "board_id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "board_id")})
 	return q
 }
 func (q *TaskQuery) OrderByBoardIDDesc() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "board_id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "board_id"), Desc: true})
 	return q
 }
 func (q *TaskQuery) OrderByTitle() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "title"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "title")})
 	return q
 }
 func (q *TaskQuery) OrderByTitleDesc() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "title", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "title"), Desc: true})
 	return q
 }
 func (q *TaskQuery) OrderByDescription() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "description"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "description")})
 	return q
 }
 func (q *TaskQuery) OrderByDescriptionDesc() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "description", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "description"), Desc: true})
 	return q
 }
 func (q *TaskQuery) OrderByStatus() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "status"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "status")})
 	return q
 }
 func (q *TaskQuery) OrderByStatusDesc() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "status", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "status"), Desc: true})
 	return q
 }
 func (q *TaskQuery) OrderByPriority() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "priority"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "priority")})
 	return q
 }
 func (q *TaskQuery) OrderByPriorityDesc() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "priority", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "priority"), Desc: true})
 	return q
 }
 func (q *TaskQuery) OrderByEstimate() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "estimate"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "estimate")})
 	return q
 }
 func (q *TaskQuery) OrderByEstimateDesc() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "estimate", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "estimate"), Desc: true})
 	return q
 }
 func (q *TaskQuery) OrderByAssigneeID() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "assignee_id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "assignee_id")})
 	return q
 }
 func (q *TaskQuery) OrderByAssigneeIDDesc() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "assignee_id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "assignee_id"), Desc: true})
 	return q
 }
 func (q *TaskQuery) OrderByCreatorID() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "creator_id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "creator_id")})
 	return q
 }
 func (q *TaskQuery) OrderByCreatorIDDesc() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "creator_id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "creator_id"), Desc: true})
 	return q
 }
 func (q *TaskQuery) OrderByParentID() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "parent_id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "parent_id")})
 	return q
 }
 func (q *TaskQuery) OrderByParentIDDesc() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "parent_id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "parent_id"), Desc: true})
 	return q
 }
 func (q *TaskQuery) OrderByDueAt() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "due_at"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "due_at")})
 	return q
 }
 func (q *TaskQuery) OrderByDueAtDesc() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "due_at", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "due_at"), Desc: true})
 	return q
 }
 func (q *TaskQuery) OrderByCreatedAt() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "created_at"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at")})
 	return q
 }
 func (q *TaskQuery) OrderByCreatedAtDesc() *TaskQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "created_at", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at"), Desc: true})
 	return q
 }
 
-func (q *TaskQuery) Limit(n int) *TaskQuery  { q.read.Limit = n; return q }
-func (q *TaskQuery) Offset(n int) *TaskQuery { q.read.Offset = n; return q }
+func (q *TaskQuery) Limit(n int) *TaskQuery  { q.spec.limit, q.spec.limitSet = n, true; return q }
+func (q *TaskQuery) Offset(n int) *TaskQuery { q.spec.offset = n; return q }
 
 // IncludeBoard embeds the referenced Board (nil when the FK is NULL).
 func (q *TaskQuery) IncludeBoard(opts ...func(*BoardInclude)) *TaskQuery {
-	b := &BoardInclude{inc: protocol.Include{FK: "tasks_board_id_fk", Dir: "parent", As: "board"}}
+	b := &BoardInclude{spec: includeSpec{table: "boards", pairs: [][2]string{{"id", "board_id"}}, as: "board", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeAssignee embeds the referenced User (nil when the FK is NULL).
 func (q *TaskQuery) IncludeAssignee(opts ...func(*UserInclude)) *TaskQuery {
-	b := &UserInclude{inc: protocol.Include{FK: "tasks_assignee_id_fk", Dir: "parent", As: "assignee"}}
+	b := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "assignee_id"}}, as: "assignee", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeCreator embeds the referenced User (nil when the FK is NULL).
 func (q *TaskQuery) IncludeCreator(opts ...func(*UserInclude)) *TaskQuery {
-	b := &UserInclude{inc: protocol.Include{FK: "tasks_creator_id_fk", Dir: "parent", As: "creator"}}
+	b := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "creator_id"}}, as: "creator", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeParent embeds the referenced Task (nil when the FK is NULL).
 func (q *TaskQuery) IncludeParent(opts ...func(*TaskInclude)) *TaskQuery {
-	b := &TaskInclude{inc: protocol.Include{FK: "tasks_parent_id_fk", Dir: "parent", As: "parent"}}
+	b := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"id", "parent_id"}}, as: "parent", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeTasks embeds the Task rows referencing this row.
 func (q *TaskQuery) IncludeTasks(opts ...func(*TaskInclude)) *TaskQuery {
-	b := &TaskInclude{inc: protocol.Include{FK: "tasks_parent_id_fk", Dir: "children", As: "tasks"}}
+	b := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"parent_id", "id"}}, as: "tasks", kind: "array"}}
 	for _, o := range opts {
 		o(b)
 	}
-	b.inc.Filter = andExpr(b.filters)
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeComments embeds the Comment rows referencing this row.
 func (q *TaskQuery) IncludeComments(opts ...func(*CommentInclude)) *TaskQuery {
-	b := &CommentInclude{inc: protocol.Include{FK: "comments_task_id_fk", Dir: "children", As: "comments"}}
+	b := &CommentInclude{spec: includeSpec{table: "comments", pairs: [][2]string{{"task_id", "id"}}, as: "comments", kind: "array"}}
 	for _, o := range opts {
 		o(b)
 	}
-	b.inc.Filter = andExpr(b.filters)
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeTaskLabels embeds the TaskLabel rows referencing this row.
 func (q *TaskQuery) IncludeTaskLabels(opts ...func(*TaskLabelInclude)) *TaskQuery {
-	b := &TaskLabelInclude{inc: protocol.Include{FK: "task_labels_task_id_fk", Dir: "children", As: "task_labels"}}
+	b := &TaskLabelInclude{spec: includeSpec{table: "task_labels", pairs: [][2]string{{"task_id", "id"}}, as: "task_labels", kind: "array"}}
 	for _, o := range opts {
 		o(b)
 	}
-	b.inc.Filter = andExpr(b.filters)
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // All executes the query.
 func (q *TaskQuery) All(ctx context.Context) ([]Task, error) {
-	q.read.Filter = andExpr(q.filters)
-	recs, err := q.v.Query(ctx, q.read)
+	recs, err := q.v.Query(ctx, assemble(q.spec))
 	if err != nil {
 		return nil, err
 	}
@@ -4000,7 +4118,7 @@ func (q *TaskQuery) All(ctx context.Context) ([]Task, error) {
 
 // First executes the query with limit 1.
 func (q *TaskQuery) First(ctx context.Context) (Task, bool, error) {
-	q.read.Limit = 1
+	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
 		return Task{}, false, err
@@ -4010,12 +4128,11 @@ func (q *TaskQuery) First(ctx context.Context) (Task, bool, error) {
 
 // fold sends the builder's filter as an aggregate query and returns the
 // one scalar record the server produces.
-func (q *TaskQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
-	read := q.read
-	read.Filter = andExpr(q.filters)
-	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
-	read.Aggs = aggs
-	recs, err := q.v.Query(ctx, read)
+func (q *TaskQuery) fold(ctx context.Context, aggs []protocol.AggTerm) (protocol.Record, error) {
+	spec := q.spec
+	spec.orders, spec.includes, spec.limit, spec.limitSet, spec.offset = nil, nil, 0, false, 0
+	spec.aggs = aggs
+	recs, err := q.v.Query(ctx, assemble(spec))
 	if err != nil || len(recs) == 0 {
 		return protocol.Record{}, err
 	}
@@ -4024,7 +4141,7 @@ func (q *TaskQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Rec
 
 // Count returns how many rows match (never NULL: 0 when none).
 func (q *TaskQuery) Count(ctx context.Context) (int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "count", As: "v"}})
 	if err != nil {
 		return 0, err
 	}
@@ -4033,7 +4150,7 @@ func (q *TaskQuery) Count(ctx context.Context) (int64, error) {
 
 // MinID is the smallest "id" over matching rows (nil when none).
 func (q *TaskQuery) MinID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4042,7 +4159,7 @@ func (q *TaskQuery) MinID(ctx context.Context) (*string, error) {
 
 // MaxID is the largest "id" over matching rows (nil when none).
 func (q *TaskQuery) MaxID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4051,7 +4168,7 @@ func (q *TaskQuery) MaxID(ctx context.Context) (*string, error) {
 
 // MinBoardID is the smallest "board_id" over matching rows (nil when none).
 func (q *TaskQuery) MinBoardID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "board_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "board_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4060,7 +4177,7 @@ func (q *TaskQuery) MinBoardID(ctx context.Context) (*string, error) {
 
 // MaxBoardID is the largest "board_id" over matching rows (nil when none).
 func (q *TaskQuery) MaxBoardID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "board_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "board_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4069,7 +4186,7 @@ func (q *TaskQuery) MaxBoardID(ctx context.Context) (*string, error) {
 
 // MinTitle is the smallest "title" over matching rows (nil when none).
 func (q *TaskQuery) MinTitle(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "title", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "title"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4078,7 +4195,7 @@ func (q *TaskQuery) MinTitle(ctx context.Context) (*string, error) {
 
 // MaxTitle is the largest "title" over matching rows (nil when none).
 func (q *TaskQuery) MaxTitle(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "title", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "title"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4087,7 +4204,7 @@ func (q *TaskQuery) MaxTitle(ctx context.Context) (*string, error) {
 
 // MinDescription is the smallest "description" over matching rows (nil when none).
 func (q *TaskQuery) MinDescription(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "description", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "description"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4096,7 +4213,7 @@ func (q *TaskQuery) MinDescription(ctx context.Context) (*string, error) {
 
 // MaxDescription is the largest "description" over matching rows (nil when none).
 func (q *TaskQuery) MaxDescription(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "description", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "description"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4105,7 +4222,7 @@ func (q *TaskQuery) MaxDescription(ctx context.Context) (*string, error) {
 
 // MinStatus is the smallest "status" over matching rows (nil when none).
 func (q *TaskQuery) MinStatus(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "status", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "status"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4114,7 +4231,7 @@ func (q *TaskQuery) MinStatus(ctx context.Context) (*string, error) {
 
 // MaxStatus is the largest "status" over matching rows (nil when none).
 func (q *TaskQuery) MaxStatus(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "status", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "status"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4123,7 +4240,7 @@ func (q *TaskQuery) MaxStatus(ctx context.Context) (*string, error) {
 
 // SumPriority totals "priority" over matching rows (nil when none).
 func (q *TaskQuery) SumPriority(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "priority", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "sum", Arg: protocol.Col("", "priority"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4132,7 +4249,7 @@ func (q *TaskQuery) SumPriority(ctx context.Context) (*int64, error) {
 
 // AvgPriority averages "priority" (nil when none).
 func (q *TaskQuery) AvgPriority(ctx context.Context) (*float64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "priority", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "avg", Arg: protocol.Col("", "priority"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4141,7 +4258,7 @@ func (q *TaskQuery) AvgPriority(ctx context.Context) (*float64, error) {
 
 // MinPriority is the smallest "priority" over matching rows (nil when none).
 func (q *TaskQuery) MinPriority(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "priority", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "priority"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4150,7 +4267,7 @@ func (q *TaskQuery) MinPriority(ctx context.Context) (*int64, error) {
 
 // MaxPriority is the largest "priority" over matching rows (nil when none).
 func (q *TaskQuery) MaxPriority(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "priority", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "priority"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4159,7 +4276,7 @@ func (q *TaskQuery) MaxPriority(ctx context.Context) (*int64, error) {
 
 // SumEstimate totals "estimate" over matching rows (nil when none).
 func (q *TaskQuery) SumEstimate(ctx context.Context) (*float64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "estimate", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "sum", Arg: protocol.Col("", "estimate"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4168,7 +4285,7 @@ func (q *TaskQuery) SumEstimate(ctx context.Context) (*float64, error) {
 
 // AvgEstimate averages "estimate" (nil when none).
 func (q *TaskQuery) AvgEstimate(ctx context.Context) (*float64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "estimate", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "avg", Arg: protocol.Col("", "estimate"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4177,7 +4294,7 @@ func (q *TaskQuery) AvgEstimate(ctx context.Context) (*float64, error) {
 
 // MinEstimate is the smallest "estimate" over matching rows (nil when none).
 func (q *TaskQuery) MinEstimate(ctx context.Context) (*float64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "estimate", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "estimate"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4186,7 +4303,7 @@ func (q *TaskQuery) MinEstimate(ctx context.Context) (*float64, error) {
 
 // MaxEstimate is the largest "estimate" over matching rows (nil when none).
 func (q *TaskQuery) MaxEstimate(ctx context.Context) (*float64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "estimate", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "estimate"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4195,7 +4312,7 @@ func (q *TaskQuery) MaxEstimate(ctx context.Context) (*float64, error) {
 
 // MinAssigneeID is the smallest "assignee_id" over matching rows (nil when none).
 func (q *TaskQuery) MinAssigneeID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "assignee_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "assignee_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4204,7 +4321,7 @@ func (q *TaskQuery) MinAssigneeID(ctx context.Context) (*string, error) {
 
 // MaxAssigneeID is the largest "assignee_id" over matching rows (nil when none).
 func (q *TaskQuery) MaxAssigneeID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "assignee_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "assignee_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4213,7 +4330,7 @@ func (q *TaskQuery) MaxAssigneeID(ctx context.Context) (*string, error) {
 
 // MinCreatorID is the smallest "creator_id" over matching rows (nil when none).
 func (q *TaskQuery) MinCreatorID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "creator_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "creator_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4222,7 +4339,7 @@ func (q *TaskQuery) MinCreatorID(ctx context.Context) (*string, error) {
 
 // MaxCreatorID is the largest "creator_id" over matching rows (nil when none).
 func (q *TaskQuery) MaxCreatorID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "creator_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "creator_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4231,7 +4348,7 @@ func (q *TaskQuery) MaxCreatorID(ctx context.Context) (*string, error) {
 
 // MinParentID is the smallest "parent_id" over matching rows (nil when none).
 func (q *TaskQuery) MinParentID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "parent_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "parent_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4240,7 +4357,7 @@ func (q *TaskQuery) MinParentID(ctx context.Context) (*string, error) {
 
 // MaxParentID is the largest "parent_id" over matching rows (nil when none).
 func (q *TaskQuery) MaxParentID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "parent_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "parent_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4249,7 +4366,7 @@ func (q *TaskQuery) MaxParentID(ctx context.Context) (*string, error) {
 
 // SumDueAt totals "due_at" over matching rows (nil when none).
 func (q *TaskQuery) SumDueAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "due_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "sum", Arg: protocol.Col("", "due_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4258,7 +4375,7 @@ func (q *TaskQuery) SumDueAt(ctx context.Context) (*int64, error) {
 
 // AvgDueAt averages "due_at" (nil when none).
 func (q *TaskQuery) AvgDueAt(ctx context.Context) (*float64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "due_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "avg", Arg: protocol.Col("", "due_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4267,7 +4384,7 @@ func (q *TaskQuery) AvgDueAt(ctx context.Context) (*float64, error) {
 
 // MinDueAt is the smallest "due_at" over matching rows (nil when none).
 func (q *TaskQuery) MinDueAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "due_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "due_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4276,7 +4393,7 @@ func (q *TaskQuery) MinDueAt(ctx context.Context) (*int64, error) {
 
 // MaxDueAt is the largest "due_at" over matching rows (nil when none).
 func (q *TaskQuery) MaxDueAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "due_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "due_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4285,7 +4402,7 @@ func (q *TaskQuery) MaxDueAt(ctx context.Context) (*int64, error) {
 
 // SumCreatedAt totals "created_at" over matching rows (nil when none).
 func (q *TaskQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "sum", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4294,7 +4411,7 @@ func (q *TaskQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
 
 // AvgCreatedAt averages "created_at" (nil when none).
 func (q *TaskQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "avg", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4303,7 +4420,7 @@ func (q *TaskQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
 
 // MinCreatedAt is the smallest "created_at" over matching rows (nil when none).
 func (q *TaskQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4312,7 +4429,7 @@ func (q *TaskQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
 
 // MaxCreatedAt is the largest "created_at" over matching rows (nil when none).
 func (q *TaskQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -4321,494 +4438,491 @@ func (q *TaskQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 
 // TaskInclude refines an included "tasks" fetch.
 type TaskInclude struct {
-	inc     protocol.Include
-	filters []protocol.Expr
+	spec includeSpec
 }
 
 func (b *TaskInclude) IDEq(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) IDNe(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) IDLt(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) IDLte(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) IDGt(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) IDGte(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) BoardIDEq(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "board_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "board_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) BoardIDNe(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "board_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "board_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) BoardIDLt(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "board_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "board_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) BoardIDLte(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "board_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "board_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) BoardIDGt(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "board_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "board_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) BoardIDGte(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "board_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "board_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) TitleEq(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "title", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "title"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) TitleNe(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "title", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "title"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) TitleLt(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "title", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "title"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) TitleLte(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "title", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "title"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) TitleGt(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "title", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "title"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) TitleGte(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "title", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "title"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) DescriptionEq(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "description", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "description"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) DescriptionNe(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "description", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "description"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) DescriptionLt(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "description", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "description"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) DescriptionLte(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "description", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "description"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) DescriptionGt(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "description", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "description"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) DescriptionGte(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "description", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "description"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) DescriptionNull() *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "is_null", Column: "description"})
+	b.spec.filters = append(b.spec.filters, protocol.IsNull(protocol.Col("", "description")))
 	return b
 }
 func (b *TaskInclude) DescriptionNotNull() *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "not", Expr: &protocol.Expr{Op: "is_null", Column: "description"}})
+	b.spec.filters = append(b.spec.filters, protocol.IsNotNull(protocol.Col("", "description")))
 	return b
 }
 func (b *TaskInclude) StatusEq(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "status", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "status"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) StatusNe(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "status", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "status"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) StatusLt(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "status", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "status"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) StatusLte(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "status", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "status"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) StatusGt(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "status", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "status"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) StatusGte(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "status", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "status"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) PriorityEq(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "priority", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "priority"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) PriorityNe(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "priority", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "priority"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) PriorityLt(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "priority", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "priority"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) PriorityLte(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "priority", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "priority"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) PriorityGt(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "priority", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "priority"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) PriorityGte(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "priority", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "priority"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) EstimateEq(v float64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "estimate", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "estimate"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) EstimateNe(v float64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "estimate", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "estimate"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) EstimateLt(v float64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "estimate", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "estimate"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) EstimateLte(v float64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "estimate", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "estimate"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) EstimateGt(v float64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "estimate", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "estimate"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) EstimateGte(v float64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "estimate", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "estimate"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) EstimateNull() *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "is_null", Column: "estimate"})
+	b.spec.filters = append(b.spec.filters, protocol.IsNull(protocol.Col("", "estimate")))
 	return b
 }
 func (b *TaskInclude) EstimateNotNull() *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "not", Expr: &protocol.Expr{Op: "is_null", Column: "estimate"}})
+	b.spec.filters = append(b.spec.filters, protocol.IsNotNull(protocol.Col("", "estimate")))
 	return b
 }
 func (b *TaskInclude) AssigneeIDEq(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "assignee_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "assignee_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) AssigneeIDNe(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "assignee_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "assignee_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) AssigneeIDLt(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "assignee_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "assignee_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) AssigneeIDLte(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "assignee_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "assignee_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) AssigneeIDGt(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "assignee_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "assignee_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) AssigneeIDGte(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "assignee_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "assignee_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) AssigneeIDNull() *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "is_null", Column: "assignee_id"})
+	b.spec.filters = append(b.spec.filters, protocol.IsNull(protocol.Col("", "assignee_id")))
 	return b
 }
 func (b *TaskInclude) AssigneeIDNotNull() *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "not", Expr: &protocol.Expr{Op: "is_null", Column: "assignee_id"}})
+	b.spec.filters = append(b.spec.filters, protocol.IsNotNull(protocol.Col("", "assignee_id")))
 	return b
 }
 func (b *TaskInclude) CreatorIDEq(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "creator_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "creator_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) CreatorIDNe(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "creator_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "creator_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) CreatorIDLt(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "creator_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "creator_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) CreatorIDLte(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "creator_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "creator_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) CreatorIDGt(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "creator_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "creator_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) CreatorIDGte(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "creator_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "creator_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) ParentIDEq(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "parent_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "parent_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) ParentIDNe(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "parent_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "parent_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) ParentIDLt(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "parent_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "parent_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) ParentIDLte(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "parent_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "parent_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) ParentIDGt(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "parent_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "parent_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) ParentIDGte(v string) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "parent_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "parent_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) ParentIDNull() *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "is_null", Column: "parent_id"})
+	b.spec.filters = append(b.spec.filters, protocol.IsNull(protocol.Col("", "parent_id")))
 	return b
 }
 func (b *TaskInclude) ParentIDNotNull() *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "not", Expr: &protocol.Expr{Op: "is_null", Column: "parent_id"}})
+	b.spec.filters = append(b.spec.filters, protocol.IsNotNull(protocol.Col("", "parent_id")))
 	return b
 }
 func (b *TaskInclude) DueAtEq(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "due_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "due_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) DueAtNe(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "due_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "due_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) DueAtLt(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "due_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "due_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) DueAtLte(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "due_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "due_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) DueAtGt(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "due_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "due_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) DueAtGte(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "due_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "due_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) DueAtNull() *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "is_null", Column: "due_at"})
+	b.spec.filters = append(b.spec.filters, protocol.IsNull(protocol.Col("", "due_at")))
 	return b
 }
 func (b *TaskInclude) DueAtNotNull() *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "not", Expr: &protocol.Expr{Op: "is_null", Column: "due_at"}})
+	b.spec.filters = append(b.spec.filters, protocol.IsNotNull(protocol.Col("", "due_at")))
 	return b
 }
 func (b *TaskInclude) CreatedAtEq(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) CreatedAtNe(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) CreatedAtLt(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) CreatedAtLte(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) CreatedAtGt(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskInclude) CreatedAtGte(v int64) *TaskInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 
 func (b *TaskInclude) OrderByID() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id")})
 	return b
 }
 func (b *TaskInclude) OrderByIDDesc() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id"), Desc: true})
 	return b
 }
 func (b *TaskInclude) OrderByBoardID() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "board_id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "board_id")})
 	return b
 }
 func (b *TaskInclude) OrderByBoardIDDesc() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "board_id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "board_id"), Desc: true})
 	return b
 }
 func (b *TaskInclude) OrderByTitle() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "title"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "title")})
 	return b
 }
 func (b *TaskInclude) OrderByTitleDesc() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "title", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "title"), Desc: true})
 	return b
 }
 func (b *TaskInclude) OrderByDescription() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "description"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "description")})
 	return b
 }
 func (b *TaskInclude) OrderByDescriptionDesc() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "description", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "description"), Desc: true})
 	return b
 }
 func (b *TaskInclude) OrderByStatus() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "status"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "status")})
 	return b
 }
 func (b *TaskInclude) OrderByStatusDesc() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "status", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "status"), Desc: true})
 	return b
 }
 func (b *TaskInclude) OrderByPriority() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "priority"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "priority")})
 	return b
 }
 func (b *TaskInclude) OrderByPriorityDesc() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "priority", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "priority"), Desc: true})
 	return b
 }
 func (b *TaskInclude) OrderByEstimate() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "estimate"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "estimate")})
 	return b
 }
 func (b *TaskInclude) OrderByEstimateDesc() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "estimate", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "estimate"), Desc: true})
 	return b
 }
 func (b *TaskInclude) OrderByAssigneeID() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "assignee_id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "assignee_id")})
 	return b
 }
 func (b *TaskInclude) OrderByAssigneeIDDesc() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "assignee_id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "assignee_id"), Desc: true})
 	return b
 }
 func (b *TaskInclude) OrderByCreatorID() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "creator_id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "creator_id")})
 	return b
 }
 func (b *TaskInclude) OrderByCreatorIDDesc() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "creator_id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "creator_id"), Desc: true})
 	return b
 }
 func (b *TaskInclude) OrderByParentID() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "parent_id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "parent_id")})
 	return b
 }
 func (b *TaskInclude) OrderByParentIDDesc() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "parent_id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "parent_id"), Desc: true})
 	return b
 }
 func (b *TaskInclude) OrderByDueAt() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "due_at"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "due_at")})
 	return b
 }
 func (b *TaskInclude) OrderByDueAtDesc() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "due_at", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "due_at"), Desc: true})
 	return b
 }
 func (b *TaskInclude) OrderByCreatedAt() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "created_at"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at")})
 	return b
 }
 func (b *TaskInclude) OrderByCreatedAtDesc() *TaskInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "created_at", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at"), Desc: true})
 	return b
 }
-func (b *TaskInclude) Limit(n int) *TaskInclude { b.inc.Limit = n; return b }
+
+func (b *TaskInclude) Limit(n int) *TaskInclude { b.spec.limit, b.spec.limitSet = n, true; return b }
 
 func (b *TaskInclude) IncludeBoard(opts ...func(*BoardInclude)) *TaskInclude {
-	nested := &BoardInclude{inc: protocol.Include{FK: "tasks_board_id_fk", Dir: "parent", As: "board"}}
+	n := &BoardInclude{spec: includeSpec{table: "boards", pairs: [][2]string{{"id", "board_id"}}, as: "board", kind: "first"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *TaskInclude) IncludeAssignee(opts ...func(*UserInclude)) *TaskInclude {
-	nested := &UserInclude{inc: protocol.Include{FK: "tasks_assignee_id_fk", Dir: "parent", As: "assignee"}}
+	n := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "assignee_id"}}, as: "assignee", kind: "first"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *TaskInclude) IncludeCreator(opts ...func(*UserInclude)) *TaskInclude {
-	nested := &UserInclude{inc: protocol.Include{FK: "tasks_creator_id_fk", Dir: "parent", As: "creator"}}
+	n := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "creator_id"}}, as: "creator", kind: "first"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *TaskInclude) IncludeParent(opts ...func(*TaskInclude)) *TaskInclude {
-	nested := &TaskInclude{inc: protocol.Include{FK: "tasks_parent_id_fk", Dir: "parent", As: "parent"}}
+	n := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"id", "parent_id"}}, as: "parent", kind: "first"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *TaskInclude) IncludeTasks(opts ...func(*TaskInclude)) *TaskInclude {
-	nested := &TaskInclude{inc: protocol.Include{FK: "tasks_parent_id_fk", Dir: "children", As: "tasks"}}
+	n := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"parent_id", "id"}}, as: "tasks", kind: "array"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	nested.inc.Filter = andExpr(nested.filters)
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *TaskInclude) IncludeComments(opts ...func(*CommentInclude)) *TaskInclude {
-	nested := &CommentInclude{inc: protocol.Include{FK: "comments_task_id_fk", Dir: "children", As: "comments"}}
+	n := &CommentInclude{spec: includeSpec{table: "comments", pairs: [][2]string{{"task_id", "id"}}, as: "comments", kind: "array"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	nested.inc.Filter = andExpr(nested.filters)
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *TaskInclude) IncludeTaskLabels(opts ...func(*TaskLabelInclude)) *TaskInclude {
-	nested := &TaskLabelInclude{inc: protocol.Include{FK: "task_labels_task_id_fk", Dir: "children", As: "task_labels"}}
+	n := &TaskLabelInclude{spec: includeSpec{table: "task_labels", pairs: [][2]string{{"task_id", "id"}}, as: "task_labels", kind: "array"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	nested.inc.Filter = andExpr(nested.filters)
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 
@@ -4953,207 +5067,205 @@ func (t CommentTable) Delete(ctx context.Context, id string) (bool, error) {
 }
 
 func (t CommentTable) Query() *CommentQuery {
-	return &CommentQuery{v: t.v, read: protocol.Read{Table: "comments"}}
+	return &CommentQuery{v: t.v, spec: querySpec{table: "comments"}}
 }
 
-// CommentQuery is a fluent shaped-read builder for "comments". Conditions AND together.
+// CommentQuery is a fluent query builder for "comments". Conditions AND together.
 type CommentQuery struct {
-	v       radclient.View
-	read    protocol.Read
-	filters []protocol.Expr
+	v    radclient.View
+	spec querySpec
 }
 
 func (q *CommentQuery) IDEq(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) IDNe(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) IDLt(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) IDLte(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) IDGt(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) IDGte(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) TaskIDEq(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "task_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) TaskIDNe(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "task_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) TaskIDLt(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "task_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) TaskIDLte(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "task_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) TaskIDGt(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "task_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) TaskIDGte(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "task_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) AuthorIDEq(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "author_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "author_id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) AuthorIDNe(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "author_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "author_id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) AuthorIDLt(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "author_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "author_id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) AuthorIDLte(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "author_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "author_id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) AuthorIDGt(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "author_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "author_id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) AuthorIDGte(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "author_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "author_id"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) BodyEq(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "body", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "body"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) BodyNe(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "body", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "body"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) BodyLt(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "body", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "body"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) BodyLte(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "body", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "body"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) BodyGt(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "body", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "body"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) BodyGte(v string) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "body", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "body"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) CreatedAtEq(v int64) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) CreatedAtNe(v int64) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) CreatedAtLt(v int64) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) CreatedAtLte(v int64) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) CreatedAtGt(v int64) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 func (q *CommentQuery) CreatedAtGte(v int64) *CommentQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "created_at", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return q
 }
 
 func (q *CommentQuery) OrderByID() *CommentQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id")})
 	return q
 }
 func (q *CommentQuery) OrderByIDDesc() *CommentQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id"), Desc: true})
 	return q
 }
 func (q *CommentQuery) OrderByTaskID() *CommentQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "task_id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "task_id")})
 	return q
 }
 func (q *CommentQuery) OrderByTaskIDDesc() *CommentQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "task_id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "task_id"), Desc: true})
 	return q
 }
 func (q *CommentQuery) OrderByAuthorID() *CommentQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "author_id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "author_id")})
 	return q
 }
 func (q *CommentQuery) OrderByAuthorIDDesc() *CommentQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "author_id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "author_id"), Desc: true})
 	return q
 }
 func (q *CommentQuery) OrderByBody() *CommentQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "body"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "body")})
 	return q
 }
 func (q *CommentQuery) OrderByBodyDesc() *CommentQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "body", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "body"), Desc: true})
 	return q
 }
 func (q *CommentQuery) OrderByCreatedAt() *CommentQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "created_at"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at")})
 	return q
 }
 func (q *CommentQuery) OrderByCreatedAtDesc() *CommentQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "created_at", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at"), Desc: true})
 	return q
 }
 
-func (q *CommentQuery) Limit(n int) *CommentQuery  { q.read.Limit = n; return q }
-func (q *CommentQuery) Offset(n int) *CommentQuery { q.read.Offset = n; return q }
+func (q *CommentQuery) Limit(n int) *CommentQuery  { q.spec.limit, q.spec.limitSet = n, true; return q }
+func (q *CommentQuery) Offset(n int) *CommentQuery { q.spec.offset = n; return q }
 
 // IncludeTask embeds the referenced Task (nil when the FK is NULL).
 func (q *CommentQuery) IncludeTask(opts ...func(*TaskInclude)) *CommentQuery {
-	b := &TaskInclude{inc: protocol.Include{FK: "comments_task_id_fk", Dir: "parent", As: "task"}}
+	b := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"id", "task_id"}}, as: "task", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeAuthor embeds the referenced User (nil when the FK is NULL).
 func (q *CommentQuery) IncludeAuthor(opts ...func(*UserInclude)) *CommentQuery {
-	b := &UserInclude{inc: protocol.Include{FK: "comments_author_id_fk", Dir: "parent", As: "author"}}
+	b := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "author_id"}}, as: "author", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // All executes the query.
 func (q *CommentQuery) All(ctx context.Context) ([]Comment, error) {
-	q.read.Filter = andExpr(q.filters)
-	recs, err := q.v.Query(ctx, q.read)
+	recs, err := q.v.Query(ctx, assemble(q.spec))
 	if err != nil {
 		return nil, err
 	}
@@ -5166,7 +5278,7 @@ func (q *CommentQuery) All(ctx context.Context) ([]Comment, error) {
 
 // First executes the query with limit 1.
 func (q *CommentQuery) First(ctx context.Context) (Comment, bool, error) {
-	q.read.Limit = 1
+	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
 		return Comment{}, false, err
@@ -5176,12 +5288,11 @@ func (q *CommentQuery) First(ctx context.Context) (Comment, bool, error) {
 
 // fold sends the builder's filter as an aggregate query and returns the
 // one scalar record the server produces.
-func (q *CommentQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
-	read := q.read
-	read.Filter = andExpr(q.filters)
-	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
-	read.Aggs = aggs
-	recs, err := q.v.Query(ctx, read)
+func (q *CommentQuery) fold(ctx context.Context, aggs []protocol.AggTerm) (protocol.Record, error) {
+	spec := q.spec
+	spec.orders, spec.includes, spec.limit, spec.limitSet, spec.offset = nil, nil, 0, false, 0
+	spec.aggs = aggs
+	recs, err := q.v.Query(ctx, assemble(spec))
 	if err != nil || len(recs) == 0 {
 		return protocol.Record{}, err
 	}
@@ -5190,7 +5301,7 @@ func (q *CommentQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.
 
 // Count returns how many rows match (never NULL: 0 when none).
 func (q *CommentQuery) Count(ctx context.Context) (int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "count", As: "v"}})
 	if err != nil {
 		return 0, err
 	}
@@ -5199,7 +5310,7 @@ func (q *CommentQuery) Count(ctx context.Context) (int64, error) {
 
 // MinID is the smallest "id" over matching rows (nil when none).
 func (q *CommentQuery) MinID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5208,7 +5319,7 @@ func (q *CommentQuery) MinID(ctx context.Context) (*string, error) {
 
 // MaxID is the largest "id" over matching rows (nil when none).
 func (q *CommentQuery) MaxID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5217,7 +5328,7 @@ func (q *CommentQuery) MaxID(ctx context.Context) (*string, error) {
 
 // MinTaskID is the smallest "task_id" over matching rows (nil when none).
 func (q *CommentQuery) MinTaskID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "task_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "task_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5226,7 +5337,7 @@ func (q *CommentQuery) MinTaskID(ctx context.Context) (*string, error) {
 
 // MaxTaskID is the largest "task_id" over matching rows (nil when none).
 func (q *CommentQuery) MaxTaskID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "task_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "task_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5235,7 +5346,7 @@ func (q *CommentQuery) MaxTaskID(ctx context.Context) (*string, error) {
 
 // MinAuthorID is the smallest "author_id" over matching rows (nil when none).
 func (q *CommentQuery) MinAuthorID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "author_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "author_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5244,7 +5355,7 @@ func (q *CommentQuery) MinAuthorID(ctx context.Context) (*string, error) {
 
 // MaxAuthorID is the largest "author_id" over matching rows (nil when none).
 func (q *CommentQuery) MaxAuthorID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "author_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "author_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5253,7 +5364,7 @@ func (q *CommentQuery) MaxAuthorID(ctx context.Context) (*string, error) {
 
 // MinBody is the smallest "body" over matching rows (nil when none).
 func (q *CommentQuery) MinBody(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "body", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "body"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5262,7 +5373,7 @@ func (q *CommentQuery) MinBody(ctx context.Context) (*string, error) {
 
 // MaxBody is the largest "body" over matching rows (nil when none).
 func (q *CommentQuery) MaxBody(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "body", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "body"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5271,7 +5382,7 @@ func (q *CommentQuery) MaxBody(ctx context.Context) (*string, error) {
 
 // SumCreatedAt totals "created_at" over matching rows (nil when none).
 func (q *CommentQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "sum", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "sum", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5280,7 +5391,7 @@ func (q *CommentQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
 
 // AvgCreatedAt averages "created_at" (nil when none).
 func (q *CommentQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "avg", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "avg", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5289,7 +5400,7 @@ func (q *CommentQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
 
 // MinCreatedAt is the smallest "created_at" over matching rows (nil when none).
 func (q *CommentQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5298,7 +5409,7 @@ func (q *CommentQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
 
 // MaxCreatedAt is the largest "created_at" over matching rows (nil when none).
 func (q *CommentQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "created_at", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "created_at"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5307,187 +5418,190 @@ func (q *CommentQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 
 // CommentInclude refines an included "comments" fetch.
 type CommentInclude struct {
-	inc     protocol.Include
-	filters []protocol.Expr
+	spec includeSpec
 }
 
 func (b *CommentInclude) IDEq(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) IDNe(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) IDLt(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) IDLte(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) IDGt(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) IDGte(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) TaskIDEq(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "task_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) TaskIDNe(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "task_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) TaskIDLt(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "task_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) TaskIDLte(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "task_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) TaskIDGt(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "task_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) TaskIDGte(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "task_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) AuthorIDEq(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "author_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "author_id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) AuthorIDNe(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "author_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "author_id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) AuthorIDLt(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "author_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "author_id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) AuthorIDLte(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "author_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "author_id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) AuthorIDGt(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "author_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "author_id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) AuthorIDGte(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "author_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "author_id"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) BodyEq(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "body", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "body"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) BodyNe(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "body", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "body"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) BodyLt(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "body", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "body"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) BodyLte(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "body", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "body"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) BodyGt(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "body", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "body"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) BodyGte(v string) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "body", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "body"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) CreatedAtEq(v int64) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) CreatedAtNe(v int64) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) CreatedAtLt(v int64) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) CreatedAtLte(v int64) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) CreatedAtGt(v int64) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 func (b *CommentInclude) CreatedAtGte(v int64) *CommentInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "created_at", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "created_at"), protocol.Lit(v)))
 	return b
 }
 
 func (b *CommentInclude) OrderByID() *CommentInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id")})
 	return b
 }
 func (b *CommentInclude) OrderByIDDesc() *CommentInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id"), Desc: true})
 	return b
 }
 func (b *CommentInclude) OrderByTaskID() *CommentInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "task_id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "task_id")})
 	return b
 }
 func (b *CommentInclude) OrderByTaskIDDesc() *CommentInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "task_id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "task_id"), Desc: true})
 	return b
 }
 func (b *CommentInclude) OrderByAuthorID() *CommentInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "author_id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "author_id")})
 	return b
 }
 func (b *CommentInclude) OrderByAuthorIDDesc() *CommentInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "author_id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "author_id"), Desc: true})
 	return b
 }
 func (b *CommentInclude) OrderByBody() *CommentInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "body"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "body")})
 	return b
 }
 func (b *CommentInclude) OrderByBodyDesc() *CommentInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "body", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "body"), Desc: true})
 	return b
 }
 func (b *CommentInclude) OrderByCreatedAt() *CommentInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "created_at"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at")})
 	return b
 }
 func (b *CommentInclude) OrderByCreatedAtDesc() *CommentInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "created_at", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "created_at"), Desc: true})
 	return b
 }
-func (b *CommentInclude) Limit(n int) *CommentInclude { b.inc.Limit = n; return b }
+
+func (b *CommentInclude) Limit(n int) *CommentInclude {
+	b.spec.limit, b.spec.limitSet = n, true
+	return b
+}
 
 func (b *CommentInclude) IncludeTask(opts ...func(*TaskInclude)) *CommentInclude {
-	nested := &TaskInclude{inc: protocol.Include{FK: "comments_task_id_fk", Dir: "parent", As: "task"}}
+	n := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"id", "task_id"}}, as: "task", kind: "first"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *CommentInclude) IncludeAuthor(opts ...func(*UserInclude)) *CommentInclude {
-	nested := &UserInclude{inc: protocol.Include{FK: "comments_author_id_fk", Dir: "parent", As: "author"}}
+	n := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "author_id"}}, as: "author", kind: "first"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 
@@ -5590,10 +5704,10 @@ func (t LabelTable) Delete(ctx context.Context, id string) (bool, error) {
 
 // ByTeamIDName finds the row by the unique index on (team_id, name).
 func (t LabelTable) ByTeamIDName(ctx context.Context, teamID string, name string) (Label, bool, error) {
-	recs, err := t.v.Query(ctx, protocol.Read{Table: "labels", Filter: andExpr([]protocol.Expr{
-		{Op: "eq", Column: "team_id", Value: teamID},
-		{Op: "eq", Column: "name", Value: name},
-	}), Limit: 1})
+	recs, err := t.v.Query(ctx, assemble(querySpec{table: "labels", limit: 1, limitSet: true, filters: []*protocol.Expr{
+		protocol.Eq(protocol.Col("", "team_id"), protocol.Lit(teamID)),
+		protocol.Eq(protocol.Col("", "name"), protocol.Lit(name)),
+	}}))
 	if err != nil || len(recs) == 0 {
 		return Label{}, false, err
 	}
@@ -5601,176 +5715,173 @@ func (t LabelTable) ByTeamIDName(ctx context.Context, teamID string, name string
 }
 
 func (t LabelTable) Query() *LabelQuery {
-	return &LabelQuery{v: t.v, read: protocol.Read{Table: "labels"}}
+	return &LabelQuery{v: t.v, spec: querySpec{table: "labels"}}
 }
 
-// LabelQuery is a fluent shaped-read builder for "labels". Conditions AND together.
+// LabelQuery is a fluent query builder for "labels". Conditions AND together.
 type LabelQuery struct {
-	v       radclient.View
-	read    protocol.Read
-	filters []protocol.Expr
+	v    radclient.View
+	spec querySpec
 }
 
 func (q *LabelQuery) IDEq(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) IDNe(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) IDLt(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) IDLte(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) IDGt(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) IDGte(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "id"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) TeamIDEq(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) TeamIDNe(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) TeamIDLt(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) TeamIDLte(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) TeamIDGt(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) TeamIDGte(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "team_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) NameEq(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) NameNe(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) NameLt(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) NameLte(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) NameGt(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) NameGte(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "name", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "name"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) HexColorEq(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "hex_color", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "hex_color"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) HexColorNe(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "hex_color", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "hex_color"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) HexColorLt(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "hex_color", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "hex_color"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) HexColorLte(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "hex_color", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "hex_color"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) HexColorGt(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "hex_color", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "hex_color"), protocol.Lit(v)))
 	return q
 }
 func (q *LabelQuery) HexColorGte(v string) *LabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "hex_color", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "hex_color"), protocol.Lit(v)))
 	return q
 }
 
 func (q *LabelQuery) OrderByID() *LabelQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id")})
 	return q
 }
 func (q *LabelQuery) OrderByIDDesc() *LabelQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id"), Desc: true})
 	return q
 }
 func (q *LabelQuery) OrderByTeamID() *LabelQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "team_id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "team_id")})
 	return q
 }
 func (q *LabelQuery) OrderByTeamIDDesc() *LabelQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "team_id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "team_id"), Desc: true})
 	return q
 }
 func (q *LabelQuery) OrderByName() *LabelQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "name"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "name")})
 	return q
 }
 func (q *LabelQuery) OrderByNameDesc() *LabelQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "name", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "name"), Desc: true})
 	return q
 }
 func (q *LabelQuery) OrderByHexColor() *LabelQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "hex_color"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "hex_color")})
 	return q
 }
 func (q *LabelQuery) OrderByHexColorDesc() *LabelQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "hex_color", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "hex_color"), Desc: true})
 	return q
 }
 
-func (q *LabelQuery) Limit(n int) *LabelQuery  { q.read.Limit = n; return q }
-func (q *LabelQuery) Offset(n int) *LabelQuery { q.read.Offset = n; return q }
+func (q *LabelQuery) Limit(n int) *LabelQuery  { q.spec.limit, q.spec.limitSet = n, true; return q }
+func (q *LabelQuery) Offset(n int) *LabelQuery { q.spec.offset = n; return q }
 
 // IncludeTeam embeds the referenced Team (nil when the FK is NULL).
 func (q *LabelQuery) IncludeTeam(opts ...func(*TeamInclude)) *LabelQuery {
-	b := &TeamInclude{inc: protocol.Include{FK: "labels_team_id_fk", Dir: "parent", As: "team"}}
+	b := &TeamInclude{spec: includeSpec{table: "teams", pairs: [][2]string{{"id", "team_id"}}, as: "team", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeTaskLabels embeds the TaskLabel rows referencing this row.
 func (q *LabelQuery) IncludeTaskLabels(opts ...func(*TaskLabelInclude)) *LabelQuery {
-	b := &TaskLabelInclude{inc: protocol.Include{FK: "task_labels_label_id_fk", Dir: "children", As: "task_labels"}}
+	b := &TaskLabelInclude{spec: includeSpec{table: "task_labels", pairs: [][2]string{{"label_id", "id"}}, as: "task_labels", kind: "array"}}
 	for _, o := range opts {
 		o(b)
 	}
-	b.inc.Filter = andExpr(b.filters)
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // All executes the query.
 func (q *LabelQuery) All(ctx context.Context) ([]Label, error) {
-	q.read.Filter = andExpr(q.filters)
-	recs, err := q.v.Query(ctx, q.read)
+	recs, err := q.v.Query(ctx, assemble(q.spec))
 	if err != nil {
 		return nil, err
 	}
@@ -5783,7 +5894,7 @@ func (q *LabelQuery) All(ctx context.Context) ([]Label, error) {
 
 // First executes the query with limit 1.
 func (q *LabelQuery) First(ctx context.Context) (Label, bool, error) {
-	q.read.Limit = 1
+	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
 		return Label{}, false, err
@@ -5793,12 +5904,11 @@ func (q *LabelQuery) First(ctx context.Context) (Label, bool, error) {
 
 // fold sends the builder's filter as an aggregate query and returns the
 // one scalar record the server produces.
-func (q *LabelQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
-	read := q.read
-	read.Filter = andExpr(q.filters)
-	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
-	read.Aggs = aggs
-	recs, err := q.v.Query(ctx, read)
+func (q *LabelQuery) fold(ctx context.Context, aggs []protocol.AggTerm) (protocol.Record, error) {
+	spec := q.spec
+	spec.orders, spec.includes, spec.limit, spec.limitSet, spec.offset = nil, nil, 0, false, 0
+	spec.aggs = aggs
+	recs, err := q.v.Query(ctx, assemble(spec))
 	if err != nil || len(recs) == 0 {
 		return protocol.Record{}, err
 	}
@@ -5807,7 +5917,7 @@ func (q *LabelQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Re
 
 // Count returns how many rows match (never NULL: 0 when none).
 func (q *LabelQuery) Count(ctx context.Context) (int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "count", As: "v"}})
 	if err != nil {
 		return 0, err
 	}
@@ -5816,7 +5926,7 @@ func (q *LabelQuery) Count(ctx context.Context) (int64, error) {
 
 // MinID is the smallest "id" over matching rows (nil when none).
 func (q *LabelQuery) MinID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5825,7 +5935,7 @@ func (q *LabelQuery) MinID(ctx context.Context) (*string, error) {
 
 // MaxID is the largest "id" over matching rows (nil when none).
 func (q *LabelQuery) MaxID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5834,7 +5944,7 @@ func (q *LabelQuery) MaxID(ctx context.Context) (*string, error) {
 
 // MinTeamID is the smallest "team_id" over matching rows (nil when none).
 func (q *LabelQuery) MinTeamID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "team_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "team_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5843,7 +5953,7 @@ func (q *LabelQuery) MinTeamID(ctx context.Context) (*string, error) {
 
 // MaxTeamID is the largest "team_id" over matching rows (nil when none).
 func (q *LabelQuery) MaxTeamID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "team_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "team_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5852,7 +5962,7 @@ func (q *LabelQuery) MaxTeamID(ctx context.Context) (*string, error) {
 
 // MinName is the smallest "name" over matching rows (nil when none).
 func (q *LabelQuery) MinName(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "name", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "name"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5861,7 +5971,7 @@ func (q *LabelQuery) MinName(ctx context.Context) (*string, error) {
 
 // MaxName is the largest "name" over matching rows (nil when none).
 func (q *LabelQuery) MaxName(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "name", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "name"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5870,7 +5980,7 @@ func (q *LabelQuery) MaxName(ctx context.Context) (*string, error) {
 
 // MinHexColor is the smallest "hex_color" over matching rows (nil when none).
 func (q *LabelQuery) MinHexColor(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "hex_color", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "hex_color"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5879,7 +5989,7 @@ func (q *LabelQuery) MinHexColor(ctx context.Context) (*string, error) {
 
 // MaxHexColor is the largest "hex_color" over matching rows (nil when none).
 func (q *LabelQuery) MaxHexColor(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "hex_color", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "hex_color"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -5888,156 +5998,155 @@ func (q *LabelQuery) MaxHexColor(ctx context.Context) (*string, error) {
 
 // LabelInclude refines an included "labels" fetch.
 type LabelInclude struct {
-	inc     protocol.Include
-	filters []protocol.Expr
+	spec includeSpec
 }
 
 func (b *LabelInclude) IDEq(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) IDNe(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) IDLt(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) IDLte(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) IDGt(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) IDGte(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "id"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) TeamIDEq(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) TeamIDNe(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) TeamIDLt(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) TeamIDLte(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) TeamIDGt(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) TeamIDGte(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "team_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "team_id"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) NameEq(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) NameNe(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) NameLt(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) NameLte(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) NameGt(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) NameGte(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "name", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "name"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) HexColorEq(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "hex_color", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "hex_color"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) HexColorNe(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "hex_color", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "hex_color"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) HexColorLt(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "hex_color", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "hex_color"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) HexColorLte(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "hex_color", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "hex_color"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) HexColorGt(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "hex_color", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "hex_color"), protocol.Lit(v)))
 	return b
 }
 func (b *LabelInclude) HexColorGte(v string) *LabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "hex_color", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "hex_color"), protocol.Lit(v)))
 	return b
 }
 
 func (b *LabelInclude) OrderByID() *LabelInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id")})
 	return b
 }
 func (b *LabelInclude) OrderByIDDesc() *LabelInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "id"), Desc: true})
 	return b
 }
 func (b *LabelInclude) OrderByTeamID() *LabelInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "team_id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "team_id")})
 	return b
 }
 func (b *LabelInclude) OrderByTeamIDDesc() *LabelInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "team_id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "team_id"), Desc: true})
 	return b
 }
 func (b *LabelInclude) OrderByName() *LabelInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "name"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "name")})
 	return b
 }
 func (b *LabelInclude) OrderByNameDesc() *LabelInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "name", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "name"), Desc: true})
 	return b
 }
 func (b *LabelInclude) OrderByHexColor() *LabelInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "hex_color"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "hex_color")})
 	return b
 }
 func (b *LabelInclude) OrderByHexColorDesc() *LabelInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "hex_color", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "hex_color"), Desc: true})
 	return b
 }
-func (b *LabelInclude) Limit(n int) *LabelInclude { b.inc.Limit = n; return b }
+
+func (b *LabelInclude) Limit(n int) *LabelInclude { b.spec.limit, b.spec.limitSet = n, true; return b }
 
 func (b *LabelInclude) IncludeTeam(opts ...func(*TeamInclude)) *LabelInclude {
-	nested := &TeamInclude{inc: protocol.Include{FK: "labels_team_id_fk", Dir: "parent", As: "team"}}
+	n := &TeamInclude{spec: includeSpec{table: "teams", pairs: [][2]string{{"id", "team_id"}}, as: "team", kind: "first"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *LabelInclude) IncludeTaskLabels(opts ...func(*TaskLabelInclude)) *LabelInclude {
-	nested := &TaskLabelInclude{inc: protocol.Include{FK: "task_labels_label_id_fk", Dir: "children", As: "task_labels"}}
+	n := &TaskLabelInclude{spec: includeSpec{table: "task_labels", pairs: [][2]string{{"label_id", "id"}}, as: "task_labels", kind: "array"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	nested.inc.Filter = andExpr(nested.filters)
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 
@@ -6119,111 +6228,112 @@ func (t TaskLabelTable) Delete(ctx context.Context, taskID string, labelID strin
 }
 
 func (t TaskLabelTable) Query() *TaskLabelQuery {
-	return &TaskLabelQuery{v: t.v, read: protocol.Read{Table: "task_labels"}}
+	return &TaskLabelQuery{v: t.v, spec: querySpec{table: "task_labels"}}
 }
 
-// TaskLabelQuery is a fluent shaped-read builder for "task_labels". Conditions AND together.
+// TaskLabelQuery is a fluent query builder for "task_labels". Conditions AND together.
 type TaskLabelQuery struct {
-	v       radclient.View
-	read    protocol.Read
-	filters []protocol.Expr
+	v    radclient.View
+	spec querySpec
 }
 
 func (q *TaskLabelQuery) TaskIDEq(v string) *TaskLabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "task_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskLabelQuery) TaskIDNe(v string) *TaskLabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "task_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskLabelQuery) TaskIDLt(v string) *TaskLabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "task_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskLabelQuery) TaskIDLte(v string) *TaskLabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "task_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskLabelQuery) TaskIDGt(v string) *TaskLabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "task_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskLabelQuery) TaskIDGte(v string) *TaskLabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "task_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskLabelQuery) LabelIDEq(v string) *TaskLabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "eq", Column: "label_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Eq(protocol.Col("", "label_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskLabelQuery) LabelIDNe(v string) *TaskLabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "ne", Column: "label_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Ne(protocol.Col("", "label_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskLabelQuery) LabelIDLt(v string) *TaskLabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lt", Column: "label_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lt(protocol.Col("", "label_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskLabelQuery) LabelIDLte(v string) *TaskLabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "lte", Column: "label_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Lte(protocol.Col("", "label_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskLabelQuery) LabelIDGt(v string) *TaskLabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gt", Column: "label_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gt(protocol.Col("", "label_id"), protocol.Lit(v)))
 	return q
 }
 func (q *TaskLabelQuery) LabelIDGte(v string) *TaskLabelQuery {
-	q.filters = append(q.filters, protocol.Expr{Op: "gte", Column: "label_id", Value: v})
+	q.spec.filters = append(q.spec.filters, protocol.Gte(protocol.Col("", "label_id"), protocol.Lit(v)))
 	return q
 }
 
 func (q *TaskLabelQuery) OrderByTaskID() *TaskLabelQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "task_id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "task_id")})
 	return q
 }
 func (q *TaskLabelQuery) OrderByTaskIDDesc() *TaskLabelQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "task_id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "task_id"), Desc: true})
 	return q
 }
 func (q *TaskLabelQuery) OrderByLabelID() *TaskLabelQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "label_id"})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "label_id")})
 	return q
 }
 func (q *TaskLabelQuery) OrderByLabelIDDesc() *TaskLabelQuery {
-	q.read.OrderBy = append(q.read.OrderBy, protocol.Order{Column: "label_id", Desc: true})
+	q.spec.orders = append(q.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "label_id"), Desc: true})
 	return q
 }
 
-func (q *TaskLabelQuery) Limit(n int) *TaskLabelQuery  { q.read.Limit = n; return q }
-func (q *TaskLabelQuery) Offset(n int) *TaskLabelQuery { q.read.Offset = n; return q }
+func (q *TaskLabelQuery) Limit(n int) *TaskLabelQuery {
+	q.spec.limit, q.spec.limitSet = n, true
+	return q
+}
+func (q *TaskLabelQuery) Offset(n int) *TaskLabelQuery { q.spec.offset = n; return q }
 
 // IncludeTask embeds the referenced Task (nil when the FK is NULL).
 func (q *TaskLabelQuery) IncludeTask(opts ...func(*TaskInclude)) *TaskLabelQuery {
-	b := &TaskInclude{inc: protocol.Include{FK: "task_labels_task_id_fk", Dir: "parent", As: "task"}}
+	b := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"id", "task_id"}}, as: "task", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // IncludeLabel embeds the referenced Label (nil when the FK is NULL).
 func (q *TaskLabelQuery) IncludeLabel(opts ...func(*LabelInclude)) *TaskLabelQuery {
-	b := &LabelInclude{inc: protocol.Include{FK: "task_labels_label_id_fk", Dir: "parent", As: "label"}}
+	b := &LabelInclude{spec: includeSpec{table: "labels", pairs: [][2]string{{"id", "label_id"}}, as: "label", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
-	inc := b.inc
-	q.read.Include = append(q.read.Include, inc)
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
 	return q
 }
 
 // All executes the query.
 func (q *TaskLabelQuery) All(ctx context.Context) ([]TaskLabel, error) {
-	q.read.Filter = andExpr(q.filters)
-	recs, err := q.v.Query(ctx, q.read)
+	recs, err := q.v.Query(ctx, assemble(q.spec))
 	if err != nil {
 		return nil, err
 	}
@@ -6236,7 +6346,7 @@ func (q *TaskLabelQuery) All(ctx context.Context) ([]TaskLabel, error) {
 
 // First executes the query with limit 1.
 func (q *TaskLabelQuery) First(ctx context.Context) (TaskLabel, bool, error) {
-	q.read.Limit = 1
+	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
 		return TaskLabel{}, false, err
@@ -6246,12 +6356,11 @@ func (q *TaskLabelQuery) First(ctx context.Context) (TaskLabel, bool, error) {
 
 // fold sends the builder's filter as an aggregate query and returns the
 // one scalar record the server produces.
-func (q *TaskLabelQuery) fold(ctx context.Context, aggs []protocol.Agg) (protocol.Record, error) {
-	read := q.read
-	read.Filter = andExpr(q.filters)
-	read.OrderBy, read.Include, read.Limit, read.Offset = nil, nil, 0, 0
-	read.Aggs = aggs
-	recs, err := q.v.Query(ctx, read)
+func (q *TaskLabelQuery) fold(ctx context.Context, aggs []protocol.AggTerm) (protocol.Record, error) {
+	spec := q.spec
+	spec.orders, spec.includes, spec.limit, spec.limitSet, spec.offset = nil, nil, 0, false, 0
+	spec.aggs = aggs
+	recs, err := q.v.Query(ctx, assemble(spec))
 	if err != nil || len(recs) == 0 {
 		return protocol.Record{}, err
 	}
@@ -6260,7 +6369,7 @@ func (q *TaskLabelQuery) fold(ctx context.Context, aggs []protocol.Agg) (protoco
 
 // Count returns how many rows match (never NULL: 0 when none).
 func (q *TaskLabelQuery) Count(ctx context.Context) (int64, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "count", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "count", As: "v"}})
 	if err != nil {
 		return 0, err
 	}
@@ -6269,7 +6378,7 @@ func (q *TaskLabelQuery) Count(ctx context.Context) (int64, error) {
 
 // MinTaskID is the smallest "task_id" over matching rows (nil when none).
 func (q *TaskLabelQuery) MinTaskID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "task_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "task_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -6278,7 +6387,7 @@ func (q *TaskLabelQuery) MinTaskID(ctx context.Context) (*string, error) {
 
 // MaxTaskID is the largest "task_id" over matching rows (nil when none).
 func (q *TaskLabelQuery) MaxTaskID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "task_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "task_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -6287,7 +6396,7 @@ func (q *TaskLabelQuery) MaxTaskID(ctx context.Context) (*string, error) {
 
 // MinLabelID is the smallest "label_id" over matching rows (nil when none).
 func (q *TaskLabelQuery) MinLabelID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "min", Column: "label_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "min", Arg: protocol.Col("", "label_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -6296,7 +6405,7 @@ func (q *TaskLabelQuery) MinLabelID(ctx context.Context) (*string, error) {
 
 // MaxLabelID is the largest "label_id" over matching rows (nil when none).
 func (q *TaskLabelQuery) MaxLabelID(ctx context.Context) (*string, error) {
-	rec, err := q.fold(ctx, []protocol.Agg{{Fn: "max", Column: "label_id", As: "v"}})
+	rec, err := q.fold(ctx, []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("", "label_id"), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
@@ -6305,91 +6414,94 @@ func (q *TaskLabelQuery) MaxLabelID(ctx context.Context) (*string, error) {
 
 // TaskLabelInclude refines an included "task_labels" fetch.
 type TaskLabelInclude struct {
-	inc     protocol.Include
-	filters []protocol.Expr
+	spec includeSpec
 }
 
 func (b *TaskLabelInclude) TaskIDEq(v string) *TaskLabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "task_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskLabelInclude) TaskIDNe(v string) *TaskLabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "task_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskLabelInclude) TaskIDLt(v string) *TaskLabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "task_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskLabelInclude) TaskIDLte(v string) *TaskLabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "task_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskLabelInclude) TaskIDGt(v string) *TaskLabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "task_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskLabelInclude) TaskIDGte(v string) *TaskLabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "task_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "task_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskLabelInclude) LabelIDEq(v string) *TaskLabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "eq", Column: "label_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Eq(protocol.Col("", "label_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskLabelInclude) LabelIDNe(v string) *TaskLabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "ne", Column: "label_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Ne(protocol.Col("", "label_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskLabelInclude) LabelIDLt(v string) *TaskLabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lt", Column: "label_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lt(protocol.Col("", "label_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskLabelInclude) LabelIDLte(v string) *TaskLabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "lte", Column: "label_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Lte(protocol.Col("", "label_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskLabelInclude) LabelIDGt(v string) *TaskLabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gt", Column: "label_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gt(protocol.Col("", "label_id"), protocol.Lit(v)))
 	return b
 }
 func (b *TaskLabelInclude) LabelIDGte(v string) *TaskLabelInclude {
-	b.filters = append(b.filters, protocol.Expr{Op: "gte", Column: "label_id", Value: v})
+	b.spec.filters = append(b.spec.filters, protocol.Gte(protocol.Col("", "label_id"), protocol.Lit(v)))
 	return b
 }
 
 func (b *TaskLabelInclude) OrderByTaskID() *TaskLabelInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "task_id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "task_id")})
 	return b
 }
 func (b *TaskLabelInclude) OrderByTaskIDDesc() *TaskLabelInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "task_id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "task_id"), Desc: true})
 	return b
 }
 func (b *TaskLabelInclude) OrderByLabelID() *TaskLabelInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "label_id"})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "label_id")})
 	return b
 }
 func (b *TaskLabelInclude) OrderByLabelIDDesc() *TaskLabelInclude {
-	b.inc.OrderBy = append(b.inc.OrderBy, protocol.Order{Column: "label_id", Desc: true})
+	b.spec.orders = append(b.spec.orders, protocol.OrderTerm{Expr: *protocol.Col("", "label_id"), Desc: true})
 	return b
 }
-func (b *TaskLabelInclude) Limit(n int) *TaskLabelInclude { b.inc.Limit = n; return b }
+
+func (b *TaskLabelInclude) Limit(n int) *TaskLabelInclude {
+	b.spec.limit, b.spec.limitSet = n, true
+	return b
+}
 
 func (b *TaskLabelInclude) IncludeTask(opts ...func(*TaskInclude)) *TaskLabelInclude {
-	nested := &TaskInclude{inc: protocol.Include{FK: "task_labels_task_id_fk", Dir: "parent", As: "task"}}
+	n := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"id", "task_id"}}, as: "task", kind: "first"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 func (b *TaskLabelInclude) IncludeLabel(opts ...func(*LabelInclude)) *TaskLabelInclude {
-	nested := &LabelInclude{inc: protocol.Include{FK: "task_labels_label_id_fk", Dir: "parent", As: "label"}}
+	n := &LabelInclude{spec: includeSpec{table: "labels", pairs: [][2]string{{"id", "label_id"}}, as: "label", kind: "first"}}
 	for _, o := range opts {
-		o(nested)
+		o(n)
 	}
-	b.inc.Include = append(b.inc.Include, nested.inc)
+	b.spec.nested = append(b.spec.nested, n.spec)
 	return b
 }
 

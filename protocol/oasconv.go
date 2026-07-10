@@ -117,24 +117,134 @@ func RecordsFromOAS(recs []oas.Record) []Record {
 	return out
 }
 
-// ── expressions ─────────────────────────────────────────────────────────────
+// ── the query graph ─────────────────────────────────────────────────────────
+
+// QueryToOAS converts a query graph into the generated wire type.
+func QueryToOAS(q Query) oas.Query {
+	nodes := make(oas.QueryNodes, len(q.Nodes))
+	for name, n := range q.Nodes {
+		nodes[name] = nodeToOAS(n)
+	}
+	return oas.Query{
+		Nodes: nodes,
+		Root:  oas.Root{Node: q.Root.Node, Cardinality: oas.RootCardinality(q.Root.Cardinality)},
+	}
+}
+
+// QueryFromOAS converts the generated wire type back into a query graph.
+func QueryFromOAS(q oas.Query) Query {
+	nodes := make(map[string]Node, len(q.Nodes))
+	for name, n := range q.Nodes {
+		nodes[name] = nodeFromOAS(n)
+	}
+	return Query{
+		Nodes: nodes,
+		Root:  Root{Node: q.Root.Node, Cardinality: string(q.Root.Cardinality)},
+	}
+}
+
+func nodeToOAS(n Node) oas.Node {
+	o := oas.Node{
+		Kind:      oas.NodeKind(n.Kind),
+		Table:     optString(n.Table),
+		Scope:     optString(n.Scope),
+		Input:     optString(n.Input),
+		Left:      optString(n.Left),
+		Right:     optString(n.Right),
+		On:        exprToOpt(n.On),
+		Predicate: exprToOpt(n.Predicate),
+		Spread:    n.Spread,
+	}
+	if n.Join != "" {
+		o.Join = oas.NewOptNodeJoin(oas.NodeJoin(n.Join))
+	}
+	for _, f := range n.Fields {
+		o.Fields = append(o.Fields, oas.Field{As: f.As, Expr: *exprToOAS(&f.Expr)})
+	}
+	for _, g := range n.Groups {
+		o.Groups = append(o.Groups, oas.GroupTerm{As: optString(g.As), Expr: *exprToOAS(&g.Expr)})
+	}
+	for _, a := range n.Aggs {
+		o.Aggs = append(o.Aggs, oas.AggTerm{Fn: oas.AggTermFn(a.Fn), Arg: exprToOAS(a.Arg), As: a.As})
+	}
+	for _, t := range n.Terms {
+		ot := oas.OrderTerm{Expr: *exprToOAS(&t.Expr)}
+		if t.Desc {
+			ot.Desc = oas.NewOptBool(true)
+		}
+		o.Terms = append(o.Terms, ot)
+	}
+	if n.Offset != nil {
+		o.Offset = oas.NewOptInt(*n.Offset)
+	}
+	if n.Limit != nil {
+		o.Limit = oas.NewOptInt(*n.Limit)
+	}
+	return o
+}
+
+func nodeFromOAS(o oas.Node) Node {
+	n := Node{
+		Kind:      string(o.Kind),
+		Table:     o.Table.Or(""),
+		Scope:     o.Scope.Or(""),
+		Input:     o.Input.Or(""),
+		Left:      o.Left.Or(""),
+		Right:     o.Right.Or(""),
+		On:        exprFromOpt(o.On),
+		Predicate: exprFromOpt(o.Predicate),
+		Spread:    o.Spread,
+	}
+	if j, ok := o.Join.Get(); ok {
+		n.Join = string(j)
+	}
+	for _, f := range o.Fields {
+		fe := f.Expr
+		n.Fields = append(n.Fields, Field{As: f.As, Expr: *exprFromOAS(&fe)})
+	}
+	for _, g := range o.Groups {
+		ge := g.Expr
+		n.Groups = append(n.Groups, GroupTerm{As: g.As.Or(""), Expr: *exprFromOAS(&ge)})
+	}
+	for _, a := range o.Aggs {
+		n.Aggs = append(n.Aggs, AggTerm{Fn: string(a.Fn), Arg: exprFromOAS(a.Arg), As: a.As})
+	}
+	for _, t := range o.Terms {
+		te := t.Expr
+		n.Terms = append(n.Terms, OrderTerm{Expr: *exprFromOAS(&te), Desc: t.Desc.Or(false)})
+	}
+	if v, ok := o.Offset.Get(); ok {
+		n.Offset = &v
+	}
+	if v, ok := o.Limit.Get(); ok {
+		n.Limit = &v
+	}
+	return n
+}
 
 func exprToOAS(e *Expr) *oas.Expr {
 	if e == nil {
 		return nil
 	}
-	o := &oas.Expr{Op: oas.ExprOp(e.Op)}
-	for i := range e.Exprs {
-		o.Exprs = append(o.Exprs, *exprToOAS(&e.Exprs[i]))
+	o := &oas.Expr{
+		Kind:   oas.ExprKind(e.Kind),
+		Scope:  optString(e.Scope),
+		Column: optString(e.Column),
+		Op:     optString(e.Op),
+		Fn:     optString(e.Fn),
+		To:     optString(e.To),
+		Node:   optString(e.Node),
+		Expr:   exprToOAS(e.Expr),
+		Left:   exprToOAS(e.Left),
+		Right:  exprToOAS(e.Right),
 	}
-	o.Expr = exprToOAS(e.Expr)
-	if e.Column != "" {
-		o.Column = oas.NewOptString(e.Column)
+	for i := range e.Args {
+		o.Args = append(o.Args, *exprToOAS(&e.Args[i]))
 	}
 	// Always populate Value: the generated codec emits the field
 	// unconditionally, and an empty raw value would render as the malformed
-	// body `"value":}`. Value-less ops (and/or/not/is_null) carry an explicit
-	// JSON null, which decodes back to a nil Value.
+	// body `"value":}`. Non-literal kinds carry an explicit JSON null, which
+	// decodes back to a nil value.
 	o.Value = oas.Value(anyToRaw(e.Value))
 	return o
 }
@@ -150,11 +260,21 @@ func exprFromOAS(o *oas.Expr) *Expr {
 	if o == nil {
 		return nil
 	}
-	e := &Expr{Op: string(o.Op), Column: o.Column.Or("")}
-	for i := range o.Exprs {
-		e.Exprs = append(e.Exprs, *exprFromOAS(&o.Exprs[i]))
+	e := &Expr{
+		Kind:   string(o.Kind),
+		Scope:  o.Scope.Or(""),
+		Column: o.Column.Or(""),
+		Op:     o.Op.Or(""),
+		Fn:     o.Fn.Or(""),
+		To:     o.To.Or(""),
+		Node:   o.Node.Or(""),
+		Expr:   exprFromOAS(o.Expr),
+		Left:   exprFromOAS(o.Left),
+		Right:  exprFromOAS(o.Right),
 	}
-	e.Expr = exprFromOAS(o.Expr)
+	for i := range o.Args {
+		e.Args = append(e.Args, *exprFromOAS(&o.Args[i]))
+	}
 	if len(o.Value) != 0 {
 		e.Value = rawToAny(jx.Raw(o.Value))
 	}
@@ -168,132 +288,11 @@ func exprFromOpt(o oas.OptExpr) *Expr {
 	return exprFromOAS(&o.Value)
 }
 
-// ── order, aggregates, includes ─────────────────────────────────────────────
-
-func ordersToOAS(in []Order) []oas.Order {
-	if len(in) == 0 {
-		return nil
+func optString(s string) oas.OptString {
+	if s == "" {
+		return oas.OptString{}
 	}
-	out := make([]oas.Order, len(in))
-	for i, o := range in {
-		out[i] = oas.Order{Column: o.Column}
-		if o.Desc {
-			out[i].Desc = oas.NewOptBool(true)
-		}
-	}
-	return out
-}
-
-func ordersFromOAS(in []oas.Order) []Order {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]Order, len(in))
-	for i, o := range in {
-		out[i] = Order{Column: o.Column, Desc: o.Desc.Or(false)}
-	}
-	return out
-}
-
-func aggsToOAS(in []Agg) []oas.Aggregate {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]oas.Aggregate, len(in))
-	for i, a := range in {
-		out[i] = oas.Aggregate{Fn: oas.AggregateFn(a.Fn), As: a.As}
-		if a.Column != "" {
-			out[i].Column = oas.NewOptString(a.Column)
-		}
-	}
-	return out
-}
-
-func aggsFromOAS(in []oas.Aggregate) []Agg {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]Agg, len(in))
-	for i, a := range in {
-		out[i] = Agg{Fn: string(a.Fn), Column: a.Column.Or(""), As: a.As}
-	}
-	return out
-}
-
-func includesToOAS(in []Include) []oas.Include {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]oas.Include, len(in))
-	for i, inc := range in {
-		o := oas.Include{
-			Fk:      inc.FK,
-			Dir:     oas.IncludeDir(inc.Dir),
-			As:      inc.As,
-			Filter:  exprToOpt(inc.Filter),
-			OrderBy: ordersToOAS(inc.OrderBy),
-			Include: includesToOAS(inc.Include),
-			Aggs:    aggsToOAS(inc.Aggs),
-		}
-		if inc.Limit != 0 {
-			o.Limit = oas.NewOptInt(inc.Limit)
-		}
-		out[i] = o
-	}
-	return out
-}
-
-func includesFromOAS(in []oas.Include) []Include {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]Include, len(in))
-	for i, o := range in {
-		out[i] = Include{
-			FK:      o.Fk,
-			Dir:     string(o.Dir),
-			As:      o.As,
-			Filter:  exprFromOpt(o.Filter),
-			OrderBy: ordersFromOAS(o.OrderBy),
-			Limit:   o.Limit.Or(0),
-			Include: includesFromOAS(o.Include),
-			Aggs:    aggsFromOAS(o.Aggs),
-		}
-	}
-	return out
-}
-
-// ── reads ─────────────────────────────────────────────────────────────────
-
-// ReadToOAS converts a shaped read into the generated Query type.
-func ReadToOAS(r Read) oas.Query {
-	q := oas.Query{
-		Table:   r.Table,
-		Filter:  exprToOpt(r.Filter),
-		OrderBy: ordersToOAS(r.OrderBy),
-		Include: includesToOAS(r.Include),
-		Aggs:    aggsToOAS(r.Aggs),
-	}
-	if r.Offset != 0 {
-		q.Offset = oas.NewOptInt(r.Offset)
-	}
-	if r.Limit != 0 {
-		q.Limit = oas.NewOptInt(r.Limit)
-	}
-	return q
-}
-
-// ReadFromOAS converts a generated Query back into a shaped read.
-func ReadFromOAS(q oas.Query) Read {
-	return Read{
-		Table:   q.Table,
-		Filter:  exprFromOpt(q.Filter),
-		OrderBy: ordersFromOAS(q.OrderBy),
-		Offset:  q.Offset.Or(0),
-		Limit:   q.Limit.Or(0),
-		Include: includesFromOAS(q.Include),
-		Aggs:    aggsFromOAS(q.Aggs),
-	}
+	return oas.NewOptString(s)
 }
 
 // ── introspection ───────────────────────────────────────────────────────────

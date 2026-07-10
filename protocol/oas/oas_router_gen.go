@@ -732,7 +732,7 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 					switch method {
 					case "POST":
 						r.name = QueryOperation
-						r.summary = "Run a shaped read."
+						r.summary = "Run a relation-graph query."
 						r.operationID = "Query"
 						r.operationGroup = ""
 						r.pathPattern = "/query"

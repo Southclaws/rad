@@ -128,66 +128,94 @@ func NewProblem(code string, status int, detail string) Problem {
 	}
 }
 
-// Expr is a filter expression — a tagged union selected by Op.
-//
-//	{"op":"eq","column":"status","value":"todo"}
-//	{"op":"and","exprs":[...]}
-//	{"op":"is_null","column":"assignee_id"}
+// Query is the relation graph on the wire: named relation nodes plus a root
+// selector. Relations are values — operators consume relations and produce
+// relations — and relationships are ordinary correlated relations
+// materialised into output shapes by cardinality crossings. The schema is
+// qir.schema.json; the semantics are docs/design/qir-v2.md.
+type Query struct {
+	Nodes map[string]Node `json:"nodes"`
+	Root  Root            `json:"root"`
+}
+
+// Root selects the result node and how it materialises: many | first |
+// exactly_one | scalar.
+type Root struct {
+	Node        string `json:"node"`
+	Cardinality string `json:"cardinality"`
+}
+
+// Node is one relation operator, a flat tagged union selected by Kind:
+// scan | filter | project | join | aggregate | order | slice.
+type Node struct {
+	Kind string `json:"kind"`
+
+	Table     string      `json:"table,omitempty"`     // scan
+	Scope     string      `json:"scope,omitempty"`     // scan (required), project, aggregate
+	Input     string      `json:"input,omitempty"`     // filter, project, aggregate, order, slice
+	Left      string      `json:"left,omitempty"`      // join
+	Right     string      `json:"right,omitempty"`     // join
+	Join      string      `json:"join,omitempty"`      // join: inner | left
+	On        *Expr       `json:"on,omitempty"`        // join
+	Predicate *Expr       `json:"predicate,omitempty"` // filter
+	Spread    []string    `json:"spread,omitempty"`    // project
+	Fields    []Field     `json:"fields,omitempty"`    // project
+	Groups    []GroupTerm `json:"groups,omitempty"`    // aggregate
+	Aggs      []AggTerm   `json:"aggs,omitempty"`      // aggregate
+	Terms     []OrderTerm `json:"terms,omitempty"`     // order
+	Offset    *int        `json:"offset,omitempty"`    // slice
+	Limit     *int        `json:"limit,omitempty"`     // slice; absent = unlimited, 0 = no rows
+}
+
+// Expr is a scalar expression, a flat tagged union selected by Kind:
+// lit | col | unary | binary | call | cast, plus the cardinality crossings
+// exists | first | scalar | array, which reference a relation node by name.
 type Expr struct {
-	Op string `json:"op"` // and, or, not, eq, ne, lt, lte, gt, gte, is_null
+	Kind string `json:"kind"`
 
-	Exprs  []Expr `json:"exprs,omitempty"`  // and, or
-	Expr   *Expr  `json:"expr,omitempty"`   // not
-	Column string `json:"column,omitempty"` // comparisons, is_null
-	Value  any    `json:"value,omitempty"`  // comparisons
+	Value  any    `json:"value,omitempty"`  // lit
+	Scope  string `json:"scope,omitempty"`  // col
+	Column string `json:"column,omitempty"` // col
+	Op     string `json:"op,omitempty"`     // unary, binary
+	Expr   *Expr  `json:"expr,omitempty"`   // unary, cast
+	Left   *Expr  `json:"left,omitempty"`   // binary
+	Right  *Expr  `json:"right,omitempty"`  // binary
+	Fn     string `json:"fn,omitempty"`     // call
+	Args   []Expr `json:"args,omitempty"`   // call
+	To     string `json:"to,omitempty"`     // cast
+	Node   string `json:"node,omitempty"`   // crossings
 }
 
-// Order is one ORDER BY term.
-type Order struct {
-	Column string `json:"column"`
-	Desc   bool   `json:"desc,omitempty"`
+// Field is one projected attribute.
+type Field struct {
+	As   string `json:"as"`
+	Expr Expr   `json:"expr"`
 }
 
-// Agg is one aggregate term: a fold over a column, named in the result. Fn
-// is count | sum | avg | min | max; Column is omitted for count() over rows.
-type Agg struct {
-	Fn     string `json:"fn"`
-	Column string `json:"column,omitempty"`
-	As     string `json:"as"`
+// GroupTerm is one grouping attribute; As defaults to a bare column
+// reference's name.
+type GroupTerm struct {
+	As   string `json:"as,omitempty"`
+	Expr Expr   `json:"expr"`
 }
 
-// Include embeds a related relation in each result record. When Aggs is set,
-// the relation is folded into one object of scalars under As instead of a
-// record array (children only) — the same shape switch Read.Aggs makes at the
-// root.
-type Include struct {
-	FK  string `json:"fk"`  // foreign key name
-	Dir string `json:"dir"` // "parent" or "children"
-	As  string `json:"as"`  // output field name
-
-	Filter  *Expr     `json:"filter,omitempty"` // children only
-	OrderBy []Order   `json:"order_by,omitempty"`
-	Limit   int       `json:"limit,omitempty"`
-	Include []Include `json:"include,omitempty"`
-	Aggs    []Agg     `json:"aggs,omitempty"`
+// AggTerm is one fold, named As in the output. Arg is nil for count over
+// rows.
+type AggTerm struct {
+	Fn  string `json:"fn"`
+	Arg *Expr  `json:"arg,omitempty"`
+	As  string `json:"as"`
 }
 
-// Read is a shaped read: the query form of Rad's QIR on the wire. It is the
-// single query operation — asking for Aggs folds the matching rows into one
-// scalar record rather than returning rows, so aggregation never needs its
-// own endpoint or verb.
-type Read struct {
-	Table   string    `json:"table"`
-	Filter  *Expr     `json:"filter,omitempty"`
-	OrderBy []Order   `json:"order_by,omitempty"`
-	Offset  int       `json:"offset,omitempty"`
-	Limit   int       `json:"limit,omitempty"`
-	Include []Include `json:"include,omitempty"`
-	Aggs    []Agg     `json:"aggs,omitempty"`
+// OrderTerm is one ordering term.
+type OrderTerm struct {
+	Expr Expr `json:"expr"`
+	Desc bool `json:"desc,omitempty"`
 }
 
-// Record is one result row: column values plus nested includes (objects for
-// parent includes — null when the FK is NULL — and arrays for children).
+// Record is one result row: scalar attributes plus nested relations
+// (objects for first fields — null when absent — and arrays for array
+// fields).
 type Record = map[string]any
 
 type MigrateRequest struct {

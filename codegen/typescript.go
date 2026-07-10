@@ -117,44 +117,67 @@ export function isConflict(err: unknown): boolean {
 
 export type Scalar = string | number | boolean | null;
 
+/** A scalar expression: a flat tagged union selected by kind. */
 export interface Expr {
-  op: "and" | "or" | "not" | "eq" | "ne" | "lt" | "lte" | "gt" | "gte" | "is_null";
-  exprs?: Expr[];
-  expr?: Expr;
-  column?: string;
+  kind: "lit" | "col" | "unary" | "binary" | "call" | "cast" | "exists" | "first" | "scalar" | "array";
   value?: Scalar;
+  scope?: string;
+  column?: string;
+  op?: string;
+  expr?: Expr;
+  left?: Expr;
+  right?: Expr;
+  fn?: string;
+  args?: Expr[];
+  to?: string;
+  node?: string;
 }
 
-export interface Order {
-  column: string;
+/** One relation operator: a flat tagged union selected by kind. */
+export interface Node {
+  kind: "scan" | "filter" | "project" | "join" | "aggregate" | "order" | "slice";
+  table?: string;
+  scope?: string;
+  input?: string;
+  left?: string;
+  right?: string;
+  join?: "inner" | "left";
+  on?: Expr;
+  predicate?: Expr;
+  spread?: string[];
+  fields?: Field[];
+  groups?: GroupTerm[];
+  aggs?: AggTerm[];
+  terms?: OrderTerm[];
+  offset?: number;
+  limit?: number;
+}
+
+export interface Field {
+  as: string;
+  expr: Expr;
+}
+
+export interface GroupTerm {
+  as?: string;
+  expr: Expr;
+}
+
+export interface AggTerm {
+  fn: "count" | "sum" | "avg" | "min" | "max";
+  arg?: Expr;
+  as: string;
+}
+
+export interface OrderTerm {
+  expr: Expr;
   desc?: boolean;
 }
 
-export interface Agg {
-  fn: "count" | "sum" | "avg" | "min" | "max";
-  column?: string;
-  as: string;
-}
-
-export interface Include {
-  fk: string;
-  dir: "parent" | "children";
-  as: string;
-  filter?: Expr;
-  order_by?: Order[];
-  limit?: number;
-  include?: Include[];
-  aggs?: Agg[];
-}
-
-export interface Read {
-  table: string;
-  filter?: Expr;
-  order_by?: Order[];
-  offset?: number;
-  limit?: number;
-  include?: Include[];
-  aggs?: Agg[];
+/** The relation graph on the wire: named nodes plus a root selector. */
+export interface GraphQuery {
+  nodes: Record<string, Node>;
+  root: { node: string; cardinality: "many" | "first" | "exactly_one" | "scalar" };
 }
 
 type Rec = Record<string, unknown>;
@@ -190,12 +213,13 @@ class Rpc {
       }
       throw new RadError(problem);
     }
-    return (await res.json()) as T;
+    const text = await res.text();
+    return (text ? JSON.parse(text) : undefined) as T;
   }
 }
 
 interface View {
-  query(r: Read): Promise<Rec[]>;
+  query(q: GraphQuery): Promise<Rec[]>;
   get(table: string, key: Rec): Promise<Rec | null>;
   create(table: string, values: Rec): Promise<Rec>;
   update(table: string, key: Rec, set: Rec, clear: string[]): Promise<Rec | null>;
@@ -210,17 +234,22 @@ class WireView implements View {
     this.prefix = prefix;
   }
 
-  async query(r: Read): Promise<Rec[]> {
-    const res = await this.rpc.req<{ records: Rec[] }>(this.prefix + "/query", r);
+  async query(q: GraphQuery): Promise<Rec[]> {
+    const res = await this.rpc.req<{ records: Rec[] }>(this.prefix + "/query", q);
     return res.records;
   }
   async get(table: string, key: Rec): Promise<Rec | null> {
-    // A point read is just a /query filtered to the key columns, limit 1 —
-    // there is no dedicated get endpoint.
-    const filter = andExpr(
-      Object.entries(key).map(([column, value]): Expr => ({ op: "eq", column, value })),
-    );
-    const recs = await this.query({ table, filter, limit: 1 });
+    // A point read is a three-node graph — scan, filter on the key columns,
+    // slice of one; there is no dedicated get endpoint.
+    const preds = Object.entries(key).map(([column, value]): Expr => eq(col("s", column), lit(value as Scalar)));
+    const recs = await this.query({
+      nodes: {
+        s: { kind: "scan", table, scope: "s" },
+        keyed: { kind: "filter", input: "s", predicate: andAll(preds) },
+        one: { kind: "slice", input: "keyed", limit: 1 },
+      },
+      root: { node: "one", cardinality: "many" },
+    });
     return recs.length ? recs[0] : null;
   }
   async create(table: string, values: Rec): Promise<Rec> {
@@ -249,10 +278,133 @@ function splitPatch(patch: Rec): { set: Rec; clear: string[] } {
   return { set, clear };
 }
 
-function andExpr(filters: Expr[]): Expr | undefined {
-  if (filters.length === 0) return undefined;
-  if (filters.length === 1) return filters[0];
-  return { op: "and", exprs: filters };
+// ── graph assembly ──────────────────────────────────────────────────────
+
+function col(scope: string, column: string): Expr {
+  return { kind: "col", scope, column };
+}
+function lit(value: Scalar): Expr {
+  return { kind: "lit", value };
+}
+function eq(left: Expr, right: Expr): Expr {
+  return { kind: "binary", op: "eq", left, right };
+}
+function bin(op: string, left: Expr, right: Expr): Expr {
+  return { kind: "binary", op, left, right };
+}
+function un(op: string, expr: Expr): Expr {
+  return { kind: "unary", op, expr };
+}
+function andAll(preds: Expr[]): Expr | undefined {
+  let out: Expr | undefined;
+  for (const p of preds) out = out ? bin("and", out, p) : p;
+  return out;
+}
+
+/** A fluent builder's accumulated state; assemble compiles it to the graph. */
+interface QuerySpec {
+  table: string;
+  filters: Expr[];
+  orders: OrderTerm[];
+  offset?: number;
+  limit?: number;
+  includes: IncludeSpec[];
+  aggs?: AggTerm[];
+}
+
+interface IncludeSpec {
+  table: string;
+  pairs: [string, string][]; // scanned-side column = outer-scope column
+  as: string;
+  kind: "first" | "array" | "fold";
+  filters: Expr[];
+  orders: OrderTerm[];
+  limit?: number;
+  nested: IncludeSpec[];
+  aggs?: AggTerm[];
+}
+
+/** Fills unscoped column references with the relation's scope. */
+function scopeExpr(e: Expr, scope: string): Expr {
+  const c: Expr = { ...e };
+  if (c.kind === "col" && !c.scope) c.scope = scope;
+  if (c.expr) c.expr = scopeExpr(c.expr, scope);
+  if (c.left) c.left = scopeExpr(c.left, scope);
+  if (c.right) c.right = scopeExpr(c.right, scope);
+  if (c.args) c.args = c.args.map((a) => scopeExpr(a, scope));
+  return c;
+}
+
+function scopeAggs(aggs: AggTerm[], scope: string): AggTerm[] {
+  return aggs.map((a) => ({ fn: a.fn, arg: a.arg ? scopeExpr(a.arg, scope) : undefined, as: a.as }));
+}
+
+/** Compiles a spec into the wire graph with deterministic node ids: a
+ * preorder walk, each scan's id doubling as its scope label. */
+function assemble(s: QuerySpec): GraphQuery {
+  const nodes: Record<string, Node> = {};
+  let n = 0;
+  const next = () => "n" + n++;
+
+  const chain = (
+    table: string, pairs: [string, string][], outerScope: string,
+    filters: Expr[], orders: OrderTerm[], offset?: number, limit?: number,
+  ): [string, string] => {
+    const scope = next();
+    nodes[scope] = { kind: "scan", table, scope };
+    let last = scope;
+    const preds = pairs.map(([local, outer]) => eq(col(scope, local), col(outerScope, outer)));
+    for (const f of filters) preds.push(scopeExpr(f, scope));
+    const pred = andAll(preds);
+    if (pred) {
+      const id = next();
+      nodes[id] = { kind: "filter", input: last, predicate: pred };
+      last = id;
+    }
+    if (orders.length) {
+      const id = next();
+      nodes[id] = { kind: "order", input: last, terms: orders.map((t) => ({ expr: scopeExpr(t.expr, scope), desc: t.desc })) };
+      last = id;
+    }
+    if ((offset ?? 0) > 0 || limit !== undefined) {
+      const id = next();
+      const node: Node = { kind: "slice", input: last };
+      if ((offset ?? 0) > 0) node.offset = offset;
+      if (limit !== undefined) node.limit = limit;
+      nodes[id] = node;
+      last = id;
+    }
+    return [last, scope];
+  };
+
+  const include = (inc: IncludeSpec, outerScope: string): Field => {
+    if (inc.kind === "fold") {
+      const [last, scope] = chain(inc.table, inc.pairs, outerScope, inc.filters, []);
+      const id = next();
+      nodes[id] = { kind: "aggregate", input: last, aggs: scopeAggs(inc.aggs ?? [], scope) };
+      return { as: inc.as, expr: { kind: "first", node: id } };
+    }
+    let [last, scope] = chain(inc.table, inc.pairs, outerScope, inc.filters, inc.orders, 0, inc.limit);
+    if (inc.nested.length) {
+      const id = next();
+      nodes[id] = { kind: "project", input: last, spread: [scope], fields: inc.nested.map((x) => include(x, scope)) };
+      last = id;
+    }
+    return { as: inc.as, expr: { kind: inc.kind, node: last } };
+  };
+
+  let [last, scope] = chain(s.table, [], "", s.filters, s.orders, s.offset, s.limit);
+  if (s.aggs && s.aggs.length) {
+    const id = next();
+    nodes[id] = { kind: "aggregate", input: last, aggs: scopeAggs(s.aggs, scope) };
+    return { nodes, root: { node: id, cardinality: "exactly_one" } };
+  }
+  if (s.includes.length) {
+    const id = next();
+    nodes[id] = { kind: "project", input: last, spread: [scope], fields: s.includes.map((x) => include(x, scope)) };
+    last = id;
+  }
+  return { nodes, root: { node: last, cardinality: "many" } };
 }`)
 	p("")
 }
@@ -364,12 +516,12 @@ func emitTSTable(p func(string, ...any), t *genTable) {
 				params += ", "
 			}
 			params += camel(c.SQLName) + ": " + tsType(c.GoType)
-			filters = append(filters, fmt.Sprintf("{ op: \"eq\", column: %q, value: %s }", c.SQLName, camel(c.SQLName)))
+			filters = append(filters, fmt.Sprintf("eq(col(\"\", %q), lit(%s))", c.SQLName, camel(c.SQLName)))
 		}
 		p("")
 		p("  /** Finds the row by the unique index on (%s). */", uqCols(uq))
 		p("  async %s(%s): Promise<%s | null> {", name, params, t.Model)
-		p("    const recs = await this.v.query({ table: %q, filter: andExpr([%s]), limit: 1 });", t.SQLName, strings.Join(filters, ", "))
+		p("    const recs = await this.v.query(assemble({ table: %q, filters: [%s], orders: [], includes: [], limit: 1 }));", t.SQLName, strings.Join(filters, ", "))
 		p("    return recs.length ? (recs[0] as unknown as %s) : null;", t.Model)
 		p("  }")
 	}
@@ -387,18 +539,18 @@ func emitTSFilterMethods(p func(string, ...any), t *genTable) {
 	for _, c := range t.Cols {
 		m := camel(c.SQLName)
 		ty := tsType(c.GoType)
-		p("  %sEq(v: %s): this { this.filters.push({ op: \"eq\", column: %q, value: v }); return this; }", m, ty, c.SQLName)
-		p("  %sNe(v: %s): this { this.filters.push({ op: \"ne\", column: %q, value: v }); return this; }", m, ty, c.SQLName)
+		p("  %sEq(v: %s): this { this.filters.push(bin(\"eq\", col(\"\", %q), lit(v))); return this; }", m, ty, c.SQLName)
+		p("  %sNe(v: %s): this { this.filters.push(bin(\"ne\", col(\"\", %q), lit(v))); return this; }", m, ty, c.SQLName)
 		if c.GoType != "bool" {
 			for _, op := range []struct{ suffix, op string }{
 				{"Lt", "lt"}, {"Lte", "lte"}, {"Gt", "gt"}, {"Gte", "gte"},
 			} {
-				p("  %s%s(v: %s): this { this.filters.push({ op: %q, column: %q, value: v }); return this; }", m, op.suffix, ty, op.op, c.SQLName)
+				p("  %s%s(v: %s): this { this.filters.push(bin(%q, col(\"\", %q), lit(v))); return this; }", m, op.suffix, ty, op.op, c.SQLName)
 			}
 		}
 		if c.Nullable {
-			p("  %sNull(): this { this.filters.push({ op: \"is_null\", column: %q }); return this; }", m, c.SQLName)
-			p("  %sNotNull(): this { this.filters.push({ op: \"not\", expr: { op: \"is_null\", column: %q } }); return this; }", m, c.SQLName)
+			p("  %sNull(): this { this.filters.push(un(\"is_null\", col(\"\", %q))); return this; }", m, c.SQLName)
+			p("  %sNotNull(): this { this.filters.push(un(\"is_not_null\", col(\"\", %q))); return this; }", m, c.SQLName)
 		}
 	}
 }
@@ -406,58 +558,66 @@ func emitTSFilterMethods(p func(string, ...any), t *genTable) {
 func emitTSOrderMethods(p func(string, ...any), t *genTable, orderTarget string) {
 	for _, c := range t.Cols {
 		m := upperCamel(c.SQLName)
-		p("  orderBy%s(): this { %s.push({ column: %q }); return this; }", m, orderTarget, c.SQLName)
-		p("  orderBy%sDesc(): this { %s.push({ column: %q, desc: true }); return this; }", m, orderTarget, c.SQLName)
+		p("  orderBy%s(): this { %s.push({ expr: col(\"\", %q) }); return this; }", m, orderTarget, c.SQLName)
+		p("  orderBy%sDesc(): this { %s.push({ expr: col(\"\", %q), desc: true }); return this; }", m, orderTarget, c.SQLName)
 	}
 }
 
 func emitTSIncludeMethods(p func(string, ...any), t *genTable, pushStmt string) {
-	for _, r := range t.Forward {
+	emit := func(r genRel, kind string) {
 		p("  include%s(fn?: (b: %sInclude) => void): this {", upperCamel(r.As), r.Target.Model)
-		p("    const b = new %sInclude(%q, \"parent\", %q);", r.Target.Model, r.FKName, r.As)
+		p("    const b = new %sInclude(%q, %s, %q, %q);", r.Target.Model, r.Target.SQLName, tsPairs(r.Pairs), r.As, kind)
 		p("    fn?.(b);")
 		p("    %s(b.build());", pushStmt)
 		p("    return this;")
 		p("  }")
 	}
+	for _, r := range t.Forward {
+		emit(r, "first")
+	}
 	for _, r := range t.Reverse {
-		p("  include%s(fn?: (b: %sInclude) => void): this {", upperCamel(r.As), r.Target.Model)
-		p("    const b = new %sInclude(%q, \"children\", %q);", r.Target.Model, r.FKName, r.As)
-		p("    fn?.(b);")
-		p("    %s(b.build());", pushStmt)
-		p("    return this;")
-		p("  }")
+		emit(r, "array")
 	}
 }
 
+// tsPairs renders correlation pairs as a TS literal.
+func tsPairs(pairs [][2]string) string {
+	out := "["
+	for i, pr := range pairs {
+		if i > 0 {
+			out += ", "
+		}
+		out += fmt.Sprintf("[%q, %q]", pr[0], pr[1])
+	}
+	return out + "]"
+}
+
 func emitTSQuery(p func(string, ...any), t *genTable) {
-	p("/** Fluent shaped-read builder for %q; conditions AND together. */", t.SQLName)
+	p("/** Fluent query builder for %q; conditions AND together. */", t.SQLName)
 	p("export class %sQuery {", t.Model)
 	p("  private filters: Expr[] = [];")
-	p("  private read: Read = { table: %q };", t.SQLName)
+	p("  private spec: QuerySpec = { table: %q, filters: [], orders: [], includes: [] };", t.SQLName)
 	p("  private v: View;")
 	p("  constructor(v: View) {")
 	p("    this.v = v;")
-	p("    this.read.order_by = [];")
-	p("    this.read.include = [];")
+	p("    this.spec.filters = this.filters;")
 	p("  }")
 	p("")
 	emitTSFilterMethods(p, t)
 	p("")
-	emitTSOrderMethods(p, t, "this.read.order_by!")
+	emitTSOrderMethods(p, t, "this.spec.orders")
 	p("")
-	p("  limit(n: number): this { this.read.limit = n; return this; }")
-	p("  offset(n: number): this { this.read.offset = n; return this; }")
+	p("  limit(n: number): this { this.spec.limit = n; return this; }")
+	p("  offset(n: number): this { this.spec.offset = n; return this; }")
 	p("")
-	emitTSIncludeMethods(p, t, "this.read.include!.push")
+	emitTSIncludeMethods(p, t, "this.spec.includes.push")
 	p("")
 	p("  async all(): Promise<%s[]> {", t.Model)
-	p("    this.read.filter = andExpr(this.filters);")
-	p("    return (await this.v.query(this.read)) as unknown as %s[];", t.Model)
+	p("    return (await this.v.query(assemble(this.spec))) as unknown as %s[];", t.Model)
 	p("  }")
 	p("")
 	p("  async first(): Promise<%s | null> {", t.Model)
-	p("    this.read.limit = 1;")
+	p("    this.spec.limit = 1;")
 	p("    const rows = await this.all();")
 	p("    return rows.length ? rows[0] : null;")
 	p("  }")
@@ -471,9 +631,8 @@ func emitTSQuery(p func(string, ...any), t *genTable) {
 // filter but not its ordering/pagination/includes (meaningless for a fold).
 // count() is always a number; the rest return null when no rows matched.
 func emitTSAggregates(p func(string, ...any), t *genTable) {
-	p("  private async fold(aggs: Agg[]): Promise<Rec> {")
-	p("    const read: Read = { table: this.read.table, filter: andExpr(this.filters), aggs };")
-	p("    const recs = await this.v.query(read);")
+	p("  private async fold(aggs: AggTerm[]): Promise<Rec> {")
+	p("    const recs = await this.v.query(assemble({ table: this.spec.table, filters: this.filters, orders: [], includes: [], aggs }));")
 	p("    return recs[0] ?? {};")
 	p("  }")
 	p("")
@@ -486,7 +645,7 @@ func emitTSAggregates(p func(string, ...any), t *genTable) {
 	fold := func(method, fn, col, ty, doc string) {
 		p("  /** %s */", doc)
 		p("  async %s(): Promise<%s | null> {", method, ty)
-		p("    const rec = await this.fold([{ fn: %q, column: %q, as: \"v\" }]);", fn, col)
+		p("    const rec = await this.fold([{ fn: %q, arg: col(\"\", %q), as: \"v\" }]);", fn, col)
 		p("    return (rec[\"v\"] as %s | null) ?? null;", ty)
 		p("  }")
 	}
@@ -506,16 +665,18 @@ func emitTSInclude(p func(string, ...any), t *genTable) {
 	p("/** Refines an included %q fetch. */", t.SQLName)
 	p("export class %sInclude {", t.Model)
 	p("  private filters: Expr[] = [];")
-	p("  private orders: Order[] = [];")
-	p("  private nested: Include[] = [];")
-	p("  private max = 0;")
-	p("  private fk: string;")
-	p("  private dir: \"parent\" | \"children\";")
+	p("  private orders: OrderTerm[] = [];")
+	p("  private nested: IncludeSpec[] = [];")
+	p("  private max?: number;")
+	p("  private table: string;")
+	p("  private pairs: [string, string][];")
 	p("  private as: string;")
-	p("  constructor(fk: string, dir: \"parent\" | \"children\", as_: string) {")
-	p("    this.fk = fk;")
-	p("    this.dir = dir;")
+	p("  private kind: \"first\" | \"array\";")
+	p("  constructor(table: string, pairs: [string, string][], as_: string, kind: \"first\" | \"array\") {")
+	p("    this.table = table;")
+	p("    this.pairs = pairs;")
 	p("    this.as = as_;")
+	p("    this.kind = kind;")
 	p("  }")
 	p("")
 	emitTSFilterMethods(p, t)
@@ -526,13 +687,11 @@ func emitTSInclude(p func(string, ...any), t *genTable) {
 	p("")
 	emitTSIncludeMethods(p, t, "this.nested.push")
 	p("")
-	p("  build(): Include {")
+	p("  build(): IncludeSpec {")
 	p("    return {")
-	p("      fk: this.fk, dir: this.dir, as: this.as,")
-	p("      filter: andExpr(this.filters),")
-	p("      order_by: this.orders.length ? this.orders : undefined,")
-	p("      limit: this.max || undefined,")
-	p("      include: this.nested.length ? this.nested : undefined,")
+	p("      table: this.table, pairs: this.pairs, as: this.as, kind: this.kind,")
+	p("      filters: this.filters, orders: this.orders, limit: this.max,")
+	p("      nested: this.nested,")
 	p("    };")
 	p("  }")
 	p("}")

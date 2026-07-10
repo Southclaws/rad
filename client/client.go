@@ -4,7 +4,7 @@
 // dynamic access.
 //
 //	c, err := radclient.Dial("rad://localhost")
-//	recs, err := c.Query(ctx, protocol.Read{Table: "users"})
+//	recs, err := c.Query(ctx, usersQuery) // a protocol.Query graph
 //
 // The generated layer speaks the OpenAPI contract on the wire; this runtime
 // keeps the ergonomic protocol.* vocabulary and converts at the boundary, so
@@ -139,7 +139,7 @@ func (c *Client) Migrate(ctx context.Context, schemaSrc string) ([]string, error
 // View is the read/write surface shared by the Client (autocommit) and Tx
 // (transactional). Generated table handles operate on a View.
 type View interface {
-	Query(ctx context.Context, r protocol.Read) ([]protocol.Record, error)
+	Query(ctx context.Context, q protocol.Query) ([]protocol.Record, error)
 	Get(ctx context.Context, table string, key map[string]any) (protocol.Record, bool, error)
 	Create(ctx context.Context, table string, values map[string]any) (protocol.Record, error)
 	Update(ctx context.Context, table string, key, set map[string]any, clear []string) (protocol.Record, bool, error)
@@ -151,8 +151,8 @@ var (
 	_ View = (*Tx)(nil)
 )
 
-func (c *Client) Query(ctx context.Context, r protocol.Read) ([]protocol.Record, error) {
-	return query(ctx, c, "", r)
+func (c *Client) Query(ctx context.Context, q protocol.Query) ([]protocol.Record, error) {
+	return query(ctx, c, "", q)
 }
 
 func (c *Client) Get(ctx context.Context, table string, key map[string]any) (protocol.Record, bool, error) {
@@ -177,8 +177,8 @@ func (c *Client) Delete(ctx context.Context, table string, key map[string]any) (
 // are the endpoint and the extra not_found the transaction form returns when
 // its id is unknown or expired.
 
-func query(ctx context.Context, c *Client, txID string, r protocol.Read) ([]protocol.Record, error) {
-	req := oas.NewOptQuery(protocol.ReadToOAS(r))
+func query(ctx context.Context, c *Client, txID string, q protocol.Query) ([]protocol.Record, error) {
+	req := oas.NewOptQuery(protocol.QueryToOAS(q))
 	if txID == "" {
 		res, err := c.oas.Query(ctx, req)
 		if err != nil {
@@ -208,14 +208,21 @@ func query(ctx context.Context, c *Client, txID string, r protocol.Read) ([]prot
 }
 
 // get fetches one row by primary key. There is no dedicated wire endpoint: a
-// point read is just a /query filtered to the key columns with a limit of one,
-// so it rides the same operation the fluent query builder uses.
+// point read is a three-node graph — scan, filter on the key columns, slice
+// of one — riding the same operation the fluent query builder uses.
 func get(ctx context.Context, c *Client, txID, table string, key map[string]any) (protocol.Record, bool, error) {
-	exprs := make([]protocol.Expr, 0, len(key))
+	preds := make([]*protocol.Expr, 0, len(key))
 	for col, val := range key {
-		exprs = append(exprs, protocol.Expr{Op: "eq", Column: col, Value: val})
+		preds = append(preds, protocol.Eq(protocol.Col("s", col), protocol.Lit(val)))
 	}
-	recs, err := query(ctx, c, txID, protocol.Read{Table: table, Filter: andExpr(exprs), Limit: 1})
+	recs, err := query(ctx, c, txID, protocol.Query{
+		Nodes: map[string]protocol.Node{
+			"s":    {Kind: "scan", Table: table, Scope: "s"},
+			"keyed": {Kind: "filter", Input: "s", Predicate: protocol.AndAll(preds)},
+			"one":  {Kind: "slice", Input: "keyed", Limit: new(int(1))},
+		},
+		Root: protocol.Root{Node: "one", Cardinality: "many"},
+	})
 	if err != nil {
 		return nil, false, err
 	}
@@ -223,19 +230,6 @@ func get(ctx context.Context, c *Client, txID, table string, key map[string]any)
 		return nil, false, nil
 	}
 	return recs[0], true, nil
-}
-
-// andExpr combines predicates into a single filter: nothing, the lone
-// predicate, or an AND over all of them.
-func andExpr(exprs []protocol.Expr) *protocol.Expr {
-	switch len(exprs) {
-	case 0:
-		return nil
-	case 1:
-		return &exprs[0]
-	default:
-		return &protocol.Expr{Op: "and", Exprs: exprs}
-	}
 }
 
 func create(ctx context.Context, c *Client, txID, table string, values map[string]any) (protocol.Record, error) {
@@ -358,8 +352,8 @@ type Tx struct {
 	id string
 }
 
-func (t *Tx) Query(ctx context.Context, r protocol.Read) ([]protocol.Record, error) {
-	return query(ctx, t.c, t.id, r)
+func (t *Tx) Query(ctx context.Context, q protocol.Query) ([]protocol.Record, error) {
+	return query(ctx, t.c, t.id, q)
 }
 
 func (t *Tx) Get(ctx context.Context, table string, key map[string]any) (protocol.Record, bool, error) {

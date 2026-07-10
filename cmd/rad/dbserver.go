@@ -91,8 +91,8 @@ type view interface {
 // catalog's column types and returning wire-shaped results. They are shared
 // verbatim by the autocommit and transaction handlers below.
 
-func (a *dbAPI) doQuery(ctx context.Context, v view, r protocol.Read) ([]protocol.Record, error) {
-	q, err := compileRead(ctx, a.cat, r)
+func (a *dbAPI) doQuery(ctx context.Context, v view, wq protocol.Query) ([]protocol.Record, error) {
+	q, err := graphQuery(wq)
 	if err != nil {
 		return nil, err
 	}
@@ -112,12 +112,15 @@ func datumRecords(d qir.Datum) []protocol.Record {
 		}
 		return protocol.Record{}
 	}
-	if d.Kind == qir.DatumArray {
+	switch d.Kind {
+	case qir.DatumArray:
 		out := make([]protocol.Record, len(d.Elems))
 		for i, el := range d.Elems {
 			out[i] = toRecord(el)
 		}
 		return out
+	case qir.DatumNull:
+		return []protocol.Record{}
 	}
 	return []protocol.Record{toRecord(d)}
 }
@@ -223,7 +226,7 @@ func (a *dbAPI) SchemaMigrate(ctx context.Context, req oas.OptMigrateProps) (oas
 // ── autocommit data operations ────────────────────────────────────────────
 
 func (a *dbAPI) Query(ctx context.Context, req oas.OptQuery) (oas.QueryRes, error) {
-	recs, err := a.doQuery(ctx, a.db, protocol.ReadFromOAS(req.Or(oas.Query{})))
+	recs, err := a.doQuery(ctx, a.db, protocol.QueryFromOAS(req.Or(oas.Query{})))
 	if err != nil {
 		if p := clientProblem(err); p != nil {
 			op := protocol.ProblemToOAS(*p)
@@ -301,7 +304,7 @@ func (a *dbAPI) TransactionQuery(ctx context.Context, req oas.OptQuery, params o
 	var recs []protocol.Record
 	err := a.withSession(params.ID, func(v view) error {
 		var e error
-		recs, e = a.doQuery(ctx, v, protocol.ReadFromOAS(req.Or(oas.Query{})))
+		recs, e = a.doQuery(ctx, v, protocol.QueryFromOAS(req.Or(oas.Query{})))
 		return e
 	})
 	if err != nil {

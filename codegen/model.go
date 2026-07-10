@@ -49,6 +49,9 @@ type genRel struct {
 	Target *genTable
 	// Cols are the FK columns on the referencing table (forward only).
 	Cols []genCol
+	// Pairs are the correlation equations for the relation's sub-query:
+	// [column on the scanned target, column on the enclosing scope].
+	Pairs [][2]string
 }
 
 // build computes the generation model from a parsed schema.
@@ -127,12 +130,19 @@ func build(pkg string, sch *schema.Schema) (*genModel, error) {
 				}
 			}
 		}
+		forwardPairs := make([][2]string, len(r.fk.Columns))
+		reversePairs := make([][2]string, len(r.fk.Columns))
+		for i := range r.fk.Columns {
+			forwardPairs[i] = [2]string{r.fk.RefColumns[i], r.fk.Columns[i]}
+			reversePairs[i] = [2]string{r.fk.Columns[i], r.fk.RefColumns[i]}
+		}
 		r.child.Forward = append(r.child.Forward, genRel{
 			Field:  forwardField,
 			As:     snake(forwardField),
 			FKName: r.fk.Name,
 			Target: r.parent,
 			Cols:   cols,
+			Pairs:  forwardPairs,
 		})
 
 		reverseField := goName(r.child.SQLName)
@@ -145,6 +155,7 @@ func build(pkg string, sch *schema.Schema) (*genModel, error) {
 			FKName: r.fk.Name,
 			Target: r.child,
 			Cols:   cols,
+			Pairs:  reversePairs,
 		})
 	}
 	return m, nil
