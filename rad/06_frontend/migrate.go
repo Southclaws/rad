@@ -45,14 +45,10 @@ func (db *DB) applyStep(ctx context.Context, step migrate.Step) error {
 		_, err := db.cat.AddColumn(ctx, s.Table, s.Def)
 		return err
 	case migrate.AddIndex:
-		// Metadata first, then backfill entries for existing rows. A failed
-		// backfill (e.g. duplicate values under a unique index) leaves the
-		// index registered but empty; rerunning the migration retries the
-		// backfill only after the data is fixed. POC trade-off.
-		if _, err := db.cat.AddIndex(ctx, s.Table, s.Def); err != nil {
-			return err
-		}
-		return db.eng.BackfillIndex(ctx, s.Table, s.Def.Name)
+		// Registration and backfill commit together: a failed backfill (e.g.
+		// duplicate values under a unique index) rolls the registration back
+		// too, so the catalog never exposes an index missing its entries.
+		return db.eng.AddIndexWithBackfill(ctx, s.Table, s.Def)
 	case migrate.DropIndex:
 		return db.cat.DropIndex(ctx, s.Table, s.Index)
 	case migrate.DropColumn:

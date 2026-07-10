@@ -127,7 +127,10 @@ func TestMigrationWorkflow(t *testing.T) {
 	}
 }
 
-// A unique-index backfill over duplicate data is refused.
+// A unique-index backfill over duplicate data is refused — and the refusal
+// rolls back the index registration too, so the catalog never exposes an
+// index missing its entries. Fixing the data and re-migrating then succeeds
+// and the constraint is live.
 func TestUniqueBackfillRejectsDuplicates(t *testing.T) {
 	ctx := context.Background()
 	db := frontend.Open(memStore(t))
@@ -139,7 +142,7 @@ func TestUniqueBackfillRejectsDuplicates(t *testing.T) {
 		}
 	}
 
-	_, err := db.MigrateFile(ctx, "schema.rad", []byte(`
+	uniqueName := `
 tables:
   - name: users
     columns:
@@ -151,8 +154,32 @@ tables:
       - { name: user_id, type: string, ref: users.id }
       - { name: title,   type: string }
       - { name: done,    type: bool, default: false }
-`))
+`
+	_, err := db.MigrateFile(ctx, "schema.rad", []byte(uniqueName))
 	if err == nil {
 		t.Fatal("unique backfill over duplicates succeeded")
+	}
+
+	// The registration must have rolled back with the backfill: no index on
+	// users. A registered-but-empty index would let reads silently drop rows.
+	tables, err := db.Tables(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tbl := range tables {
+		if tbl.Name == "users" && len(tbl.Indexes) != 0 {
+			t.Fatalf("failed backfill left index registered on users: %+v", tbl.Indexes)
+		}
+	}
+
+	// Fix the data; the same migration now applies and the constraint is live.
+	if _, _, err := db.Update(ctx, "users", lir.Row{"id": lir.Text("u2")}, lir.Row{"name": lir.Text("unique")}); err != nil {
+		t.Fatal(err)
+	}
+	if steps := migrateTo(t, db, ctx, uniqueName); len(steps) == 0 {
+		t.Fatal("re-migration after fixing data applied no steps")
+	}
+	if err := db.Insert(ctx, "users", lir.Row{"id": lir.Text("u3"), "name": lir.Text("dup")}); err == nil {
+		t.Fatal("unique index registered by re-migration is not enforcing")
 	}
 }

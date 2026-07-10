@@ -9,7 +9,9 @@ package catalog
 //     never reused, so orphans are unreachable garbage awaiting a future
 //     vacuum — acceptable for the POC.
 //   - AddIndex records metadata only; backfilling entries for existing rows
-//     is the executor's job (the migration engine drives both).
+//     is the executor's job. The two must commit together — a registered
+//     index with no entries would let the planner return wrong results — so
+//     the executor composes AddIndexIn with its backfill in one transaction.
 
 import (
 	"context"
@@ -29,34 +31,41 @@ func saveTable(ctx context.Context, view kv.KV, tbl Table) error {
 	return view.Put(ctx, []byte(tablePrefix+tbl.ID), raw)
 }
 
-// mutateTable loads a table, applies fn, and saves the result, all in one
-// DDL transaction.
+// mutateTableIn loads a table, applies fn, and saves the result, all against
+// the given view — typically a transaction owned by the caller, so table
+// mutations can commit atomically with other work (index backfills).
+func mutateTableIn(ctx context.Context, view kv.KV, tableName string, fn func(view kv.KV, tbl *Table) error) (Table, error) {
+	id, ok, err := view.Get(ctx, []byte(tableNamePrefix+tableName))
+	if err != nil {
+		return Table{}, err
+	}
+	if !ok {
+		return Table{}, fmt.Errorf("catalog: table %q does not exist", tableName)
+	}
+	raw, ok, err := view.Get(ctx, []byte(tablePrefix+string(id)))
+	if err != nil {
+		return Table{}, err
+	}
+	if !ok {
+		return Table{}, fmt.Errorf("catalog: table %q metadata missing", tableName)
+	}
+	var tbl Table
+	if err := json.Unmarshal(raw, &tbl); err != nil {
+		return Table{}, err
+	}
+	if err := fn(view, &tbl); err != nil {
+		return Table{}, err
+	}
+	return tbl, saveTable(ctx, view, tbl)
+}
+
+// mutateTable is mutateTableIn in its own DDL transaction.
 func (c *Catalog) mutateTable(ctx context.Context, tableName string, fn func(view kv.KV, tbl *Table) error) (Table, error) {
 	var out Table
 	err := c.ddl(ctx, func(view kv.KV) error {
-		id, ok, err := view.Get(ctx, []byte(tableNamePrefix+tableName))
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("catalog: table %q does not exist", tableName)
-		}
-		raw, ok, err := view.Get(ctx, []byte(tablePrefix+string(id)))
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("catalog: table %q metadata missing", tableName)
-		}
-		var tbl Table
-		if err := json.Unmarshal(raw, &tbl); err != nil {
-			return err
-		}
-		if err := fn(view, &tbl); err != nil {
-			return err
-		}
-		out = tbl
-		return saveTable(ctx, view, tbl)
+		var err error
+		out, err = mutateTableIn(ctx, view, tableName, fn)
+		return err
 	})
 	if err != nil {
 		return Table{}, err
@@ -217,12 +226,14 @@ func (c *Catalog) RenameColumn(ctx context.Context, tableName, oldName, newName 
 	})
 }
 
-// AddIndex records a new index in the catalog and returns it. Entries for
-// existing rows are NOT written here — the executor backfills them (see the
-// migration engine), and until it does the index is incomplete.
-func (c *Catalog) AddIndex(ctx context.Context, tableName string, def IndexDef) (Index, error) {
+// AddIndexIn records a new index in the catalog against the caller's view
+// and returns the updated table plus the new index. Entries for existing
+// rows are NOT written here — the executor backfills them, in the same
+// transaction, so the registration and its entries commit or fail together
+// (a registered index with no entries would silently drop rows from reads).
+func AddIndexIn(ctx context.Context, view kv.KV, tableName string, def IndexDef) (Table, Index, error) {
 	var added Index
-	_, err := c.mutateTable(ctx, tableName, func(view kv.KV, tbl *Table) error {
+	tbl, err := mutateTableIn(ctx, view, tableName, func(view kv.KV, tbl *Table) error {
 		if _, exists := tbl.Index(def.Name); exists {
 			return fmt.Errorf("catalog: index %q already exists on table %q", def.Name, tableName)
 		}
@@ -241,6 +252,21 @@ func (c *Catalog) AddIndex(ctx context.Context, tableName string, def IndexDef) 
 		added = Index{ID: id, Name: def.Name, Columns: def.Columns, Unique: def.Unique}
 		tbl.Indexes = append(tbl.Indexes, added)
 		return nil
+	})
+	if err != nil {
+		return Table{}, Index{}, err
+	}
+	return tbl, added, nil
+}
+
+// AddIndex is AddIndexIn in its own DDL transaction, for indexes over tables
+// with no existing rows to backfill.
+func (c *Catalog) AddIndex(ctx context.Context, tableName string, def IndexDef) (Index, error) {
+	var added Index
+	err := c.ddl(ctx, func(view kv.KV) error {
+		var err error
+		_, added, err = AddIndexIn(ctx, view, tableName, def)
+		return err
 	})
 	if err != nil {
 		return Index{}, err
