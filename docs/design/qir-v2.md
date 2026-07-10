@@ -50,19 +50,32 @@ Every relation node obeys the same laws:
 
 ```go
 type Relation interface {
-    Output() RowType        // the row type this relation produces
+    Output() RowType        // the row type this relation produces; every
+                            // field carries a dense SlotID
     Inputs() []Relation     // child relations
-    FreeScopes() ScopeSet   // scopes referenced but not defined beneath
+    FreeSlots() SlotSet     // slots referenced but not produced beneath
     Card() Cardinality      // {Min, Max} bounds, Max may be Unbounded
 }
 type Expr interface {
     Type() Type             // inferred type, including nullability
-    FreeScopes() ScopeSet
+    FreeSlots() SlotSet
 }
 ```
 
-`FreeScopes` is the whole correlation story. There is no `Correlate` node: a
-sub-relation that references a scope it does not define is *correlated*, as a
+**Relational closure is a law, not an aspiration**: the output of every
+relation node must be usable as an ordinary input relation, which means every
+output attribute must be addressable by later operators. In the *unbound* IR
+attributes are named — a `Column{scope, name}` names a column of a bound
+scope, and row-producing nodes (`scan` always; `project` and `aggregate` when
+their outputs are referenced downstream) bind the scope labels those names
+resolve against. In the *bound* IR the binder assigns every relation output a
+dense **slot** per field and rewrites every column reference to a
+`SlotRef(slot)` — names and scopes exist only at the binding boundary. A
+`Filter` above an `Aggregate` references the fold's `total` as a slot the
+aggregate produced, exactly as it would reference a scanned column.
+
+`FreeSlots` is the whole correlation story. There is no `Correlate` node: a
+sub-relation that references a slot it does not produce is *correlated*, as a
 derived property. The binder computes it; the planner exploits it.
 
 ## Relation operators
@@ -73,14 +86,17 @@ Filter    { input, predicate }        keep rows where predicate is TRUE (3VL)
 Project   { input, fields }           establish a new row type; fields are exprs
 Join      { left, right, kind, on }   inner | left  (semi/anti reserved)
 Aggregate { input, groups, terms }    fold; empty groups ⇒ exactly one row
-Order     { input, terms }            stable sort; NULLs first asc, last desc
-Slice     { input, offset, limit }    limit 0 = unlimited (existing convention)
+Order     { input, terms }            logical ordering; NULLs first asc, last desc
+Slice     { input, offset, limit }    limit absent = unlimited; 0 = zero rows
 ```
 
 Notes:
 
-- `Scan` is the only scope-binding node in v1. The scope label is how column
-  references name their source; after binding, labels become dense scope IDs.
+- `Scan` always binds a scope; `Project` and `Aggregate` — the nodes that
+  establish new row types — may bind one too, and must when a later operator
+  references their outputs by name (`Order(stats, Column(stats, total))`).
+  Scope labels exist only in the unbound IR; the binder resolves every
+  reference to an output slot.
 - `Filter` keeps only rows whose predicate evaluates to `TRUE` — not
   `UNKNOWN`. This is the load-bearing 3VL rule.
 - `Project` is not column selection; it establishes a new row type. Aliases,
@@ -117,15 +133,32 @@ conversion. These are the only four doors:
 
 ```text
 Exists(rel)  : Expr<Bool>            true iff rel has ≥1 row; never NULL
-First(rel)   : Expr<Row?>            first row as a nested object, or NULL
-Scalar(rel)  : Expr<T?>              single-column relation → its value, or NULL
+First(rel)   : Expr<Row?>            the row as a nested object, or NULL
+Scalar(rel)  : Expr<T?>              single-column, single-row relation → its
+                                     value, or NULL when there is no row
 Array(rel)   : Expr<Array<Row>>      all rows as a nested array; empty, never NULL
 ```
 
-`First` and `Scalar` over a multi-row relation take the first row (cheap,
-deterministic given the relation's ordering); they do not error. A relation
-can therefore appear almost anywhere — inside a projection field, inside a
-filter predicate — but never *as* a scalar without declaring the conversion.
+`First` and `Scalar` must be deterministic — a KV scan's encounter order is
+physical, never logical, and access-path choice must not change results. So
+the binder enforces, statically:
+
+- `First(rel)` is legal iff `rel.Card().Max ≤ 1` (a unique-key filter, a
+  global aggregate, a `Slice` of 1) **or** `rel` carries an explicit logical
+  `Order`. Take-first over an *ordered* relation is deliberate row selection;
+  take-first over an unordered one is a plan choice leaking into results, and
+  is rejected. (`Any(rel)`, an explicitly nondeterministic escape, is
+  reserved but not built.)
+- `Scalar(rel)` is a cardinality *assertion*: the relation must have exactly
+  one output column and statically at most one row. "First scalar" is spelled
+  out as the composition `Scalar(Slice₁(Order(...)))` rather than implied.
+
+`Slice` itself is explicitly positional: slicing an unordered relation is a
+declared-arbitrary selection (the SQL `LIMIT` without `ORDER BY` contract),
+and the path-independence invariant carries that one documented exception.
+A relation can therefore appear almost anywhere — inside a projection field,
+inside a filter predicate — but never *as* a scalar without declaring the
+conversion, and never with plan-dependent contents.
 
 Shaping falls out: a projection field whose expr is `First(sub)` renders as a
 nested object (or JSON null), `Array(sub)` as a nested array, `Scalar(sub)` as
@@ -180,8 +213,9 @@ boardTasks = Filter(
 )
 ```
 
-The binder sees `FreeScopes(boardTasks) = {b}` — the relation is correlated.
-It appears in a projection over boards:
+The binder resolves `b.id` to a slot produced outside `boardTasks`, so
+`FreeSlots(boardTasks) ≠ ∅` — the relation is correlated. It appears in a
+projection over boards:
 
 ```text
 Project(
@@ -212,9 +246,16 @@ RelNode kind ∈ scan filter project join aggregate order slice
 Expr    kind ∈ lit col unary binary call cast exists first scalar array
 ```
 
-- `scan` requires `scope`, unique per query.
+- `scan` requires `scope`, unique per query. `project` and `aggregate` accept
+  an optional `scope` binding their *output* row, required whenever a later
+  node references their fields by name — relational closure on the wire.
 - `project` has `spread: [scopes]` ("all columns of these scopes first") plus
-  `fields: [{as, expr}]`.
+  `fields: [{as, expr}]`. Name collisions — explicit field vs explicit field,
+  explicit field vs spread-produced column, spread vs spread across scopes —
+  are all rejected at bind time.
+- `slice.limit` omitted means unlimited; an explicit `0` means zero rows. (The
+  old wire's "0 = unlimited" convention ends at the compat boundary — an IR
+  must be able to say *no rows*.)
 - `and`/`or` are binary; clients left-fold chains.
 - Crossings (`exists|first|scalar|array`) carry `node: <id>` referencing the
   sub-relation.
@@ -297,12 +338,24 @@ literals, scope labels. The binder — the engine's front door — produces
 *bound* IR in one recursive walk:
 
 ```text
-cycle detection → scope resolution → name/ID binding → literal coercion
-→ type inference → cardinality inference → free scopes → validation
+cycle detection → scope resolution → name/ID binding → slot assignment
+→ literal coercion → type inference → cardinality inference → free slots
+→ validation
 ```
 
-- Names resolve to catalog IDs; scope labels to dense scope IDs. Crossings
-  keep the outer scope stack visible — that is how correlation binds.
+- Names resolve to catalog IDs; every relation output gets dense slot IDs and
+  every column reference becomes a `SlotRef`. Crossings keep the outer scope
+  stack visible — that is how correlation binds — and a reference into a
+  `project`/`aggregate` output requires that node to have bound a scope.
+- Cardinality inference knows uniqueness: a `Filter` whose equality conjuncts
+  cover a unique key (primary key or unique index) of its scan has `Max = 1`
+  — this is what lets the to-parent pattern (`First` over an FK→PK filter)
+  pass the determinism rule statically.
+- `Order` gains a deterministic tie-breaker at bind time when the output
+  carries a known unique key (a scan's primary key, an aggregate's group
+  slots): the key is appended as final ascending terms, so tied rows order
+  identically under every access path. Without a known unique key, ties are
+  documented as unspecified.
 - **The binder owns all literal coercion.** A `lit` arrives as a raw JSON
   scalar and is typed by the column it meets (a JSON number becomes int64 or
   float64 by the column's type, never by guessing); a NULL literal adopts the
@@ -313,9 +366,11 @@ cycle detection → scope resolution → name/ID binding → literal coercion
   `Scalar` → the single column's type, nullable; `Array` → non-nullable array.
 - Validation is exhaustive and bind-time: unknown tables/columns, out-of-scope
   references, duplicate scope labels, non-Bool predicates, type mismatches,
-  `Scalar` over a relation whose arity ≠ 1, aggregate term rules, columns
-  above an Aggregate resolving only to groups/terms, duplicate projection
-  fields, cycles. The planner and executor trust bound IR completely.
+  `Scalar` over a relation whose arity ≠ 1 or whose static `Max > 1`,
+  `First` over an unordered multi-row relation, aggregate term rules, columns
+  above an Aggregate resolving only to groups/terms, projection name
+  collisions (explicit×explicit, explicit×spread, spread×spread), cycles.
+  The planner and executor trust bound IR completely.
 
 ## Physical mapping
 
@@ -336,31 +391,51 @@ operators; the invariant carried over from v1, now made structural:
    satisfies the required ordering wins.
 4. Otherwise, full table scan.
 
-**Ordered-index pushdown** (deliberately limited): index scans provide their
-column order (ascending only — the KV has no reverse scan; `desc` always
-sorts). When provided ⊇ required ordering and a `Slice` is present, the sort
-disappears and the scan stops after `offset+limit` accepted rows. No general
-Top-N heap.
+**Ordered-index pushdown** (deliberately limited): an index scan's *provided*
+ordering is the index columns **after the equality-fixed prefix**, then the
+primary-key suffix, all ascending — an index on `(board_id, priority)` with
+`board_id = X` provides `priority` order; without that equality it provides
+`(board_id, priority)` order, not `priority`. (The KV has no reverse scan;
+`desc` always sorts.) When provided ⊇ required and a `Slice` is present, the
+sort disappears and the scan stops after `offset+limit` accepted rows. No
+general Top-N heap.
 
-**Batched decorrelation** — the N+1 kill. A projection field whose crossing
-is *key-correlated* (its sub-relation's only free references are
-`inner.col = outer.col` equalities) executes batched:
+**Deduplicated correlated execution** — how correlation runs, stated
+honestly. A projection field whose crossing is *key-correlated* (its
+sub-relation's only free references are `inner.col = outer.col` equalities)
+executes grouped over the outer batch:
 
 ```text
 for the current batch of outer rows:
     collect the distinct outer key tuples        (NULL key ⇒ empty result now)
-    fetch the sub-relation once per DISTINCT key (index scan / PK get)
+    KeyedLookup(inner plan, distinct keys)       one plan instantiation per
+                                                 DISTINCT key today
     group results by key; attach to each outer row
     recurse: grandchildren batch across this inner batch
 ```
 
+This *dissolves* N+1 semantically — no per-outer-row plan recursion, and
+duplicate keys are fetched once — but for N distinct parents the storage work
+is still N lookups/scans. The physical seam is explicit so that changes
+without touching the IR: **`KeyedLookup{plan, keys []Tuple}`** is one
+operator, and the storage boundary exposes `LookupMany(ctx, keys)` whose
+first implementation loops. True multi-key batching — merged range scans,
+concurrent prefix scans, one broad scan partitioned by key — lands behind
+that seam later.
+
 The to-parent pattern (correlation keys covering the inner PK) becomes
-deduplicated point gets. A per-key `Slice` ("first 20 tasks *per board*")
-keeps per-key scans with stop-early — a merged multi-key scan cannot honour a
-per-key limit and is deferred. Generally-correlated sub-relations (non-key
-predicates over outer scopes) fall back to per-row nested evaluation.
-Batched and nested execution are result-equivalent by construction, and the
-conformance suite asserts it.
+deduplicated point gets — already ahead of today's per-row fetches. A
+per-key `Slice` ("first 20 tasks *per board*") keeps per-key scans with
+stop-early — a merged multi-key scan cannot honour a per-key limit.
+Generally-correlated sub-relations (non-key predicates over outer scopes)
+fall back to per-row nested evaluation. Grouped and nested execution are
+result-equivalent by construction, and the conformance suite asserts it.
+
+Crossings in a projection are never scalar-evaluator callbacks: `Array`,
+`First`, `Scalar`, and `Exists` fields compile to explicit materialisation
+work inside the projection operator (`KeyedLookup` when key-correlated, an
+operator-tree sub-plan per row when general) — a thousand-row `Array` is a
+physical plan the executor can see, not a recursive function call hiding one.
 
 **Execution** is a pull-operator tree (`Next(ctx) (Frame, bool, error)`), one
 operator per physical node. Operators may materialise internally (sort,
@@ -375,7 +450,9 @@ present-with-null; children are arrays, never null; folds are scalar objects).
 - No streaming pipeline end-to-end; no vectorised execution.
 - No cost model, statistics, or join reordering; access selection is the
   rule-based ranking above. Joins execute as nested loops (inner, left).
-- No merged multi-key batched scans; no index-only scans; no descending scans.
+- No true multi-key storage batching (merged or concurrent range scans) — the
+  `KeyedLookup`/`LookupMany` seam exists, its first implementation loops per
+  distinct key. No index-only scans; no descending scans.
 - No `Call` registry, no expression arithmetic on the wire from the generated
   clients (the grammar carries it; nothing emits it yet).
 - No `HAVING`, `DISTINCT`, window functions, recursive queries, CTEs. GROUP BY
@@ -395,7 +472,7 @@ graph admits DAG sharing without a format change.
 | Two-valued NULL logic (`NOT(x=1)` matches NULL) | **Fixed** — K3, Filter keeps TRUE |
 | NULLs participate in unique constraints | **Fixed** — NULLs distinct |
 | Only equalities drive access paths | **Fixed** — trailing range bounds |
-| Includes are N+1 by construction | **Fixed** — batched decorrelation |
+| Includes are N+1 by construction | **Dissolved semantically** — no per-row plan recursion; keys deduplicated and grouped. Physically still one lookup per distinct key, behind the `KeyedLookup` seam where true batching lands later |
 | Full materialisation, no pushdown | **Partly** — stop-early slices over ordered index scans; operators still materialise internally |
 | Registered-but-empty index after failed unique backfill | **Fixed** (standalone, before this design lands) — registration + backfill in one transaction |
 | Aggregates reject order/limit/include structurally | **Dissolved** — legal algebra; binder rules replace the blanket rejection |
