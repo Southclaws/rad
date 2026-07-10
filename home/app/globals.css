@@ -1374,10 +1374,19 @@ main,
   font-family: var(--mono);
   font-size: 0.68rem;
   letter-spacing: 0.04em;
-  color: var(--amber-mid);
+  color: var(--muted);
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 0.12rem 0.4rem;
+}
+/* warn: amber border and a faint amber wash, full border (no side-stripe) */
+.callout--warn {
+  border-color: oklch(0.66 0.16 58 / 0.5);
+  background: oklch(0.66 0.16 58 / 0.07);
+}
+.callout--warn .callout__tag {
+  color: var(--amber-mid);
+  border-color: oklch(0.66 0.16 58 / 0.45);
 }
 .callout p {
   margin: 0;

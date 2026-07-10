@@ -30,12 +30,19 @@ export async function generateMetadata({
 }
 
 // Callout is the one custom MDX component our content uses. Full border with a
-// tint — no side-stripe.
-function Callout({ children }: { children: ReactNode }) {
+// tint — no side-stripe. `type` selects the tone: "note" (neutral) or "warn"
+// (amber), and doubles as the tag label.
+function Callout({
+  type = "note",
+  children,
+}: {
+  type?: "note" | "warn";
+  children: ReactNode;
+}) {
   return (
-    <div className="callout" role="note">
+    <div className={`callout callout--${type}`} role="note">
       <span className="callout__tag" aria-hidden="true">
-        note
+        {type}
       </span>
       <div>{children}</div>
     </div>
