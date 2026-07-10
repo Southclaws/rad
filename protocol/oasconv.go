@@ -131,9 +131,11 @@ func exprToOAS(e *Expr) *oas.Expr {
 	if e.Column != "" {
 		o.Column = oas.NewOptString(e.Column)
 	}
-	if e.Value != nil {
-		o.Value = oas.Value(anyToRaw(e.Value))
-	}
+	// Always populate Value: the generated codec emits the field
+	// unconditionally, and an empty raw value would render as the malformed
+	// body `"value":}`. Value-less ops (and/or/not/is_null) carry an explicit
+	// JSON null, which decodes back to a nil Value.
+	o.Value = oas.Value(anyToRaw(e.Value))
 	return o
 }
 

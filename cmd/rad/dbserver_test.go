@@ -146,6 +146,60 @@ func TestClientCRUDOverTheWire(t *testing.T) {
 	}
 }
 
+// Value-less expression ops (and/or/not/is_null) must encode cleanly: the
+// generated wire codec emits the `value` field unconditionally, so the
+// converter has to supply an explicit JSON null rather than leave the raw
+// value empty (which produced the malformed body `"value":}`).
+func TestClientExprOpsOverTheWire(t *testing.T) {
+	c := migrated(t)
+	ctx := context.Background()
+
+	if _, err := c.Create(ctx, "users", map[string]any{"name": "ada", "age": 40}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Create(ctx, "users", map[string]any{"name": "bob"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two conjuncts fold into an `and` — an expr with no value of its own.
+	recs, err := c.Query(ctx, protocol.Read{Table: "users", Filter: &protocol.Expr{
+		Op: "and",
+		Exprs: []protocol.Expr{
+			{Op: "eq", Column: "name", Value: "ada"},
+			{Op: "gte", Column: "age", Value: 18},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("and filter: %v", err)
+	}
+	if len(recs) != 1 || recs[0]["name"] != "ada" {
+		t.Fatalf("and filter recs = %v", recs)
+	}
+
+	// is_null carries only a column.
+	recs, err = c.Query(ctx, protocol.Read{Table: "users", Filter: &protocol.Expr{
+		Op: "is_null", Column: "age",
+	}})
+	if err != nil {
+		t.Fatalf("is_null filter: %v", err)
+	}
+	if len(recs) != 1 || recs[0]["name"] != "bob" {
+		t.Fatalf("is_null recs = %v", recs)
+	}
+
+	// not wraps a sub-expression and has no value either.
+	recs, err = c.Query(ctx, protocol.Read{Table: "users", Filter: &protocol.Expr{
+		Op:   "not",
+		Expr: &protocol.Expr{Op: "is_null", Column: "age"},
+	}})
+	if err != nil {
+		t.Fatalf("not filter: %v", err)
+	}
+	if len(recs) != 1 || recs[0]["name"] != "ada" {
+		t.Fatalf("not recs = %v", recs)
+	}
+}
+
 // Errors arrive as RFC 7807 problems with stable codes.
 func TestClientProblemDetails(t *testing.T) {
 	c := migrated(t)
