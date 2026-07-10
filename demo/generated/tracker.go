@@ -251,6 +251,25 @@ func scopeExpr(e *protocol.Expr, scope string) *protocol.Expr {
 	return &c
 }
 
+// assembleGrouped compiles the spec into a grouped fold: one row per
+// distinct value of groupCol, counted, ordered by the group key. The
+// aggregate binds an output scope so the ordering can address its key —
+// relational closure on the wire.
+func assembleGrouped(s querySpec, groupCol string) protocol.Query {
+	g := &graphBuilder{nodes: map[string]protocol.Node{}}
+	last, scope := g.chain(s.table, nil, "", s.filters, nil, 0, 0, false)
+	agg := g.next()
+	g.nodes[agg] = protocol.Node{
+		Kind: "aggregate", Input: last, Scope: agg,
+		Groups: []protocol.GroupTerm{{Expr: *protocol.Col(scope, groupCol)}},
+		Aggs:   []protocol.AggTerm{{Fn: "count", As: "count"}},
+	}
+	ord := g.next()
+	g.nodes[ord] = protocol.Node{Kind: "order", Input: agg,
+		Terms: []protocol.OrderTerm{{Expr: *protocol.Col(agg, groupCol)}}}
+	return protocol.Query{Nodes: g.nodes, Root: protocol.Root{Node: ord, Cardinality: "many"}}
+}
+
 func scopeAggs(aggs []protocol.AggTerm, scope string) []protocol.AggTerm {
 	out := make([]protocol.AggTerm, len(aggs))
 	for i, a := range aggs {
@@ -879,6 +898,138 @@ func (q *UserQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 		return nil, err
 	}
 	return recInt64Ptr(rec, "v"), nil
+}
+
+// UserCountByID is one per-id row count.
+type UserCountByID struct {
+	ID    string
+	Count int64
+}
+
+// CountByID counts matching rows per distinct "id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *UserQuery) CountByID(ctx context.Context) ([]UserCountByID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]UserCountByID, len(recs))
+	for i, r := range recs {
+		out[i] = UserCountByID{ID: recString(r, "id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// UserCountByUsername is one per-username row count.
+type UserCountByUsername struct {
+	Username string
+	Count    int64
+}
+
+// CountByUsername counts matching rows per distinct "username", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *UserQuery) CountByUsername(ctx context.Context) ([]UserCountByUsername, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "username"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]UserCountByUsername, len(recs))
+	for i, r := range recs {
+		out[i] = UserCountByUsername{Username: recString(r, "username"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// UserCountByDisplayName is one per-display_name row count.
+type UserCountByDisplayName struct {
+	DisplayName *string
+	Count       int64
+}
+
+// CountByDisplayName counts matching rows per distinct "display_name", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *UserQuery) CountByDisplayName(ctx context.Context) ([]UserCountByDisplayName, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "display_name"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]UserCountByDisplayName, len(recs))
+	for i, r := range recs {
+		out[i] = UserCountByDisplayName{DisplayName: recStringPtr(r, "display_name"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// UserCountByPasswordHash is one per-password_hash row count.
+type UserCountByPasswordHash struct {
+	PasswordHash string
+	Count        int64
+}
+
+// CountByPasswordHash counts matching rows per distinct "password_hash", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *UserQuery) CountByPasswordHash(ctx context.Context) ([]UserCountByPasswordHash, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "password_hash"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]UserCountByPasswordHash, len(recs))
+	for i, r := range recs {
+		out[i] = UserCountByPasswordHash{PasswordHash: recString(r, "password_hash"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// UserCountByEmail is one per-email row count.
+type UserCountByEmail struct {
+	Email *string
+	Count int64
+}
+
+// CountByEmail counts matching rows per distinct "email", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *UserQuery) CountByEmail(ctx context.Context) ([]UserCountByEmail, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "email"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]UserCountByEmail, len(recs))
+	for i, r := range recs {
+		out[i] = UserCountByEmail{Email: recStringPtr(r, "email"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// UserCountByCreatedAt is one per-created_at row count.
+type UserCountByCreatedAt struct {
+	CreatedAt int64
+	Count     int64
+}
+
+// CountByCreatedAt counts matching rows per distinct "created_at", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *UserQuery) CountByCreatedAt(ctx context.Context) ([]UserCountByCreatedAt, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "created_at"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]UserCountByCreatedAt, len(recs))
+	for i, r := range recs {
+		out[i] = UserCountByCreatedAt{CreatedAt: recInt64(r, "created_at"), Count: recInt64(r, "count")}
+	}
+	return out, nil
 }
 
 // UserInclude refines an included "users" fetch.
@@ -1570,6 +1721,94 @@ func (q *SessionQuery) MaxExpiresAt(ctx context.Context) (*int64, error) {
 	return recInt64Ptr(rec, "v"), nil
 }
 
+// SessionCountByToken is one per-token row count.
+type SessionCountByToken struct {
+	Token string
+	Count int64
+}
+
+// CountByToken counts matching rows per distinct "token", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *SessionQuery) CountByToken(ctx context.Context) ([]SessionCountByToken, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "token"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SessionCountByToken, len(recs))
+	for i, r := range recs {
+		out[i] = SessionCountByToken{Token: recString(r, "token"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// SessionCountByUserID is one per-user_id row count.
+type SessionCountByUserID struct {
+	UserID string
+	Count  int64
+}
+
+// CountByUserID counts matching rows per distinct "user_id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *SessionQuery) CountByUserID(ctx context.Context) ([]SessionCountByUserID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "user_id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SessionCountByUserID, len(recs))
+	for i, r := range recs {
+		out[i] = SessionCountByUserID{UserID: recString(r, "user_id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// SessionCountByCreatedAt is one per-created_at row count.
+type SessionCountByCreatedAt struct {
+	CreatedAt int64
+	Count     int64
+}
+
+// CountByCreatedAt counts matching rows per distinct "created_at", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *SessionQuery) CountByCreatedAt(ctx context.Context) ([]SessionCountByCreatedAt, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "created_at"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SessionCountByCreatedAt, len(recs))
+	for i, r := range recs {
+		out[i] = SessionCountByCreatedAt{CreatedAt: recInt64(r, "created_at"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// SessionCountByExpiresAt is one per-expires_at row count.
+type SessionCountByExpiresAt struct {
+	ExpiresAt int64
+	Count     int64
+}
+
+// CountByExpiresAt counts matching rows per distinct "expires_at", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *SessionQuery) CountByExpiresAt(ctx context.Context) ([]SessionCountByExpiresAt, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "expires_at"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SessionCountByExpiresAt, len(recs))
+	for i, r := range recs {
+		out[i] = SessionCountByExpiresAt{ExpiresAt: recInt64(r, "expires_at"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
 // SessionInclude refines an included "sessions" fetch.
 type SessionInclude struct {
 	spec includeSpec
@@ -2075,6 +2314,72 @@ func (q *TeamQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 		return nil, err
 	}
 	return recInt64Ptr(rec, "v"), nil
+}
+
+// TeamCountByID is one per-id row count.
+type TeamCountByID struct {
+	ID    string
+	Count int64
+}
+
+// CountByID counts matching rows per distinct "id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TeamQuery) CountByID(ctx context.Context) ([]TeamCountByID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TeamCountByID, len(recs))
+	for i, r := range recs {
+		out[i] = TeamCountByID{ID: recString(r, "id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TeamCountByName is one per-name row count.
+type TeamCountByName struct {
+	Name  string
+	Count int64
+}
+
+// CountByName counts matching rows per distinct "name", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TeamQuery) CountByName(ctx context.Context) ([]TeamCountByName, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "name"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TeamCountByName, len(recs))
+	for i, r := range recs {
+		out[i] = TeamCountByName{Name: recString(r, "name"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TeamCountByCreatedAt is one per-created_at row count.
+type TeamCountByCreatedAt struct {
+	CreatedAt int64
+	Count     int64
+}
+
+// CountByCreatedAt counts matching rows per distinct "created_at", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TeamQuery) CountByCreatedAt(ctx context.Context) ([]TeamCountByCreatedAt, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "created_at"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TeamCountByCreatedAt, len(recs))
+	for i, r := range recs {
+		out[i] = TeamCountByCreatedAt{CreatedAt: recInt64(r, "created_at"), Count: recInt64(r, "count")}
+	}
+	return out, nil
 }
 
 // TeamInclude refines an included "teams" fetch.
@@ -2612,6 +2917,94 @@ func (q *TeamMemberQuery) MaxJoinedAt(ctx context.Context) (*int64, error) {
 		return nil, err
 	}
 	return recInt64Ptr(rec, "v"), nil
+}
+
+// TeamMemberCountByTeamID is one per-team_id row count.
+type TeamMemberCountByTeamID struct {
+	TeamID string
+	Count  int64
+}
+
+// CountByTeamID counts matching rows per distinct "team_id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TeamMemberQuery) CountByTeamID(ctx context.Context) ([]TeamMemberCountByTeamID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "team_id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TeamMemberCountByTeamID, len(recs))
+	for i, r := range recs {
+		out[i] = TeamMemberCountByTeamID{TeamID: recString(r, "team_id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TeamMemberCountByUserID is one per-user_id row count.
+type TeamMemberCountByUserID struct {
+	UserID string
+	Count  int64
+}
+
+// CountByUserID counts matching rows per distinct "user_id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TeamMemberQuery) CountByUserID(ctx context.Context) ([]TeamMemberCountByUserID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "user_id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TeamMemberCountByUserID, len(recs))
+	for i, r := range recs {
+		out[i] = TeamMemberCountByUserID{UserID: recString(r, "user_id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TeamMemberCountByRole is one per-role row count.
+type TeamMemberCountByRole struct {
+	Role  string
+	Count int64
+}
+
+// CountByRole counts matching rows per distinct "role", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TeamMemberQuery) CountByRole(ctx context.Context) ([]TeamMemberCountByRole, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "role"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TeamMemberCountByRole, len(recs))
+	for i, r := range recs {
+		out[i] = TeamMemberCountByRole{Role: recString(r, "role"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TeamMemberCountByJoinedAt is one per-joined_at row count.
+type TeamMemberCountByJoinedAt struct {
+	JoinedAt int64
+	Count    int64
+}
+
+// CountByJoinedAt counts matching rows per distinct "joined_at", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TeamMemberQuery) CountByJoinedAt(ctx context.Context) ([]TeamMemberCountByJoinedAt, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "joined_at"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TeamMemberCountByJoinedAt, len(recs))
+	for i, r := range recs {
+		out[i] = TeamMemberCountByJoinedAt{JoinedAt: recInt64(r, "joined_at"), Count: recInt64(r, "count")}
+	}
+	return out, nil
 }
 
 // TeamMemberInclude refines an included "team_members" fetch.
@@ -3220,6 +3613,116 @@ func (q *BoardQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 		return nil, err
 	}
 	return recInt64Ptr(rec, "v"), nil
+}
+
+// BoardCountByID is one per-id row count.
+type BoardCountByID struct {
+	ID    string
+	Count int64
+}
+
+// CountByID counts matching rows per distinct "id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *BoardQuery) CountByID(ctx context.Context) ([]BoardCountByID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BoardCountByID, len(recs))
+	for i, r := range recs {
+		out[i] = BoardCountByID{ID: recString(r, "id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// BoardCountByTeamID is one per-team_id row count.
+type BoardCountByTeamID struct {
+	TeamID string
+	Count  int64
+}
+
+// CountByTeamID counts matching rows per distinct "team_id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *BoardQuery) CountByTeamID(ctx context.Context) ([]BoardCountByTeamID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "team_id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BoardCountByTeamID, len(recs))
+	for i, r := range recs {
+		out[i] = BoardCountByTeamID{TeamID: recString(r, "team_id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// BoardCountByName is one per-name row count.
+type BoardCountByName struct {
+	Name  string
+	Count int64
+}
+
+// CountByName counts matching rows per distinct "name", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *BoardQuery) CountByName(ctx context.Context) ([]BoardCountByName, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "name"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BoardCountByName, len(recs))
+	for i, r := range recs {
+		out[i] = BoardCountByName{Name: recString(r, "name"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// BoardCountByArchived is one per-archived row count.
+type BoardCountByArchived struct {
+	Archived bool
+	Count    int64
+}
+
+// CountByArchived counts matching rows per distinct "archived", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *BoardQuery) CountByArchived(ctx context.Context) ([]BoardCountByArchived, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "archived"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BoardCountByArchived, len(recs))
+	for i, r := range recs {
+		out[i] = BoardCountByArchived{Archived: recBool(r, "archived"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// BoardCountByCreatedAt is one per-created_at row count.
+type BoardCountByCreatedAt struct {
+	CreatedAt int64
+	Count     int64
+}
+
+// CountByCreatedAt counts matching rows per distinct "created_at", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *BoardQuery) CountByCreatedAt(ctx context.Context) ([]BoardCountByCreatedAt, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "created_at"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BoardCountByCreatedAt, len(recs))
+	for i, r := range recs {
+		out[i] = BoardCountByCreatedAt{CreatedAt: recInt64(r, "created_at"), Count: recInt64(r, "count")}
+	}
+	return out, nil
 }
 
 // BoardInclude refines an included "boards" fetch.
@@ -4436,6 +4939,270 @@ func (q *TaskQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 	return recInt64Ptr(rec, "v"), nil
 }
 
+// TaskCountByID is one per-id row count.
+type TaskCountByID struct {
+	ID    string
+	Count int64
+}
+
+// CountByID counts matching rows per distinct "id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TaskQuery) CountByID(ctx context.Context) ([]TaskCountByID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskCountByID, len(recs))
+	for i, r := range recs {
+		out[i] = TaskCountByID{ID: recString(r, "id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TaskCountByBoardID is one per-board_id row count.
+type TaskCountByBoardID struct {
+	BoardID string
+	Count   int64
+}
+
+// CountByBoardID counts matching rows per distinct "board_id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TaskQuery) CountByBoardID(ctx context.Context) ([]TaskCountByBoardID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "board_id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskCountByBoardID, len(recs))
+	for i, r := range recs {
+		out[i] = TaskCountByBoardID{BoardID: recString(r, "board_id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TaskCountByTitle is one per-title row count.
+type TaskCountByTitle struct {
+	Title string
+	Count int64
+}
+
+// CountByTitle counts matching rows per distinct "title", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TaskQuery) CountByTitle(ctx context.Context) ([]TaskCountByTitle, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "title"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskCountByTitle, len(recs))
+	for i, r := range recs {
+		out[i] = TaskCountByTitle{Title: recString(r, "title"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TaskCountByDescription is one per-description row count.
+type TaskCountByDescription struct {
+	Description *string
+	Count       int64
+}
+
+// CountByDescription counts matching rows per distinct "description", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TaskQuery) CountByDescription(ctx context.Context) ([]TaskCountByDescription, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "description"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskCountByDescription, len(recs))
+	for i, r := range recs {
+		out[i] = TaskCountByDescription{Description: recStringPtr(r, "description"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TaskCountByStatus is one per-status row count.
+type TaskCountByStatus struct {
+	Status string
+	Count  int64
+}
+
+// CountByStatus counts matching rows per distinct "status", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TaskQuery) CountByStatus(ctx context.Context) ([]TaskCountByStatus, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "status"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskCountByStatus, len(recs))
+	for i, r := range recs {
+		out[i] = TaskCountByStatus{Status: recString(r, "status"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TaskCountByPriority is one per-priority row count.
+type TaskCountByPriority struct {
+	Priority int64
+	Count    int64
+}
+
+// CountByPriority counts matching rows per distinct "priority", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TaskQuery) CountByPriority(ctx context.Context) ([]TaskCountByPriority, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "priority"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskCountByPriority, len(recs))
+	for i, r := range recs {
+		out[i] = TaskCountByPriority{Priority: recInt64(r, "priority"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TaskCountByEstimate is one per-estimate row count.
+type TaskCountByEstimate struct {
+	Estimate *float64
+	Count    int64
+}
+
+// CountByEstimate counts matching rows per distinct "estimate", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TaskQuery) CountByEstimate(ctx context.Context) ([]TaskCountByEstimate, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "estimate"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskCountByEstimate, len(recs))
+	for i, r := range recs {
+		out[i] = TaskCountByEstimate{Estimate: recFloat64Ptr(r, "estimate"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TaskCountByAssigneeID is one per-assignee_id row count.
+type TaskCountByAssigneeID struct {
+	AssigneeID *string
+	Count      int64
+}
+
+// CountByAssigneeID counts matching rows per distinct "assignee_id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TaskQuery) CountByAssigneeID(ctx context.Context) ([]TaskCountByAssigneeID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "assignee_id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskCountByAssigneeID, len(recs))
+	for i, r := range recs {
+		out[i] = TaskCountByAssigneeID{AssigneeID: recStringPtr(r, "assignee_id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TaskCountByCreatorID is one per-creator_id row count.
+type TaskCountByCreatorID struct {
+	CreatorID string
+	Count     int64
+}
+
+// CountByCreatorID counts matching rows per distinct "creator_id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TaskQuery) CountByCreatorID(ctx context.Context) ([]TaskCountByCreatorID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "creator_id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskCountByCreatorID, len(recs))
+	for i, r := range recs {
+		out[i] = TaskCountByCreatorID{CreatorID: recString(r, "creator_id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TaskCountByParentID is one per-parent_id row count.
+type TaskCountByParentID struct {
+	ParentID *string
+	Count    int64
+}
+
+// CountByParentID counts matching rows per distinct "parent_id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TaskQuery) CountByParentID(ctx context.Context) ([]TaskCountByParentID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "parent_id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskCountByParentID, len(recs))
+	for i, r := range recs {
+		out[i] = TaskCountByParentID{ParentID: recStringPtr(r, "parent_id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TaskCountByDueAt is one per-due_at row count.
+type TaskCountByDueAt struct {
+	DueAt *int64
+	Count int64
+}
+
+// CountByDueAt counts matching rows per distinct "due_at", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TaskQuery) CountByDueAt(ctx context.Context) ([]TaskCountByDueAt, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "due_at"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskCountByDueAt, len(recs))
+	for i, r := range recs {
+		out[i] = TaskCountByDueAt{DueAt: recInt64Ptr(r, "due_at"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TaskCountByCreatedAt is one per-created_at row count.
+type TaskCountByCreatedAt struct {
+	CreatedAt int64
+	Count     int64
+}
+
+// CountByCreatedAt counts matching rows per distinct "created_at", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TaskQuery) CountByCreatedAt(ctx context.Context) ([]TaskCountByCreatedAt, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "created_at"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskCountByCreatedAt, len(recs))
+	for i, r := range recs {
+		out[i] = TaskCountByCreatedAt{CreatedAt: recInt64(r, "created_at"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
 // TaskInclude refines an included "tasks" fetch.
 type TaskInclude struct {
 	spec includeSpec
@@ -5416,6 +6183,116 @@ func (q *CommentQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 	return recInt64Ptr(rec, "v"), nil
 }
 
+// CommentCountByID is one per-id row count.
+type CommentCountByID struct {
+	ID    string
+	Count int64
+}
+
+// CountByID counts matching rows per distinct "id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *CommentQuery) CountByID(ctx context.Context) ([]CommentCountByID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]CommentCountByID, len(recs))
+	for i, r := range recs {
+		out[i] = CommentCountByID{ID: recString(r, "id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// CommentCountByTaskID is one per-task_id row count.
+type CommentCountByTaskID struct {
+	TaskID string
+	Count  int64
+}
+
+// CountByTaskID counts matching rows per distinct "task_id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *CommentQuery) CountByTaskID(ctx context.Context) ([]CommentCountByTaskID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "task_id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]CommentCountByTaskID, len(recs))
+	for i, r := range recs {
+		out[i] = CommentCountByTaskID{TaskID: recString(r, "task_id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// CommentCountByAuthorID is one per-author_id row count.
+type CommentCountByAuthorID struct {
+	AuthorID string
+	Count    int64
+}
+
+// CountByAuthorID counts matching rows per distinct "author_id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *CommentQuery) CountByAuthorID(ctx context.Context) ([]CommentCountByAuthorID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "author_id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]CommentCountByAuthorID, len(recs))
+	for i, r := range recs {
+		out[i] = CommentCountByAuthorID{AuthorID: recString(r, "author_id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// CommentCountByBody is one per-body row count.
+type CommentCountByBody struct {
+	Body  string
+	Count int64
+}
+
+// CountByBody counts matching rows per distinct "body", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *CommentQuery) CountByBody(ctx context.Context) ([]CommentCountByBody, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "body"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]CommentCountByBody, len(recs))
+	for i, r := range recs {
+		out[i] = CommentCountByBody{Body: recString(r, "body"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// CommentCountByCreatedAt is one per-created_at row count.
+type CommentCountByCreatedAt struct {
+	CreatedAt int64
+	Count     int64
+}
+
+// CountByCreatedAt counts matching rows per distinct "created_at", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *CommentQuery) CountByCreatedAt(ctx context.Context) ([]CommentCountByCreatedAt, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "created_at"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]CommentCountByCreatedAt, len(recs))
+	for i, r := range recs {
+		out[i] = CommentCountByCreatedAt{CreatedAt: recInt64(r, "created_at"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
 // CommentInclude refines an included "comments" fetch.
 type CommentInclude struct {
 	spec includeSpec
@@ -5996,6 +6873,94 @@ func (q *LabelQuery) MaxHexColor(ctx context.Context) (*string, error) {
 	return recStringPtr(rec, "v"), nil
 }
 
+// LabelCountByID is one per-id row count.
+type LabelCountByID struct {
+	ID    string
+	Count int64
+}
+
+// CountByID counts matching rows per distinct "id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *LabelQuery) CountByID(ctx context.Context) ([]LabelCountByID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]LabelCountByID, len(recs))
+	for i, r := range recs {
+		out[i] = LabelCountByID{ID: recString(r, "id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// LabelCountByTeamID is one per-team_id row count.
+type LabelCountByTeamID struct {
+	TeamID string
+	Count  int64
+}
+
+// CountByTeamID counts matching rows per distinct "team_id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *LabelQuery) CountByTeamID(ctx context.Context) ([]LabelCountByTeamID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "team_id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]LabelCountByTeamID, len(recs))
+	for i, r := range recs {
+		out[i] = LabelCountByTeamID{TeamID: recString(r, "team_id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// LabelCountByName is one per-name row count.
+type LabelCountByName struct {
+	Name  string
+	Count int64
+}
+
+// CountByName counts matching rows per distinct "name", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *LabelQuery) CountByName(ctx context.Context) ([]LabelCountByName, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "name"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]LabelCountByName, len(recs))
+	for i, r := range recs {
+		out[i] = LabelCountByName{Name: recString(r, "name"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// LabelCountByHexColor is one per-hex_color row count.
+type LabelCountByHexColor struct {
+	HexColor string
+	Count    int64
+}
+
+// CountByHexColor counts matching rows per distinct "hex_color", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *LabelQuery) CountByHexColor(ctx context.Context) ([]LabelCountByHexColor, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "hex_color"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]LabelCountByHexColor, len(recs))
+	for i, r := range recs {
+		out[i] = LabelCountByHexColor{HexColor: recString(r, "hex_color"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
 // LabelInclude refines an included "labels" fetch.
 type LabelInclude struct {
 	spec includeSpec
@@ -6410,6 +7375,50 @@ func (q *TaskLabelQuery) MaxLabelID(ctx context.Context) (*string, error) {
 		return nil, err
 	}
 	return recStringPtr(rec, "v"), nil
+}
+
+// TaskLabelCountByTaskID is one per-task_id row count.
+type TaskLabelCountByTaskID struct {
+	TaskID string
+	Count  int64
+}
+
+// CountByTaskID counts matching rows per distinct "task_id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TaskLabelQuery) CountByTaskID(ctx context.Context) ([]TaskLabelCountByTaskID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "task_id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskLabelCountByTaskID, len(recs))
+	for i, r := range recs {
+		out[i] = TaskLabelCountByTaskID{TaskID: recString(r, "task_id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
+}
+
+// TaskLabelCountByLabelID is one per-label_id row count.
+type TaskLabelCountByLabelID struct {
+	LabelID string
+	Count   int64
+}
+
+// CountByLabelID counts matching rows per distinct "label_id", ordered by the
+// group key — one round trip, no rows fetched.
+func (q *TaskLabelQuery) CountByLabelID(ctx context.Context) ([]TaskLabelCountByLabelID, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, "label_id"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskLabelCountByLabelID, len(recs))
+	for i, r := range recs {
+		out[i] = TaskLabelCountByLabelID{LabelID: recString(r, "label_id"), Count: recInt64(r, "count")}
+	}
+	return out, nil
 }
 
 // TaskLabelInclude refines an included "task_labels" fetch.

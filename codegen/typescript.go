@@ -339,6 +339,33 @@ function scopeAggs(aggs: AggTerm[], scope: string): AggTerm[] {
   return aggs.map((a) => ({ fn: a.fn, arg: a.arg ? scopeExpr(a.arg, scope) : undefined, as: a.as }));
 }
 
+/** Compiles a spec into a grouped fold: one row per distinct value of
+ * groupCol, counted, ordered by the group key — the aggregate binds an
+ * output scope so the ordering can address its key. */
+function assembleGrouped(s: QuerySpec, groupCol: string): GraphQuery {
+  const nodes: Record<string, Node> = {};
+  let n = 0;
+  const next = () => "n" + n++;
+  const scope = next();
+  nodes[scope] = { kind: "scan", table: s.table, scope };
+  let last = scope;
+  const pred = andAll(s.filters.map((f) => scopeExpr(f, scope)));
+  if (pred) {
+    const id = next();
+    nodes[id] = { kind: "filter", input: last, predicate: pred };
+    last = id;
+  }
+  const agg = next();
+  nodes[agg] = {
+    kind: "aggregate", input: last, scope: agg,
+    groups: [{ expr: col(scope, groupCol) }],
+    aggs: [{ fn: "count", as: "count" }],
+  };
+  const ord = next();
+  nodes[ord] = { kind: "order", input: agg, terms: [{ expr: col(agg, groupCol) }] };
+  return { nodes, root: { node: ord, cardinality: "many" } };
+}
+
 /** Compiles a spec into the wire graph with deterministic node ids: a
  * preorder walk, each scan's id doubling as its scope label. */
 function assemble(s: QuerySpec): GraphQuery {
@@ -658,6 +685,19 @@ func emitTSAggregates(p func(string, ...any), t *genTable) {
 		}
 		fold("min"+m, "min", c.SQLName, ty, fmt.Sprintf("Smallest %q (null when no rows).", c.SQLName))
 		fold("max"+m, "max", c.SQLName, ty, fmt.Sprintf("Largest %q (null when no rows).", c.SQLName))
+	}
+
+	for _, c := range t.Cols {
+		m := upperCamel(c.SQLName)
+		keyTy := tsType(c.GoType)
+		if c.Nullable {
+			keyTy += " | null"
+		}
+		p("  /** Counts matching rows per distinct %q, ordered by the group key. */", c.SQLName)
+		p("  async countBy%s(): Promise<{ %s: %s; count: number }[]> {", m, camel(c.SQLName), keyTy)
+		p("    const recs = await this.v.query(assembleGrouped({ table: this.spec.table, filters: this.filters, orders: [], includes: [] }, %q));", c.SQLName)
+		p("    return recs as unknown as { %s: %s; count: number }[];", camel(c.SQLName), keyTy)
+		p("  }")
 	}
 }
 

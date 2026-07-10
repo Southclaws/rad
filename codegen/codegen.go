@@ -487,6 +487,39 @@ func emitAggregates(p func(string, ...any), t *genTable, q string) {
 		fold("Max"+c.Field, "max", c.SQLName, "*"+c.GoType, ptrHelper,
 			fmt.Sprintf("Max%s is the largest %q over matching rows (nil when none).", c.Field, c.SQLName))
 	}
+
+	// Grouped counts: one row per distinct value, one round trip.
+	for _, c := range t.Cols {
+		keyType := c.GoType
+		helper := "rec" + goHelper(c.GoType)
+		if c.Nullable {
+			keyType = "*" + keyType
+			helper += "Ptr"
+		}
+		rowType := t.Model + "CountBy" + c.Field
+		p("// %s is one per-%s row count.", rowType, c.SQLName)
+		p("type %s struct {", rowType)
+		p("\t%s %s", c.Field, keyType)
+		p("\tCount int64")
+		p("}")
+		p("")
+		p("// CountBy%s counts matching rows per distinct %q, ordered by the", c.Field, c.SQLName)
+		p("// group key — one round trip, no rows fetched.")
+		p("func (q *%s) CountBy%s(ctx context.Context) ([]%s, error) {", q, c.Field, rowType)
+		p("\tspec := q.spec")
+		p("\tspec.filters = q.spec.filters")
+		p("\trecs, err := q.v.Query(ctx, assembleGrouped(spec, %q))", c.SQLName)
+		p("\tif err != nil {")
+		p("\t\treturn nil, err")
+		p("\t}")
+		p("\tout := make([]%s, len(recs))", rowType)
+		p("\tfor i, r := range recs {")
+		p("\t\tout[i] = %s{%s: %s(r, %q), Count: recInt64(r, \"count\")}", rowType, c.Field, helper, c.SQLName)
+		p("\t}")
+		p("\treturn out, nil")
+		p("}")
+		p("")
+	}
 }
 
 // emitFilterMethods writes typed column predicates onto builder type q with

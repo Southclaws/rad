@@ -411,6 +411,39 @@ function scopeAggs(aggs: AggTerm[], scope: string): AggTerm[] {
   }));
 }
 
+/** Compiles a spec into a grouped fold: one row per distinct value of
+ * groupCol, counted, ordered by the group key — the aggregate binds an
+ * output scope so the ordering can address its key. */
+function assembleGrouped(s: QuerySpec, groupCol: string): GraphQuery {
+  const nodes: Record<string, Node> = {};
+  let n = 0;
+  const next = () => "n" + n++;
+  const scope = next();
+  nodes[scope] = { kind: "scan", table: s.table, scope };
+  let last = scope;
+  const pred = andAll(s.filters.map((f) => scopeExpr(f, scope)));
+  if (pred) {
+    const id = next();
+    nodes[id] = { kind: "filter", input: last, predicate: pred };
+    last = id;
+  }
+  const agg = next();
+  nodes[agg] = {
+    kind: "aggregate",
+    input: last,
+    scope: agg,
+    groups: [{ expr: col(scope, groupCol) }],
+    aggs: [{ fn: "count", as: "count" }],
+  };
+  const ord = next();
+  nodes[ord] = {
+    kind: "order",
+    input: agg,
+    terms: [{ expr: col(agg, groupCol) }],
+  };
+  return { nodes, root: { node: ord, cardinality: "many" } };
+}
+
 /** Compiles a spec into the wire graph with deterministic node ids: a
  * preorder walk, each scan's id doubling as its scope label. */
 function assemble(s: QuerySpec): GraphQuery {
@@ -1031,6 +1064,100 @@ export class UserQuery {
       { fn: "max", arg: col("", "created_at"), as: "v" },
     ]);
     return (rec["v"] as number | null) ?? null;
+  }
+  /** Counts matching rows per distinct "id", ordered by the group key. */
+  async countById(): Promise<{ id: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "id",
+      ),
+    );
+    return recs as unknown as { id: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "username", ordered by the group key. */
+  async countByUsername(): Promise<{ username: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "username",
+      ),
+    );
+    return recs as unknown as { username: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "display_name", ordered by the group key. */
+  async countByDisplayName(): Promise<
+    { displayName: string | null; count: number }[]
+  > {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "display_name",
+      ),
+    );
+    return recs as unknown as { displayName: string | null; count: number }[];
+  }
+  /** Counts matching rows per distinct "password_hash", ordered by the group key. */
+  async countByPasswordHash(): Promise<
+    { passwordHash: string; count: number }[]
+  > {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "password_hash",
+      ),
+    );
+    return recs as unknown as { passwordHash: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "email", ordered by the group key. */
+  async countByEmail(): Promise<{ email: string | null; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "email",
+      ),
+    );
+    return recs as unknown as { email: string | null; count: number }[];
+  }
+  /** Counts matching rows per distinct "created_at", ordered by the group key. */
+  async countByCreatedAt(): Promise<{ createdAt: number; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "created_at",
+      ),
+    );
+    return recs as unknown as { createdAt: number; count: number }[];
   }
 }
 
@@ -1677,6 +1804,66 @@ export class SessionQuery {
     ]);
     return (rec["v"] as number | null) ?? null;
   }
+  /** Counts matching rows per distinct "token", ordered by the group key. */
+  async countByToken(): Promise<{ token: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "token",
+      ),
+    );
+    return recs as unknown as { token: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "user_id", ordered by the group key. */
+  async countByUserId(): Promise<{ userId: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "user_id",
+      ),
+    );
+    return recs as unknown as { userId: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "created_at", ordered by the group key. */
+  async countByCreatedAt(): Promise<{ createdAt: number; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "created_at",
+      ),
+    );
+    return recs as unknown as { createdAt: number; count: number }[];
+  }
+  /** Counts matching rows per distinct "expires_at", ordered by the group key. */
+  async countByExpiresAt(): Promise<{ expiresAt: number; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "expires_at",
+      ),
+    );
+    return recs as unknown as { expiresAt: number; count: number }[];
+  }
 }
 
 /** Refines an included "sessions" fetch. */
@@ -2164,6 +2351,51 @@ export class TeamQuery {
       { fn: "max", arg: col("", "created_at"), as: "v" },
     ]);
     return (rec["v"] as number | null) ?? null;
+  }
+  /** Counts matching rows per distinct "id", ordered by the group key. */
+  async countById(): Promise<{ id: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "id",
+      ),
+    );
+    return recs as unknown as { id: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "name", ordered by the group key. */
+  async countByName(): Promise<{ name: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "name",
+      ),
+    );
+    return recs as unknown as { name: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "created_at", ordered by the group key. */
+  async countByCreatedAt(): Promise<{ createdAt: number; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "created_at",
+      ),
+    );
+    return recs as unknown as { createdAt: number; count: number }[];
   }
 }
 
@@ -2670,6 +2902,66 @@ export class TeamMemberQuery {
       { fn: "max", arg: col("", "joined_at"), as: "v" },
     ]);
     return (rec["v"] as number | null) ?? null;
+  }
+  /** Counts matching rows per distinct "team_id", ordered by the group key. */
+  async countByTeamId(): Promise<{ teamId: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "team_id",
+      ),
+    );
+    return recs as unknown as { teamId: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "user_id", ordered by the group key. */
+  async countByUserId(): Promise<{ userId: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "user_id",
+      ),
+    );
+    return recs as unknown as { userId: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "role", ordered by the group key. */
+  async countByRole(): Promise<{ role: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "role",
+      ),
+    );
+    return recs as unknown as { role: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "joined_at", ordered by the group key. */
+  async countByJoinedAt(): Promise<{ joinedAt: number; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "joined_at",
+      ),
+    );
+    return recs as unknown as { joinedAt: number; count: number }[];
   }
 }
 
@@ -3227,6 +3519,81 @@ export class BoardQuery {
       { fn: "max", arg: col("", "created_at"), as: "v" },
     ]);
     return (rec["v"] as number | null) ?? null;
+  }
+  /** Counts matching rows per distinct "id", ordered by the group key. */
+  async countById(): Promise<{ id: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "id",
+      ),
+    );
+    return recs as unknown as { id: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "team_id", ordered by the group key. */
+  async countByTeamId(): Promise<{ teamId: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "team_id",
+      ),
+    );
+    return recs as unknown as { teamId: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "name", ordered by the group key. */
+  async countByName(): Promise<{ name: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "name",
+      ),
+    );
+    return recs as unknown as { name: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "archived", ordered by the group key. */
+  async countByArchived(): Promise<{ archived: boolean; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "archived",
+      ),
+    );
+    return recs as unknown as { archived: boolean; count: number }[];
+  }
+  /** Counts matching rows per distinct "created_at", ordered by the group key. */
+  async countByCreatedAt(): Promise<{ createdAt: number; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "created_at",
+      ),
+    );
+    return recs as unknown as { createdAt: number; count: number }[];
   }
 }
 
@@ -4294,6 +4661,194 @@ export class TaskQuery {
     ]);
     return (rec["v"] as number | null) ?? null;
   }
+  /** Counts matching rows per distinct "id", ordered by the group key. */
+  async countById(): Promise<{ id: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "id",
+      ),
+    );
+    return recs as unknown as { id: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "board_id", ordered by the group key. */
+  async countByBoardId(): Promise<{ boardId: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "board_id",
+      ),
+    );
+    return recs as unknown as { boardId: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "title", ordered by the group key. */
+  async countByTitle(): Promise<{ title: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "title",
+      ),
+    );
+    return recs as unknown as { title: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "description", ordered by the group key. */
+  async countByDescription(): Promise<
+    { description: string | null; count: number }[]
+  > {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "description",
+      ),
+    );
+    return recs as unknown as { description: string | null; count: number }[];
+  }
+  /** Counts matching rows per distinct "status", ordered by the group key. */
+  async countByStatus(): Promise<{ status: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "status",
+      ),
+    );
+    return recs as unknown as { status: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "priority", ordered by the group key. */
+  async countByPriority(): Promise<{ priority: number; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "priority",
+      ),
+    );
+    return recs as unknown as { priority: number; count: number }[];
+  }
+  /** Counts matching rows per distinct "estimate", ordered by the group key. */
+  async countByEstimate(): Promise<
+    { estimate: number | null; count: number }[]
+  > {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "estimate",
+      ),
+    );
+    return recs as unknown as { estimate: number | null; count: number }[];
+  }
+  /** Counts matching rows per distinct "assignee_id", ordered by the group key. */
+  async countByAssigneeId(): Promise<
+    { assigneeId: string | null; count: number }[]
+  > {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "assignee_id",
+      ),
+    );
+    return recs as unknown as { assigneeId: string | null; count: number }[];
+  }
+  /** Counts matching rows per distinct "creator_id", ordered by the group key. */
+  async countByCreatorId(): Promise<{ creatorId: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "creator_id",
+      ),
+    );
+    return recs as unknown as { creatorId: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "parent_id", ordered by the group key. */
+  async countByParentId(): Promise<
+    { parentId: string | null; count: number }[]
+  > {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "parent_id",
+      ),
+    );
+    return recs as unknown as { parentId: string | null; count: number }[];
+  }
+  /** Counts matching rows per distinct "due_at", ordered by the group key. */
+  async countByDueAt(): Promise<{ dueAt: number | null; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "due_at",
+      ),
+    );
+    return recs as unknown as { dueAt: number | null; count: number }[];
+  }
+  /** Counts matching rows per distinct "created_at", ordered by the group key. */
+  async countByCreatedAt(): Promise<{ createdAt: number; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "created_at",
+      ),
+    );
+    return recs as unknown as { createdAt: number; count: number }[];
+  }
 }
 
 /** Refines an included "tasks" fetch. */
@@ -5211,6 +5766,81 @@ export class CommentQuery {
     ]);
     return (rec["v"] as number | null) ?? null;
   }
+  /** Counts matching rows per distinct "id", ordered by the group key. */
+  async countById(): Promise<{ id: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "id",
+      ),
+    );
+    return recs as unknown as { id: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "task_id", ordered by the group key. */
+  async countByTaskId(): Promise<{ taskId: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "task_id",
+      ),
+    );
+    return recs as unknown as { taskId: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "author_id", ordered by the group key. */
+  async countByAuthorId(): Promise<{ authorId: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "author_id",
+      ),
+    );
+    return recs as unknown as { authorId: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "body", ordered by the group key. */
+  async countByBody(): Promise<{ body: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "body",
+      ),
+    );
+    return recs as unknown as { body: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "created_at", ordered by the group key. */
+  async countByCreatedAt(): Promise<{ createdAt: number; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "created_at",
+      ),
+    );
+    return recs as unknown as { createdAt: number; count: number }[];
+  }
 }
 
 /** Refines an included "comments" fetch. */
@@ -5763,6 +6393,66 @@ export class LabelQuery {
     ]);
     return (rec["v"] as string | null) ?? null;
   }
+  /** Counts matching rows per distinct "id", ordered by the group key. */
+  async countById(): Promise<{ id: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "id",
+      ),
+    );
+    return recs as unknown as { id: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "team_id", ordered by the group key. */
+  async countByTeamId(): Promise<{ teamId: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "team_id",
+      ),
+    );
+    return recs as unknown as { teamId: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "name", ordered by the group key. */
+  async countByName(): Promise<{ name: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "name",
+      ),
+    );
+    return recs as unknown as { name: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "hex_color", ordered by the group key. */
+  async countByHexColor(): Promise<{ hexColor: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "hex_color",
+      ),
+    );
+    return recs as unknown as { hexColor: string; count: number }[];
+  }
 }
 
 /** Refines an included "labels" fetch. */
@@ -6180,6 +6870,36 @@ export class TaskLabelQuery {
       { fn: "max", arg: col("", "label_id"), as: "v" },
     ]);
     return (rec["v"] as string | null) ?? null;
+  }
+  /** Counts matching rows per distinct "task_id", ordered by the group key. */
+  async countByTaskId(): Promise<{ taskId: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "task_id",
+      ),
+    );
+    return recs as unknown as { taskId: string; count: number }[];
+  }
+  /** Counts matching rows per distinct "label_id", ordered by the group key. */
+  async countByLabelId(): Promise<{ labelId: string; count: number }[]> {
+    const recs = await this.v.query(
+      assembleGrouped(
+        {
+          table: this.spec.table,
+          filters: this.filters,
+          orders: [],
+          includes: [],
+        },
+        "label_id",
+      ),
+    );
+    return recs as unknown as { labelId: string; count: number }[];
   }
 }
 

@@ -80,11 +80,12 @@ for (const task of view?.tasks ?? []) {
 
 // Aggregates: board stats folded server-side, no rows fetched.
 const onBoard = () => db.tasks.query().boardIdEq(board.id);
-const totalTasks = await onBoard().count();
-const doneTasks = await onBoard().statusEq("done").count();
-const openTasks = await onBoard().statusNe("done").count();
+// One grouped fold answers the whole card in a single round trip.
+const byStatus = await onBoard().countByStatus();
+const totalTasks = byStatus.reduce((n, g) => n + g.count, 0);
+const doneTasks = byStatus.find((g) => g.status === "done")?.count ?? 0;
 console.log(
-  `   ${board.name}: ${totalTasks} tasks · ${openTasks} open · ${doneTasks} done`,
+  `   ${board.name}: ${totalTasks} tasks · ${totalTasks - doneTasks} open · ${doneTasks} done (GROUP BY, one query)`,
 );
 const avgEst = await onBoard().avgEstimate(); // null when nothing estimated
 console.log(

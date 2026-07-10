@@ -354,6 +354,33 @@ func TestClientAggregateOverTheWire(t *testing.T) {
 		t.Errorf("include count = %d, want 3", got)
 	}
 
+	// GROUP BY: a grouped fold returns one record per distinct key, and the
+	// ordering above it addresses the aggregate's output scope — relational
+	// closure over the wire.
+	if _, err := c.Create(ctx, "posts", map[string]any{"user_id": id, "title": "z", "score": int64(30)}); err != nil {
+		t.Fatal(err)
+	}
+	recs, err = c.Query(ctx, protocol.Query{
+		Nodes: map[string]protocol.Node{
+			"posts": {Kind: "scan", Table: "posts", Scope: "p"},
+			"stats": {Kind: "aggregate", Input: "posts", Scope: "stats",
+				Groups: []protocol.GroupTerm{{Expr: *protocol.Col("p", "score")}},
+				Aggs:   []protocol.AggTerm{{Fn: "count", As: "n"}}},
+			"sorted": {Kind: "order", Input: "stats",
+				Terms: []protocol.OrderTerm{{Expr: *protocol.Col("stats", "score"), Desc: true}}},
+		},
+		Root: protocol.Root{Node: "sorted", Cardinality: "many"},
+	})
+	if err != nil || len(recs) != 3 {
+		t.Fatalf("grouped fold: recs=%d err=%v", len(recs), err)
+	}
+	if got := jsonInt(t, recs[0]["score"]); got != 30 {
+		t.Fatalf("group order lost: %v", recs)
+	}
+	if got := jsonInt(t, recs[0]["n"]); got != 2 {
+		t.Fatalf("group count = %d, want 2 (two score-30 posts)", got)
+	}
+
 	// Bind-time rejections surface as 422 invalid problems: a dangling node
 	// reference, and a fold over a non-numeric argument.
 	_, err = c.Query(ctx, protocol.Query{

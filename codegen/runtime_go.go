@@ -154,6 +154,25 @@ func scopeExpr(e *protocol.Expr, scope string) *protocol.Expr {
 	return &c
 }
 
+// assembleGrouped compiles the spec into a grouped fold: one row per
+// distinct value of groupCol, counted, ordered by the group key. The
+// aggregate binds an output scope so the ordering can address its key —
+// relational closure on the wire.
+func assembleGrouped(s querySpec, groupCol string) protocol.Query {
+	g := &graphBuilder{nodes: map[string]protocol.Node{}}
+	last, scope := g.chain(s.table, nil, "", s.filters, nil, 0, 0, false)
+	agg := g.next()
+	g.nodes[agg] = protocol.Node{
+		Kind: "aggregate", Input: last, Scope: agg,
+		Groups: []protocol.GroupTerm{{Expr: *protocol.Col(scope, groupCol)}},
+		Aggs:   []protocol.AggTerm{{Fn: "count", As: "count"}},
+	}
+	ord := g.next()
+	g.nodes[ord] = protocol.Node{Kind: "order", Input: agg,
+		Terms: []protocol.OrderTerm{{Expr: *protocol.Col(agg, groupCol)}}}
+	return protocol.Query{Nodes: g.nodes, Root: protocol.Root{Node: ord, Cardinality: "many"}}
+}
+
 func scopeAggs(aggs []protocol.AggTerm, scope string) []protocol.AggTerm {
 	out := make([]protocol.AggTerm, len(aggs))
 	for i, a := range aggs {

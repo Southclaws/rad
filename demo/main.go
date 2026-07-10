@@ -236,19 +236,20 @@ func run() error {
 	// estimate, the next deadline — each one query that folds server-side.
 	fmt.Println("── board stats (aggregates, no rows fetched)")
 	onBoard := func() *tracker.TaskQuery { return db.Tasks.Query().BoardIDEq(board.ID) }
-	total, err := onBoard().Count(ctx)
+	// One grouped fold answers the whole card: counts per status, ordered by
+	// the group key, in a single round trip.
+	byStatus, err := onBoard().CountByStatus(ctx)
 	if err != nil {
 		return err
 	}
-	done, err := onBoard().StatusEq("done").Count(ctx)
-	if err != nil {
-		return err
+	var total, done int64
+	for _, g := range byStatus {
+		total += g.Count
+		if g.Status == "done" {
+			done = g.Count
+		}
 	}
-	open, err := onBoard().StatusNe("done").Count(ctx)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("   Launch v0: %d tasks · %d open · %d done\n", total, open, done)
+	fmt.Printf("   Launch v0: %d tasks · %d open · %d done (GROUP BY, one query)\n", total, total-done, done)
 
 	avgEst, err := onBoard().AvgEstimate(ctx)
 	if err != nil {
