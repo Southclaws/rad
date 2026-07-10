@@ -110,7 +110,7 @@ export function StackDiagram() {
         aria-label="Left, an OLTP database: protocol, query language, planner and storage welded into one block, reachable only through a SQL door. Right, an OLAP stack: several engines over a shared metadata layer and shared object storage."
       >
         <text
-          x="165"
+          x="178"
           y="26"
           fill="var(--faint)"
           fontSize="13"
