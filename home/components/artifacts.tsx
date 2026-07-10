@@ -21,6 +21,7 @@ const FILES: { name: string; lang: Lang; code: string }[] = [
       - { name: board_id,    type: string, ref: boards.id, index: true }
       - { name: title,       type: string }
       - { name: status,      type: string, default: todo }
+      - { name: priority,    type: int64, default: 2 }
       - { name: assignee_id, type: string, ref: users.id, nullable: true }
       - { name: estimate,    type: float64, nullable: true }
     indexes:
