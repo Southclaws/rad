@@ -15,6 +15,8 @@ Go evolved out of Google's world of internal tooling culture. And while things l
 
 The team didn't write a specification, release (or sell) it and say to the industry "here's our idea, go implement your interpretation of it" no, they just built everything in their vision. It was coherent and coupled for better or worse.
 
+<ToolchainDiagram />
+
 Now it's 2026, Bun has a built in test runner, Rust has a built in package manager, TypeScript has, arguably an entire IDE and intellisense ecosystem. The industry realised that the text part of a language is only about 20% of what makes it _feel_ good to use.
 
 ## Databases
@@ -74,6 +76,8 @@ In all the major OLTP databases I've used, every layer is welded together. Stora
 
 In the OLAP world, those layers have been somewhat decomposed. The storage format is standardised. Multiple engines compete on execution. Metadata is shared. Suddenly innovation can happen independently at each layer.
 
+<StackDiagram />
+
 While it feels hard to contribute innovations on the layers I have the technical capability to do so with a project like PostgreSQL. And I equally haven't found it particularly fulfilling to innovate outside of the codebase because the only real tools I have are gluing SQL strings together.
 
 ## Rad
@@ -85,6 +89,8 @@ I want to explore three distinct areas with this project, that for various reaso
 1. Small and simple databases for the really common use-cases that still need the relational model
 2. Fully integrated toolchain, much like Go: one vision driving the whole stack
 3. SQL is just one of many ways to access relational data, what if we had an IR to target?
+
+<IRDiagram />
 
 ### What it's not
 

@@ -1500,6 +1500,31 @@ main,
   margin-bottom: 1rem;
 }
 
+/* schematic figures inside posts */
+.fig {
+  margin: 2.25rem 0;
+  padding: 1.5rem 1.25rem 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.fig svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.fig text {
+  font-family: var(--mono);
+}
+.fig figcaption {
+  margin-top: 1.1rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--faint);
+  text-align: center;
+}
+
 /* ── reveal-on-scroll (enhances an already-visible default) ──────────────── */
 
 /* Default: fully visible (no-JS, headless, and hidden-tab safe). JS opts in

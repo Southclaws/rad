@@ -1,3 +1,8 @@
+import {
+  IRDiagram,
+  StackDiagram,
+  ToolchainDiagram,
+} from "@/components/blog-diagrams";
 import { SiteNav } from "@/components/site-nav";
 import { blogSource } from "@/lib/source";
 import type { Metadata } from "next";
@@ -73,7 +78,9 @@ export default async function BlogPost({
             )}
           </header>
           <div className="doc__body" style={{ marginTop: "2.5rem" }}>
-            <MDX components={{ Callout }} />
+            <MDX
+              components={{ Callout, ToolchainDiagram, StackDiagram, IRDiagram }}
+            />
           </div>
         </article>
       </main>
