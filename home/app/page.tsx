@@ -136,7 +136,9 @@ export default function Home() {
                 <p className="hero__thesis">
                   The relational database, redesigned.{" "}
                   <span className="mark">With one cohesive toolchain.</span>{" "}
-                  <span className="dim">From schema to application.</span>
+                  <span className="dim">
+                    True OLTP backed by durable object storage.
+                  </span>
                 </p>
                 <CopyCommand command={INSTALL} />
                 <div className="hero__cta">
