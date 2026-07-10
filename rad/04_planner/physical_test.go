@@ -1,0 +1,179 @@
+package planner_test
+
+// Physical planning tests: access selection (v1 chooseAccess parity plus
+// ranges), the limited ordered-index pushdown, and the forcing-query plan —
+// three key-correlated attaches, a point get per distinct parent key, and
+// the residual filter above every access node.
+
+import (
+	"strings"
+	"testing"
+
+	qir "rad/rad/03_qir"
+	planner "rad/rad/04_planner"
+)
+
+func planOf(t *testing.T, root qir.Relation) string {
+	t.Helper()
+	q := bind(t, qir.Query{Card: qir.CardMany, Root: root})
+	return planner.PrintPlan(planner.PlanQuery(q))
+}
+
+func wantPlan(t *testing.T, got, want string) {
+	t.Helper()
+	if got != want {
+		t.Fatalf("plan drifted.\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+// Complete-PK equality is a point get; the full predicate still rides above
+// it — the structural residual.
+func TestPlanPKLookup(t *testing.T) {
+	got := planOf(t, bfilter(bscan("tasks", "t"),
+		band(beq(bcol("t", "id"), blit("t1")), beq(bcol("t", "status"), blit("open")))))
+	wantPlan(t, got, `Plan card=many
+  Filter and(eq(t.id#0, "t1"), eq(t.status#3, "open"))
+    PKGet tasks [id = "t1"]
+`)
+}
+
+// The longest leading equality prefix picks the index; a non-leading
+// equality cannot use it (v1 parity).
+func TestPlanIndexPrefixSelection(t *testing.T) {
+	got := planOf(t, bfilter(bscan("tasks", "t"),
+		band(beq(bcol("t", "board_id"), blit("b1")), beq(bcol("t", "status"), blit("open")))))
+	wantPlan(t, got, `Plan card=many
+  Filter and(eq(t.board_id#1, "b1"), eq(t.status#3, "open"))
+    IndexRangeScan tasks tasks_board_status_idx [board_id = "b1", status = "open"]
+`)
+
+	got = planOf(t, bfilter(bscan("tasks", "t"), beq(bcol("t", "status"), blit("open"))))
+	wantPlan(t, got, `Plan card=many
+  Filter eq(t.status#3, "open")
+    TableScan tasks
+`)
+}
+
+// A trailing range bound rides the index after the equality prefix —
+// inequalities finally drive access paths.
+func TestPlanEqPlusRange(t *testing.T) {
+	got := planOf(t, bfilter(bscan("tasks", "t"),
+		band(beq(bcol("t", "board_id"), blit("b1")),
+			qir.Binary{Op: qir.OpGte, L: bcol("t", "status"), R: blit("m")})))
+	wantPlan(t, got, `Plan card=many
+  Filter and(eq(t.board_id#1, "b1"), gte(t.status#3, "m"))
+    IndexRangeScan tasks tasks_board_status_idx [board_id = "b1", status >= "m"]
+`)
+}
+
+// A range on an index's first column is usable with no equalities at all.
+func TestPlanRangeOnly(t *testing.T) {
+	got := planOf(t, bfilter(bscan("tasks", "t"),
+		qir.Binary{Op: qir.OpLt, L: bcol("t", "board_id"), R: blit("m")}))
+	wantPlan(t, got, `Plan card=many
+  Filter lt(t.board_id#1, "m")
+    IndexRangeScan tasks tasks_board_status_idx [board_id < "m"]
+`)
+}
+
+// Ordered-index pushdown: when an index's provided order (columns after the
+// equality prefix, then the primary key) satisfies the requirement, the
+// sort disappears — the binder's id tie-breaker matches the pk suffix
+// exactly. Descending never pushes down (the KV has no reverse scan), and a
+// table scan already provides pk order.
+func TestPlanOrderedIndexPushdown(t *testing.T) {
+	got := planOf(t, qir.Order{
+		Input: bscan("users", "u"),
+		Terms: []qir.OrderTerm{{Expr: bcol("u", "name")}},
+	})
+	wantPlan(t, got, `Plan card=many
+  IndexRangeScan users users_name_uq
+`)
+
+	got = planOf(t, qir.Order{
+		Input: bscan("users", "u"),
+		Terms: []qir.OrderTerm{{Expr: bcol("u", "name"), Desc: true}},
+	})
+	wantPlan(t, got, `Plan card=many
+  Sort u.name#1 desc, id#0 asc
+    TableScan users
+`)
+
+	got = planOf(t, qir.Order{
+		Input: bscan("tasks", "t"),
+		Terms: []qir.OrderTerm{{Expr: bcol("t", "id")}},
+	})
+	wantPlan(t, got, `Plan card=many
+  TableScan tasks
+`)
+}
+
+// The whole point: ordering + slicing over an equality-pinned index keeps
+// the pipeline lazy end to end when the index provides the order, so the
+// slice stops the scan early.
+func TestPlanStopEarlyShape(t *testing.T) {
+	got := planOf(t, qir.Slice{
+		Input: qir.Order{
+			Input: bfilter(bscan("tasks", "t"), beq(bcol("t", "board_id"), blit("b1"))),
+			Terms: []qir.OrderTerm{{Expr: bcol("t", "status")}},
+		},
+		Limit: new(int(10)),
+	})
+	wantPlan(t, got, `Plan card=many
+  Slice offset=0 limit=10
+    Filter eq(t.board_id#1, "b1")
+      IndexRangeScan tasks tasks_board_status_idx [board_id = "b1"]
+`)
+}
+
+func TestPlanForcingQueryGolden(t *testing.T) {
+	q := bind(t, forcingQuery())
+	got := planner.PrintPlan(planner.PlanQuery(q))
+	wantPlan(t, got, forcingPlanGolden)
+
+	// The headline properties, asserted independently of formatting: every
+	// crossing — owner, tasks, assignee, comment_count — attaches
+	// key-correlated, and both to-parent patterns are point gets.
+	if strings.Count(got, "attach") != 4 || strings.Count(got, "key-correlated") != 4 {
+		t.Fatalf("want 4 key-correlated attaches:\n%s", got)
+	}
+	if strings.Count(got, "PKGet users") != 2 {
+		t.Fatalf("to-parent patterns must be point gets:\n%s", got)
+	}
+	// The one full scan is the root ("all boards"); every child fetch rides
+	// a key.
+	if strings.Count(got, "TableScan") != 1 {
+		t.Fatalf("only the root may scan a whole table:\n%s", got)
+	}
+}
+
+const forcingPlanGolden = `Plan card=many
+  Project
+    id#0 = b.id#0
+    name#1 = b.name#1
+    owner_id#2 = b.owner_id#2
+    owner#5 = attach first key-correlated [id#3 = @2]
+      Filter eq(o.id#3, b.owner_id#2)
+        PKGet users [id = @2]
+    tasks#21 = attach array key-correlated [board_id#7 = @0]
+      Project
+        id#6 = t.id#6
+        board_id#7 = t.board_id#7
+        title#8 = t.title#8
+        status#9 = t.status#9
+        priority#10 = t.priority#10
+        estimate#11 = t.estimate#11
+        assignee_id#12 = t.assignee_id#12
+        assignee#15 = attach first key-correlated [id#13 = @12]
+          Filter eq(a.id#13, t.assignee_id#12)
+            PKGet users [id = @12]
+        comment_count#20 = attach scalar key-correlated [task_id#17 = @6]
+          Aggregate n#19=count(*)
+            Filter eq(c.task_id#17, t.id#6)
+              IndexRangeScan comments comments_task_idx [task_id = @6]
+        Slice offset=0 limit=20
+          Sort t.priority#10 desc, id#6 asc
+            Filter and(eq(t.board_id#7, b.id#0), eq(t.status#9, "open"))
+              IndexRangeScan tasks tasks_board_status_idx [board_id = @0, status = "open"]
+    TableScan boards
+`

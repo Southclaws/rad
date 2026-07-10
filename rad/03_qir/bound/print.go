@@ -85,6 +85,10 @@ func suffix(rel Relation) string {
 	return s + "]"
 }
 
+// PrintExpr renders one bound expression on a line, for plan printers and
+// diagnostics.
+func PrintExpr(e Expr) string { return printExpr(e) }
+
 func printExpr(e Expr) string {
 	switch x := e.(type) {
 	case Literal:
