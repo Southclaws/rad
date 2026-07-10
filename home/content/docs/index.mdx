@@ -3,43 +3,11 @@ title: Introduction
 description: What Rad is, and the one loop it is built around.
 ---
 
-Rad is an ORM-native relational database. It is written in Go, stores data on
-[SlateDB](https://slatedb.io), and speaks a small HTTP protocol over
-`rad://`. What makes it different is not the storage engine — it is the
-workflow.
+<Callout type="warn">
+  Rad is not currently public, it's almost finished but still being polished so
+  that curious readers will be able to grab a working proof-of-concept binary
+  and play!
 
-You never write SQL. You describe your tables once, in YAML, and Rad gives you
-a typed client for your language. When the schema changes, you regenerate the
-client, and your code stops compiling exactly where it needs your attention.
+Bookmark this site and check back in the coming weeks!
 
-## The loop
-
-Everything in Rad is one workflow:
-
-1. **define** — write `schema.rad`, a YAML description of your tables.
-2. **run** — `rad serve` boots the database, devtool, and API from one binary.
-3. **generate** — `rad generate` emits a typed Go or TypeScript client.
-4. **write** — query through the generated client: fluent, nested, typed.
-5. **evolve** — change `schema.rad`.
-6. **regenerate** — `rad generate` again; the client changes with you.
-
-You go around it once to ship, and around the last two steps every time the
-shape of your data changes.
-
-<Callout>
-  Rad is a proof of concept, and honest about it. It exists to prove the
-  developer experience, not to run your production fleet.
 </Callout>
-
-## What's in the box
-
-- Typed clients for **Go and TypeScript**, generated from the schema.
-- **Nested reads** that return JSON shaped like your data — no N+1, no joins to
-  unpick.
-- **Aggregations** (`count`, `sum`, `avg`, `min`, `max`) that fold server-side.
-- **Serializable transactions** with retryable conflict errors.
-- **Migrations** derived from a schema diff.
-- A single `rad` binary: server, devtool, and codegen.
-
-Head to [Getting started](/docs/getting-started) to install it and run the
-loop end to end.
