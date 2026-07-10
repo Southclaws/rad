@@ -1,0 +1,230 @@
+---
+title: QIR
+description: The relation-graph query IR, and how it maps to key-value operations — to the byte.
+---
+
+The QIR is Rad's canonical query IR: a **relation graph**. Relations are
+values — operators consume relations and produce relations — and
+relationships are not a separate kind of query: they are ordinary correlated
+relations, materialised into output shapes. This page specifies the grammar,
+how a query lowers through the engine, the physical key-value layout it
+targets, and the exact KV operations each construct issues.
+
+<Callout>
+  The normative design — grammar, three-valued logic, determinism rules —
+  lives in `docs/design/qir-v2.md` in the repository. This page tracks the
+  implementation.
+</Callout>
+
+## The discipline
+
+Before anything else, the rule that shapes the IR: **could this be expressed
+as an ordinary relation?** Every time the answer is yes, the special node is
+resisted. The IR converges on four primitives — relations, expressions,
+cardinality crossings, projection — and everything else is a consequence:
+
+| SQL spelling | QIR expression |
+| --- | --- |
+| `EXISTS (subquery)` | `exists(rel)` |
+| `x IN (subquery)` | `exists(filter(rel, col = x))` |
+| `LATERAL` / correlated subquery | any sub-relation referencing outer scopes |
+| `JOIN` | `join` — already minimal |
+| `JSON_AGG` / `ARRAY_AGG` | `array(rel)` in a projection field |
+| scalar subquery | `scalar(rel)` |
+| `GROUP BY` | `aggregate` with groups — the same node as a global fold |
+| an ORM's `include` | a correlated relation crossed into a projection field |
+
+## The pipeline
+
+A read travels top to bottom; results are reassembled bottom to top.
+
+<QIRPipeline />
+
+The load-bearing invariant, visible in the plan tree itself: **the access
+path only narrows which keys are scanned; the full original predicate rides
+above every access node and is re-evaluated on every fetched row.** Access
+choice can never change results — the conformance suite executes every query
+twice, once as planned and once with every access forced to a full scan, and
+holds the outputs identical.
+
+## The wire: a query graph
+
+`POST /query` takes the graph directly: relation nodes keyed by caller-chosen
+names, plus a root selector. Node references are plain strings; the graph
+must be acyclic.
+
+```json
+{
+  "nodes": {
+    "tasks":  { "kind": "scan", "table": "tasks", "scope": "t" },
+    "open":   { "kind": "filter", "input": "tasks",
+                "predicate": { "kind": "binary", "op": "eq",
+                  "left":  { "kind": "col", "scope": "t", "column": "status" },
+                  "right": { "kind": "lit", "value": "open" } } },
+    "sorted": { "kind": "order", "input": "open",
+                "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "priority" },
+                             "desc": true } ] },
+    "page":   { "kind": "slice", "input": "sorted", "limit": 20 }
+  },
+  "root": { "node": "page", "cardinality": "many" }
+}
+```
+
+**Relation operators** (`kind`): `scan` introduces a table and binds its
+scope label; `filter` keeps rows whose predicate is TRUE under three-valued
+logic; `project` establishes a new row type from `spread` scopes plus
+computed `fields`, optionally binding an output scope; `join` (inner, left);
+`aggregate` folds per distinct `groups` — none means exactly one row;
+`order`; `slice` — `limit` omitted is unlimited, an explicit `0` keeps no
+rows.
+
+**Expressions** (`kind`): `lit` (typed by the binder against the column it
+meets — never by guessing), `col`, `unary` (`not`, `negate`, `is_null`,
+`is_not_null`), `binary` (`eq ne lt lte gt gte`, `and or`, `add sub mul
+div`), `cast`, and the four **cardinality crossings** — the only doors from a
+relation into an expression:
+
+```text
+exists(node)  : boolean, never null
+first(node)   : the row as a nested object, or null
+scalar(node)  : a single-column, at-most-one relation's value
+array(node)   : every row as a nested array; empty, never null
+```
+
+A projection field whose expression is a crossing renders as a nested
+object, array, value, or boolean — that is the whole story of includes and
+folds. Determinism is enforced at bind time: `first` requires a statically
+at-most-one relation (a unique-key filter, a global fold, a slice of one) or
+an explicit ordering, and `scalar` asserts arity one and at-most-one — scan
+encounter order is physical and never observable.
+
+**Correlation needs no node.** A sub-relation reachable through a crossing
+may reference enclosing scopes in its expressions; the binder derives the
+correlation from the free references. Nobody hand-writes this JSON — the
+generated clients keep their fluent builders and assemble graphs; SQL or
+GraphQL compilers can emit the same shape later.
+
+## Binding: names become slots
+
+The wire graph decodes into unbound IR — names and raw literals — and the
+binder resolves it in one walk: scope resolution, catalog binding, **slot
+assignment**, literal coercion, type and cardinality inference, and an
+exhaustive validation matrix. Every relation output is addressed by dense
+slots; a projection's computed column or an aggregate's fold is referenced
+by later operators exactly like a scanned column — relational closure is
+structural, not a rule.
+
+Cardinality inference is uniqueness-aware — a filter whose equality
+conjuncts cover a primary key or unique index is at-most-one, which is what
+lets the to-parent pattern (`first` over an FK→PK filter) pass the
+determinism rule statically. Ordering gains a deterministic tie-breaker: a
+known unique key of the output (a scan's primary key, an aggregate's group
+keys) is appended ascending, so tied rows order identically under every
+access path.
+
+### Three-valued logic
+
+Predicates over nullable operands evaluate to Kleene tri-bools; a filter
+keeps only TRUE:
+
+```text
+eq/ne/lt/lte/gt/gte with any NULL operand  →  UNKNOWN
+NOT UNKNOWN                                 →  UNKNOWN   (filtered out)
+is_null / is_not_null / exists              →  always TRUE or FALSE
+```
+
+`NOT (x = 1)` does not match rows where `x` is NULL; `is_null` is the only
+NULL match. Unique indexes agree: a tuple with any NULL component is exempt
+from uniqueness — NULL equals nothing, including NULL.
+
+## Physical storage
+
+Everything — catalog and data — lives in one ordered KV keyspace over
+SlateDB. Four operations: `Get`, `Put`, `Delete`, and `Scan` over the
+half-open range `[start, end)` in ascending lexicographic order. A prefix
+scan is `Scan(prefix, PrefixEnd(prefix))`.
+
+Every value encodes to `[tag byte][payload]`, order-preserving and
+self-delimiting, so tuples concatenate with no separator:
+
+| Type | Tag | Payload | Total |
+| --- | --- | --- | --- |
+| NULL | `0x01` | — | 1 byte |
+| bool | `0x02` | `0x00` / `0x01` | 2 bytes |
+| int64 | `0x03` | big-endian of `u64 XOR 2⁶³` | 9 bytes |
+| float64 | `0x04` | transformed IEEE-754, big-endian | 9 bytes |
+| text | `0x05` | body (`0x00` → `0x00 0xFF`), then `0x00 0x01` | variable |
+
+<KeyLayoutDiagram />
+
+Physical identity is the table id, never the name, and row values are JSON
+keyed by stable column ids — renaming a table or column rewrites one
+metadata key and zero rows. An index entry's key is
+`indexed_tuple ++ pk_tuple` and its value is the PK tuple: a covering
+pointer back to the base row. Unique and non-unique indexes are physically
+identical; uniqueness is enforced at write time by a prefix scan whose
+requested range is tracked by the serializable transaction, so concurrent
+violations conflict at commit.
+
+## Access selection
+
+The planner reduces a scan chain's filters to per-column **domains** —
+pinned equalities (literal or correlation parameter) and range bounds from
+`lt/lte/gt/gte` — and ranks the paths:
+
+<AccessPathDiagram />
+
+An index scan is one range `Scan` plus one `Get` per matching entry,
+interleaved with the open iterator so a lazy consumer never pays for the
+rest of the range:
+
+<IndexScanDiagram />
+
+Ordering is a physical property: an index provides its columns *after* the
+equality prefix, then the primary key, ascending. When that provided order
+satisfies the requirement, the sort disappears — and because the binder's
+tie-breaker matches the index's PK suffix exactly, `order by name limit 1`
+over a name index reads one index entry and one row, then stops. Descending
+always sorts; the KV has no reverse scan.
+
+## Correlated execution
+
+There is no join operator behind a crossing, and no per-row loop either.
+A key-correlated sub-relation — one whose only outer references are
+`column = outerColumn` equalities — executes **once per distinct key over
+the batch**:
+
+<IncludeTraversalDiagram />
+
+A NULL key short-circuits to the empty result with no KV work (equality with
+NULL matches nothing). The to-parent pattern becomes deduplicated point
+gets; a per-key slice ("first 20 tasks per board") keeps per-key scans, each
+stopping early. Generally-correlated relations fall back to per-row nested
+evaluation — and batched and nested execution are result-equivalent by
+construction, which the conformance suite asserts.
+
+## Aggregation
+
+`aggregate` is one node for both shapes: with groups, one output row per
+distinct group (GROUP BY); without, exactly one row (the global fold —
+`count` of nothing is 0, every other fold of nothing is NULL, folds skip
+NULLs, `avg` is always float64). The aggregate may bind an output scope, so
+ordering or filtering *above* the fold addresses its keys and terms like any
+other columns. The generated clients' `CountBy<Column>` methods answer a
+board card's "3 tasks · 2 open · 1 done" in a single round trip.
+
+## Results
+
+A query returns a typed value tree — null, scalar, object, array — rendered
+to JSON exactly as shaped: a `first` field is an object or a present key
+with `null`, an `array` field is an array (empty, never null), a folded
+relation is an object of scalars. Rad never exposes a flattened join.
+
+## What this deliberately does not do
+
+No cost model or statistics — access selection is the rule-based ranking
+above, and joins execute as nested loops. No merged multi-key storage
+batching yet (the per-distinct-key seam is where it lands). No descending or
+index-only scans. No `HAVING`, `DISTINCT`, window functions, or recursive
+queries. Each is an extension point in an IR built from four primitives, not
+a redesign.

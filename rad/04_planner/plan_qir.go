@@ -16,35 +16,59 @@ import (
 	"rad/rad/03_qir/bound"
 )
 
+// PlanOpt adjusts planning; the conformance suite uses these to prove that
+// physical choices never change results.
+type PlanOpt func(*planCfg)
+
+type planCfg struct {
+	fullScanOnly bool
+}
+
+// FullScanOnly disables point gets and index scans: every access is a table
+// scan filtered by the full predicate. Results must be identical to the
+// chosen plan's — the residual filter is the source of truth.
+func FullScanOnly() PlanOpt {
+	return func(c *planCfg) { c.fullScanOnly = true }
+}
+
 // PlanQuery lowers a bound query into a physical plan.
-func PlanQuery(q *bound.Query) *PhysPlan {
+func PlanQuery(q *bound.Query, opts ...PlanOpt) *PhysPlan {
+	cfg := planCfg{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	pl := &planner{cfg: cfg}
 	return &PhysPlan{
-		Root: plan(q.Root, nil),
+		Root: pl.plan(q.Root, nil),
 		Card: q.Card,
 		Out:  q.Root.Output(),
 	}
 }
 
+type planner struct {
+	cfg planCfg
+}
+
 // plan lowers one relation. req is the ordering an enclosing Order needs —
 // flowing it down lets access selection prefer an order-providing index, so
 // the Order above can disappear entirely.
-func plan(rel bound.Relation, req []bound.OrderTerm) PhysNode {
+func (pl *planner) plan(rel bound.Relation, req []bound.OrderTerm) PhysNode {
 	switch n := rel.(type) {
 	case *bound.Scan:
-		return chooseAccessPath(&ScanConstraints{Scan: n, Cols: map[string]Domain{}}, req)
+		return pl.chooseAccessPath(&ScanConstraints{Scan: n, Cols: map[string]Domain{}}, req)
 
 	case *bound.Filter:
 		// A filter chain over a scan plans as a unit: constraints choose the
 		// access path, and the merged conjunction rides above it.
 		if scan := underlyingScan(n); scan != nil && filterChain(n) {
 			cs := ExtractConstraints(n)
-			access := chooseAccessPath(cs, req)
+			access := pl.chooseAccessPath(cs, req)
 			return &FilterExec{Input: access, Pred: mergedPred(n)}
 		}
-		return &FilterExec{Input: plan(n.In, req), Pred: n.Pred}
+		return &FilterExec{Input: pl.plan(n.In, req), Pred: n.Pred}
 
 	case *bound.Order:
-		in := plan(n.In, n.Terms)
+		in := pl.plan(n.In, n.Terms)
 		if satisfiesOrder(in, n.Terms) {
 			return in
 		}
@@ -52,27 +76,27 @@ func plan(rel bound.Relation, req []bound.OrderTerm) PhysNode {
 
 	case *bound.Slice:
 		// Ordering does not commute with slicing, so nothing flows through.
-		return &SliceExec{Input: plan(n.In, nil), Offset: n.Offset, Limit: n.Limit}
+		return &SliceExec{Input: pl.plan(n.In, nil), Offset: n.Offset, Limit: n.Limit}
 
 	case *bound.Project:
 		fields := make([]PhysField, len(n.Fields))
 		for i, f := range n.Fields {
-			fields[i] = planField(f)
+			fields[i] = pl.planField(f)
 		}
-		return &ProjectExec{Input: plan(n.In, nil), Fields: fields}
+		return &ProjectExec{Input: pl.plan(n.In, nil), Fields: fields}
 
 	case *bound.Aggregate:
-		return &AggregateExec{Input: plan(n.In, nil), Groups: n.Groups, Terms: n.Terms}
+		return &AggregateExec{Input: pl.plan(n.In, nil), Groups: n.Groups, Terms: n.Terms}
 
 	case *bound.Join:
-		return &NestedLoopJoinExec{L: plan(n.L, nil), R: plan(n.R, nil), Kind: n.Kind, On: n.On, ROut: n.R.Output()}
+		return &NestedLoopJoinExec{L: pl.plan(n.L, nil), R: pl.plan(n.R, nil), Kind: n.Kind, On: n.On, ROut: n.R.Output()}
 	}
 	panic("planner: unplannable relation") // sealed interface; unreachable
 }
 
 // planField lowers one projection field. Crossings become attached
 // sub-plans; anything else stays a scalar expression.
-func planField(f bound.ProjField) PhysField {
+func (pl *planner) planField(f bound.ProjField) PhysField {
 	out := PhysField{Name: f.Name, Slot: f.Slot}
 	var kind CrossKind
 	var rel bound.Relation
@@ -92,7 +116,7 @@ func planField(f bound.ProjField) PhysField {
 	out.Attach = &AttachSpec{
 		Kind: kind,
 		Corr: Classify(rel),
-		Plan: plan(rel, nil),
+		Plan: pl.plan(rel, nil),
 		Out:  rel.Output(),
 	}
 	return out
@@ -100,7 +124,9 @@ func planField(f bound.ProjField) PhysField {
 
 // PlanRelation lowers a bare relation — the executor's nested-evaluation
 // glue plans crossing sub-relations on demand with it.
-func PlanRelation(rel bound.Relation) PhysNode { return plan(rel, nil) }
+func PlanRelation(rel bound.Relation) PhysNode {
+	return (&planner{}).plan(rel, nil)
+}
 
 // filterChain reports whether every node between rel and its scan is a
 // Filter — the shape whose conjunctions merge soundly into one residual.
@@ -136,8 +162,11 @@ func mergedPred(rel bound.Relation) bound.Expr {
 }
 
 // chooseAccessPath picks the cheapest access path the constraints support.
-func chooseAccessPath(cs *ScanConstraints, req []bound.OrderTerm) PhysNode {
+func (pl *planner) chooseAccessPath(cs *ScanConstraints, req []bound.OrderTerm) PhysNode {
 	scan := cs.Scan
+	if pl.cfg.fullScanOnly {
+		return &TableScanExec{Scan: scan}
+	}
 
 	// A fully pinned primary key is a point get.
 	if key, ok := pinnedKey(cs, scan.Table.PrimaryKey); ok {

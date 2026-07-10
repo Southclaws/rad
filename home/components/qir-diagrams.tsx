@@ -90,20 +90,20 @@ export function QIRPipeline() {
     sub: string;
     tone?: "hero" | "kv";
   }[] = [
-    { label: "generated client", sub: "builds a protocol.Read" },
-    { label: "POST /query", sub: "the rad:// wire · protocol.Read", tone: "hero" },
-    { label: "wireconv.toRead", sub: "coerce JSON to column types" },
-    { label: "planner.PlanRead", sub: "choose access path · validate" },
+    { label: "generated client", sub: "assembles a query graph" },
+    { label: "POST /query", sub: "the rad:// wire · {nodes, root}", tone: "hero" },
+    { label: "binder", sub: "names → slots · types · cardinality" },
+    { label: "physical planner", sub: "access paths · ordering · attaches" },
     {
-      label: "exec.runShapedRead",
-      sub: "fetch · filter · sort · include · fold",
+      label: "executor",
+      sub: "pull operators · batched correlation · folds",
     },
     {
       label: "01_kv over SlateDB",
       sub: "Get · Scan[start, end) · Put · Delete",
       tone: "kv",
     },
-    { label: "frontend.RecordsJSON", sub: "nested records, shaped like your data" },
+    { label: "result tree", sub: "nested records, shaped like your data" },
   ];
   const W = 340;
   const X = 150;
@@ -114,8 +114,8 @@ export function QIRPipeline() {
   return (
     <Fig
       viewBox={`0 0 640 ${top + stages.length * (H + GAP)}`}
-      label="A vertical pipeline: the generated client builds a protocol.Read, which travels over POST /query, through wireconv, the planner, the executor, down to the KV store over SlateDB, and back up as nested JSON."
-      caption="One read, top to bottom: the QIR is chosen at the client, lowered, planned, executed against the KV store, and reassembled as nested JSON."
+      label="A vertical pipeline: the generated client assembles a query graph, which travels over POST /query, through the binder and physical planner, into the executor, down to the KV store over SlateDB, and back up as nested JSON."
+      caption="One read, top to bottom: the graph is assembled at the client, bound, planned, executed against the KV store, and reassembled as nested JSON."
     >
       {stages.map((s, i) => {
         const y = top + i * (H + GAP);
@@ -289,8 +289,8 @@ export function AccessPathDiagram() {
     },
     {
       rank: "2",
-      title: "index scan",
-      when: "longest gapless prefix",
+      title: "index range scan",
+      when: "eq prefix + range bound",
       cost: "1 Scan + N Get",
       x: 234,
     },
@@ -306,7 +306,7 @@ export function AccessPathDiagram() {
     <Fig
       viewBox="0 0 640 292"
       label="A filter is reduced to its equality predicates, then chooseAccess ranks three paths: a complete primary-key equality set becomes a single-Get PK lookup; the longest gapless leading index prefix becomes an index scan of one Scan plus N Gets; otherwise a full table scan."
-      caption="chooseAccess reads only column = literal equalities under top-level ANDs. Precedence: complete PK → longest gapless index prefix → full scan. The full filter is still re-checked on every fetched row."
+      caption="Constraint extraction reduces filters to per-column domains: equalities and range bounds. Precedence: complete PK → longest equality prefix (+ trailing range, + ordering tie-break) → full scan. The full filter is still re-checked on every fetched row."
     >
       <rect
         x="200"
@@ -326,10 +326,10 @@ export function AccessPathDiagram() {
         fontWeight="700"
         fill="var(--green)"
       >
-        chooseAccess(filter)
+        access selection
       </text>
       <text x="320" y="60" textAnchor="middle" fontSize="11.5" fill="var(--green-mid)">
-        equalities() under top-level ANDs
+        per-column domains: eq + ranges
       </text>
       {paths.map((p) => {
         const bx = p.x + 86;
@@ -452,115 +452,79 @@ export function IndexScanDiagram() {
   );
 }
 
-// ── nested include traversal: recursive, per-row relationship fetches ───────
+// ── correlated attaches: deduplicated batched fetches, not per-row loops ────
 export function IncludeTraversalDiagram() {
-  function Node({
-    x,
-    y,
-    w,
-    label,
-    sub,
-    tone,
-  }: {
-    x: number;
-    y: number;
-    w: number;
-    label: string;
-    sub?: string;
-    tone?: "root" | "null";
-  }) {
-    const nul = tone === "null";
-    const root = tone === "root";
-    return (
-      <g>
-        <rect
-          x={x}
-          y={y}
-          width={w}
-          height={sub ? 46 : 34}
-          rx="5"
-          stroke={root ? "var(--green)" : nul ? "var(--line)" : "var(--line-2)"}
-          strokeWidth={root ? 1.7 : 1.4}
-          strokeDasharray={nul ? "4 4" : undefined}
-          fill={root ? "var(--green-deep)" : "none"}
-        />
-        <text
-          x={x + w / 2}
-          y={y + (sub ? 21 : 22)}
-          textAnchor="middle"
-          fontSize="12.5"
-          fontWeight={root ? 700 : 500}
-          fill={root ? "var(--green)" : nul ? "var(--faint)" : "var(--ink)"}
-        >
-          {label}
-        </text>
-        {sub && (
-          <text
-            x={x + w / 2}
-            y={y + 38}
-            textAnchor="middle"
-            fontSize="10.5"
-            fill={nul ? "var(--faint)" : "var(--green-mid)"}
-          >
-            {sub}
-          </text>
-        )}
-      </g>
-    );
-  }
-  const tasks = [0, 1, 2];
-  const ty = (i: number) => 34 + i * 104;
+  const boards = [
+    { id: "b1", y: 30, owner: "ada" },
+    { id: "b2", y: 96, owner: "ada" },
+    { id: "b3", y: 162, owner: "bob" },
+  ];
   return (
     <Fig
-      viewBox="0 0 660 350"
-      label="A nested read. The root board is fetched with one Get. Its tasks are an index scan plus a Get each. Then, per task, the assignee parent is one Get (or nothing when the FK is NULL) and the comments children are another index scan plus a Get each — a recursive, per-row traversal."
-      caption="Includes are recursive per-row fetches, not joins. Every parent row independently drives its relationship reads; a NULL parent FK costs no KV op at all."
+      viewBox="0 0 660 300"
+      label="Three board rows flow into one batch. Their owner keys deduplicate to two distinct users, fetched with one point get each; their board ids drive one index scan per distinct board for tasks. No fetch happens per row."
+      caption="Correlated relations execute per DISTINCT key over the batch, not per row: ada owns two boards but is fetched once, and a NULL key costs no KV work at all. Grandchildren batch across each inner batch in turn."
     >
-      <Node x={20} y={148} w={120} label="board b1" sub="Get" tone="root" />
-      <Arrow x1={140} y1={165} x2={196} y2={70} />
-      <text x={150} y={120} fontSize="10.5" fill="var(--green-mid)">
-        Scan+Get
-      </text>
-      {tasks.map((i) => (
-        <g key={i}>
-          {i > 0 && <Arrow x1={140} y1={171} x2={196} y2={ty(i) + 17} />}
-          <Node
-            x={196}
-            y={ty(i)}
-            w={120}
-            label={`task t${i + 1}`}
-            sub="Get"
-          />
-          {/* assignee (parent) */}
-          <Arrow x1={316} y1={ty(i) + 8} x2={392} y2={ty(i) - 8} dash={i === 2} />
-          {i === 2 ? (
-            <Node
-              x={392}
-              y={ty(i) - 26}
-              w={230}
-              label="assignee = null · NULL FK, no KV op"
-              tone="null"
-            />
-          ) : (
-            <Node
-              x={392}
-              y={ty(i) - 26}
-              w={150}
-              label="assignee"
-              sub="Get (parent)"
-            />
-          )}
-          {/* comments (children) */}
-          <Arrow x1={316} y1={ty(i) + 26} x2={392} y2={ty(i) + 44} />
-          <Node
-            x={392}
-            y={ty(i) + 30}
-            w={190}
-            label="comments[]"
-            sub="Scan + Get per row"
-          />
+      {boards.map((b) => (
+        <g key={b.id}>
+          <rect x="20" y={b.y} width="120" height="40" rx="5"
+            stroke="var(--line-2)" strokeWidth="1.4" />
+          <text x="80" y={b.y + 19} textAnchor="middle" fontSize="12.5"
+            fontWeight={500} fill="var(--ink)">
+            board {b.id}
+          </text>
+          <text x="80" y={b.y + 33} textAnchor="middle" fontSize="10.5"
+            fill="var(--faint)">
+            owner_id = {b.owner}
+          </text>
+          <Arrow x1={140} y1={b.y + 20} x2={216} y2={116} />
         </g>
       ))}
+
+      <rect x="216" y="66" width="150" height="100" rx="7"
+        stroke="var(--green)" strokeWidth="1.7" fill="var(--green-deep)" />
+      <text x="291" y="106" textAnchor="middle" fontSize="13.5"
+        fontWeight={700} fill="var(--green)">
+        dedupe keys
+      </text>
+      <text x="291" y="126" textAnchor="middle" fontSize="11"
+        fill="var(--green-mid)">
+        over the batch
+      </text>
+
+      <Arrow x1={366} y1={96} x2={452} y2={52} />
+      <Arrow x1={366} y1={116} x2={452} y2={116} />
+      <Arrow x1={366} y1={136} x2={452} y2={228} />
+      <text x="382" y="72" fontSize="10.5" fill="var(--green-mid)">
+        owners: 2 distinct
+      </text>
+      <text x="382" y="205" fontSize="10.5" fill="var(--green-mid)">
+        tasks: 3 distinct
+      </text>
+
+      <rect x="452" y="30" width="186" height="40" rx="5"
+        stroke="var(--line-2)" strokeWidth="1.4" />
+      <text x="545" y="49" textAnchor="middle" fontSize="12" fill="var(--ink)">
+        PKGet users[ada]
+      </text>
+      <text x="545" y="62" textAnchor="middle" fontSize="10"
+        fill="var(--faint)">
+        shared by b1 and b2
+      </text>
+      <rect x="452" y="96" width="186" height="40" rx="5"
+        stroke="var(--line-2)" strokeWidth="1.4" />
+      <text x="545" y="120" textAnchor="middle" fontSize="12" fill="var(--ink)">
+        PKGet users[bob]
+      </text>
+      <rect x="452" y="208" width="186" height="60" rx="5"
+        stroke="var(--line-2)" strokeWidth="1.4" />
+      <text x="545" y="232" textAnchor="middle" fontSize="12" fill="var(--ink)">
+        IndexRangeScan tasks
+      </text>
+      <text x="545" y="250" textAnchor="middle" fontSize="10.5"
+        fill="var(--faint)">
+        one per distinct board id
+      </text>
     </Fig>
   );
 }
