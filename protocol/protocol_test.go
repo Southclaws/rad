@@ -12,12 +12,12 @@ func TestParseURL(t *testing.T) {
 		"rad://localhost":            "http://localhost:7237",
 		"rad://localhost:9000":       "http://localhost:9000",
 		"rad://db.internal":          "http://db.internal:7237",
-		"rads://db.example.com":      "https://db.example.com:7237",
-		"rads://db.example.com:8443": "https://db.example.com:8443",
 		"rad://10.0.0.5":             "http://10.0.0.5:7237",
 		"rad://[::1]":                "http://[::1]:7237",
 		"rad://[::1]:9000":           "http://[::1]:9000",
 		"rad://localhost/":           "http://localhost:7237",
+		"rads://db.example.com":      "https://db.example.com:7237",
+		"rads://db.example.com:8443": "https://db.example.com:8443",
 	}
 	for in, want := range cases {
 		got, err := ParseURL(in)

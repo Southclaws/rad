@@ -192,7 +192,7 @@ export interface Read {
 
 type Rec = Record<string, unknown>;
 
-/** Parses rad://host[:port] (or rads:// for TLS) into an http(s) base URL. */
+/** Parses rad://host[:port] (or rads:// for HTTPS) into an http(s) base URL. */
 export function parseRadUrl(url: string): string {
   const m = /^(rad|rads):\/\/([^/?#@]+?)(:\d+)?\/?$/.exec(url);
   if (!m)
@@ -263,11 +263,17 @@ class WireView implements View {
     return res.records;
   }
   async get(table: string, key: Rec): Promise<Rec | null> {
-    const res = await this.rpc.req<{ found: boolean; record?: Rec }>(
-      this.prefix + "/get",
-      { table, key },
+    // A point read is just a /query filtered to the key columns, limit 1 —
+    // there is no dedicated get endpoint.
+    const filter = andExpr(
+      Object.entries(key).map(([column, value]): Expr => ({
+        op: "eq",
+        column,
+        value,
+      })),
     );
-    return res.found ? res.record! : null;
+    const recs = await this.query({ table, filter, limit: 1 });
+    return recs.length ? recs[0] : null;
   }
   async create(table: string, values: Rec): Promise<Rec> {
     const res = await this.rpc.req<{ record: Rec }>(this.prefix + "/create", {

@@ -9,8 +9,9 @@
 //	rad://db.internal:9000     → http://db.internal:9000
 //	rads://db.example.com      → https://db.example.com:7237
 //
-// rads is rad over TLS. Rad itself never terminates TLS — a reverse proxy
-// in front of the server does.
+// Rad speaks plain HTTP, so rad:// resolves to http. Front it with your own
+// proxy for encryption or authentication in production and use rads:// — the
+// client then dials that proxy over HTTPS. Rad itself never terminates TLS.
 //
 // # Endpoints
 //
@@ -21,12 +22,11 @@
 //	GET  /tables                        table definitions
 //	POST /migrate                       MigrateRequest  → MigrateResponse
 //	POST /query                         Read            → QueryResponse
-//	POST /get                           GetRequest      → RecordResponse
 //	POST /create                        CreateRequest   → RecordResponse
 //	POST /update                        UpdateRequest   → RecordResponse
 //	POST /delete                        DeleteRequest   → DeleteResponse
 //	POST /tx                            —               → TxResponse
-//	POST /tx/{id}/query|get|create|update|delete        as above
+//	POST /tx/{id}/query|create|update|delete            as above
 //	POST /tx/{id}/commit                —               → empty
 //	POST /tx/{id}/rollback              —               → empty
 //
@@ -50,7 +50,9 @@ import (
 // RAD_ADDR on the server; clients name a port in the URI.
 const DefaultPort = 7237
 
-// ParseURL parses a rad(s):// connection URI into an http(s) base URL.
+// ParseURL parses a rad(s):// connection URI into an http(s) base URL. rad://
+// resolves to http; rads:// resolves to https, for when a TLS-terminating
+// proxy sits in front of the server. Rad itself never terminates TLS.
 func ParseURL(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -199,11 +201,6 @@ type MigrateResponse struct {
 
 type QueryResponse struct {
 	Records []Record `json:"records"`
-}
-
-type GetRequest struct {
-	Table string         `json:"table"`
-	Key   map[string]any `json:"key"` // exactly the primary key columns
 }
 
 type CreateRequest struct {

@@ -1,7 +1,8 @@
 # Builds the Rad server image: one mostly-static binary (SlateDB compiled
 # from source at the go.mod-pinned tag and statically linked; only glibc
 # stays dynamic). Configure storage with RAD_STORAGE / RAD_DATA_DIR /
-# RAD_S3_* and put a TLS-terminating reverse proxy in front for rads://.
+# RAD_S3_*. Rad speaks plain HTTP; front it with your own proxy and connect
+# with rads:// to dial that proxy over HTTPS.
 #
 #   task docker:build
 #   docker run --rm -p 7237:7237 -e RAD_STORAGE=memory rad

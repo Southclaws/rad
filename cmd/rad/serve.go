@@ -48,12 +48,9 @@ func serveCmd() *cobra.Command {
 			cat := catalog.New(store)
 			db := frontend.Open(store)
 
+			// The devtool UI + inspection API ride along on the same port,
+			// serving every path the database API contract does not claim.
 			mux := http.NewServeMux()
-
-			// The database API.
-			newDBAPI(db, cat).register(mux)
-
-			// The devtool UI + inspection API ride along on the same port.
 			devtool := &server{
 				store:  store,
 				cat:    cat,
@@ -68,7 +65,14 @@ func serveCmd() *cobra.Command {
 			mux.HandleFunc("GET /api/tables/{table}/indexscan", devtool.handleIndexScan)
 			mux.Handle("/", uiHandler())
 
-			srv := newHTTPServer(cfg.Addr, withRecovery(withLogging(withCORS(mux))))
+			// The database API: the ogen-generated server implementing the
+			// OpenAPI contract, falling back to the devtool for other paths.
+			api, err := newDBAPI(db, cat).httpHandler(mux)
+			if err != nil {
+				return err
+			}
+
+			srv := newHTTPServer(cfg.Addr, withRecovery(withLogging(withCORS(withBodyLimit(api)))))
 
 			// Graceful shutdown on SIGINT/SIGTERM.
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)

@@ -43,9 +43,11 @@ func testServer(t *testing.T) *radclient.Client {
 
 	cat := catalog.New(store)
 	db := frontend.Open(store)
-	mux := http.NewServeMux()
-	newDBAPI(db, cat).register(mux)
-	srv := httptest.NewServer(withRecovery(mux))
+	api, err := newDBAPI(db, cat).httpHandler(http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(withRecovery(api))
 	t.Cleanup(srv.Close)
 
 	// httptest serves plain http on 127.0.0.1:port — reachable as rad://.

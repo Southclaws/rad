@@ -1,0 +1,777 @@
+openapi: 3.0.3
+
+info:
+  contact:
+    name: Barnaby Keene
+  description: >
+    The Rad wire protocol: a small JSON over HTTP surface that clients and a
+    Rad server speak to each other.
+
+
+    Rad is reached over a `rad://` (or `rads://` for HTTPS) connection URI
+    which resolves to an HTTP base URL. Rad speaks plain HTTP; front it with
+    your own proxy for encryption or authentication and use `rads://` so the
+    client dials it over HTTPS. Rad never terminates TLS itself. The default
+    port is 7237.
+
+
+    This document is the contract. Every operation describes what it does, what
+    it returns, and how it fails, in enough detail to serve as the basis for
+    acceptance tests. The protocol is deliberately unversioned: Rad is a proof
+    of concept and makes no backwards compatibility guarantees yet.
+
+
+    Errors are returned as RFC 7807 Problem Details with the
+    `application/problem+json` media type. The `code` member is the stable,
+    machine readable discriminator (`invalid`, `not_found`, `conflict`,
+    `internal`) and clients should switch on it rather than parsing the `type`
+    URI or the HTTP status.
+  title: rad
+  version: "v0"
+
+servers:
+  - url: "/"
+    description: >
+      The server mounts every operation at the root. A `rad://host:7237`
+      connection URI maps directly onto `http://host:7237/`.
+
+tags:
+  - name: meta
+    description: Liveness and schema introspection.
+  - name: schema
+    description: Reconciling the database with a schema.rad file.
+  - name: data
+    description: Reading and writing rows against committed state.
+  - name: transactions
+    description: Server held serializable transactions.
+
+paths:
+  /health:
+    get:
+      operationId: GetHealth
+      summary: Check that the server is alive.
+      description: |
+        A cheap liveness probe that touches no storage. It always returns `200`
+        with a small status body while the process is serving, so it is safe to
+        use as a readiness check or a `rad://` reachability test before opening
+        a connection.
+      tags: [meta]
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/GetHealthOK" }
+
+  /tables:
+    get:
+      operationId: TableList
+      summary: List the tables in the database.
+      description: |
+        Return every table currently defined in the catalog, along with its
+        columns and primary key. This reflects the schema as it exists right
+        now, after the most recent successful migration. An empty database
+        returns an empty list, not an error.
+
+        Use this to introspect a running server without access to the original
+        `schema.rad` file.
+      tags: [meta]
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TableListOK" }
+
+  /migrate:
+    post:
+      operationId: SchemaMigrate
+      summary: Reconcile the database with a schema.
+      description: |
+        Take a `schema.rad` source document, compute the difference against the
+        database's current catalog, and apply whatever changes are needed to
+        make them match. The response lists the steps that were applied, in
+        order.
+
+        Migration is idempotent. Submitting a schema that already matches the
+        database applies nothing and returns an empty step list. Renames are
+        driven by `renamed_from` hints in the schema so that renaming a column
+        or table does not drop and recreate it.
+
+        A schema that fails to parse or validate, or that requests an
+        unsupported change (such as altering a column's type), is rejected with
+        an `invalid` problem and the database is left untouched.
+      tags: [schema]
+      requestBody: { $ref: "#/components/requestBodies/SchemaMigrate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/SchemaMigrateOK" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /query:
+    post:
+      operationId: Query
+      summary: Run a shaped read.
+      description: |
+        Read rows from a table, optionally filtered, ordered, paginated, and
+        with related rows embedded through `include`. The result is a list of
+        records shaped like the request: parent includes appear as nested
+        objects (or `null`), children includes as nested arrays.
+
+        Setting `aggs` folds the matching rows into a single record of scalar
+        values (count, sum, avg, min, max) instead of returning the rows
+        themselves, so aggregation reuses this operation rather than having its
+        own endpoint. When `aggs` is set at the root, `order_by`, `offset`,
+        `limit`, and `include` are not permitted together with it.
+
+        Filters and values are validated against the catalog's column types. A
+        reference to an unknown table or column, or a value of the wrong type,
+        is rejected with an `invalid` problem.
+      tags: [data]
+      requestBody: { $ref: "#/components/requestBodies/Query" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/QueryOK" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /create:
+    post:
+      operationId: RowCreate
+      summary: Insert one row.
+      description: |
+        Insert a single row into a table. Columns left out of `values` fall back
+        to their schema default, so generated defaults such as `uuid()` and
+        `now_ms()` are filled in server side. The complete stored row, including
+        any generated values, is returned.
+
+        Inserting a row that would violate a unique constraint, or whose foreign
+        key references a row that does not exist, fails with a `conflict`
+        problem and nothing is written.
+      tags: [data]
+      requestBody: { $ref: "#/components/requestBodies/RowCreate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/RowCreateOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /update:
+    post:
+      operationId: RowUpdate
+      summary: Update one row by primary key.
+      description: |
+        Update the row named by `key`. Columns in `set` are assigned new values;
+        columns listed in `clear` are set to `null` (only nullable columns may
+        be cleared). Columns mentioned in neither are left as they are.
+
+        When the target row exists the updated record is returned with `found`
+        set to `true`. When it does not exist, `found` is `false` and nothing is
+        written. Violating a unique constraint fails with a `conflict` problem.
+      tags: [data]
+      requestBody: { $ref: "#/components/requestBodies/RowUpdate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/RowUpdateOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /delete:
+    post:
+      operationId: RowDelete
+      summary: Delete one row by primary key.
+      description: |
+        Delete the row named by `key`. The response reports whether a row was
+        actually removed through `found`. Deleting a row that does not exist is
+        not an error and reports `found` as `false`.
+
+        A delete that would leave a dangling foreign key reference is refused
+        with a `conflict` problem, since Rad restricts rather than cascades.
+      tags: [data]
+      requestBody: { $ref: "#/components/requestBodies/RowDelete" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/RowDeleteOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /tx:
+    post:
+      operationId: TransactionBegin
+      summary: Open a transaction.
+      description: |
+        Start a server held serializable transaction and return an opaque
+        transaction id. Subsequent reads and writes made under `/tx/{id}` see a
+        consistent snapshot plus their own uncommitted writes, and are isolated
+        from other transactions until committed.
+
+        A transaction holds server side state, so it must be finished with
+        either commit or rollback. An idle transaction is reaped automatically
+        after roughly sixty seconds, after which its id is no longer valid.
+      tags: [transactions]
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TransactionBeginOK" }
+
+  /tx/{id}/query:
+    post:
+      operationId: TransactionQuery
+      summary: Run a shaped read inside a transaction.
+      description: |
+        Behaves exactly like `Query`, but reads through the transaction's
+        snapshot and sees the transaction's own uncommitted writes. Referencing
+        an unknown or already finished transaction fails with a `not_found`
+        problem.
+      tags: [transactions]
+      parameters:
+        - { $ref: "#/components/parameters/TransactionID" }
+      requestBody: { $ref: "#/components/requestBodies/Query" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/QueryOK" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /tx/{id}/create:
+    post:
+      operationId: TransactionRowCreate
+      summary: Insert one row inside a transaction.
+      description: |
+        Behaves exactly like `RowCreate`, but the write is staged in the
+        transaction and only becomes visible to others on commit. Referencing an
+        unknown or already finished transaction fails with a `not_found`
+        problem.
+      tags: [transactions]
+      parameters:
+        - { $ref: "#/components/parameters/TransactionID" }
+      requestBody: { $ref: "#/components/requestBodies/RowCreate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/RowCreateOK" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /tx/{id}/update:
+    post:
+      operationId: TransactionRowUpdate
+      summary: Update one row inside a transaction.
+      description: |
+        Behaves exactly like `RowUpdate`, but the write is staged in the
+        transaction and only becomes visible to others on commit. Referencing an
+        unknown or already finished transaction fails with a `not_found`
+        problem.
+      tags: [transactions]
+      parameters:
+        - { $ref: "#/components/parameters/TransactionID" }
+      requestBody: { $ref: "#/components/requestBodies/RowUpdate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/RowUpdateOK" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /tx/{id}/delete:
+    post:
+      operationId: TransactionRowDelete
+      summary: Delete one row inside a transaction.
+      description: |
+        Behaves exactly like `RowDelete`, but the delete is staged in the
+        transaction and only becomes visible to others on commit. Referencing an
+        unknown or already finished transaction fails with a `not_found`
+        problem.
+      tags: [transactions]
+      parameters:
+        - { $ref: "#/components/parameters/TransactionID" }
+      requestBody: { $ref: "#/components/requestBodies/RowDelete" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/RowDeleteOK" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /tx/{id}/commit:
+    post:
+      operationId: TransactionCommit
+      summary: Commit a transaction.
+      description: |
+        Atomically apply every write staged in the transaction and release its
+        server side state. On success the transaction id is spent and can no
+        longer be used.
+
+        If another transaction committed a conflicting change while this one was
+        open, the commit fails with a `conflict` problem. The correct response
+        is to open a fresh transaction and replay the work.
+      tags: [transactions]
+      parameters:
+        - { $ref: "#/components/parameters/TransactionID" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "204": { $ref: "#/components/responses/NoContent" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /tx/{id}/rollback:
+    post:
+      operationId: TransactionRollback
+      summary: Roll back a transaction.
+      description: |
+        Discard every write staged in the transaction and release its server
+        side state. On success the transaction id is spent.
+
+        Rolling back is safe to call defensively. A transaction that has already
+        been committed or rolled back, or that has been reaped for being idle,
+        is simply gone, so clients may treat a `not_found` here as success.
+      tags: [transactions]
+      parameters:
+        - { $ref: "#/components/parameters/TransactionID" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "204": { $ref: "#/components/responses/NoContent" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  parameters:
+    TransactionID:
+      name: id
+      in: path
+      required: true
+      description: The opaque id returned by `TransactionBegin`.
+      schema:
+        type: string
+
+  requestBodies:
+    SchemaMigrate:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/MigrateProps" }
+
+    Query:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Query" }
+
+    RowCreate:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/RowCreateProps" }
+
+    RowUpdate:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/RowUpdateProps" }
+
+    RowDelete:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/RowDeleteProps" }
+
+  responses:
+    InternalServerError:
+      description: Something went wrong inside the server that was not the caller's fault.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    BadRequest:
+      description: The request body was malformed or could not be decoded.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    NotFound:
+      description: The addressed resource, such as a transaction, does not exist.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Conflict:
+      description: The write lost an optimistic race or violated a constraint.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    UnprocessableEntity:
+      description: The request was well formed but failed validation against the catalog.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    NoContent:
+      description: The operation succeeded and there is no body to return.
+
+    GetHealthOK:
+      description: The server is alive.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Health" }
+    TableListOK:
+      description: The current set of tables.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/TableList" }
+    SchemaMigrateOK:
+      description: The schema was reconciled and the applied steps are listed.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/MigrateResult" }
+    QueryOK:
+      description: The rows, or the single folded record when aggregating.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/QueryResult" }
+    RowCreateOK:
+      description: The stored row, including any server generated values.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/RecordResult" }
+    RowUpdateOK:
+      description: The updated row if it existed, otherwise a not found marker.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/RecordResult" }
+    RowDeleteOK:
+      description: Whether a row was removed.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/DeleteResult" }
+    TransactionBeginOK:
+      description: The new transaction's credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/TransactionCredentials" }
+
+  schemas:
+    Problem:
+      description: |
+        An RFC 7807 Problem Details object. Every non 2xx response carries one.
+        The `code` member mirrors the last segment of `type` so clients can
+        branch on a stable string without parsing the URI.
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type:
+          description: A stable URN identifying the problem kind, for example `urn:rad:problem:conflict`.
+          type: string
+        title:
+          description: A short, human readable summary of the problem kind.
+          type: string
+        status:
+          description: The HTTP status code, repeated in the body for convenience.
+          type: integer
+        detail:
+          description: A human readable explanation specific to this occurrence.
+          type: string
+        code:
+          description: |
+            The machine readable discriminator. One of `invalid` for a malformed
+            or rejected request, `not_found`, `conflict` for a lost optimistic
+            race or constraint violation, or `internal`.
+          type: string
+          enum: [invalid, not_found, conflict, internal]
+
+    Value:
+      description: |
+        A single column value on the wire. It is a plain JSON scalar: a string,
+        a number, a boolean, or `null`. Numbers are decoded so that 64 bit
+        integers keep full precision, and the server coerces each value to its
+        column's declared type.
+      nullable: true
+
+    Record:
+      description: |
+        One result row as a JSON object keyed by column name. Beyond scalar
+        columns a record may also carry included relations: a parent include
+        appears as a nested object (or `null`), a children include as an array
+        of records, and an aggregate include as an object of scalars.
+      type: object
+      additionalProperties: true
+
+    Cells:
+      description: |
+        A JSON object mapping column names to values. Used for the primary key,
+        the values of a new row, and the assignments of an update.
+      type: object
+      additionalProperties: { $ref: "#/components/schemas/Value" }
+
+    Expr:
+      description: |
+        A filter expression, expressed as a tagged union selected by `op`.
+
+
+        The logical operators `and` and `or` take a list of sub expressions in
+        `exprs`. `not` takes a single sub expression in `expr`. The comparisons
+        `eq`, `ne`, `lt`, `lte`, `gt`, and `gte` take a `column` and a `value`.
+        `is_null` takes just a `column`. A comparison against `null` never
+        matches, following SQL three valued logic.
+      type: object
+      required: [op]
+      properties:
+        op:
+          type: string
+          enum: [and, or, not, eq, ne, lt, lte, gt, gte, is_null]
+        exprs:
+          description: The operands of `and` or `or`.
+          type: array
+          items: { $ref: "#/components/schemas/Expr" }
+        expr:
+          $ref: "#/components/schemas/Expr"
+        column:
+          description: The column a comparison or `is_null` tests.
+          type: string
+        value:
+          $ref: "#/components/schemas/Value"
+
+    Order:
+      description: One ordering term. Rows sort by these terms in list order.
+      type: object
+      required: [column]
+      properties:
+        column:
+          type: string
+        desc:
+          description: Sort descending instead of the default ascending.
+          type: boolean
+
+    Aggregate:
+      description: |
+        One aggregate fold over the matching rows, written into the result under
+        the name `as`. `count` with no `column` counts rows; `count` with a
+        column counts non null values. `sum` and `avg` require a numeric column,
+        `min` and `max` accept any comparable column. Folds skip nulls, and an
+        empty input yields `0` for `count` and `null` for the rest.
+      type: object
+      required: [fn, as]
+      properties:
+        fn:
+          type: string
+          enum: [count, sum, avg, min, max]
+        column:
+          description: The column to fold. Omitted only for `count` over rows.
+          type: string
+        as:
+          description: The name this fold takes in the result record.
+          type: string
+
+    Include:
+      description: |
+        Embed a related relation in each result record under the name `as`. The
+        relation is identified by the foreign key name in `fk` and the direction
+        in `dir`: `parent` follows a foreign key on this table to the single row
+        it references, `children` follows a foreign key on another table back to
+        the rows that reference this one.
+
+
+        Children includes may be refined with `filter`, `order_by`, `limit`, and
+        further nested `include`s. Setting `aggs` folds the matched children
+        into one object of scalars instead of returning them as an array, and is
+        mutually exclusive with `order_by`, `limit`, and nested `include`.
+        Parent includes take no refinements, since a parent is at most one row.
+      type: object
+      required: [fk, dir, as]
+      properties:
+        fk:
+          description: The foreign key name that defines the relation.
+          type: string
+        dir:
+          type: string
+          enum: [parent, children]
+        as:
+          description: The field name the embedded relation takes in each record.
+          type: string
+        filter:
+          $ref: "#/components/schemas/Expr"
+        order_by:
+          type: array
+          items: { $ref: "#/components/schemas/Order" }
+        limit:
+          type: integer
+        include:
+          type: array
+          items: { $ref: "#/components/schemas/Include" }
+        aggs:
+          type: array
+          items: { $ref: "#/components/schemas/Aggregate" }
+
+    Query:
+      description: |
+        A shaped read against one table. Without `aggs` it returns matching
+        rows, optionally filtered, ordered, paginated, and with related rows
+        embedded. With `aggs` it returns a single record of folded scalars, in
+        which case `order_by`, `offset`, `limit`, and `include` are not allowed.
+      type: object
+      required: [table]
+      properties:
+        table:
+          description: The table to read from.
+          type: string
+        filter:
+          $ref: "#/components/schemas/Expr"
+        order_by:
+          type: array
+          items: { $ref: "#/components/schemas/Order" }
+        offset:
+          description: Skip this many rows before returning.
+          type: integer
+        limit:
+          description: Return at most this many rows. Zero means no limit.
+          type: integer
+        include:
+          type: array
+          items: { $ref: "#/components/schemas/Include" }
+        aggs:
+          type: array
+          items: { $ref: "#/components/schemas/Aggregate" }
+
+    ColumnInfo:
+      description: One column of a table, as reported by introspection.
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+        type:
+          description: The column's storage type, one of `string`, `int64`, `float64`, or `bool`.
+          type: string
+        nullable:
+          type: boolean
+        format:
+          description: An optional semantic hint such as `uuid` or `unix_ms`.
+          type: string
+
+    TableInfo:
+      description: One table's definition, as reported by introspection.
+      type: object
+      required: [name, columns, primary_key]
+      properties:
+        name:
+          type: string
+        columns:
+          type: array
+          items: { $ref: "#/components/schemas/ColumnInfo" }
+        primary_key:
+          description: The column names that make up the primary key, in order.
+          type: array
+          items:
+            type: string
+
+    Health:
+      description: The liveness status of the server.
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+
+    TableList:
+      description: The set of tables defined in the database.
+      type: object
+      required: [tables]
+      properties:
+        tables:
+          type: array
+          items: { $ref: "#/components/schemas/TableInfo" }
+
+    MigrateProps:
+      description: A request to reconcile the database with a schema.
+      type: object
+      required: [schema]
+      properties:
+        schema:
+          description: The full `schema.rad` source document, as YAML.
+          type: string
+
+    MigrateResult:
+      description: The outcome of a migration.
+      type: object
+      required: [steps]
+      properties:
+        steps:
+          description: |
+            A human readable description of each change that was applied, in the
+            order it was applied. Empty when the database already matched.
+          type: array
+          items:
+            type: string
+
+    QueryResult:
+      description: |
+        The result of a shaped read: a list of records. A row read returns the
+        matching rows. An aggregate read returns exactly one record whose fields
+        are the folded scalars.
+      type: object
+      required: [records]
+      properties:
+        records:
+          type: array
+          items: { $ref: "#/components/schemas/Record" }
+
+    RowCreateProps:
+      description: A request to insert one row.
+      type: object
+      required: [table, values]
+      properties:
+        table:
+          type: string
+        values:
+          description: |
+            The column values for the new row. Columns left out fall back to
+            their schema default.
+          allOf:
+            - $ref: "#/components/schemas/Cells"
+
+    RowUpdateProps:
+      description: A request to update one row by primary key.
+      type: object
+      required: [table, key, set]
+      properties:
+        table:
+          type: string
+        key:
+          description: The primary key of the row to update.
+          allOf:
+            - $ref: "#/components/schemas/Cells"
+        set:
+          description: The columns to assign new values.
+          allOf:
+            - $ref: "#/components/schemas/Cells"
+        clear:
+          description: |
+            Nullable columns to set to `null`. A column may appear in `set` or
+            `clear` but assigning and clearing the same column is redundant.
+          type: array
+          items:
+            type: string
+
+    RowDeleteProps:
+      description: A request to delete one row by primary key.
+      type: object
+      required: [table, key]
+      properties:
+        table:
+          type: string
+        key:
+          description: The primary key of the row to delete.
+          allOf:
+            - $ref: "#/components/schemas/Cells"
+
+    RecordResult:
+      description: |
+        A single row lookup or write result. When the addressed row exists,
+        `found` is `true` and `record` carries it. When it does not, `found` is
+        `false` and `record` is absent.
+      type: object
+      required: [found]
+      properties:
+        found:
+          type: boolean
+        record:
+          $ref: "#/components/schemas/Record"
+
+    DeleteResult:
+      description: The result of a delete.
+      type: object
+      required: [found]
+      properties:
+        found:
+          description: Whether a row was actually removed.
+          type: boolean
+
+    TransactionCredentials:
+      description: The handle for a newly opened transaction.
+      type: object
+      required: [id]
+      properties:
+        id:
+          description: The opaque id used to address the transaction under `/tx/{id}`.
+          type: string

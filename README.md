@@ -10,8 +10,8 @@ schema.rad → rad migrate → rad generate → typed Go client → rad:// wire 
 One binary — `rad` — is the entire system: the database server (`rad
 serve`, HTTP on port **7237**), the migration tool (`rad migrate`), and the
 client codegen (`rad generate`). Applications link a pure-Go generated
-client (no cgo, no SQL) and connect with `rad://host:7237` (`rads://` behind
-a TLS-terminating reverse proxy). Storage is SlateDB in every mode —
+client (no cgo, no SQL) and connect with `rad://host:7237` (`rads://` to
+reach it through an HTTPS proxy). Storage is SlateDB in every mode —
 in-memory, local file, or S3 — selected by environment variables. One Rad
 instance is one database; two databases are two RADs.
 
@@ -50,8 +50,9 @@ RAD_STORAGE=s3 RAD_S3_BUCKET=my-bucket \
 
 The server follows standard HTTP practice (timeouts, body limits, panic
 recovery, request logs, graceful shutdown) and serves errors as RFC 7807
-problem+json. No TLS on purpose: terminate at your reverse proxy and speak
-`rads://`. Docker: `task docker:build && docker run -p 7237:7237 rad`.
+problem+json. It speaks plain HTTP; put your own proxy in front and connect
+with `rads://` to dial it over HTTPS. Docker: `task docker:build && docker
+run -p 7237:7237 rad`.
 
 ## Build an app
 
