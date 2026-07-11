@@ -16,10 +16,11 @@ import (
 	planner "rad/rad/04_planner"
 )
 
-func TestPathIndependence(t *testing.T) {
-	eng, ctx, _, _ := lirSetup(t)
-
-	queries := map[string]lir.Query{
+// conformanceQueries is the shared corpus: every query shape the invariants
+// are held over, by path independence here and by the reference interpreter
+// in oracle_test.go.
+func conformanceQueries() map[string]lir.Query {
+	return map[string]lir.Query{
 		"forcing query": forcingQ(),
 		"pk lookup": many(qfilter(qscan("tasks", "t"),
 			qeq(qcol("t", "id"), qlit("t2")))),
@@ -70,8 +71,12 @@ func TestPathIndependence(t *testing.T) {
 			Pred: lir.Unary{Op: lir.OpIsNotNull, X: qcol("p", "assignee")},
 		}),
 	}
+}
 
-	for name, q := range queries {
+func TestPathIndependence(t *testing.T) {
+	eng, ctx, _, _ := lirSetup(t)
+
+	for name, q := range conformanceQueries() {
 		t.Run(name, func(t *testing.T) {
 			chosen, err := eng.Execute(ctx, q)
 			if err != nil {
