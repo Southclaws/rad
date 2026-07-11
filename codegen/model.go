@@ -175,7 +175,6 @@ func goType(t catalog.Type) string {
 	return "any"
 }
 
-
 // goName converts snake_case to exported CamelCase, uppercasing the id
 // initialism (board_id -> BoardID).
 func goName(s string) string {

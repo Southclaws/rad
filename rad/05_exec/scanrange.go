@@ -23,8 +23,8 @@ import (
 // rangeBounds is the executor-facing trailing range: encoded from planner
 // bounds against the index column right after the equality prefix.
 type rangeBounds struct {
-	lo, hi          *lir.Value
-	loIncl, hiIncl  bool
+	lo, hi         *lir.Value
+	loIncl, hiIncl bool
 }
 
 // scanIndexRange yields base rows for index entries in [prefix ++ range)
@@ -72,7 +72,7 @@ func scanIndexRange(ctx context.Context, view kv.KV, tbl catalog.Table, idx cata
 	if err != nil {
 		return nil, err
 	}
-	return &indexRangeIterator{ctx: ctx, view: view, tbl: tbl, it: it}, nil
+	return &indexRangeIterator{ctx: ctx, view: view, tbl: tbl, idx: idx.Name, it: it}, nil
 }
 
 // indexRangeIterator walks index entries and fetches each base row
@@ -81,6 +81,7 @@ type indexRangeIterator struct {
 	ctx  context.Context
 	view kv.KV
 	tbl  catalog.Table
+	idx  string
 	it   kv.Iterator
 }
 
@@ -99,7 +100,7 @@ func (r *indexRangeIterator) Next() (lir.Row, bool, error) {
 		return nil, false, err
 	}
 	if !ok {
-		return nil, false, fmt.Errorf("exec: index %q points at a missing row of %q", r.tbl.Name, r.tbl.Name)
+		return nil, false, fmt.Errorf("exec: index %q points at a missing row of %q", r.idx, r.tbl.Name)
 	}
 	row, err := UnmarshalRow(r.tbl, raw)
 	if err != nil {

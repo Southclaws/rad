@@ -54,6 +54,7 @@ type Relation interface {
                             // field carries a dense SlotID
     Inputs() []Relation     // child relations
     FreeSlots() SlotSet     // slots referenced but not produced beneath
+    Produced() SlotSet      // every slot defined beneath, incl. intermediates
     Card() Cardinality      // {Min, Max} bounds, Max may be Unbounded
 }
 type Expr interface {
@@ -363,10 +364,13 @@ literals, scope labels. The binder — the engine's front door — produces
 *bound* IR in one recursive walk:
 
 ```text
-cycle detection → scope resolution → name/ID binding → slot assignment
-→ literal coercion → type inference → cardinality inference → free slots
-→ validation
+scope resolution → name/ID binding → slot assignment → literal coercion
+→ type inference → cardinality inference → free slots → validation
 ```
+
+(Cycle rejection lives in the wire's graph decoder, the only place string
+node references exist — unbound IR nodes are value structs and cannot form
+cycles at all.)
 
 - Names resolve to catalog IDs; every relation output gets dense slot IDs and
   every column reference becomes a `SlotRef`. Crossings keep the outer scope
@@ -394,8 +398,9 @@ cycle detection → scope resolution → name/ID binding → slot assignment
   `Scalar` over a relation whose arity ≠ 1 or whose static `Max > 1`,
   `First` over an unordered multi-row relation, aggregate term rules, columns
   above an Aggregate resolving only to groups/terms, projection name
-  collisions (explicit×explicit, explicit×spread, spread×spread), cycles.
-  The planner and executor trust bound IR completely.
+  collisions (explicit×explicit, explicit×spread, spread×spread), dependent
+  join inputs (a join side referencing its sibling), crossings inside a join
+  condition. The planner and executor trust bound IR completely.
 
 ## Physical mapping
 
@@ -412,7 +417,7 @@ operators; the invariant carried over from v1, now made structural:
 2. Otherwise the index with the longest leading equality prefix, now **plus
    one trailing range bound** — `lt/lte/gt/gte` predicates finally drive
    access paths, as KV scan bounds built from the order-preserving encoding.
-3. Tie-break: when an `Order`+`Slice` sits above, an index whose column order
+3. Tie-break: when an `Order` sits above, an index whose column order
    satisfies the required ordering wins.
 4. Otherwise, full table scan.
 
@@ -421,32 +426,33 @@ ordering is the index columns **after the equality-fixed prefix**, then the
 primary-key suffix, all ascending — an index on `(board_id, priority)` with
 `board_id = X` provides `priority` order; without that equality it provides
 `(board_id, priority)` order, not `priority`. (The KV has no reverse scan;
-`desc` always sorts.) When provided ⊇ required and a `Slice` is present, the
-sort disappears and the scan stops after `offset+limit` accepted rows. No
+`desc` always sorts.) When provided ⊇ required, the sort disappears — and a
+`Slice` above then stops the scan after `offset+limit` accepted rows. No
 general Top-N heap.
 
 **Deduplicated correlated execution** — how correlation runs, stated
-honestly. A projection field whose crossing is *key-correlated* (its
-sub-relation's only free references are `inner.col = outer.col` equalities)
-executes grouped over the outer batch:
+honestly. The planner extracts every crossing — from a projection field, a
+filter predicate, an order term, an aggregate argument — into an
+**`AttachSpec`** writing a fresh slot, grouped under an **`AttachExec`**
+operator below the consumer; the containing expression evaluates over the
+slot, so wrapping a crossing in `NOT` or arithmetic cannot change how it
+executes. A *key-correlated* attach (its sub-relation's only free references
+are `inner.col = outer.col` equalities) executes grouped over the batch:
 
 ```text
-for the current batch of outer rows:
+for the current batch of rows:
     collect the distinct outer key tuples        (NULL key ⇒ empty result now)
-    KeyedLookup(inner plan, distinct keys)       one plan instantiation per
-                                                 DISTINCT key today
-    group results by key; attach to each outer row
+    instantiate the attach plan once per         DISTINCT key today
+    group results by key; attach to each row
     recurse: grandchildren batch across this inner batch
 ```
 
 This *dissolves* N+1 semantically — no per-outer-row plan recursion, and
 duplicate keys are fetched once — but for N distinct parents the storage work
 is still N lookups/scans. The physical seam is explicit so that changes
-without touching the IR: **`KeyedLookup{plan, keys []Tuple}`** is one
-operator, and the storage boundary exposes `LookupMany(ctx, keys)` whose
-first implementation loops. True multi-key batching — merged range scans,
-concurrent prefix scans, one broad scan partitioned by key — lands behind
-that seam later.
+without touching the IR: `AttachExec` is where true multi-key batching —
+merged range scans, concurrent prefix scans, one broad scan partitioned by
+key — lands later.
 
 The to-parent pattern (correlation keys covering the inner PK) becomes
 deduplicated point gets — already ahead of today's per-row fetches. A
@@ -456,11 +462,12 @@ Generally-correlated sub-relations (non-key predicates over outer scopes)
 fall back to per-row nested evaluation. Grouped and nested execution are
 result-equivalent by construction, and the conformance suite asserts it.
 
-Crossings in a projection are never scalar-evaluator callbacks: `Array`,
-`First`, `Scalar`, and `Exists` fields compile to explicit materialisation
-work inside the projection operator (`KeyedLookup` when key-correlated, an
-operator-tree sub-plan per row when general) — a thousand-row `Array` is a
-physical plan the executor can see, not a recursive function call hiding one.
+Crossings are never scalar-evaluator callbacks: every `Array`, `First`,
+`Scalar`, and `Exists` compiles to an explicit sub-plan inside an
+`AttachExec` (deduplicated when key-correlated, per row when general) — a
+thousand-row `Array` is a physical plan the executor can see, not a
+recursive function call hiding one. Expression evaluation itself is pure:
+no context, no I/O, no relation evaluator behind an operand.
 
 **Execution** is a pull-operator tree (`Next(ctx) (Frame, bool, error)`), one
 operator per physical node. Operators may materialise internally (sort,
@@ -475,9 +482,9 @@ present-with-null; children are arrays, never null; folds are scalar objects).
 - No streaming pipeline end-to-end; no vectorised execution.
 - No cost model, statistics, or join reordering; access selection is the
   rule-based ranking above. Joins execute as nested loops (inner, left).
-- No true multi-key storage batching (merged or concurrent range scans) — the
-  `KeyedLookup`/`LookupMany` seam exists, its first implementation loops per
-  distinct key. No index-only scans; no descending scans.
+- No true multi-key storage batching (merged or concurrent range scans) —
+  `AttachExec` is the seam, and it loops per distinct key. No index-only
+  scans; no descending scans.
 - No `Call` registry, no expression arithmetic on the wire from the generated
   clients (the grammar carries it; nothing emits it yet).
 - No `HAVING`, `DISTINCT`, window functions, recursive queries, CTEs. GROUP BY
@@ -497,7 +504,7 @@ graph admits DAG sharing without a format change.
 | Two-valued NULL logic (`NOT(x=1)` matches NULL) | **Fixed** — K3, Filter keeps TRUE |
 | NULLs participate in unique constraints | **Fixed** — NULLs distinct |
 | Only equalities drive access paths | **Fixed** — trailing range bounds |
-| Includes are N+1 by construction | **Dissolved semantically** — no per-row plan recursion; keys deduplicated and grouped. Physically still one lookup per distinct key, behind the `KeyedLookup` seam where true batching lands later |
+| Includes are N+1 by construction | **Dissolved semantically** — no per-row plan recursion; keys deduplicated and grouped. Physically still one lookup per distinct key, behind the `AttachExec` seam where true batching lands later |
 | Full materialisation, no pushdown | **Partly** — stop-early slices over ordered index scans; operators still materialise internally |
 | Registered-but-empty index after failed unique backfill | **Fixed** (standalone, before this design lands) — registration + backfill in one transaction |
 | Aggregates reject order/limit/include structurally | **Dissolved** — legal algebra; binder rules replace the blanket rejection |

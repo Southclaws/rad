@@ -34,10 +34,10 @@ type laws struct {
 	card     lir.Cardinality
 }
 
-func (l *laws) Output() lir.RowType     { return l.out }
-func (l *laws) FreeSlots() SlotSet      { return l.free }
-func (l *laws) Produced() SlotSet       { return l.produced }
-func (l *laws) Card() lir.Cardinality   { return l.card }
+func (l *laws) Output() lir.RowType   { return l.out }
+func (l *laws) FreeSlots() SlotSet    { return l.free }
+func (l *laws) Produced() SlotSet     { return l.produced }
+func (l *laws) Card() lir.Cardinality { return l.card }
 
 // RefineCard lets the binder tighten a node's cardinality with knowledge the
 // constructor lacks — e.g. a filter whose equality conjuncts cover a unique

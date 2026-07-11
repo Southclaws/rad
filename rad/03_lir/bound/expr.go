@@ -32,8 +32,8 @@ type SlotRef struct {
 	T    lir.Type
 }
 
-func (s SlotRef) Type() lir.Type      { return s.T }
-func (s SlotRef) FreeSlots() SlotSet  { return NewSlotSet(s.Slot) }
+func (s SlotRef) Type() lir.Type     { return s.T }
+func (s SlotRef) FreeSlots() SlotSet { return NewSlotSet(s.Slot) }
 
 // Unary applies a unary operator.
 type Unary struct {

@@ -81,32 +81,34 @@ included):
 
 On the returned `Table`, `Column(name)` and `Index(name)` resolve members by
 name with linear scans. There is no caching at any level: every `GetTable`
-hits the store and unmarshals JSON. The binder (`planner.Bind` in
-`rad/04_planner/bind.go`) calls `GetTable` once per `Scan` node it binds and
-carries the resulting `Table` through the rest of the walk; the executor's
-`Engine.table` does the same per write request.
+hits the store and unmarshals JSON.
 
-**Which KV view readers use matters.** The read methods go through `c.store`
-directly — the `TransactionalKV`'s plain `KV` surface — so each `Get` and
-`Scan` is an independent, autocommit read of the *current committed state*.
-Readers neither take a snapshot per call nor hold one across calls. Two
-consequences downstream code must not forget:
+**Which KV view readers use matters, and callers choose it.** `Reader` is
+the read API over one explicit `kv.KV` view: `catalog.NewReader(view)`
+exposes `GetTable`/`GetTableByID`/`ListTables` against exactly that view.
+The `Catalog` methods are the committed-state convenience —
+`c.GetTable(...)` is `NewReader(c.store).GetTable(...)`, each `Get` and
+`Scan` an independent autocommit read.
 
-- Catalog reads are **not** part of any enclosing data transaction. Even
-  `Tx.Execute` (05_exec) binds via `planner.Bind(ctx, e.cat, q)`, which reads
-  schema from committed state, not from the transaction's snapshot, and adds
-  nothing to its read set. A concurrent DDL commit is invisible to the
-  transaction's conflict detection; the design leans on DDL being rare and on
-  IDs being stable (a stale `Table` still points at real data keys).
-- Within one `GetTable`, the name read and the metadata read are two separate
-  committed-state reads with no snapshot spanning them. A drop or rename
-  between the two resolves as "not found" or as the pre-rename blob — never
-  as another table's data, again because IDs are never reused.
+The execution layer always resolves schema through the statement's view.
+`planner.Bind` takes the small `planner.Catalog` interface (satisfied by
+both `Catalog` and `Reader`), and 05_exec passes a `Reader` over the
+statement's snapshot — `Engine.Execute` over the statement-scoped
+`kv.Snapshot` transaction, `Tx.Execute` and every mutation over the
+transaction itself (`tableIn`). Two consequences fall out:
 
-The only read paths that *are* transactional are the unexported
-`getTable`/`getTableByID` helpers, which take an explicit `kv.KV` view — DDL
-uses them internally, and `AddIndexIn` exposes that capability for index
-creation (below). There is no exported transaction-scoped `GetTable`.
+- Schema resolution and data reads can never observe different storage
+  moments: one statement, one view.
+- Inside a `SerializableSnapshot` transaction, the catalog keys a statement
+  touches join the read set, so a concurrent DDL commit on a touched table
+  conflicts at commit instead of passing unseen
+  (`TestConcurrentDDLConflictsWithOpenTxn` in 05_exec pins this, and its
+  sibling pins that DDL on an untouched table does not conflict).
+
+ID stability is still the backstop for readers who do use committed state:
+within one `GetTable`, a drop or rename between the name read and the
+metadata read resolves as "not found" or as the pre-rename blob — never as
+another table's data, because IDs are never reused.
 
 ## DDL
 

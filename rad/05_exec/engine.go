@@ -402,4 +402,3 @@ func scanTable(ctx context.Context, view kv.KV, tbl catalog.Table) (RowIterator,
 	}
 	return &kvRowIterator{it: it, tbl: tbl}, nil
 }
-

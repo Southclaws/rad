@@ -154,6 +154,9 @@ func Eval(e Expr, env Env) (lir.Value, error) {
 		return x.V, nil
 
 	case SlotRef:
+		if !x.T.Kind.Scalar() {
+			return lir.Value{}, fmt.Errorf("exec: slot %d (%s) holds a %s, not a scalar", x.Slot, x.Name, x.T.Kind)
+		}
 		return env.ScalarAt(x.Slot, x.Name, x.T)
 
 	case Binary:

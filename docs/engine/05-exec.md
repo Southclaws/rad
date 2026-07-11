@@ -1,0 +1,343 @@
+# Layer 05: the executor
+
+Package `exec` (directory `rad/05_exec`) is the physical execution layer: it
+turns bound queries and write requests into KV operations — scans, point
+gets, index lookups, joins, and constraint-checked writes. It sits above the
+KV (01), the catalog (02), the LIR and its bound form (03), and the planner
+(04); the frontend (06) drives it and nothing below it knows it exists. The
+layer has two halves that share one storage vocabulary: a pull-operator read
+executor over `planner.PhysNode` trees, and a mutation path (`insert`,
+`update`, `delete`, index backfill) whose constraint checks lean on the KV's
+`SerializableSnapshot` conflict detection instead of locks.
+
+## The read path
+
+`Engine.Execute(ctx, q lir.Query)` is the autocommit entry point. It opens a
+`kv.Snapshot` transaction, runs the statement against it, and discards it
+with `Rollback` — read-only, so there is nothing to commit
+(`executeSnapshot`). `Tx.Execute` runs the same pipeline against the
+transaction's own `kv.Txn`, so the statement sees the snapshot taken at
+`Engine.Begin` plus the transaction's buffered writes.
+`Engine.ExecuteNested` is `Execute` with keyed batching disabled
+(`executor.forceNested`); it exists so the conformance suite can hold the
+executor to batched ≡ nested.
+
+The contract underneath all three: **every statement binds and executes
+against one KV view**. `execute` calls `planner.Bind(ctx,
+catalog.NewReader(view), q)` with the *same* view the operators will read
+data through, so schema resolution and data reads can never observe
+different storage moments. The same rule governs every other statement-shaped
+entry point — `GetByPrimaryKey`, `ScanTable`, and `ScanIndex` each open their
+own `kv.Snapshot` (for `ScanTable`, `snapshotRowIterator` ties the snapshot's
+lifetime to the iterator it feeds), and the `tableIn` helper resolves table
+names through whatever view the caller passes.
+
+Inside a transaction this has a second consequence: schema lookups go through
+the transaction's serializable txn, so the catalog keys a statement resolved
+join the transaction's read set. DDL committed on that table while the
+transaction is open makes `Commit` return a conflict
+(`TestConcurrentDDLConflictsWithOpenTxn`), while a transaction that never
+touched the altered table's schema commits fine
+(`TestConcurrentDDLOnOtherTableDoesNotConflict`). Stale bindings cannot pass
+unseen beneath an open transaction.
+
+After binding, `planner.PlanQuery` produces a `PhysPlan` and the executor
+builds and drains the operator tree, materialising the root by the query's
+cardinality (`execute.go`):
+
+- `lir.CardMany` — drain every frame, render each as an object, return an
+  array datum.
+- `lir.CardFirst` — pull once; no row is `lir.NullDatum()`, not an error.
+- `lir.CardExactlyOne` — pull once, then pull *again* to prove there is no
+  second row; either miss is an error.
+- `lir.CardScalar` — pull once and return the datum in the output row type's
+  single field slot; no row is the null datum. The binder has already proven
+  arity 1 and static `Max ≤ 1`, so the executor takes the first frame on
+  trust.
+
+Rendering is `frameToObject(out lir.RowType, f Frame)`: fields in the row
+type's declared order, a missing slot rendered as NULL — the one
+representation of absence.
+
+## Frames and the operator seam
+
+A `Frame` is one execution row, and it is literally the expression
+evaluator's environment: `type Frame = bound.Env`, i.e.
+`map[lir.SlotID]lir.Datum` — one datum per slot in scope. Scalar slots hold
+scalar datums; row- and array-typed slots hold materialised nested datums.
+One value vocabulary end to end is what lets a `First` output be filtered
+with `is_null`, reprojected under a new name, or spread, exactly like a
+scanned column (`TestNestedOutputIsReferable`). `newFrame(outer)` seeds a
+frame with the enclosing environment, so correlated sub-plans see their outer
+rows' slots the same way they see their own; `mergeFrames` unions two frames
+(slots are disjoint by construction — the binder assigned them densely).
+
+Operators implement the pull seam in `iter.go`:
+
+```go
+type Operator interface {
+    Next(ctx context.Context) (Frame, bool, error)
+    Close() error
+}
+```
+
+`executor.build` (`operators.go`) maps each physical node to one operator.
+Nothing in the contract requires materialisation, and most operators stream:
+`pkGetOp` (a resolved point get, or a no-op when a key component is NULL —
+equality with NULL matches nothing, so no KV op is issued), `rowIterOp`
+(adapts a storage `RowIterator`, serving both full table scans and index
+range scans), `filterOp` (keeps `lir.TriTrue` only — the load-bearing 3VL
+rule), and `projectOp` (pure expression evaluation per row; any crossing a
+field once contained arrives as an attach slot from below). `sliceOp` is the
+stop-early mechanism: once `emitted` reaches the limit it stops pulling its
+input entirely, which is what lets an ordered-index pushdown stop a scan
+after `offset+limit` accepted rows.
+
+Three operators block. `sortOp` drains its input, evaluates the order terms
+once per frame, and stable-sorts by `Value.Compare` (NULLs first ascending,
+last descending via negation). `aggOp` folds its input into groups keyed by
+`EncodeTuple` of the group values, emitting in first-seen order; a global
+fold (no groups) yields exactly one row even over nothing, and `foldResult`
+applies the empty-set rules — `count` is 0 and never NULL, `sum`/`min`/`max`
+keep the argument's type, `avg` is always float64, and every fold but `count`
+is NULL over no non-NULL input. `nljOp` materialises its right side and
+nested-loops the left over it, evaluating the join predicate under the merged
+frame; an unmatched left row under `lir.LeftJoin` is `nullPadded` — every
+right-side output slot, scalar or nested, set to the null datum.
+
+Expressions never do I/O. `bound.EvalPred` and `bound.EvalDatum` are pure
+evaluation over the frame; the planner extracted every crossing before the
+executor saw the plan, so a relation-valued expression reaching the evaluator
+is a planner bug, not a query.
+
+## attachOp: deduplicated correlated execution
+
+`attachOp` (`attach.go`) is where crossings execute. The planner pulls every
+`Exists`/`First`/`Scalar`/`Array` out of every expression — projection
+fields, filter predicates, order terms, aggregate arguments — into
+`planner.AttachSpec`s wrapped as an `AttachExec` below the consumer. Each
+spec carries the slot to fill, the crossing kind, a correlation
+classification, the compiled sub-plan, and the sub-relation's output shape.
+`attachOp` drains its input into a batch, executes each spec by strategy,
+writes results into the frames in place, and re-emits them in input order —
+so attaching preserves whatever ordering the input provided.
+
+The three strategies, dispatched on `a.Corr.Kind`:
+
+- **`planner.KeyCorrelated`** (and batching not disabled): the sub-relation's
+  only free references are `inner.col = outer.col` equalities. The batch's
+  outer key tuples are deduplicated by `EncodeTuple`; the sub-plan runs once
+  per DISTINCT key under an environment binding the key slots, and the result
+  datum is shared among every frame with that key. A frame whose key has any
+  NULL component short-circuits to `emptyAttach` with no KV work at all —
+  `false` for exists, the empty array for array, the null datum for scalar
+  and first, because equality with NULL matches nothing.
+- **`planner.Uncorrelated`**: run once under the operator's own outer
+  environment, share the datum with every frame.
+- **general** correlation, or `forceNested`: per-frame nested evaluation, the
+  fallback. `forceNested` only disables the keyed strategy — uncorrelated
+  attaches still run once.
+
+`runAttach` builds the sub-plan's operator tree under the chosen environment
+and folds the frames into the crossing's shape: exists is "did one frame
+arrive", first renders the first frame as an object or null, scalar takes the
+single output field's datum, array drains and renders everything.
+
+Recursion falls out rather than being coded: a sub-plan may itself contain
+`AttachExec` nodes, so when the parent runs one instantiation per distinct
+board, the inner plan's own `attachOp` drains *that* inner batch and
+deduplicates the grandchildren's keys across it. Grandchildren batch per
+inner batch, not per outermost row. The forcing query's exact op counts in
+`TestExecuteForcingQuery` are the proof this all actually happens: one boards
+scan, two owner gets (ada deduplicated across two boards), three task index
+scans (one per distinct board), two assignee gets (per-board batches, the
+NULL assignee free), three comment scans — 7 scans and 10 data-plane gets,
+asserted exactly.
+
+## Storage mapping
+
+`keys.go` defines the key layouts. Top-level namespaces are literal path
+strings; only the tuple segments are order-preserving `keyenc` bytes:
+
+```text
+/rad/data/{table_id}/primary/{pk_tuple}
+/rad/index/{table_id}/{index_id}/{indexed_tuple}{pk_tuple}
+```
+
+The indexed tuple and PK tuple concatenate with **no separator**: tuple
+encodings are self-delimiting, so the boundary is unambiguous, and a
+separator byte would break ordering. An index entry's *value* is the PK
+tuple, so an index scan can fetch the base row with one `Get`. The builders
+(`DataPrefix`, `DataKey`, `IndexPrefix`, `IndexKey`) are exported for
+tooling.
+
+`tuple.go` is the boundary where semantic values become key bytes — it lives
+here because `keyenc` knows nothing about the IR and the IR knows nothing
+about storage. `encodeValue` maps each `lir.Value` onto the matching `keyenc`
+encoding (NULL, text, int64, bool, float64 — NaN is rejected, its ordering is
+undefined); `EncodeTuple` concatenates, and tuples compare element-wise
+because each element is self-delimiting. `DecodeTuple`/`DecodeValue` walk the
+bytes back using `keyenc.Peek`'s type tag. `tuple_test.go` pins round-trips
+(including embedded NUL strings) and that encoded byte order agrees with
+tuple value order.
+
+`rowcodec.go` is the row storage format: a JSON object keyed by **column
+ID**, not column name. Renaming a column is a pure catalog operation — no row
+rewrite — and dropping a column simply orphans its field, which
+`UnmarshalRow` discards. Reading a row written before a column existed yields
+the column's *literal* default when one is defined, otherwise NULL; generator
+defaults (`uuid`, `now_ms`) are never fabricated on read. `rowcodec_test.go`
+holds the whole cheap-migration story: rename preserves data and index
+service, added columns read defaults or NULL, and a dropped-then-recreated
+column name gets a fresh ID so old data does not bleed back in.
+
+## Index range scans
+
+`scanIndexRange` (`scanrange.go`) is the read path's index access primitive:
+an equality prefix over the leading index columns plus an optional trailing
+range on the next column, both encoded into `[start, end)` scan bounds. The
+inclusive bounds are the obvious concatenations; the exclusive ones use the
+encoding's structure — an exclusive lower bound is
+`keyenc.PrefixEnd(prefix ++ enc(lo))`, the smallest key past every entry
+whose next column *is* that value, and an exclusive upper bound is the plain
+concatenation. `IndexRangeScanExec` resolves its equality prefix through
+`resolveConst` (literals or outer-slot parameters), and a NULL component
+builds an `emptyOp` instead of touching storage.
+
+`indexRangeIterator` interleaves point `Get`s with the open scan: each entry
+yields its PK tuple (copied first — the iterator's value is only valid until
+the next `Next`, and the `Get` may invalidate it), the base row is fetched
+immediately, and a lazy consumer never pays for the rest of the range.
+`TestExecuteOrderedPushdownAndSlice` pins the payoff: an ordered-index
+pushdown with `LIMIT 1` performs exactly one scan and one get.
+`TestExecuteInsideTransaction` pins that the interleaving works inside a
+kvslate transaction — the named risk item, since a backend that could not
+interleave would need a chunked fallback in this file. A dangling entry
+(index pointing at a missing row) is an error, never a silent skip.
+
+`scanindex.go` is the devtool sibling: `Engine.ScanIndex` reads base rows
+through an index by equality prefix, validating that the prefix covers a
+leading subset of the index's columns. Queries never call it — the planner
+chooses index access itself — but `cmd/rad` and half the mutation tests
+inspect indexes through it.
+
+## Mutations
+
+Every write runs inside a `SerializableSnapshot` transaction — `Engine.Txn`
+wraps a callback, `Engine.Begin`/`Tx` exist for drivers that hold a
+transaction across requests, and the one-shot forms (`Insert`, `Create`,
+`Update`, `Delete`) are `Txn` around the transactional forms. A commit-time
+race surfaces as an error wrapping `kv.ErrConflict`, re-exported as
+`exec.IsConflict`; the caller retries the whole callback.
+
+**Insert** (`engine.go: insert`): resolve the table through the statement's
+view, apply catalog defaults (`applyDefaults` — omitted columns get generated
+`uuid`/`now_ms` or literal defaults; explicit values, including explicit
+NULLs, win), then `normalizeRow` (unknown columns, non-nullable NULLs, type
+mismatches all rejected; absent nullable columns become explicit NULLs). The
+constraint checks are optimistic reads: a `Get` on the row key rejects a
+duplicate primary key; `checkForeignKeys` requires each referenced parent row
+to exist (a NULL in any FK column skips that constraint, SQL semantics);
+`checkUniqueIndexes` prefix-scans each unique index on the full indexed tuple
+and rejects entries carrying a different PK tuple. NULLs are distinct: a
+tuple with any NULL component is exempt from uniqueness — its entry is still
+written, but the check skips it (`anyNullComponent`), so any number of rows
+may leave a unique column NULL while non-NULL duplicates stay rejected on
+insert, update, and backfill (`TestUniqueIndexNullsDistinct`). Only then does
+the row `Put` happen, followed by one index entry per index.
+
+What makes these checks sound without locks is the KV's serializable
+validation of *reads*, including the requested bounds of empty scans. The PK
+`Get` is tracked, so two racing inserts of the same key conflict
+(`TestTxnConcurrentDuplicatePKConflict`). The FK parent `Get` is tracked, so
+a concurrent delete of the parent conflicts. The unique check's prefix range
+is tracked even when the scan returns nothing, so two concurrent inserts of
+the same unique value — different PKs, hence entirely disjoint write sets —
+still conflict at commit; this is the phantom case that requires
+`SerializableSnapshot` (`TestTxnConcurrentUniqueInsertConflict`).
+
+**Update** (`mutate.go`) merges a patch into the row loaded by `loadByPK`
+(missing row is `found=false`, not an error), rejecting unknown columns and
+any change to a primary-key column. Constraint re-checks are scoped to what
+the patch touches — `checkForeignKeysFor` and `checkUniqueIndexesFor` filter
+to the FKs and unique indexes whose columns appear in `set` — and index
+maintenance rewrites only entries whose indexed tuple actually changed
+(delete old key, put new key; a byte-equal tuple is skipped, which is also
+why a self-value rewrite passes the unique check: the existing entry carries
+the same PK).
+
+**Delete** enforces restrict semantics: `checkNoReferences` walks every
+table's foreign keys pointing at the target table and asks `anyRowMatching`
+whether any child row references the doomed values — through an index whose
+leading columns cover the FK columns when one exists, by full table scan
+otherwise. Self-referential FKs skip the row being deleted itself, so a
+parent with children is restricted while a leaf deletes cleanly
+(`TestDeleteRestrictSelfReferential`). Only then are the index entries and
+the row deleted, atomically with the check under the serializable
+transaction.
+
+**Backfill** (`backfill.go`): `AddIndexWithBackfill` registers the index and
+writes entries for every existing row in *one* transaction. If the backfill
+fails — most notably two rows sharing a value under a unique index, detected
+by an in-memory `seen` map with the same NULL exemption — the registration
+rolls back with it, so the catalog never exposes an index whose entries do
+not exist (a registered-but-empty index would let the planner silently drop
+rows, and access-path choice must never change results). The serializable
+scan also closes the race with concurrent writers: a row inserted while the
+backfill runs conflicts at commit rather than being missed.
+`backfillIndexIn` takes resolved catalog values rather than names because the
+index it fills is visible only inside the caller's transaction.
+
+## The test architecture
+
+The suite is outcome-oriented: rather than asserting plan shapes, it holds
+the executor to observable invariants, and the pieces compose.
+
+`execute_test.go` supplies the shared harness: `lirSetup` builds the tracker
+schema (users, boards, tasks, comments) and seeds the forcing-query data
+behind a `countingStore`/`countingTxn` pair that tallies data-plane `Get`s
+and `Scan`s — keys under `/rad/data/` and `/rad/index/` only, so catalog
+reads never pollute the counts — through both the direct view and
+transactions. On top of it sit the **exact op-count tests**:
+`TestExecuteForcingQuery` asserts the full nested result *and* exactly 7
+scans / 10 gets, itemised per correlation batch — the proof that
+deduplicated correlated execution performs precisely the storage work the
+strategy promises, no more; `TestExecuteOrderedPushdownAndSlice` asserts 1
+scan / 1 get for a pushed-down `LIMIT 1`, the stop-early proof; and
+`TestWrappingKeepsStorageWork` (`crossings_test.go`) asserts that wrapping a
+crossing in arithmetic changes the value and *nothing else* — identical op
+counts, the acceptance test for crossing extraction.
+
+Three equivalence properties then pin semantics independently of any single
+plan. **Path independence** (`conformance_test.go`): for every query in the
+shared `conformanceQueries` corpus, the chosen plan and a
+`planner.FullScanOnly()` plan must produce identical results — the residual
+filter is the source of truth and access paths only narrow which keys are
+scanned. **Batched ≡ nested** (`TestExecuteBatchedEquivalentToNested`):
+`Execute` and `ExecuteNested` agree on the forcing query, and nested costs
+strictly more gets — proving both that the strategies are result-equivalent
+and that deduplication actually saves work. **The reference interpreter**
+(`oracle_test.go`): `interp` evaluates bound LIR the most naive way that
+could possibly be right — full table scans only, materialised `[]bound.Env`
+at every node, nested-loop joins, an independent fold implementation
+(`oracleFold`), and per-row crossing evaluation by substituting each crossing
+with a scratch slot holding its fully nested result (`substitute`). No
+planner, no extraction, no attach machinery. `TestReferenceInterpreter` runs
+the engine against it over the conformance corpus plus cases the corpus
+lacks (crossing arithmetic, left join).
+
+The composition is the point: path independence and batched ≡ nested prove
+the engine equivalent to *itself* under different physical choices, the
+oracle pins what the answer actually *is*, and the op-count tests prove the
+efficient path is the one actually taken. A regression that broke batching
+silently would trip the counts; one that broke semantics would trip the
+oracle; one that leaked physical choice into results would trip conformance.
+
+The remaining files cover the mutation and snapshot contracts directly:
+`engine_test.go` (insert validation, composite PKs, unique-index prefix
+non-collision, transactional atomicity, read-your-writes, and both
+concurrency conflicts), `mutate_test.go` (index rewrite on update, scoped
+re-checks, delete-restrict via index and via full scan), `snapshot_test.go`
+(DDL-vs-transaction conflicts and `ScanTable`'s snapshot stability under a
+concurrent insert), `defaults_test.go` (generated and literal defaults, bool
+index keys), `rowcodec_test.go`, and `tuple_test.go`.

@@ -416,7 +416,7 @@ func TestExecuteThreeValuedNot(t *testing.T) {
 
 	// is_null remains the way to ask for NULLs.
 	d, err = eng.Execute(ctx, many(lir.Project{
-		Input: qfilter(qscan("tasks", "t"), lir.Unary{Op: lir.OpIsNull, X: qcol("t", "assignee_id")}),
+		Input:  qfilter(qscan("tasks", "t"), lir.Unary{Op: lir.OpIsNull, X: qcol("t", "assignee_id")}),
 		Fields: []lir.ProjField{{As: "id", Expr: qcol("t", "id")}},
 	}))
 	if err != nil {

@@ -1,0 +1,306 @@
+# Layer 03: LIR — the relation graph
+
+Package `lir` (directory `rad/03_lir`) is the canonical query IR: the
+relation graph. It defines what a query *means* — values, static types,
+relations, expressions, three-valued logic, result datums — and nothing about
+how it runs: the layer is storage-free, index-free, and strategy-free. It
+imports layer 02 only for the shared type vocabulary (`catalog.Type`,
+`catalog.Table`). The package comes in two forms: `lir` itself is the
+**unbound** IR, exactly as a frontend produces it, and the subpackage
+`lir/bound` is the **bound** IR the binder (04_planner) resolves it into.
+Planning and execution trust bound IR completely. The normative design —
+grammar, K3 semantics, determinism rules, the wire format — is
+`docs/design/lir-v2.md`; this document describes the code that implements it.
+
+## The two categories
+
+The IR has exactly two categories, and no third "shape" category — shaping is
+projection, and nesting lives in the value model.
+
+A **`Relation`** is a possibly-empty, possibly-many stream of structurally
+typed rows. The relation operators — `Scan`, `Filter`, `Project`, `Join`,
+`Aggregate`, `Order`, `Slice` — consume relations and produce relations, and
+the output of every node is usable as an ordinary input (relational closure).
+
+An **`Expr`** is a scalar computation evaluated in some scope: `Literal`,
+`Column`, `Unary`, `Binary`, `Call` (reserved; the registry is empty this
+arc), `Cast`. Expressions may *consume* relations, but only through one of
+the four **cardinality crossings**, the only doors from `Relation` into
+`Expr`:
+
+- `Exists(rel)` — true iff the relation has at least one row; never NULL.
+- `First(rel)` — the row as a nested object, or NULL when empty.
+- `Scalar(rel)` — a single-column, at-most-one-row relation's value, or NULL.
+- `Array(rel)` — all rows as a nested array; empty, never NULL.
+
+Each crossing states how many-becomes-one. A relation can appear almost
+anywhere — inside a projection field, inside a filter predicate — but never
+*as* a scalar without declaring the conversion. Result shaping falls out of
+projection: a `Project` field whose expression is a crossing renders as a
+nested object, array, naked value, or boolean. Relationships are not a
+separate kind of query; they are ordinary correlated relations materialised
+into output shapes.
+
+The IR converges on four primitives — relations, expressions, crossings,
+projection — and the discipline, stated in `doc.go`, is that everything else
+must be a consequence of those. Before adding any node, ask: could this be
+expressed as an ordinary relation? If yes, resist the special node. There is
+deliberately no `Eq` node (equality is `Binary{OpEq}` and the planner
+*extracts* searchable constraints from the regular tree), no `Correlate` node
+(correlation is a derived property, below), and no "fold mode" (`Aggregate`
+with empty `Groups` is the global fold; with groups it is GROUP BY — the same
+node).
+
+## Values: the storage contract
+
+`Value` (value.go) is the typed SQL-ish scalar — the runtime datum of the IR.
+It is a tagged union: `Type catalog.Type` selects which of `Text`, `Int64`,
+`Float64`, `Bool` is meaningful, and `Null` overrides the payload.
+Constructors `Text`, `Int64`, `Float64`, `Bool`, and `Null(t)` build them.
+
+The JSON encoding of `Value` is a **storage contract, not just a type**: rows
+persist as column-ID-keyed maps of these values (the 05_exec rowcodec), so
+the field tags — `type`, `text`, `int64`, `float64`, `bool`, `null` — must
+never change. Renaming a field tag silently corrupts every stored row.
+
+Two comparison regimes live on `Value`, deliberately distinct:
+
+- `Equal` is *two-valued*: nulls never equal anything, including each other.
+  It serves storage-side checks like index maintenance, where a missing value
+  can never match. It is not query equality.
+- `Compare` is a total order for sorting and range bounds: NULL sorts before
+  every value (matching the key encoding), and comparing different non-null
+  types is an error. Three-valued query comparison lives in the bound
+  evaluator, not here.
+
+`Row` (`map[string]Value`) is the name-keyed row map used at the storage and
+frontend edges.
+
+## The type system
+
+`types.go` carries the static vocabulary shared by both IR forms.
+
+`SlotID` (int32) names one output attribute of a bound relation. The binder
+assigns slots densely per query; every bound column reference is a slot
+reference. The zero value marks "unassigned" — unbound IR carries names, not
+slots.
+
+`Kind` classifies a static type. The four scalar kinds are defined by direct
+conversion from `catalog.Type` (`KindText = Kind(catalog.TypeText)`, …), so
+the catalog remains the engine-wide scalar vocabulary; `KindRow` and
+`KindArray` exist for the nested values crossings produce. `Kind.Scalar()`
+gates the four storable kinds, `Kind.CatalogType()` maps a scalar kind back,
+and `Kind.Numeric()` admits int64 and float64 to arithmetic.
+
+`Type` is the static type of an expression or attribute: a `Kind`, a
+`Nullable` flag, and — for the nested kinds only — `Row *RowType` (the nested
+row's shape, for `KindRow`) or `Elem *Type` (the element type, for
+`KindArray`). Nullability is load-bearing: a comparison's Bool result is
+nullable iff an operand is, and that nullability *is* UNKNOWN.
+
+`Field` is one attribute of a relation's output row — a `Name` for humans and
+the wire, a `Slot` for the bound IR, a `Type` — and `RowType` is the ordered
+list of fields, with `Lookup(name)` and `Slots()` helpers.
+
+## The cardinality algebra
+
+`Cardinality{Min, Max int}` bounds how many rows a relation can produce;
+`Max` is a count or the sentinel `Unbounded` (-1). `AtMostOne()` — `Max` is
+bounded and ≤ 1 — is the condition that lets `First` and `Scalar` cross
+deterministically without an explicit ordering. The determinism rules are:
+`First` is legal iff its relation is statically at-most-one *or* carries an
+explicit logical `Order` (take-first over an unordered multi-row relation is
+a plan choice leaking into results, and is rejected at bind time); `Scalar`
+is a cardinality assertion — exactly one output column, statically at most
+one row. `Slice` is the one documented exception to path-independence:
+slicing an unordered relation is a declared-arbitrary selection.
+
+Every bound constructor computes its node's bounds (see the laws below), and
+`RefineCard` lets the binder *tighten* them with knowledge the constructors
+lack — a filter whose equality conjuncts cover a unique key has `Max` 1,
+which is what lets the to-parent pattern (`First` over an FK→PK filter) pass
+the determinism rule statically. Bounds only ever tighten; refinement never
+loosens.
+
+## The unbound IR
+
+`rel.go` and `expr.go` define the sealed interfaces `Relation` and `Expr`
+(unexported marker methods `rel()` / `expr()`) and their nodes. Every node is
+a **value struct**: children are held by value through the interface, so an
+unbound relation is necessarily a finite tree — a node cannot alias another,
+and a value cannot contain itself, so cycles are impossible by construction.
+(Cycle detection is a wire concern: the wire graph is a flat id-keyed node
+map, and the binder rejects cyclic references while decoding it.)
+
+Unbound nodes carry names and raw literals, exactly as a frontend produces
+them. `Scan{Table, Scope}` introduces a table and binds a scope label, unique
+per query. `Column{Scope, Name}` names a column of a bound scope — the scope
+is required, because bare references stop working the moment two relations
+are in play. `Literal{Raw any}` carries a raw wire scalar (string,
+`json.Number`, bool, or nil); the binder types it by the column it meets — a
+JSON number becomes int64 or float64 by context, never by guessing, and nil
+adopts the column's type as NULL. `Project` carries `Spread []string` (all
+columns of the listed scopes first, then computed `Fields`; every name
+collision is rejected at bind time) and an optional output `Scope`, required
+when later operators reference its outputs by name — as on `Aggregate`.
+`Slice.Limit` is `*int`: nil is unlimited, an explicit 0 keeps no rows.
+`JoinKind` implements `InnerJoin` and `LeftJoin`; semi and anti are reserved.
+
+`Query{Root, Card}` is the root: a relation plus its materialisation
+cardinality, `RootCard` ∈ `CardMany` (array of objects), `CardFirst` (object
+or null), `CardExactlyOne` (object, error otherwise), `CardScalar` (single
+value; root arity must be 1).
+
+## The bound IR: laws and slots
+
+Package `bound` is the resolved form: every name bound against the catalog,
+every literal typed, every relation output addressed by dense slots. Nodes
+are **pointers** (`*Scan`, `*Filter`, …) built by constructors (`NewScan`,
+`NewFilter`, …), and `Inputs()` returns child pointers — a DAG, not a value
+tree. The binder is the only producer.
+
+Every node precomputes its **laws** at construction — nothing is derived
+lazily during planning or execution. The embedded `laws` struct serves the
+`Relation` interface:
+
+- `Output() lir.RowType` — the row type this relation produces; every field
+  carries a slot. Slots are the mechanism of relational closure: a
+  projection's computed column or an aggregate's fold is addressable by later
+  operators exactly like a scanned column, because it *is* just a slot.
+- `FreeSlots() SlotSet` — slots referenced but not produced beneath this
+  node. This is the whole correlation story: a non-empty set means the
+  relation is correlated, as a derived property. Each constructor computes it
+  as the input's free slots unioned with each expression's
+  `FreeSlots().Without(input.Produced())`.
+- `Produced() SlotSet` — every slot defined anywhere beneath the node,
+  including intermediates its `Output` no longer exposes. It is the
+  subtrahend that makes `FreeSlots` correct above projections.
+- `Card() lir.Cardinality` — the bounds, per the algebra above. `NewScan` is
+  `{0, Unbounded}`; `NewFilter` zeroes the minimum; `NewAggregate` is exactly
+  `{1, 1}` for the global fold and `{0, input.Max}` with groups; `NewJoin`
+  multiplies bounded maxima (a left join keeps the left minimum and floors
+  the right side at one row); `NewSlice` caps at the limit.
+
+`SlotSet` (slotset.go) backs the slot laws: a bitset over the binder's dense
+slot space, persistent in style — `Union` and `Without` return new sets, and
+a set is never mutated after it escapes a constructor.
+
+Bound expressions carry the same discipline: `Expr` is `Type() lir.Type` plus
+`FreeSlots() SlotSet`, both precomputed. `SlotRef{Slot, Name, T}` replaces
+`Column` — the name is diagnostic only; the slot is the identity. `NewBinary`
+applies the typing rules (comparisons and connectives are Bool, nullable when
+either operand is; arithmetic promotes int64 to float64 when either side is
+float), and `AggTermType` applies the aggregate rules (`count` int64 never
+NULL — an empty fold counts 0; `sum`/`min`/`max` the argument's type,
+nullable; `avg` float64, nullable). Bound projections have no spread concept:
+the binder resolves spread scopes into explicit `ProjField`s whose
+expressions are slot references.
+
+A crossing's free slots are its relation's free slots: whatever the
+sub-relation produces internally stays internal, and whatever it needs from
+enclosing scopes is exactly what makes the crossing correlated. `NewFirst`
+yields a nullable `KindRow` type, `NewScalar` enforces the single-column
+arity (its one runtime check) and makes the column's type nullable — no row
+is NULL — and `NewArray` yields a non-nullable `KindArray` of rows.
+
+`Query{Root, Card, Slots}` closes the bound form: `Slots` records how many
+slots the binder allocated, so the planner's crossing extraction can allocate
+fresh attach slots starting there. `Ordered(rel)` reports whether a relation
+carries an explicit logical ordering — an `Order` at the root, seen through
+the order-preserving operators (`Filter`, `Project`, `Slice`); scans, joins,
+and aggregates provide none, because their encounter order is physical and
+never observable.
+
+## Datums and evaluation
+
+`Datum` (result.go) is the typed result value tree a read produces: `Kind` ∈
+`DatumNull | DatumScalar | DatumObject | DatumArray`, a tagged union in the
+same style as `Value`. It replaces flat row lists — the result is always
+shaped like the request — and the frontend renders it to JSON without knowing
+anything about relations. The constructors normalise absence to exactly one
+representation: `ScalarDatum` collapses a NULL `Value` into the null datum,
+and `ArrayDatum` turns a nil slice into an empty array, never null.
+`ObjectField` order is deterministic: spread columns first, then computed
+fields, as projected.
+
+Datum is also the evaluation environment's currency. `bound.Env` is
+`map[lir.SlotID]lir.Datum` — one datum per slot in scope: the current row's
+own slots plus any outer slots a correlated expression references. One value
+vocabulary, one map. Scalar slots hold scalar datums (`Env.SetScalar`
+collapses NULL; `Env.ScalarAt` restores the typed NULL from the `SlotRef`'s
+static type); row and array slots hold the materialised nested datums.
+Scalar operators reject non-scalars: `ScalarAt` errors on a row or array
+datum, because expressions containing crossings were extracted before
+execution — a nested value reaching a scalar operand is a planner bug, not a
+query error. `EvalDatum` is the nested-reference path: a nested-typed
+`SlotRef` yields its materialised datum verbatim, everything else evaluates
+as a scalar and wraps — which is how a `first` or `array` output is
+referenced, reprojected, and spread like any other column.
+
+Evaluation is **pure**: `Eval` and `EvalPred` take an expression and an `Env`
+— no context, no I/O, no relation evaluator hiding behind an expression. The
+crossings never reach evaluation because the planner extracts every one into
+an attach slot; `Eval` returns an "unextracted crossing" internal error if
+one does.
+
+## Three-valued logic
+
+`TriBool` (tribool.go) is a Kleene K3 truth value with the ordering
+`TriFalse < TriUnknown < TriTrue`, which makes `And` a minimum, `Or` a
+maximum, and `Not` the reflection `TriTrue - a` (UNKNOWN stays UNKNOWN).
+These tables are the normative semantics of every predicate in the IR.
+
+`EvalPred` evaluates a Bool-typed expression to a tri-bool: comparisons with
+any NULL operand are UNKNOWN (`evalCompare` checks nulls before delegating to
+`Value.Compare`); `and`/`or` short-circuit soundly (F∧x=F, T∨x=T without
+evaluating the other side) and otherwise fold with the K3 tables;
+`is_null`/`is_not_null` are always two-valued and — via `EvalDatum` — work on
+nested slots too, so an absent `first` is NULL exactly like a NULL scalar.
+Anything else Bool-typed (a bool column, a literal, a cast) evaluates as a
+value, with NULL read as UNKNOWN. `Filter` keeps only `TriTrue` — the
+load-bearing rule. Its headline consequence: `NOT (x = 1)` does not match
+NULL rows, because the comparison is UNKNOWN and NOT of UNKNOWN is UNKNOWN;
+`is_null` is the only way to match NULLs.
+
+The two directions compose: `Eval` renders predicate forms as values
+(`triValue`: UNKNOWN becomes a NULL Bool), so a comparison can be projected,
+and `EvalPred` falls through to `Eval` for non-predicate forms. Arithmetic
+propagates NULL with the result's type, truncates integer division, and
+treats division by zero as an error, not infinity. `Cast` converts between
+the numeric kinds only (truncating float→int) and passes NULL through with
+the target type.
+
+## Printing
+
+`bound.Print` renders a bound query as a deterministic indented tree, and
+`PrintExpr` one expression, for golden tests and diagnostics. Slots print as
+`name#id`, so a snapshot pins both the resolution and the allocation; the
+`suffix` helper prints each node's interesting laws — cardinality always,
+free slots when the relation is correlated — and crossings render their
+sub-relations inline. The layer defines the printer; the golden test that
+consumes it lives with the binder (`04_planner/bind_test.go`), which prints
+the design doc's forcing query against a snapshot — the single acceptance
+shape for the whole IR.
+
+## Testing
+
+The layer's own tests are executable statements of the laws, no store
+required:
+
+- `tribool_test.go` pins the full K3 truth tables for `And`, `Or`, `Not` —
+  the tables `docs/design/lir-v2.md` states in prose.
+- `bound/bound_test.go` pins the laws against a hand-built `catalog.Table`:
+  scan output slots and nullability, filter refinement (tightens, never
+  loosens), correlation as free slots (and that crossings propagate them),
+  relational closure (projected and aggregated slots addressable above),
+  aggregate typing and fold cardinality, join arity and left-join
+  nullability, slice bounds, `Ordered` visibility through filter and slice,
+  the `Scalar` arity check, and `SlotSet` word-boundary behaviour.
+- `bound/eval_test.go` pins evaluation: every comparison with a NULL operand
+  is UNKNOWN and `NOT (NULL = 1)` stays UNKNOWN; the connectives reproduce
+  K3 including short-circuit soundness; the null predicates are two-valued
+  and see nested slots; a bare nullable bool slot reads NULL as UNKNOWN;
+  scalar slots round-trip through the datum env with typed NULLs restored;
+  scalar operators reject nested datums; `EvalDatum` passes nested datums
+  verbatim; arithmetic, casts, and the error paths — including that an
+  unextracted crossing is an internal error, always.

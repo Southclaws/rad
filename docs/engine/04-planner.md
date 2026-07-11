@@ -1,0 +1,306 @@
+# Layer 04: the planner
+
+Package `planner` (directory `rad/04_planner`) turns an unbound `lir.Query` —
+table, column, and scope names plus raw literals, exactly as a frontend
+produced it — into a physical operator tree the executor runs. It is three
+stages with a sharp boundary between them: the **binder** (`bind.go`,
+`bind_expr.go`) resolves and validates everything client-caused; the
+**analyses** (`constraints.go`, `correlate.go`) are pure functions over bound
+IR; the **physical planner** (`physical.go`, `plan_lir.go`) lowers bound IR
+into operators and cannot fail. The bound form it produces lives one layer
+down, in `rad/03_lir/bound`, because 05_exec consumes it directly; the binder
+is its only producer.
+
+## The binder: one walk
+
+`Bind(ctx, cat, q)` performs one recursive walk (`binder.bindRel` /
+`binder.bindExpr`) that does scope resolution, catalog binding, slot
+assignment, literal coercion, type inference, cardinality inference, and the
+full validation matrix. There is deliberately no cycle detection: unbound
+nodes are value structs, which cannot form cycles; the wire's graph decoder —
+the only place string node references exist — rejects cyclic graphs while
+materialising them into values.
+
+### The catalog seam
+
+Binding needs exactly one thing from the schema, so it asks for exactly that:
+
+```go
+type Catalog interface {
+    GetTable(ctx context.Context, name string) (catalog.Table, bool, error)
+}
+```
+
+Callers choose the read view by choosing the implementation. 05_exec always
+passes `catalog.NewReader(view)` over the statement's KV view (`execute.go`) —
+the statement-scoped snapshot for autocommit reads, the transaction itself
+inside `Tx.Execute` — so schema resolution and data reads can never observe
+different storage moments, and catalog keys the statement touched join a
+serializable transaction's read set. The committed-state `*catalog.Catalog`
+satisfies the interface too, which is what tests use.
+
+### Errors: the `planner:` prefix contract
+
+Every `Bind` error is client-caused and carries the `planner:` prefix. The
+server's `isEngineClientError` (`cmd/rad/dbserver.go`) recognises that prefix
+(along with `exec:`, `catalog:`, `migrate:`, `schema.rad:`) and maps the error
+to an invalid-request problem — HTTP 422 with the message relayed verbatim —
+instead of a generic 500. `bindErr` in `bind_test.go` asserts on every
+rejection that the prefix survived wrapping.
+
+### Scopes and slots
+
+The binder carries a visibility stack (`binder.scopes`, innermost last) and a
+query-wide label set (`binder.labels` — duplicate scope labels are rejected
+even across unrelated subtrees). `Scan` always binds a scope; `Project` and
+`Aggregate` optionally bind one for their *output* row, and must when a later
+operator references their fields by name. Closure is structural, not a rule:
+`bindProject` and `bindAggregate` truncate the stack to its pre-input mark
+after binding their input, so the scans beneath a projection or fold simply
+stop being addressable above it (`TestClosureAboveAggregate`,
+`TestClosureAboveProject`). Crossings bind through `bindSubRel`, which keeps
+the enclosing stack visible — that is how correlation binds — while scopes
+bound inside the sub-relation never leak out. `Project.Spread` may only name
+scopes produced beneath the projection (the `from` argument of `findScope`);
+an outer scope is visible for column references but not spreadable.
+
+Slots are a dense space allocated by `binder.nextSlot`. A scan gets one slot
+per column in column order; `slotFor` reuses a bare `SlotRef`'s slot for a
+renamed or spread column — the same attribute, not a copy — and allocates a
+fresh slot for anything computed; aggregate terms always get fresh slots. The
+final count is recorded as `bound.Query.Slots`, which matters later: the
+physical planner's crossing extraction continues the same space.
+
+### Literal coercion
+
+The binder owns all literal coercion. `bindOperands` handles the common shape
+— exactly one side of a comparison or arithmetic pair is a raw literal — by
+binding the other side first and coercing the literal to its type
+(`coerceLiteral`): a JSON number becomes int64 or float64 by the column it
+meets, never by guessing, and a NULL literal adopts the context type. A
+literal with no column context types itself (`inferLiteral`): integers stay
+int64, and a bare NULL is rejected because it has no type to adopt. There is
+no numeric widening in comparisons — an int64 column never silently compares
+against a float literal (`cannot compare int64 with float64`) — though
+arithmetic *results* promote to float64 when either operand is float
+(`bound.NewBinary`).
+
+### Types and cardinality
+
+Type inference lives in the bound constructors: comparisons and logical
+connectives are Bool, nullable iff an operand is nullable — that nullability
+*is* three-valued UNKNOWN; `is_null`/`is_not_null` are never NULL (and are
+rejected on arrays, which are empty, never NULL); `First` is a nullable row,
+`Scalar` the single column's type made nullable, `Array` a non-nullable
+array, `Exists` a non-nullable Bool. `bound.AggTermType` fixes the fold
+types: `count` int64 never NULL, `avg` nullable float64, `sum`/`min`/`max`
+the argument's type made nullable.
+
+Cardinality bounds are precomputed by the same constructors, and the binder
+tightens one case they cannot see: `refineUnique` walks a filter chain's
+equality conjuncts and marks a column *pinned* when `scanColumn = rhs` has an
+rhs that does not read the scan itself — a literal, or an outer reference,
+either way fixed per evaluation of the relation. Pinning a whole primary key
+or unique index refines the filter to `0..1` (`laws.RefineCard`; bounds only
+tighten). This uniqueness-aware refinement is what lets the to-parent pattern
+— `First` over an FK→PK filter — pass the determinism rule statically.
+
+The determinism rules themselves: `First` over a relation that is neither
+statically at-most-one nor explicitly ordered (`bound.Ordered`, which sees an
+`Order` through Filter/Project/Slice) is rejected, because take-first over an
+unordered relation would let the access path leak into results. `Scalar` is a
+cardinality *assertion* — single column, statically at most one row — and
+never accepts ordering as a substitute; "first scalar" must be spelled
+`Scalar(Slice₁(Order(...)))`. The root cardinalities `first` and `scalar` are
+held to the same rule as the `First` crossing, with the one documented
+exception that a `Slice` is declared-arbitrary selection, so `first` over
+`Slice(limit 1)` is legal (`TestRootCardinalityRules`).
+
+### The order tie-breaker
+
+`appendTieBreaker` appends a known unique key of the relation's output as
+final ascending terms, so tied rows order identically under every access
+path. `uniqueKeyFields` finds that key: a scan's primary key seen through
+order-preserving operators and through projections that keep every key slot,
+or a grouped aggregate's group attributes; a global fold has one row and no
+ties. Without a known unique key, ties are documented as unspecified. The
+tie-breaker matters twice: it makes logical results path-independent, and its
+slots match an index's primary-key suffix exactly, which is what lets
+ordered-index pushdown eliminate the sort (below).
+
+### Join rules
+
+`bindJoin` accepts inner and left joins and enforces two structural rules.
+
+**No dependent join inputs.** A join input may be correlated with an
+*enclosing* query, but never with its sibling: after binding both sides, any
+free slot of the right side that the left side produced is rejected (`join
+right side references … from the left side`). The executor builds each join
+side independently, so a dependent right side would not mean what it says —
+the condition belongs in the join's `on`, or the correlation belongs in a
+crossing. The check catches references smuggled through projections too
+(`dependent join through a projection` in the validation matrix), while
+`TestJoinCorrelatedWithEnclosingScope` pins that both sides referencing an
+outer scope binds fine. The reverse direction cannot arise: the left binds
+first, so a left-side reference to a right-side scope fails scope resolution.
+
+**No crossings in the join condition** (`containsCrossing`). A crossing in
+`on` would need evaluation per candidate pair — a shape the executor does not
+batch. Filtering above the join says the same thing and gets the full attach
+machinery; the physical planner relies on this when it lowers `Join` without
+extracting from `On`.
+
+### The validation matrix
+
+Everything else is exhaustive bind-time validation, pinned case by case in
+`TestValidationMatrix`: unknown tables, missing scope labels, duplicate
+scopes, unknown or unqualified columns, non-Bool filter and join predicates,
+operand type rules for every operator, the empty `Call` registry (every
+function is rejected this arc), cast rules (int64↔float64 only), aggregate
+argument and naming rules, projection field naming and collision rules
+(explicit×explicit and explicit×spread), order and slice bounds, and join
+kinds. `Slice` distinguishes nil limit (unlimited) from an explicit 0 (zero
+rows, cardinality `0..0`). The planner and executor trust bound IR
+completely; nothing downstream re-checks any of this.
+
+## Analyses
+
+Both analyses are exported pure functions over bound relations; the physical
+planner is their only in-tree consumer, but they are independently tested
+(`analyses_test.go`) with queries bound through the real binder.
+
+`ExtractConstraints` reduces a filter chain's top-level AND conjuncts to
+per-column `Domain`s — the input to access-path selection. It applies only to
+relations that bottom out at a scan through Filter/Order/Slice wrappers
+(`underlyingScan`); projections, joins, and aggregates have no single scan to
+constrain, and return nil. A `Domain` holds an equality (`ConstVal` — a
+non-NULL literal, or an *outer* slot: a correlation parameter whose value
+arrives when the enclosing row is known) and/or range bounds (`RangeBound`;
+only literal bounds this arc). Equalities subsume range bounds seen in either
+order; overlapping ranges intersect to the tightest (`tighterLo`/`tighterHi`);
+a literal on the left flips the comparison; conflicting equalities poison the
+column, leaving the (empty) truth to the residual filter. There is
+deliberately no normalization pass: OR trees, NOT, `ne`, `is_null`, and
+`eq NULL` contribute nothing to access paths by design, and anything the
+extractor fails to recognise simply stays in the residual, which is always
+the full original predicate.
+
+`Classify` classifies a crossing's relation for correlated execution. No free
+slots means `Uncorrelated`: the attach executes once for the whole batch.
+`KeyCorrelated` requires that the relation's *only* use of outer slots is
+equality conjuncts `scanColumn = outerSlot` in its filter chain, and that the
+chain bottoms out at a scan (`scanBelow`, which also descends through the
+shaping `Project` and folding `Aggregate` a crossing typically carries): the
+executor then dedupes the outer key tuples over a batch and instantiates the
+inner plan once per *distinct* key, with the keys becoming that scan's
+equality constraints. The exclusivity check is a count: `countFreeUsage`
+tallies every outer-slot reference in the tree, each candidate key conjunct
+accounts for exactly one, and any remainder — a range against an outer slot,
+an order term, a projected expression — demotes to `GeneralCorrelated`,
+the per-row nested fallback. All three strategies are result-equivalent;
+classification only picks the cheaper one.
+
+## Physical planning
+
+`PlanQuery(q, opts...)` is pure lowering: everything client-caused was
+resolved and validated by the binder, so planning cannot fail — the one
+`panic` in `planner.plan` is unreachable over the sealed `bound.Relation`
+interface. It chooses implementations, nothing more.
+
+### Access-path selection
+
+A filter chain over a scan plans as a unit (`filterChain`): constraints
+choose the access path and the merged conjunction rides above it.
+`chooseAccessPath` generalises equality-only selection: equality constraints
+covering the whole primary key (`pinnedKey`) win outright as a `PKGetExec`;
+otherwise every index competes against the `TableScanExec` baseline with its
+longest leading equality prefix plus at most one trailing range bound on the
+next index column, ranked by the lexicographic `score` — equality-prefix
+length (`eqLen << 2`), then a trailing range (`| 2`), then whether the
+candidate's provided ordering satisfies the ordering an enclosing `Order`
+requires (`| 1`). Key values in `PKGetExec.Key` and
+`IndexRangeScanExec.EqPrefix` are `ConstVal`s — literals, or outer-slot
+parameters the executor resolves from the environment when it builds the
+operator, which is how a key-correlated attach becomes a point get per
+distinct parent key.
+
+The required ordering flows down from `plan`'s `req` parameter: an `Order`
+passes its terms to its input, so access selection can prefer an
+order-providing index and the `SortExec` above disappears entirely when
+`satisfiesOrder` holds (and no attach specs intervene). Nothing flows through
+a `Slice` — ordering does not commute with slicing. `providedOrder` states the
+physical ordering properties: a `PKGetExec` is a singleton (any ordering is
+satisfied), a table scan provides primary-key order, an index scan provides
+the index columns *after* the equality-fixed prefix then the primary-key
+suffix — all ascending, because the KV has no reverse scan, so `desc` always
+sorts — and `FilterExec`, `AttachExec`, and `SliceExec` preserve their
+input's order. The binder's id tie-breaker matches the primary-key suffix
+exactly, which is why `Order(users by name)` over the unique name index plans
+to a bare `IndexRangeScanExec` (`TestPlanOrderedIndexPushdown`). Slices are
+lazy pull operators, so "stop early" is not a plan annotation — a `SliceExec`
+over a non-blocking pipeline stops the scan after `offset+limit` accepted
+rows by construction (`TestPlanStopEarlyShape`).
+
+### The structural residual
+
+The invariant is visible in the tree: an access node only narrows which keys
+are scanned, and the full original predicate — `mergedPred` conjoins the
+whole filter chain — always rides above it in a `FilterExec`, re-evaluated on
+every fetched row. Access-path choice can therefore never change results.
+`TestPlanPKLookup` shows the shape: a complete-PK equality plans to `PKGet`,
+and the filter above it still carries both conjuncts.
+
+`FullScanOnly()` is the `PlanOpt` that turns this invariant into a test
+oracle: it disables point gets and index scans so every access is a table
+scan filtered by the full residual. The conformance suite
+(`TestPathIndependence` in 05_exec) runs every query both ways —
+`PlanQuery(bq)` against `PlanQuery(bq, planner.FullScanOnly())` — and asserts
+identical results; its sibling `ExecuteNested` does the same for the
+correlation strategies by forcing per-row evaluation.
+
+### Crossing extraction
+
+The planner pulls every crossing out of every expression — projection fields,
+filter predicates, order terms, aggregate arguments — so expressions stay
+pure and every sub-relation is a plan the executor can see, never a
+scalar-evaluator callback. `extractExpr` rewrites an expression so no
+crossing remains: each becomes an `AttachSpec` (its slot, its `CrossKind`,
+its `Classify` result, its recursively planned sub-tree, its output row type)
+writing a fresh slot — allocated by continuing the binder's dense space from
+`bound.Query.Slots` — and the rewritten expression references that slot.
+Whatever wraps the crossing — a NOT, an arithmetic term, a comparison —
+evaluates over the slot, so wrapping a crossing in a wider expression cannot
+change how the sub-relation executes; the strategy is fixed by
+classification, not by expression shape. `extractField` adds one shortcut: a
+projection field that *is* a crossing keeps its own slot, the attach writes
+the field directly, and the expression becomes a self-reference the executor
+recognises as already present.
+
+`attachWrap` interposes an `AttachExec` directly below the consuming operator
+— between a `FilterExec`, `SortExec`, `ProjectExec`, or `AggregateExec` and
+its input — whenever there is anything to attach. `AttachExec` is
+order-preserving: it drains the batch, executes each spec by its strategy
+(once per distinct outer key when key-correlated, once when uncorrelated, per
+row when general), writes results into the frames, and re-emits them in input
+order — which is why it appears in `providedOrder` as order-transparent.
+
+## The plan printer and the goldens
+
+`PrintPlan` (`print_phys.go`) renders a physical plan as a deterministic
+indented tree — the EXPLAIN precursor. Access nodes print their keys with
+outer parameters as `@slot` (`PKGet users [id = @2]`), attaches print their
+slot, kind, classification, and correlation keys, and every operator prints
+through `bound.PrintExpr`. Its counterpart `bound.Print` renders bound IR
+with `name#slot` fields and the law suffix `[card … free …]`.
+
+Both printers exist for the goldens that pin the arc's acceptance shape: the
+forcing query (boards → owner → first 20 open tasks by priority → assignee +
+comment count, `docs/design/lir-v2.md`). `TestBindForcingQueryGolden` pins
+the bound form — slot allocation order, spread slot reuse, correlation as
+free slots, both `First` relations uniqueness-refined to `0..1`, the appended
+id tie-breaker, every inferred type. `TestPlanForcingQueryGolden` pins the
+physical form and then asserts the headline properties independently of
+formatting: all four crossings attach key-correlated, both to-parent patterns
+are point gets, and the only `TableScan` is the root's "all boards" — every
+child fetch rides a key. A plan change that alters any of this fails loudly,
+in a diff a human can read.

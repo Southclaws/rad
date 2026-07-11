@@ -217,9 +217,9 @@ func get(ctx context.Context, c *Client, txID, table string, key map[string]any)
 	}
 	recs, err := query(ctx, c, txID, protocol.Query{
 		Nodes: map[string]protocol.Node{
-			"s":    {Kind: "scan", Table: table, Scope: "s"},
+			"s":     {Kind: "scan", Table: table, Scope: "s"},
 			"keyed": {Kind: "filter", Input: "s", Predicate: protocol.AndAll(preds)},
-			"one":  {Kind: "slice", Input: "keyed", Limit: new(int(1))},
+			"one":   {Kind: "slice", Input: "keyed", Limit: new(int(1))},
 		},
 		Root: protocol.Root{Node: "one", Cardinality: "many"},
 	})
