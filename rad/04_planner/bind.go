@@ -238,6 +238,18 @@ func (b *binder) bindJoin(n qir.Join) (*bound.Join, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A join input may be correlated with an enclosing query, but never with
+	// its sibling: the executor builds each side independently, so a dependent
+	// right side would not mean what it says. Reject it here.
+	for _, slot := range r.FreeSlots().Slots() {
+		if l.Produced().Contains(slot) {
+			desc := slotDesc(l, slot)
+			if desc == "" {
+				desc = "a column"
+			}
+			return nil, fmt.Errorf("planner: join right side references %s from the left side; a join input cannot depend on the other input — put the condition in the join's `on`, or correlate through a crossing instead", desc)
+		}
+	}
 	on, err := b.bindExpr(n.On)
 	if err != nil {
 		return nil, err
@@ -557,4 +569,28 @@ func uniqueKeyFields(rel bound.Relation) []qir.Field {
 		return key
 	}
 	return nil
+}
+
+// slotDesc names a slot for error messages by searching rel's subtree —
+// scans give the qualified spelling, other outputs just the field name.
+// Empty means the slot was not found.
+func slotDesc(rel bound.Relation, slot qir.SlotID) string {
+	if sc, ok := rel.(*bound.Scan); ok {
+		for _, f := range sc.Output().Fields {
+			if f.Slot == slot {
+				return fmt.Sprintf("column %q of scope %q", f.Name, sc.Scope)
+			}
+		}
+	}
+	for _, in := range rel.Inputs() {
+		if d := slotDesc(in, slot); d != "" {
+			return d
+		}
+	}
+	for _, f := range rel.Output().Fields {
+		if f.Slot == slot {
+			return fmt.Sprintf("column %q", f.Name)
+		}
+	}
+	return ""
 }

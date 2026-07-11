@@ -539,6 +539,20 @@ func TestValidationMatrix(t *testing.T) {
 				Left: bscan("tasks", "t"), Right: bscan("users", "u"),
 				Kind: qir.InnerJoin, On: bcol("t", "title")}},
 			"join condition must be boolean"},
+		{"dependent join right side",
+			qir.Query{Card: qir.CardMany, Root: qir.Join{
+				Left: bscan("boards", "b"),
+				Right: bfilter(bscan("tasks", "t"),
+					beq(bcol("t", "board_id"), bcol("b", "id"))),
+				Kind: qir.InnerJoin, On: blit(true)}},
+			"join right side references"},
+		{"dependent join through a projection",
+			qir.Query{Card: qir.CardMany, Root: qir.Join{
+				Left: bscan("boards", "b"),
+				Right: qir.Project{Input: bscan("tasks", "t"),
+					Fields: []qir.ProjField{{As: "owner", Expr: bcol("b", "owner_id")}}},
+				Kind: qir.LeftJoin, On: blit(true)}},
+			"join right side references"},
 		{"spread across a crossing boundary",
 			qir.Query{Card: qir.CardMany, Root: qir.Project{
 				Input:  bscan("boards", "b"),
@@ -576,4 +590,27 @@ func TestJoinScopesAndZeroLimit(t *testing.T) {
 	if got := zq.Root.Card(); !got.AtMostOne() || got.Max != 0 {
 		t.Fatalf("limit 0 card = %v, want 0..0", got)
 	}
+}
+
+// A join input may be correlated with an enclosing query — only sibling
+// dependence is rejected. Both sides here reference the outer board scope.
+func TestJoinCorrelatedWithEnclosingScope(t *testing.T) {
+	bind(t, qir.Query{Card: qir.CardMany, Root: qir.Project{
+		Input:  bscan("boards", "b"),
+		Spread: []string{"b"},
+		Fields: []qir.ProjField{{As: "pairs", Expr: qir.Array{Rel: qir.Project{
+			Input: qir.Join{
+				Left: bfilter(bscan("tasks", "t"),
+					beq(bcol("t", "board_id"), bcol("b", "id"))),
+				Right: bfilter(bscan("users", "u"),
+					beq(bcol("u", "id"), bcol("b", "owner_id"))),
+				Kind: qir.InnerJoin,
+				On:   beq(bcol("t", "assignee_id"), bcol("u", "id")),
+			},
+			Fields: []qir.ProjField{
+				{As: "task", Expr: bcol("t", "title")},
+				{As: "user", Expr: bcol("u", "name")},
+			},
+		}}}},
+	}})
 }
