@@ -38,8 +38,10 @@ func (b *binder) bindExpr(e lir.Expr) (bound.Expr, error) {
 				return nil, fmt.Errorf("planner: cannot negate %s", sub.Type())
 			}
 		case lir.OpIsNull, lir.OpIsNotNull:
-			if !sub.Type().Kind.Scalar() {
-				return nil, fmt.Errorf("planner: %s needs a scalar value, got %s", x.Op, sub.Type().Kind)
+			// Any nullable value has a null to test — including a first
+			// crossing's row. Arrays are empty, never NULL.
+			if sub.Type().Kind == lir.KindArray {
+				return nil, fmt.Errorf("planner: %s is meaningless on an array — arrays are empty, never NULL", x.Op)
 			}
 		default:
 			return nil, fmt.Errorf("planner: unknown unary operator %q", x.Op)

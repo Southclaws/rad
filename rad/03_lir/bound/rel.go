@@ -333,6 +333,9 @@ func (s *Slice) Inputs() []Relation { return []Relation{s.In} }
 type Query struct {
 	Root Relation
 	Card lir.RootCard
+	// Slots is how many slots the binder allocated. The planner's crossing
+	// extraction allocates fresh slots starting here.
+	Slots lir.SlotID
 }
 
 // Ordered reports whether rel carries an explicit logical ordering: an Order

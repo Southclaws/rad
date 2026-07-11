@@ -1,19 +1,21 @@
 package exec
 
-// projectOp: shape assembly, and the home of deduplicated correlated
-// execution. Scalar fields evaluate per frame; attached crossings
-// materialise as explicit sub-plans —
+// attachOp: the home of deduplicated correlated execution. Every crossing
+// the planner extracted — from a projection field, a filter predicate, an
+// order term, an aggregate argument — materialises here as an explicit
+// sub-plan writing one slot, by strategy:
 //
 //   key-correlated:  dedupe the outer key tuples across the batch, run the
 //                    inner plan once per DISTINCT key (a NULL key component
 //                    short-circuits to the empty result with no KV work),
-//                    group and attach; grandchildren batch across each
-//                    inner batch in turn.
+//                    and share the result among the frames of each key;
+//                    grandchildren batch across each inner batch in turn.
 //   uncorrelated:    run once, share the result with every frame.
 //   general:         per-frame nested evaluation — the fallback.
 //
 // All three strategies are result-equivalent; the conformance suite asserts
-// batched ≡ nested.
+// batched ≡ nested. Frames re-emit in input order, so attaching preserves
+// any provided ordering.
 
 import (
 	"context"
@@ -24,20 +26,20 @@ import (
 	planner "rad/rad/04_planner"
 )
 
-type projectOp struct {
-	ex     *executor
-	in     Operator
-	fields []planner.PhysField
-	outer  bound.Env
+type attachOp struct {
+	ex    *executor
+	in    Operator
+	specs []*planner.AttachSpec
+	outer bound.Env
 
 	out    []Frame
 	pos    int
 	primed bool
 }
 
-func (o *projectOp) Next(ctx context.Context) (Frame, bool, error) {
+func (o *attachOp) Next(ctx context.Context) (Frame, bool, error) {
 	if !o.primed {
-		if err := o.project(ctx); err != nil {
+		if err := o.attachAll(ctx); err != nil {
 			return Frame{}, false, err
 		}
 		o.primed = true
@@ -50,55 +52,31 @@ func (o *projectOp) Next(ctx context.Context) (Frame, bool, error) {
 	return f, true, nil
 }
 
-func (o *projectOp) Close() error { return o.in.Close() }
+func (o *attachOp) Close() error { return o.in.Close() }
 
-func (o *projectOp) project(ctx context.Context) error {
+func (o *attachOp) attachAll(ctx context.Context) error {
 	batch, err := drainOp(ctx, o.in)
 	if err != nil {
 		return err
 	}
-	if len(batch) == 0 {
-		return nil
-	}
-
-	// Output frames start from the outer environment so correlated
-	// references above this projection keep resolving.
-	outFrames := make([]Frame, len(batch))
-	for i := range batch {
-		outFrames[i] = newFrame(o.outer)
-	}
-
-	glue := o.ex.glue(o.outer)
-	for _, fld := range o.fields {
-		if fld.Attach == nil {
-			for i, in := range batch {
-				v, err := bound.Eval(ctx, fld.Expr, in.vals, glue)
-				if err != nil {
-					return err
-				}
-				outFrames[i].vals[fld.Slot] = v
-			}
-			continue
-		}
-		if err := o.attach(ctx, fld, batch, outFrames); err != nil {
+	o.out = batch
+	for _, spec := range o.specs {
+		if err := o.attach(ctx, spec, batch); err != nil {
 			return err
 		}
 	}
-	o.out = outFrames
 	return nil
 }
 
-func (o *projectOp) attach(ctx context.Context, fld planner.PhysField, batch, outFrames []Frame) error {
-	a := fld.Attach
-
+func (o *attachOp) attach(ctx context.Context, a *planner.AttachSpec, batch []Frame) error {
 	switch {
 	case a.Corr.Kind == planner.Uncorrelated:
-		d, sv, err := o.runAttach(ctx, a, o.outer)
+		d, err := o.runAttach(ctx, a, o.outer)
 		if err != nil {
 			return err
 		}
-		for i := range outFrames {
-			assignAttach(&outFrames[i], fld, a, d, sv)
+		for i := range batch {
+			batch[i][a.Slot] = d
 		}
 		return nil
 
@@ -110,13 +88,15 @@ func (o *projectOp) attach(ctx context.Context, fld planner.PhysField, batch, ou
 		}
 		groups := map[string]*keyGroup{}
 		var order []string
-		empties := make([]int, 0)
 
 		for i, in := range batch {
 			keyVals := make([]lir.Value, len(a.Corr.Keys))
 			null := false
 			for j, k := range a.Corr.Keys {
-				v := in.vals[k.OuterSlot]
+				v, err := in.ScalarAt(k.OuterSlot, k.InnerCol, lir.Type{})
+				if err != nil {
+					return err
+				}
 				if v.Null {
 					null = true
 					break
@@ -126,7 +106,7 @@ func (o *projectOp) attach(ctx context.Context, fld planner.PhysField, batch, ou
 			if null {
 				// Equality with NULL matches nothing: the empty result,
 				// with no KV work at all.
-				empties = append(empties, i)
+				batch[i][a.Slot] = emptyAttach(a)
 				continue
 			}
 			enc, err := EncodeTuple(keyVals)
@@ -140,7 +120,7 @@ func (o *projectOp) attach(ctx context.Context, fld planner.PhysField, batch, ou
 					env[k] = v
 				}
 				for j, k := range a.Corr.Keys {
-					env[k.OuterSlot] = keyVals[j]
+					env.SetScalar(k.OuterSlot, keyVals[j])
 				}
 				g = &keyGroup{env: env}
 				groups[string(enc)] = g
@@ -151,39 +131,34 @@ func (o *projectOp) attach(ctx context.Context, fld planner.PhysField, batch, ou
 
 		for _, key := range order {
 			g := groups[key]
-			d, sv, err := o.runAttach(ctx, a, g.env)
+			d, err := o.runAttach(ctx, a, g.env)
 			if err != nil {
 				return err
 			}
 			for _, i := range g.frames {
-				assignAttach(&outFrames[i], fld, a, d, sv)
+				batch[i][a.Slot] = d
 			}
-		}
-		for _, i := range empties {
-			d, sv := emptyAttach(a)
-			assignAttach(&outFrames[i], fld, a, d, sv)
 		}
 		return nil
 
 	default: // general correlation, or batching disabled
 		for i, in := range batch {
-			d, sv, err := o.runAttach(ctx, a, in.vals)
+			d, err := o.runAttach(ctx, a, in)
 			if err != nil {
 				return err
 			}
-			assignAttach(&outFrames[i], fld, a, d, sv)
+			batch[i][a.Slot] = d
 		}
 		return nil
 	}
 }
 
 // runAttach executes the attached plan under env and folds the resulting
-// frames into the crossing's shape: a nested datum for first/array, a
-// scalar value for scalar/exists.
-func (o *projectOp) runAttach(ctx context.Context, a *planner.AttachSpec, env bound.Env) (lir.Datum, lir.Value, error) {
+// frames into the crossing's shape — every shape is a datum.
+func (o *attachOp) runAttach(ctx context.Context, a *planner.AttachSpec, env bound.Env) (lir.Datum, error) {
 	op, err := o.ex.build(ctx, a.Plan, env)
 	if err != nil {
-		return lir.Datum{}, lir.Value{}, err
+		return lir.Datum{}, err
 	}
 	defer op.Close()
 
@@ -191,66 +166,83 @@ func (o *projectOp) runAttach(ctx context.Context, a *planner.AttachSpec, env bo
 	case planner.CrossExists:
 		_, ok, err := op.Next(ctx)
 		if err != nil {
-			return lir.Datum{}, lir.Value{}, err
+			return lir.Datum{}, err
 		}
-		return lir.Datum{}, lir.Bool(ok), nil
+		return lir.ScalarDatum(lir.Bool(ok)), nil
 
 	case planner.CrossFirst:
 		f, ok, err := op.Next(ctx)
 		if err != nil {
-			return lir.Datum{}, lir.Value{}, err
+			return lir.Datum{}, err
 		}
 		if !ok {
-			return lir.NullDatum(), lir.Value{}, nil
+			return lir.NullDatum(), nil
 		}
-		return frameToObject(a.Out, f), lir.Value{}, nil
+		return frameToObject(a.Out, f), nil
 
 	case planner.CrossScalar:
 		f, ok, err := op.Next(ctx)
 		if err != nil {
-			return lir.Datum{}, lir.Value{}, err
+			return lir.Datum{}, err
 		}
-		fld := a.Out.Fields[0]
 		if !ok {
-			return lir.Datum{}, lir.Null(fld.Type.Kind.CatalogType()), nil
+			return lir.NullDatum(), nil
 		}
-		return lir.Datum{}, f.vals[fld.Slot], nil
+		d, has := f[a.Out.Fields[0].Slot]
+		if !has {
+			return lir.NullDatum(), nil
+		}
+		return d, nil
 
 	case planner.CrossArray:
 		frames, err := drainOp(ctx, op)
 		if err != nil {
-			return lir.Datum{}, lir.Value{}, err
+			return lir.Datum{}, err
 		}
 		elems := make([]lir.Datum, len(frames))
 		for i, f := range frames {
 			elems[i] = frameToObject(a.Out, f)
 		}
-		return lir.ArrayDatum(elems), lir.Value{}, nil
+		return lir.ArrayDatum(elems), nil
 	}
-	return lir.Datum{}, lir.Value{}, fmt.Errorf("exec: unknown crossing %q", a.Kind)
+	return lir.Datum{}, fmt.Errorf("exec: unknown crossing %q", a.Kind)
 }
 
 // emptyAttach is the no-KV-work result for a NULL correlation key.
-func emptyAttach(a *planner.AttachSpec) (lir.Datum, lir.Value) {
+func emptyAttach(a *planner.AttachSpec) lir.Datum {
 	switch a.Kind {
 	case planner.CrossExists:
-		return lir.Datum{}, lir.Bool(false)
-	case planner.CrossScalar:
-		return lir.Datum{}, lir.Null(a.Out.Fields[0].Type.Kind.CatalogType())
-	case planner.CrossFirst:
-		return lir.NullDatum(), lir.Value{}
-	default: // array
-		return lir.ArrayDatum(nil), lir.Value{}
+		return lir.ScalarDatum(lir.Bool(false))
+	case planner.CrossArray:
+		return lir.ArrayDatum(nil)
+	default: // scalar, first
+		return lir.NullDatum()
 	}
 }
 
-// assignAttach writes a crossing's result to the right side of the frame:
-// nested datums for first/array, scalar values for scalar/exists.
-func assignAttach(f *Frame, fld planner.PhysField, a *planner.AttachSpec, d lir.Datum, sv lir.Value) {
-	switch a.Kind {
-	case planner.CrossFirst, planner.CrossArray:
-		*f = f.setNested(fld.Slot, d)
-	default:
-		f.vals[fld.Slot] = sv
-	}
+// projectOp assembles output rows from pure expressions, streaming — the
+// blocking batch point moved into attachOp, which exists only when a field
+// actually needs one.
+type projectOp struct {
+	in     Operator
+	fields []planner.PhysField
+	outer  bound.Env
 }
+
+func (o *projectOp) Next(ctx context.Context) (Frame, bool, error) {
+	in, ok, err := o.in.Next(ctx)
+	if err != nil || !ok {
+		return Frame{}, false, err
+	}
+	out := newFrame(o.outer)
+	for _, fld := range o.fields {
+		d, err := bound.EvalDatum(fld.Expr, in)
+		if err != nil {
+			return Frame{}, false, err
+		}
+		out[fld.Slot] = d
+	}
+	return out, true, nil
+}
+
+func (o *projectOp) Close() error { return o.in.Close() }

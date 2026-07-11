@@ -51,6 +51,24 @@ func TestPathIndependence(t *testing.T) {
 			},
 			Terms: []lir.OrderTerm{{Expr: qcol("stats", "status")}},
 		}),
+		"crossing in a filter": many(lir.Order{
+			Input: qfilter(qscan("tasks", "t"),
+				lir.Unary{Op: lir.OpNot, X: lir.Exists{Rel: qfilter(qscan("comments", "c"),
+					qeq(qcol("c", "task_id"), qcol("t", "id")))}}),
+			Terms: []lir.OrderTerm{{Expr: qcol("t", "id")}},
+		}),
+		"nested output referenced above": many(lir.Filter{
+			Input: lir.Project{
+				Input: qscan("tasks", "t"),
+				Scope: "p",
+				Fields: []lir.ProjField{
+					{As: "id", Expr: qcol("t", "id")},
+					{As: "assignee", Expr: lir.First{Rel: qfilter(qscan("users", "u"),
+						qeq(qcol("u", "id"), qcol("t", "assignee_id")))}},
+				},
+			},
+			Pred: lir.Unary{Op: lir.OpIsNotNull, X: qcol("p", "assignee")},
+		}),
 	}
 
 	for name, q := range queries {

@@ -134,7 +134,7 @@ func TestPlanForcingQueryGolden(t *testing.T) {
 	// The headline properties, asserted independently of formatting: every
 	// crossing — owner, tasks, assignee, comment_count — attaches
 	// key-correlated, and both to-parent patterns are point gets.
-	if strings.Count(got, "attach") != 4 || strings.Count(got, "key-correlated") != 4 {
+	if strings.Count(got, "key-correlated") != 4 {
 		t.Fatalf("want 4 key-correlated attaches:\n%s", got)
 	}
 	if strings.Count(got, "PKGet users") != 2 {
@@ -152,28 +152,34 @@ const forcingPlanGolden = `Plan card=many
     id#0 = b.id#0
     name#1 = b.name#1
     owner_id#2 = b.owner_id#2
-    owner#5 = attach first key-correlated [id#3 = @2]
-      Filter eq(o.id#3, b.owner_id#2)
-        PKGet users [id = @2]
-    tasks#21 = attach array key-correlated [board_id#7 = @0]
-      Project
-        id#6 = t.id#6
-        board_id#7 = t.board_id#7
-        title#8 = t.title#8
-        status#9 = t.status#9
-        priority#10 = t.priority#10
-        estimate#11 = t.estimate#11
-        assignee_id#12 = t.assignee_id#12
-        assignee#15 = attach first key-correlated [id#13 = @12]
-          Filter eq(a.id#13, t.assignee_id#12)
-            PKGet users [id = @12]
-        comment_count#20 = attach scalar key-correlated [task_id#17 = @6]
-          Aggregate n#19=count(*)
-            Filter eq(c.task_id#17, t.id#6)
-              IndexRangeScan comments comments_task_idx [task_id = @6]
-        Slice offset=0 limit=20
-          Sort t.priority#10 desc, id#6 asc
-            Filter and(eq(t.board_id#7, b.id#0), eq(t.status#9, "open"))
-              IndexRangeScan tasks tasks_board_status_idx [board_id = @0, status = "open"]
-    TableScan boards
+    owner#5 = owner#5
+    tasks#21 = tasks#21
+    Attach
+      #5 = first key-correlated [id#3 = @2]
+        Filter eq(o.id#3, b.owner_id#2)
+          PKGet users [id = @2]
+      #21 = array key-correlated [board_id#7 = @0]
+        Project
+          id#6 = t.id#6
+          board_id#7 = t.board_id#7
+          title#8 = t.title#8
+          status#9 = t.status#9
+          priority#10 = t.priority#10
+          estimate#11 = t.estimate#11
+          assignee_id#12 = t.assignee_id#12
+          assignee#15 = assignee#15
+          comment_count#20 = comment_count#20
+          Attach
+            #15 = first key-correlated [id#13 = @12]
+              Filter eq(a.id#13, t.assignee_id#12)
+                PKGet users [id = @12]
+            #20 = scalar key-correlated [task_id#17 = @6]
+              Aggregate n#19=count(*)
+                Filter eq(c.task_id#17, t.id#6)
+                  IndexRangeScan comments comments_task_idx [task_id = @6]
+            Slice offset=0 limit=20
+              Sort t.priority#10 desc, id#6 asc
+                Filter and(eq(t.board_id#7, b.id#0), eq(t.status#9, "open"))
+                  IndexRangeScan tasks tasks_board_status_idx [board_id = @0, status = "open"]
+      TableScan boards
 `

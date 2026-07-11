@@ -21,11 +21,10 @@ import (
 type executor struct {
 	view        kv.KV
 	forceNested bool
-	plans       map[bound.Relation]planner.PhysNode // nested-crossing plan cache
 }
 
 func newExecutor(view kv.KV) *executor {
-	return &executor{view: view, plans: map[bound.Relation]planner.PhysNode{}}
+	return &executor{view: view}
 }
 
 func (ex *executor) build(ctx context.Context, node planner.PhysNode, outer bound.Env) (Operator, error) {
@@ -45,19 +44,25 @@ func (ex *executor) build(ctx context.Context, node planner.PhysNode, outer boun
 		if err != nil {
 			return nil, err
 		}
-		return &filterOp{in: in, pred: n.Pred, glue: ex.glue(outer)}, nil
+		return &filterOp{in: in, pred: n.Pred}, nil
+	case *planner.AttachExec:
+		in, err := ex.build(ctx, n.Input, outer)
+		if err != nil {
+			return nil, err
+		}
+		return &attachOp{ex: ex, in: in, specs: n.Specs, outer: outer}, nil
 	case *planner.ProjectExec:
 		in, err := ex.build(ctx, n.Input, outer)
 		if err != nil {
 			return nil, err
 		}
-		return &projectOp{ex: ex, in: in, fields: n.Fields, outer: outer}, nil
+		return &projectOp{in: in, fields: n.Fields, outer: outer}, nil
 	case *planner.SortExec:
 		in, err := ex.build(ctx, n.Input, outer)
 		if err != nil {
 			return nil, err
 		}
-		return &sortOp{ex: ex, in: in, terms: n.Terms, outer: outer}, nil
+		return &sortOp{in: in, terms: n.Terms}, nil
 	case *planner.SliceExec:
 		in, err := ex.build(ctx, n.Input, outer)
 		if err != nil {
@@ -69,7 +74,7 @@ func (ex *executor) build(ctx context.Context, node planner.PhysNode, outer boun
 		if err != nil {
 			return nil, err
 		}
-		return &aggOp{ex: ex, in: in, groups: n.Groups, terms: n.Terms, outer: outer}, nil
+		return &aggOp{in: in, groups: n.Groups, terms: n.Terms, outer: outer}, nil
 	case *planner.NestedLoopJoinExec:
 		l, err := ex.build(ctx, n.L, outer)
 		if err != nil {
@@ -80,7 +85,7 @@ func (ex *executor) build(ctx context.Context, node planner.PhysNode, outer boun
 			l.Close()
 			return nil, err
 		}
-		return &nljOp{ex: ex, l: l, r: r, kind: n.Kind, on: n.On, rOut: n.ROut, outer: outer}, nil
+		return &nljOp{l: l, r: r, kind: n.Kind, on: n.On, rOut: n.ROut}, nil
 	}
 	return nil, fmt.Errorf("exec: unknown physical node %T", node)
 }
@@ -91,18 +96,14 @@ func resolveConst(cv planner.ConstVal, outer bound.Env) (lir.Value, error) {
 	if cv.Lit != nil {
 		return *cv.Lit, nil
 	}
-	v, ok := outer[*cv.Outer]
-	if !ok {
-		return lir.Value{}, fmt.Errorf("exec: outer slot %d not bound", *cv.Outer)
-	}
-	return v, nil
+	return outer.ScalarAt(*cv.Outer, "outer", lir.Type{})
 }
 
 // rowToFrame lifts a stored row into a frame under the scan's slots.
 func rowToFrame(scan *bound.Scan, row lir.Row, outer bound.Env) Frame {
 	f := newFrame(outer)
 	for _, fld := range scan.Output().Fields {
-		f.vals[fld.Slot] = row[fld.Name]
+		f.SetScalar(fld.Slot, row[fld.Name])
 	}
 	return f
 }
@@ -206,7 +207,6 @@ func (emptyOp) Close() error                              { return nil }
 type filterOp struct {
 	in   Operator
 	pred bound.Expr
-	glue bound.RelEvaluator
 }
 
 func (o *filterOp) Next(ctx context.Context) (Frame, bool, error) {
@@ -215,7 +215,7 @@ func (o *filterOp) Next(ctx context.Context) (Frame, bool, error) {
 		if err != nil || !ok {
 			return Frame{}, false, err
 		}
-		t, err := bound.EvalPred(ctx, o.pred, f.vals, o.glue)
+		t, err := bound.EvalPred(o.pred, f)
 		if err != nil {
 			return Frame{}, false, err
 		}
@@ -230,10 +230,8 @@ func (o *filterOp) Close() error { return o.in.Close() }
 // ── sort ────────────────────────────────────────────────────────────────────
 
 type sortOp struct {
-	ex     *executor
 	in     Operator
 	terms  []bound.OrderTerm
-	outer  bound.Env
 	sorted []Frame
 	pos    int
 	primed bool
@@ -246,11 +244,10 @@ func (o *sortOp) Next(ctx context.Context) (Frame, bool, error) {
 			return Frame{}, false, err
 		}
 		keys := make([][]lir.Value, len(frames))
-		glue := o.ex.glue(o.outer)
 		for i, f := range frames {
 			keys[i] = make([]lir.Value, len(o.terms))
 			for j, t := range o.terms {
-				v, err := bound.Eval(ctx, t.Expr, f.vals, glue)
+				v, err := bound.Eval(t.Expr, f)
 				if err != nil {
 					return Frame{}, false, err
 				}
@@ -330,7 +327,6 @@ func (o *sliceOp) Close() error { return o.in.Close() }
 // ── aggregate ───────────────────────────────────────────────────────────────
 
 type aggOp struct {
-	ex     *executor
 	in     Operator
 	groups []bound.GroupTerm
 	terms  []bound.AggTerm
@@ -365,8 +361,6 @@ func (o *aggOp) Next(ctx context.Context) (Frame, bool, error) {
 }
 
 func (o *aggOp) fold(ctx context.Context) error {
-	glue := o.ex.glue(o.outer)
-
 	type group struct {
 		vals  []lir.Value
 		accum []aggAccum
@@ -384,7 +378,7 @@ func (o *aggOp) fold(ctx context.Context) error {
 		}
 		gvals := make([]lir.Value, len(o.groups))
 		for i, g := range o.groups {
-			v, err := bound.Eval(ctx, g.Expr, f.vals, glue)
+			v, err := bound.Eval(g.Expr, f)
 			if err != nil {
 				return err
 			}
@@ -406,7 +400,7 @@ func (o *aggOp) fold(ctx context.Context) error {
 				a.count++
 				continue
 			}
-			v, err := bound.Eval(ctx, t.Arg, f.vals, glue)
+			v, err := bound.Eval(t.Arg, f)
 			if err != nil {
 				return err
 			}
@@ -450,10 +444,10 @@ func (o *aggOp) fold(ctx context.Context) error {
 		grp := groups[key]
 		f := newFrame(o.outer)
 		for i, g := range o.groups {
-			f.vals[g.Slot] = grp.vals[i]
+			f.SetScalar(g.Slot, grp.vals[i])
 		}
 		for i, t := range o.terms {
-			f.vals[t.Slot] = foldResult(t, grp.accum[i])
+			f.SetScalar(t.Slot, foldResult(t, grp.accum[i]))
 		}
 		o.out = append(o.out, f)
 	}
@@ -498,12 +492,10 @@ func (o *aggOp) Close() error { return o.in.Close() }
 // ── nested-loop join ────────────────────────────────────────────────────────
 
 type nljOp struct {
-	ex    *executor
-	l, r  Operator
-	kind  lir.JoinKind
-	on    bound.Expr
-	rOut  lir.RowType
-	outer bound.Env
+	l, r Operator
+	kind lir.JoinKind
+	on   bound.Expr
+	rOut lir.RowType
 
 	right   []Frame
 	cur     *Frame
@@ -521,7 +513,6 @@ func (o *nljOp) Next(ctx context.Context) (Frame, bool, error) {
 		o.right = right
 		o.primed = true
 	}
-	glue := o.ex.glue(o.outer)
 	for {
 		if o.cur == nil {
 			f, ok, err := o.l.Next(ctx)
@@ -534,7 +525,7 @@ func (o *nljOp) Next(ctx context.Context) (Frame, bool, error) {
 			r := o.right[o.rPos]
 			o.rPos++
 			merged := mergeFrames(*o.cur, r)
-			t, err := bound.EvalPred(ctx, o.on, merged.vals, glue)
+			t, err := bound.EvalPred(o.on, merged)
 			if err != nil {
 				return Frame{}, false, err
 			}
@@ -551,32 +542,12 @@ func (o *nljOp) Next(ctx context.Context) (Frame, bool, error) {
 	}
 }
 
-// mergeFrames unions two frames — slots are disjoint by construction.
-func mergeFrames(l, r Frame) Frame {
-	out := Frame{vals: make(bound.Env, len(l.vals)+len(r.vals))}
-	for k, v := range l.vals {
-		out.vals[k] = v
-	}
-	for k, v := range r.vals {
-		out.vals[k] = v
-	}
-	for k, v := range l.nested {
-		out = out.setNested(k, v)
-	}
-	for k, v := range r.nested {
-		out = out.setNested(k, v)
-	}
-	return out
-}
-
-// nullPadded extends an unmatched left row with typed NULLs for the right
-// side's output.
+// nullPadded extends an unmatched left row with NULLs for every right-side
+// output — scalar or nested, absence has one representation.
 func (o *nljOp) nullPadded(left Frame) Frame {
 	out := mergeFrames(left, Frame{})
 	for _, f := range o.rOut.Fields {
-		if f.Type.Kind.Scalar() {
-			out.vals[f.Slot] = lir.Null(f.Type.Kind.CatalogType())
-		}
+		out[f.Slot] = lir.NullDatum()
 	}
 	return out
 }

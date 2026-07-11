@@ -37,7 +37,7 @@ func PlanQuery(q *bound.Query, opts ...PlanOpt) *PhysPlan {
 	for _, o := range opts {
 		o(&cfg)
 	}
-	pl := &planner{cfg: cfg}
+	pl := &planner{cfg: cfg, nextSlot: q.Slots}
 	return &PhysPlan{
 		Root: pl.plan(q.Root, nil),
 		Card: q.Card,
@@ -47,6 +47,15 @@ func PlanQuery(q *bound.Query, opts ...PlanOpt) *PhysPlan {
 
 type planner struct {
 	cfg planCfg
+	// nextSlot continues the binder's dense slot space: every extracted
+	// crossing gets a fresh slot its rewritten expression references.
+	nextSlot lir.SlotID
+}
+
+func (pl *planner) allocSlot() lir.SlotID {
+	s := pl.nextSlot
+	pl.nextSlot++
+	return s
 }
 
 // plan lowers one relation. req is the ordering an enclosing Order needs —
@@ -59,20 +68,31 @@ func (pl *planner) plan(rel bound.Relation, req []bound.OrderTerm) PhysNode {
 
 	case *bound.Filter:
 		// A filter chain over a scan plans as a unit: constraints choose the
-		// access path, and the merged conjunction rides above it.
+		// access path, and the merged conjunction rides above it. Crossings
+		// contribute no constraints; they extract out of the residual and
+		// attach beneath it.
 		if scan := underlyingScan(n); scan != nil && filterChain(n) {
 			cs := ExtractConstraints(n)
 			access := pl.chooseAccessPath(cs, req)
-			return &FilterExec{Input: access, Pred: mergedPred(n)}
+			pred, specs := pl.extractExpr(mergedPred(n))
+			return &FilterExec{Input: attachWrap(access, specs), Pred: pred}
 		}
-		return &FilterExec{Input: pl.plan(n.In, req), Pred: n.Pred}
+		pred, specs := pl.extractExpr(n.Pred)
+		return &FilterExec{Input: attachWrap(pl.plan(n.In, req), specs), Pred: pred}
 
 	case *bound.Order:
 		in := pl.plan(n.In, n.Terms)
-		if satisfiesOrder(in, n.Terms) {
+		terms := make([]bound.OrderTerm, len(n.Terms))
+		var specs []*AttachSpec
+		for i, t := range n.Terms {
+			e, s := pl.extractExpr(t.Expr)
+			terms[i] = bound.OrderTerm{Expr: e, Desc: t.Desc}
+			specs = append(specs, s...)
+		}
+		if len(specs) == 0 && satisfiesOrder(in, terms) {
 			return in
 		}
-		return &SortExec{Input: in, Terms: n.Terms}
+		return &SortExec{Input: attachWrap(in, specs), Terms: terms}
 
 	case *bound.Slice:
 		// Ordering does not commute with slicing, so nothing flows through.
@@ -80,52 +100,116 @@ func (pl *planner) plan(rel bound.Relation, req []bound.OrderTerm) PhysNode {
 
 	case *bound.Project:
 		fields := make([]PhysField, len(n.Fields))
+		var specs []*AttachSpec
 		for i, f := range n.Fields {
-			fields[i] = pl.planField(f)
+			e, s := pl.extractField(f)
+			fields[i] = PhysField{Name: f.Name, Slot: f.Slot, Expr: e}
+			specs = append(specs, s...)
 		}
-		return &ProjectExec{Input: pl.plan(n.In, nil), Fields: fields}
+		return &ProjectExec{Input: attachWrap(pl.plan(n.In, nil), specs), Fields: fields}
 
 	case *bound.Aggregate:
-		return &AggregateExec{Input: pl.plan(n.In, nil), Groups: n.Groups, Terms: n.Terms}
+		groups := make([]bound.GroupTerm, len(n.Groups))
+		var specs []*AttachSpec
+		for i, g := range n.Groups {
+			e, s := pl.extractExpr(g.Expr)
+			groups[i] = bound.GroupTerm{Name: g.Name, Slot: g.Slot, Expr: e}
+			specs = append(specs, s...)
+		}
+		terms := make([]bound.AggTerm, len(n.Terms))
+		for i, t := range n.Terms {
+			terms[i] = t
+			if t.Arg != nil {
+				e, s := pl.extractExpr(t.Arg)
+				terms[i].Arg = e
+				specs = append(specs, s...)
+			}
+		}
+		return &AggregateExec{Input: attachWrap(pl.plan(n.In, nil), specs), Groups: groups, Terms: terms}
 
 	case *bound.Join:
+		// The binder rejects crossings in join conditions, so On is pure.
 		return &NestedLoopJoinExec{L: pl.plan(n.L, nil), R: pl.plan(n.R, nil), Kind: n.Kind, On: n.On, ROut: n.R.Output()}
 	}
 	panic("planner: unplannable relation") // sealed interface; unreachable
 }
 
-// planField lowers one projection field. Crossings become attached
-// sub-plans; anything else stays a scalar expression.
-func (pl *planner) planField(f bound.ProjField) PhysField {
-	out := PhysField{Name: f.Name, Slot: f.Slot}
-	var kind CrossKind
-	var rel bound.Relation
-	switch x := f.Expr.(type) {
-	case bound.Exists:
-		kind, rel = CrossExists, x.Rel
-	case bound.First:
-		kind, rel = CrossFirst, x.Rel
-	case bound.Scalar:
-		kind, rel = CrossScalar, x.Rel
-	case bound.Array:
-		kind, rel = CrossArray, x.Rel
-	default:
-		out.Expr = f.Expr
-		return out
+// extractField extracts a projection field's crossings. A field that IS a
+// crossing keeps its own slot — the attach writes the field directly and the
+// expression is a self-reference the executor recognises as already present.
+func (pl *planner) extractField(f bound.ProjField) (bound.Expr, []*AttachSpec) {
+	if kind, rel, ok := crossing(f.Expr); ok {
+		spec := pl.attachSpec(f.Slot, kind, rel)
+		return bound.SlotRef{Slot: f.Slot, Name: f.Name, T: f.Expr.Type()}, []*AttachSpec{spec}
 	}
-	out.Attach = &AttachSpec{
+	return pl.extractExpr(f.Expr)
+}
+
+// extractExpr rewrites e so no crossing remains: each becomes an AttachSpec
+// writing a fresh slot, and the expression references the slot. Whatever
+// wraps the crossing — a NOT, an arithmetic term, a comparison — evaluates
+// over the slot, so wrapping never changes how the sub-relation executes.
+func (pl *planner) extractExpr(e bound.Expr) (bound.Expr, []*AttachSpec) {
+	if kind, rel, ok := crossing(e); ok {
+		slot := pl.allocSlot()
+		spec := pl.attachSpec(slot, kind, rel)
+		return bound.SlotRef{Slot: slot, Name: string(kind), T: e.Type()}, []*AttachSpec{spec}
+	}
+	switch x := e.(type) {
+	case bound.Unary:
+		sub, specs := pl.extractExpr(x.X)
+		if len(specs) == 0 {
+			return e, nil
+		}
+		return bound.NewUnary(x.Op, sub), specs
+	case bound.Binary:
+		l, ls := pl.extractExpr(x.L)
+		r, rs := pl.extractExpr(x.R)
+		if len(ls) == 0 && len(rs) == 0 {
+			return e, nil
+		}
+		return bound.NewBinary(x.Op, l, r), append(ls, rs...)
+	case bound.Cast:
+		sub, specs := pl.extractExpr(x.X)
+		if len(specs) == 0 {
+			return e, nil
+		}
+		return bound.NewCast(sub, x.To), specs
+	}
+	return e, nil
+}
+
+func (pl *planner) attachSpec(slot lir.SlotID, kind CrossKind, rel bound.Relation) *AttachSpec {
+	return &AttachSpec{
+		Slot: slot,
 		Kind: kind,
 		Corr: Classify(rel),
 		Plan: pl.plan(rel, nil),
 		Out:  rel.Output(),
 	}
-	return out
 }
 
-// PlanRelation lowers a bare relation — the executor's nested-evaluation
-// glue plans crossing sub-relations on demand with it.
-func PlanRelation(rel bound.Relation) PhysNode {
-	return (&planner{}).plan(rel, nil)
+// crossing destructures a crossing expression.
+func crossing(e bound.Expr) (CrossKind, bound.Relation, bool) {
+	switch x := e.(type) {
+	case bound.Exists:
+		return CrossExists, x.Rel, true
+	case bound.First:
+		return CrossFirst, x.Rel, true
+	case bound.Scalar:
+		return CrossScalar, x.Rel, true
+	case bound.Array:
+		return CrossArray, x.Rel, true
+	}
+	return "", nil, false
+}
+
+// attachWrap interposes an AttachExec when there is anything to attach.
+func attachWrap(input PhysNode, specs []*AttachSpec) PhysNode {
+	if len(specs) == 0 {
+		return input
+	}
+	return &AttachExec{Input: input, Specs: specs}
 }
 
 // filterChain reports whether every node between rel and its scan is a

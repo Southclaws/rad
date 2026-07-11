@@ -55,7 +55,7 @@ func Bind(ctx context.Context, cat Catalog, q lir.Query) (*bound.Query, error) {
 		return nil, fmt.Errorf("planner: root cardinality %q over an unordered multi-row relation would make results depend on the access path — add an order or make the relation at-most-one", q.Card)
 	}
 
-	return &bound.Query{Root: root, Card: q.Card}, nil
+	return &bound.Query{Root: root, Card: q.Card, Slots: b.nextSlot}, nil
 }
 
 // binder carries the walk state: the dense slot allocator and the scope
@@ -264,7 +264,35 @@ func (b *binder) bindJoin(n lir.Join) (*bound.Join, error) {
 	if on.Type().Kind != lir.KindBool {
 		return nil, fmt.Errorf("planner: join condition must be boolean, got %s", on.Type())
 	}
+	// A crossing in the join condition would need evaluation per candidate
+	// pair — a shape the executor does not batch. Filtering above the join
+	// says the same thing and gets the full attach machinery.
+	if containsCrossing(on) {
+		return nil, fmt.Errorf("planner: a join condition cannot contain a sub-relation crossing — filter above the join instead")
+	}
 	return bound.NewJoin(l, r, n.Kind, on), nil
+}
+
+// containsCrossing reports whether any sub-expression is a cardinality
+// crossing.
+func containsCrossing(e bound.Expr) bool {
+	switch x := e.(type) {
+	case bound.Exists, bound.First, bound.Scalar, bound.Array:
+		return true
+	case bound.Unary:
+		return containsCrossing(x.X)
+	case bound.Binary:
+		return containsCrossing(x.L) || containsCrossing(x.R)
+	case bound.Cast:
+		return containsCrossing(x.X)
+	case bound.Call:
+		for _, a := range x.Args {
+			if containsCrossing(a) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // bindAggregate folds its input. Above it, only the group and term outputs

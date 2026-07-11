@@ -1,92 +1,105 @@
 package bound
 
 import (
-	"context"
 	"fmt"
 
 	catalog "rad/rad/02_catalog"
 	lir "rad/rad/03_lir"
 )
 
-// Env is an evaluation environment: values for every slot in scope, both the
+// Env is an evaluation environment: one datum per slot in scope — the
 // current row's own slots and any outer slots a correlated expression
-// references.
-type Env map[lir.SlotID]lir.Value
+// references. Scalar slots hold scalar datums (a NULL value is the null
+// datum; SlotRef's static type restores it), row and array slots hold the
+// materialised nested datums. One value vocabulary, one map.
+type Env map[lir.SlotID]lir.Datum
 
-// RelEvaluator executes the relation-consuming crossings that can appear in
-// scalar position. The executor implements it; First and Array never reach
-// scalar evaluation — projection compiles them to explicit materialisation
-// operators.
-type RelEvaluator interface {
-	Exists(ctx context.Context, rel Relation, env Env) (bool, error)
-	Scalar(ctx context.Context, rel Relation, env Env) (lir.Value, error)
+// SetScalar stores a scalar value, collapsing NULL into the null datum.
+func (e Env) SetScalar(slot lir.SlotID, v lir.Value) { e[slot] = lir.ScalarDatum(v) }
+
+// ScalarAt reads a slot as a scalar value, restoring a typed NULL from t.
+// Row and array datums are not scalars and error — expressions containing
+// crossings were extracted before execution, so a non-scalar here is a
+// planner bug, not a query.
+func (e Env) ScalarAt(slot lir.SlotID, name string, t lir.Type) (lir.Value, error) {
+	d, ok := e[slot]
+	if !ok {
+		return lir.Value{}, fmt.Errorf("exec: slot %d (%s) not in scope", slot, name)
+	}
+	switch d.Kind {
+	case lir.DatumScalar:
+		return d.Scalar, nil
+	case lir.DatumNull:
+		return lir.Null(t.Kind.CatalogType()), nil
+	}
+	return lir.Value{}, fmt.Errorf("exec: slot %d (%s) holds a nested value, not a scalar", slot, name)
 }
 
 // EvalPred evaluates a Bool-typed expression to a Kleene tri-bool. Filter
 // keeps only TriTrue; NOT of UNKNOWN stays UNKNOWN — this is where
 // `NOT (x = 1)` stops matching NULL rows.
-func EvalPred(ctx context.Context, e Expr, env Env, re RelEvaluator) (lir.TriBool, error) {
+//
+// Expressions are pure: crossings never reach evaluation (the planner
+// extracts every one into an attach slot), so there is no I/O, no context,
+// and no relation evaluator behind an expression.
+func EvalPred(e Expr, env Env) (lir.TriBool, error) {
 	switch x := e.(type) {
 	case Binary:
 		switch x.Op {
 		case lir.OpAnd:
-			l, err := EvalPred(ctx, x.L, env, re)
+			l, err := EvalPred(x.L, env)
 			if err != nil {
 				return lir.TriUnknown, err
 			}
 			if l == lir.TriFalse {
 				return lir.TriFalse, nil
 			}
-			r, err := EvalPred(ctx, x.R, env, re)
+			r, err := EvalPred(x.R, env)
 			if err != nil {
 				return lir.TriUnknown, err
 			}
 			return l.And(r), nil
 		case lir.OpOr:
-			l, err := EvalPred(ctx, x.L, env, re)
+			l, err := EvalPred(x.L, env)
 			if err != nil {
 				return lir.TriUnknown, err
 			}
 			if l == lir.TriTrue {
 				return lir.TriTrue, nil
 			}
-			r, err := EvalPred(ctx, x.R, env, re)
+			r, err := EvalPred(x.R, env)
 			if err != nil {
 				return lir.TriUnknown, err
 			}
 			return l.Or(r), nil
 		case lir.OpEq, lir.OpNe, lir.OpLt, lir.OpLte, lir.OpGt, lir.OpGte:
-			return evalCompare(ctx, x, env, re)
+			return evalCompare(x, env)
 		}
 	case Unary:
 		switch x.Op {
 		case lir.OpNot:
-			v, err := EvalPred(ctx, x.X, env, re)
+			v, err := EvalPred(x.X, env)
 			if err != nil {
 				return lir.TriUnknown, err
 			}
 			return v.Not(), nil
 		case lir.OpIsNull, lir.OpIsNotNull:
-			v, err := Eval(ctx, x.X, env, re)
+			// Works on any datum: a nested slot (an absent first) is NULL
+			// exactly like a NULL scalar.
+			d, err := EvalDatum(x.X, env)
 			if err != nil {
 				return lir.TriUnknown, err
 			}
 			if x.Op == lir.OpIsNull {
-				return lir.FromBool(v.Null), nil
+				return lir.FromBool(d.Kind == lir.DatumNull), nil
 			}
-			return lir.FromBool(!v.Null), nil
+			return lir.FromBool(d.Kind != lir.DatumNull), nil
 		}
-	case Exists:
-		ok, err := re.Exists(ctx, x.Rel, env)
-		if err != nil {
-			return lir.TriUnknown, err
-		}
-		return lir.FromBool(ok), nil
 	}
 
-	// Anything else Bool-typed — a bool column, literal, cast, scalar
-	// crossing — evaluates as a value; NULL is UNKNOWN.
-	v, err := Eval(ctx, e, env, re)
+	// Anything else Bool-typed — a bool column, literal, cast — evaluates as
+	// a value; NULL is UNKNOWN.
+	v, err := Eval(e, env)
 	if err != nil {
 		return lir.TriUnknown, err
 	}
@@ -99,12 +112,12 @@ func EvalPred(ctx context.Context, e Expr, env Env, re RelEvaluator) (lir.TriBoo
 	return lir.FromBool(v.Bool), nil
 }
 
-func evalCompare(ctx context.Context, b Binary, env Env, re RelEvaluator) (lir.TriBool, error) {
-	l, err := Eval(ctx, b.L, env, re)
+func evalCompare(b Binary, env Env) (lir.TriBool, error) {
+	l, err := Eval(b.L, env)
 	if err != nil {
 		return lir.TriUnknown, err
 	}
-	r, err := Eval(ctx, b.R, env, re)
+	r, err := Eval(b.R, env)
 	if err != nil {
 		return lir.TriUnknown, err
 	}
@@ -131,27 +144,24 @@ func evalCompare(ctx context.Context, b Binary, env Env, re RelEvaluator) (lir.T
 	}
 }
 
-// Eval evaluates an expression to a value. Bool-typed predicate forms yield
-// Bool values with UNKNOWN as NULL. First and Array are not scalar values
-// and are rejected here — projection materialises them explicitly.
-func Eval(ctx context.Context, e Expr, env Env, re RelEvaluator) (lir.Value, error) {
+// Eval evaluates an expression to a scalar value. Bool-typed predicate forms
+// yield Bool values with UNKNOWN as NULL. Crossings never appear here — the
+// planner extracted them into slots — and nested-typed slots are values, not
+// scalars; both are internal errors, not query errors.
+func Eval(e Expr, env Env) (lir.Value, error) {
 	switch x := e.(type) {
 	case Literal:
 		return x.V, nil
 
 	case SlotRef:
-		v, ok := env[x.Slot]
-		if !ok {
-			return lir.Value{}, fmt.Errorf("exec: slot %d (%s) not in scope", x.Slot, x.Name)
-		}
-		return v, nil
+		return env.ScalarAt(x.Slot, x.Name, x.T)
 
 	case Binary:
 		switch x.Op {
 		case lir.OpAdd, lir.OpSub, lir.OpMul, lir.OpDiv:
-			return evalArith(ctx, x, env, re)
+			return evalArith(x, env)
 		default: // comparisons and and/or: predicate forms as values
-			t, err := EvalPred(ctx, x, env, re)
+			t, err := EvalPred(x, env)
 			if err != nil {
 				return lir.Value{}, err
 			}
@@ -161,7 +171,7 @@ func Eval(ctx context.Context, e Expr, env Env, re RelEvaluator) (lir.Value, err
 	case Unary:
 		switch x.Op {
 		case lir.OpNegate:
-			v, err := Eval(ctx, x.X, env, re)
+			v, err := Eval(x.X, env)
 			if err != nil {
 				return lir.Value{}, err
 			}
@@ -176,7 +186,7 @@ func Eval(ctx context.Context, e Expr, env Env, re RelEvaluator) (lir.Value, err
 			}
 			return lir.Value{}, fmt.Errorf("exec: cannot negate %s", v.Type)
 		default: // not, is_null, is_not_null
-			t, err := EvalPred(ctx, x, env, re)
+			t, err := EvalPred(x, env)
 			if err != nil {
 				return lir.Value{}, err
 			}
@@ -184,25 +194,34 @@ func Eval(ctx context.Context, e Expr, env Env, re RelEvaluator) (lir.Value, err
 		}
 
 	case Cast:
-		return evalCast(ctx, x, env, re)
-
-	case Exists:
-		t, err := EvalPred(ctx, x, env, re)
-		if err != nil {
-			return lir.Value{}, err
-		}
-		return triValue(t), nil
-
-	case Scalar:
-		return re.Scalar(ctx, x.Rel, env)
+		return evalCast(x, env)
 
 	case Call:
 		return lir.Value{}, fmt.Errorf("exec: unknown function %q", x.Fn)
 
-	case First, Array:
-		return lir.Value{}, fmt.Errorf("exec: %T is not a scalar value; it materialises only in a projection field", e)
+	case Exists, First, Scalar, Array:
+		return lir.Value{}, fmt.Errorf("exec: unextracted crossing %T reached evaluation", e)
 	}
 	return lir.Value{}, fmt.Errorf("exec: cannot evaluate %T", e)
+}
+
+// EvalDatum evaluates an expression to a datum: nested-typed slot references
+// yield their materialised datum verbatim, everything else evaluates as a
+// scalar and wraps. This is how a first or array output is referenced,
+// reprojected, and spread like any other column.
+func EvalDatum(e Expr, env Env) (lir.Datum, error) {
+	if ref, ok := e.(SlotRef); ok && !ref.T.Kind.Scalar() {
+		d, ok := env[ref.Slot]
+		if !ok {
+			return lir.Datum{}, fmt.Errorf("exec: slot %d (%s) not in scope", ref.Slot, ref.Name)
+		}
+		return d, nil
+	}
+	v, err := Eval(e, env)
+	if err != nil {
+		return lir.Datum{}, err
+	}
+	return lir.ScalarDatum(v), nil
 }
 
 // triValue renders a tri-bool as a Bool value with UNKNOWN as NULL.
@@ -217,12 +236,12 @@ func triValue(t lir.TriBool) lir.Value {
 	}
 }
 
-func evalArith(ctx context.Context, b Binary, env Env, re RelEvaluator) (lir.Value, error) {
-	l, err := Eval(ctx, b.L, env, re)
+func evalArith(b Binary, env Env) (lir.Value, error) {
+	l, err := Eval(b.L, env)
 	if err != nil {
 		return lir.Value{}, err
 	}
-	r, err := Eval(ctx, b.R, env, re)
+	r, err := Eval(b.R, env)
 	if err != nil {
 		return lir.Value{}, err
 	}
@@ -270,8 +289,8 @@ func asFloat(v lir.Value) float64 {
 	return v.Float64
 }
 
-func evalCast(ctx context.Context, c Cast, env Env, re RelEvaluator) (lir.Value, error) {
-	v, err := Eval(ctx, c.X, env, re)
+func evalCast(c Cast, env Env) (lir.Value, error) {
+	v, err := Eval(c.X, env)
 	if err != nil {
 		return lir.Value{}, err
 	}

@@ -39,16 +39,17 @@ func printPhys(b *strings.Builder, n PhysNode, depth int) {
 	case *FilterExec:
 		fmt.Fprintf(b, "%sFilter %s\n", pad, bound.PrintExpr(x.Pred))
 		printPhys(b, x.Input, depth+1)
+	case *AttachExec:
+		fmt.Fprintf(b, "%sAttach\n", pad)
+		for _, a := range x.Specs {
+			fmt.Fprintf(b, "%s  #%d = %s %s%s\n", pad, a.Slot, a.Kind, a.Corr.Kind, corrKeys(a.Corr))
+			printPhys(b, a.Plan, depth+2)
+		}
+		printPhys(b, x.Input, depth+1)
 	case *ProjectExec:
 		fmt.Fprintf(b, "%sProject\n", pad)
 		for _, f := range x.Fields {
-			if f.Attach == nil {
-				fmt.Fprintf(b, "%s  %s#%d = %s\n", pad, f.Name, f.Slot, bound.PrintExpr(f.Expr))
-				continue
-			}
-			a := f.Attach
-			fmt.Fprintf(b, "%s  %s#%d = attach %s %s%s\n", pad, f.Name, f.Slot, a.Kind, a.Corr.Kind, corrKeys(a.Corr))
-			printPhys(b, a.Plan, depth+2)
+			fmt.Fprintf(b, "%s  %s#%d = %s\n", pad, f.Name, f.Slot, bound.PrintExpr(f.Expr))
 		}
 		printPhys(b, x.Input, depth+1)
 	case *SortExec:

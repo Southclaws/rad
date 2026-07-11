@@ -76,31 +76,40 @@ const (
 	CrossArray  CrossKind = "array"
 )
 
-// AttachSpec is a projection field that materialises a sub-relation. The
-// correlation classification decides the strategy: key-correlated attaches
-// execute once per DISTINCT outer key over the batch (KeyedLookup — the
-// deduplicated correlated execution); uncorrelated attaches execute once;
-// general correlation falls back to per-row nested evaluation. All three
-// are result-equivalent.
+// AttachSpec materialises one extracted crossing into a slot. The planner
+// pulls every crossing out of every expression — projection fields, filter
+// predicates, order terms, aggregate arguments — so expressions stay pure
+// and the optimizer sees every sub-relation. The correlation classification
+// decides the strategy: key-correlated attaches execute once per DISTINCT
+// outer key over the batch (the deduplicated correlated execution);
+// uncorrelated attaches execute once; general correlation falls back to
+// per-row nested evaluation. All three are result-equivalent — wrapping a
+// crossing in a wider expression cannot change how it executes.
 type AttachSpec struct {
+	Slot lir.SlotID // the slot the crossing's result is written to
 	Kind CrossKind
 	Corr Correlation
 	Plan PhysNode
 	Out  lir.RowType // the sub-relation's output shape
 }
 
-// PhysField is one projection output: either a scalar expression or an
-// attached sub-relation, never both.
-type PhysField struct {
-	Name   string
-	Slot   lir.SlotID
-	Expr   bound.Expr
-	Attach *AttachSpec
+// AttachExec computes attach slots over its input stream, order-preserving:
+// it drains the batch, executes each spec by its strategy, writes results
+// into the frames, and re-emits them in input order.
+type AttachExec struct {
+	Input PhysNode
+	Specs []*AttachSpec
 }
 
-// ProjectExec assembles output rows — and is where nested materialisation
-// lives. A crossing is never a scalar-evaluator callback: every attached
-// field is an explicit sub-plan the executor can see.
+// PhysField is one projection output; its expression is crossing-free.
+type PhysField struct {
+	Name string
+	Slot lir.SlotID
+	Expr bound.Expr
+}
+
+// ProjectExec assembles output rows from pure expressions — any crossing a
+// field once contained now arrives as an attach slot from below.
 type ProjectExec struct {
 	Input  PhysNode
 	Fields []PhysField
@@ -142,6 +151,7 @@ func (*PKGetExec) phys()          {}
 func (*TableScanExec) phys()      {}
 func (*IndexRangeScanExec) phys() {}
 func (*FilterExec) phys()         {}
+func (*AttachExec) phys()         {}
 func (*ProjectExec) phys()        {}
 func (*SortExec) phys()           {}
 func (*SliceExec) phys()          {}
@@ -169,6 +179,8 @@ func providedOrder(n PhysNode) (slots []lir.SlotID, singleton bool) {
 		}
 		return append(out, pkSlots(x.Scan)...), false
 	case *FilterExec:
+		return providedOrder(x.Input)
+	case *AttachExec:
 		return providedOrder(x.Input)
 	case *SliceExec:
 		return providedOrder(x.Input)

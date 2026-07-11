@@ -94,14 +94,10 @@ func (e *Engine) execute(ctx context.Context, view kv.KV, q lir.Query, forceNest
 		if err != nil {
 			return lir.Datum{}, err
 		}
-		fld := pp.Out.Fields[0]
 		if !ok {
 			return lir.NullDatum(), nil
 		}
-		if fld.Type.Kind.Scalar() {
-			return lir.ScalarDatum(f.vals[fld.Slot]), nil
-		}
-		if d, hasNested := f.nested[fld.Slot]; hasNested {
+		if d, has := f[pp.Out.Fields[0].Slot]; has {
 			return d, nil
 		}
 		return lir.NullDatum(), nil
