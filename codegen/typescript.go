@@ -83,7 +83,7 @@ func emitTSHeader(p func(string, ...any), schemaSrc []byte) {
 	p("//")
 	p("// Typed TypeScript client for a Rad database, speaking the rad:// wire")
 	p("// protocol over fetch. Zero dependencies; works in Node 18+, Bun, Deno,")
-	p("// and browsers. No SQL anywhere — queries compile to Rad's QIR on the")
+	p("// and browsers. No SQL anywhere — queries compile to Rad's LIR on the")
 	p("// wire. Note: int64 columns decode as JavaScript numbers; values beyond")
 	p("// 2^53 lose precision.")
 	p("")

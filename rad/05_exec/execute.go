@@ -13,45 +13,45 @@ import (
 
 	kv "rad/rad/01_kv"
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
-	"rad/rad/03_qir/bound"
+	lir "rad/rad/03_lir"
+	"rad/rad/03_lir/bound"
 	planner "rad/rad/04_planner"
 )
 
 // Execute runs an unbound query against a snapshot of committed state.
-func (e *Engine) Execute(ctx context.Context, q qir.Query) (qir.Datum, error) {
+func (e *Engine) Execute(ctx context.Context, q lir.Query) (lir.Datum, error) {
 	return e.executeSnapshot(ctx, q, false)
 }
 
 // Execute inside a transaction sees its snapshot plus its own writes. The
 // schema lookups join the transaction's read set, so concurrent DDL on a
 // table the statement touched conflicts at commit.
-func (tx *Tx) Execute(ctx context.Context, q qir.Query) (qir.Datum, error) {
+func (tx *Tx) Execute(ctx context.Context, q lir.Query) (lir.Datum, error) {
 	return tx.e.execute(ctx, tx.txn, q, false)
 }
 
 // ExecuteNested runs with keyed batching disabled — every correlated
 // crossing evaluates per row. Results are identical to Execute by
 // construction; the conformance suite holds the executor to it.
-func (e *Engine) ExecuteNested(ctx context.Context, q qir.Query) (qir.Datum, error) {
+func (e *Engine) ExecuteNested(ctx context.Context, q lir.Query) (lir.Datum, error) {
 	return e.executeSnapshot(ctx, q, true)
 }
 
 // executeSnapshot gives an autocommit read one statement-scoped snapshot;
 // read-only, so it is discarded rather than committed.
-func (e *Engine) executeSnapshot(ctx context.Context, q qir.Query, forceNested bool) (qir.Datum, error) {
+func (e *Engine) executeSnapshot(ctx context.Context, q lir.Query, forceNested bool) (lir.Datum, error) {
 	txn, err := e.store.Begin(ctx, kv.Snapshot)
 	if err != nil {
-		return qir.Datum{}, err
+		return lir.Datum{}, err
 	}
 	defer txn.Rollback()
 	return e.execute(ctx, txn, q, forceNested)
 }
 
-func (e *Engine) execute(ctx context.Context, view kv.KV, q qir.Query, forceNested bool) (qir.Datum, error) {
+func (e *Engine) execute(ctx context.Context, view kv.KV, q lir.Query, forceNested bool) (lir.Datum, error) {
 	bq, err := planner.Bind(ctx, catalog.NewReader(view), q)
 	if err != nil {
-		return qir.Datum{}, err
+		return lir.Datum{}, err
 	}
 	pp := planner.PlanQuery(bq)
 
@@ -59,62 +59,62 @@ func (e *Engine) execute(ctx context.Context, view kv.KV, q qir.Query, forceNest
 	ex.forceNested = forceNested
 	op, err := ex.build(ctx, pp.Root, bound.Env{})
 	if err != nil {
-		return qir.Datum{}, err
+		return lir.Datum{}, err
 	}
 	defer op.Close()
 
 	switch pp.Card {
-	case qir.CardFirst:
+	case lir.CardFirst:
 		f, ok, err := op.Next(ctx)
 		if err != nil {
-			return qir.Datum{}, err
+			return lir.Datum{}, err
 		}
 		if !ok {
-			return qir.NullDatum(), nil
+			return lir.NullDatum(), nil
 		}
 		return frameToObject(pp.Out, f), nil
 
-	case qir.CardExactlyOne:
+	case lir.CardExactlyOne:
 		f, ok, err := op.Next(ctx)
 		if err != nil {
-			return qir.Datum{}, err
+			return lir.Datum{}, err
 		}
 		if !ok {
-			return qir.Datum{}, fmt.Errorf("exec: expected exactly one row, got none")
+			return lir.Datum{}, fmt.Errorf("exec: expected exactly one row, got none")
 		}
 		if _, more, err := op.Next(ctx); err != nil {
-			return qir.Datum{}, err
+			return lir.Datum{}, err
 		} else if more {
-			return qir.Datum{}, fmt.Errorf("exec: expected exactly one row, got more")
+			return lir.Datum{}, fmt.Errorf("exec: expected exactly one row, got more")
 		}
 		return frameToObject(pp.Out, f), nil
 
-	case qir.CardScalar:
+	case lir.CardScalar:
 		f, ok, err := op.Next(ctx)
 		if err != nil {
-			return qir.Datum{}, err
+			return lir.Datum{}, err
 		}
 		fld := pp.Out.Fields[0]
 		if !ok {
-			return qir.NullDatum(), nil
+			return lir.NullDatum(), nil
 		}
 		if fld.Type.Kind.Scalar() {
-			return qir.ScalarDatum(f.vals[fld.Slot]), nil
+			return lir.ScalarDatum(f.vals[fld.Slot]), nil
 		}
 		if d, hasNested := f.nested[fld.Slot]; hasNested {
 			return d, nil
 		}
-		return qir.NullDatum(), nil
+		return lir.NullDatum(), nil
 
 	default: // many
 		frames, err := drainOp(ctx, op)
 		if err != nil {
-			return qir.Datum{}, err
+			return lir.Datum{}, err
 		}
-		elems := make([]qir.Datum, len(frames))
+		elems := make([]lir.Datum, len(frames))
 		for i, f := range frames {
 			elems[i] = frameToObject(pp.Out, f)
 		}
-		return qir.ArrayDatum(elems), nil
+		return lir.ArrayDatum(elems), nil
 	}
 }

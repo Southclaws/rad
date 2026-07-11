@@ -345,7 +345,7 @@ func run() error {
 	fmt.Printf("   unlinked %d task_labels, then deleted the label ✓\n", len(tls))
 	_ = bugLabel
 
-	fmt.Println("\ndone — typed app, QIR under the hood, zero SQL.")
+	fmt.Println("\ndone — typed app, LIR under the hood, zero SQL.")
 	return nil
 }
 

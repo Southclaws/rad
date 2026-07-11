@@ -2,7 +2,7 @@
 // to the real documents on the deployed site:
 //
 //   https://www.radengine.dev/schema.rad.json  -> the schema.rad table format
-//   https://www.radengine.dev/schema/qir.json  -> the query IR
+//   https://www.radengine.dev/schema/lir.json  -> the query IR
 //
 // The canonical copies live in the Go module (rad/, protocol/), which is the
 // single source of truth. This runs before the build to refresh the served
@@ -25,8 +25,8 @@ const schemas = [
     dst: join(publicDir, "schema.rad.json"),
   },
   {
-    src: join(repo, "protocol", "qir.schema.json"),
-    dst: join(publicDir, "schema", "qir.json"),
+    src: join(repo, "protocol", "lir.schema.json"),
+    dst: join(publicDir, "schema", "lir.json"),
   },
 ];
 

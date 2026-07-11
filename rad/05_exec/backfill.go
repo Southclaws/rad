@@ -6,7 +6,7 @@ import (
 
 	kv "rad/rad/01_kv"
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 )
 
 // AddIndexWithBackfill registers a new index in the catalog and writes index
@@ -40,7 +40,7 @@ func backfillIndexIn(ctx context.Context, view kv.KV, tbl catalog.Table, idx cat
 	}
 	defer it.Close()
 
-	seen := map[string]qir.Row{}
+	seen := map[string]lir.Row{}
 	for {
 		row, ok, err := it.Next()
 		if err != nil {

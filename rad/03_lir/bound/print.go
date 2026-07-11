@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 )
 
 // Print renders a bound query as a deterministic indented tree, for golden
@@ -127,7 +127,7 @@ func subrel(rel Relation) string {
 	return strings.TrimRight(b.String(), "\n") + "\n    "
 }
 
-func rowType(rt qir.RowType) string {
+func rowType(rt lir.RowType) string {
 	parts := make([]string, len(rt.Fields))
 	for i, f := range rt.Fields {
 		parts[i] = fmt.Sprintf("%s#%d:%s", f.Name, f.Slot, f.Type)

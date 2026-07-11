@@ -10,8 +10,8 @@ package exec
 import (
 	"context"
 
-	qir "rad/rad/03_qir"
-	"rad/rad/03_qir/bound"
+	lir "rad/rad/03_lir"
+	"rad/rad/03_lir/bound"
 )
 
 // Frame is one execution row: scalar slot values (the expression
@@ -20,7 +20,7 @@ import (
 // only rendering consumes them.
 type Frame struct {
 	vals   bound.Env
-	nested map[qir.SlotID]qir.Datum
+	nested map[lir.SlotID]lir.Datum
 }
 
 // newFrame starts a frame from the outer environment — correlated
@@ -33,9 +33,9 @@ func newFrame(outer bound.Env) Frame {
 	return Frame{vals: vals}
 }
 
-func (f Frame) setNested(slot qir.SlotID, d qir.Datum) Frame {
+func (f Frame) setNested(slot lir.SlotID, d lir.Datum) Frame {
 	if f.nested == nil {
-		f.nested = map[qir.SlotID]qir.Datum{}
+		f.nested = map[lir.SlotID]lir.Datum{}
 	}
 	f.nested[slot] = d
 	return f
@@ -50,20 +50,20 @@ type Operator interface {
 
 // frameToObject renders a frame as an object datum in the row type's field
 // order: scalar fields from values, nested fields from materialised datums.
-func frameToObject(out qir.RowType, f Frame) qir.Datum {
-	fields := make([]qir.ObjectField, len(out.Fields))
+func frameToObject(out lir.RowType, f Frame) lir.Datum {
+	fields := make([]lir.ObjectField, len(out.Fields))
 	for i, fld := range out.Fields {
-		var d qir.Datum
+		var d lir.Datum
 		if fld.Type.Kind.Scalar() {
-			d = qir.ScalarDatum(f.vals[fld.Slot])
+			d = lir.ScalarDatum(f.vals[fld.Slot])
 		} else if n, ok := f.nested[fld.Slot]; ok {
 			d = n
 		} else {
-			d = qir.NullDatum()
+			d = lir.NullDatum()
 		}
-		fields[i] = qir.ObjectField{Name: fld.Name, Datum: d}
+		fields[i] = lir.ObjectField{Name: fld.Name, Datum: d}
 	}
-	return qir.ObjectDatum(fields)
+	return lir.ObjectDatum(fields)
 }
 
 // drainOp pulls every remaining frame. The caller owns Close.

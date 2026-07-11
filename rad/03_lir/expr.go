@@ -1,4 +1,4 @@
-package qir
+package lir
 
 // Unbound expressions: names and raw literals, exactly as a frontend
 // produces them. The binder resolves columns to slots, coerces literals

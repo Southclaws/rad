@@ -25,7 +25,7 @@ import db from "./generated"
 Typed application code
       │
       ▼
-Generated QIR
+Generated LIR
       │
       ▼
 Planner
@@ -44,7 +44,7 @@ Nested JSON
 - Declarative schema
 - Schema reconciliation/migration engine
 - Generated ORM client
-- QIR execution pipeline
+- LIR execution pipeline
 - JSON API
 
 ## Storage
@@ -89,7 +89,7 @@ transactions.
 
 Ignore: lazy loading, identity maps, change tracking, magic.
 
-## Query Interface (QIR)
+## Query Interface (LIR)
 
 Reads: `get`, `read`, `list`.
 Commands: `add`, `change`, `remove`.
@@ -124,7 +124,7 @@ parallel execution.
 ## SQL
 
 Tiny SQLite-ish subset (`SELECT FROM WHERE ORDER BY LIMIT JOIN`), compiled
-only to QIR. No SQL endpoint required for v0.
+only to LIR. No SQL endpoint required for v0.
 
 Ignore: SQL compatibility, DDL, window functions, recursive CTEs, vendor
 syntax.
@@ -137,7 +137,7 @@ JSON only. Requests: Query, Command, Transaction. Responses: Object, Array.
 
 ✅ Define schema → ✅ Start DB → ✅ Generate ORM → ✅ Write app →
 ✅ Run migrations → ✅ Regenerate ORM → ✅ App still compiles →
-✅ Execute QIR → ✅ Receive nested JSON → ✅ Never manually write SQL
+✅ Execute LIR → ✅ Receive nested JSON → ✅ Never manually write SQL
 
 ## Ignore Completely
 

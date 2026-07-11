@@ -6,17 +6,17 @@ import (
 	"testing"
 
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 )
 
 func TestTupleRoundTrip(t *testing.T) {
-	tuples := [][]qir.Value{
-		{qir.Int64(0)},
-		{qir.Int64(-9223372036854775808), qir.Int64(9223372036854775807)},
-		{qir.Float64(-1.5), qir.Float64(0), qir.Float64(3.14159)},
-		{qir.Text(""), qir.Text("hello"), qir.Text("a\x00b\x00\x00c")},
-		{qir.Null(catalog.TypeText)},
-		{qir.Int64(42), qir.Text("x"), qir.Float64(2.5), {Null: true}},
+	tuples := [][]lir.Value{
+		{lir.Int64(0)},
+		{lir.Int64(-9223372036854775808), lir.Int64(9223372036854775807)},
+		{lir.Float64(-1.5), lir.Float64(0), lir.Float64(3.14159)},
+		{lir.Text(""), lir.Text("hello"), lir.Text("a\x00b\x00\x00c")},
+		{lir.Null(catalog.TypeText)},
+		{lir.Int64(42), lir.Text("x"), lir.Float64(2.5), {Null: true}},
 	}
 	for _, tup := range tuples {
 		enc, err := EncodeTuple(tup)
@@ -45,13 +45,13 @@ func TestTupleRoundTrip(t *testing.T) {
 }
 
 func TestTupleOrdering(t *testing.T) {
-	tuples := [][]qir.Value{
-		{qir.Null(catalog.TypeInt64), qir.Text("z")},
-		{qir.Int64(1), qir.Text("a")},
-		{qir.Int64(1), qir.Text("b")},
-		{qir.Int64(2), qir.Text("a")},
-		{qir.Int64(10), qir.Text("a")},
-		{qir.Text("x"), qir.Int64(5)},
+	tuples := [][]lir.Value{
+		{lir.Null(catalog.TypeInt64), lir.Text("z")},
+		{lir.Int64(1), lir.Text("a")},
+		{lir.Int64(1), lir.Text("b")},
+		{lir.Int64(2), lir.Text("a")},
+		{lir.Int64(10), lir.Text("a")},
+		{lir.Text("x"), lir.Int64(5)},
 	}
 	enc := make([][]byte, len(tuples))
 	for i, tup := range tuples {
@@ -68,8 +68,8 @@ func TestTupleOrdering(t *testing.T) {
 
 func TestEncodeRejectsNaN(t *testing.T) {
 	zero := 0.0
-	nan := qir.Value{Type: catalog.TypeFloat64, Float64: zero / zero}
-	if _, err := EncodeTuple([]qir.Value{nan}); err == nil {
+	nan := lir.Value{Type: catalog.TypeFloat64, Float64: zero / zero}
+	if _, err := EncodeTuple([]lir.Value{nan}); err == nil {
 		t.Error("expected error encoding NaN")
 	}
 }

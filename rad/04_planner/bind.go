@@ -1,6 +1,6 @@
 package planner
 
-// The binder is the engine's front door: it resolves an unbound qir.Query —
+// The binder is the engine's front door: it resolves an unbound lir.Query —
 // table, column, and scope names plus raw literals, exactly as a frontend
 // produced it — into bound IR the planner and executor trust completely.
 // One recursive walk performs scope resolution, name/ID binding, slot
@@ -18,8 +18,8 @@ import (
 	"slices"
 
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
-	"rad/rad/03_qir/bound"
+	lir "rad/rad/03_lir"
+	"rad/rad/03_lir/bound"
 )
 
 // Catalog is what binding needs from the schema. Callers choose the read
@@ -32,9 +32,9 @@ type Catalog interface {
 // Bind resolves q against the catalog. Every error is client-caused and
 // carries the "planner:" prefix the server maps to an invalid-request
 // problem.
-func Bind(ctx context.Context, cat Catalog, q qir.Query) (*bound.Query, error) {
+func Bind(ctx context.Context, cat Catalog, q lir.Query) (*bound.Query, error) {
 	switch q.Card {
-	case qir.CardMany, qir.CardFirst, qir.CardExactlyOne, qir.CardScalar:
+	case lir.CardMany, lir.CardFirst, lir.CardExactlyOne, lir.CardScalar:
 	default:
 		return nil, fmt.Errorf("planner: unknown root cardinality %q", q.Card)
 	}
@@ -45,12 +45,12 @@ func Bind(ctx context.Context, cat Catalog, q qir.Query) (*bound.Query, error) {
 		return nil, err
 	}
 
-	if q.Card == qir.CardScalar && len(root.Output().Fields) != 1 {
+	if q.Card == lir.CardScalar && len(root.Output().Fields) != 1 {
 		return nil, fmt.Errorf("planner: a scalar query needs a single-column root, got %d columns", len(root.Output().Fields))
 	}
 	// first is deliberate row selection, same determinism rule as the First
 	// crossing: at most one row statically, or an explicit logical order.
-	if (q.Card == qir.CardFirst || q.Card == qir.CardScalar) &&
+	if (q.Card == lir.CardFirst || q.Card == lir.CardScalar) &&
 		!root.Card().AtMostOne() && !bound.Ordered(root) {
 		return nil, fmt.Errorf("planner: root cardinality %q over an unordered multi-row relation would make results depend on the access path — add an order or make the relation at-most-one", q.Card)
 	}
@@ -63,7 +63,7 @@ func Bind(ctx context.Context, cat Catalog, q qir.Query) (*bound.Query, error) {
 type binder struct {
 	ctx      context.Context
 	cat      Catalog
-	nextSlot qir.SlotID
+	nextSlot lir.SlotID
 	scopes   []scopeEntry    // innermost last
 	labels   map[string]bool // every label bound anywhere (query-wide uniqueness)
 }
@@ -73,12 +73,12 @@ type scopeEntry struct {
 	rel   bound.Relation
 }
 
-func (b *binder) bindRel(r qir.Relation) (bound.Relation, error) {
+func (b *binder) bindRel(r lir.Relation) (bound.Relation, error) {
 	switch n := r.(type) {
-	case qir.Scan:
+	case lir.Scan:
 		return b.bindScan(n)
 
-	case qir.Filter:
+	case lir.Filter:
 		in, err := b.bindRel(n.Input)
 		if err != nil {
 			return nil, err
@@ -87,23 +87,23 @@ func (b *binder) bindRel(r qir.Relation) (bound.Relation, error) {
 		if err != nil {
 			return nil, err
 		}
-		if pred.Type().Kind != qir.KindBool {
+		if pred.Type().Kind != lir.KindBool {
 			return nil, fmt.Errorf("planner: filter predicate must be boolean, got %s", pred.Type())
 		}
 		f := bound.NewFilter(in, pred)
 		b.refineUnique(f)
 		return f, nil
 
-	case qir.Project:
+	case lir.Project:
 		return b.bindProject(n)
 
-	case qir.Join:
+	case lir.Join:
 		return b.bindJoin(n)
 
-	case qir.Aggregate:
+	case lir.Aggregate:
 		return b.bindAggregate(n)
 
-	case qir.Order:
+	case lir.Order:
 		in, err := b.bindRel(n.Input)
 		if err != nil {
 			return nil, err
@@ -124,7 +124,7 @@ func (b *binder) bindRel(r qir.Relation) (bound.Relation, error) {
 		}
 		return bound.NewOrder(in, appendTieBreaker(in, terms)), nil
 
-	case qir.Slice:
+	case lir.Slice:
 		in, err := b.bindRel(n.Input)
 		if err != nil {
 			return nil, err
@@ -144,7 +144,7 @@ func (b *binder) bindRel(r qir.Relation) (bound.Relation, error) {
 	}
 }
 
-func (b *binder) bindScan(n qir.Scan) (*bound.Scan, error) {
+func (b *binder) bindScan(n lir.Scan) (*bound.Scan, error) {
 	if n.Scope == "" {
 		return nil, fmt.Errorf("planner: scan of %q needs a scope label", n.Table)
 	}
@@ -158,7 +158,7 @@ func (b *binder) bindScan(n qir.Scan) (*bound.Scan, error) {
 	if !ok {
 		return nil, fmt.Errorf("planner: unknown table %q", n.Table)
 	}
-	slots := make([]qir.SlotID, len(tbl.Columns))
+	slots := make([]lir.SlotID, len(tbl.Columns))
 	for i := range slots {
 		slots[i] = b.nextSlot
 		b.nextSlot++
@@ -173,7 +173,7 @@ func (b *binder) bindScan(n qir.Scan) (*bound.Scan, error) {
 // being visible above it — the projection's output (optionally labelled) is
 // what later operators address. Spread scopes keep their source slots;
 // computed fields get fresh ones.
-func (b *binder) bindProject(n qir.Project) (*bound.Project, error) {
+func (b *binder) bindProject(n lir.Project) (*bound.Project, error) {
 	mark := len(b.scopes)
 	in, err := b.bindRel(n.Input)
 	if err != nil {
@@ -182,7 +182,7 @@ func (b *binder) bindProject(n qir.Project) (*bound.Project, error) {
 
 	names := map[string]bool{}
 	var fields []bound.ProjField
-	addField := func(name string, slot qir.SlotID, e bound.Expr) error {
+	addField := func(name string, slot lir.SlotID, e bound.Expr) error {
 		if name == "" {
 			return fmt.Errorf("planner: projection field needs a name (as)")
 		}
@@ -231,9 +231,9 @@ func (b *binder) bindProject(n qir.Project) (*bound.Project, error) {
 	return p, nil
 }
 
-func (b *binder) bindJoin(n qir.Join) (*bound.Join, error) {
+func (b *binder) bindJoin(n lir.Join) (*bound.Join, error) {
 	switch n.Kind {
-	case qir.InnerJoin, qir.LeftJoin:
+	case lir.InnerJoin, lir.LeftJoin:
 	default:
 		return nil, fmt.Errorf("planner: unsupported join kind %q", n.Kind)
 	}
@@ -261,7 +261,7 @@ func (b *binder) bindJoin(n qir.Join) (*bound.Join, error) {
 	if err != nil {
 		return nil, err
 	}
-	if on.Type().Kind != qir.KindBool {
+	if on.Type().Kind != lir.KindBool {
 		return nil, fmt.Errorf("planner: join condition must be boolean, got %s", on.Type())
 	}
 	return bound.NewJoin(l, r, n.Kind, on), nil
@@ -271,7 +271,7 @@ func (b *binder) bindJoin(n qir.Join) (*bound.Join, error) {
 // are addressable — the input's scopes close here, which is what makes
 // "columns above an aggregate resolve only to groups/terms" structural
 // rather than a rule.
-func (b *binder) bindAggregate(n qir.Aggregate) (*bound.Aggregate, error) {
+func (b *binder) bindAggregate(n lir.Aggregate) (*bound.Aggregate, error) {
 	mark := len(b.scopes)
 	in, err := b.bindRel(n.Input)
 	if err != nil {
@@ -298,7 +298,7 @@ func (b *binder) bindAggregate(n qir.Aggregate) (*bound.Aggregate, error) {
 		}
 		name := g.As
 		if name == "" {
-			col, ok := g.Expr.(qir.Column)
+			col, ok := g.Expr.(lir.Column)
 			if !ok {
 				return nil, fmt.Errorf("planner: group expression needs an output name (as)")
 			}
@@ -325,18 +325,18 @@ func (b *binder) bindAggregate(n qir.Aggregate) (*bound.Aggregate, error) {
 			}
 		}
 		switch t.Fn {
-		case qir.AggCount:
+		case lir.AggCount:
 			if arg != nil && !arg.Type().Kind.Scalar() {
 				return nil, fmt.Errorf("planner: count needs a scalar argument, got %s", arg.Type().Kind)
 			}
-		case qir.AggSum, qir.AggAvg:
+		case lir.AggSum, lir.AggAvg:
 			if arg == nil {
 				return nil, fmt.Errorf("planner: %s needs an argument", t.Fn)
 			}
 			if !arg.Type().Kind.Numeric() {
 				return nil, fmt.Errorf("planner: %s requires a numeric argument, got %s", t.Fn, arg.Type())
 			}
-		case qir.AggMin, qir.AggMax:
+		case lir.AggMin, lir.AggMax:
 			if arg == nil {
 				return nil, fmt.Errorf("planner: %s needs an argument", t.Fn)
 			}
@@ -381,7 +381,7 @@ func (b *binder) findScope(label string, from int) (scopeEntry, bool) {
 // slotFor reuses a bare slot reference's slot — a renamed or spread column is
 // the same attribute, not a copy — and allocates a fresh slot for anything
 // computed.
-func (b *binder) slotFor(e bound.Expr) qir.SlotID {
+func (b *binder) slotFor(e bound.Expr) lir.SlotID {
 	if ref, ok := e.(bound.SlotRef); ok {
 		return ref.Slot
 	}
@@ -404,7 +404,7 @@ func (b *binder) refineUnique(f *bound.Filter) {
 	if scan == nil {
 		return
 	}
-	slotToCol := map[qir.SlotID]string{}
+	slotToCol := map[lir.SlotID]string{}
 	for _, fld := range scan.Output().Fields {
 		slotToCol[fld.Slot] = fld.Name
 	}
@@ -414,7 +414,7 @@ func (b *binder) refineUnique(f *bound.Filter) {
 	collect := func(pred bound.Expr) {
 		for _, c := range conjuncts(pred) {
 			bin, ok := c.(bound.Binary)
-			if !ok || bin.Op != qir.OpEq {
+			if !ok || bin.Op != lir.OpEq {
 				continue
 			}
 			for _, side := range [2][2]bound.Expr{{bin.L, bin.R}, {bin.R, bin.L}} {
@@ -459,12 +459,12 @@ func (b *binder) refineUnique(f *bound.Filter) {
 		return true
 	}
 	if covers(scan.Table.PrimaryKey) {
-		f.RefineCard(qir.Cardinality{Min: 0, Max: 1})
+		f.RefineCard(lir.Cardinality{Min: 0, Max: 1})
 		return
 	}
 	for _, idx := range scan.Table.Indexes {
 		if idx.Unique && covers(idx.Columns) {
-			f.RefineCard(qir.Cardinality{Min: 0, Max: 1})
+			f.RefineCard(lir.Cardinality{Min: 0, Max: 1})
 			return
 		}
 	}
@@ -490,7 +490,7 @@ func underlyingScan(rel bound.Relation) *bound.Scan {
 
 // conjuncts flattens a predicate's top-level AND tree.
 func conjuncts(e bound.Expr) []bound.Expr {
-	if bin, ok := e.(bound.Binary); ok && bin.Op == qir.OpAnd {
+	if bin, ok := e.(bound.Binary); ok && bin.Op == lir.OpAnd {
 		return append(conjuncts(bin.L), conjuncts(bin.R)...)
 	}
 	return []bound.Expr{e}
@@ -511,7 +511,7 @@ func appendTieBreaker(in bound.Relation, terms []bound.OrderTerm) []bound.OrderT
 	if key == nil {
 		return terms
 	}
-	referenced := map[qir.SlotID]bool{}
+	referenced := map[lir.SlotID]bool{}
 	for _, t := range terms {
 		if ref, ok := t.Expr.(bound.SlotRef); ok {
 			referenced[ref.Slot] = true
@@ -531,10 +531,10 @@ func appendTieBreaker(in bound.Relation, terms []bound.OrderTerm) []bound.OrderT
 // scan's primary key seen through order-preserving operators (and through
 // projections that keep every key slot), or a grouped aggregate's group
 // attributes. A global fold has one row — no ties to break.
-func uniqueKeyFields(rel bound.Relation) []qir.Field {
+func uniqueKeyFields(rel bound.Relation) []lir.Field {
 	switch n := rel.(type) {
 	case *bound.Scan:
-		key := make([]qir.Field, 0, len(n.Table.PrimaryKey))
+		key := make([]lir.Field, 0, len(n.Table.PrimaryKey))
 		for _, col := range n.Table.PrimaryKey {
 			f, ok := n.Output().Lookup(col)
 			if !ok {
@@ -564,7 +564,7 @@ func uniqueKeyFields(rel bound.Relation) []qir.Field {
 		if len(n.Groups) == 0 {
 			return nil
 		}
-		key := make([]qir.Field, 0, len(n.Groups))
+		key := make([]lir.Field, 0, len(n.Groups))
 		out := n.Output()
 		for _, g := range n.Groups {
 			f, ok := out.Lookup(g.Name)
@@ -581,7 +581,7 @@ func uniqueKeyFields(rel bound.Relation) []qir.Field {
 // slotDesc names a slot for error messages by searching rel's subtree —
 // scans give the qualified spelling, other outputs just the field name.
 // Empty means the slot was not found.
-func slotDesc(rel bound.Relation, slot qir.SlotID) string {
+func slotDesc(rel bound.Relation, slot lir.SlotID) string {
 	if sc, ok := rel.(*bound.Scan); ok {
 		for _, f := range sc.Output().Fields {
 			if f.Slot == slot {

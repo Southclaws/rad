@@ -2,7 +2,7 @@ package protocol
 
 // The wire types, HTTP client, and HTTP server for the Rad protocol are
 // generated from openapi.yaml by ogen into the ./oas subpackage. The Query IR
-// schemas live in qir.schema.json and are pulled in by reference; ogen.yaml
+// schemas live in lir.schema.json and are pulled in by reference; ogen.yaml
 // enables that resolution. Regenerate with `go generate ./protocol` after
 // editing either the contract or the IR schema.
 //

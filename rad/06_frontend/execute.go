@@ -1,6 +1,6 @@
 package frontend
 
-// The relation-graph read surface: Execute takes an unbound qir.Query — the
+// The relation-graph read surface: Execute takes an unbound lir.Query — the
 // form every frontend (the wire, future SQL/GraphQL) lowers into — and
 // returns the typed result value tree. DatumJSON renders that tree as plain
 // JSON-ready Go values: the database's result shape is nested, never a
@@ -11,21 +11,21 @@ import (
 	"encoding/json"
 
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 )
 
 // Execute runs a query against committed state.
-func (db *DB) Execute(ctx context.Context, q qir.Query) (qir.Datum, error) {
+func (db *DB) Execute(ctx context.Context, q lir.Query) (lir.Datum, error) {
 	return db.eng.Execute(ctx, q)
 }
 
 // Execute inside a transaction sees its snapshot plus its own writes.
-func (tx *Tx) Execute(ctx context.Context, q qir.Query) (qir.Datum, error) {
+func (tx *Tx) Execute(ctx context.Context, q lir.Query) (lir.Datum, error) {
 	return tx.tx.Execute(ctx, q)
 }
 
 // ExecuteJSON runs a query and renders the result.
-func (db *DB) ExecuteJSON(ctx context.Context, q qir.Query) (any, error) {
+func (db *DB) ExecuteJSON(ctx context.Context, q lir.Query) (any, error) {
 	d, err := db.Execute(ctx, q)
 	if err != nil {
 		return nil, err
@@ -37,17 +37,17 @@ func (db *DB) ExecuteJSON(ctx context.Context, q qir.Query) (any, error) {
 // maps (an absent to-one relation is a PRESENT key with a nil value),
 // arrays become slices (empty, never nil), scalars become native Go values,
 // NULL becomes nil.
-func DatumJSON(d qir.Datum) any {
+func DatumJSON(d lir.Datum) any {
 	switch d.Kind {
-	case qir.DatumScalar:
+	case lir.DatumScalar:
 		return plainScalar(d.Scalar)
-	case qir.DatumObject:
+	case lir.DatumObject:
 		m := make(map[string]any, len(d.Fields))
 		for _, f := range d.Fields {
 			m[f.Name] = DatumJSON(f.Datum)
 		}
 		return m
-	case qir.DatumArray:
+	case lir.DatumArray:
 		out := make([]any, len(d.Elems))
 		for i, e := range d.Elems {
 			out[i] = DatumJSON(e)
@@ -60,7 +60,7 @@ func DatumJSON(d qir.Datum) any {
 
 // RowJSON renders one stored row as a JSON-ready map — the shape mutation
 // responses carry.
-func RowJSON(row qir.Row) map[string]any {
+func RowJSON(row lir.Row) map[string]any {
 	m := make(map[string]any, len(row))
 	for name, v := range row {
 		m[name] = plainScalar(v)
@@ -70,11 +70,11 @@ func RowJSON(row qir.Row) map[string]any {
 
 // MarshalDatum renders a result as indented JSON with deterministic key
 // order.
-func MarshalDatum(d qir.Datum) ([]byte, error) {
+func MarshalDatum(d lir.Datum) ([]byte, error) {
 	return json.MarshalIndent(DatumJSON(d), "", "  ")
 }
 
-func plainScalar(v qir.Value) any {
+func plainScalar(v lir.Value) any {
 	if v.Null {
 		return nil
 	}

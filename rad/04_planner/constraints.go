@@ -14,22 +14,22 @@ package planner
 // contribute nothing to access paths by design.
 
 import (
-	qir "rad/rad/03_qir"
-	"rad/rad/03_qir/bound"
+	lir "rad/rad/03_lir"
+	"rad/rad/03_lir/bound"
 )
 
 // ConstVal is an equality's right-hand side that is fixed per evaluation of
 // the relation: a literal, or an outer slot (a correlation key, whose value
 // arrives when the enclosing row is known).
 type ConstVal struct {
-	Lit   *qir.Value
-	Outer *qir.SlotID
+	Lit   *lir.Value
+	Outer *lir.SlotID
 }
 
 // RangeBound is one end of a column range. Only literal bounds drive access
 // paths this arc.
 type RangeBound struct {
-	V         qir.Value
+	V         lir.Value
 	Inclusive bool
 }
 
@@ -54,7 +54,7 @@ func ExtractConstraints(rel bound.Relation) *ScanConstraints {
 	if scan == nil {
 		return nil
 	}
-	slotToCol := map[qir.SlotID]string{}
+	slotToCol := map[lir.SlotID]string{}
 	for _, f := range scan.Output().Fields {
 		slotToCol[f.Slot] = f.Name
 	}
@@ -68,7 +68,7 @@ func ExtractConstraints(rel bound.Relation) *ScanConstraints {
 			return
 		}
 		switch bin.Op {
-		case qir.OpEq:
+		case lir.OpEq:
 			for _, side := range [2][2]bound.Expr{{bin.L, bin.R}, {bin.R, bin.L}} {
 				ref, ok := side[0].(bound.SlotRef)
 				if !ok {
@@ -95,7 +95,7 @@ func ExtractConstraints(rel bound.Relation) *ScanConstraints {
 				d.Eq, d.Lo, d.Hi = &cv, nil, nil
 				cols[col] = d
 			}
-		case qir.OpLt, qir.OpLte, qir.OpGt, qir.OpGte:
+		case lir.OpLt, lir.OpLte, lir.OpGt, lir.OpGte:
 			// col OP lit, or lit OP col with the comparison flipped.
 			if ref, ok := bin.L.(bound.SlotRef); ok {
 				if lit, isLit := bin.R.(bound.Literal); isLit && !lit.V.Null {
@@ -157,7 +157,7 @@ func sameConst(a, b ConstVal) bool {
 	return false
 }
 
-func addRange(cols map[string]Domain, poisoned map[string]bool, slotToCol map[qir.SlotID]string, ref bound.SlotRef, op qir.BinaryOp, v qir.Value) {
+func addRange(cols map[string]Domain, poisoned map[string]bool, slotToCol map[lir.SlotID]string, ref bound.SlotRef, op lir.BinaryOp, v lir.Value) {
 	col, ours := slotToCol[ref.Slot]
 	if !ours || poisoned[col] {
 		return
@@ -166,13 +166,13 @@ func addRange(cols map[string]Domain, poisoned map[string]bool, slotToCol map[qi
 	if d.Eq != nil {
 		return // an equality already pins the column exactly
 	}
-	b := RangeBound{V: v, Inclusive: op == qir.OpLte || op == qir.OpGte}
+	b := RangeBound{V: v, Inclusive: op == lir.OpLte || op == lir.OpGte}
 	switch op {
-	case qir.OpGt, qir.OpGte:
+	case lir.OpGt, lir.OpGte:
 		if d.Lo == nil || tighterLo(b, *d.Lo) {
 			d.Lo = &b
 		}
-	case qir.OpLt, qir.OpLte:
+	case lir.OpLt, lir.OpLte:
 		if d.Hi == nil || tighterHi(b, *d.Hi) {
 			d.Hi = &b
 		}
@@ -182,16 +182,16 @@ func addRange(cols map[string]Domain, poisoned map[string]bool, slotToCol map[qi
 
 // flip mirrors a comparison when the literal was on the left: 3 < col means
 // col > 3.
-func flip(op qir.BinaryOp) qir.BinaryOp {
+func flip(op lir.BinaryOp) lir.BinaryOp {
 	switch op {
-	case qir.OpLt:
-		return qir.OpGt
-	case qir.OpLte:
-		return qir.OpGte
-	case qir.OpGt:
-		return qir.OpLt
+	case lir.OpLt:
+		return lir.OpGt
+	case lir.OpLte:
+		return lir.OpGte
+	case lir.OpGt:
+		return lir.OpLt
 	default:
-		return qir.OpLte
+		return lir.OpLte
 	}
 }
 

@@ -132,7 +132,7 @@ func NewProblem(code string, status int, detail string) Problem {
 // selector. Relations are values — operators consume relations and produce
 // relations — and relationships are ordinary correlated relations
 // materialised into output shapes by cardinality crossings. The schema is
-// qir.schema.json; the semantics are docs/design/qir-v2.md.
+// lir.schema.json; the semantics are docs/design/lir-v2.md.
 type Query struct {
 	Nodes map[string]Node `json:"nodes"`
 	Root  Root            `json:"root"`

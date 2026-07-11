@@ -9,13 +9,13 @@ import (
 	"strings"
 	"testing"
 
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 	planner "rad/rad/04_planner"
 )
 
-func planOf(t *testing.T, root qir.Relation) string {
+func planOf(t *testing.T, root lir.Relation) string {
 	t.Helper()
-	q := bind(t, qir.Query{Card: qir.CardMany, Root: root})
+	q := bind(t, lir.Query{Card: lir.CardMany, Root: root})
 	return planner.PrintPlan(planner.PlanQuery(q))
 }
 
@@ -59,7 +59,7 @@ func TestPlanIndexPrefixSelection(t *testing.T) {
 func TestPlanEqPlusRange(t *testing.T) {
 	got := planOf(t, bfilter(bscan("tasks", "t"),
 		band(beq(bcol("t", "board_id"), blit("b1")),
-			qir.Binary{Op: qir.OpGte, L: bcol("t", "status"), R: blit("m")})))
+			lir.Binary{Op: lir.OpGte, L: bcol("t", "status"), R: blit("m")})))
 	wantPlan(t, got, `Plan card=many
   Filter and(eq(t.board_id#1, "b1"), gte(t.status#3, "m"))
     IndexRangeScan tasks tasks_board_status_idx [board_id = "b1", status >= "m"]
@@ -69,7 +69,7 @@ func TestPlanEqPlusRange(t *testing.T) {
 // A range on an index's first column is usable with no equalities at all.
 func TestPlanRangeOnly(t *testing.T) {
 	got := planOf(t, bfilter(bscan("tasks", "t"),
-		qir.Binary{Op: qir.OpLt, L: bcol("t", "board_id"), R: blit("m")}))
+		lir.Binary{Op: lir.OpLt, L: bcol("t", "board_id"), R: blit("m")}))
 	wantPlan(t, got, `Plan card=many
   Filter lt(t.board_id#1, "m")
     IndexRangeScan tasks tasks_board_status_idx [board_id < "m"]
@@ -82,26 +82,26 @@ func TestPlanRangeOnly(t *testing.T) {
 // exactly. Descending never pushes down (the KV has no reverse scan), and a
 // table scan already provides pk order.
 func TestPlanOrderedIndexPushdown(t *testing.T) {
-	got := planOf(t, qir.Order{
+	got := planOf(t, lir.Order{
 		Input: bscan("users", "u"),
-		Terms: []qir.OrderTerm{{Expr: bcol("u", "name")}},
+		Terms: []lir.OrderTerm{{Expr: bcol("u", "name")}},
 	})
 	wantPlan(t, got, `Plan card=many
   IndexRangeScan users users_name_uq
 `)
 
-	got = planOf(t, qir.Order{
+	got = planOf(t, lir.Order{
 		Input: bscan("users", "u"),
-		Terms: []qir.OrderTerm{{Expr: bcol("u", "name"), Desc: true}},
+		Terms: []lir.OrderTerm{{Expr: bcol("u", "name"), Desc: true}},
 	})
 	wantPlan(t, got, `Plan card=many
   Sort u.name#1 desc, id#0 asc
     TableScan users
 `)
 
-	got = planOf(t, qir.Order{
+	got = planOf(t, lir.Order{
 		Input: bscan("tasks", "t"),
-		Terms: []qir.OrderTerm{{Expr: bcol("t", "id")}},
+		Terms: []lir.OrderTerm{{Expr: bcol("t", "id")}},
 	})
 	wantPlan(t, got, `Plan card=many
   TableScan tasks
@@ -112,10 +112,10 @@ func TestPlanOrderedIndexPushdown(t *testing.T) {
 // the pipeline lazy end to end when the index provides the order, so the
 // slice stops the scan early.
 func TestPlanStopEarlyShape(t *testing.T) {
-	got := planOf(t, qir.Slice{
-		Input: qir.Order{
+	got := planOf(t, lir.Slice{
+		Input: lir.Order{
 			Input: bfilter(bscan("tasks", "t"), beq(bcol("t", "board_id"), blit("b1"))),
-			Terms: []qir.OrderTerm{{Expr: bcol("t", "status")}},
+			Terms: []lir.OrderTerm{{Expr: bcol("t", "status")}},
 		},
 		Limit: new(int(10)),
 	})

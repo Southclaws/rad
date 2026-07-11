@@ -6,13 +6,13 @@ import (
 	"strconv"
 
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
-	"rad/rad/03_qir/bound"
+	lir "rad/rad/03_lir"
+	"rad/rad/03_lir/bound"
 )
 
-func (b *binder) bindExpr(e qir.Expr) (bound.Expr, error) {
+func (b *binder) bindExpr(e lir.Expr) (bound.Expr, error) {
 	switch x := e.(type) {
-	case qir.Literal:
+	case lir.Literal:
 		// A literal with no column context types itself from its raw form.
 		v, err := inferLiteral(x.Raw)
 		if err != nil {
@@ -20,24 +20,24 @@ func (b *binder) bindExpr(e qir.Expr) (bound.Expr, error) {
 		}
 		return bound.Literal{V: v}, nil
 
-	case qir.Column:
+	case lir.Column:
 		return b.resolveColumn(x)
 
-	case qir.Unary:
+	case lir.Unary:
 		sub, err := b.bindExpr(x.X)
 		if err != nil {
 			return nil, err
 		}
 		switch x.Op {
-		case qir.OpNot:
-			if sub.Type().Kind != qir.KindBool {
+		case lir.OpNot:
+			if sub.Type().Kind != lir.KindBool {
 				return nil, fmt.Errorf("planner: not needs a boolean, got %s", sub.Type())
 			}
-		case qir.OpNegate:
+		case lir.OpNegate:
 			if !sub.Type().Kind.Numeric() {
 				return nil, fmt.Errorf("planner: cannot negate %s", sub.Type())
 			}
-		case qir.OpIsNull, qir.OpIsNotNull:
+		case lir.OpIsNull, lir.OpIsNotNull:
 			if !sub.Type().Kind.Scalar() {
 				return nil, fmt.Errorf("planner: %s needs a scalar value, got %s", x.Op, sub.Type().Kind)
 			}
@@ -46,14 +46,14 @@ func (b *binder) bindExpr(e qir.Expr) (bound.Expr, error) {
 		}
 		return bound.NewUnary(x.Op, sub), nil
 
-	case qir.Binary:
+	case lir.Binary:
 		return b.bindBinary(x)
 
-	case qir.Call:
+	case lir.Call:
 		// The function registry is empty this arc.
 		return nil, fmt.Errorf("planner: unknown function %q", x.Fn)
 
-	case qir.Cast:
+	case lir.Cast:
 		sub, err := b.bindExpr(x.X)
 		if err != nil {
 			return nil, err
@@ -63,21 +63,21 @@ func (b *binder) bindExpr(e qir.Expr) (bound.Expr, error) {
 		}
 		from := sub.Type().Kind
 		ok := from == x.To ||
-			(from == qir.KindInt64 && x.To == qir.KindFloat64) ||
-			(from == qir.KindFloat64 && x.To == qir.KindInt64)
+			(from == lir.KindInt64 && x.To == lir.KindFloat64) ||
+			(from == lir.KindFloat64 && x.To == lir.KindInt64)
 		if !ok {
 			return nil, fmt.Errorf("planner: cannot cast %s to %s", from, x.To)
 		}
 		return bound.NewCast(sub, x.To), nil
 
-	case qir.Exists:
+	case lir.Exists:
 		rel, err := b.bindSubRel(x.Rel)
 		if err != nil {
 			return nil, err
 		}
 		return bound.Exists{Rel: rel}, nil
 
-	case qir.First:
+	case lir.First:
 		rel, err := b.bindSubRel(x.Rel)
 		if err != nil {
 			return nil, err
@@ -87,7 +87,7 @@ func (b *binder) bindExpr(e qir.Expr) (bound.Expr, error) {
 		}
 		return bound.NewFirst(rel), nil
 
-	case qir.Scalar:
+	case lir.Scalar:
 		rel, err := b.bindSubRel(x.Rel)
 		if err != nil {
 			return nil, err
@@ -97,7 +97,7 @@ func (b *binder) bindExpr(e qir.Expr) (bound.Expr, error) {
 		}
 		return bound.NewScalar(rel)
 
-	case qir.Array:
+	case lir.Array:
 		rel, err := b.bindSubRel(x.Rel)
 		if err != nil {
 			return nil, err
@@ -114,7 +114,7 @@ func (b *binder) bindExpr(e qir.Expr) (bound.Expr, error) {
 // bindSubRel binds a crossing's relation: the current scope stack stays
 // visible — that is how correlation binds — but scopes bound inside the
 // sub-relation never leak out.
-func (b *binder) bindSubRel(r qir.Relation) (bound.Relation, error) {
+func (b *binder) bindSubRel(r lir.Relation) (bound.Relation, error) {
 	if r == nil {
 		return nil, fmt.Errorf("planner: crossing needs a relation")
 	}
@@ -127,7 +127,7 @@ func (b *binder) bindSubRel(r qir.Relation) (bound.Relation, error) {
 	return rel, nil
 }
 
-func (b *binder) resolveColumn(c qir.Column) (bound.SlotRef, error) {
+func (b *binder) resolveColumn(c lir.Column) (bound.SlotRef, error) {
 	if c.Scope == "" {
 		return bound.SlotRef{}, fmt.Errorf("planner: column %q needs a scope qualifier", c.Name)
 	}
@@ -145,9 +145,9 @@ func (b *binder) resolveColumn(c qir.Column) (bound.SlotRef, error) {
 // bindBinary binds both operands, coercing a raw literal against the other
 // side's type — a JSON number becomes int64 or float64 by the column it
 // meets, never by guessing.
-func (b *binder) bindBinary(x qir.Binary) (bound.Expr, error) {
+func (b *binder) bindBinary(x lir.Binary) (bound.Expr, error) {
 	switch x.Op {
-	case qir.OpAnd, qir.OpOr:
+	case lir.OpAnd, lir.OpOr:
 		l, err := b.bindExpr(x.L)
 		if err != nil {
 			return nil, err
@@ -157,13 +157,13 @@ func (b *binder) bindBinary(x qir.Binary) (bound.Expr, error) {
 			return nil, err
 		}
 		for _, side := range []bound.Expr{l, r} {
-			if side.Type().Kind != qir.KindBool {
+			if side.Type().Kind != lir.KindBool {
 				return nil, fmt.Errorf("planner: %s needs boolean operands, got %s", x.Op, side.Type())
 			}
 		}
 		return bound.NewBinary(x.Op, l, r), nil
 
-	case qir.OpEq, qir.OpNe, qir.OpLt, qir.OpLte, qir.OpGt, qir.OpGte:
+	case lir.OpEq, lir.OpNe, lir.OpLt, lir.OpLte, lir.OpGt, lir.OpGte:
 		l, r, err := b.bindOperands(x.L, x.R)
 		if err != nil {
 			return nil, err
@@ -179,7 +179,7 @@ func (b *binder) bindBinary(x qir.Binary) (bound.Expr, error) {
 		}
 		return bound.NewBinary(x.Op, l, r), nil
 
-	case qir.OpAdd, qir.OpSub, qir.OpMul, qir.OpDiv:
+	case lir.OpAdd, lir.OpSub, lir.OpMul, lir.OpDiv:
 		l, r, err := b.bindOperands(x.L, x.R)
 		if err != nil {
 			return nil, err
@@ -197,9 +197,9 @@ func (b *binder) bindBinary(x qir.Binary) (bound.Expr, error) {
 // bindOperands binds a comparison or arithmetic pair. When exactly one side
 // is a raw literal, the other side binds first and the literal coerces to
 // its type; a NULL literal adopts it.
-func (b *binder) bindOperands(l, r qir.Expr) (bound.Expr, bound.Expr, error) {
-	llit, lIsLit := l.(qir.Literal)
-	rlit, rIsLit := r.(qir.Literal)
+func (b *binder) bindOperands(l, r lir.Expr) (bound.Expr, bound.Expr, error) {
+	llit, lIsLit := l.(lir.Literal)
+	rlit, rIsLit := r.(lir.Literal)
 
 	switch {
 	case lIsLit && !rIsLit:
@@ -236,13 +236,13 @@ func (b *binder) bindOperands(l, r qir.Expr) (bound.Expr, bound.Expr, error) {
 }
 
 // coerceLiteral types a raw wire scalar against a known context type.
-func coerceLiteral(raw any, want qir.Type) (bound.Literal, error) {
+func coerceLiteral(raw any, want lir.Type) (bound.Literal, error) {
 	if !want.Kind.Scalar() {
 		return bound.Literal{}, fmt.Errorf("planner: a literal cannot be a %s", want.Kind)
 	}
 	ct := want.Kind.CatalogType()
 	if raw == nil {
-		return bound.Literal{V: qir.Null(ct)}, nil
+		return bound.Literal{V: lir.Null(ct)}, nil
 	}
 
 	fail := func() (bound.Literal, error) {
@@ -253,12 +253,12 @@ func coerceLiteral(raw any, want qir.Type) (bound.Literal, error) {
 		if ct != catalog.TypeText {
 			return fail()
 		}
-		return bound.Literal{V: qir.Text(v)}, nil
+		return bound.Literal{V: lir.Text(v)}, nil
 	case bool:
 		if ct != catalog.TypeBool {
 			return fail()
 		}
-		return bound.Literal{V: qir.Bool(v)}, nil
+		return bound.Literal{V: lir.Bool(v)}, nil
 	case json.Number:
 		switch ct {
 		case catalog.TypeInt64:
@@ -266,13 +266,13 @@ func coerceLiteral(raw any, want qir.Type) (bound.Literal, error) {
 			if err != nil {
 				return bound.Literal{}, fmt.Errorf("planner: expected an int64 value, got %q", v.String())
 			}
-			return bound.Literal{V: qir.Int64(n)}, nil
+			return bound.Literal{V: lir.Int64(n)}, nil
 		case catalog.TypeFloat64:
 			f, err := v.Float64()
 			if err != nil {
 				return bound.Literal{}, fmt.Errorf("planner: expected a float64 value, got %q", v.String())
 			}
-			return bound.Literal{V: qir.Float64(f)}, nil
+			return bound.Literal{V: lir.Float64(f)}, nil
 		}
 		return fail()
 	case int:
@@ -283,7 +283,7 @@ func coerceLiteral(raw any, want qir.Type) (bound.Literal, error) {
 		if ct != catalog.TypeFloat64 {
 			return fail()
 		}
-		return bound.Literal{V: qir.Float64(v)}, nil
+		return bound.Literal{V: lir.Float64(v)}, nil
 	}
 	return fail()
 }
@@ -291,9 +291,9 @@ func coerceLiteral(raw any, want qir.Type) (bound.Literal, error) {
 func coerceGoInt(v int64, ct catalog.Type) (bound.Literal, error) {
 	switch ct {
 	case catalog.TypeInt64:
-		return bound.Literal{V: qir.Int64(v)}, nil
+		return bound.Literal{V: lir.Int64(v)}, nil
 	case catalog.TypeFloat64:
-		return bound.Literal{V: qir.Float64(float64(v))}, nil
+		return bound.Literal{V: lir.Float64(float64(v))}, nil
 	}
 	return bound.Literal{}, fmt.Errorf("planner: expected a %s value, got integer %d", ct, v)
 }
@@ -301,28 +301,28 @@ func coerceGoInt(v int64, ct catalog.Type) (bound.Literal, error) {
 // inferLiteral types a literal with no column context — a literal compared
 // against another literal, or used arithmetically. Integers stay int64;
 // a bare NULL has no type to adopt and is rejected.
-func inferLiteral(raw any) (qir.Value, error) {
+func inferLiteral(raw any) (lir.Value, error) {
 	switch v := raw.(type) {
 	case nil:
-		return qir.Value{}, fmt.Errorf("planner: a bare NULL literal needs a typed context")
+		return lir.Value{}, fmt.Errorf("planner: a bare NULL literal needs a typed context")
 	case string:
-		return qir.Text(v), nil
+		return lir.Text(v), nil
 	case bool:
-		return qir.Bool(v), nil
+		return lir.Bool(v), nil
 	case int:
-		return qir.Int64(int64(v)), nil
+		return lir.Int64(int64(v)), nil
 	case int64:
-		return qir.Int64(v), nil
+		return lir.Int64(v), nil
 	case float64:
-		return qir.Float64(v), nil
+		return lir.Float64(v), nil
 	case json.Number:
 		if n, err := strconv.ParseInt(v.String(), 10, 64); err == nil {
-			return qir.Int64(n), nil
+			return lir.Int64(n), nil
 		}
 		if f, err := v.Float64(); err == nil {
-			return qir.Float64(f), nil
+			return lir.Float64(f), nil
 		}
-		return qir.Value{}, fmt.Errorf("planner: malformed number %q", v.String())
+		return lir.Value{}, fmt.Errorf("planner: malformed number %q", v.String())
 	}
-	return qir.Value{}, fmt.Errorf("planner: unsupported literal %T", raw)
+	return lir.Value{}, fmt.Errorf("planner: unsupported literal %T", raw)
 }

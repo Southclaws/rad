@@ -11,8 +11,8 @@ package planner
 // picks the cheaper one.
 
 import (
-	qir "rad/rad/03_qir"
-	"rad/rad/03_qir/bound"
+	lir "rad/rad/03_lir"
+	"rad/rad/03_lir/bound"
 )
 
 // CorrKind classifies a relation's correlation.
@@ -38,9 +38,9 @@ func (k CorrKind) String() string {
 // CorrKey is one correlation equation: the scan column (by slot and name)
 // that must equal the outer slot's value.
 type CorrKey struct {
-	InnerSlot qir.SlotID
+	InnerSlot lir.SlotID
 	InnerCol  string
-	OuterSlot qir.SlotID
+	OuterSlot lir.SlotID
 }
 
 // Correlation is the classification result.
@@ -64,7 +64,7 @@ func Classify(rel bound.Relation) Correlation {
 	if scan == nil {
 		return Correlation{Kind: GeneralCorrelated}
 	}
-	slotToCol := map[qir.SlotID]string{}
+	slotToCol := map[lir.SlotID]string{}
 	for _, f := range scan.Output().Fields {
 		slotToCol[f.Slot] = f.Name
 	}
@@ -76,7 +76,7 @@ func Classify(rel bound.Relation) Correlation {
 		case *bound.Filter:
 			for _, c := range conjuncts(n.Pred) {
 				bin, ok := c.(bound.Binary)
-				if !ok || bin.Op != qir.OpEq {
+				if !ok || bin.Op != lir.OpEq {
 					continue
 				}
 				for _, side := range [2][2]bound.Expr{{bin.L, bin.R}, {bin.R, bin.L}} {
@@ -115,7 +115,7 @@ func Classify(rel bound.Relation) Correlation {
 	// Every use of an outer slot must be one of the candidate conjuncts —
 	// count usages everywhere, subtract the candidates', and anything left
 	// means general correlation.
-	usage := map[qir.SlotID]int{}
+	usage := map[lir.SlotID]int{}
 	countFreeUsage(rel, rel.Produced(), usage)
 	for _, k := range candidates {
 		usage[k.OuterSlot]--
@@ -155,7 +155,7 @@ func scanBelow(rel bound.Relation) *bound.Scan {
 // countFreeUsage tallies references to slots outside produced, walking every
 // expression in the relation tree. A conjunct that IS a candidate key
 // equation contributes exactly one outer reference, which Classify subtracts.
-func countFreeUsage(rel bound.Relation, produced bound.SlotSet, usage map[qir.SlotID]int) {
+func countFreeUsage(rel bound.Relation, produced bound.SlotSet, usage map[lir.SlotID]int) {
 	countExpr := func(e bound.Expr) {
 		if e == nil {
 			return

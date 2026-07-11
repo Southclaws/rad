@@ -12,7 +12,7 @@ import (
 	kv "rad/rad/01_kv"
 	"rad/rad/01_kv/kvslate"
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 	exec "rad/rad/05_exec"
 )
 
@@ -61,42 +61,42 @@ func TestRelationalStackOverBothBackends(t *testing.T) {
 			}
 
 			for i := int64(1); i <= 3; i++ {
-				if err := eng.Insert(ctx, "users", qir.Row{"id": qir.Int64(i), "name": qir.Text(fmt.Sprintf("user%d", i))}); err != nil {
+				if err := eng.Insert(ctx, "users", lir.Row{"id": lir.Int64(i), "name": lir.Text(fmt.Sprintf("user%d", i))}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			for i, uid := range []int64{1, 1, 2} {
-				if err := eng.Insert(ctx, "orders", qir.Row{
-					"id": qir.Int64(int64(100 + i)), "user_id": qir.Int64(uid), "total": qir.Float64(float64(i) + 0.5),
+				if err := eng.Insert(ctx, "orders", lir.Row{
+					"id": lir.Int64(int64(100 + i)), "user_id": lir.Int64(uid), "total": lir.Float64(float64(i) + 0.5),
 				}); err != nil {
 					t.Fatal(err)
 				}
 			}
 
 			// Constraints hold on this backend.
-			if err := eng.Insert(ctx, "users", qir.Row{"id": qir.Int64(1), "name": qir.Text("dup")}); err == nil {
+			if err := eng.Insert(ctx, "users", lir.Row{"id": lir.Int64(1), "name": lir.Text("dup")}); err == nil {
 				t.Fatal("expected duplicate pk error")
 			}
-			if err := eng.Insert(ctx, "orders", qir.Row{"id": qir.Int64(999), "user_id": qir.Int64(99)}); err == nil {
+			if err := eng.Insert(ctx, "orders", lir.Row{"id": lir.Int64(999), "user_id": lir.Int64(99)}); err == nil {
 				t.Fatal("expected fk violation")
 			}
 
 			// A join returns each order with its user; the projection is
 			// where the joined row takes its output shape.
-			d, err := eng.Execute(ctx, qir.Query{Card: qir.CardMany, Root: qir.Project{
-				Input: qir.Join{
-					Left:  qir.Scan{Table: "users", Scope: "u"},
-					Right: qir.Scan{Table: "orders", Scope: "o"},
-					Kind:  qir.InnerJoin,
-					On: qir.Binary{Op: qir.OpEq,
-						L: qir.Column{Scope: "u", Name: "id"},
-						R: qir.Column{Scope: "o", Name: "user_id"},
+			d, err := eng.Execute(ctx, lir.Query{Card: lir.CardMany, Root: lir.Project{
+				Input: lir.Join{
+					Left:  lir.Scan{Table: "users", Scope: "u"},
+					Right: lir.Scan{Table: "orders", Scope: "o"},
+					Kind:  lir.InnerJoin,
+					On: lir.Binary{Op: lir.OpEq,
+						L: lir.Column{Scope: "u", Name: "id"},
+						R: lir.Column{Scope: "o", Name: "user_id"},
 					},
 				},
-				Fields: []qir.ProjField{
-					{As: "user_id", Expr: qir.Column{Scope: "u", Name: "id"}},
-					{As: "order_user", Expr: qir.Column{Scope: "o", Name: "user_id"}},
-					{As: "total", Expr: qir.Column{Scope: "o", Name: "total"}},
+				Fields: []lir.ProjField{
+					{As: "user_id", Expr: lir.Column{Scope: "u", Name: "id"}},
+					{As: "order_user", Expr: lir.Column{Scope: "o", Name: "user_id"}},
+					{As: "total", Expr: lir.Column{Scope: "o", Name: "total"}},
 				},
 			}})
 			if err != nil {
@@ -151,10 +151,10 @@ func TestTransactionsOverBothBackends(t *testing.T) {
 			// Atomic multi-table insert: the order's FK check sees the user
 			// inserted earlier in the same transaction.
 			err := eng.Txn(ctx, func(tx *exec.Tx) error {
-				if err := tx.Insert(ctx, "users", qir.Row{"id": qir.Int64(1), "name": qir.Text("Alice")}); err != nil {
+				if err := tx.Insert(ctx, "users", lir.Row{"id": lir.Int64(1), "name": lir.Text("Alice")}); err != nil {
 					return err
 				}
-				return tx.Insert(ctx, "orders", qir.Row{"id": qir.Int64(100), "user_id": qir.Int64(1)})
+				return tx.Insert(ctx, "orders", lir.Row{"id": lir.Int64(100), "user_id": lir.Int64(1)})
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -162,7 +162,7 @@ func TestTransactionsOverBothBackends(t *testing.T) {
 
 			// Rollback on error: neither row survives.
 			err = eng.Txn(ctx, func(tx *exec.Tx) error {
-				if err := tx.Insert(ctx, "users", qir.Row{"id": qir.Int64(2), "name": qir.Text("Bob")}); err != nil {
+				if err := tx.Insert(ctx, "users", lir.Row{"id": lir.Int64(2), "name": lir.Text("Bob")}); err != nil {
 					return err
 				}
 				return fmt.Errorf("application decided to abort")
@@ -170,18 +170,18 @@ func TestTransactionsOverBothBackends(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected fn error to propagate")
 			}
-			if _, ok, _ := eng.GetByPrimaryKey(ctx, "users", qir.Row{"id": qir.Int64(2)}); ok {
+			if _, ok, _ := eng.GetByPrimaryKey(ctx, "users", lir.Row{"id": lir.Int64(2)}); ok {
 				t.Fatal("rolled-back insert visible")
 			}
 
 			// Queries inside a transaction run against its snapshot: a row
 			// committed by another writer after Begin is invisible.
 			err = eng.Txn(ctx, func(tx *exec.Tx) error {
-				if err := eng.Insert(ctx, "users", qir.Row{"id": qir.Int64(3), "name": qir.Text("Carol")}); err != nil {
+				if err := eng.Insert(ctx, "users", lir.Row{"id": lir.Int64(3), "name": lir.Text("Carol")}); err != nil {
 					return err
 				}
-				d, err := tx.Execute(ctx, qir.Query{Card: qir.CardMany,
-					Root: qir.Scan{Table: "users", Scope: "u"}})
+				d, err := tx.Execute(ctx, lir.Query{Card: lir.CardMany,
+					Root: lir.Scan{Table: "users", Scope: "u"}})
 				if err != nil {
 					return err
 				}
@@ -200,19 +200,19 @@ func TestTransactionsOverBothBackends(t *testing.T) {
 			// Racing unique inserts: disjoint write sets, conflict comes
 			// from the tracked unique-check range scan.
 			err = eng.Txn(ctx, func(tx *exec.Tx) error {
-				if err := tx.Insert(ctx, "users", qir.Row{"id": qir.Int64(10), "name": qir.Text("dup")}); err != nil {
+				if err := tx.Insert(ctx, "users", lir.Row{"id": lir.Int64(10), "name": lir.Text("dup")}); err != nil {
 					return err
 				}
-				return eng.Insert(ctx, "users", qir.Row{"id": qir.Int64(11), "name": qir.Text("dup")})
+				return eng.Insert(ctx, "users", lir.Row{"id": lir.Int64(11), "name": lir.Text("dup")})
 			})
 			if !exec.IsConflict(err) {
 				t.Fatalf("expected serializable conflict, got %v", err)
 			}
-			rows, err := eng.ScanIndex(ctx, "users", "users_name_uq", qir.Row{"name": qir.Text("dup")})
+			rows, err := eng.ScanIndex(ctx, "users", "users_name_uq", lir.Row{"name": lir.Text("dup")})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(rows) != 1 || !rows[0]["id"].Equal(qir.Int64(11)) {
+			if len(rows) != 1 || !rows[0]["id"].Equal(lir.Int64(11)) {
 				t.Fatalf("unique index has %v, want just committed id=11", rows)
 			}
 		})

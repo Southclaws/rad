@@ -27,7 +27,7 @@ import (
 	"rad/protocol"
 	"rad/protocol/oas"
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 	frontend "rad/rad/06_frontend"
 )
 
@@ -78,11 +78,11 @@ func (a *dbAPI) httpHandler(notFound http.Handler) (http.Handler, error) {
 
 // view is the shared read/write surface of *frontend.DB and *frontend.Tx.
 type view interface {
-	Create(ctx context.Context, table string, row qir.Row) (qir.Row, error)
-	Update(ctx context.Context, table string, key, set qir.Row) (qir.Row, bool, error)
-	Delete(ctx context.Context, table string, key qir.Row) (bool, error)
-	Get(ctx context.Context, table string, key qir.Row) (qir.Row, bool, error)
-	Execute(ctx context.Context, q qir.Query) (qir.Datum, error)
+	Create(ctx context.Context, table string, row lir.Row) (lir.Row, error)
+	Update(ctx context.Context, table string, key, set lir.Row) (lir.Row, bool, error)
+	Delete(ctx context.Context, table string, key lir.Row) (bool, error)
+	Get(ctx context.Context, table string, key lir.Row) (lir.Row, bool, error)
+	Execute(ctx context.Context, q lir.Query) (lir.Datum, error)
 }
 
 // ── core operations (transport free) ─────────────────────────────────────
@@ -105,21 +105,21 @@ func (a *dbAPI) doQuery(ctx context.Context, v view, wq protocol.Query) ([]proto
 
 // datumRecords renders a result as the wire's record list: an array yields
 // its objects, a single object (a root fold) yields one record.
-func datumRecords(d qir.Datum) []protocol.Record {
-	toRecord := func(el qir.Datum) protocol.Record {
+func datumRecords(d lir.Datum) []protocol.Record {
+	toRecord := func(el lir.Datum) protocol.Record {
 		if m, ok := frontend.DatumJSON(el).(map[string]any); ok {
 			return m
 		}
 		return protocol.Record{}
 	}
 	switch d.Kind {
-	case qir.DatumArray:
+	case lir.DatumArray:
 		out := make([]protocol.Record, len(d.Elems))
 		for i, el := range d.Elems {
 			out[i] = toRecord(el)
 		}
 		return out
-	case qir.DatumNull:
+	case lir.DatumNull:
 		return []protocol.Record{}
 	}
 	return []protocol.Record{toRecord(d)}
@@ -161,7 +161,7 @@ func (a *dbAPI) doUpdate(ctx context.Context, v view, table string, key, set map
 		if !ok {
 			return nil, false, wireErrf("table %q has no column %q", tbl.Name, name)
 		}
-		srow[name] = qir.Null(col.Type)
+		srow[name] = lir.Null(col.Type)
 	}
 	stored, found, err := v.Update(ctx, table, krow, srow)
 	if err != nil {
@@ -573,7 +573,7 @@ func problemErrorHandler(ctx context.Context, w http.ResponseWriter, r *http.Req
 	_ = json.NewEncoder(w).Encode(protocol.NewProblem(protocol.CodeInvalid, status, err.Error()))
 }
 
-func rowJSON(row qir.Row) protocol.Record {
+func rowJSON(row lir.Row) protocol.Record {
 	if row == nil {
 		return nil
 	}

@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 )
 
 // tasksTable is a hand-built catalog table for law tests: no store needed.
@@ -24,7 +24,7 @@ func tasksTable() catalog.Table {
 }
 
 func scanTasks() *Scan {
-	return NewScan(tasksTable(), "t", []qir.SlotID{0, 1, 2, 3, 4})
+	return NewScan(tasksTable(), "t", []lir.SlotID{0, 1, 2, 3, 4})
 }
 
 func slot(s *Scan, name string) SlotRef {
@@ -47,7 +47,7 @@ func TestScanLaws(t *testing.T) {
 	if !s.FreeSlots().Empty() {
 		t.Fatal("scan has free slots")
 	}
-	if s.Card() != (qir.Cardinality{Min: 0, Max: qir.Unbounded}) {
+	if s.Card() != (lir.Cardinality{Min: 0, Max: lir.Unbounded}) {
 		t.Fatalf("scan card = %v", s.Card())
 	}
 	if got := s.Produced().Slots(); len(got) != 5 {
@@ -57,22 +57,22 @@ func TestScanLaws(t *testing.T) {
 
 func TestFilterLawsAndRefinement(t *testing.T) {
 	s := scanTasks()
-	pred := NewBinary(qir.OpEq, slot(s, "status"), Literal{V: qir.Text("open")})
+	pred := NewBinary(lir.OpEq, slot(s, "status"), Literal{V: lir.Text("open")})
 	f := NewFilter(s, pred)
 
 	if !f.FreeSlots().Empty() {
 		t.Fatalf("uncorrelated filter has free slots: %v", f.FreeSlots().Slots())
 	}
-	if f.Card().Max != qir.Unbounded {
+	if f.Card().Max != lir.Unbounded {
 		t.Fatalf("filter card = %v", f.Card())
 	}
 	// The binder tightens with uniqueness knowledge.
-	f.RefineCard(qir.Cardinality{Min: 0, Max: 1})
+	f.RefineCard(lir.Cardinality{Min: 0, Max: 1})
 	if !f.Card().AtMostOne() {
 		t.Fatalf("refined card = %v", f.Card())
 	}
 	// Refinement never loosens.
-	f.RefineCard(qir.Cardinality{Min: 0, Max: 100})
+	f.RefineCard(lir.Cardinality{Min: 0, Max: 100})
 	if f.Card().Max != 1 {
 		t.Fatalf("card loosened to %v", f.Card())
 	}
@@ -80,8 +80,8 @@ func TestFilterLawsAndRefinement(t *testing.T) {
 
 func TestCorrelationIsFreeSlots(t *testing.T) {
 	s := scanTasks()
-	outer := SlotRef{Slot: 100, Name: "b.id", T: qir.Type{Kind: qir.KindText}}
-	pred := NewBinary(qir.OpEq, slot(s, "board_id"), outer)
+	outer := SlotRef{Slot: 100, Name: "b.id", T: lir.Type{Kind: lir.KindText}}
+	pred := NewBinary(lir.OpEq, slot(s, "board_id"), outer)
 	f := NewFilter(s, pred)
 
 	free := f.FreeSlots()
@@ -96,7 +96,7 @@ func TestCorrelationIsFreeSlots(t *testing.T) {
 
 func TestProjectLaws(t *testing.T) {
 	s := scanTasks()
-	doubled := NewBinary(qir.OpMul, slot(s, "priority"), Literal{V: qir.Int64(2)})
+	doubled := NewBinary(lir.OpMul, slot(s, "priority"), Literal{V: lir.Int64(2)})
 	p := NewProject(s, "shaped", []ProjField{
 		{Name: "id", Slot: 10, Expr: slot(s, "id")},
 		{Name: "score", Slot: 11, Expr: doubled},
@@ -106,13 +106,13 @@ func TestProjectLaws(t *testing.T) {
 	if len(out.Fields) != 2 || out.Fields[1].Name != "score" || out.Fields[1].Slot != 11 {
 		t.Fatalf("project output = %+v", out)
 	}
-	if out.Fields[1].Type.Kind != qir.KindInt64 {
+	if out.Fields[1].Type.Kind != lir.KindInt64 {
 		t.Fatalf("score type = %v", out.Fields[1].Type)
 	}
 	// Closure: the projected slot is addressable above.
-	above := NewFilter(p, NewBinary(qir.OpGt,
+	above := NewFilter(p, NewBinary(lir.OpGt,
 		SlotRef{Slot: 11, Name: "score", T: out.Fields[1].Type},
-		Literal{V: qir.Int64(10)}))
+		Literal{V: lir.Int64(10)}))
 	if !above.FreeSlots().Empty() {
 		t.Fatalf("score not produced beneath: free = %v", above.FreeSlots().Slots())
 	}
@@ -125,34 +125,34 @@ func TestAggregateLaws(t *testing.T) {
 	s := scanTasks()
 
 	global := NewAggregate(s, nil, []AggTerm{
-		{Fn: qir.AggCount, Name: "n", Slot: 20, T: AggTermType(qir.AggCount, nil)},
-		{Fn: qir.AggAvg, Arg: slot(s, "priority"), Name: "avg_p", Slot: 21, T: AggTermType(qir.AggAvg, slot(s, "priority"))},
-		{Fn: qir.AggSum, Arg: slot(s, "priority"), Name: "sum_p", Slot: 22, T: AggTermType(qir.AggSum, slot(s, "priority"))},
+		{Fn: lir.AggCount, Name: "n", Slot: 20, T: AggTermType(lir.AggCount, nil)},
+		{Fn: lir.AggAvg, Arg: slot(s, "priority"), Name: "avg_p", Slot: 21, T: AggTermType(lir.AggAvg, slot(s, "priority"))},
+		{Fn: lir.AggSum, Arg: slot(s, "priority"), Name: "sum_p", Slot: 22, T: AggTermType(lir.AggSum, slot(s, "priority"))},
 	})
-	if global.Card() != (qir.Cardinality{Min: 1, Max: 1}) {
+	if global.Card() != (lir.Cardinality{Min: 1, Max: 1}) {
 		t.Fatalf("global fold card = %v", global.Card())
 	}
 	out := global.Output()
-	if out.Fields[0].Type != (qir.Type{Kind: qir.KindInt64}) {
+	if out.Fields[0].Type != (lir.Type{Kind: lir.KindInt64}) {
 		t.Fatalf("count type = %v (must be non-nullable int64)", out.Fields[0].Type)
 	}
-	if out.Fields[1].Type != (qir.Type{Kind: qir.KindFloat64, Nullable: true}) {
+	if out.Fields[1].Type != (lir.Type{Kind: lir.KindFloat64, Nullable: true}) {
 		t.Fatalf("avg type = %v", out.Fields[1].Type)
 	}
-	if out.Fields[2].Type != (qir.Type{Kind: qir.KindInt64, Nullable: true}) {
+	if out.Fields[2].Type != (lir.Type{Kind: lir.KindInt64, Nullable: true}) {
 		t.Fatalf("sum type = %v", out.Fields[2].Type)
 	}
 
 	grouped := NewAggregate(s,
 		[]GroupTerm{{Name: "status", Slot: 30, Expr: slot(s, "status")}},
-		[]AggTerm{{Fn: qir.AggCount, Name: "n", Slot: 31, T: AggTermType(qir.AggCount, nil)}})
-	if grouped.Card().Max != qir.Unbounded || grouped.Card().Min != 0 {
+		[]AggTerm{{Fn: lir.AggCount, Name: "n", Slot: 31, T: AggTermType(lir.AggCount, nil)}})
+	if grouped.Card().Max != lir.Unbounded || grouped.Card().Min != 0 {
 		t.Fatalf("grouped card = %v", grouped.Card())
 	}
 	// Closure: group and term slots addressable above.
-	above := NewFilter(grouped, NewBinary(qir.OpGt,
-		SlotRef{Slot: 31, Name: "n", T: qir.Type{Kind: qir.KindInt64}},
-		Literal{V: qir.Int64(10)}))
+	above := NewFilter(grouped, NewBinary(lir.OpGt,
+		SlotRef{Slot: 31, Name: "n", T: lir.Type{Kind: lir.KindInt64}},
+		Literal{V: lir.Int64(10)}))
 	if !above.FreeSlots().Empty() {
 		t.Fatal("aggregate outputs not addressable")
 	}
@@ -164,17 +164,17 @@ func TestJoinLaws(t *testing.T) {
 		ID: "t2", Name: "users",
 		Columns:    []catalog.Column{{ID: "c6", Name: "id", Type: catalog.TypeText}},
 		PrimaryKey: []string{"id"},
-	}, "u", []qir.SlotID{50})
+	}, "u", []lir.SlotID{50})
 
-	on := NewBinary(qir.OpEq, slot(l, "assignee_id"), SlotRef{Slot: 50, Name: "u.id", T: qir.Type{Kind: qir.KindText}})
-	inner := NewJoin(l, r, qir.InnerJoin, on)
+	on := NewBinary(lir.OpEq, slot(l, "assignee_id"), SlotRef{Slot: 50, Name: "u.id", T: lir.Type{Kind: lir.KindText}})
+	inner := NewJoin(l, r, lir.InnerJoin, on)
 	if got := len(inner.Output().Fields); got != 6 {
 		t.Fatalf("join output arity = %d", got)
 	}
 	if inner.Output().Fields[5].Type.Nullable {
 		t.Fatal("inner join must not null-pad")
 	}
-	left := NewJoin(l, r, qir.LeftJoin, on)
+	left := NewJoin(l, r, lir.LeftJoin, on)
 	if !left.Output().Fields[5].Type.Nullable {
 		t.Fatal("left join right side must be nullable")
 	}
@@ -194,12 +194,12 @@ func TestSliceCardAndOrdered(t *testing.T) {
 	if !NewSlice(s, 0, &one).Card().AtMostOne() {
 		t.Fatal("slice 1 must be at-most-one")
 	}
-	if NewSlice(s, 3, nil).Card().Max != qir.Unbounded {
+	if NewSlice(s, 3, nil).Card().Max != lir.Unbounded {
 		t.Fatal("nil limit must stay unbounded")
 	}
 
 	ord := NewOrder(s, []OrderTerm{{Expr: slot(s, "priority"), Desc: true}})
-	if !Ordered(NewSlice(NewFilter(ord, Literal{V: qir.Bool(true)}), 0, &lim)) {
+	if !Ordered(NewSlice(NewFilter(ord, Literal{V: lir.Bool(true)}), 0, &lim)) {
 		t.Fatal("ordering must survive filter+slice")
 	}
 	if Ordered(s) || Ordered(NewAggregate(s, nil, nil)) {
@@ -212,19 +212,19 @@ func TestScalarCrossingArity(t *testing.T) {
 	if _, err := NewScalar(s); err == nil {
 		t.Fatal("scalar over 5-column relation accepted")
 	}
-	agg := NewAggregate(s, nil, []AggTerm{{Fn: qir.AggCount, Name: "n", Slot: 20, T: AggTermType(qir.AggCount, nil)}})
+	agg := NewAggregate(s, nil, []AggTerm{{Fn: lir.AggCount, Name: "n", Slot: 20, T: AggTermType(lir.AggCount, nil)}})
 	sc, err := NewScalar(agg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sc.Type() != (qir.Type{Kind: qir.KindInt64, Nullable: true}) {
+	if sc.Type() != (lir.Type{Kind: lir.KindInt64, Nullable: true}) {
 		t.Fatalf("scalar type = %v (crossing must be nullable: no row = NULL)", sc.Type())
 	}
 }
 
 func TestSlotSetWordBoundaries(t *testing.T) {
 	s := NewSlotSet(0, 63, 64, 130)
-	for _, id := range []qir.SlotID{0, 63, 64, 130} {
+	for _, id := range []lir.SlotID{0, 63, 64, 130} {
 		if !s.Contains(id) {
 			t.Fatalf("missing %d", id)
 		}

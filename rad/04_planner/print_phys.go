@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"rad/rad/03_qir/bound"
+	"rad/rad/03_lir/bound"
 )
 
 // PrintPlan renders a physical plan as a deterministic indented tree for

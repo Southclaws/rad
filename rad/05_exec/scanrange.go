@@ -17,20 +17,20 @@ import (
 	kv "rad/rad/01_kv"
 	keyenc "rad/rad/01_kv/keyenc"
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 )
 
 // rangeBounds is the executor-facing trailing range: encoded from planner
 // bounds against the index column right after the equality prefix.
 type rangeBounds struct {
-	lo, hi          *qir.Value
+	lo, hi          *lir.Value
 	loIncl, hiIncl  bool
 }
 
 // scanIndexRange yields base rows for index entries in [prefix ++ range)
 // order. eqVals are the leading index columns' pinned values, in index
 // order.
-func scanIndexRange(ctx context.Context, view kv.KV, tbl catalog.Table, idx catalog.Index, eqVals []qir.Value, rng *rangeBounds) (RowIterator, error) {
+func scanIndexRange(ctx context.Context, view kv.KV, tbl catalog.Table, idx catalog.Index, eqVals []lir.Value, rng *rangeBounds) (RowIterator, error) {
 	prefix := IndexPrefix(tbl.ID, idx.ID)
 	if len(eqVals) > 0 {
 		tup, err := EncodeTuple(eqVals)
@@ -84,7 +84,7 @@ type indexRangeIterator struct {
 	it   kv.Iterator
 }
 
-func (r *indexRangeIterator) Next() (qir.Row, bool, error) {
+func (r *indexRangeIterator) Next() (lir.Row, bool, error) {
 	if !r.it.Next() {
 		if err := r.it.Err(); err != nil {
 			return nil, false, err

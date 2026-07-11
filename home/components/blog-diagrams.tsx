@@ -339,7 +339,7 @@ export function IRDiagram() {
           fontWeight="700"
           textAnchor="middle"
         >
-          QIR
+          LIR
         </text>
         {outs.map((o) => (
           <g key={o.t}>

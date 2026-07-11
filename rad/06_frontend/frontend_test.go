@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 	frontend "rad/rad/06_frontend"
 )
 
@@ -52,14 +52,14 @@ func newDB(t *testing.T) (*frontend.DB, context.Context) {
 
 	seed := []struct {
 		table string
-		row   qir.Row
+		row   lir.Row
 	}{
-		{"users", qir.Row{"id": qir.Int64(1), "name": qir.Text("Alice"), "age": qir.Int64(30)}},
-		{"users", qir.Row{"id": qir.Int64(2), "name": qir.Text("Bob"), "age": qir.Int64(25)}},
-		{"users", qir.Row{"id": qir.Int64(3), "name": qir.Text("Carol")}},
-		{"orders", qir.Row{"id": qir.Int64(100), "user_id": qir.Int64(1), "total": qir.Float64(9.99)}},
-		{"orders", qir.Row{"id": qir.Int64(101), "user_id": qir.Int64(1), "total": qir.Float64(25.00)}},
-		{"orders", qir.Row{"id": qir.Int64(102), "user_id": qir.Int64(2), "total": qir.Float64(3.50)}},
+		{"users", lir.Row{"id": lir.Int64(1), "name": lir.Text("Alice"), "age": lir.Int64(30)}},
+		{"users", lir.Row{"id": lir.Int64(2), "name": lir.Text("Bob"), "age": lir.Int64(25)}},
+		{"users", lir.Row{"id": lir.Int64(3), "name": lir.Text("Carol")}},
+		{"orders", lir.Row{"id": lir.Int64(100), "user_id": lir.Int64(1), "total": lir.Float64(9.99)}},
+		{"orders", lir.Row{"id": lir.Int64(101), "user_id": lir.Int64(1), "total": lir.Float64(25.00)}},
+		{"orders", lir.Row{"id": lir.Int64(102), "user_id": lir.Int64(2), "total": lir.Float64(3.50)}},
 	}
 	for _, s := range seed {
 		if err := db.Insert(ctx, s.table, s.row); err != nil {
@@ -99,23 +99,23 @@ func TestOpen(t *testing.T) {
 func TestInsertAndGet(t *testing.T) {
 	db, ctx := newDB(t)
 
-	row, ok, err := db.Get(ctx, "users", qir.Row{"id": qir.Int64(1)})
+	row, ok, err := db.Get(ctx, "users", lir.Row{"id": lir.Int64(1)})
 	if err != nil || !ok {
 		t.Fatalf("ok=%v err=%v", ok, err)
 	}
-	if !row["name"].Equal(qir.Text("Alice")) {
+	if !row["name"].Equal(lir.Text("Alice")) {
 		t.Fatalf("got %v", row)
 	}
 
-	if _, ok, err := db.Get(ctx, "users", qir.Row{"id": qir.Int64(999)}); err != nil || ok {
+	if _, ok, err := db.Get(ctx, "users", lir.Row{"id": lir.Int64(999)}); err != nil || ok {
 		t.Fatalf("missing row: ok=%v err=%v", ok, err)
 	}
 
 	// Constraints are enforced on the public surface too.
-	if err := db.Insert(ctx, "users", qir.Row{"id": qir.Int64(1), "name": qir.Text("Dup")}); err == nil {
+	if err := db.Insert(ctx, "users", lir.Row{"id": lir.Int64(1), "name": lir.Text("Dup")}); err == nil {
 		t.Fatal("duplicate primary key accepted")
 	}
-	if err := db.Insert(ctx, "orders", qir.Row{"id": qir.Int64(999), "user_id": qir.Int64(42)}); err == nil {
+	if err := db.Insert(ctx, "orders", lir.Row{"id": lir.Int64(999), "user_id": lir.Int64(42)}); err == nil {
 		t.Fatal("dangling foreign key accepted")
 	}
 }
@@ -125,23 +125,23 @@ func TestInsertAndGet(t *testing.T) {
 func TestUpdateAndDelete(t *testing.T) {
 	db, ctx := newDB(t)
 
-	if _, found, err := db.Update(ctx, "users", qir.Row{"id": qir.Int64(3)}, qir.Row{"age": qir.Int64(41)}); err != nil || !found {
+	if _, found, err := db.Update(ctx, "users", lir.Row{"id": lir.Int64(3)}, lir.Row{"age": lir.Int64(41)}); err != nil || !found {
 		t.Fatalf("update: found=%v err=%v", found, err)
 	}
-	row, _, _ := db.Get(ctx, "users", qir.Row{"id": qir.Int64(3)})
-	if !row["age"].Equal(qir.Int64(41)) {
+	row, _, _ := db.Get(ctx, "users", lir.Row{"id": lir.Int64(3)})
+	if !row["age"].Equal(lir.Int64(41)) {
 		t.Fatalf("update lost: %v", row)
 	}
 
 	// Alice has orders: restrict blocks her deletion.
-	if _, err := db.Delete(ctx, "users", qir.Row{"id": qir.Int64(1)}); err == nil {
+	if _, err := db.Delete(ctx, "users", lir.Row{"id": lir.Int64(1)}); err == nil {
 		t.Fatal("deleted a referenced user")
 	}
 	// Carol has none: she can go.
-	if found, err := db.Delete(ctx, "users", qir.Row{"id": qir.Int64(3)}); err != nil || !found {
+	if found, err := db.Delete(ctx, "users", lir.Row{"id": lir.Int64(3)}); err != nil || !found {
 		t.Fatalf("delete: found=%v err=%v", found, err)
 	}
-	if _, ok, _ := db.Get(ctx, "users", qir.Row{"id": qir.Int64(3)}); ok {
+	if _, ok, _ := db.Get(ctx, "users", lir.Row{"id": lir.Int64(3)}); ok {
 		t.Fatal("deleted row still present")
 	}
 }
@@ -153,15 +153,15 @@ func TestTxnAtomicity(t *testing.T) {
 	db, ctx := newDB(t)
 
 	err := db.Txn(ctx, func(tx *frontend.Tx) error {
-		if err := tx.Insert(ctx, "users", qir.Row{"id": qir.Int64(10), "name": qir.Text("Dave")}); err != nil {
+		if err := tx.Insert(ctx, "users", lir.Row{"id": lir.Int64(10), "name": lir.Text("Dave")}); err != nil {
 			return err
 		}
 		// FK check sees the uncommitted user.
-		if err := tx.Insert(ctx, "orders", qir.Row{"id": qir.Int64(200), "user_id": qir.Int64(10)}); err != nil {
+		if err := tx.Insert(ctx, "orders", lir.Row{"id": lir.Int64(200), "user_id": lir.Int64(10)}); err != nil {
 			return err
 		}
 		// So do reads and queries inside the transaction.
-		if _, ok, err := tx.Get(ctx, "users", qir.Row{"id": qir.Int64(10)}); err != nil || !ok {
+		if _, ok, err := tx.Get(ctx, "users", lir.Row{"id": lir.Int64(10)}); err != nil || !ok {
 			return fmt.Errorf("read-your-writes failed: ok=%v err=%v", ok, err)
 		}
 		return nil
@@ -170,7 +170,7 @@ func TestTxnAtomicity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, ok, _ := db.Get(ctx, "orders", qir.Row{"id": qir.Int64(200)}); !ok {
+	if _, ok, _ := db.Get(ctx, "orders", lir.Row{"id": lir.Int64(200)}); !ok {
 		t.Fatal("committed transactional insert missing")
 	}
 }
@@ -181,7 +181,7 @@ func TestTxnRollback(t *testing.T) {
 
 	sentinel := fmt.Errorf("changed our mind")
 	err := db.Txn(ctx, func(tx *frontend.Tx) error {
-		if err := tx.Insert(ctx, "users", qir.Row{"id": qir.Int64(11), "name": qir.Text("Eve")}); err != nil {
+		if err := tx.Insert(ctx, "users", lir.Row{"id": lir.Int64(11), "name": lir.Text("Eve")}); err != nil {
 			return err
 		}
 		return sentinel
@@ -189,7 +189,7 @@ func TestTxnRollback(t *testing.T) {
 	if err == nil {
 		t.Fatal("fn error not propagated")
 	}
-	if _, ok, _ := db.Get(ctx, "users", qir.Row{"id": qir.Int64(11)}); ok {
+	if _, ok, _ := db.Get(ctx, "users", lir.Row{"id": lir.Int64(11)}); ok {
 		t.Fatal("rolled-back insert visible")
 	}
 }
@@ -201,10 +201,10 @@ func TestTxnSnapshotIsolation(t *testing.T) {
 
 	err := db.Txn(ctx, func(tx *frontend.Tx) error {
 		// Another writer commits mid-transaction.
-		if err := db.Insert(ctx, "users", qir.Row{"id": qir.Int64(12), "name": qir.Text("Zed")}); err != nil {
+		if err := db.Insert(ctx, "users", lir.Row{"id": lir.Int64(12), "name": lir.Text("Zed")}); err != nil {
 			return err
 		}
-		if _, ok, err := tx.Get(ctx, "users", qir.Row{"id": qir.Int64(12)}); err != nil {
+		if _, ok, err := tx.Get(ctx, "users", lir.Row{"id": lir.Int64(12)}); err != nil {
 			return err
 		} else if ok {
 			t.Error("snapshot read saw a post-Begin commit")
@@ -217,7 +217,7 @@ func TestTxnSnapshotIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, ok, _ := db.Get(ctx, "users", qir.Row{"id": qir.Int64(12)}); !ok {
+	if _, ok, _ := db.Get(ctx, "users", lir.Row{"id": lir.Int64(12)}); !ok {
 		t.Fatal("committed row missing after transaction ended")
 	}
 }
@@ -231,12 +231,12 @@ func TestTxnConflictAndRetry(t *testing.T) {
 	insert13 := func() error {
 		return db.Txn(ctx, func(tx *frontend.Tx) error {
 			attempts++
-			if err := tx.Insert(ctx, "users", qir.Row{"id": qir.Int64(13), "name": qir.Text("Race")}); err != nil {
+			if err := tx.Insert(ctx, "users", lir.Row{"id": lir.Int64(13), "name": lir.Text("Race")}); err != nil {
 				return err
 			}
 			if attempts == 1 {
 				// First attempt: a rival commits the same PK before us.
-				return db.Insert(ctx, "users", qir.Row{"id": qir.Int64(13), "name": qir.Text("Rival")})
+				return db.Insert(ctx, "users", lir.Row{"id": lir.Int64(13), "name": lir.Text("Rival")})
 			}
 			return nil
 		})
@@ -254,8 +254,8 @@ func TestTxnConflictAndRetry(t *testing.T) {
 		t.Fatalf("retry: got %v, want duplicate-pk error", err)
 	}
 
-	row, ok, _ := db.Get(ctx, "users", qir.Row{"id": qir.Int64(13)})
-	if !ok || !row["name"].Equal(qir.Text("Rival")) {
+	row, ok, _ := db.Get(ctx, "users", lir.Row{"id": lir.Int64(13)})
+	if !ok || !row["name"].Equal(lir.Text("Rival")) {
 		t.Fatalf("winner's row missing: %v ok=%v", row, ok)
 	}
 }
@@ -266,12 +266,12 @@ func TestTxnExecute(t *testing.T) {
 	db, ctx := newDB(t)
 
 	err := db.Txn(ctx, func(tx *frontend.Tx) error {
-		if err := tx.Insert(ctx, "users", qir.Row{"id": qir.Int64(14), "name": qir.Text("Quinn")}); err != nil {
+		if err := tx.Insert(ctx, "users", lir.Row{"id": lir.Int64(14), "name": lir.Text("Quinn")}); err != nil {
 			return err
 		}
-		d, err := tx.Execute(ctx, qir.Query{Card: qir.CardScalar, Root: qir.Aggregate{
-			Input: qir.Scan{Table: "users", Scope: "u"},
-			Terms: []qir.AggTerm{{Fn: qir.AggCount, As: "n"}},
+		d, err := tx.Execute(ctx, lir.Query{Card: lir.CardScalar, Root: lir.Aggregate{
+			Input: lir.Scan{Table: "users", Scope: "u"},
+			Terms: []lir.AggTerm{{Fn: lir.AggCount, As: "n"}},
 		}})
 		if err != nil {
 			return err

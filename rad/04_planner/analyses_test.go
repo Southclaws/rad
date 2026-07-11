@@ -8,15 +8,15 @@ package planner_test
 import (
 	"testing"
 
-	qir "rad/rad/03_qir"
-	"rad/rad/03_qir/bound"
+	lir "rad/rad/03_lir"
+	"rad/rad/03_lir/bound"
 	planner "rad/rad/04_planner"
 )
 
 // extract binds a many-query over the given root and runs extraction on it.
-func extract(t *testing.T, root qir.Relation) *planner.ScanConstraints {
+func extract(t *testing.T, root lir.Relation) *planner.ScanConstraints {
 	t.Helper()
-	q := bind(t, qir.Query{Card: qir.CardMany, Root: root})
+	q := bind(t, lir.Query{Card: lir.CardMany, Root: root})
 	cs := planner.ExtractConstraints(q.Root)
 	if cs == nil {
 		t.Fatal("no scan constraints extracted")
@@ -27,7 +27,7 @@ func extract(t *testing.T, root qir.Relation) *planner.ScanConstraints {
 func TestExtractEquality(t *testing.T) {
 	cs := extract(t, bfilter(bscan("tasks", "t"), beq(bcol("t", "status"), blit("open"))))
 	d, ok := cs.Cols["status"]
-	if !ok || d.Eq == nil || d.Eq.Lit == nil || !d.Eq.Lit.Equal(qir.Text("open")) {
+	if !ok || d.Eq == nil || d.Eq.Lit == nil || !d.Eq.Lit.Equal(lir.Text("open")) {
 		t.Fatalf("status domain = %+v", d)
 	}
 	if cs.Scan.Table.Name != "tasks" {
@@ -37,37 +37,37 @@ func TestExtractEquality(t *testing.T) {
 
 func TestExtractRanges(t *testing.T) {
 	cs := extract(t, bfilter(bscan("tasks", "t"),
-		band(qir.Binary{Op: qir.OpGte, L: bcol("t", "priority"), R: blit(3)},
-			qir.Binary{Op: qir.OpLt, L: bcol("t", "priority"), R: blit(8)})))
+		band(lir.Binary{Op: lir.OpGte, L: bcol("t", "priority"), R: blit(3)},
+			lir.Binary{Op: lir.OpLt, L: bcol("t", "priority"), R: blit(8)})))
 	d := cs.Cols["priority"]
-	if d.Lo == nil || !d.Lo.Inclusive || !d.Lo.V.Equal(qir.Int64(3)) {
+	if d.Lo == nil || !d.Lo.Inclusive || !d.Lo.V.Equal(lir.Int64(3)) {
 		t.Fatalf("lo = %+v", d.Lo)
 	}
-	if d.Hi == nil || d.Hi.Inclusive || !d.Hi.V.Equal(qir.Int64(8)) {
+	if d.Hi == nil || d.Hi.Inclusive || !d.Hi.V.Equal(lir.Int64(8)) {
 		t.Fatalf("hi = %+v", d.Hi)
 	}
 
 	// A flipped comparison means the same range: 3 < priority ⇒ priority > 3.
 	cs = extract(t, bfilter(bscan("tasks", "t"),
-		qir.Binary{Op: qir.OpLt, L: blit(3), R: bcol("t", "priority")}))
+		lir.Binary{Op: lir.OpLt, L: blit(3), R: bcol("t", "priority")}))
 	d = cs.Cols["priority"]
-	if d.Lo == nil || d.Lo.Inclusive || !d.Lo.V.Equal(qir.Int64(3)) {
+	if d.Lo == nil || d.Lo.Inclusive || !d.Lo.V.Equal(lir.Int64(3)) {
 		t.Fatalf("flipped lo = %+v", d.Lo)
 	}
 
 	// Overlapping bounds intersect to the tightest.
 	cs = extract(t, bfilter(bscan("tasks", "t"),
-		band(qir.Binary{Op: qir.OpGt, L: bcol("t", "priority"), R: blit(3)},
-			qir.Binary{Op: qir.OpGte, L: bcol("t", "priority"), R: blit(5)})))
+		band(lir.Binary{Op: lir.OpGt, L: bcol("t", "priority"), R: blit(3)},
+			lir.Binary{Op: lir.OpGte, L: bcol("t", "priority"), R: blit(5)})))
 	d = cs.Cols["priority"]
-	if d.Lo == nil || !d.Lo.Inclusive || !d.Lo.V.Equal(qir.Int64(5)) {
+	if d.Lo == nil || !d.Lo.Inclusive || !d.Lo.V.Equal(lir.Int64(5)) {
 		t.Fatalf("intersected lo = %+v", d.Lo)
 	}
 }
 
 func TestExtractEqualityBeatsRange(t *testing.T) {
 	cs := extract(t, bfilter(bscan("tasks", "t"),
-		band(qir.Binary{Op: qir.OpGte, L: bcol("t", "priority"), R: blit(1)},
+		band(lir.Binary{Op: lir.OpGte, L: bcol("t", "priority"), R: blit(1)},
 			beq(bcol("t", "priority"), blit(4)))))
 	d := cs.Cols["priority"]
 	if d.Eq == nil || d.Lo != nil {
@@ -86,15 +86,15 @@ func TestExtractConflictingEqualitiesPoison(t *testing.T) {
 func TestExtractContributesNothing(t *testing.T) {
 	// OR trees, ne, is_null, and NULL literals never drive access paths.
 	cs := extract(t, bfilter(bscan("tasks", "t"),
-		qir.Binary{Op: qir.OpOr,
+		lir.Binary{Op: lir.OpOr,
 			L: beq(bcol("t", "status"), blit("a")),
 			R: beq(bcol("t", "status"), blit("b"))}))
 	if len(cs.Cols) != 0 {
 		t.Fatalf("or contributed: %+v", cs.Cols)
 	}
 	cs = extract(t, bfilter(bscan("tasks", "t"),
-		band(qir.Binary{Op: qir.OpNe, L: bcol("t", "status"), R: blit("x")},
-			qir.Unary{Op: qir.OpIsNull, X: bcol("t", "assignee_id")})))
+		band(lir.Binary{Op: lir.OpNe, L: bcol("t", "status"), R: blit("x")},
+			lir.Unary{Op: lir.OpIsNull, X: bcol("t", "assignee_id")})))
 	if len(cs.Cols) != 0 {
 		t.Fatalf("ne/is_null contributed: %+v", cs.Cols)
 	}
@@ -105,9 +105,9 @@ func TestExtractContributesNothing(t *testing.T) {
 }
 
 func TestExtractStackedFilters(t *testing.T) {
-	cs := extract(t, qir.Filter{
+	cs := extract(t, lir.Filter{
 		Input: bfilter(bscan("tasks", "t"), beq(bcol("t", "status"), blit("open"))),
-		Pred:  qir.Binary{Op: qir.OpGte, L: bcol("t", "priority"), R: blit(3)},
+		Pred:  lir.Binary{Op: lir.OpGte, L: bcol("t", "priority"), R: blit(3)},
 	})
 	if cs.Cols["status"].Eq == nil || cs.Cols["priority"].Lo == nil {
 		t.Fatalf("stacked filters not merged: %+v", cs.Cols)
@@ -174,12 +174,12 @@ func TestClassifyForcingQuery(t *testing.T) {
 
 func TestClassifyGeneral(t *testing.T) {
 	// An outer slot in a non-equality: general.
-	q := bind(t, qir.Query{Card: qir.CardMany, Root: qir.Project{
+	q := bind(t, lir.Query{Card: lir.CardMany, Root: lir.Project{
 		Input:  bscan("boards", "b"),
 		Spread: []string{"b"},
-		Fields: []qir.ProjField{{As: "later", Expr: qir.Array{
+		Fields: []lir.ProjField{{As: "later", Expr: lir.Array{
 			Rel: bfilter(bscan("tasks", "t"),
-				qir.Binary{Op: qir.OpGt, L: bcol("t", "title"), R: bcol("b", "name")}),
+				lir.Binary{Op: lir.OpGt, L: bcol("t", "title"), R: bcol("b", "name")}),
 		}}},
 	}})
 	arr := q.Root.(*bound.Project).Fields[3].Expr.(bound.Array)
@@ -188,13 +188,13 @@ func TestClassifyGeneral(t *testing.T) {
 	}
 
 	// A key equation plus another use of the outer scope: general.
-	q = bind(t, qir.Query{Card: qir.CardMany, Root: qir.Project{
+	q = bind(t, lir.Query{Card: lir.CardMany, Root: lir.Project{
 		Input:  bscan("boards", "b"),
 		Spread: []string{"b"},
-		Fields: []qir.ProjField{{As: "odd", Expr: qir.Array{
+		Fields: []lir.ProjField{{As: "odd", Expr: lir.Array{
 			Rel: bfilter(bscan("tasks", "t"),
 				band(beq(bcol("t", "board_id"), bcol("b", "id")),
-					qir.Binary{Op: qir.OpGt, L: bcol("t", "title"), R: bcol("b", "name")})),
+					lir.Binary{Op: lir.OpGt, L: bcol("t", "title"), R: bcol("b", "name")})),
 		}}},
 	}})
 	arr = q.Root.(*bound.Project).Fields[3].Expr.(bound.Array)

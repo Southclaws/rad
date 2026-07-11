@@ -12,8 +12,8 @@ import (
 
 	"rad/rad/01_kv/kvslate"
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
-	"rad/rad/03_qir/bound"
+	lir "rad/rad/03_lir"
+	"rad/rad/03_lir/bound"
 	planner "rad/rad/04_planner"
 )
 
@@ -94,16 +94,16 @@ func trackerCat(t *testing.T) (*catalog.Catalog, context.Context) {
 
 // ── unbound construction helpers ────────────────────────────────────────────
 
-func bcol(scope, name string) qir.Column { return qir.Column{Scope: scope, Name: name} }
-func blit(v any) qir.Literal             { return qir.Literal{Raw: v} }
-func beq(l, r qir.Expr) qir.Expr         { return qir.Binary{Op: qir.OpEq, L: l, R: r} }
-func band(l, r qir.Expr) qir.Expr        { return qir.Binary{Op: qir.OpAnd, L: l, R: r} }
-func bscan(table, scope string) qir.Scan { return qir.Scan{Table: table, Scope: scope} }
-func bfilter(in qir.Relation, pred qir.Expr) qir.Filter {
-	return qir.Filter{Input: in, Pred: pred}
+func bcol(scope, name string) lir.Column { return lir.Column{Scope: scope, Name: name} }
+func blit(v any) lir.Literal             { return lir.Literal{Raw: v} }
+func beq(l, r lir.Expr) lir.Expr         { return lir.Binary{Op: lir.OpEq, L: l, R: r} }
+func band(l, r lir.Expr) lir.Expr        { return lir.Binary{Op: lir.OpAnd, L: l, R: r} }
+func bscan(table, scope string) lir.Scan { return lir.Scan{Table: table, Scope: scope} }
+func bfilter(in lir.Relation, pred lir.Expr) lir.Filter {
+	return lir.Filter{Input: in, Pred: pred}
 }
 
-func bind(t *testing.T, q qir.Query) *bound.Query {
+func bind(t *testing.T, q lir.Query) *bound.Query {
 	t.Helper()
 	cat, ctx := trackerCat(t)
 	bq, err := planner.Bind(ctx, cat, q)
@@ -113,7 +113,7 @@ func bind(t *testing.T, q qir.Query) *bound.Query {
 	return bq
 }
 
-func bindErr(t *testing.T, q qir.Query, want string) {
+func bindErr(t *testing.T, q lir.Query, want string) {
 	t.Helper()
 	cat, ctx := trackerCat(t)
 	_, err := planner.Bind(ctx, cat, q)
@@ -131,37 +131,37 @@ func bindErr(t *testing.T, q qir.Query, want string) {
 // forcingQuery is the arc's acceptance shape: boards → owner → first 20 open
 // tasks by priority → assignee + comment count. Zero include/parent/children
 // special cases.
-func forcingQuery() qir.Query {
+func forcingQuery() lir.Query {
 	owner := bfilter(bscan("users", "o"), beq(bcol("o", "id"), bcol("b", "owner_id")))
 	assignee := bfilter(bscan("users", "a"), beq(bcol("a", "id"), bcol("t", "assignee_id")))
-	commentCount := qir.Aggregate{
+	commentCount := lir.Aggregate{
 		Input: bfilter(bscan("comments", "c"), beq(bcol("c", "task_id"), bcol("t", "id"))),
-		Terms: []qir.AggTerm{{Fn: qir.AggCount, As: "n"}},
+		Terms: []lir.AggTerm{{Fn: lir.AggCount, As: "n"}},
 	}
-	openTasks := qir.Project{
-		Input: qir.Slice{
-			Input: qir.Order{
+	openTasks := lir.Project{
+		Input: lir.Slice{
+			Input: lir.Order{
 				Input: bfilter(bscan("tasks", "t"),
 					band(beq(bcol("t", "board_id"), bcol("b", "id")),
 						beq(bcol("t", "status"), blit("open")))),
-				Terms: []qir.OrderTerm{{Expr: bcol("t", "priority"), Desc: true}},
+				Terms: []lir.OrderTerm{{Expr: bcol("t", "priority"), Desc: true}},
 			},
 			Limit: new(int(20)),
 		},
 		Spread: []string{"t"},
-		Fields: []qir.ProjField{
-			{As: "assignee", Expr: qir.First{Rel: assignee}},
-			{As: "comment_count", Expr: qir.Scalar{Rel: commentCount}},
+		Fields: []lir.ProjField{
+			{As: "assignee", Expr: lir.First{Rel: assignee}},
+			{As: "comment_count", Expr: lir.Scalar{Rel: commentCount}},
 		},
 	}
-	return qir.Query{
-		Card: qir.CardMany,
-		Root: qir.Project{
+	return lir.Query{
+		Card: lir.CardMany,
+		Root: lir.Project{
 			Input:  bscan("boards", "b"),
 			Spread: []string{"b"},
-			Fields: []qir.ProjField{
-				{As: "owner", Expr: qir.First{Rel: owner}},
-				{As: "tasks", Expr: qir.Array{Rel: openTasks}},
+			Fields: []lir.ProjField{
+				{As: "owner", Expr: lir.First{Rel: owner}},
+				{As: "tasks", Expr: lir.Array{Rel: openTasks}},
 			},
 		},
 	}
@@ -218,74 +218,74 @@ const forcingGolden = `Query card=many
 
 func TestFirstRequiresDeterminism(t *testing.T) {
 	// Unordered multi-row: rejected.
-	bindErr(t, qir.Query{Card: qir.CardMany, Root: qir.Project{
+	bindErr(t, lir.Query{Card: lir.CardMany, Root: lir.Project{
 		Input:  bscan("boards", "b"),
 		Spread: []string{"b"},
-		Fields: []qir.ProjField{{As: "any_task", Expr: qir.First{Rel: bscan("tasks", "t")}}},
+		Fields: []lir.ProjField{{As: "any_task", Expr: lir.First{Rel: bscan("tasks", "t")}}},
 	}}, "first over an unordered multi-row relation")
 
 	// A unique-key filter is statically at-most-one: accepted. So is an
 	// explicitly ordered relation.
-	bind(t, qir.Query{Card: qir.CardMany, Root: qir.Project{
+	bind(t, lir.Query{Card: lir.CardMany, Root: lir.Project{
 		Input:  bscan("boards", "b"),
 		Spread: []string{"b"},
-		Fields: []qir.ProjField{
-			{As: "owner", Expr: qir.First{Rel: bfilter(bscan("users", "o"), beq(bcol("o", "id"), bcol("b", "owner_id")))}},
-			{As: "by_name", Expr: qir.First{Rel: bfilter(bscan("users", "u"), beq(bcol("u", "name"), blit("ada")))}},
-			{As: "top_task", Expr: qir.First{Rel: qir.Order{
+		Fields: []lir.ProjField{
+			{As: "owner", Expr: lir.First{Rel: bfilter(bscan("users", "o"), beq(bcol("o", "id"), bcol("b", "owner_id")))}},
+			{As: "by_name", Expr: lir.First{Rel: bfilter(bscan("users", "u"), beq(bcol("u", "name"), blit("ada")))}},
+			{As: "top_task", Expr: lir.First{Rel: lir.Order{
 				Input: bscan("tasks", "t"),
-				Terms: []qir.OrderTerm{{Expr: bcol("t", "priority"), Desc: true}},
+				Terms: []lir.OrderTerm{{Expr: bcol("t", "priority"), Desc: true}},
 			}}},
 		},
 	}})
 
 	// A non-unique equality does not pin: still rejected.
-	bindErr(t, qir.Query{Card: qir.CardMany, Root: qir.Project{
+	bindErr(t, lir.Query{Card: lir.CardMany, Root: lir.Project{
 		Input:  bscan("boards", "b"),
 		Spread: []string{"b"},
-		Fields: []qir.ProjField{{As: "open", Expr: qir.First{
+		Fields: []lir.ProjField{{As: "open", Expr: lir.First{
 			Rel: bfilter(bscan("tasks", "t"), beq(bcol("t", "status"), blit("open"))),
 		}}},
 	}}, "first over an unordered multi-row relation")
 }
 
 func TestScalarAssertsCardinalityAndArity(t *testing.T) {
-	count := qir.Aggregate{Input: bscan("tasks", "t"), Terms: []qir.AggTerm{{Fn: qir.AggCount, As: "n"}}}
+	count := lir.Aggregate{Input: bscan("tasks", "t"), Terms: []lir.AggTerm{{Fn: lir.AggCount, As: "n"}}}
 
 	// Global fold: exactly one row, one column — accepted.
-	bind(t, qir.Query{Card: qir.CardMany, Root: qir.Project{
+	bind(t, lir.Query{Card: lir.CardMany, Root: lir.Project{
 		Input:  bscan("boards", "b"),
 		Spread: []string{"b"},
-		Fields: []qir.ProjField{{As: "n", Expr: qir.Scalar{Rel: count}}},
+		Fields: []lir.ProjField{{As: "n", Expr: lir.Scalar{Rel: count}}},
 	}})
 
 	// Multi-row, even ordered: rejected — Scalar is an assertion, and
 	// "first scalar" must be spelled Scalar(Slice₁(Order(...))).
-	bindErr(t, qir.Query{Card: qir.CardMany, Root: qir.Project{
+	bindErr(t, lir.Query{Card: lir.CardMany, Root: lir.Project{
 		Input:  bscan("boards", "b"),
 		Spread: []string{"b"},
-		Fields: []qir.ProjField{{As: "x", Expr: qir.Scalar{Rel: qir.Order{
+		Fields: []lir.ProjField{{As: "x", Expr: lir.Scalar{Rel: lir.Order{
 			Input: bscan("tasks", "t"),
-			Terms: []qir.OrderTerm{{Expr: bcol("t", "priority")}},
+			Terms: []lir.OrderTerm{{Expr: bcol("t", "priority")}},
 		}}}},
 	}}, "scalar asserts at most one row")
 
 	// At-most-one but five columns: the arity check fires.
-	bindErr(t, qir.Query{Card: qir.CardMany, Root: qir.Project{
+	bindErr(t, lir.Query{Card: lir.CardMany, Root: lir.Project{
 		Input:  bscan("boards", "b"),
 		Spread: []string{"b"},
-		Fields: []qir.ProjField{{As: "x", Expr: qir.Scalar{
-			Rel: qir.Slice{Input: bscan("tasks", "t"), Limit: new(int(1))},
+		Fields: []lir.ProjField{{As: "x", Expr: lir.Scalar{
+			Rel: lir.Slice{Input: bscan("tasks", "t"), Limit: new(int(1))},
 		}}},
 	}}, "single-column relation")
 }
 
 func TestRootCardinalityRules(t *testing.T) {
-	bindErr(t, qir.Query{Card: "some", Root: bscan("tasks", "t")}, "unknown root cardinality")
-	bindErr(t, qir.Query{Card: qir.CardScalar, Root: bscan("tasks", "t")}, "single-column root")
-	bindErr(t, qir.Query{Card: qir.CardFirst, Root: bscan("tasks", "t")}, "depend on the access path")
+	bindErr(t, lir.Query{Card: "some", Root: bscan("tasks", "t")}, "unknown root cardinality")
+	bindErr(t, lir.Query{Card: lir.CardScalar, Root: bscan("tasks", "t")}, "single-column root")
+	bindErr(t, lir.Query{Card: lir.CardFirst, Root: bscan("tasks", "t")}, "depend on the access path")
 	// Slice 1 makes first legal (declared-arbitrary selection).
-	bind(t, qir.Query{Card: qir.CardFirst, Root: qir.Slice{Input: bscan("tasks", "t"), Limit: new(int(1))}})
+	bind(t, lir.Query{Card: lir.CardFirst, Root: lir.Slice{Input: bscan("tasks", "t"), Limit: new(int(1))}})
 }
 
 // ── the order tie-breaker ───────────────────────────────────────────────────
@@ -301,9 +301,9 @@ func TestOrderTieBreaker(t *testing.T) {
 	}
 
 	// Ordering by a non-key column appends the primary key ascending.
-	q := bind(t, qir.Query{Card: qir.CardMany, Root: qir.Order{
+	q := bind(t, lir.Query{Card: lir.CardMany, Root: lir.Order{
 		Input: bscan("tasks", "t"),
-		Terms: []qir.OrderTerm{{Expr: bcol("t", "priority"), Desc: true}},
+		Terms: []lir.OrderTerm{{Expr: bcol("t", "priority"), Desc: true}},
 	}})
 	terms := rootOrder(q).Terms
 	if len(terms) != 2 || terms[1].Desc {
@@ -314,23 +314,23 @@ func TestOrderTieBreaker(t *testing.T) {
 	}
 
 	// Ordering by the key itself appends nothing.
-	q = bind(t, qir.Query{Card: qir.CardMany, Root: qir.Order{
+	q = bind(t, lir.Query{Card: lir.CardMany, Root: lir.Order{
 		Input: bscan("tasks", "t"),
-		Terms: []qir.OrderTerm{{Expr: bcol("t", "id")}},
+		Terms: []lir.OrderTerm{{Expr: bcol("t", "id")}},
 	}})
 	if len(rootOrder(q).Terms) != 1 {
 		t.Fatalf("ordering by the pk grew terms: %+v", rootOrder(q).Terms)
 	}
 
 	// Above a grouped aggregate, the group attributes are the unique key.
-	q = bind(t, qir.Query{Card: qir.CardMany, Root: qir.Order{
-		Input: qir.Aggregate{
+	q = bind(t, lir.Query{Card: lir.CardMany, Root: lir.Order{
+		Input: lir.Aggregate{
 			Input:  bscan("tasks", "t"),
 			Scope:  "stats",
-			Groups: []qir.GroupTerm{{Expr: bcol("t", "status")}},
-			Terms:  []qir.AggTerm{{Fn: qir.AggCount, As: "n"}},
+			Groups: []lir.GroupTerm{{Expr: bcol("t", "status")}},
+			Terms:  []lir.AggTerm{{Fn: lir.AggCount, As: "n"}},
 		},
-		Terms: []qir.OrderTerm{{Expr: bcol("stats", "n"), Desc: true}},
+		Terms: []lir.OrderTerm{{Expr: bcol("stats", "n"), Desc: true}},
 	}})
 	terms = rootOrder(q).Terms
 	if len(terms) != 2 {
@@ -347,48 +347,48 @@ func TestOrderTieBreaker(t *testing.T) {
 // address them through the aggregate's scope, and nothing else is visible
 // there — the input's scopes closed at the aggregate.
 func TestClosureAboveAggregate(t *testing.T) {
-	grouped := qir.Aggregate{
+	grouped := lir.Aggregate{
 		Input:  bscan("tasks", "t"),
 		Scope:  "stats",
-		Groups: []qir.GroupTerm{{Expr: bcol("t", "status")}},
-		Terms:  []qir.AggTerm{{Fn: qir.AggCount, As: "n"}},
+		Groups: []lir.GroupTerm{{Expr: bcol("t", "status")}},
+		Terms:  []lir.AggTerm{{Fn: lir.AggCount, As: "n"}},
 	}
-	bind(t, qir.Query{Card: qir.CardMany, Root: qir.Filter{
+	bind(t, lir.Query{Card: lir.CardMany, Root: lir.Filter{
 		Input: grouped,
-		Pred:  qir.Binary{Op: qir.OpGt, L: bcol("stats", "n"), R: blit(10)},
+		Pred:  lir.Binary{Op: lir.OpGt, L: bcol("stats", "n"), R: blit(10)},
 	}})
 
 	// The scan's scope is gone above the aggregate.
-	bindErr(t, qir.Query{Card: qir.CardMany, Root: qir.Filter{
+	bindErr(t, lir.Query{Card: lir.CardMany, Root: lir.Filter{
 		Input: grouped,
 		Pred:  beq(bcol("t", "status"), blit("open")),
 	}}, `unknown scope "t"`)
 
 	// Unlabelled aggregates cannot be referenced — the error says why.
-	bindErr(t, qir.Query{Card: qir.CardMany, Root: qir.Filter{
-		Input: qir.Aggregate{
+	bindErr(t, lir.Query{Card: lir.CardMany, Root: lir.Filter{
+		Input: lir.Aggregate{
 			Input:  bscan("tasks", "t"),
-			Groups: []qir.GroupTerm{{Expr: bcol("t", "status")}},
-			Terms:  []qir.AggTerm{{Fn: qir.AggCount, As: "n"}},
+			Groups: []lir.GroupTerm{{Expr: bcol("t", "status")}},
+			Terms:  []lir.AggTerm{{Fn: lir.AggCount, As: "n"}},
 		},
-		Pred: qir.Binary{Op: qir.OpGt, L: bcol("stats", "n"), R: blit(10)},
+		Pred: lir.Binary{Op: lir.OpGt, L: bcol("stats", "n"), R: blit(10)},
 	}}, `unknown scope "stats"`)
 }
 
 func TestClosureAboveProject(t *testing.T) {
-	shaped := qir.Project{
+	shaped := lir.Project{
 		Input: bscan("tasks", "t"),
 		Scope: "shaped",
-		Fields: []qir.ProjField{
+		Fields: []lir.ProjField{
 			{As: "id", Expr: bcol("t", "id")},
-			{As: "score", Expr: qir.Binary{Op: qir.OpMul, L: bcol("t", "priority"), R: blit(2)}},
+			{As: "score", Expr: lir.Binary{Op: lir.OpMul, L: bcol("t", "priority"), R: blit(2)}},
 		},
 	}
-	bind(t, qir.Query{Card: qir.CardMany, Root: qir.Filter{
+	bind(t, lir.Query{Card: lir.CardMany, Root: lir.Filter{
 		Input: shaped,
-		Pred:  qir.Binary{Op: qir.OpGt, L: bcol("shaped", "score"), R: blit(10)},
+		Pred:  lir.Binary{Op: lir.OpGt, L: bcol("shaped", "score"), R: blit(10)},
 	}})
-	bindErr(t, qir.Query{Card: qir.CardMany, Root: qir.Filter{
+	bindErr(t, lir.Query{Card: lir.CardMany, Root: lir.Filter{
 		Input: shaped,
 		Pred:  beq(bcol("t", "title"), blit("x")),
 	}}, `unknown scope "t"`)
@@ -398,20 +398,20 @@ func TestClosureAboveProject(t *testing.T) {
 
 func TestLiteralCoercion(t *testing.T) {
 	// A NULL literal adopts the column's type.
-	bind(t, qir.Query{Card: qir.CardMany, Root: bfilter(bscan("tasks", "t"),
+	bind(t, lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
 		beq(bcol("t", "assignee_id"), blit(nil)))})
 
 	// Numbers coerce by column type, never by guess.
-	bind(t, qir.Query{Card: qir.CardMany, Root: bfilter(bscan("tasks", "t"),
-		qir.Binary{Op: qir.OpGte, L: bcol("t", "priority"), R: blit(3)})})
-	bind(t, qir.Query{Card: qir.CardMany, Root: bfilter(bscan("tasks", "t"),
-		qir.Binary{Op: qir.OpLt, L: bcol("t", "estimate"), R: blit(2)})}) // int literal, float column
+	bind(t, lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
+		lir.Binary{Op: lir.OpGte, L: bcol("t", "priority"), R: blit(3)})})
+	bind(t, lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
+		lir.Binary{Op: lir.OpLt, L: bcol("t", "estimate"), R: blit(2)})}) // int literal, float column
 
-	bindErr(t, qir.Query{Card: qir.CardMany, Root: bfilter(bscan("tasks", "t"),
+	bindErr(t, lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
 		beq(bcol("t", "status"), blit(5)))}, "expected a text value")
-	bindErr(t, qir.Query{Card: qir.CardMany, Root: bfilter(bscan("tasks", "t"),
+	bindErr(t, lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
 		beq(bcol("t", "priority"), blit(1.5)))}, "expected a int64 value")
-	bindErr(t, qir.Query{Card: qir.CardMany, Root: bfilter(bscan("tasks", "t"),
+	bindErr(t, lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
 		beq(blit(nil), blit(nil)))}, "bare NULL")
 }
 
@@ -420,147 +420,147 @@ func TestLiteralCoercion(t *testing.T) {
 func TestValidationMatrix(t *testing.T) {
 	cases := []struct {
 		name string
-		q    qir.Query
+		q    lir.Query
 		want string
 	}{
 		{"unknown table",
-			qir.Query{Card: qir.CardMany, Root: bscan("ghosts", "g")},
+			lir.Query{Card: lir.CardMany, Root: bscan("ghosts", "g")},
 			`unknown table "ghosts"`},
 		{"scan needs scope",
-			qir.Query{Card: qir.CardMany, Root: bscan("tasks", "")},
+			lir.Query{Card: lir.CardMany, Root: bscan("tasks", "")},
 			"needs a scope label"},
 		{"duplicate scope",
-			qir.Query{Card: qir.CardMany, Root: qir.Join{
+			lir.Query{Card: lir.CardMany, Root: lir.Join{
 				Left: bscan("tasks", "t"), Right: bscan("comments", "t"),
-				Kind: qir.InnerJoin, On: blit(true)}},
+				Kind: lir.InnerJoin, On: blit(true)}},
 			`duplicate scope "t"`},
 		{"unknown column",
-			qir.Query{Card: qir.CardMany, Root: bfilter(bscan("tasks", "t"), beq(bcol("t", "ghost"), blit("x")))},
+			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"), beq(bcol("t", "ghost"), blit("x")))},
 			`scope "t" has no column "ghost"`},
 		{"unqualified column",
-			qir.Query{Card: qir.CardMany, Root: bfilter(bscan("tasks", "t"), beq(bcol("", "status"), blit("x")))},
+			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"), beq(bcol("", "status"), blit("x")))},
 			"needs a scope qualifier"},
 		{"filter needs bool",
-			qir.Query{Card: qir.CardMany, Root: bfilter(bscan("tasks", "t"), bcol("t", "title"))},
+			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"), bcol("t", "title"))},
 			"filter predicate must be boolean"},
 		{"and needs bools",
-			qir.Query{Card: qir.CardMany, Root: bfilter(bscan("tasks", "t"),
+			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
 				band(bcol("t", "title"), blit(true)))},
 			"and needs boolean operands"},
 		{"not needs bool",
-			qir.Query{Card: qir.CardMany, Root: bfilter(bscan("tasks", "t"),
-				qir.Unary{Op: qir.OpNot, X: bcol("t", "title")})},
+			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
+				lir.Unary{Op: lir.OpNot, X: bcol("t", "title")})},
 			"not needs a boolean"},
 		{"negate needs numeric",
-			qir.Query{Card: qir.CardMany, Root: bfilter(bscan("tasks", "t"),
-				beq(qir.Unary{Op: qir.OpNegate, X: bcol("t", "title")}, blit("x")))},
+			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
+				beq(lir.Unary{Op: lir.OpNegate, X: bcol("t", "title")}, blit("x")))},
 			"cannot negate"},
 		{"comparing mixed kinds",
-			qir.Query{Card: qir.CardMany, Root: bfilter(bscan("tasks", "t"),
+			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
 				beq(bcol("t", "priority"), bcol("t", "title")))},
 			"cannot compare int64 with text"},
 		{"arithmetic needs numbers",
-			qir.Query{Card: qir.CardMany, Root: bfilter(bscan("tasks", "t"),
-				beq(qir.Binary{Op: qir.OpAdd, L: bcol("t", "title"), R: blit("x")}, blit("y")))},
+			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
+				beq(lir.Binary{Op: lir.OpAdd, L: bcol("t", "title"), R: blit("x")}, blit("y")))},
 			"add needs numeric operands"},
 		{"unknown function",
-			qir.Query{Card: qir.CardMany, Root: bfilter(bscan("tasks", "t"),
-				beq(qir.Call{Fn: "lower", Args: []qir.Expr{bcol("t", "title")}}, blit("x")))},
+			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
+				beq(lir.Call{Fn: "lower", Args: []lir.Expr{bcol("t", "title")}}, blit("x")))},
 			`unknown function "lower"`},
 		{"bad cast",
-			qir.Query{Card: qir.CardMany, Root: bfilter(bscan("tasks", "t"),
-				beq(qir.Cast{X: bcol("t", "title"), To: qir.KindBool}, blit(true)))},
+			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
+				beq(lir.Cast{X: bcol("t", "title"), To: lir.KindBool}, blit(true)))},
 			"cannot cast text to bool"},
 		{"sum needs numeric",
-			qir.Query{Card: qir.CardMany, Root: qir.Aggregate{Input: bscan("tasks", "t"),
-				Terms: []qir.AggTerm{{Fn: qir.AggSum, Arg: bcol("t", "title"), As: "s"}}}},
+			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{Input: bscan("tasks", "t"),
+				Terms: []lir.AggTerm{{Fn: lir.AggSum, Arg: bcol("t", "title"), As: "s"}}}},
 			"sum requires a numeric argument"},
 		{"aggregate needs as",
-			qir.Query{Card: qir.CardMany, Root: qir.Aggregate{Input: bscan("tasks", "t"),
-				Terms: []qir.AggTerm{{Fn: qir.AggCount}}}},
+			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{Input: bscan("tasks", "t"),
+				Terms: []lir.AggTerm{{Fn: lir.AggCount}}}},
 			"needs an output name"},
 		{"duplicate aggregate name",
-			qir.Query{Card: qir.CardMany, Root: qir.Aggregate{Input: bscan("tasks", "t"),
-				Terms: []qir.AggTerm{{Fn: qir.AggCount, As: "n"}, {Fn: qir.AggCount, As: "n"}}}},
+			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{Input: bscan("tasks", "t"),
+				Terms: []lir.AggTerm{{Fn: lir.AggCount, As: "n"}, {Fn: lir.AggCount, As: "n"}}}},
 			`duplicate aggregate output name "n"`},
 		{"unknown aggregate fn",
-			qir.Query{Card: qir.CardMany, Root: qir.Aggregate{Input: bscan("tasks", "t"),
-				Terms: []qir.AggTerm{{Fn: "median", Arg: bcol("t", "priority"), As: "m"}}}},
+			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{Input: bscan("tasks", "t"),
+				Terms: []lir.AggTerm{{Fn: "median", Arg: bcol("t", "priority"), As: "m"}}}},
 			`unknown aggregate function "median"`},
 		{"empty aggregate",
-			qir.Query{Card: qir.CardMany, Root: qir.Aggregate{Input: bscan("tasks", "t")}},
+			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{Input: bscan("tasks", "t")}},
 			"at least one group or term"},
 		{"group needs name",
-			qir.Query{Card: qir.CardMany, Root: qir.Aggregate{Input: bscan("tasks", "t"),
-				Groups: []qir.GroupTerm{{Expr: qir.Binary{Op: qir.OpAdd, L: bcol("t", "priority"), R: blit(1)}}},
-				Terms:  []qir.AggTerm{{Fn: qir.AggCount, As: "n"}}}},
+			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{Input: bscan("tasks", "t"),
+				Groups: []lir.GroupTerm{{Expr: lir.Binary{Op: lir.OpAdd, L: bcol("t", "priority"), R: blit(1)}}},
+				Terms:  []lir.AggTerm{{Fn: lir.AggCount, As: "n"}}}},
 			"group expression needs an output name"},
 		{"projection needs fields",
-			qir.Query{Card: qir.CardMany, Root: qir.Project{Input: bscan("tasks", "t")}},
+			lir.Query{Card: lir.CardMany, Root: lir.Project{Input: bscan("tasks", "t")}},
 			"projection has no fields"},
 		{"duplicate projection field",
-			qir.Query{Card: qir.CardMany, Root: qir.Project{Input: bscan("tasks", "t"),
-				Fields: []qir.ProjField{
+			lir.Query{Card: lir.CardMany, Root: lir.Project{Input: bscan("tasks", "t"),
+				Fields: []lir.ProjField{
 					{As: "x", Expr: bcol("t", "id")},
 					{As: "x", Expr: bcol("t", "title")}}}},
 			`duplicate projection field "x"`},
 		{"spread collides with field",
-			qir.Query{Card: qir.CardMany, Root: qir.Project{Input: bscan("tasks", "t"),
+			lir.Query{Card: lir.CardMany, Root: lir.Project{Input: bscan("tasks", "t"),
 				Spread: []string{"t"},
-				Fields: []qir.ProjField{{As: "title", Expr: bcol("t", "id")}}}},
+				Fields: []lir.ProjField{{As: "title", Expr: bcol("t", "id")}}}},
 			`duplicate projection field "title"`},
 		{"spread of unknown scope",
-			qir.Query{Card: qir.CardMany, Root: qir.Project{Input: bscan("tasks", "t"),
+			lir.Query{Card: lir.CardMany, Root: lir.Project{Input: bscan("tasks", "t"),
 				Spread: []string{"z"},
-				Fields: []qir.ProjField{{As: "id", Expr: bcol("t", "id")}}}},
+				Fields: []lir.ProjField{{As: "id", Expr: bcol("t", "id")}}}},
 			`spread scope "z"`},
 		{"order needs terms",
-			qir.Query{Card: qir.CardMany, Root: qir.Order{Input: bscan("tasks", "t")}},
+			lir.Query{Card: lir.CardMany, Root: lir.Order{Input: bscan("tasks", "t")}},
 			"order needs at least one term"},
 		{"order by array",
-			qir.Query{Card: qir.CardMany, Root: qir.Order{
+			lir.Query{Card: lir.CardMany, Root: lir.Order{
 				Input: bscan("boards", "b"),
-				Terms: []qir.OrderTerm{{Expr: qir.Array{Rel: bfilter(bscan("tasks", "t"),
+				Terms: []lir.OrderTerm{{Expr: lir.Array{Rel: bfilter(bscan("tasks", "t"),
 					beq(bcol("t", "board_id"), bcol("b", "id")))}}}}},
 			"cannot order by a array value"},
 		{"negative offset",
-			qir.Query{Card: qir.CardMany, Root: qir.Slice{Input: bscan("tasks", "t"), Offset: -1}},
+			lir.Query{Card: lir.CardMany, Root: lir.Slice{Input: bscan("tasks", "t"), Offset: -1}},
 			"offset must be >= 0"},
 		{"negative limit",
-			qir.Query{Card: qir.CardMany, Root: qir.Slice{Input: bscan("tasks", "t"), Limit: new(int(-2))}},
+			lir.Query{Card: lir.CardMany, Root: lir.Slice{Input: bscan("tasks", "t"), Limit: new(int(-2))}},
 			"limit must be >= 0"},
 		{"join kind",
-			qir.Query{Card: qir.CardMany, Root: qir.Join{
+			lir.Query{Card: lir.CardMany, Root: lir.Join{
 				Left: bscan("tasks", "t"), Right: bscan("users", "u"),
 				Kind: "cross", On: blit(true)}},
 			`unsupported join kind "cross"`},
 		{"join on bool",
-			qir.Query{Card: qir.CardMany, Root: qir.Join{
+			lir.Query{Card: lir.CardMany, Root: lir.Join{
 				Left: bscan("tasks", "t"), Right: bscan("users", "u"),
-				Kind: qir.InnerJoin, On: bcol("t", "title")}},
+				Kind: lir.InnerJoin, On: bcol("t", "title")}},
 			"join condition must be boolean"},
 		{"dependent join right side",
-			qir.Query{Card: qir.CardMany, Root: qir.Join{
+			lir.Query{Card: lir.CardMany, Root: lir.Join{
 				Left: bscan("boards", "b"),
 				Right: bfilter(bscan("tasks", "t"),
 					beq(bcol("t", "board_id"), bcol("b", "id"))),
-				Kind: qir.InnerJoin, On: blit(true)}},
+				Kind: lir.InnerJoin, On: blit(true)}},
 			"join right side references"},
 		{"dependent join through a projection",
-			qir.Query{Card: qir.CardMany, Root: qir.Join{
+			lir.Query{Card: lir.CardMany, Root: lir.Join{
 				Left: bscan("boards", "b"),
-				Right: qir.Project{Input: bscan("tasks", "t"),
-					Fields: []qir.ProjField{{As: "owner", Expr: bcol("b", "owner_id")}}},
-				Kind: qir.LeftJoin, On: blit(true)}},
+				Right: lir.Project{Input: bscan("tasks", "t"),
+					Fields: []lir.ProjField{{As: "owner", Expr: bcol("b", "owner_id")}}},
+				Kind: lir.LeftJoin, On: blit(true)}},
 			"join right side references"},
 		{"spread across a crossing boundary",
-			qir.Query{Card: qir.CardMany, Root: qir.Project{
+			lir.Query{Card: lir.CardMany, Root: lir.Project{
 				Input:  bscan("boards", "b"),
 				Spread: []string{"b"},
-				Fields: []qir.ProjField{{As: "tasks", Expr: qir.Array{Rel: qir.Project{
+				Fields: []lir.ProjField{{As: "tasks", Expr: lir.Array{Rel: lir.Project{
 					Input:  bfilter(bscan("tasks", "t"), beq(bcol("t", "board_id"), bcol("b", "id"))),
 					Spread: []string{"b"}, // outer scope: visible for refs, not spreadable
-					Fields: []qir.ProjField{{As: "id", Expr: bcol("t", "id")}},
+					Fields: []lir.ProjField{{As: "id", Expr: bcol("t", "id")}},
 				}}}},
 			}},
 			`spread scope "b" is not produced beneath`},
@@ -573,11 +573,11 @@ func TestValidationMatrix(t *testing.T) {
 // A join keeps both sides' scopes visible above it, and slice-limit nil vs 0
 // are distinct: zero rows is expressible.
 func TestJoinScopesAndZeroLimit(t *testing.T) {
-	q := bind(t, qir.Query{Card: qir.CardMany, Root: qir.Filter{
-		Input: qir.Join{
+	q := bind(t, lir.Query{Card: lir.CardMany, Root: lir.Filter{
+		Input: lir.Join{
 			Left:  bscan("tasks", "t"),
 			Right: bscan("users", "u"),
-			Kind:  qir.LeftJoin,
+			Kind:  lir.LeftJoin,
 			On:    beq(bcol("t", "assignee_id"), bcol("u", "id")),
 		},
 		Pred: beq(bcol("u", "name"), blit("ada")),
@@ -586,7 +586,7 @@ func TestJoinScopesAndZeroLimit(t *testing.T) {
 		t.Fatalf("root = %T", q.Root)
 	}
 
-	zq := bind(t, qir.Query{Card: qir.CardMany, Root: qir.Slice{Input: bscan("tasks", "t"), Limit: new(int(0))}})
+	zq := bind(t, lir.Query{Card: lir.CardMany, Root: lir.Slice{Input: bscan("tasks", "t"), Limit: new(int(0))}})
 	if got := zq.Root.Card(); !got.AtMostOne() || got.Max != 0 {
 		t.Fatalf("limit 0 card = %v, want 0..0", got)
 	}
@@ -595,19 +595,19 @@ func TestJoinScopesAndZeroLimit(t *testing.T) {
 // A join input may be correlated with an enclosing query — only sibling
 // dependence is rejected. Both sides here reference the outer board scope.
 func TestJoinCorrelatedWithEnclosingScope(t *testing.T) {
-	bind(t, qir.Query{Card: qir.CardMany, Root: qir.Project{
+	bind(t, lir.Query{Card: lir.CardMany, Root: lir.Project{
 		Input:  bscan("boards", "b"),
 		Spread: []string{"b"},
-		Fields: []qir.ProjField{{As: "pairs", Expr: qir.Array{Rel: qir.Project{
-			Input: qir.Join{
+		Fields: []lir.ProjField{{As: "pairs", Expr: lir.Array{Rel: lir.Project{
+			Input: lir.Join{
 				Left: bfilter(bscan("tasks", "t"),
 					beq(bcol("t", "board_id"), bcol("b", "id"))),
 				Right: bfilter(bscan("users", "u"),
 					beq(bcol("u", "id"), bcol("b", "owner_id"))),
-				Kind: qir.InnerJoin,
+				Kind: lir.InnerJoin,
 				On:   beq(bcol("t", "assignee_id"), bcol("u", "id")),
 			},
-			Fields: []qir.ProjField{
+			Fields: []lir.ProjField{
 				{As: "task", Expr: bcol("t", "title")},
 				{As: "user", Expr: bcol("u", "name")},
 			},

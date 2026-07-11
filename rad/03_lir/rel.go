@@ -1,4 +1,4 @@
-package qir
+package lir
 
 // Unbound relations. Operators consume relations and produce relations;
 // the output of every node is usable as an ordinary input (relational

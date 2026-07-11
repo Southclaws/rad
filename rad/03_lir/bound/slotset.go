@@ -8,7 +8,7 @@ package bound
 import (
 	"slices"
 
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 )
 
 // SlotSet is a set of slot IDs, backed by a bitset over the binder's dense
@@ -19,7 +19,7 @@ type SlotSet struct {
 }
 
 // NewSlotSet builds a set from ids.
-func NewSlotSet(ids ...qir.SlotID) SlotSet {
+func NewSlotSet(ids ...lir.SlotID) SlotSet {
 	var s SlotSet
 	for _, id := range ids {
 		s.add(id)
@@ -27,7 +27,7 @@ func NewSlotSet(ids ...qir.SlotID) SlotSet {
 	return s
 }
 
-func (s *SlotSet) add(id qir.SlotID) {
+func (s *SlotSet) add(id lir.SlotID) {
 	w := int(id) / 64
 	for len(s.words) <= w {
 		s.words = append(s.words, 0)
@@ -36,7 +36,7 @@ func (s *SlotSet) add(id qir.SlotID) {
 }
 
 // Contains reports membership.
-func (s SlotSet) Contains(id qir.SlotID) bool {
+func (s SlotSet) Contains(id lir.SlotID) bool {
 	w := int(id) / 64
 	return w < len(s.words) && s.words[w]&(1<<(uint(id)%64)) != 0
 }
@@ -73,12 +73,12 @@ func (s SlotSet) Empty() bool {
 }
 
 // Slots lists members in ascending order.
-func (s SlotSet) Slots() []qir.SlotID {
-	var out []qir.SlotID
+func (s SlotSet) Slots() []lir.SlotID {
+	var out []lir.SlotID
 	for wi, w := range s.words {
 		for b := range 64 {
 			if w&(1<<uint(b)) != 0 {
-				out = append(out, qir.SlotID(wi*64+b))
+				out = append(out, lir.SlotID(wi*64+b))
 			}
 		}
 	}

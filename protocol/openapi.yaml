@@ -463,12 +463,12 @@ components:
           type: string
           enum: [invalid, not_found, conflict, internal]
 
-    # The Query IR schemas live once in qir.schema.json and are referenced
+    # The Query IR schemas live once in lir.schema.json and are referenced
     # here, so the wire contract and the IR share a single source of truth
     # rather than duplicating it. ogen inlines them at generation time
     # (parser.allow_remote, see ogen.yaml).
     Value:
-      $ref: "qir.schema.json#/$defs/Value"
+      $ref: "lir.schema.json#/$defs/Value"
 
     Record:
       description: |
@@ -487,28 +487,28 @@ components:
       additionalProperties: { $ref: "#/components/schemas/Value" }
 
     Query:
-      $ref: "qir.schema.json#/$defs/Query"
+      $ref: "lir.schema.json#/$defs/Query"
 
     Node:
-      $ref: "qir.schema.json#/$defs/Node"
+      $ref: "lir.schema.json#/$defs/Node"
 
     Root:
-      $ref: "qir.schema.json#/$defs/Root"
+      $ref: "lir.schema.json#/$defs/Root"
 
     Expr:
-      $ref: "qir.schema.json#/$defs/Expr"
+      $ref: "lir.schema.json#/$defs/Expr"
 
     Field:
-      $ref: "qir.schema.json#/$defs/Field"
+      $ref: "lir.schema.json#/$defs/Field"
 
     GroupTerm:
-      $ref: "qir.schema.json#/$defs/GroupTerm"
+      $ref: "lir.schema.json#/$defs/GroupTerm"
 
     AggTerm:
-      $ref: "qir.schema.json#/$defs/AggTerm"
+      $ref: "lir.schema.json#/$defs/AggTerm"
 
     OrderTerm:
-      $ref: "qir.schema.json#/$defs/OrderTerm"
+      $ref: "lir.schema.json#/$defs/OrderTerm"
 
     ColumnInfo:
       description: One column of a table, as reported by introspection.

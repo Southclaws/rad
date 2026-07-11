@@ -1,4 +1,4 @@
-# Design: QIR v2 — the relation graph
+# Design: LIR v2 — the relation graph
 
 Status: approved design, implementation in progress
 
@@ -24,7 +24,7 @@ hand-written SQL executor, with nicer JSON at the entrance.
 
 The shaped read got the important things right: results shaped like the
 application's data, named relationship traversal, logical filters separated
-from physical access paths, the residual filter as the source of truth. QIR
+from physical access paths, the residual filter as the source of truth. LIR
 v2 keeps all of that and fixes the architecture underneath with one idea:
 
 > **A relationship is not a kind of query. It is an ordinary correlated
@@ -85,7 +85,7 @@ ordinary relation?** Every time the answer is yes, resist the special node.
 SQL is the cautionary tale — a different spelling for every variation of the
 same underlying problem. All of these are already expressible here:
 
-| SQL spelling | QIR expression |
+| SQL spelling | LIR expression |
 |---|---|
 | `EXISTS (subquery)` | `Exists(rel)` |
 | `x IN (subquery)` | `Exists(Filter(rel, col = x))` |

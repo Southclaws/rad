@@ -18,7 +18,7 @@ import (
 	kv "rad/rad/01_kv"
 	keyenc "rad/rad/01_kv/keyenc"
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 )
 
 // Engine executes reads and writes against the database's tables.
@@ -95,20 +95,20 @@ func tableIn(ctx context.Context, view kv.KV, name string) (catalog.Table, error
 
 // normalizeRow validates row against the table definition and returns a copy
 // with every column present (absent nullable columns become explicit NULLs).
-func normalizeRow(tbl catalog.Table, row qir.Row) (qir.Row, error) {
+func normalizeRow(tbl catalog.Table, row lir.Row) (lir.Row, error) {
 	for name := range row {
 		if _, ok := tbl.Column(name); !ok {
 			return nil, fmt.Errorf("exec: table %q has no column %q", tbl.Name, name)
 		}
 	}
-	out := make(qir.Row, len(tbl.Columns))
+	out := make(lir.Row, len(tbl.Columns))
 	for _, col := range tbl.Columns {
 		v, ok := row[col.Name]
 		if !ok || v.Null {
 			if !col.Nullable {
 				return nil, fmt.Errorf("exec: column %q is not nullable", col.Name)
 			}
-			out[col.Name] = qir.Null(col.Type)
+			out[col.Name] = lir.Null(col.Type)
 			continue
 		}
 		if v.Type != col.Type {
@@ -121,20 +121,20 @@ func normalizeRow(tbl catalog.Table, row qir.Row) (qir.Row, error) {
 
 // Insert adds one row in its own transaction. For multi-row atomicity use
 // Engine.Txn with Tx.Insert.
-func (e *Engine) Insert(ctx context.Context, table string, row qir.Row) error {
+func (e *Engine) Insert(ctx context.Context, table string, row lir.Row) error {
 	_, err := e.Create(ctx, table, row)
 	return err
 }
 
-func (tx *Tx) Insert(ctx context.Context, table string, row qir.Row) error {
+func (tx *Tx) Insert(ctx context.Context, table string, row lir.Row) error {
 	_, err := tx.Create(ctx, table, row)
 	return err
 }
 
 // Create is Insert returning the stored row — the caller's values plus
 // applied defaults (generated IDs, timestamps).
-func (e *Engine) Create(ctx context.Context, table string, row qir.Row) (qir.Row, error) {
-	var stored qir.Row
+func (e *Engine) Create(ctx context.Context, table string, row lir.Row) (lir.Row, error) {
+	var stored lir.Row
 	err := e.Txn(ctx, func(tx *Tx) error {
 		var err error
 		stored, err = tx.Create(ctx, table, row)
@@ -146,11 +146,11 @@ func (e *Engine) Create(ctx context.Context, table string, row qir.Row) (qir.Row
 	return stored, nil
 }
 
-func (tx *Tx) Create(ctx context.Context, table string, row qir.Row) (qir.Row, error) {
+func (tx *Tx) Create(ctx context.Context, table string, row lir.Row) (lir.Row, error) {
 	return tx.e.insert(ctx, tx.txn, table, row)
 }
 
-func (e *Engine) insert(ctx context.Context, view kv.KV, table string, row qir.Row) (qir.Row, error) {
+func (e *Engine) insert(ctx context.Context, view kv.KV, table string, row lir.Row) (lir.Row, error) {
 	tbl, err := tableIn(ctx, view, table)
 	if err != nil {
 		return nil, err
@@ -205,9 +205,9 @@ func (e *Engine) insert(ctx context.Context, view kv.KV, table string, row qir.R
 // column is NULL the constraint is not checked (matches SQL semantics).
 // Inside a serializable transaction the parent read is tracked, so a
 // concurrent delete of the parent conflicts at commit.
-func checkForeignKeys(ctx context.Context, view kv.KV, tbl catalog.Table, row qir.Row) error {
+func checkForeignKeys(ctx context.Context, view kv.KV, tbl catalog.Table, row lir.Row) error {
 	for _, fk := range tbl.ForeignKeys {
-		vals := make([]qir.Value, len(fk.Columns))
+		vals := make([]lir.Value, len(fk.Columns))
 		null := false
 		for i, name := range fk.Columns {
 			vals[i] = row[name]
@@ -245,7 +245,7 @@ func checkForeignKeys(ctx context.Context, view kv.KV, tbl catalog.Table, row qi
 // even when the scan returns nothing, so two concurrent inserts of the same
 // unique value (different PKs, hence different index keys) conflict at
 // commit instead of both succeeding.
-func checkUniqueIndexes(ctx context.Context, view kv.KV, tbl catalog.Table, row qir.Row, pkTuple []byte) error {
+func checkUniqueIndexes(ctx context.Context, view kv.KV, tbl catalog.Table, row lir.Row, pkTuple []byte) error {
 	for _, idx := range tbl.Indexes {
 		if !idx.Unique || anyNullComponent(row, idx.Columns) {
 			continue
@@ -277,7 +277,7 @@ func checkUniqueIndexes(ctx context.Context, view kv.KV, tbl catalog.Table, row 
 }
 
 // anyNullComponent reports whether any of the named columns is NULL in row.
-func anyNullComponent(row qir.Row, cols []string) bool {
+func anyNullComponent(row lir.Row, cols []string) bool {
 	for _, c := range cols {
 		if row[c].Null {
 			return true
@@ -288,7 +288,7 @@ func anyNullComponent(row qir.Row, cols []string) bool {
 
 // GetByPrimaryKey fetches one row by its primary key values. key must contain
 // exactly the primary key columns.
-func (e *Engine) GetByPrimaryKey(ctx context.Context, table string, key qir.Row) (qir.Row, bool, error) {
+func (e *Engine) GetByPrimaryKey(ctx context.Context, table string, key lir.Row) (lir.Row, bool, error) {
 	txn, err := e.store.Begin(ctx, kv.Snapshot)
 	if err != nil {
 		return nil, false, err
@@ -297,11 +297,11 @@ func (e *Engine) GetByPrimaryKey(ctx context.Context, table string, key qir.Row)
 	return getByPrimaryKey(ctx, txn, table, key)
 }
 
-func (tx *Tx) GetByPrimaryKey(ctx context.Context, table string, key qir.Row) (qir.Row, bool, error) {
+func (tx *Tx) GetByPrimaryKey(ctx context.Context, table string, key lir.Row) (lir.Row, bool, error) {
 	return getByPrimaryKey(ctx, tx.txn, table, key)
 }
 
-func getByPrimaryKey(ctx context.Context, view kv.KV, table string, key qir.Row) (qir.Row, bool, error) {
+func getByPrimaryKey(ctx context.Context, view kv.KV, table string, key lir.Row) (lir.Row, bool, error) {
 	tbl, err := tableIn(ctx, view, table)
 	if err != nil {
 		return nil, false, err
@@ -327,7 +327,7 @@ func getByPrimaryKey(ctx context.Context, view kv.KV, table string, key qir.Row)
 // RowIterator streams rows from a scan.
 type RowIterator interface {
 	// Next returns the next row, or ok=false when the scan is exhausted.
-	Next() (qir.Row, bool, error)
+	Next() (lir.Row, bool, error)
 	Close() error
 }
 
@@ -336,7 +336,7 @@ type kvRowIterator struct {
 	tbl catalog.Table
 }
 
-func (r *kvRowIterator) Next() (qir.Row, bool, error) {
+func (r *kvRowIterator) Next() (lir.Row, bool, error) {
 	if !r.it.Next() {
 		return nil, false, r.it.Err()
 	}

@@ -1,4 +1,4 @@
-// Schematic diagrams for the QIR spec, in the home page's hairline / phosphor
+// Schematic diagrams for the LIR spec, in the home page's hairline / phosphor
 // style (see DESIGN.md; matches components/blog-diagrams.tsx). Provided to MDX
 // via the docs components map. Colours are DESIGN.md tokens; literal path bytes
 // read muted, order-preserving encoded tuples read green.
@@ -83,8 +83,8 @@ function Fig({
   );
 }
 
-// ── the read pipeline: wire QIR down to KV and back up as JSON ──────────────
-export function QIRPipeline() {
+// ── the read pipeline: wire LIR down to KV and back up as JSON ──────────────
+export function LIRPipeline() {
   const stages: {
     label: string;
     sub: string;

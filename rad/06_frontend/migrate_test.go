@@ -8,7 +8,7 @@ import (
 	"context"
 	"testing"
 
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 	frontend "rad/rad/06_frontend"
 )
 
@@ -72,10 +72,10 @@ func TestMigrationWorkflow(t *testing.T) {
 	}
 
 	// Live data under v1.
-	if err := db.Insert(ctx, "users", qir.Row{"id": qir.Text("u1"), "name": qir.Text("ada")}); err != nil {
+	if err := db.Insert(ctx, "users", lir.Row{"id": lir.Text("u1"), "name": lir.Text("ada")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Insert(ctx, "tasks", qir.Row{"id": qir.Text("t1"), "user_id": qir.Text("u1"), "title": qir.Text("ship v0")}); err != nil {
+	if err := db.Insert(ctx, "tasks", lir.Row{"id": lir.Text("t1"), "user_id": lir.Text("u1"), "title": lir.Text("ship v0")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -92,11 +92,11 @@ func TestMigrationWorkflow(t *testing.T) {
 	}
 
 	// Existing data is intact under the new names.
-	user, ok, err := db.Get(ctx, "users", qir.Row{"id": qir.Text("u1")})
+	user, ok, err := db.Get(ctx, "users", lir.Row{"id": lir.Text("u1")})
 	if err != nil || !ok {
 		t.Fatalf("ok=%v err=%v", ok, err)
 	}
-	if !user["username"].Equal(qir.Text("ada")) {
+	if !user["username"].Equal(lir.Text("ada")) {
 		t.Fatalf("rename lost data: %v", user)
 	}
 	if !user["email"].Null {
@@ -106,11 +106,11 @@ func TestMigrationWorkflow(t *testing.T) {
 	// The new index was backfilled: a query pinned to its leading column
 	// rides it, and access-path narrowing means a missing entry would lose
 	// the row.
-	d, err := db.Execute(ctx, qir.Query{Card: qir.CardMany, Root: qir.Filter{
-		Input: qir.Scan{Table: "tasks", Scope: "t"},
-		Pred: qir.Binary{Op: qir.OpEq,
-			L: qir.Column{Scope: "t", Name: "user_id"},
-			R: qir.Literal{Raw: "u1"}},
+	d, err := db.Execute(ctx, lir.Query{Card: lir.CardMany, Root: lir.Filter{
+		Input: lir.Scan{Table: "tasks", Scope: "t"},
+		Pred: lir.Binary{Op: lir.OpEq,
+			L: lir.Column{Scope: "t", Name: "user_id"},
+			R: lir.Literal{Raw: "u1"}},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +121,7 @@ func TestMigrationWorkflow(t *testing.T) {
 	}
 
 	// The new table works.
-	if err := db.Insert(ctx, "comments", qir.Row{"id": qir.Text("c1"), "task_id": qir.Text("t1"), "body": qir.Text("nice")}); err != nil {
+	if err := db.Insert(ctx, "comments", lir.Row{"id": lir.Text("c1"), "task_id": lir.Text("t1"), "body": lir.Text("nice")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -141,7 +141,7 @@ func TestUniqueBackfillRejectsDuplicates(t *testing.T) {
 	migrateTo(t, db, ctx, trackerV1)
 
 	for _, id := range []string{"u1", "u2"} {
-		if err := db.Insert(ctx, "users", qir.Row{"id": qir.Text(id), "name": qir.Text("dup")}); err != nil {
+		if err := db.Insert(ctx, "users", lir.Row{"id": lir.Text(id), "name": lir.Text("dup")}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -177,13 +177,13 @@ tables:
 	}
 
 	// Fix the data; the same migration now applies and the constraint is live.
-	if _, _, err := db.Update(ctx, "users", qir.Row{"id": qir.Text("u2")}, qir.Row{"name": qir.Text("unique")}); err != nil {
+	if _, _, err := db.Update(ctx, "users", lir.Row{"id": lir.Text("u2")}, lir.Row{"name": lir.Text("unique")}); err != nil {
 		t.Fatal(err)
 	}
 	if steps := migrateTo(t, db, ctx, uniqueName); len(steps) == 0 {
 		t.Fatal("re-migration after fixing data applied no steps")
 	}
-	if err := db.Insert(ctx, "users", qir.Row{"id": qir.Text("u3"), "name": qir.Text("dup")}); err == nil {
+	if err := db.Insert(ctx, "users", lir.Row{"id": lir.Text("u3"), "name": lir.Text("dup")}); err == nil {
 		t.Fatal("unique index registered by re-migration is not enforcing")
 	}
 }

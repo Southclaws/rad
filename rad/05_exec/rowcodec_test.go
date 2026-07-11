@@ -8,12 +8,12 @@ import (
 	"testing"
 
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 )
 
 func TestRenameColumnPreservesData(t *testing.T) {
 	eng, ctx := setup(t)
-	if err := eng.Insert(ctx, "users", qir.Row{"id": qir.Int64(1), "name": qir.Text("Alice")}); err != nil {
+	if err := eng.Insert(ctx, "users", lir.Row{"id": lir.Int64(1), "name": lir.Text("Alice")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -21,11 +21,11 @@ func TestRenameColumnPreservesData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	row, ok, err := eng.GetByPrimaryKey(ctx, "users", qir.Row{"id": qir.Int64(1)})
+	row, ok, err := eng.GetByPrimaryKey(ctx, "users", lir.Row{"id": lir.Int64(1)})
 	if err != nil || !ok {
 		t.Fatalf("ok=%v err=%v", ok, err)
 	}
-	if !row["full_name"].Equal(qir.Text("Alice")) {
+	if !row["full_name"].Equal(lir.Text("Alice")) {
 		t.Fatalf("data lost across rename: %v", row)
 	}
 	if _, present := row["name"]; present {
@@ -33,10 +33,10 @@ func TestRenameColumnPreservesData(t *testing.T) {
 	}
 
 	// Writes under the new name work, and the renamed index still serves.
-	if err := eng.Insert(ctx, "users", qir.Row{"id": qir.Int64(2), "full_name": qir.Text("Bob")}); err != nil {
+	if err := eng.Insert(ctx, "users", lir.Row{"id": lir.Int64(2), "full_name": lir.Text("Bob")}); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := eng.ScanIndex(ctx, "users", "users_name_idx", qir.Row{"full_name": qir.Text("Alice")})
+	rows, err := eng.ScanIndex(ctx, "users", "users_name_idx", lir.Row{"full_name": lir.Text("Alice")})
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("index after rename: rows=%d err=%v", len(rows), err)
 	}
@@ -44,7 +44,7 @@ func TestRenameColumnPreservesData(t *testing.T) {
 
 func TestAddColumnOldRowsReadDefaults(t *testing.T) {
 	eng, ctx := setup(t)
-	if err := eng.Insert(ctx, "users", qir.Row{"id": qir.Int64(1), "name": qir.Text("Alice")}); err != nil {
+	if err := eng.Insert(ctx, "users", lir.Row{"id": lir.Int64(1), "name": lir.Text("Alice")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -59,11 +59,11 @@ func TestAddColumnOldRowsReadDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	row, _, err := eng.GetByPrimaryKey(ctx, "users", qir.Row{"id": qir.Int64(1)})
+	row, _, err := eng.GetByPrimaryKey(ctx, "users", lir.Row{"id": lir.Int64(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !row["active"].Equal(qir.Bool(true)) {
+	if !row["active"].Equal(lir.Bool(true)) {
 		t.Fatalf("literal default not served for old row: %v", row["active"])
 	}
 	if !row["bio"].Null {
@@ -73,7 +73,7 @@ func TestAddColumnOldRowsReadDefaults(t *testing.T) {
 
 func TestDropColumnHidesData(t *testing.T) {
 	eng, ctx := setup(t)
-	if err := eng.Insert(ctx, "users", qir.Row{"id": qir.Int64(1), "name": qir.Text("Alice"), "age": qir.Int64(30)}); err != nil {
+	if err := eng.Insert(ctx, "users", lir.Row{"id": lir.Int64(1), "name": lir.Text("Alice"), "age": lir.Int64(30)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -81,7 +81,7 @@ func TestDropColumnHidesData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	row, _, err := eng.GetByPrimaryKey(ctx, "users", qir.Row{"id": qir.Int64(1)})
+	row, _, err := eng.GetByPrimaryKey(ctx, "users", lir.Row{"id": lir.Int64(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestDropColumnHidesData(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	row, _, _ = eng.GetByPrimaryKey(ctx, "users", qir.Row{"id": qir.Int64(1)})
+	row, _, _ = eng.GetByPrimaryKey(ctx, "users", lir.Row{"id": lir.Int64(1)})
 	if !row["age"].Null {
 		t.Fatalf("recreated column resurrected old data: %v", row["age"])
 	}

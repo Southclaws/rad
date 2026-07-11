@@ -7,14 +7,14 @@ import (
 	"time"
 
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 )
 
 // applyDefaults returns row with catalog defaults filled in for columns the
 // caller omitted. Explicit values — including explicit NULLs — win over
 // defaults.
-func applyDefaults(tbl catalog.Table, row qir.Row) (qir.Row, error) {
-	out := make(qir.Row, len(tbl.Columns))
+func applyDefaults(tbl catalog.Table, row lir.Row) (lir.Row, error) {
+	out := make(lir.Row, len(tbl.Columns))
 	maps.Copy(out, row)
 	for _, col := range tbl.Columns {
 		if _, ok := out[col.Name]; ok || col.Default == nil {
@@ -29,28 +29,28 @@ func applyDefaults(tbl catalog.Table, row qir.Row) (qir.Row, error) {
 	return out, nil
 }
 
-func defaultValue(col catalog.Column) (qir.Value, error) {
+func defaultValue(col catalog.Column) (lir.Value, error) {
 	d := col.Default
 	switch d.Func {
 	case catalog.DefaultUUID:
-		return qir.Text(newUUID()), nil
+		return lir.Text(newUUID()), nil
 	case catalog.DefaultNowMS:
-		return qir.Int64(time.Now().UnixMilli()), nil
+		return lir.Int64(time.Now().UnixMilli()), nil
 	case "":
 	default:
-		return qir.Value{}, fmt.Errorf("exec: column %q: unknown default function %q", col.Name, d.Func)
+		return lir.Value{}, fmt.Errorf("exec: column %q: unknown default function %q", col.Name, d.Func)
 	}
 	switch col.Type {
 	case catalog.TypeText:
-		return qir.Text(d.Text), nil
+		return lir.Text(d.Text), nil
 	case catalog.TypeInt64:
-		return qir.Int64(d.Int64), nil
+		return lir.Int64(d.Int64), nil
 	case catalog.TypeFloat64:
-		return qir.Float64(d.Float64), nil
+		return lir.Float64(d.Float64), nil
 	case catalog.TypeBool:
-		return qir.Bool(d.Bool), nil
+		return lir.Bool(d.Bool), nil
 	}
-	return qir.Value{}, fmt.Errorf("exec: column %q: cannot default type %q", col.Name, col.Type)
+	return lir.Value{}, fmt.Errorf("exec: column %q: cannot default type %q", col.Name, col.Type)
 }
 
 // newUUID returns a random RFC 4122 version-4 UUID string.

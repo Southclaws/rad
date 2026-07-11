@@ -4,12 +4,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 import {
-  QIRPipeline,
+  LIRPipeline,
   KeyLayoutDiagram,
   AccessPathDiagram,
   IndexScanDiagram,
   IncludeTraversalDiagram,
-} from "@/components/qir-diagrams";
+} from "@/components/lir-diagrams";
 
 export function generateStaticParams() {
   return source.generateParams();
@@ -51,7 +51,7 @@ function Callout({
 
 const mdxComponents = {
   Callout,
-  QIRPipeline,
+  LIRPipeline,
   KeyLayoutDiagram,
   AccessPathDiagram,
   IndexScanDiagram,

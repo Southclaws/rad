@@ -3,88 +3,88 @@ package bound
 import (
 	"fmt"
 
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 )
 
 // Expr is the bound expression law: a precomputed static type and the slots
 // it references.
 type Expr interface {
-	Type() qir.Type
+	Type() lir.Type
 	FreeSlots() SlotSet
 }
 
 // Literal is a typed constant. The binder coerced the wire's raw scalar
 // against the column type it met.
 type Literal struct {
-	V qir.Value
+	V lir.Value
 }
 
-func (l Literal) Type() qir.Type {
-	return qir.ScalarType(l.V.Type, l.V.Null)
+func (l Literal) Type() lir.Type {
+	return lir.ScalarType(l.V.Type, l.V.Null)
 }
 func (l Literal) FreeSlots() SlotSet { return SlotSet{} }
 
 // SlotRef reads one attribute of a relation output. Name is diagnostic only;
 // the slot is the identity.
 type SlotRef struct {
-	Slot qir.SlotID
+	Slot lir.SlotID
 	Name string
-	T    qir.Type
+	T    lir.Type
 }
 
-func (s SlotRef) Type() qir.Type      { return s.T }
+func (s SlotRef) Type() lir.Type      { return s.T }
 func (s SlotRef) FreeSlots() SlotSet  { return NewSlotSet(s.Slot) }
 
 // Unary applies a unary operator.
 type Unary struct {
-	Op qir.UnaryOp
+	Op lir.UnaryOp
 	X  Expr
-	t  qir.Type
+	t  lir.Type
 }
 
-func NewUnary(op qir.UnaryOp, x Expr) Unary {
-	var t qir.Type
+func NewUnary(op lir.UnaryOp, x Expr) Unary {
+	var t lir.Type
 	switch op {
-	case qir.OpNot:
-		t = qir.Type{Kind: qir.KindBool, Nullable: x.Type().Nullable}
-	case qir.OpNegate:
+	case lir.OpNot:
+		t = lir.Type{Kind: lir.KindBool, Nullable: x.Type().Nullable}
+	case lir.OpNegate:
 		t = x.Type()
-	case qir.OpIsNull, qir.OpIsNotNull:
-		t = qir.Type{Kind: qir.KindBool}
+	case lir.OpIsNull, lir.OpIsNotNull:
+		t = lir.Type{Kind: lir.KindBool}
 	}
 	return Unary{Op: op, X: x, t: t}
 }
 
-func (u Unary) Type() qir.Type     { return u.t }
+func (u Unary) Type() lir.Type     { return u.t }
 func (u Unary) FreeSlots() SlotSet { return u.X.FreeSlots() }
 
 // Binary applies a binary operator. Comparisons yield Bool, nullable when
 // either operand is (a NULL operand makes the comparison UNKNOWN);
 // arithmetic promotes int64 to float64 when either side is float.
 type Binary struct {
-	Op   qir.BinaryOp
+	Op   lir.BinaryOp
 	L, R Expr
-	t    qir.Type
+	t    lir.Type
 }
 
-func NewBinary(op qir.BinaryOp, l, r Expr) Binary {
+func NewBinary(op lir.BinaryOp, l, r Expr) Binary {
 	nullable := l.Type().Nullable || r.Type().Nullable
-	var t qir.Type
+	var t lir.Type
 	switch op {
-	case qir.OpEq, qir.OpNe, qir.OpLt, qir.OpLte, qir.OpGt, qir.OpGte,
-		qir.OpAnd, qir.OpOr:
-		t = qir.Type{Kind: qir.KindBool, Nullable: nullable}
-	case qir.OpAdd, qir.OpSub, qir.OpMul, qir.OpDiv:
-		kind := qir.KindInt64
-		if l.Type().Kind == qir.KindFloat64 || r.Type().Kind == qir.KindFloat64 {
-			kind = qir.KindFloat64
+	case lir.OpEq, lir.OpNe, lir.OpLt, lir.OpLte, lir.OpGt, lir.OpGte,
+		lir.OpAnd, lir.OpOr:
+		t = lir.Type{Kind: lir.KindBool, Nullable: nullable}
+	case lir.OpAdd, lir.OpSub, lir.OpMul, lir.OpDiv:
+		kind := lir.KindInt64
+		if l.Type().Kind == lir.KindFloat64 || r.Type().Kind == lir.KindFloat64 {
+			kind = lir.KindFloat64
 		}
-		t = qir.Type{Kind: kind, Nullable: nullable}
+		t = lir.Type{Kind: kind, Nullable: nullable}
 	}
 	return Binary{Op: op, L: l, R: r, t: t}
 }
 
-func (b Binary) Type() qir.Type     { return b.t }
+func (b Binary) Type() lir.Type     { return b.t }
 func (b Binary) FreeSlots() SlotSet { return b.L.FreeSlots().Union(b.R.FreeSlots()) }
 
 // Call invokes a named function. The registry is empty this arc; the binder
@@ -92,10 +92,10 @@ func (b Binary) FreeSlots() SlotSet { return b.L.FreeSlots().Union(b.R.FreeSlots
 type Call struct {
 	Fn   string
 	Args []Expr
-	T    qir.Type
+	T    lir.Type
 }
 
-func (c Call) Type() qir.Type { return c.T }
+func (c Call) Type() lir.Type { return c.T }
 func (c Call) FreeSlots() SlotSet {
 	var s SlotSet
 	for _, a := range c.Args {
@@ -107,15 +107,15 @@ func (c Call) FreeSlots() SlotSet {
 // Cast converts to a scalar kind.
 type Cast struct {
 	X  Expr
-	To qir.Kind
-	t  qir.Type
+	To lir.Kind
+	t  lir.Type
 }
 
-func NewCast(x Expr, to qir.Kind) Cast {
-	return Cast{X: x, To: to, t: qir.Type{Kind: to, Nullable: x.Type().Nullable}}
+func NewCast(x Expr, to lir.Kind) Cast {
+	return Cast{X: x, To: to, t: lir.Type{Kind: to, Nullable: x.Type().Nullable}}
 }
 
-func (c Cast) Type() qir.Type     { return c.t }
+func (c Cast) Type() lir.Type     { return c.t }
 func (c Cast) FreeSlots() SlotSet { return c.X.FreeSlots() }
 
 // ── cardinality crossings ───────────────────────────────────────────────────
@@ -129,7 +129,7 @@ type Exists struct {
 	Rel Relation
 }
 
-func (e Exists) Type() qir.Type     { return qir.Type{Kind: qir.KindBool} }
+func (e Exists) Type() lir.Type     { return lir.Type{Kind: lir.KindBool} }
 func (e Exists) FreeSlots() SlotSet { return e.Rel.FreeSlots() }
 
 // First materialises Rel's row as a nested object, or NULL when empty. The
@@ -137,22 +137,22 @@ func (e Exists) FreeSlots() SlotSet { return e.Rel.FreeSlots() }
 // ordered.
 type First struct {
 	Rel Relation
-	t   qir.Type
+	t   lir.Type
 }
 
 func NewFirst(rel Relation) First {
 	out := rel.Output()
-	return First{Rel: rel, t: qir.Type{Kind: qir.KindRow, Nullable: true, Row: &out}}
+	return First{Rel: rel, t: lir.Type{Kind: lir.KindRow, Nullable: true, Row: &out}}
 }
 
-func (f First) Type() qir.Type     { return f.t }
+func (f First) Type() lir.Type     { return f.t }
 func (f First) FreeSlots() SlotSet { return f.Rel.FreeSlots() }
 
 // Scalar asserts Rel has one output column and statically at most one row,
 // and yields that value — NULL when there is no row.
 type Scalar struct {
 	Rel Relation
-	t   qir.Type
+	t   lir.Type
 }
 
 func NewScalar(rel Relation) (Scalar, error) {
@@ -165,20 +165,20 @@ func NewScalar(rel Relation) (Scalar, error) {
 	return Scalar{Rel: rel, t: t}, nil
 }
 
-func (s Scalar) Type() qir.Type     { return s.t }
+func (s Scalar) Type() lir.Type     { return s.t }
 func (s Scalar) FreeSlots() SlotSet { return s.Rel.FreeSlots() }
 
 // Array materialises all of Rel's rows as a nested array; empty, never NULL.
 type Array struct {
 	Rel Relation
-	t   qir.Type
+	t   lir.Type
 }
 
 func NewArray(rel Relation) Array {
 	out := rel.Output()
-	elem := qir.Type{Kind: qir.KindRow, Row: &out}
-	return Array{Rel: rel, t: qir.Type{Kind: qir.KindArray, Elem: &elem}}
+	elem := lir.Type{Kind: lir.KindRow, Row: &out}
+	return Array{Rel: rel, t: lir.Type{Kind: lir.KindArray, Elem: &elem}}
 }
 
-func (a Array) Type() qir.Type     { return a.t }
+func (a Array) Type() lir.Type     { return a.t }
 func (a Array) FreeSlots() SlotSet { return a.Rel.FreeSlots() }

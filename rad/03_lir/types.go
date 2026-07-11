@@ -1,4 +1,4 @@
-package qir
+package lir
 
 import (
 	"fmt"

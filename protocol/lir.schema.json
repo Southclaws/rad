@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://www.radengine.dev/schema/qir.json",
+  "$id": "https://www.radengine.dev/schema/lir.json",
   "title": "Rad Query IR",
-  "description": "The relation-graph query IR on the wire: a map of named relation nodes plus a root selector. Relations are values — operators consume relations and produce relations — and relationships are ordinary correlated relations materialised into output shapes by cardinality crossings. The normative semantics live in docs/design/qir-v2.md.",
+  "description": "The relation-graph query IR on the wire: a map of named relation nodes plus a root selector. Relations are values — operators consume relations and produce relations — and relationships are ordinary correlated relations materialised into output shapes by cardinality crossings. The normative semantics live in docs/design/lir-v2.md.",
   "$defs": {
     "Value": {
       "title": "Value",

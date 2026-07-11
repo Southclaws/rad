@@ -25,7 +25,7 @@ rad generate -f demo/schema.rad -o demo/generated --pkg tracker
 go build .                                           # compiler catches schema drift
    │
    ▼
-typed app  →  rad:// wire QIR  →  planner  →  SlateDB  →  nested JSON
+typed app  →  rad:// wire LIR  →  planner  →  SlateDB  →  nested JSON
 ```
 
 The app is pure Go — no cgo, no native library; only the server needs

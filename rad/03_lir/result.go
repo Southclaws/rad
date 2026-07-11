@@ -1,4 +1,4 @@
-package qir
+package lir
 
 // Datum is the typed result value tree a read produces: null, a scalar, an
 // object of named datums, or an array. It replaces flat row lists — the

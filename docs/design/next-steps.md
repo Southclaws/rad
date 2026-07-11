@@ -2,7 +2,7 @@
 
 ## Executive assessment
 
-Rad is a strong and coherent proof of concept. QIR v2 is the right foundation and should be evolved, not replaced. Its two-category model—relations and expressions, connected through explicit `Exists`, `First`, `Scalar`, and `Array` crossings—is substantially cleaner than an AST that accumulates special-purpose query constructs ([QIR contract](/Users/barney/Documents/rad/rad/03_qir/doc.go:3)).
+Rad is a strong and coherent proof of concept. LIR v2 is the right foundation and should be evolved, not replaced. Its two-category model—relations and expressions, connected through explicit `Exists`, `First`, `Scalar`, and `Array` crossings—is substantially cleaner than an AST that accumulates special-purpose query constructs ([LIR contract](/Users/barney/Documents/rad/rad/03_lir/doc.go:3)).
 
 The primary risk is not missing SQL syntax. It is that several advertised invariants are not yet true across binding, planning, execution, and transport:
 
@@ -13,7 +13,7 @@ The primary risk is not missing SQL syntax. It is that several advertised invari
 - Query execution lacks a single catalog-and-data statement snapshot.
 - The public wire contract is developing faster than its versioning, parameterization, result-shape, and compatibility model.
 
-The focused QIR, planner, and executor suites pass. The protocol/client worktree is actively undergoing a tree-to-graph migration, so individual transport observations are snapshot-specific; the contract requirements below remain structural.
+The focused LIR, planner, and executor suites pass. The protocol/client worktree is actively undergoing a tree-to-graph migration, so individual transport observations are snapshot-specific; the contract requirements below remain structural.
 
 The exact synthesis is distinctive, but the product territory is not empty. Gel already offers a schema-generated, fully typed and composable query builder plus nested result shapes, while Prisma supports generated nested relation queries and alternate join/query execution strategies ([Gel query builder](https://docs.geldata.com/reference/using/js/querybuilder), [Gel shapes](https://docs.geldata.com/database/reference/edgeql/shapes), [Prisma relation queries](https://www.prisma.io/docs/orm/prisma-client/queries/relation-queries)). Rad’s defensible position should be:
 
@@ -24,16 +24,16 @@ That is a stronger and more precise claim than “a typed relational database wi
 ## What to preserve
 
 - Keep the relation/expression separation and explicit cardinality crossings.
-- Keep unbound names at the public boundary and dense bound slots internally ([bound relations](/Users/barney/Documents/rad/rad/03_qir/bound/rel.go:8)).
-- Preserve centralized three-valued logic and the rule that access-path narrowing does not replace the residual predicate ([expression evaluation](/Users/barney/Documents/rad/rad/03_qir/bound/eval.go:25), [physical plan](/Users/barney/Documents/rad/rad/04_planner/physical.go:3)).
+- Keep unbound names at the public boundary and dense bound slots internally ([bound relations](/Users/barney/Documents/rad/rad/03_lir/bound/rel.go:8)).
+- Preserve centralized three-valued logic and the rule that access-path narrowing does not replace the residual predicate ([expression evaluation](/Users/barney/Documents/rad/rad/03_lir/bound/eval.go:25), [physical plan](/Users/barney/Documents/rad/rad/04_planner/physical.go:3)).
 - Continue testing a forcing query through both nested and batched execution paths; this is the correct architectural regression test.
-- Keep the public QIR relatively small. Prefer frontend lowering and internal physical operators over exposing every SQL keyword directly.
+- Keep the public LIR relatively small. Prefer frontend lowering and internal physical operators over exposing every SQL keyword directly.
 
 ## Foundational issues and decisions
 
 ### P0 — Make the logical model truthful
 
-1. **Unify runtime values.** QIR says scalars, rows, and arrays are values, but execution stores nested results beside scalar slots in a separate channel ([runtime frame](/Users/barney/Documents/rad/rad/05_exec/iter.go:17)). Consequently, a direct `Array(...)` projection may work while reprojecting that field or embedding `Exists(...)` inside another expression can fail or silently lose batching.
+1. **Unify runtime values.** LIR says scalars, rows, and arrays are values, but execution stores nested results beside scalar slots in a separate channel ([runtime frame](/Users/barney/Documents/rad/rad/05_exec/iter.go:17)). Consequently, a direct `Array(...)` projection may work while reprojecting that field or embedding `Exists(...)` inside another expression can fail or silently lose batching.
 
    Adopt one runtime datum capable of scalar, row, array, and null. Scalar operators must reject non-scalars. Extract every subquery crossing into an optimizer-visible Apply/Attach slot regardless of where it appears syntactically.
 
@@ -60,7 +60,7 @@ That is a stronger and more precise claim than “a typed relational database wi
    Use catalog revision/fingerprint compare-and-swap, explicit migration authority, expand/contract workflows, destructive-change approval, and index states such as building/ready. Migration application must be atomic or resumable rather than a sequence of independently visible steps ([migration flow](/Users/barney/Documents/rad/rad/06_frontend/migrate.go:16)).
 
 3. **Finish the wire contract before compatibility becomes expensive.**
-   - Add `qir_version`, schema revision/capabilities, root, nodes, and typed parameters.
+   - Add `lir_version`, schema revision/capabilities, root, nodes, and typed parameters.
    - Represent parameters separately from literals so plans can be fingerprinted and cached.
    - Return a general datum envelope supporting scalar, object, array, and null roots.
    - Validate tagged-union payload combinations exhaustively and impose node, depth, payload, and execution limits.
@@ -68,7 +68,7 @@ That is a stronger and more precise claim than “a typed relational database wi
    - Keep single-consumer tree semantics initially. Future graph sharing should use explicit `Let`/`Ref` semantics because shared correlated nodes have evaluation and capture implications.
    - Make cross-language integer representation lossless; JavaScript `number` cannot carry the full `int64` domain ([TypeScript generator](/Users/barney/Documents/rad/codegen/typescript.go:8)).
 
-4. **Separate logical and persistent representations.** QIR `Value` should not double as the permanent on-disk row contract. Introduce a versioned storage codec beneath the logical scalar/type/datum model so QIR evolution does not become a storage-format migration.
+4. **Separate logical and persistent representations.** LIR `Value` should not double as the permanent on-disk row contract. Introduce a versioned storage codec beneath the logical scalar/type/datum model so LIR evolution does not become a storage-format migration.
 
 ## SQL-like expressiveness
 
@@ -84,23 +84,23 @@ That is a stronger and more precise claim than “a typed relational database wi
 | `VALUES` / table-free query                                                                              | Missing; add a unit/values relation.                                                                                                                                         |
 | `UNION ALL`                                                                                              | Clearest missing relational primitive and the first set operator to add.                                                                                                     |
 | Union distinct, intersect, except, full outer join                                                       | Derive where practical after `UNION ALL`; add dedicated bag operators only when workloads justify them.                                                                      |
-| Parameters, `CASE`, `COALESCE`, function calls                                                           | Missing expression capabilities needed before presenting QIR as broadly SQL-comparable.                                                                                      |
+| Parameters, `CASE`, `COALESCE`, function calls                                                           | Missing expression capabilities needed before presenting LIR as broadly SQL-comparable.                                                                                      |
 | `IN`, `ANY`, `ALL`                                                                                       | Existing conceptual lowerings are not null-correct under three-valued logic. Supply explicit semantics or differential-tested lowerings after conditional expressions exist. |
 | Windows and recursive queries                                                                            | Genuine future logical operators; defer until a target workload requires them.                                                                                               |
 
-Rad should describe present QIR as a composable SPJA-plus-aggregation IR with nested result shaping, not yet as SQL-equivalent.
+Rad should describe present LIR as a composable SPJA-plus-aggregation IR with nested result shaping, not yet as SQL-equivalent.
 
 ## Directional roadmap
 
 ### 1. Freeze the semantic foundation
 
-Before expanding QIR syntax, settle unified datums, crossing extraction, dependent joins, left-join nullability, total-order proofs, unique output names, cardinality overflow, expression effects, statement snapshots, wire versioning, parameters, and migration authority.
+Before expanding LIR syntax, settle unified datums, crossing extraction, dependent joins, left-join nullability, total-order proofs, unique output names, cardinality overflow, expression effects, statement snapshots, wire versioning, parameters, and migration authority.
 
 Exit criterion: syntactically harmless wrapping or reprojection cannot change correctness, batching visibility, or determinism.
 
 ### 2. Turn the planner into an optimizer
 
-Evolve the current recursive lowering pass ([planner lowering](/Users/barney/Documents/rad/rad/04_planner/plan_qir.go:31)) into:
+Evolve the current recursive lowering pass ([planner lowering](/Users/barney/Documents/rad/rad/04_planner/plan_lir.go:31)) into:
 
 `bind → normalize → derive logical properties → enumerate physical alternatives → cost/select → execute`
 
@@ -119,13 +119,13 @@ Build EXPLAIN and per-operator metrics before investing in sophisticated statist
 
 ### 3. Build a semantic oracle and bounded execution model
 
-Implement a deliberately simple reference interpreter for bound logical QIR. Differentially compare every physical plan against it, including forced table/index access and nested/batched correlation.
+Implement a deliberately simple reference interpreter for bound logical LIR. Differentially compare every physical plan against it, including forced table/index access and nested/batched correlation.
 
 Set explicit query budgets for memory, rows, storage operations, graph size, recursion depth, cancellation, and session lifetime. Replace unbounded buffering in projection, joins, sorting, aggregation, and root materialization with streaming or bounded/spillable operators according to workload priorities.
 
 ### 4. Grow capability through representative workloads
 
-Drive new QIR features from several forcing workloads:
+Drive new LIR features from several forcing workloads:
 
 - Nested OLTP reads with multi-level correlation.
 - Multi-join reporting with grouping and `HAVING`.
@@ -137,7 +137,7 @@ Add `Values` and `UnionAll` first, followed by typed parameters, conditional exp
 
 ### 5. Validate the product thesis independently of storage
 
-Maintain a restricted SQLite or PostgreSQL compiler/backend for the same logical QIR. Use it as a differential oracle and strategic experiment, not as an immediate pivot.
+Maintain a restricted SQLite or PostgreSQL compiler/backend for the same logical LIR. Use it as a differential oracle and strategic experiment, not as an immediate pivot.
 
 If Rad’s generated-client experience is equally compelling on a mature relational engine, consider a gateway/engine product. If owning storage materially improves nested-query latency, deployment, or operational simplicity, demonstrate that advantage with measured workloads.
 
@@ -162,7 +162,7 @@ Before external deployment, require authentication and authorization, separation
 
 ## Assumptions
 
-- QIR v2 is the normative design; the older aggregation-shaped transport is transitional.
+- LIR v2 is the normative design; the older aggregation-shaped transport is transitional.
 - Pre-release compatibility can be broken now to establish a durable versioned wire contract.
 - SQL comparability means relational and null-semantic expressiveness, not reproducing SQL syntax.
 - Functions are pure, deterministic, and total unless explicitly classified otherwise.

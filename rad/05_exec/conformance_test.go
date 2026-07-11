@@ -11,45 +11,45 @@ import (
 	"reflect"
 	"testing"
 
-	qir "rad/rad/03_qir"
-	"rad/rad/03_qir/bound"
+	lir "rad/rad/03_lir"
+	"rad/rad/03_lir/bound"
 	planner "rad/rad/04_planner"
 )
 
 func TestPathIndependence(t *testing.T) {
-	eng, ctx, _, _ := qirSetup(t)
+	eng, ctx, _, _ := lirSetup(t)
 
-	queries := map[string]qir.Query{
+	queries := map[string]lir.Query{
 		"forcing query": forcingQ(),
 		"pk lookup": many(qfilter(qscan("tasks", "t"),
 			qeq(qcol("t", "id"), qlit("t2")))),
-		"index prefix": many(qir.Order{
+		"index prefix": many(lir.Order{
 			Input: qfilter(qscan("tasks", "t"),
 				qand(qeq(qcol("t", "board_id"), qlit("b1")),
 					qeq(qcol("t", "status"), qlit("open")))),
-			Terms: []qir.OrderTerm{{Expr: qcol("t", "id")}},
+			Terms: []lir.OrderTerm{{Expr: qcol("t", "id")}},
 		}),
-		"range": many(qir.Order{
+		"range": many(lir.Order{
 			Input: qfilter(qscan("tasks", "t"),
 				qand(qeq(qcol("t", "board_id"), qlit("b1")),
-					qir.Binary{Op: qir.OpGte, L: qcol("t", "status"), R: qlit("m")})),
-			Terms: []qir.OrderTerm{{Expr: qcol("t", "id")}},
+					lir.Binary{Op: lir.OpGte, L: qcol("t", "status"), R: qlit("m")})),
+			Terms: []lir.OrderTerm{{Expr: qcol("t", "id")}},
 		}),
-		"ordered pushdown": many(qir.Slice{
-			Input: qir.Order{
+		"ordered pushdown": many(lir.Slice{
+			Input: lir.Order{
 				Input: qscan("users", "u"),
-				Terms: []qir.OrderTerm{{Expr: qcol("u", "name")}},
+				Terms: []lir.OrderTerm{{Expr: qcol("u", "name")}},
 			},
 			Limit: new(int(1)),
 		}),
-		"grouped fold": many(qir.Order{
-			Input: qir.Aggregate{
+		"grouped fold": many(lir.Order{
+			Input: lir.Aggregate{
 				Input:  qscan("tasks", "t"),
 				Scope:  "stats",
-				Groups: []qir.GroupTerm{{Expr: qcol("t", "status")}},
-				Terms:  []qir.AggTerm{{Fn: qir.AggCount, As: "n"}},
+				Groups: []lir.GroupTerm{{Expr: qcol("t", "status")}},
+				Terms:  []lir.AggTerm{{Fn: lir.AggCount, As: "n"}},
 			},
-			Terms: []qir.OrderTerm{{Expr: qcol("stats", "status")}},
+			Terms: []lir.OrderTerm{{Expr: qcol("stats", "status")}},
 		}),
 	}
 
@@ -73,27 +73,27 @@ func TestPathIndependence(t *testing.T) {
 
 // executeFullScan runs a query with every access forced to a filtered table
 // scan.
-func executeFullScan(ctx context.Context, e *Engine, q qir.Query) (qir.Datum, error) {
+func executeFullScan(ctx context.Context, e *Engine, q lir.Query) (lir.Datum, error) {
 	bq, err := planner.Bind(ctx, e.cat, q)
 	if err != nil {
-		return qir.Datum{}, err
+		return lir.Datum{}, err
 	}
 	pp := planner.PlanQuery(bq, planner.FullScanOnly())
 
 	ex := newExecutor(e.store)
 	op, err := ex.build(ctx, pp.Root, bound.Env{})
 	if err != nil {
-		return qir.Datum{}, err
+		return lir.Datum{}, err
 	}
 	defer op.Close()
 
 	frames, err := drainOp(ctx, op)
 	if err != nil {
-		return qir.Datum{}, err
+		return lir.Datum{}, err
 	}
-	elems := make([]qir.Datum, len(frames))
+	elems := make([]lir.Datum, len(frames))
 	for i, f := range frames {
 		elems[i] = frameToObject(pp.Out, f)
 	}
-	return qir.ArrayDatum(elems), nil
+	return lir.ArrayDatum(elems), nil
 }

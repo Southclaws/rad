@@ -6,24 +6,24 @@ package main
 // detection. Names, types, and semantics are the binder's job.
 
 import (
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 
 	"rad/protocol"
 )
 
-// graphQuery converts a wire query into an unbound qir.Query.
-func graphQuery(q protocol.Query) (qir.Query, error) {
+// graphQuery converts a wire query into an unbound lir.Query.
+func graphQuery(q protocol.Query) (lir.Query, error) {
 	switch q.Root.Cardinality {
 	case "many", "first", "exactly_one", "scalar":
 	default:
-		return qir.Query{}, wireErrf("unknown root cardinality %q", q.Root.Cardinality)
+		return lir.Query{}, wireErrf("unknown root cardinality %q", q.Root.Cardinality)
 	}
 	g := &graphConv{nodes: q.Nodes, building: map[string]bool{}}
 	root, err := g.rel(q.Root.Node)
 	if err != nil {
-		return qir.Query{}, err
+		return lir.Query{}, err
 	}
-	return qir.Query{Root: root, Card: qir.RootCard(q.Root.Cardinality)}, nil
+	return lir.Query{Root: root, Card: lir.RootCard(q.Root.Cardinality)}, nil
 }
 
 type graphConv struct {
@@ -34,7 +34,7 @@ type graphConv struct {
 // rel resolves one node reference into a relation value. Value nodes cannot
 // hold cycles, so a reference re-entered while still being built is a cycle
 // in the wire graph.
-func (g *graphConv) rel(name string) (qir.Relation, error) {
+func (g *graphConv) rel(name string) (lir.Relation, error) {
 	if name == "" {
 		return nil, wireErrf("missing node reference")
 	}
@@ -50,7 +50,7 @@ func (g *graphConv) rel(name string) (qir.Relation, error) {
 
 	switch n.Kind {
 	case "scan":
-		return qir.Scan{Table: n.Table, Scope: n.Scope}, nil
+		return lir.Scan{Table: n.Table, Scope: n.Scope}, nil
 
 	case "filter":
 		in, err := g.rel(n.Input)
@@ -64,22 +64,22 @@ func (g *graphConv) rel(name string) (qir.Relation, error) {
 		if pred == nil {
 			return nil, wireErrf("filter %q needs a predicate", name)
 		}
-		return qir.Filter{Input: in, Pred: pred}, nil
+		return lir.Filter{Input: in, Pred: pred}, nil
 
 	case "project":
 		in, err := g.rel(n.Input)
 		if err != nil {
 			return nil, err
 		}
-		fields := make([]qir.ProjField, len(n.Fields))
+		fields := make([]lir.ProjField, len(n.Fields))
 		for i, f := range n.Fields {
 			e, err := g.expr(&f.Expr)
 			if err != nil {
 				return nil, err
 			}
-			fields[i] = qir.ProjField{As: f.As, Expr: e}
+			fields[i] = lir.ProjField{As: f.As, Expr: e}
 		}
-		return qir.Project{Input: in, Scope: n.Scope, Spread: n.Spread, Fields: fields}, nil
+		return lir.Project{Input: in, Scope: n.Scope, Spread: n.Spread, Fields: fields}, nil
 
 	case "join":
 		l, err := g.rel(n.Left)
@@ -97,45 +97,45 @@ func (g *graphConv) rel(name string) (qir.Relation, error) {
 		if on == nil {
 			return nil, wireErrf("join %q needs a condition", name)
 		}
-		return qir.Join{Left: l, Right: r, Kind: qir.JoinKind(n.Join), On: on}, nil
+		return lir.Join{Left: l, Right: r, Kind: lir.JoinKind(n.Join), On: on}, nil
 
 	case "aggregate":
 		in, err := g.rel(n.Input)
 		if err != nil {
 			return nil, err
 		}
-		groups := make([]qir.GroupTerm, len(n.Groups))
+		groups := make([]lir.GroupTerm, len(n.Groups))
 		for i, gt := range n.Groups {
 			e, err := g.expr(&gt.Expr)
 			if err != nil {
 				return nil, err
 			}
-			groups[i] = qir.GroupTerm{As: gt.As, Expr: e}
+			groups[i] = lir.GroupTerm{As: gt.As, Expr: e}
 		}
-		terms := make([]qir.AggTerm, len(n.Aggs))
+		terms := make([]lir.AggTerm, len(n.Aggs))
 		for i, a := range n.Aggs {
 			arg, err := g.expr(a.Arg)
 			if err != nil {
 				return nil, err
 			}
-			terms[i] = qir.AggTerm{Fn: qir.AggFn(a.Fn), Arg: arg, As: a.As}
+			terms[i] = lir.AggTerm{Fn: lir.AggFn(a.Fn), Arg: arg, As: a.As}
 		}
-		return qir.Aggregate{Input: in, Scope: n.Scope, Groups: groups, Terms: terms}, nil
+		return lir.Aggregate{Input: in, Scope: n.Scope, Groups: groups, Terms: terms}, nil
 
 	case "order":
 		in, err := g.rel(n.Input)
 		if err != nil {
 			return nil, err
 		}
-		terms := make([]qir.OrderTerm, len(n.Terms))
+		terms := make([]lir.OrderTerm, len(n.Terms))
 		for i, t := range n.Terms {
 			e, err := g.expr(&t.Expr)
 			if err != nil {
 				return nil, err
 			}
-			terms[i] = qir.OrderTerm{Expr: e, Desc: t.Desc}
+			terms[i] = lir.OrderTerm{Expr: e, Desc: t.Desc}
 		}
-		return qir.Order{Input: in, Terms: terms}, nil
+		return lir.Order{Input: in, Terms: terms}, nil
 
 	case "slice":
 		in, err := g.rel(n.Input)
@@ -146,23 +146,23 @@ func (g *graphConv) rel(name string) (qir.Relation, error) {
 		if n.Offset != nil {
 			offset = *n.Offset
 		}
-		return qir.Slice{Input: in, Offset: offset, Limit: n.Limit}, nil
+		return lir.Slice{Input: in, Offset: offset, Limit: n.Limit}, nil
 
 	default:
 		return nil, wireErrf("node %q has unknown kind %q", name, n.Kind)
 	}
 }
 
-func (g *graphConv) expr(e *protocol.Expr) (qir.Expr, error) {
+func (g *graphConv) expr(e *protocol.Expr) (lir.Expr, error) {
 	if e == nil {
 		return nil, nil
 	}
 	switch e.Kind {
 	case "lit":
-		return qir.Literal{Raw: e.Value}, nil
+		return lir.Literal{Raw: e.Value}, nil
 
 	case "col":
-		return qir.Column{Scope: e.Scope, Name: e.Column}, nil
+		return lir.Column{Scope: e.Scope, Name: e.Column}, nil
 
 	case "unary":
 		sub, err := g.expr(e.Expr)
@@ -172,7 +172,7 @@ func (g *graphConv) expr(e *protocol.Expr) (qir.Expr, error) {
 		if sub == nil {
 			return nil, wireErrf("unary %q needs an operand", e.Op)
 		}
-		return qir.Unary{Op: qir.UnaryOp(e.Op), X: sub}, nil
+		return lir.Unary{Op: lir.UnaryOp(e.Op), X: sub}, nil
 
 	case "binary":
 		l, err := g.expr(e.Left)
@@ -186,10 +186,10 @@ func (g *graphConv) expr(e *protocol.Expr) (qir.Expr, error) {
 		if l == nil || r == nil {
 			return nil, wireErrf("binary %q needs two operands", e.Op)
 		}
-		return qir.Binary{Op: qir.BinaryOp(e.Op), L: l, R: r}, nil
+		return lir.Binary{Op: lir.BinaryOp(e.Op), L: l, R: r}, nil
 
 	case "call":
-		args := make([]qir.Expr, len(e.Args))
+		args := make([]lir.Expr, len(e.Args))
 		for i := range e.Args {
 			a, err := g.expr(&e.Args[i])
 			if err != nil {
@@ -197,7 +197,7 @@ func (g *graphConv) expr(e *protocol.Expr) (qir.Expr, error) {
 			}
 			args[i] = a
 		}
-		return qir.Call{Fn: e.Fn, Args: args}, nil
+		return lir.Call{Fn: e.Fn, Args: args}, nil
 
 	case "cast":
 		sub, err := g.expr(e.Expr)
@@ -207,7 +207,7 @@ func (g *graphConv) expr(e *protocol.Expr) (qir.Expr, error) {
 		if sub == nil {
 			return nil, wireErrf("cast needs an operand")
 		}
-		return qir.Cast{X: sub, To: qir.Kind(e.To)}, nil
+		return lir.Cast{X: sub, To: lir.Kind(e.To)}, nil
 
 	case "exists", "first", "scalar", "array":
 		rel, err := g.rel(e.Node)
@@ -216,13 +216,13 @@ func (g *graphConv) expr(e *protocol.Expr) (qir.Expr, error) {
 		}
 		switch e.Kind {
 		case "exists":
-			return qir.Exists{Rel: rel}, nil
+			return lir.Exists{Rel: rel}, nil
 		case "first":
-			return qir.First{Rel: rel}, nil
+			return lir.First{Rel: rel}, nil
 		case "scalar":
-			return qir.Scalar{Rel: rel}, nil
+			return lir.Scalar{Rel: rel}, nil
 		default:
-			return qir.Array{Rel: rel}, nil
+			return lir.Array{Rel: rel}, nil
 		}
 
 	default:

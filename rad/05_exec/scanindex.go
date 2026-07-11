@@ -9,12 +9,12 @@ import (
 	"fmt"
 
 	kv "rad/rad/01_kv"
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 )
 
 // ScanIndex returns the base rows whose indexed values match prefix, which
 // must populate a leading subset of the index's columns.
-func (e *Engine) ScanIndex(ctx context.Context, table, index string, prefix qir.Row) ([]qir.Row, error) {
+func (e *Engine) ScanIndex(ctx context.Context, table, index string, prefix lir.Row) ([]lir.Row, error) {
 	txn, err := e.store.Begin(ctx, kv.Snapshot)
 	if err != nil {
 		return nil, err
@@ -29,7 +29,7 @@ func (e *Engine) ScanIndex(ctx context.Context, table, index string, prefix qir.
 		return nil, fmt.Errorf("exec: table %q has no index %q", table, index)
 	}
 
-	var eqVals []qir.Value
+	var eqVals []lir.Value
 	for _, name := range idx.Columns {
 		v, ok := prefix[name]
 		if !ok {
@@ -47,7 +47,7 @@ func (e *Engine) ScanIndex(ctx context.Context, table, index string, prefix qir.
 	}
 	defer it.Close()
 
-	var rows []qir.Row
+	var rows []lir.Row
 	for {
 		row, ok, err := it.Next()
 		if err != nil {

@@ -1,4 +1,4 @@
-package qir
+package lir
 
 // TriBool is a Kleene K3 truth value. Predicates over nullable operands
 // evaluate to tri-bools; Filter keeps only TriTrue. The ordering

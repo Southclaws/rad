@@ -1,4 +1,4 @@
-// Package qir is Rad's canonical query IR: the relation graph.
+// Package lir is Rad's canonical query IR: the relation graph.
 //
 // The IR has exactly two categories. A Relation is a possibly-empty,
 // possibly-many stream of structurally typed rows; operators consume
@@ -12,12 +12,12 @@
 //
 // This package defines the UNBOUND form: table, column, and scope names plus
 // raw literals, exactly as a frontend produces it. The binder (04_planner)
-// resolves it against the catalog into the bound form (qir/bound), where
+// resolves it against the catalog into the bound form (lir/bound), where
 // every relation output is addressed by dense slots. Planning and execution
 // trust bound IR completely.
 //
 // The discipline, before adding any node here: could this be expressed as an
 // ordinary relation? If yes, resist the special node. The normative design —
 // grammar, three-valued logic, determinism rules, the wire format — is
-// docs/design/qir-v2.md.
-package qir
+// docs/design/lir-v2.md.
+package lir

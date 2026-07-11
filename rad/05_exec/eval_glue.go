@@ -9,8 +9,8 @@ package exec
 import (
 	"context"
 
-	qir "rad/rad/03_qir"
-	"rad/rad/03_qir/bound"
+	lir "rad/rad/03_lir"
+	"rad/rad/03_lir/bound"
 	planner "rad/rad/04_planner"
 )
 
@@ -42,19 +42,19 @@ func (g relGlue) Exists(ctx context.Context, rel bound.Relation, env bound.Env) 
 	return ok, err
 }
 
-func (g relGlue) Scalar(ctx context.Context, rel bound.Relation, env bound.Env) (qir.Value, error) {
+func (g relGlue) Scalar(ctx context.Context, rel bound.Relation, env bound.Env) (lir.Value, error) {
 	op, err := g.ex.build(ctx, g.planFor(rel), env)
 	if err != nil {
-		return qir.Value{}, err
+		return lir.Value{}, err
 	}
 	defer op.Close()
 	f, ok, err := op.Next(ctx)
 	if err != nil {
-		return qir.Value{}, err
+		return lir.Value{}, err
 	}
 	fld := rel.Output().Fields[0]
 	if !ok {
-		return qir.Null(fld.Type.Kind.CatalogType()), nil
+		return lir.Null(fld.Type.Kind.CatalogType()), nil
 	}
 	return f.vals[fld.Slot], nil
 }

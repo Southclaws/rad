@@ -1,9 +1,9 @@
 ---
-title: QIR
+title: LIR
 description: The relation-graph query IR, and how it maps to key-value operations — to the byte.
 ---
 
-The QIR is Rad's canonical query IR: a **relation graph**. Relations are
+The LIR is Rad's canonical query IR: a **relation graph**. Relations are
 values — operators consume relations and produce relations — and
 relationships are not a separate kind of query: they are ordinary correlated
 relations, materialised into output shapes. This page specifies the grammar,
@@ -12,7 +12,7 @@ targets, and the exact KV operations each construct issues.
 
 <Callout>
   The normative design — grammar, three-valued logic, determinism rules —
-  lives in `docs/design/qir-v2.md` in the repository. This page tracks the
+  lives in `docs/design/lir-v2.md` in the repository. This page tracks the
   implementation.
 </Callout>
 
@@ -23,7 +23,7 @@ as an ordinary relation?** Every time the answer is yes, the special node is
 resisted. The IR converges on four primitives — relations, expressions,
 cardinality crossings, projection — and everything else is a consequence:
 
-| SQL spelling | QIR expression |
+| SQL spelling | LIR expression |
 | --- | --- |
 | `EXISTS (subquery)` | `exists(rel)` |
 | `x IN (subquery)` | `exists(filter(rel, col = x))` |
@@ -38,7 +38,7 @@ cardinality crossings, projection — and everything else is a consequence:
 
 A read travels top to bottom; results are reassembled bottom to top.
 
-<QIRPipeline />
+<LIRPipeline />
 
 The load-bearing invariant, visible in the plan tree itself: **the access
 path only narrows which keys are scanned; the full original predicate rides

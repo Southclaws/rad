@@ -4,7 +4,7 @@ A client/server relational database in Go whose product is the developer
 experience, not the SQL dialect:
 
 ```
-schema.rad → rad migrate → rad generate → typed Go client → rad:// wire QIR → planner → SlateDB → nested JSON
+schema.rad → rad migrate → rad generate → typed Go client → rad:// wire LIR → planner → SlateDB → nested JSON
 ```
 
 One binary — `rad` — is the entire system: the database server (`rad
@@ -87,7 +87,7 @@ Rad is composed of several logical layers:
 Frontend
 ↓
 
-QIR
+LIR
 
 ↓
 
@@ -109,9 +109,9 @@ The frontend may consist of:
 - SQL frontend (optional)
 - future custom DSLs
 
-All frontends compile into the same Query Intermediate Representation (QIR).
+All frontends compile into the same Query Intermediate Representation (LIR).
 
-The planner converts QIR into physical execution plans.
+The planner converts LIR into physical execution plans.
 
 The executor performs those plans against the underlying ordered key-value store.
 
@@ -176,13 +176,13 @@ Migration hints may be introduced where changes cannot be inferred automatically
 
 ---
 
-### Query Interface (QIR)
+### Query Interface (LIR)
 
-QIR is a structured JSON representation of relational operations.
+LIR is a structured JSON representation of relational operations.
 
 It is designed for machines rather than humans, although it should remain readable and debuggable.
 
-QIR is:
+LIR is:
 
 - versioned
 - canonical
@@ -192,7 +192,7 @@ QIR is:
 
 Parameters are separated from query structure to eliminate the primary SQL injection class of bugs.
 
-The QIR is the contract between frontends and the database.
+The LIR is the contract between frontends and the database.
 
 ---
 
@@ -228,7 +228,7 @@ Commands may optionally return structured data.
 
 SQL is not the native interface.
 
-An optional SQL frontend may compile a subset of SQLite-like SQL into QIR.
+An optional SQL frontend may compile a subset of SQLite-like SQL into LIR.
 
 SQL compatibility is not a design objective.
 

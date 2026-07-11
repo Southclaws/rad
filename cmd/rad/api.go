@@ -12,7 +12,7 @@ import (
 	"rad/rad/01_kv"
 	"rad/rad/01_kv/keyenc"
 	"rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 	"rad/rad/05_exec"
 )
 
@@ -185,7 +185,7 @@ type rowResult struct {
 	Cells      []cell `json:"cells"`
 }
 
-func rowResults(tbl catalog.Table, rows []qir.Row, keys [][]byte, dec *keyDecoder) []rowResult {
+func rowResults(tbl catalog.Table, rows []lir.Row, keys [][]byte, dec *keyDecoder) []rowResult {
 	out := make([]rowResult, len(rows))
 	for i, row := range rows {
 		rr := rowResult{Cells: make([]cell, len(tbl.Columns))}
@@ -202,7 +202,7 @@ func rowResults(tbl catalog.Table, rows []qir.Row, keys [][]byte, dec *keyDecode
 	return out
 }
 
-func valueDisplay(v qir.Value) string {
+func valueDisplay(v lir.Value) string {
 	if v.Null {
 		return "NULL"
 	}
@@ -250,7 +250,7 @@ func (s *server) handleTableRows(w http.ResponseWriter, r *http.Request) {
 	}
 	defer it.Close()
 
-	var rows []qir.Row
+	var rows []lir.Row
 	var keys [][]byte
 	truncated := false
 	for it.Next() {
@@ -308,7 +308,7 @@ func (s *server) handleIndexScan(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 400, fmt.Errorf("index %q has %d columns, got %d values", idx.Name, len(idx.Columns), len(values)))
 		return
 	}
-	prefix := qir.Row{}
+	prefix := lir.Row{}
 	for i, raw := range values {
 		col, _ := tbl.Column(idx.Columns[i])
 		v, err := coerce(raw, col.Type)
@@ -330,24 +330,24 @@ func (s *server) handleIndexScan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func coerce(raw string, t catalog.Type) (qir.Value, error) {
+func coerce(raw string, t catalog.Type) (lir.Value, error) {
 	switch t {
 	case catalog.TypeText:
-		return qir.Text(raw), nil
+		return lir.Text(raw), nil
 	case catalog.TypeInt64:
 		i, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil {
-			return qir.Value{}, fmt.Errorf("not an int64: %q", raw)
+			return lir.Value{}, fmt.Errorf("not an int64: %q", raw)
 		}
-		return qir.Int64(i), nil
+		return lir.Int64(i), nil
 	case catalog.TypeFloat64:
 		f, err := strconv.ParseFloat(raw, 64)
 		if err != nil {
-			return qir.Value{}, fmt.Errorf("not a float64: %q", raw)
+			return lir.Value{}, fmt.Errorf("not a float64: %q", raw)
 		}
-		return qir.Float64(f), nil
+		return lir.Float64(f), nil
 	}
-	return qir.Value{}, fmt.Errorf("unsupported type %q", t)
+	return lir.Value{}, fmt.Errorf("unsupported type %q", t)
 }
 
 func tableColumns(tbl catalog.Table) map[string]any {

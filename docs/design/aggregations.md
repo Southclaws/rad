@@ -1,7 +1,7 @@
 # Design: Aggregations
 
 Status: implemented (count/sum/avg/min/max); superseded in structure by
-docs/design/qir-v2.md — the unification this document deferred ("where this
+docs/design/lir-v2.md — the unification this document deferred ("where this
 wants to go") was built: `Read`/`Include` dissolved into the relation graph,
 aggregation became the `aggregate` node (grouped or global), and folded
 relations cross into projections via `first`/`scalar`. The semantics below
@@ -26,7 +26,7 @@ speculative.
 
 ## Shape: a fold is a shape, not an operation
 
-The first draft made `Aggregate` a *sibling* of `Read` — a distinct QIR node
+The first draft made `Aggregate` a *sibling* of `Read` — a distinct LIR node
 with its own `/aggregate` endpoint. That was SQL thinking in disguise
 (`SELECT ...` vs `SELECT count(*) ...` wearing two struct names), and it
 would have leaked an internal taxonomy into the public API.

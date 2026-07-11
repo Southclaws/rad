@@ -19,8 +19,8 @@ import (
 	"context"
 	"fmt"
 
-	qir "rad/rad/03_qir"
-	"rad/rad/03_qir/bound"
+	lir "rad/rad/03_lir"
+	"rad/rad/03_lir/bound"
 	planner "rad/rad/04_planner"
 )
 
@@ -113,7 +113,7 @@ func (o *projectOp) attach(ctx context.Context, fld planner.PhysField, batch, ou
 		empties := make([]int, 0)
 
 		for i, in := range batch {
-			keyVals := make([]qir.Value, len(a.Corr.Keys))
+			keyVals := make([]lir.Value, len(a.Corr.Keys))
 			null := false
 			for j, k := range a.Corr.Keys {
 				v := in.vals[k.OuterSlot]
@@ -180,10 +180,10 @@ func (o *projectOp) attach(ctx context.Context, fld planner.PhysField, batch, ou
 // runAttach executes the attached plan under env and folds the resulting
 // frames into the crossing's shape: a nested datum for first/array, a
 // scalar value for scalar/exists.
-func (o *projectOp) runAttach(ctx context.Context, a *planner.AttachSpec, env bound.Env) (qir.Datum, qir.Value, error) {
+func (o *projectOp) runAttach(ctx context.Context, a *planner.AttachSpec, env bound.Env) (lir.Datum, lir.Value, error) {
 	op, err := o.ex.build(ctx, a.Plan, env)
 	if err != nil {
-		return qir.Datum{}, qir.Value{}, err
+		return lir.Datum{}, lir.Value{}, err
 	}
 	defer op.Close()
 
@@ -191,62 +191,62 @@ func (o *projectOp) runAttach(ctx context.Context, a *planner.AttachSpec, env bo
 	case planner.CrossExists:
 		_, ok, err := op.Next(ctx)
 		if err != nil {
-			return qir.Datum{}, qir.Value{}, err
+			return lir.Datum{}, lir.Value{}, err
 		}
-		return qir.Datum{}, qir.Bool(ok), nil
+		return lir.Datum{}, lir.Bool(ok), nil
 
 	case planner.CrossFirst:
 		f, ok, err := op.Next(ctx)
 		if err != nil {
-			return qir.Datum{}, qir.Value{}, err
+			return lir.Datum{}, lir.Value{}, err
 		}
 		if !ok {
-			return qir.NullDatum(), qir.Value{}, nil
+			return lir.NullDatum(), lir.Value{}, nil
 		}
-		return frameToObject(a.Out, f), qir.Value{}, nil
+		return frameToObject(a.Out, f), lir.Value{}, nil
 
 	case planner.CrossScalar:
 		f, ok, err := op.Next(ctx)
 		if err != nil {
-			return qir.Datum{}, qir.Value{}, err
+			return lir.Datum{}, lir.Value{}, err
 		}
 		fld := a.Out.Fields[0]
 		if !ok {
-			return qir.Datum{}, qir.Null(fld.Type.Kind.CatalogType()), nil
+			return lir.Datum{}, lir.Null(fld.Type.Kind.CatalogType()), nil
 		}
-		return qir.Datum{}, f.vals[fld.Slot], nil
+		return lir.Datum{}, f.vals[fld.Slot], nil
 
 	case planner.CrossArray:
 		frames, err := drainOp(ctx, op)
 		if err != nil {
-			return qir.Datum{}, qir.Value{}, err
+			return lir.Datum{}, lir.Value{}, err
 		}
-		elems := make([]qir.Datum, len(frames))
+		elems := make([]lir.Datum, len(frames))
 		for i, f := range frames {
 			elems[i] = frameToObject(a.Out, f)
 		}
-		return qir.ArrayDatum(elems), qir.Value{}, nil
+		return lir.ArrayDatum(elems), lir.Value{}, nil
 	}
-	return qir.Datum{}, qir.Value{}, fmt.Errorf("exec: unknown crossing %q", a.Kind)
+	return lir.Datum{}, lir.Value{}, fmt.Errorf("exec: unknown crossing %q", a.Kind)
 }
 
 // emptyAttach is the no-KV-work result for a NULL correlation key.
-func emptyAttach(a *planner.AttachSpec) (qir.Datum, qir.Value) {
+func emptyAttach(a *planner.AttachSpec) (lir.Datum, lir.Value) {
 	switch a.Kind {
 	case planner.CrossExists:
-		return qir.Datum{}, qir.Bool(false)
+		return lir.Datum{}, lir.Bool(false)
 	case planner.CrossScalar:
-		return qir.Datum{}, qir.Null(a.Out.Fields[0].Type.Kind.CatalogType())
+		return lir.Datum{}, lir.Null(a.Out.Fields[0].Type.Kind.CatalogType())
 	case planner.CrossFirst:
-		return qir.NullDatum(), qir.Value{}
+		return lir.NullDatum(), lir.Value{}
 	default: // array
-		return qir.ArrayDatum(nil), qir.Value{}
+		return lir.ArrayDatum(nil), lir.Value{}
 	}
 }
 
 // assignAttach writes a crossing's result to the right side of the frame:
 // nested datums for first/array, scalar values for scalar/exists.
-func assignAttach(f *Frame, fld planner.PhysField, a *planner.AttachSpec, d qir.Datum, sv qir.Value) {
+func assignAttach(f *Frame, fld planner.PhysField, a *planner.AttachSpec, d lir.Datum, sv lir.Value) {
 	switch a.Kind {
 	case planner.CrossFirst, planner.CrossArray:
 		*f = f.setNested(fld.Slot, d)

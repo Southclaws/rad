@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://www.radengine.dev/schema/qir.json",
+  "$id": "https://www.radengine.dev/schema/lir.json",
   "title": "Rad Query IR",
   "description": "Rad's query intermediate representation: the shaped-read form of the relational algebra that clients send and the engine plans. It is defined as JSON Schema so it can be shared across the wire contract, code generators, and documentation without being tied to any one transport. Every operation that reads data speaks this shape.",
   "$defs": {

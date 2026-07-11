@@ -9,7 +9,7 @@ import (
 	"time"
 
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 )
 
 func setupWithDefaults(t *testing.T) (*Engine, string) {
@@ -41,7 +41,7 @@ func TestInsertAppliesDefaults(t *testing.T) {
 	ctx := t.Context()
 
 	before := time.Now().UnixMilli()
-	if err := eng.Insert(ctx, table, qir.Row{"title": qir.Text("fix roof")}); err != nil {
+	if err := eng.Insert(ctx, table, lir.Row{"title": lir.Text("fix roof")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,10 +54,10 @@ func TestInsertAppliesDefaults(t *testing.T) {
 	if !uuidRE.MatchString(row["id"].Text) {
 		t.Errorf("id = %q, want uuid v4", row["id"].Text)
 	}
-	if !row["status"].Equal(qir.Text("open")) || !row["priority"].Equal(qir.Int64(2)) {
+	if !row["status"].Equal(lir.Text("open")) || !row["priority"].Equal(lir.Int64(2)) {
 		t.Errorf("literal defaults not applied: %v", row)
 	}
-	if !row["done"].Equal(qir.Bool(false)) {
+	if !row["done"].Equal(lir.Bool(false)) {
 		t.Errorf("bool default not applied: %v", row["done"])
 	}
 	if at := row["created_at"].Int64; at < before || at > time.Now().UnixMilli() {
@@ -69,19 +69,19 @@ func TestExplicitValuesBeatDefaults(t *testing.T) {
 	eng, table := setupWithDefaults(t)
 	ctx := t.Context()
 
-	err := eng.Insert(ctx, table, qir.Row{
-		"id": qir.Text("custom-id"), "title": qir.Text("x"),
-		"status": qir.Text("closed"), "done": qir.Bool(true),
+	err := eng.Insert(ctx, table, lir.Row{
+		"id": lir.Text("custom-id"), "title": lir.Text("x"),
+		"status": lir.Text("closed"), "done": lir.Bool(true),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	row, ok, err := eng.GetByPrimaryKey(ctx, table, qir.Row{"id": qir.Text("custom-id")})
+	row, ok, err := eng.GetByPrimaryKey(ctx, table, lir.Row{"id": lir.Text("custom-id")})
 	if err != nil || !ok {
 		t.Fatalf("ok=%v err=%v", ok, err)
 	}
-	if !row["status"].Equal(qir.Text("closed")) || !row["done"].Equal(qir.Bool(true)) {
+	if !row["status"].Equal(lir.Text("closed")) || !row["done"].Equal(lir.Bool(true)) {
 		t.Errorf("explicit values overridden: %v", row)
 	}
 }
@@ -93,7 +93,7 @@ func TestUUIDDefaultsAreUnique(t *testing.T) {
 	ctx := t.Context()
 
 	for range 10 {
-		if err := eng.Insert(ctx, table, qir.Row{"title": qir.Text("t")}); err != nil {
+		if err := eng.Insert(ctx, table, lir.Row{"title": lir.Text("t")}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -109,12 +109,12 @@ func TestBoolIndexScan(t *testing.T) {
 	ctx := t.Context()
 
 	for _, done := range []bool{true, false, true} {
-		if err := eng.Insert(ctx, table, qir.Row{"title": qir.Text("t"), "done": qir.Bool(done)}); err != nil {
+		if err := eng.Insert(ctx, table, lir.Row{"title": lir.Text("t"), "done": lir.Bool(done)}); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	rows, err := eng.ScanIndex(ctx, table, "tickets_done_idx", qir.Row{"done": qir.Bool(true)})
+	rows, err := eng.ScanIndex(ctx, table, "tickets_done_idx", lir.Row{"done": lir.Bool(true)})
 	if err != nil || len(rows) != 2 {
 		t.Fatalf("done=true rows=%d err=%v", len(rows), err)
 	}

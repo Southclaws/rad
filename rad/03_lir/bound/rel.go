@@ -2,7 +2,7 @@ package bound
 
 import (
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 )
 
 // Relation is the bound relation law. Every node precomputes its laws at
@@ -13,7 +13,7 @@ import (
 // folds — is addressable by later operators exactly like a scanned column.
 type Relation interface {
 	// Output is the row type this relation produces; every field has a slot.
-	Output() qir.RowType
+	Output() lir.RowType
 	// Inputs lists child relations.
 	Inputs() []Relation
 	// FreeSlots are slots referenced but not produced beneath this node —
@@ -23,30 +23,30 @@ type Relation interface {
 	// intermediates that Output no longer exposes.
 	Produced() SlotSet
 	// Card bounds how many rows this relation can produce.
-	Card() qir.Cardinality
+	Card() lir.Cardinality
 }
 
 // laws carries the precomputed law values every node embeds.
 type laws struct {
-	out      qir.RowType
+	out      lir.RowType
 	free     SlotSet
 	produced SlotSet
-	card     qir.Cardinality
+	card     lir.Cardinality
 }
 
-func (l *laws) Output() qir.RowType     { return l.out }
+func (l *laws) Output() lir.RowType     { return l.out }
 func (l *laws) FreeSlots() SlotSet      { return l.free }
 func (l *laws) Produced() SlotSet       { return l.produced }
-func (l *laws) Card() qir.Cardinality   { return l.card }
+func (l *laws) Card() lir.Cardinality   { return l.card }
 
 // RefineCard lets the binder tighten a node's cardinality with knowledge the
 // constructor lacks — e.g. a filter whose equality conjuncts cover a unique
 // key has Max 1. Bounds only ever tighten.
-func (l *laws) RefineCard(c qir.Cardinality) {
+func (l *laws) RefineCard(c lir.Cardinality) {
 	if c.Min > l.card.Min {
 		l.card.Min = c.Min
 	}
-	if c.Max != qir.Unbounded && (l.card.Max == qir.Unbounded || c.Max < l.card.Max) {
+	if c.Max != lir.Unbounded && (l.card.Max == lir.Unbounded || c.Max < l.card.Max) {
 		l.card.Max = c.Max
 	}
 }
@@ -62,20 +62,20 @@ type Scan struct {
 }
 
 // NewScan binds a scan: slots must parallel tbl.Columns.
-func NewScan(tbl catalog.Table, scope string, slots []qir.SlotID) *Scan {
-	fields := make([]qir.Field, len(tbl.Columns))
+func NewScan(tbl catalog.Table, scope string, slots []lir.SlotID) *Scan {
+	fields := make([]lir.Field, len(tbl.Columns))
 	for i, col := range tbl.Columns {
-		fields[i] = qir.Field{
+		fields[i] = lir.Field{
 			Name: col.Name,
 			Slot: slots[i],
-			Type: qir.ScalarType(col.Type, col.Nullable),
+			Type: lir.ScalarType(col.Type, col.Nullable),
 		}
 	}
 	return &Scan{
 		laws: laws{
-			out:      qir.RowType{Fields: fields},
+			out:      lir.RowType{Fields: fields},
 			produced: NewSlotSet(slots...),
-			card:     qir.Cardinality{Min: 0, Max: qir.Unbounded},
+			card:     lir.Cardinality{Min: 0, Max: lir.Unbounded},
 		},
 		Table: tbl,
 		Scope: scope,
@@ -98,7 +98,7 @@ func NewFilter(in Relation, pred Expr) *Filter {
 			out:      in.Output(),
 			free:     in.FreeSlots().Union(pred.FreeSlots().Without(in.Produced())),
 			produced: in.Produced(),
-			card:     qir.Cardinality{Min: 0, Max: in.Card().Max},
+			card:     lir.Cardinality{Min: 0, Max: in.Card().Max},
 		},
 		In: in, Pred: pred,
 	}
@@ -112,7 +112,7 @@ func (f *Filter) Inputs() []Relation { return []Relation{f.In} }
 // spread concept.
 type ProjField struct {
 	Name string
-	Slot qir.SlotID
+	Slot lir.SlotID
 	Expr Expr
 }
 
@@ -125,17 +125,17 @@ type Project struct {
 }
 
 func NewProject(in Relation, scope string, fields []ProjField) *Project {
-	out := make([]qir.Field, len(fields))
-	slots := make([]qir.SlotID, len(fields))
+	out := make([]lir.Field, len(fields))
+	slots := make([]lir.SlotID, len(fields))
 	free := in.FreeSlots()
 	for i, f := range fields {
-		out[i] = qir.Field{Name: f.Name, Slot: f.Slot, Type: f.Expr.Type()}
+		out[i] = lir.Field{Name: f.Name, Slot: f.Slot, Type: f.Expr.Type()}
 		slots[i] = f.Slot
 		free = free.Union(f.Expr.FreeSlots().Without(in.Produced()))
 	}
 	return &Project{
 		laws: laws{
-			out:      qir.RowType{Fields: out},
+			out:      lir.RowType{Fields: out},
 			free:     free,
 			produced: in.Produced().Union(NewSlotSet(slots...)),
 			card:     in.Card(),
@@ -151,16 +151,16 @@ func (p *Project) Inputs() []Relation { return []Relation{p.In} }
 type Join struct {
 	laws
 	L, R Relation
-	Kind qir.JoinKind
+	Kind lir.JoinKind
 	On   Expr
 }
 
-func NewJoin(l, r Relation, kind qir.JoinKind, on Expr) *Join {
+func NewJoin(l, r Relation, kind lir.JoinKind, on Expr) *Join {
 	lf, rf := l.Output().Fields, r.Output().Fields
-	fields := make([]qir.Field, 0, len(lf)+len(rf))
+	fields := make([]lir.Field, 0, len(lf)+len(rf))
 	fields = append(fields, lf...)
 	for _, f := range rf {
-		if kind == qir.LeftJoin {
+		if kind == lir.LeftJoin {
 			f.Type.Nullable = true
 		}
 		fields = append(fields, f)
@@ -169,20 +169,20 @@ func NewJoin(l, r Relation, kind qir.JoinKind, on Expr) *Join {
 	free := l.FreeSlots().Union(r.FreeSlots()).Union(on.FreeSlots().Without(produced))
 
 	lc, rc := l.Card(), r.Card()
-	card := qir.Cardinality{Min: 0, Max: qir.Unbounded}
-	if kind == qir.LeftJoin {
+	card := lir.Cardinality{Min: 0, Max: lir.Unbounded}
+	if kind == lir.LeftJoin {
 		card.Min = lc.Min
 	}
-	if lc.Max != qir.Unbounded && rc.Max != qir.Unbounded {
+	if lc.Max != lir.Unbounded && rc.Max != lir.Unbounded {
 		rmax := rc.Max
-		if kind == qir.LeftJoin && rmax < 1 {
+		if kind == lir.LeftJoin && rmax < 1 {
 			rmax = 1
 		}
 		card.Max = lc.Max * rmax
 	}
 	return &Join{
 		laws: laws{
-			out:      qir.RowType{Fields: fields},
+			out:      lir.RowType{Fields: fields},
 			free:     free,
 			produced: produced,
 			card:     card,
@@ -196,30 +196,30 @@ func (j *Join) Inputs() []Relation { return []Relation{j.L, j.R} }
 // GroupTerm is one bound grouping attribute.
 type GroupTerm struct {
 	Name string
-	Slot qir.SlotID
+	Slot lir.SlotID
 	Expr Expr
 }
 
 // AggTerm is one bound fold. Arg is nil only for count-rows. T is the fold's
 // result type, fixed by the aggregate typing rules.
 type AggTerm struct {
-	Fn   qir.AggFn
+	Fn   lir.AggFn
 	Arg  Expr
 	Name string
-	Slot qir.SlotID
-	T    qir.Type
+	Slot lir.SlotID
+	T    lir.Type
 }
 
 // AggTermType applies the aggregate typing rules: count is int64 and never
 // NULL (an empty fold counts 0); sum/min/max keep the argument's type but
 // are NULL over an empty or all-NULL input; avg is always float64, likewise
 // nullable.
-func AggTermType(fn qir.AggFn, arg Expr) qir.Type {
+func AggTermType(fn lir.AggFn, arg Expr) lir.Type {
 	switch fn {
-	case qir.AggCount:
-		return qir.Type{Kind: qir.KindInt64}
-	case qir.AggAvg:
-		return qir.Type{Kind: qir.KindFloat64, Nullable: true}
+	case lir.AggCount:
+		return lir.Type{Kind: lir.KindInt64}
+	case lir.AggAvg:
+		return lir.Type{Kind: lir.KindFloat64, Nullable: true}
 	default: // sum, min, max
 		t := arg.Type()
 		t.Nullable = true
@@ -237,28 +237,28 @@ type Aggregate struct {
 }
 
 func NewAggregate(in Relation, groups []GroupTerm, terms []AggTerm) *Aggregate {
-	fields := make([]qir.Field, 0, len(groups)+len(terms))
-	slots := make([]qir.SlotID, 0, len(groups)+len(terms))
+	fields := make([]lir.Field, 0, len(groups)+len(terms))
+	slots := make([]lir.SlotID, 0, len(groups)+len(terms))
 	free := in.FreeSlots()
 	for _, g := range groups {
-		fields = append(fields, qir.Field{Name: g.Name, Slot: g.Slot, Type: g.Expr.Type()})
+		fields = append(fields, lir.Field{Name: g.Name, Slot: g.Slot, Type: g.Expr.Type()})
 		slots = append(slots, g.Slot)
 		free = free.Union(g.Expr.FreeSlots().Without(in.Produced()))
 	}
 	for _, t := range terms {
-		fields = append(fields, qir.Field{Name: t.Name, Slot: t.Slot, Type: t.T})
+		fields = append(fields, lir.Field{Name: t.Name, Slot: t.Slot, Type: t.T})
 		slots = append(slots, t.Slot)
 		if t.Arg != nil {
 			free = free.Union(t.Arg.FreeSlots().Without(in.Produced()))
 		}
 	}
-	card := qir.Cardinality{Min: 1, Max: 1} // global fold
+	card := lir.Cardinality{Min: 1, Max: 1} // global fold
 	if len(groups) > 0 {
-		card = qir.Cardinality{Min: 0, Max: in.Card().Max}
+		card = lir.Cardinality{Min: 0, Max: in.Card().Max}
 	}
 	return &Aggregate{
 		laws: laws{
-			out:      qir.RowType{Fields: fields},
+			out:      lir.RowType{Fields: fields},
 			free:     free,
 			produced: in.Produced().Union(NewSlotSet(slots...)),
 			card:     card,
@@ -313,7 +313,7 @@ type Slice struct {
 func NewSlice(in Relation, offset int, limit *int) *Slice {
 	card := in.Card()
 	card.Min = 0
-	if limit != nil && (card.Max == qir.Unbounded || *limit < card.Max) {
+	if limit != nil && (card.Max == lir.Unbounded || *limit < card.Max) {
 		card.Max = *limit
 	}
 	return &Slice{
@@ -332,7 +332,7 @@ func (s *Slice) Inputs() []Relation { return []Relation{s.In} }
 // Query is a bound root relation plus its materialisation cardinality.
 type Query struct {
 	Root Relation
-	Card qir.RootCard
+	Card lir.RootCard
 }
 
 // Ordered reports whether rel carries an explicit logical ordering: an Order

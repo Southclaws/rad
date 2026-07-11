@@ -14,8 +14,8 @@ package planner
 
 import (
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
-	"rad/rad/03_qir/bound"
+	lir "rad/rad/03_lir"
+	"rad/rad/03_lir/bound"
 )
 
 // PhysNode is the sealed physical operator interface.
@@ -25,8 +25,8 @@ type PhysNode interface{ phys() }
 // cardinality, and the output row type.
 type PhysPlan struct {
 	Root PhysNode
-	Card qir.RootCard
-	Out  qir.RowType
+	Card lir.RootCard
+	Out  lir.RowType
 }
 
 // PKGetExec fetches at most one row by primary key. Key values may be
@@ -86,14 +86,14 @@ type AttachSpec struct {
 	Kind CrossKind
 	Corr Correlation
 	Plan PhysNode
-	Out  qir.RowType // the sub-relation's output shape
+	Out  lir.RowType // the sub-relation's output shape
 }
 
 // PhysField is one projection output: either a scalar expression or an
 // attached sub-relation, never both.
 type PhysField struct {
 	Name   string
-	Slot   qir.SlotID
+	Slot   lir.SlotID
 	Expr   bound.Expr
 	Attach *AttachSpec
 }
@@ -125,9 +125,9 @@ type SliceExec struct {
 // NULL-padding unmatched left rows.
 type NestedLoopJoinExec struct {
 	L, R PhysNode
-	Kind qir.JoinKind
+	Kind lir.JoinKind
 	On   bound.Expr
-	ROut qir.RowType
+	ROut lir.RowType
 }
 
 // AggregateExec folds its input: one row per distinct group, or exactly one
@@ -154,14 +154,14 @@ func (*AggregateExec) phys()      {}
 // and whether the node is a singleton (at most one row satisfies any
 // ordering). Filters and slices preserve their input's order; everything
 // else provides none.
-func providedOrder(n PhysNode) (slots []qir.SlotID, singleton bool) {
+func providedOrder(n PhysNode) (slots []lir.SlotID, singleton bool) {
 	switch x := n.(type) {
 	case *PKGetExec:
 		return nil, true
 	case *TableScanExec:
 		return pkSlots(x.Scan), false
 	case *IndexRangeScanExec:
-		var out []qir.SlotID
+		var out []lir.SlotID
 		for _, col := range x.Index.Columns[len(x.EqPrefix):] {
 			if f, ok := x.Scan.Output().Lookup(col); ok {
 				out = append(out, f.Slot)
@@ -176,8 +176,8 @@ func providedOrder(n PhysNode) (slots []qir.SlotID, singleton bool) {
 	return nil, false
 }
 
-func pkSlots(s *bound.Scan) []qir.SlotID {
-	out := make([]qir.SlotID, 0, len(s.Table.PrimaryKey))
+func pkSlots(s *bound.Scan) []lir.SlotID {
+	out := make([]lir.SlotID, 0, len(s.Table.PrimaryKey))
 	for _, col := range s.Table.PrimaryKey {
 		if f, ok := s.Output().Lookup(col); ok {
 			out = append(out, f.Slot)

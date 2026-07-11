@@ -11,8 +11,8 @@ import (
 	"slices"
 
 	kv "rad/rad/01_kv"
-	qir "rad/rad/03_qir"
-	"rad/rad/03_qir/bound"
+	lir "rad/rad/03_lir"
+	"rad/rad/03_lir/bound"
 	planner "rad/rad/04_planner"
 )
 
@@ -87,19 +87,19 @@ func (ex *executor) build(ctx context.Context, node planner.PhysNode, outer boun
 
 // resolveConst turns a planner constant — literal or outer-slot parameter —
 // into a value under the environment.
-func resolveConst(cv planner.ConstVal, outer bound.Env) (qir.Value, error) {
+func resolveConst(cv planner.ConstVal, outer bound.Env) (lir.Value, error) {
 	if cv.Lit != nil {
 		return *cv.Lit, nil
 	}
 	v, ok := outer[*cv.Outer]
 	if !ok {
-		return qir.Value{}, fmt.Errorf("exec: outer slot %d not bound", *cv.Outer)
+		return lir.Value{}, fmt.Errorf("exec: outer slot %d not bound", *cv.Outer)
 	}
 	return v, nil
 }
 
 // rowToFrame lifts a stored row into a frame under the scan's slots.
-func rowToFrame(scan *bound.Scan, row qir.Row, outer bound.Env) Frame {
+func rowToFrame(scan *bound.Scan, row lir.Row, outer bound.Env) Frame {
 	f := newFrame(outer)
 	for _, fld := range scan.Output().Fields {
 		f.vals[fld.Slot] = row[fld.Name]
@@ -111,13 +111,13 @@ func rowToFrame(scan *bound.Scan, row qir.Row, outer bound.Env) Frame {
 
 type pkGetOp struct {
 	scan  *bound.Scan
-	row   qir.Row // nil when absent or a key component was NULL
+	row   lir.Row // nil when absent or a key component was NULL
 	outer bound.Env
 	done  bool
 }
 
 func (ex *executor) buildPKGet(ctx context.Context, n *planner.PKGetExec, outer bound.Env) (Operator, error) {
-	key := qir.Row{}
+	key := lir.Row{}
 	for i, col := range n.Scan.Table.PrimaryKey {
 		v, err := resolveConst(n.Key[i], outer)
 		if err != nil {
@@ -166,7 +166,7 @@ func (o *rowIterOp) Next(context.Context) (Frame, bool, error) {
 func (o *rowIterOp) Close() error { return o.it.Close() }
 
 func (ex *executor) buildIndexScan(ctx context.Context, n *planner.IndexRangeScanExec, outer bound.Env) (Operator, error) {
-	eq := make([]qir.Value, len(n.EqPrefix))
+	eq := make([]lir.Value, len(n.EqPrefix))
 	for i, cv := range n.EqPrefix {
 		v, err := resolveConst(cv, outer)
 		if err != nil {
@@ -219,7 +219,7 @@ func (o *filterOp) Next(ctx context.Context) (Frame, bool, error) {
 		if err != nil {
 			return Frame{}, false, err
 		}
-		if t == qir.TriTrue {
+		if t == lir.TriTrue {
 			return f, true, nil
 		}
 	}
@@ -245,10 +245,10 @@ func (o *sortOp) Next(ctx context.Context) (Frame, bool, error) {
 		if err != nil {
 			return Frame{}, false, err
 		}
-		keys := make([][]qir.Value, len(frames))
+		keys := make([][]lir.Value, len(frames))
 		glue := o.ex.glue(o.outer)
 		for i, f := range frames {
-			keys[i] = make([]qir.Value, len(o.terms))
+			keys[i] = make([]lir.Value, len(o.terms))
 			for j, t := range o.terms {
 				v, err := bound.Eval(ctx, t.Expr, f.vals, glue)
 				if err != nil {
@@ -345,8 +345,8 @@ type aggAccum struct {
 	sumI  int64
 	sumF  float64
 	n     int64 // non-NULL inputs seen by sum/avg/min/max
-	min   qir.Value
-	max   qir.Value
+	min   lir.Value
+	max   lir.Value
 }
 
 func (o *aggOp) Next(ctx context.Context) (Frame, bool, error) {
@@ -368,7 +368,7 @@ func (o *aggOp) fold(ctx context.Context) error {
 	glue := o.ex.glue(o.outer)
 
 	type group struct {
-		vals  []qir.Value
+		vals  []lir.Value
 		accum []aggAccum
 	}
 	groups := map[string]*group{}
@@ -382,7 +382,7 @@ func (o *aggOp) fold(ctx context.Context) error {
 		if !ok {
 			break
 		}
-		gvals := make([]qir.Value, len(o.groups))
+		gvals := make([]lir.Value, len(o.groups))
 		for i, g := range o.groups {
 			v, err := bound.Eval(ctx, g.Expr, f.vals, glue)
 			if err != nil {
@@ -415,7 +415,7 @@ func (o *aggOp) fold(ctx context.Context) error {
 			}
 			a.count++
 			switch t.Fn {
-			case qir.AggSum, qir.AggAvg:
+			case lir.AggSum, lir.AggAvg:
 				a.n++
 				if v.Type == "int64" {
 					a.sumI += v.Int64
@@ -423,7 +423,7 @@ func (o *aggOp) fold(ctx context.Context) error {
 				} else {
 					a.sumF += v.Float64
 				}
-			case qir.AggMin, qir.AggMax:
+			case lir.AggMin, lir.AggMax:
 				if a.n == 0 {
 					a.min, a.max = v, v
 				} else {
@@ -463,31 +463,31 @@ func (o *aggOp) fold(ctx context.Context) error {
 // foldResult applies the empty-set and typing rules: count is 0, never
 // NULL; sum keeps the argument's type; avg is always float64; min/max keep
 // the argument's type; every fold but count is NULL over no non-NULL input.
-func foldResult(t bound.AggTerm, a aggAccum) qir.Value {
+func foldResult(t bound.AggTerm, a aggAccum) lir.Value {
 	switch t.Fn {
-	case qir.AggCount:
-		return qir.Int64(a.count)
-	case qir.AggSum:
+	case lir.AggCount:
+		return lir.Int64(a.count)
+	case lir.AggSum:
 		if a.n == 0 {
-			return qir.Null(t.T.Kind.CatalogType())
+			return lir.Null(t.T.Kind.CatalogType())
 		}
-		if t.T.Kind == qir.KindInt64 {
-			return qir.Int64(a.sumI)
+		if t.T.Kind == lir.KindInt64 {
+			return lir.Int64(a.sumI)
 		}
-		return qir.Float64(a.sumF)
-	case qir.AggAvg:
+		return lir.Float64(a.sumF)
+	case lir.AggAvg:
 		if a.n == 0 {
-			return qir.Null(t.T.Kind.CatalogType())
+			return lir.Null(t.T.Kind.CatalogType())
 		}
-		return qir.Float64(a.sumF / float64(a.n))
-	case qir.AggMin:
+		return lir.Float64(a.sumF / float64(a.n))
+	case lir.AggMin:
 		if a.n == 0 {
-			return qir.Null(t.T.Kind.CatalogType())
+			return lir.Null(t.T.Kind.CatalogType())
 		}
 		return a.min
 	default: // max
 		if a.n == 0 {
-			return qir.Null(t.T.Kind.CatalogType())
+			return lir.Null(t.T.Kind.CatalogType())
 		}
 		return a.max
 	}
@@ -500,9 +500,9 @@ func (o *aggOp) Close() error { return o.in.Close() }
 type nljOp struct {
 	ex    *executor
 	l, r  Operator
-	kind  qir.JoinKind
+	kind  lir.JoinKind
 	on    bound.Expr
-	rOut  qir.RowType
+	rOut  lir.RowType
 	outer bound.Env
 
 	right   []Frame
@@ -538,14 +538,14 @@ func (o *nljOp) Next(ctx context.Context) (Frame, bool, error) {
 			if err != nil {
 				return Frame{}, false, err
 			}
-			if t == qir.TriTrue {
+			if t == lir.TriTrue {
 				o.matched = true
 				return merged, true, nil
 			}
 		}
 		left := *o.cur
 		o.cur = nil
-		if o.kind == qir.LeftJoin && !o.matched {
+		if o.kind == lir.LeftJoin && !o.matched {
 			return o.nullPadded(left), true, nil
 		}
 	}
@@ -575,7 +575,7 @@ func (o *nljOp) nullPadded(left Frame) Frame {
 	out := mergeFrames(left, Frame{})
 	for _, f := range o.rOut.Fields {
 		if f.Type.Kind.Scalar() {
-			out.vals[f.Slot] = qir.Null(f.Type.Kind.CatalogType())
+			out.vals[f.Slot] = lir.Null(f.Type.Kind.CatalogType())
 		}
 	}
 	return out

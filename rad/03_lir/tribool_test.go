@@ -1,9 +1,9 @@
-package qir
+package lir
 
 import "testing"
 
 // The full Kleene K3 truth tables. These are the normative semantics of
-// every predicate in the IR; docs/design/qir-v2.md states them in prose.
+// every predicate in the IR; docs/design/lir-v2.md states them in prose.
 func TestKleeneTables(t *testing.T) {
 	F, U, T := TriFalse, TriUnknown, TriTrue
 

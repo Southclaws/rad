@@ -1,4 +1,4 @@
-package qir
+package lir
 
 import (
 	"cmp"
@@ -71,7 +71,7 @@ func (v Value) Compare(o Value) (int, error) {
 		return 1, nil
 	}
 	if v.Type != o.Type {
-		return 0, fmt.Errorf("qir: cannot compare %s with %s", v.Type, o.Type)
+		return 0, fmt.Errorf("lir: cannot compare %s with %s", v.Type, o.Type)
 	}
 	switch v.Type {
 	case catalog.TypeText:
@@ -90,7 +90,7 @@ func (v Value) Compare(o Value) (int, error) {
 			return 1, nil
 		}
 	}
-	return 0, fmt.Errorf("qir: cannot compare type %s", v.Type)
+	return 0, fmt.Errorf("lir: cannot compare type %s", v.Type)
 }
 
 func (v Value) String() string {

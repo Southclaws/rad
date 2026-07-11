@@ -17,7 +17,7 @@ import (
 	kv "rad/rad/01_kv"
 	"rad/rad/01_kv/kvslate"
 	catalog "rad/rad/02_catalog"
-	qir "rad/rad/03_qir"
+	lir "rad/rad/03_lir"
 )
 
 // countingStore tallies data-plane Gets and Scans — row and index keys,
@@ -73,9 +73,9 @@ func (c countingTxn) Scan(ctx context.Context, start, end []byte) (kv.Iterator, 
 	return c.Txn.Scan(ctx, start, end)
 }
 
-// qirSetup builds the tracker schema, seeds the forcing-query data, and
+// lirSetup builds the tracker schema, seeds the forcing-query data, and
 // returns the engine plus the KV op counters.
-func qirSetup(t *testing.T) (*Engine, context.Context, *int, *int) {
+func lirSetup(t *testing.T) (*Engine, context.Context, *int, *int) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := kvslate.Open("test-"+t.Name(), "memory:///")
@@ -133,28 +133,28 @@ func qirSetup(t *testing.T) (*Engine, context.Context, *int, *int) {
 			{Name: "comments_task_fk", Columns: []string{"task_id"}, RefTable: "tasks", RefColumns: []string{"id"}}}})
 
 	eng := New(counted, cat)
-	ins := func(table string, row qir.Row) {
+	ins := func(table string, row lir.Row) {
 		t.Helper()
 		if err := eng.Insert(ctx, table, row); err != nil {
 			t.Fatal(err)
 		}
 	}
-	ins("users", qir.Row{"id": qir.Text("ada"), "name": qir.Text("Ada")})
-	ins("users", qir.Row{"id": qir.Text("bob"), "name": qir.Text("Bob")})
-	ins("boards", qir.Row{"id": qir.Text("b1"), "name": qir.Text("Launch"), "owner_id": qir.Text("ada")})
-	ins("boards", qir.Row{"id": qir.Text("b2"), "name": qir.Text("Infra"), "owner_id": qir.Text("ada")})
-	ins("boards", qir.Row{"id": qir.Text("b3"), "name": qir.Text("Empty"), "owner_id": qir.Text("bob")})
-	ins("tasks", qir.Row{"id": qir.Text("t1"), "board_id": qir.Text("b1"), "title": qir.Text("ship"),
-		"status": qir.Text("open"), "priority": qir.Int64(3), "assignee_id": qir.Text("bob"), "estimate": qir.Float64(2)})
-	ins("tasks", qir.Row{"id": qir.Text("t2"), "board_id": qir.Text("b1"), "title": qir.Text("write"),
-		"status": qir.Text("open"), "priority": qir.Int64(5)}) // no assignee, no estimate
-	ins("tasks", qir.Row{"id": qir.Text("t3"), "board_id": qir.Text("b1"), "title": qir.Text("done"),
-		"status": qir.Text("done"), "priority": qir.Int64(9), "assignee_id": qir.Text("ada")})
-	ins("tasks", qir.Row{"id": qir.Text("t4"), "board_id": qir.Text("b2"), "title": qir.Text("rack"),
-		"status": qir.Text("open"), "priority": qir.Int64(1), "assignee_id": qir.Text("ada"), "estimate": qir.Float64(8)})
-	ins("comments", qir.Row{"id": qir.Text("c1"), "task_id": qir.Text("t1"), "body": qir.Text("nice")})
-	ins("comments", qir.Row{"id": qir.Text("c2"), "task_id": qir.Text("t1"), "body": qir.Text("ship it")})
-	ins("comments", qir.Row{"id": qir.Text("c3"), "task_id": qir.Text("t4"), "body": qir.Text("racked")})
+	ins("users", lir.Row{"id": lir.Text("ada"), "name": lir.Text("Ada")})
+	ins("users", lir.Row{"id": lir.Text("bob"), "name": lir.Text("Bob")})
+	ins("boards", lir.Row{"id": lir.Text("b1"), "name": lir.Text("Launch"), "owner_id": lir.Text("ada")})
+	ins("boards", lir.Row{"id": lir.Text("b2"), "name": lir.Text("Infra"), "owner_id": lir.Text("ada")})
+	ins("boards", lir.Row{"id": lir.Text("b3"), "name": lir.Text("Empty"), "owner_id": lir.Text("bob")})
+	ins("tasks", lir.Row{"id": lir.Text("t1"), "board_id": lir.Text("b1"), "title": lir.Text("ship"),
+		"status": lir.Text("open"), "priority": lir.Int64(3), "assignee_id": lir.Text("bob"), "estimate": lir.Float64(2)})
+	ins("tasks", lir.Row{"id": lir.Text("t2"), "board_id": lir.Text("b1"), "title": lir.Text("write"),
+		"status": lir.Text("open"), "priority": lir.Int64(5)}) // no assignee, no estimate
+	ins("tasks", lir.Row{"id": lir.Text("t3"), "board_id": lir.Text("b1"), "title": lir.Text("done"),
+		"status": lir.Text("done"), "priority": lir.Int64(9), "assignee_id": lir.Text("ada")})
+	ins("tasks", lir.Row{"id": lir.Text("t4"), "board_id": lir.Text("b2"), "title": lir.Text("rack"),
+		"status": lir.Text("open"), "priority": lir.Int64(1), "assignee_id": lir.Text("ada"), "estimate": lir.Float64(8)})
+	ins("comments", lir.Row{"id": lir.Text("c1"), "task_id": lir.Text("t1"), "body": lir.Text("nice")})
+	ins("comments", lir.Row{"id": lir.Text("c2"), "task_id": lir.Text("t1"), "body": lir.Text("ship it")})
+	ins("comments", lir.Row{"id": lir.Text("c3"), "task_id": lir.Text("t4"), "body": lir.Text("racked")})
 
 	*gets, *scans = 0, 0
 	return eng, ctx, gets, scans
@@ -162,22 +162,22 @@ func qirSetup(t *testing.T) (*Engine, context.Context, *int, *int) {
 
 // ── unbound construction helpers ────────────────────────────────────────────
 
-func qcol(scope, name string) qir.Column { return qir.Column{Scope: scope, Name: name} }
-func qlit(v any) qir.Literal             { return qir.Literal{Raw: v} }
-func qeq(l, r qir.Expr) qir.Expr         { return qir.Binary{Op: qir.OpEq, L: l, R: r} }
-func qand(l, r qir.Expr) qir.Expr        { return qir.Binary{Op: qir.OpAnd, L: l, R: r} }
-func qscan(tbl, scope string) qir.Scan   { return qir.Scan{Table: tbl, Scope: scope} }
-func qfilter(in qir.Relation, p qir.Expr) qir.Filter {
-	return qir.Filter{Input: in, Pred: p}
+func qcol(scope, name string) lir.Column { return lir.Column{Scope: scope, Name: name} }
+func qlit(v any) lir.Literal             { return lir.Literal{Raw: v} }
+func qeq(l, r lir.Expr) lir.Expr         { return lir.Binary{Op: lir.OpEq, L: l, R: r} }
+func qand(l, r lir.Expr) lir.Expr        { return lir.Binary{Op: lir.OpAnd, L: l, R: r} }
+func qscan(tbl, scope string) lir.Scan   { return lir.Scan{Table: tbl, Scope: scope} }
+func qfilter(in lir.Relation, p lir.Expr) lir.Filter {
+	return lir.Filter{Input: in, Pred: p}
 }
-func many(root qir.Relation) qir.Query { return qir.Query{Card: qir.CardMany, Root: root} }
+func many(root lir.Relation) lir.Query { return lir.Query{Card: lir.CardMany, Root: root} }
 
 // jsonish flattens a Datum for readable assertions.
-func jsonish(d qir.Datum) any {
+func jsonish(d lir.Datum) any {
 	switch d.Kind {
-	case qir.DatumNull:
+	case lir.DatumNull:
 		return nil
-	case qir.DatumScalar:
+	case lir.DatumScalar:
 		v := d.Scalar
 		switch v.Type {
 		case catalog.TypeText:
@@ -190,7 +190,7 @@ func jsonish(d qir.Datum) any {
 			return v.Bool
 		}
 		return v
-	case qir.DatumObject:
+	case lir.DatumObject:
 		m := map[string]any{}
 		for _, f := range d.Fields {
 			m[f.Name] = jsonish(f.Datum)
@@ -207,37 +207,37 @@ func jsonish(d qir.Datum) any {
 
 // forcingQ is the acceptance query: boards → owner → open tasks by priority
 // desc → assignee + comment count.
-func forcingQ() qir.Query {
+func forcingQ() lir.Query {
 	owner := qfilter(qscan("users", "o"), qeq(qcol("o", "id"), qcol("b", "owner_id")))
 	assignee := qfilter(qscan("users", "a"), qeq(qcol("a", "id"), qcol("t", "assignee_id")))
-	commentCount := qir.Aggregate{
+	commentCount := lir.Aggregate{
 		Input: qfilter(qscan("comments", "c"), qeq(qcol("c", "task_id"), qcol("t", "id"))),
-		Terms: []qir.AggTerm{{Fn: qir.AggCount, As: "n"}},
+		Terms: []lir.AggTerm{{Fn: lir.AggCount, As: "n"}},
 	}
-	openTasks := qir.Project{
-		Input: qir.Slice{
-			Input: qir.Order{
+	openTasks := lir.Project{
+		Input: lir.Slice{
+			Input: lir.Order{
 				Input: qfilter(qscan("tasks", "t"),
 					qand(qeq(qcol("t", "board_id"), qcol("b", "id")),
 						qeq(qcol("t", "status"), qlit("open")))),
-				Terms: []qir.OrderTerm{{Expr: qcol("t", "priority"), Desc: true}},
+				Terms: []lir.OrderTerm{{Expr: qcol("t", "priority"), Desc: true}},
 			},
 			Limit: new(int(20)),
 		},
-		Fields: []qir.ProjField{
+		Fields: []lir.ProjField{
 			{As: "id", Expr: qcol("t", "id")},
 			{As: "title", Expr: qcol("t", "title")},
-			{As: "assignee", Expr: qir.First{Rel: assignee}},
-			{As: "comment_count", Expr: qir.Scalar{Rel: commentCount}},
+			{As: "assignee", Expr: lir.First{Rel: assignee}},
+			{As: "comment_count", Expr: lir.Scalar{Rel: commentCount}},
 		},
 	}
-	return many(qir.Project{
-		Input: qir.Order{Input: qscan("boards", "b"),
-			Terms: []qir.OrderTerm{{Expr: qcol("b", "id")}}},
-		Fields: []qir.ProjField{
+	return many(lir.Project{
+		Input: lir.Order{Input: qscan("boards", "b"),
+			Terms: []lir.OrderTerm{{Expr: qcol("b", "id")}}},
+		Fields: []lir.ProjField{
 			{As: "id", Expr: qcol("b", "id")},
-			{As: "owner", Expr: qir.First{Rel: owner}},
-			{As: "tasks", Expr: qir.Array{Rel: openTasks}},
+			{As: "owner", Expr: lir.First{Rel: owner}},
+			{As: "tasks", Expr: lir.Array{Rel: openTasks}},
 		},
 	})
 }
@@ -262,7 +262,7 @@ var forcingWant = []any{
 }
 
 func TestExecuteForcingQuery(t *testing.T) {
-	eng, ctx, gets, scans := qirSetup(t)
+	eng, ctx, gets, scans := lirSetup(t)
 
 	d, err := eng.Execute(ctx, forcingQ())
 	if err != nil {
@@ -289,7 +289,7 @@ func TestExecuteForcingQuery(t *testing.T) {
 // Batched and nested execution are result-equivalent by construction —
 // and nested costs strictly more storage work.
 func TestExecuteBatchedEquivalentToNested(t *testing.T) {
-	eng, ctx, gets, scans := qirSetup(t)
+	eng, ctx, gets, scans := lirSetup(t)
 
 	batched, err := eng.Execute(ctx, forcingQ())
 	if err != nil {
@@ -315,11 +315,11 @@ func TestExecuteBatchedEquivalentToNested(t *testing.T) {
 // interleaves Gets with the open iterator against a kvslate txn — the risk
 // item, pinned here.
 func TestExecuteInsideTransaction(t *testing.T) {
-	eng, ctx, _, _ := qirSetup(t)
+	eng, ctx, _, _ := lirSetup(t)
 
 	err := eng.Txn(ctx, func(tx *Tx) error {
-		if err := tx.Insert(ctx, "comments", qir.Row{
-			"id": qir.Text("c4"), "task_id": qir.Text("t2"), "body": qir.Text("mid-txn")}); err != nil {
+		if err := tx.Insert(ctx, "comments", lir.Row{
+			"id": lir.Text("c4"), "task_id": lir.Text("t2"), "body": lir.Text("mid-txn")}); err != nil {
 			return err
 		}
 		d, err := tx.Execute(ctx, forcingQ())
@@ -343,7 +343,7 @@ func TestExecuteInsideTransaction(t *testing.T) {
 // unique column NULL, while non-NULL duplicates stay rejected — on insert,
 // on update, and through backfill.
 func TestUniqueIndexNullsDistinct(t *testing.T) {
-	eng, ctx, _, _ := qirSetup(t)
+	eng, ctx, _, _ := lirSetup(t)
 
 	if _, err := eng.Catalog().CreateTable(ctx, catalog.TableDef{
 		Name: "invites",
@@ -358,7 +358,7 @@ func TestUniqueIndexNullsDistinct(t *testing.T) {
 
 	// Two pending invites with no email yet: fine.
 	for _, id := range []string{"i1", "i2"} {
-		if err := eng.Insert(ctx, "invites", qir.Row{"id": qir.Text(id)}); err != nil {
+		if err := eng.Insert(ctx, "invites", lir.Row{"id": lir.Text(id)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -370,22 +370,22 @@ func TestUniqueIndexNullsDistinct(t *testing.T) {
 	}
 
 	// A third NULL is still fine; a real duplicate is not.
-	if err := eng.Insert(ctx, "invites", qir.Row{"id": qir.Text("i3")}); err != nil {
+	if err := eng.Insert(ctx, "invites", lir.Row{"id": lir.Text("i3")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := eng.Insert(ctx, "invites", qir.Row{"id": qir.Text("i4"), "email": qir.Text("a@b.co")}); err != nil {
+	if err := eng.Insert(ctx, "invites", lir.Row{"id": lir.Text("i4"), "email": lir.Text("a@b.co")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := eng.Insert(ctx, "invites", qir.Row{"id": qir.Text("i5"), "email": qir.Text("a@b.co")}); err == nil {
+	if err := eng.Insert(ctx, "invites", lir.Row{"id": lir.Text("i5"), "email": lir.Text("a@b.co")}); err == nil {
 		t.Fatal("duplicate non-NULL unique value accepted")
 	}
 
 	// Updating a NULL into a taken value trips the constraint; updating into
 	// NULL never does.
-	if _, _, err := eng.Update(ctx, "invites", qir.Row{"id": qir.Text("i1")}, qir.Row{"email": qir.Text("a@b.co")}); err == nil {
+	if _, _, err := eng.Update(ctx, "invites", lir.Row{"id": lir.Text("i1")}, lir.Row{"email": lir.Text("a@b.co")}); err == nil {
 		t.Fatal("update into a taken unique value accepted")
 	}
-	if _, _, err := eng.Update(ctx, "invites", qir.Row{"id": qir.Text("i4")}, qir.Row{"email": qir.Null(catalog.TypeText)}); err != nil {
+	if _, _, err := eng.Update(ctx, "invites", lir.Row{"id": lir.Text("i4")}, lir.Row{"email": lir.Null(catalog.TypeText)}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -393,15 +393,15 @@ func TestUniqueIndexNullsDistinct(t *testing.T) {
 // Three-valued logic at the row level: NOT (assignee = "bob") must NOT
 // match tasks with a NULL assignee.
 func TestExecuteThreeValuedNot(t *testing.T) {
-	eng, ctx, _, _ := qirSetup(t)
+	eng, ctx, _, _ := lirSetup(t)
 
-	d, err := eng.Execute(ctx, many(qir.Project{
-		Input: qir.Order{
+	d, err := eng.Execute(ctx, many(lir.Project{
+		Input: lir.Order{
 			Input: qfilter(qscan("tasks", "t"),
-				qir.Unary{Op: qir.OpNot, X: qeq(qcol("t", "assignee_id"), qlit("bob"))}),
-			Terms: []qir.OrderTerm{{Expr: qcol("t", "id")}},
+				lir.Unary{Op: lir.OpNot, X: qeq(qcol("t", "assignee_id"), qlit("bob"))}),
+			Terms: []lir.OrderTerm{{Expr: qcol("t", "id")}},
 		},
-		Fields: []qir.ProjField{{As: "id", Expr: qcol("t", "id")}},
+		Fields: []lir.ProjField{{As: "id", Expr: qcol("t", "id")}},
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -415,9 +415,9 @@ func TestExecuteThreeValuedNot(t *testing.T) {
 	}
 
 	// is_null remains the way to ask for NULLs.
-	d, err = eng.Execute(ctx, many(qir.Project{
-		Input: qfilter(qscan("tasks", "t"), qir.Unary{Op: qir.OpIsNull, X: qcol("t", "assignee_id")}),
-		Fields: []qir.ProjField{{As: "id", Expr: qcol("t", "id")}},
+	d, err = eng.Execute(ctx, many(lir.Project{
+		Input: qfilter(qscan("tasks", "t"), lir.Unary{Op: lir.OpIsNull, X: qcol("t", "assignee_id")}),
+		Fields: []lir.ProjField{{As: "id", Expr: qcol("t", "id")}},
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -429,21 +429,21 @@ func TestExecuteThreeValuedNot(t *testing.T) {
 
 // Aggregates: grouped folds with the empty-set rules, plus range access.
 func TestExecuteAggregatesAndRanges(t *testing.T) {
-	eng, ctx, _, _ := qirSetup(t)
+	eng, ctx, _, _ := lirSetup(t)
 
 	// GROUP BY status over board b1, ordered by the group key.
-	d, err := eng.Execute(ctx, many(qir.Order{
-		Input: qir.Aggregate{
+	d, err := eng.Execute(ctx, many(lir.Order{
+		Input: lir.Aggregate{
 			Input:  qfilter(qscan("tasks", "t"), qeq(qcol("t", "board_id"), qlit("b1"))),
 			Scope:  "stats",
-			Groups: []qir.GroupTerm{{Expr: qcol("t", "status")}},
-			Terms: []qir.AggTerm{
-				{Fn: qir.AggCount, As: "n"},
-				{Fn: qir.AggMax, Arg: qcol("t", "priority"), As: "top"},
-				{Fn: qir.AggAvg, Arg: qcol("t", "estimate"), As: "avg_est"},
+			Groups: []lir.GroupTerm{{Expr: qcol("t", "status")}},
+			Terms: []lir.AggTerm{
+				{Fn: lir.AggCount, As: "n"},
+				{Fn: lir.AggMax, Arg: qcol("t", "priority"), As: "top"},
+				{Fn: lir.AggAvg, Arg: qcol("t", "estimate"), As: "avg_est"},
 			},
 		},
-		Terms: []qir.OrderTerm{{Expr: qcol("stats", "status")}},
+		Terms: []lir.OrderTerm{{Expr: qcol("stats", "status")}},
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -457,11 +457,11 @@ func TestExecuteAggregatesAndRanges(t *testing.T) {
 	}
 
 	// A global fold over nothing: count 0, everything else NULL — one row.
-	d, err = eng.Execute(ctx, many(qir.Aggregate{
+	d, err = eng.Execute(ctx, many(lir.Aggregate{
 		Input: qfilter(qscan("tasks", "t"), qeq(qcol("t", "board_id"), qlit("b3"))),
-		Terms: []qir.AggTerm{
-			{Fn: qir.AggCount, As: "n"},
-			{Fn: qir.AggSum, Arg: qcol("t", "priority"), As: "total"},
+		Terms: []lir.AggTerm{
+			{Fn: lir.AggCount, As: "n"},
+			{Fn: lir.AggSum, Arg: qcol("t", "priority"), As: "total"},
 		},
 	}))
 	if err != nil {
@@ -473,14 +473,14 @@ func TestExecuteAggregatesAndRanges(t *testing.T) {
 
 	// A range drives the index: board_id = b1 AND status >= "m" rides
 	// (board_id, status) and returns only open tasks.
-	d, err = eng.Execute(ctx, many(qir.Project{
-		Input: qir.Order{
+	d, err = eng.Execute(ctx, many(lir.Project{
+		Input: lir.Order{
 			Input: qfilter(qscan("tasks", "t"),
 				qand(qeq(qcol("t", "board_id"), qlit("b1")),
-					qir.Binary{Op: qir.OpGte, L: qcol("t", "status"), R: qlit("m")})),
-			Terms: []qir.OrderTerm{{Expr: qcol("t", "id")}},
+					lir.Binary{Op: lir.OpGte, L: qcol("t", "status"), R: qlit("m")})),
+			Terms: []lir.OrderTerm{{Expr: qcol("t", "id")}},
 		},
-		Fields: []qir.ProjField{{As: "id", Expr: qcol("t", "id")}},
+		Fields: []lir.ProjField{{As: "id", Expr: qcol("t", "id")}},
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -494,12 +494,12 @@ func TestExecuteAggregatesAndRanges(t *testing.T) {
 // Ordered-index pushdown returns correctly ordered rows with no sort, and
 // slicing stops the scan early.
 func TestExecuteOrderedPushdownAndSlice(t *testing.T) {
-	eng, ctx, gets, scans := qirSetup(t)
+	eng, ctx, gets, scans := lirSetup(t)
 
-	d, err := eng.Execute(ctx, many(qir.Slice{
-		Input: qir.Order{
+	d, err := eng.Execute(ctx, many(lir.Slice{
+		Input: lir.Order{
 			Input: qscan("users", "u"),
-			Terms: []qir.OrderTerm{{Expr: qcol("u", "name")}},
+			Terms: []lir.OrderTerm{{Expr: qcol("u", "name")}},
 		},
 		Limit: new(int(1)),
 	}))
@@ -516,7 +516,7 @@ func TestExecuteOrderedPushdownAndSlice(t *testing.T) {
 	}
 
 	// Root cardinalities.
-	one, err := eng.Execute(ctx, qir.Query{Card: qir.CardFirst, Root: qir.Slice{
+	one, err := eng.Execute(ctx, lir.Query{Card: lir.CardFirst, Root: lir.Slice{
 		Input: qfilter(qscan("users", "u2"), qeq(qcol("u2", "id"), qlit("ada"))),
 		Limit: new(int(1)),
 	}})
@@ -526,9 +526,9 @@ func TestExecuteOrderedPushdownAndSlice(t *testing.T) {
 	if jsonish(one).(map[string]any)["name"] != "Ada" {
 		t.Fatalf("first = %#v", jsonish(one))
 	}
-	scalar, err := eng.Execute(ctx, qir.Query{Card: qir.CardScalar, Root: qir.Aggregate{
+	scalar, err := eng.Execute(ctx, lir.Query{Card: lir.CardScalar, Root: lir.Aggregate{
 		Input: qscan("tasks", "t"),
-		Terms: []qir.AggTerm{{Fn: qir.AggCount, As: "n"}},
+		Terms: []lir.AggTerm{{Fn: lir.AggCount, As: "n"}},
 	}})
 	if err != nil {
 		t.Fatal(err)

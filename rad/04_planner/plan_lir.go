@@ -12,8 +12,8 @@ package planner
 // full predicate always rides above the access node.
 
 import (
-	qir "rad/rad/03_qir"
-	"rad/rad/03_qir/bound"
+	lir "rad/rad/03_lir"
+	"rad/rad/03_lir/bound"
 )
 
 // PlanOpt adjusts planning; the conformance suite uses these to prove that
@@ -155,7 +155,7 @@ func mergedPred(rel bound.Relation) bound.Expr {
 		if pred == nil {
 			pred = f.Pred
 		} else {
-			pred = bound.NewBinary(qir.OpAnd, pred, f.Pred)
+			pred = bound.NewBinary(lir.OpAnd, pred, f.Pred)
 		}
 		rel = f.In
 	}
