@@ -22,10 +22,17 @@ import (
 	"rad/rad/03_qir/bound"
 )
 
+// Catalog is what binding needs from the schema. Callers choose the read
+// view by choosing the implementation: catalog.NewReader over a statement's
+// snapshot keeps schema resolution consistent with its data reads.
+type Catalog interface {
+	GetTable(ctx context.Context, name string) (catalog.Table, bool, error)
+}
+
 // Bind resolves q against the catalog. Every error is client-caused and
 // carries the "planner:" prefix the server maps to an invalid-request
 // problem.
-func Bind(ctx context.Context, cat *catalog.Catalog, q qir.Query) (*bound.Query, error) {
+func Bind(ctx context.Context, cat Catalog, q qir.Query) (*bound.Query, error) {
 	switch q.Card {
 	case qir.CardMany, qir.CardFirst, qir.CardExactlyOne, qir.CardScalar:
 	default:
@@ -55,7 +62,7 @@ func Bind(ctx context.Context, cat *catalog.Catalog, q qir.Query) (*bound.Query,
 // visibility stack.
 type binder struct {
 	ctx      context.Context
-	cat      *catalog.Catalog
+	cat      Catalog
 	nextSlot qir.SlotID
 	scopes   []scopeEntry    // innermost last
 	labels   map[string]bool // every label bound anywhere (query-wide uniqueness)

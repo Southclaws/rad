@@ -34,7 +34,7 @@ func (tx *Tx) Update(ctx context.Context, table string, key, set qir.Row) (qir.R
 }
 
 func (e *Engine) update(ctx context.Context, view kv.KV, table string, key, set qir.Row) (qir.Row, bool, error) {
-	tbl, err := e.table(ctx, table)
+	tbl, err := tableIn(ctx, view, table)
 	if err != nil {
 		return nil, false, err
 	}
@@ -126,7 +126,7 @@ func (tx *Tx) Delete(ctx context.Context, table string, key qir.Row) (bool, erro
 }
 
 func (e *Engine) delete(ctx context.Context, view kv.KV, table string, key qir.Row) (bool, error) {
-	tbl, err := e.table(ctx, table)
+	tbl, err := tableIn(ctx, view, table)
 	if err != nil {
 		return false, err
 	}
@@ -216,7 +216,7 @@ func checkUniqueIndexesFor(ctx context.Context, view kv.KV, tbl catalog.Table, r
 // found through an index on the FK columns when one exists, falling back to
 // a full scan.
 func (e *Engine) checkNoReferences(ctx context.Context, view kv.KV, tbl catalog.Table, row qir.Row) error {
-	all, err := e.cat.ListTables(ctx)
+	all, err := catalog.NewReader(view).ListTables(ctx)
 	if err != nil {
 		return err
 	}

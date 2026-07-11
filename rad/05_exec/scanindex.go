@@ -8,13 +8,19 @@ import (
 	"context"
 	"fmt"
 
+	kv "rad/rad/01_kv"
 	qir "rad/rad/03_qir"
 )
 
 // ScanIndex returns the base rows whose indexed values match prefix, which
 // must populate a leading subset of the index's columns.
 func (e *Engine) ScanIndex(ctx context.Context, table, index string, prefix qir.Row) ([]qir.Row, error) {
-	tbl, err := e.table(ctx, table)
+	txn, err := e.store.Begin(ctx, kv.Snapshot)
+	if err != nil {
+		return nil, err
+	}
+	defer txn.Rollback()
+	tbl, err := tableIn(ctx, txn, table)
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +41,7 @@ func (e *Engine) ScanIndex(ctx context.Context, table, index string, prefix qir.
 		return nil, fmt.Errorf("exec: index scan prefix must cover a leading subset of index %q columns %v", idx.Name, idx.Columns)
 	}
 
-	it, err := scanIndexRange(ctx, e.store, tbl, idx, eqVals, nil)
+	it, err := scanIndexRange(ctx, txn, tbl, idx, eqVals, nil)
 	if err != nil {
 		return nil, err
 	}

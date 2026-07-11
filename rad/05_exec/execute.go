@@ -2,25 +2,30 @@ package exec
 
 // Execute: the relation-graph read entry point. Bind against the catalog,
 // plan, run the operator tree, and materialise the root according to its
-// cardinality. Reads run against committed state (Engine) or a
-// transaction's snapshot plus its own writes (Tx).
+// cardinality. Every statement binds and executes against one KV view —
+// Engine.Execute takes a snapshot for the statement's duration, Tx.Execute
+// uses the transaction's snapshot plus its own writes — so schema
+// resolution and data reads can never observe different moments.
 
 import (
 	"context"
 	"fmt"
 
 	kv "rad/rad/01_kv"
+	catalog "rad/rad/02_catalog"
 	qir "rad/rad/03_qir"
 	"rad/rad/03_qir/bound"
 	planner "rad/rad/04_planner"
 )
 
-// Execute runs an unbound query against committed state.
+// Execute runs an unbound query against a snapshot of committed state.
 func (e *Engine) Execute(ctx context.Context, q qir.Query) (qir.Datum, error) {
-	return e.execute(ctx, e.store, q, false)
+	return e.executeSnapshot(ctx, q, false)
 }
 
-// Execute inside a transaction sees its snapshot plus its own writes.
+// Execute inside a transaction sees its snapshot plus its own writes. The
+// schema lookups join the transaction's read set, so concurrent DDL on a
+// table the statement touched conflicts at commit.
 func (tx *Tx) Execute(ctx context.Context, q qir.Query) (qir.Datum, error) {
 	return tx.e.execute(ctx, tx.txn, q, false)
 }
@@ -29,11 +34,22 @@ func (tx *Tx) Execute(ctx context.Context, q qir.Query) (qir.Datum, error) {
 // crossing evaluates per row. Results are identical to Execute by
 // construction; the conformance suite holds the executor to it.
 func (e *Engine) ExecuteNested(ctx context.Context, q qir.Query) (qir.Datum, error) {
-	return e.execute(ctx, e.store, q, true)
+	return e.executeSnapshot(ctx, q, true)
+}
+
+// executeSnapshot gives an autocommit read one statement-scoped snapshot;
+// read-only, so it is discarded rather than committed.
+func (e *Engine) executeSnapshot(ctx context.Context, q qir.Query, forceNested bool) (qir.Datum, error) {
+	txn, err := e.store.Begin(ctx, kv.Snapshot)
+	if err != nil {
+		return qir.Datum{}, err
+	}
+	defer txn.Rollback()
+	return e.execute(ctx, txn, q, forceNested)
 }
 
 func (e *Engine) execute(ctx context.Context, view kv.KV, q qir.Query, forceNested bool) (qir.Datum, error) {
-	bq, err := planner.Bind(ctx, e.cat, q)
+	bq, err := planner.Bind(ctx, catalog.NewReader(view), q)
 	if err != nil {
 		return qir.Datum{}, err
 	}

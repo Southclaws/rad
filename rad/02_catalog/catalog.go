@@ -114,6 +114,31 @@ func New(store kv.TransactionalKV) *Catalog {
 	return &Catalog{store: store}
 }
 
+// Reader is the catalog read API over one KV view. A Reader taken from a
+// transaction sees that transaction's snapshot plus its own writes, and its
+// lookups join the transaction's read set — under SerializableSnapshot,
+// concurrent DDL on a table the statement touched conflicts at commit
+// instead of passing unseen. Catalog methods read committed state; anything
+// that must be consistent with data reads goes through a Reader.
+type Reader struct {
+	view kv.KV
+}
+
+func NewReader(view kv.KV) Reader { return Reader{view: view} }
+
+func (r Reader) GetTable(ctx context.Context, tableName string) (Table, bool, error) {
+	return getTable(ctx, r.view, tableName)
+}
+
+func (r Reader) GetTableByID(ctx context.Context, id string) (Table, bool, error) {
+	return getTableByID(ctx, r.view, id)
+}
+
+// ListTables returns every table in the database, sorted by name.
+func (r Reader) ListTables(ctx context.Context) ([]Table, error) {
+	return listTables(ctx, r.view)
+}
+
 // ddl runs fn in a transaction and commits it if fn returns nil.
 func (c *Catalog) ddl(ctx context.Context, fn func(view kv.KV) error) error {
 	txn, err := c.store.Begin(ctx, kv.SerializableSnapshot)
@@ -332,6 +357,10 @@ func (c *Catalog) GetTable(ctx context.Context, tableName string) (Table, bool, 
 	return getTable(ctx, c.store, tableName)
 }
 
+// Reader returns a read API bound to committed state. For reads that must
+// share a transaction's snapshot, use NewReader with the transaction.
+func (c *Catalog) Reader() Reader { return NewReader(c.store) }
+
 func getTable(ctx context.Context, view kv.KV, tableName string) (Table, bool, error) {
 	id, ok, err := view.Get(ctx, []byte(tableNamePrefix+tableName))
 	if err != nil || !ok {
@@ -346,8 +375,12 @@ func (c *Catalog) GetTableByID(ctx context.Context, id string) (Table, bool, err
 
 // ListTables returns every table in the database, sorted by name.
 func (c *Catalog) ListTables(ctx context.Context) ([]Table, error) {
+	return listTables(ctx, c.store)
+}
+
+func listTables(ctx context.Context, view kv.KV) ([]Table, error) {
 	prefix := []byte(tablePrefix)
-	it, err := c.store.Scan(ctx, prefix, keyenc.PrefixEnd(prefix))
+	it, err := view.Scan(ctx, prefix, keyenc.PrefixEnd(prefix))
 	if err != nil {
 		return nil, err
 	}

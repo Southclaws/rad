@@ -79,8 +79,11 @@ func IsConflict(err error) bool { return errors.Is(err, kv.ErrConflict) }
 
 func (e *Engine) Catalog() *catalog.Catalog { return e.cat }
 
-func (e *Engine) table(ctx context.Context, name string) (catalog.Table, error) {
-	tbl, ok, err := e.cat.GetTable(ctx, name)
+// tableIn resolves a table through the statement's KV view, so schema
+// resolution shares the snapshot of the data reads and writes that follow —
+// and, inside a serializable transaction, joins its read set.
+func tableIn(ctx context.Context, view kv.KV, name string) (catalog.Table, error) {
+	tbl, ok, err := catalog.NewReader(view).GetTable(ctx, name)
 	if err != nil {
 		return catalog.Table{}, err
 	}
@@ -148,7 +151,7 @@ func (tx *Tx) Create(ctx context.Context, table string, row qir.Row) (qir.Row, e
 }
 
 func (e *Engine) insert(ctx context.Context, view kv.KV, table string, row qir.Row) (qir.Row, error) {
-	tbl, err := e.table(ctx, table)
+	tbl, err := tableIn(ctx, view, table)
 	if err != nil {
 		return nil, err
 	}
@@ -286,15 +289,20 @@ func anyNullComponent(row qir.Row, cols []string) bool {
 // GetByPrimaryKey fetches one row by its primary key values. key must contain
 // exactly the primary key columns.
 func (e *Engine) GetByPrimaryKey(ctx context.Context, table string, key qir.Row) (qir.Row, bool, error) {
-	return e.getByPrimaryKey(ctx, e.store, table, key)
+	txn, err := e.store.Begin(ctx, kv.Snapshot)
+	if err != nil {
+		return nil, false, err
+	}
+	defer txn.Rollback()
+	return getByPrimaryKey(ctx, txn, table, key)
 }
 
 func (tx *Tx) GetByPrimaryKey(ctx context.Context, table string, key qir.Row) (qir.Row, bool, error) {
-	return tx.e.getByPrimaryKey(ctx, tx.txn, table, key)
+	return getByPrimaryKey(ctx, tx.txn, table, key)
 }
 
-func (e *Engine) getByPrimaryKey(ctx context.Context, view kv.KV, table string, key qir.Row) (qir.Row, bool, error) {
-	tbl, err := e.table(ctx, table)
+func getByPrimaryKey(ctx context.Context, view kv.KV, table string, key qir.Row) (qir.Row, bool, error) {
+	tbl, err := tableIn(ctx, view, table)
 	if err != nil {
 		return nil, false, err
 	}
@@ -341,19 +349,45 @@ func (r *kvRowIterator) Next() (qir.Row, bool, error) {
 
 func (r *kvRowIterator) Close() error { return r.it.Close() }
 
-// ScanTable streams every row of the table in primary key order.
+// ScanTable streams every row of the table in primary key order, from a
+// snapshot held until the iterator is closed.
 func (e *Engine) ScanTable(ctx context.Context, table string) (RowIterator, error) {
-	tbl, err := e.table(ctx, table)
+	txn, err := e.store.Begin(ctx, kv.Snapshot)
 	if err != nil {
 		return nil, err
 	}
-	return scanTable(ctx, e.store, tbl)
+	tbl, err := tableIn(ctx, txn, table)
+	if err != nil {
+		txn.Rollback()
+		return nil, err
+	}
+	it, err := scanTable(ctx, txn, tbl)
+	if err != nil {
+		txn.Rollback()
+		return nil, err
+	}
+	return &snapshotRowIterator{RowIterator: it, txn: txn}, nil
+}
+
+// snapshotRowIterator ties a statement-scoped snapshot's lifetime to the
+// iterator it feeds.
+type snapshotRowIterator struct {
+	RowIterator
+	txn kv.Txn
+}
+
+func (s *snapshotRowIterator) Close() error {
+	err := s.RowIterator.Close()
+	if rerr := s.txn.Rollback(); err == nil {
+		err = rerr
+	}
+	return err
 }
 
 // ScanTable inside a transaction sees the snapshot plus the transaction's
 // own writes. The iterator must be closed before the transaction commits.
 func (tx *Tx) ScanTable(ctx context.Context, table string) (RowIterator, error) {
-	tbl, err := tx.e.table(ctx, table)
+	tbl, err := tableIn(ctx, tx.txn, table)
 	if err != nil {
 		return nil, err
 	}
