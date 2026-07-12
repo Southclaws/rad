@@ -1233,11 +1233,16 @@ main,
   color: var(--green-mid);
   margin-bottom: 0.75rem;
 }
-.docs__nav ul {
+.docs__tree {
   list-style: none;
   display: flex;
   flex-direction: column;
   gap: 0.1rem;
+}
+.docs__folder > .docs__tree {
+  margin: 0.1rem 0 0.2rem 0.65rem;
+  padding-left: 0.65rem;
+  border-left: 1px solid var(--line);
 }
 .docs__nav a {
   display: block;
@@ -1253,6 +1258,52 @@ main,
 .docs__nav a[aria-current="page"] {
   color: var(--green);
   background: var(--surface);
+}
+.docs__folderhead {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.docs__folderhead > span {
+  padding: 0.4rem 0.65rem 0.4rem 0.2rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+.docs__folderhead > a {
+  flex: 1;
+}
+.docs__foldertoggle {
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: none;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+}
+.docs__foldertoggle:hover {
+  background: var(--surface);
+  color: var(--ink);
+}
+.docs__foldertoggle span {
+  font-size: 1.1rem;
+  line-height: 1;
+  transition: transform 160ms ease-out;
+}
+.docs__foldertoggle[aria-expanded="true"] span {
+  transform: rotate(90deg);
+}
+.docs__foldertoggle:focus-visible {
+  outline: 2px solid var(--green-mid);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .docs__foldertoggle span {
+    transition: none;
+  }
 }
 
 .doc__head h1 {

@@ -3,9 +3,15 @@ import { SiteNav } from "@/components/site-nav";
 import { source } from "@/lib/source";
 import type { ReactNode } from "react";
 
-// Flatten the fumadocs page tree into an ordered link list for the sidebar
-// (the docs are a flat set of pages; folders unwrap in order).
-type Item = { name: string; url: string };
+type SidebarNode =
+  | { type: "page"; name: string; url: string }
+  | {
+      type: "folder";
+      name: string;
+      index?: { name: string; url: string };
+      children: SidebarNode[];
+    };
+
 type TreeNode = {
   type: string;
   name?: ReactNode;
@@ -14,20 +20,35 @@ type TreeNode = {
   children?: TreeNode[];
 };
 
-function flatten(nodes: TreeNode[] = []): Item[] {
-  const out: Item[] = [];
-  for (const n of nodes) {
-    if (n.type === "page" && n.url) out.push({ name: String(n.name), url: n.url });
-    else if (n.type === "folder") {
-      if (n.index) out.push({ name: String(n.index.name), url: n.index.url });
-      out.push(...flatten(n.children));
+// Keep Fumadocs' hierarchy intact rather than flattening folders into links.
+// The narrow serialisable shape is all the client-side disclosure needs.
+function toSidebarNodes(nodes: TreeNode[] = []): SidebarNode[] {
+  return nodes.flatMap((node): SidebarNode[] => {
+    if (node.type === "page" && node.url) {
+      return [{ type: "page", name: String(node.name), url: node.url }];
     }
-  }
-  return out;
+
+    if (node.type === "folder") {
+      return [
+        {
+          type: "folder",
+          name: String(node.name),
+          ...(node.index && {
+            index: { name: String(node.index.name), url: node.index.url },
+          }),
+          children: toSidebarNodes(node.children),
+        },
+      ];
+    }
+
+    return [];
+  });
 }
 
 export default function DocsLayout({ children }: { children: ReactNode }) {
-  const items = flatten((source.pageTree as { children?: TreeNode[] }).children);
+  const items = toSidebarNodes(
+    (source.pageTree as { children?: TreeNode[] }).children,
+  );
 
   return (
     <div className="page">
