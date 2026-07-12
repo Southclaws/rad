@@ -4,7 +4,7 @@
 #
 # Environment:
 #   $env:RAD_VERSION   install a specific version tag (default: latest release)
-#   $env:RAD_INSTALL   install directory (default: $HOME\.rad)
+#   $env:RAD_INSTALL   install directory (default: %LOCALAPPDATA%\Programs\Rad)
 #   $env:RAD_REPO      GitHub repo to download from (default: Southclaws/rad)
 #
 # Installs the single rad.exe — the database server, the devtool, and the
@@ -13,8 +13,12 @@
 $ErrorActionPreference = "Stop"
 
 $Repo = if ($env:RAD_REPO) { $env:RAD_REPO } else { "Southclaws/rad" }
-$InstallDir = if ($env:RAD_INSTALL) { $env:RAD_INSTALL } else { Join-Path $HOME ".rad" }
-$BinDir = Join-Path $InstallDir "bin"
+# Per-user application installs belong under LocalAppData, not in the user's
+# home/Documents area. This remains writable without elevation, unlike Program
+# Files, and follows the convention used by Windows installers.
+$DefaultInstallDir = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "Programs\Rad"
+$InstallDir = if ($env:RAD_INSTALL) { $env:RAD_INSTALL } else { $DefaultInstallDir }
+$BinDir = $InstallDir
 
 $Arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq "Arm64") { "arm64" } else { "amd64" }
 if ($Arch -ne "amd64") {
