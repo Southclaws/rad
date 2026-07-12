@@ -3,7 +3,7 @@ title: "Layer 02: the catalog"
 description: "Rad's persistent schema catalog for tables, columns, indexes, and foreign keys."
 ---
 
-Package `catalog` (directory `rad/02_catalog`) owns the schema: table
+Package `catalog` (directory `rad/engine/02_catalog`) owns the schema: table
 definitions with their columns, primary keys, secondary indexes, and foreign
 keys. It is the second layer of the engine and imports only layer 01 (`kv`).
 Everything above it — the LIR's type vocabulary (03), the binder (04), the
@@ -154,7 +154,7 @@ only inside that transaction until commit). It exists because index
 registration and index backfill must be atomic: a committed index with no
 entries would let the planner choose an access path that silently drops rows,
 violating the invariant that access-path choice never changes results.
-`exec.Engine.AddIndexWithBackfill` (rad/05_exec/backfill.go) is the
+`exec.Engine.AddIndexWithBackfill` (rad/engine/05_exec/backfill.go) is the
 composition: inside one `Engine.Txn` it calls `catalog.AddIndexIn` and then
 writes index entries for every existing row. A backfill failure — notably a
 uniqueness violation — rolls the registration back with it, and the
@@ -217,7 +217,7 @@ structurally (post-rename columns + uniqueness), not by name, so a column
 rename never forces a needless drop-and-backfill. Unsupported changes (column
 type or nullability, primary keys, FKs on existing tables) are errors, not
 destructive guesses. Applying the plan is the frontend's job
-(`DB.Migrate` in rad/06_frontend/migrate.go), one step per transaction — the
+(`DB.Migrate` in rad/engine/06_frontend/migrate.go), one step per transaction — the
 plan as a whole is *not* atomic; a failing step aborts mid-plan with prior
 steps committed.
 

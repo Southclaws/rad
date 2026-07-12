@@ -1,6 +1,6 @@
 // rad is the Rad command-line tool: database server, devtool, and codegen
-// in one binary. The database engine itself lives under ./rad; this package
-// is only the CLI shell around it.
+// in one binary. The database engine lives under ./rad/engine and the HTTP
+// implementation under ./rad/server; this package is only the CLI shell.
 //
 //	rad migrate  -d ./data -f schema.rad     reconcile the database with a schema
 //	rad generate -f schema.rad -o ./gen      emit the typed Go client
@@ -15,9 +15,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	radclient "rad/client"
-	"rad/rad/01_kv/kvslate"
-	frontend "rad/rad/06_frontend"
+	radclient "github.com/Southclaws/rad/rad/client"
+	"github.com/Southclaws/rad/rad/engine/01_kv/kvslate"
+	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
 )
 
 // version is stamped by the release build via -ldflags "-X main.version=…".

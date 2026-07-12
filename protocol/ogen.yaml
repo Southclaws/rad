@@ -1,8 +1,0 @@
-# ogen code generation config for the Rad wire protocol.
-#
-# allow_remote lets the OpenAPI document reference the Query IR schemas in
-# lir.schema.json (via $ref: "lir.schema.json#/$defs/..."). ogen resolves and
-# inlines them at generation time, so the IR is defined once as JSON Schema and
-# the wire contract borrows it rather than duplicating the shapes.
-parser:
-  allow_remote: true

@@ -4,7 +4,7 @@
 //   https://www.radengine.dev/schema.rad.json  -> the schema.rad table format
 //   https://www.radengine.dev/schema/lir.json  -> the query IR
 //
-// The canonical copies live in the Go module (rad/, protocol/), which is the
+// The canonical copies live under the Go module's rad/ tree, which is the
 // single source of truth. This runs before the build to refresh the served
 // copies. On Vercel the module source may live outside the build root, so a
 // missing source is not an error: the committed copy in public/ is used as is.
@@ -21,11 +21,11 @@ const publicDir = join(here, "..", "public");
 
 const schemas = [
   {
-    src: join(repo, "rad", "02_catalog", "schema", "radschema.json"),
+    src: join(repo, "rad", "engine", "02_catalog", "schema", "radschema.json"),
     dst: join(publicDir, "schema.rad.json"),
   },
   {
-    src: join(repo, "protocol", "lir.schema.json"),
+    src: join(repo, "rad", "protocol", "lir.schema.json"),
     dst: join(publicDir, "schema", "lir.json"),
   },
 ];

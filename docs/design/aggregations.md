@@ -1,7 +1,7 @@
 # Design: Aggregations
 
 Status: implemented (count/sum/avg/min/max); superseded in structure by
-docs/design/lir-v2.md — the unification this document deferred ("where this
+docs/design/lir.md — the unification this document deferred ("where this
 wants to go") was built: `Read`/`Include` dissolved into the relation graph,
 aggregation became the `aggregate` node (grouped or global), and folded
 relations cross into projections via `first`/`scalar`. The semantics below

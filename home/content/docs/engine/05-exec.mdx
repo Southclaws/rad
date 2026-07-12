@@ -3,7 +3,7 @@ title: "Layer 05: the executor"
 description: "The physical read and mutation layer that turns bound queries into KV operations."
 ---
 
-Package `exec` (directory `rad/05_exec`) is the physical execution layer: it
+Package `exec` (directory `rad/engine/05_exec`) is the physical execution layer: it
 turns bound queries and write requests into KV operations — scans, point
 gets, index lookups, joins, and constraint-checked writes. It sits above the
 KV (01), the catalog (02), the LIR and its bound form (03), and the planner

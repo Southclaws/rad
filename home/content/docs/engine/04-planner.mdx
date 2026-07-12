@@ -3,7 +3,7 @@ title: "Layer 04: the planner"
 description: "How Rad binds queries, analyses them, and lowers them into physical execution plans."
 ---
 
-Package `planner` (directory `rad/04_planner`) turns an unbound `lir.Query` —
+Package `planner` (directory `rad/engine/04_planner`) turns an unbound `lir.Query` —
 table, column, and scope names plus raw literals, exactly as a frontend
 produced it — into a physical operator tree the executor runs. It is three
 stages with a sharp boundary between them: the **binder** (`bind.go`,
@@ -11,7 +11,7 @@ stages with a sharp boundary between them: the **binder** (`bind.go`,
 **analyses** (`constraints.go`, `correlate.go`) are pure functions over bound
 IR; the **physical planner** (`physical.go`, `plan_lir.go`) lowers bound IR
 into operators and cannot fail. The bound form it produces lives one layer
-down, in `rad/03_lir/bound`, because 05_exec consumes it directly; the binder
+down, in `rad/engine/03_lir/bound`, because 05_exec consumes it directly; the binder
 is its only producer.
 
 ## The binder: one walk
@@ -45,7 +45,7 @@ satisfies the interface too, which is what tests use.
 ### Errors: the `planner:` prefix contract
 
 Every `Bind` error is client-caused and carries the `planner:` prefix. The
-server's `isEngineClientError` (`cmd/rad/dbserver.go`) recognises that prefix
+server's `isEngineClientError` (`rad/server/dbserver.go`) recognises that prefix
 (along with `exec:`, `catalog:`, `migrate:`, `schema.rad:`) and maps the error
 to an invalid-request problem — HTTP 422 with the message relayed verbatim —
 instead of a generic 500. `bindErr` in `bind_test.go` asserts on every
@@ -298,7 +298,7 @@ with `name#slot` fields and the law suffix `[card … free …]`.
 
 Both printers exist for the goldens that pin the arc's acceptance shape: the
 forcing query (boards → owner → first 20 open tasks by priority → assignee +
-comment count, `docs/design/lir-v2.md`). `TestBindForcingQueryGolden` pins
+comment count, `docs/design/lir.md`). `TestBindForcingQueryGolden` pins
 the bound form — slot allocation order, spread slot reuse, correlation as
 free slots, both `First` relations uniqueness-refined to `0..1`, the appended
 id tie-breaker, every inferred type. `TestPlanForcingQueryGolden` pins the

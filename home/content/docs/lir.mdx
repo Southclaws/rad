@@ -12,7 +12,7 @@ targets, and the exact KV operations each construct issues.
 
 <Callout>
   The normative design — grammar, three-valued logic, determinism rules —
-  lives in `docs/design/lir-v2.md` in the repository. This page tracks the
+  lives in `docs/design/lir.md` in the repository. This page tracks the
   implementation.
 </Callout>
 
@@ -26,13 +26,16 @@ cardinality crossings, projection — and everything else is a consequence:
 | SQL spelling | LIR expression |
 | --- | --- |
 | `EXISTS (subquery)` | `exists(rel)` |
-| `x IN (subquery)` | `exists(filter(rel, col = x))` |
-| `LATERAL` / correlated subquery | any sub-relation referencing outer scopes |
 | `JOIN` | `join` — already minimal |
 | `JSON_AGG` / `ARRAY_AGG` | `array(rel)` in a projection field |
 | scalar subquery | `scalar(rel)` |
 | `GROUP BY` | `aggregate` with groups — the same node as a global fold |
+| `HAVING` | `filter(aggregate(...), predicate)` |
 | an ORM's `include` | a correlated relation crossed into a projection field |
+
+`IN`, `ANY`, and `ALL` are not generally reducible to `exists`: NULL makes
+those rewrites incorrect. Correlated crossings produce nested values; LIR
+does not provide relational `LATERAL`/`APPLY` flattening.
 
 ## The pipeline
 
@@ -47,11 +50,16 @@ choice can never change results — the conformance suite executes every query
 twice, once as planned and once with every access forced to a full scan, and
 holds the outputs identical.
 
-## The wire: a query graph
+## The wire: a relation tree
 
-`POST /query` takes the graph directly: relation nodes keyed by caller-chosen
-names, plus a root selector. Node references are plain strings; the graph
-must be acyclic.
+`POST /query` takes a strict LIR relation tree encoded as nodes keyed by
+caller-chosen names plus a root selector. Node references name inline
+definitions: the tree must be acyclic, every non-root node has one consumer,
+and unused or shared definitions are invalid.
+
+LIR is deliberately separate from the HTTP OpenAPI contract. `/query` carries
+raw JSON; generated tagged unions and runtime validation both come from the
+canonical LIR JSON Schema.
 
 ```json
 {
@@ -100,7 +108,8 @@ encounter order is physical and never observable.
 
 **Correlation needs no node.** A sub-relation reachable through a crossing
 may reference enclosing scopes in its expressions; the binder derives the
-correlation from the free references. Nobody hand-writes this JSON — the
+correlation from the free references. Correlation is not materialisation:
+only a crossing or the root converts a relation into a datum. Nobody hand-writes this JSON — the
 generated clients keep their fluent builders and assemble graphs; SQL or
 GraphQL compilers can emit the same shape later.
 
@@ -225,6 +234,7 @@ relation is an object of scalars. Rad never exposes a flattened join.
 No cost model or statistics — access selection is the rule-based ranking
 above, and joins execute as nested loops. No merged multi-key storage
 batching yet (the per-distinct-key seam is where it lands). No descending or
-index-only scans. No `HAVING`, `DISTINCT`, window functions, or recursive
-queries. Each is an extension point in an IR built from four primitives, not
-a redesign.
+index-only scans. No dedicated `DISTINCT`, windows, recursive queries,
+quantified comparisons, or relational `LATERAL`/`APPLY`. `HAVING` is already
+`filter(aggregate(...))`. Each future capability extends the relation or
+expression vocabulary without replacing the core model.

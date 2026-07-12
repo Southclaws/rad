@@ -3,7 +3,7 @@ title: "Layer 03: LIR — the relation graph"
 description: "The storage-free relation and expression graph that gives Rad queries their meaning."
 ---
 
-Package `lir` (directory `rad/03_lir`) is the canonical query IR: the
+Package `lir` (directory `rad/engine/03_lir`) is the canonical query IR: the
 relation graph. It defines what a query *means* — values, static types,
 relations, expressions, three-valued logic, result datums — and nothing about
 how it runs: the layer is storage-free, index-free, and strategy-free. It
@@ -13,7 +13,7 @@ imports layer 02 only for the shared type vocabulary (`catalog.Type`,
 `lir/bound` is the **bound** IR the binder (04_planner) resolves it into.
 Planning and execution trust bound IR completely. The normative design —
 grammar, K3 semantics, determinism rules, the wire format — is
-`docs/design/lir-v2.md`; this document describes the code that implements it.
+`docs/design/lir.md`; this document describes the code that implements it.
 
 ## The two categories
 
@@ -25,9 +25,10 @@ typed rows. The relation operators — `Scan`, `Filter`, `Project`, `Join`,
 `Aggregate`, `Order`, `Slice` — consume relations and produce relations, and
 the output of every node is usable as an ordinary input (relational closure).
 
-An **`Expr`** is a scalar computation evaluated in some scope: `Literal`,
+An **`Expr`** computes exactly one typed datum in some scope: `Literal`,
 `Column`, `Unary`, `Binary`, `Call` (reserved; the registry is empty this
-arc), `Cast`. Expressions may *consume* relations, but only through one of
+arc), `Cast`. Most are scalar; crossings may produce rows or arrays.
+Expressions may *consume* relations only through one of
 the four **cardinality crossings**, the only doors from `Relation` into
 `Expr`:
 
@@ -149,18 +150,19 @@ when later operators reference its outputs by name — as on `Aggregate`.
 `Slice.Limit` is `*int`: nil is unlimited, an explicit 0 keeps no rows.
 `JoinKind` implements `InnerJoin` and `LeftJoin`; semi and anti are reserved.
 
-`Query{Root, Card}` is the root: a relation plus its materialisation
-cardinality, `RootCard` ∈ `CardMany` (array of objects), `CardFirst` (object
+`Query{Root, Card}` is the root: a relation plus its materialisation mode,
+`RootCard` ∈ `CardMany` (array of objects), `CardFirst` (object
 or null), `CardExactlyOne` (object, error otherwise), `CardScalar` (single
-value; root arity must be 1).
+value or null; root arity must be 1 and cardinality statically at most one).
 
 ## The bound IR: laws and slots
 
 Package `bound` is the resolved form: every name bound against the catalog,
 every literal typed, every relation output addressed by dense slots. Nodes
 are **pointers** (`*Scan`, `*Filter`, …) built by constructors (`NewScan`,
-`NewFilter`, …), and `Inputs()` returns child pointers — a DAG, not a value
-tree. The binder is the only producer.
+`NewFilter`, …), and `Inputs()` returns child pointers. The representation can
+hold a DAG, but the LIR wire binder produces a single-consumer tree; sharing
+has no semantics in the current contract. The binder is the only producer.
 
 Every node precomputes its **laws** at construction — nothing is derived
 lazily during planning or execution. The embedded `laws` struct serves the
@@ -291,7 +293,7 @@ The layer's own tests are executable statements of the laws, no store
 required:
 
 - `tribool_test.go` pins the full K3 truth tables for `And`, `Or`, `Not` —
-  the tables `docs/design/lir-v2.md` states in prose.
+  the tables `docs/design/lir.md` states in prose.
 - `bound/bound_test.go` pins the laws against a hand-built `catalog.Table`:
   scan output slots and nullability, filter refinement (tightens, never
   loosens), correlation as free slots (and that crossings propagate them),

@@ -53,4 +53,4 @@ task build
 ```
 
 See [`docs/v0-spec.md`](docs/v0-spec.md) for the current proof-of-concept
-goals, and [`demo/`](demo/) for a working example.
+goals, and [`examples/demo/`](examples/demo/) for a working example.

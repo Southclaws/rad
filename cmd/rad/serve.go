@@ -3,26 +3,24 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
-	"net/http"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"rad/rad/02_catalog"
-	"rad/rad/05_exec"
-	frontend "rad/rad/06_frontend"
+	"github.com/Southclaws/rad/rad/engine/02_catalog"
+	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
+	"github.com/Southclaws/rad/rad/server"
 )
 
 // serveCmd runs the Rad server: the database API (what clients connect
 // to via rad://host:7237) plus the devtool UI and its /api endpoints, on a
 // single port. Storage comes from the environment (RAD_STORAGE et al; see
-// Config), with flags overriding.
+// server.Config), with flags overriding.
 func serveCmd() *cobra.Command {
-	cfg := LoadConfig()
+	cfg := server.LoadConfig()
 	var addr, storage, dataDir string
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -48,31 +46,11 @@ func serveCmd() *cobra.Command {
 			cat := catalog.New(store)
 			db := frontend.Open(store)
 
-			// The devtool UI + inspection API ride along on the same port,
-			// serving every path the database API contract does not claim.
-			mux := http.NewServeMux()
-			devtool := &server{
-				store:  store,
-				cat:    cat,
-				eng:    exec.New(store, cat),
-				dbPath: location,
-			}
-			mux.HandleFunc("GET /api/meta", devtool.handleMeta)
-			mux.HandleFunc("GET /api/schema", devtool.handleSchema)
-			mux.HandleFunc("GET /api/kv/scan", devtool.handleKVScan)
-			mux.HandleFunc("GET /api/kv/get", devtool.handleKVGet)
-			mux.HandleFunc("GET /api/tables/{table}/rows", devtool.handleTableRows)
-			mux.HandleFunc("GET /api/tables/{table}/indexscan", devtool.handleIndexScan)
-			mux.Handle("/", uiHandler())
-
-			// The database API: the ogen-generated server implementing the
-			// OpenAPI contract, falling back to the devtool for other paths.
-			api, err := newDBAPI(db, cat).httpHandler(mux)
+			handler, err := server.New(store, db, cat, location)
 			if err != nil {
 				return err
 			}
-
-			srv := newHTTPServer(cfg.Addr, withRecovery(withLogging(withCORS(withBodyLimit(api)))))
+			srv := server.NewHTTPServer(cfg.Addr, handler)
 
 			// Graceful shutdown on SIGINT/SIGTERM.
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
@@ -102,21 +80,4 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&storage, "storage", "", "storage backend: memory, file, s3 (default RAD_STORAGE or file)")
 	cmd.Flags().StringVarP(&dataDir, "db", "d", "", "file storage directory (default RAD_DATA_DIR or data)")
 	return cmd
-}
-
-// withCORS allows the Vite dev server (different origin) to call the API.
-func withCORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func httpError(w http.ResponseWriter, code int, err error) {
-	http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), code)
 }

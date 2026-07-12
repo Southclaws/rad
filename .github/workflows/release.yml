@@ -1,7 +1,7 @@
 # Release: build the single `rad` binary for Linux, macOS, and Windows and
 # attach the archives to a GitHub release on every v* tag.
 #
-# The binary embeds the devtool UI (committed in cmd/rad/dist) and statically
+# The binary embeds the devtool UI (committed in rad/server/dist) and statically
 # links SlateDB's native library, built from source at the tag pinned by
 # go.mod — "as static as it gets": only the OS libc/frameworks stay dynamic
 # (macOS and glibc have no static libc; Windows links the usual system DLLs).
@@ -39,7 +39,7 @@ jobs:
           export CGO_ENABLED=1
           export CGO_LDFLAGS="-L/tmp/slatedb/target/release $(cat /tmp/native-libs.txt)"
           go test ./...
-          cd demo && go build -o /dev/null .
+          cd examples/demo && go build -o /dev/null .
 
   build:
     name: build (${{ matrix.goos }}-${{ matrix.goarch }})

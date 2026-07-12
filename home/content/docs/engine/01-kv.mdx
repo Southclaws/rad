@@ -3,9 +3,9 @@ title: "Layer 01: the KV abstraction"
 description: "The ordered key-value store and transaction primitives at the bottom of Rad's engine layer stack."
 ---
 
-Source: `rad/01_kv` (package `kv`), with subpackages `keyenc`, `kvslate`, and
+Source: `rad/engine/01_kv` (package `kv`), with subpackages `keyenc`, `kvslate`, and
 `kvtest`. This is the bottom of the layer stack described in `rad/doc.go` and
-enforced by `scripts/check_layers.sh`: a package under `rad/NN_*` may import
+expressed by the numbered layout: a package under `rad/engine/NN_*` may import
 only same-or-lower-numbered layers, so `kv` imports nothing from the rest of
 Rad. Everything above it — catalog, IR, planner, executor, frontend — reaches
 storage exclusively through the interfaces defined here.

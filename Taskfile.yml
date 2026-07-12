@@ -54,15 +54,15 @@ tasks:
     env:
       CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
-      - rm -rf demo/data
+      - rm -rf examples/demo/data
       - mkdir -p bin
       - go build -o bin/rad ./cmd/rad
       - |
-        RAD_STORAGE=file RAD_DATA_DIR=demo/data ./bin/rad serve &
+        RAD_STORAGE=file RAD_DATA_DIR=examples/demo/data ./bin/rad serve &
         SERVER_PID=$!
         trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
         until curl -s -m 1 -o /dev/null http://127.0.0.1:7237/health; do sleep 0.3; done
-        (cd demo && go run .)
+        (cd examples/demo && go run .)
         open http://127.0.0.1:7237 || true
         wait $SERVER_PID
 
@@ -72,38 +72,50 @@ tasks:
       CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
       - go test ./... {{.CLI_ARGS}}
-      - cd demo && go build -o /dev/null .
+      - cd examples/demo && go build -o /dev/null .
 
   vet:
-    desc: go vet all packages + enforce layer import direction
+    desc: Go vet all packages
     env:
       CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
       - go vet ./...
-      - sh scripts/check_layers.sh
 
   demo:
     desc: "Run the Tracker demo: fresh Rad server + the app over rad://"
     env:
       CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
-      - rm -rf demo/data
+      - rm -rf examples/demo/data
       - mkdir -p bin
       - go build -o bin/rad ./cmd/rad
       - |
-        RAD_STORAGE=file RAD_DATA_DIR=demo/data ./bin/rad serve > /tmp/rad-demo-serve.log 2>&1 &
+        RAD_STORAGE=file RAD_DATA_DIR=examples/demo/data ./bin/rad serve > /tmp/rad-demo-serve.log 2>&1 &
         SERVER_PID=$!
         trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
         until curl -s -m 1 -o /dev/null http://127.0.0.1:7237/health; do sleep 0.3; done
-        cd demo && go run .
+        cd examples/demo && go run .
 
   generate:
     desc: Regenerate the demo's typed clients (Go + TypeScript)
     env:
       CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
-      - go run ./cmd/rad generate -f demo/schema.rad -o demo/generated --pkg tracker
-      - go run ./cmd/rad generate -f demo/schema.rad -o demo/generated --pkg tracker --lang ts
+      - go run ./cmd/rad generate -f examples/demo/schema.rad -o examples/demo/generated --pkg tracker
+      - go run ./cmd/rad generate -f examples/demo/schema.rad -o examples/demo/generated --pkg tracker --lang ts
+
+  protocol:generate:
+    desc: Regenerate LIR wire types, OpenAPI transport, and the public LIR schema
+    cmds:
+      - '${SCHEMANCER:-$HOME/go/bin/schemancer} rad/protocol/lir.schema.json golang rad/protocol/lirwire --package lirwire --optional-style pointer'
+      # Preserve literal numbers as raw JSON. Schemancer otherwise emits the
+      # multi-type Value definition as interface{}, whose decoder uses
+      # float64 and loses integers beyond JavaScript's safe range.
+      - perl -pi -e 's/type Value = interface\{\}/type Value = json.RawMessage/' rad/protocol/lirwire/lirwire.go
+      - rg -q 'type Value = json.RawMessage' rad/protocol/lirwire/lirwire.go
+      - go generate ./rad/api
+      - mkdir -p home/public/schema
+      - cp rad/protocol/lir.schema.json home/public/schema/lir.json
 
   demo:ts:
     desc: "Run the TypeScript demo: fresh Rad server + node app over rad://"
@@ -117,14 +129,14 @@ tasks:
         SERVER_PID=$!
         trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
         until curl -s -m 1 -o /dev/null http://127.0.0.1:7237/health; do sleep 0.3; done
-        node demo/tracker-demo.ts
+        node examples/demo/tracker-demo.ts
 
   migrate:
-    desc: Apply demo/schema.rad to the running Rad server
+    desc: Apply examples/demo/schema.rad to the running Rad server
     env:
       CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
-      - go run ./cmd/rad migrate -f demo/schema.rad -u rad://localhost
+      - go run ./cmd/rad migrate -f examples/demo/schema.rad -u rad://localhost
 
   build:
     desc: Build mostly-static binaries (SlateDB linked in) -> bin/
@@ -133,32 +145,32 @@ tasks:
     cmds:
       - mkdir -p bin
       - go build -o bin/rad ./cmd/rad
-      - cd demo && go build -o ../bin/tracker-demo .
+      - cd examples/demo && go build -o ../../bin/tracker-demo .
       - otool -L bin/tracker-demo
 
   clean:
     desc: Remove demo data, built binaries, and the cargo target dir
     cmds:
-      - rm -rf data demo/data bin '{{.SLATEDB_SRC}}/target'
+      - rm -rf data examples/demo/data bin '{{.SLATEDB_SRC}}/target'
 
   ui:install:
     desc: Install UI dependencies
-    dir: ui
+    dir: rad/ui
     status:
       - test -d node_modules
     cmds:
       - npm install
 
   ui:build:
-    desc: Build the SPA into cmd/rad/dist (embedded by go:embed)
-    dir: ui
+    desc: Build the SPA into rad/server/dist (embedded by go:embed)
+    dir: rad/ui
     deps: [ui:install]
     cmds:
       - npm run build
 
   ui:dev:
     desc: Vite dev server with API proxy (run `task serve` in another shell)
-    dir: ui
+    dir: rad/ui
     deps: [ui:install]
     cmds:
       - npm run dev

@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	schema "rad/rad/02_catalog/schema"
+	schema "github.com/Southclaws/rad/rad/engine/02_catalog/schema"
 )
 
 func validateCmd() *cobra.Command {
