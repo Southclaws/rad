@@ -86,14 +86,24 @@ function Folder({ node, pathname }: { node: Extract<SidebarNode, { type: "folder
 
 export function DocsSidebar({
   items,
+  locale,
 }: {
   items: SidebarNode[];
+  locale: "en" | "fr";
 }) {
   const pathname = usePathname();
   return (
     <nav className="docs__nav" aria-label="Documentation">
       <p className="docs__navlabel">Documentation</p>
       <Tree nodes={items} pathname={pathname} />
+      <div className="docs__languages" aria-label="Documentation language">
+        <Link href="/docs" aria-current={locale === "en" ? "true" : undefined}>
+          English
+        </Link>
+        <Link href="/fr/docs" aria-current={locale === "fr" ? "true" : undefined}>
+          Français
+        </Link>
+      </div>
     </nav>
   );
 }

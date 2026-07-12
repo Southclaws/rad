@@ -4,7 +4,7 @@ import { GitHubMark } from "./icons";
 const GITHUB = "https://github.com/Southclaws/rad";
 
 // The shared top bar, used on the landing page and the docs.
-export function SiteNav() {
+export function SiteNav({ docsHref = "/docs" }: { docsHref?: string }) {
   return (
     <header className="nav">
       <div className="wrap nav__in">
@@ -19,7 +19,7 @@ export function SiteNav() {
           <Link className="nav__hide" href="/#build">
             what you get
           </Link>
-          <Link href="/docs">docs</Link>
+          <Link href={docsHref}>docs</Link>
           <Link href="/blog">blog</Link>
           <a className="nav__gh" href={GITHUB} aria-label="Rad on GitHub">
             <GitHubMark />

@@ -1259,6 +1259,22 @@ main,
   color: var(--green);
   background: var(--surface);
 }
+.docs__languages {
+  display: flex;
+  gap: 0.25rem;
+  margin-top: 1.25rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--line);
+}
+.docs__languages a {
+  padding: 0.28rem 0.45rem;
+  color: var(--faint);
+  font-size: 0.75rem;
+}
+.docs__languages a[aria-current="true"] {
+  color: var(--green);
+  background: var(--surface);
+}
 .docs__folderhead {
   display: flex;
   align-items: center;

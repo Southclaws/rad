@@ -1,6 +1,8 @@
 import { DocsSidebar } from "@/components/docs-sidebar";
 import { SiteNav } from "@/components/site-nav";
+import { i18n, isDocsLocale } from "@/lib/i18n";
 import { source } from "@/lib/source";
+import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 
 type SidebarNode =
@@ -20,8 +22,6 @@ type TreeNode = {
   children?: TreeNode[];
 };
 
-// Keep Fumadocs' hierarchy intact rather than flattening folders into links.
-// The narrow serialisable shape is all the client-side disclosure needs.
 function toSidebarNodes(nodes: TreeNode[] = []): SidebarNode[] {
   return nodes.flatMap((node): SidebarNode[] => {
     if (node.type === "page" && node.url) {
@@ -45,18 +45,27 @@ function toSidebarNodes(nodes: TreeNode[] = []): SidebarNode[] {
   });
 }
 
-export default function DocsLayout({ children }: { children: ReactNode }) {
+export default async function DocsLayout({
+  children,
+  params,
+}: {
+  children: ReactNode;
+  params: Promise<{ lang: string }>;
+}) {
+  const { lang } = await params;
+  if (!isDocsLocale(lang)) notFound();
   const items = toSidebarNodes(
-    (source.pageTree as { children?: TreeNode[] }).children,
+    (source.getPageTree(lang) as { children?: TreeNode[] }).children,
   );
+  const docsHref = lang === i18n.defaultLanguage ? "/docs" : `/${lang}/docs`;
 
   return (
-    <div className="page">
+    <div className="page" lang={lang}>
       <div className="page__ticks" aria-hidden="true" />
-      <SiteNav />
+      <SiteNav docsHref={docsHref} />
       <div className="wrap docs">
         <aside className="docs__side">
-          <DocsSidebar items={items} />
+          <DocsSidebar items={items} locale={lang} />
         </aside>
         <main className="docs__main">{children}</main>
       </div>
