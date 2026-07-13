@@ -329,11 +329,13 @@ type AggTerm struct {
 	Fn string `json:"fn"`
 }
 
-// One named relational value. The binding denotes the single committed
-// bag its defining tree produces for this statement: a nondeterministic
-// body (a slice with no total order) is resolved once, and every
-// reference observes the same choice. The binding's public output is its
-// root's declared output shape — interior scopes never leak.
+// One named relational value. The binding denotes one committed
+// relational value produced by its defining tree for this statement.
+// Under bag semantics, that value is one committed bag: a
+// nondeterministic body (a slice with no total order) is resolved once,
+// and every reference observes the same choice. The binding's public
+// output is its root's declared output shape — interior scopes never
+// leak.
 type Binding struct {
 	// The id of the binding's defining root node in `nodes`.
 	Node string `json:"node"`
@@ -733,18 +735,21 @@ type Root struct {
 // `root.node` plus one tree per binding root — and cyclic, dangling,
 // shared, or unreachable definitions are rejected before binding.
 //
-// `bindings` is the one deliberate sharing construct. A binding names a
-// derived relation as a first-class relational value: it denotes one
-// statement-local committed bag, and every `ref` node observes that same
-// bag under its own fresh scope — exactly as two scans of one table
-// observe the same snapshot. Binding names, node ids, and scope labels
-// are three separate namespaces.
+// `bindings` is the one deliberate sharing construct. A binding names
+// and denotes a derived relation as a first-class relational value —
+// the name is syntax, the denotation is semantics: one statement-local
+// committed value, observed by every `ref` node under its own fresh
+// scope, exactly as two scans of one table observe the same snapshot.
+// Binding names, node ids, and scope labels are three separate
+// namespaces.
 type Query struct {
 	// Named relational values, each identifying the root node of its
 	// defining tree within `nodes`. A binding's tree is subject to the
 	// same single-consumer rules as the main tree; `ref` nodes are edges
-	// into this namespace, never ordinary node-consumer edges. Every
-	// declared binding must be referenced at least once.
+	// into this namespace, never ordinary node-consumer edges. Binding
+	// trees may themselves reference other bindings: those references
+	// form a separate acyclic dependency graph over the relation forest.
+	// Every declared binding must be referenced at least once.
 	//
 	Bindings map[string]Binding `json:"bindings,omitempty"`
 	// The relation nodes of the query, keyed by caller-chosen id. Ids are

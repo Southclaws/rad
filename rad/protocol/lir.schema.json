@@ -130,7 +130,7 @@
     },
     "Binding": {
       "additionalProperties": false,
-      "description": "One named relational value. The binding denotes the single committed\nbag its defining tree produces for this statement: a nondeterministic\nbody (a slice with no total order) is resolved once, and every\nreference observes the same choice. The binding's public output is its\nroot's declared output shape — interior scopes never leak.\n",
+      "description": "One named relational value. The binding denotes one committed\nrelational value produced by its defining tree for this statement.\nUnder bag semantics, that value is one committed bag: a\nnondeterministic body (a slice with no total order) is resolved once,\nand every reference observes the same choice. The binding's public\noutput is its root's declared output shape — interior scopes never\nleak.\n",
       "properties": {
         "node": {
           "description": "The id of the binding's defining root node in `nodes`.",
@@ -604,13 +604,13 @@
     },
     "Query": {
       "additionalProperties": false,
-      "description": "A complete query: the relation forest plus its root selector.\n\n`nodes` is a flat map from caller-chosen id to relation node. Edges are\nthe string ids a node names in its `input`, `left`, `right`, or a\ncrossing's `node`. This encoding carries no sharing among ordinary\nnodes: an id names exactly one inline definition, referenced by exactly\none consumer. The document is a finite forest — one tree rooted at\n`root.node` plus one tree per binding root — and cyclic, dangling,\nshared, or unreachable definitions are rejected before binding.\n\n`bindings` is the one deliberate sharing construct. A binding names a\nderived relation as a first-class relational value: it denotes one\nstatement-local committed bag, and every `ref` node observes that same\nbag under its own fresh scope — exactly as two scans of one table\nobserve the same snapshot. Binding names, node ids, and scope labels\nare three separate namespaces.\n",
+      "description": "A complete query: the relation forest plus its root selector.\n\n`nodes` is a flat map from caller-chosen id to relation node. Edges are\nthe string ids a node names in its `input`, `left`, `right`, or a\ncrossing's `node`. This encoding carries no sharing among ordinary\nnodes: an id names exactly one inline definition, referenced by exactly\none consumer. The document is a finite forest — one tree rooted at\n`root.node` plus one tree per binding root — and cyclic, dangling,\nshared, or unreachable definitions are rejected before binding.\n\n`bindings` is the one deliberate sharing construct. A binding names\nand denotes a derived relation as a first-class relational value —\nthe name is syntax, the denotation is semantics: one statement-local\ncommitted value, observed by every `ref` node under its own fresh\nscope, exactly as two scans of one table observe the same snapshot.\nBinding names, node ids, and scope labels are three separate\nnamespaces.\n",
       "properties": {
         "bindings": {
           "additionalProperties": {
             "$ref": "#/$defs/Binding"
           },
-          "description": "Named relational values, each identifying the root node of its\ndefining tree within `nodes`. A binding's tree is subject to the\nsame single-consumer rules as the main tree; `ref` nodes are edges\ninto this namespace, never ordinary node-consumer edges. Every\ndeclared binding must be referenced at least once.\n",
+          "description": "Named relational values, each identifying the root node of its\ndefining tree within `nodes`. A binding's tree is subject to the\nsame single-consumer rules as the main tree; `ref` nodes are edges\ninto this namespace, never ordinary node-consumer edges. Binding\ntrees may themselves reference other bindings: those references\nform a separate acyclic dependency graph over the relation forest.\nEvery declared binding must be referenced at least once.\n",
           "propertyNames": {
             "minLength": 1
           },

@@ -406,9 +406,12 @@ matter how arbitrary the body.
 Rules, each pinned by tests:
 
 - `bindings` maps names to root nodes within `nodes`; ordinary edges remain
-  tree-shaped, `ref` edges point into the binding namespace. The preflight
-  rejects unused bindings, refs to unknown bindings, and binding cycles
-  (recursion is a future construct, never an accident).
+  tree-shaped, `ref` edges point into the binding namespace. Binding trees
+  may themselves reference other bindings: those references form a separate
+  acyclic dependency graph *over* the relation forest — the forest is the
+  set of ordinary node trees, the dependency graph is the overlay. The
+  preflight rejects unused bindings, refs to unknown bindings, and binding
+  cycles (recursion is a future construct, never an accident).
 - Bindings are closed: a body referencing scopes outside its own tree fails
   to bind. Interior scopes never leak through a reference — the public
   contract is the output schema (names, types, nullability), which must be
