@@ -201,9 +201,6 @@ func Eval(e Expr, env Env) (lir.Value, error) {
 	case Cast:
 		return evalCast(x, env)
 
-	case Call:
-		return lir.Value{}, fmt.Errorf("exec: unknown function %q", x.Fn)
-
 	case Exists, First, Scalar, Array:
 		return lir.Value{}, fmt.Errorf("exec: unextracted crossing %T reached evaluation", e)
 	}

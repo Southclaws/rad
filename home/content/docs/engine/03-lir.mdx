@@ -29,8 +29,9 @@ below) — consume relations and produce relations, and the output of every
 node is usable as an ordinary input (relational closure).
 
 An **`Expr`** computes exactly one typed datum in some scope: `Literal`,
-`Column`, `Unary`, `Binary`, `Call` (reserved; the registry is empty this
-arc), `Cast`. Most are scalar; crossings may produce rows or arrays.
+`Column`, `Unary`, `Binary`, `Cast`. Most are scalar; crossings may produce
+rows or arrays. Scalar function calls are deliberately absent until their
+semantics are designed.
 Expressions may *consume* relations only through one of
 the four **cardinality crossings**, the only doors from `Relation` into
 `Expr`:

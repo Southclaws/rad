@@ -484,7 +484,6 @@ $defs:
       - { $ref: "#/$defs/ColumnExpr" }
       - { $ref: "#/$defs/UnaryExpr" }
       - { $ref: "#/$defs/BinaryExpr" }
-      - { $ref: "#/$defs/CallExpr" }
       - { $ref: "#/$defs/CastExpr" }
       - { $ref: "#/$defs/CrossingExprExists" }
       - { $ref: "#/$defs/CrossingExprFirst" }
@@ -578,25 +577,6 @@ $defs:
       right:
         description: The right operand.
         $ref: "#/$defs/Expr"
-
-  CallExpr:
-    description: |
-      Invoke a named function on `args`. Reserved: the function registry is
-      empty in this revision and the binder rejects every call. The node
-      exists so that the grammar is stable as functions are added.
-    type: object
-    additionalProperties: false
-    required: [kind, fn, args]
-    properties:
-      kind: { type: string, const: call }
-      fn:
-        description: The function name. No name is currently registered.
-        type: string
-        minLength: 1
-      args:
-        description: The argument expressions, in order.
-        type: array
-        items: { $ref: "#/$defs/Expr" }
 
   CastExpr:
     description: |

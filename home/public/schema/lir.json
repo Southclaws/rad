@@ -144,34 +144,6 @@
       "title": "Binding",
       "type": "object"
     },
-    "CallExpr": {
-      "additionalProperties": false,
-      "description": "Invoke a named function on `args`. Reserved: the function registry is\nempty in this revision and the binder rejects every call. The node\nexists so that the grammar is stable as functions are added.\n",
-      "properties": {
-        "args": {
-          "description": "The argument expressions, in order.",
-          "items": {
-            "$ref": "#/$defs/Expr"
-          },
-          "type": "array"
-        },
-        "fn": {
-          "description": "The function name. No name is currently registered.",
-          "minLength": 1,
-          "type": "string"
-        },
-        "kind": {
-          "const": "call",
-          "type": "string"
-        }
-      },
-      "required": [
-        "kind",
-        "fn",
-        "args"
-      ],
-      "type": "object"
-    },
     "CastExpr": {
       "additionalProperties": false,
       "description": "Convert `expr` to the scalar type `to`. The conversion is explicit; the\nresult is nullable exactly when the operand is.\n",
@@ -322,9 +294,6 @@
         },
         {
           "$ref": "#/$defs/BinaryExpr"
-        },
-        {
-          "$ref": "#/$defs/CallExpr"
         },
         {
           "$ref": "#/$defs/CastExpr"

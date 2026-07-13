@@ -109,12 +109,6 @@ func printExpr(e Expr) string {
 		return fmt.Sprintf("%s(%s)", x.Op, printExpr(x.X))
 	case Binary:
 		return fmt.Sprintf("%s(%s, %s)", x.Op, printExpr(x.L), printExpr(x.R))
-	case Call:
-		args := make([]string, len(x.Args))
-		for i, a := range x.Args {
-			args[i] = printExpr(a)
-		}
-		return fmt.Sprintf("%s(%s)", x.Fn, strings.Join(args, ", "))
 	case Cast:
 		return fmt.Sprintf("cast(%s as %s)", printExpr(x.X), x.To)
 	case Exists:

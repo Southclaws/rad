@@ -238,9 +238,6 @@ func TestCrossingsNeverEvaluate(t *testing.T) {
 }
 
 func TestEvalErrors(t *testing.T) {
-	if _, err := Eval(Call{Fn: "lower"}, nil); err == nil || !strings.Contains(err.Error(), "unknown function") {
-		t.Fatalf("call err = %v", err)
-	}
 	if _, err := Eval(SlotRef{Slot: 9, Name: "ghost"}, Env{}); err == nil {
 		t.Fatal("missing slot evaluated")
 	}

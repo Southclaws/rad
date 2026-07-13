@@ -190,15 +190,6 @@ func validateWireExpr(e *protocol.Expr, where string) error {
 			return err
 		}
 		return validateWireExpr(e.Right, where+" right operand")
-	case "call":
-		if e.Fn == "" {
-			return wireErrf("%s call needs fn", where)
-		}
-		for i := range e.Args {
-			if err := validateWireExpr(&e.Args[i], fmt.Sprintf("%s argument %d", where, i)); err != nil {
-				return err
-			}
-		}
 	case "cast":
 		switch e.To {
 		case "text", "int64", "float64", "bool":
@@ -424,10 +415,6 @@ func appendExprRefs(refs *[]string, e *protocol.Expr) {
 	case "binary":
 		appendExprRefs(refs, e.Left)
 		appendExprRefs(refs, e.Right)
-	case "call":
-		for i := range e.Args {
-			appendExprRefs(refs, &e.Args[i])
-		}
 	case "exists", "first", "scalar", "array":
 		*refs = append(*refs, e.Node)
 	}
@@ -597,17 +584,6 @@ func (g *graphConv) expr(e *protocol.Expr) (lir.Expr, error) {
 			return nil, wireErrf("binary %q needs two operands", e.Op)
 		}
 		return lir.Binary{Op: lir.BinaryOp(e.Op), L: l, R: r}, nil
-
-	case "call":
-		args := make([]lir.Expr, len(e.Args))
-		for i := range e.Args {
-			a, err := g.expr(&e.Args[i])
-			if err != nil {
-				return nil, err
-			}
-			args[i] = a
-		}
-		return lir.Call{Fn: e.Fn, Args: args}, nil
 
 	case "cast":
 		sub, err := g.expr(e.Expr)

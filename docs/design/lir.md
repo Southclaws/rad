@@ -157,7 +157,6 @@ Literal  { value }                    raw scalar; typed by the binder in context
 Column   { scope, name }              a column of a bound scope
 Unary    { op, expr }                 not · negate · is_null · is_not_null
 Binary   { op, left, right }          eq ne lt lte gt gte · and or · add sub mul div
-Call     { fn, args }                 reserved (empty registry this arc)
 Cast     { expr, to }                 explicit type conversion
 ```
 
@@ -296,7 +295,7 @@ document against that same schema before decoding or planning it.
 Query   { nodes: { <id>: RelNode }, bindings?: { <name>: {node} },
           root: { node, cardinality } }
 RelNode kind ∈ scan filter project join aggregate order slice ref
-Expr    kind ∈ lit col unary binary call cast exists first scalar array
+Expr    kind ∈ lit col unary binary cast exists first scalar array
 ```
 
 - `scan` requires `scope`, unique per query. `project` and `aggregate` accept
@@ -559,8 +558,9 @@ present-with-null; children are arrays, never null; folds are scalar objects).
 - No true multi-key storage batching (merged or concurrent range scans) —
   `AttachExec` is the seam, and it loops per distinct key. No index-only
   scans; no descending scans.
-- No `Call` registry, no expression arithmetic on the wire from the generated
-  clients (the grammar carries it; nothing emits it yet).
+- No scalar function registry or expression arithmetic on the wire from the
+  generated clients. Function calls can be added as a future expression
+  variant once their semantics are designed.
 - No dedicated `DISTINCT`, window functions, recursive queries, quantified
   comparisons, or relational `LATERAL`/`APPLY`. `HAVING` is already ordinary
   `Filter(Aggregate(...))`; GROUP BY is `Aggregate.groups`; CTE-style

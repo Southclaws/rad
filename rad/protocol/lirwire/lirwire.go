@@ -117,8 +117,6 @@ func (w *Expr) UnmarshalJSON(data []byte) error {
 		v = &UnaryExpr{}
 	case "binary":
 		v = &BinaryExpr{}
-	case "call":
-		v = &CallExpr{}
 	case "cast":
 		v = &CastExpr{}
 	case "exists":
@@ -216,21 +214,6 @@ type BinaryExpr struct {
 func (BinaryExpr) isExpr() {}
 
 func (BinaryExpr) ExprType() string { return "binary" }
-
-// Invoke a named function on `args`. Reserved: the function registry is
-// empty in this revision and the binder rejects every call. The node
-// exists so that the grammar is stable as functions are added.
-type CallExpr struct {
-	// The argument expressions, in order.
-	Args []Expr `json:"args"`
-	// The function name. No name is currently registered.
-	Fn   string `json:"fn"`
-	Kind string `json:"kind"`
-}
-
-func (CallExpr) isExpr() {}
-
-func (CallExpr) ExprType() string { return "call" }
 
 // Convert `expr` to the scalar type `to`. The conversion is explicit; the
 // result is nullable exactly when the operand is.

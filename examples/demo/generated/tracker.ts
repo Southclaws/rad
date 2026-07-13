@@ -134,7 +134,7 @@ export type Scalar = string | number | boolean | null;
 
 /** One typed datum computation. Crossings may produce rows or arrays. */
 export interface Expr {
-  kind: "lit" | "col" | "unary" | "binary" | "call" | "cast" | "exists" | "first" | "scalar" | "array";
+  kind: "lit" | "col" | "unary" | "binary" | "cast" | "exists" | "first" | "scalar" | "array";
   value?: Scalar;
   scope?: string;
   column?: string;
@@ -142,8 +142,6 @@ export interface Expr {
   expr?: Expr;
   left?: Expr;
   right?: Expr;
-  fn?: string;
-  args?: Expr[];
   to?: string;
   node?: string;
 }

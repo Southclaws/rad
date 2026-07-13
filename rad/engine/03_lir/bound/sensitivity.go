@@ -85,12 +85,6 @@ func exprSensitive(e Expr) bool {
 		return exprSensitive(x.L) || exprSensitive(x.R)
 	case Cast:
 		return exprSensitive(x.X)
-	case Call:
-		for _, a := range x.Args {
-			if exprSensitive(a) {
-				return true
-			}
-		}
 	}
 	return false
 }

@@ -158,8 +158,7 @@ extracting from `On`.
 Everything else is exhaustive bind-time validation, pinned case by case in
 `TestValidationMatrix`: unknown tables, missing scope labels, duplicate
 scopes, unknown or unqualified columns, non-Bool filter and join predicates,
-operand type rules for every operator, the empty `Call` registry (every
-function is rejected this arc), cast rules (int64↔float64 only), aggregate
+operand type rules for every operator, cast rules (int64↔float64 only), aggregate
 argument and naming rules, projection field naming and collision rules
 (explicit×explicit and explicit×spread), order and slice bounds, and join
 kinds. `Slice` distinguishes nil limit (unlimited) from an explicit 0 (zero

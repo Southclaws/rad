@@ -205,10 +205,6 @@ func lirBindingDeps(r lir.Relation) []string {
 			expr(x.R)
 		case lir.Cast:
 			expr(x.X)
-		case lir.Call:
-			for _, a := range x.Args {
-				expr(a)
-			}
 		case lir.Exists:
 			rel(x.Rel)
 		case lir.First:
@@ -472,12 +468,6 @@ func containsCrossing(e bound.Expr) bool {
 		return containsCrossing(x.L) || containsCrossing(x.R)
 	case bound.Cast:
 		return containsCrossing(x.X)
-	case bound.Call:
-		for _, a := range x.Args {
-			if containsCrossing(a) {
-				return true
-			}
-		}
 	}
 	return false
 }

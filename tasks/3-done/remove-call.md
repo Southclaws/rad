@@ -1,5 +1,9 @@
 # Remove Call scalar operation expression
 
+Status: **done** (2026-07-13) — removed from the LIR schema and every
+transport, planner, evaluator, generated-client, and documentation surface.
+`kind: "call"` is now rejected during structural validation.
+
 I'd distinguish between **language features** and **engine primitives**.
 
 Today, your engine primitives are:

@@ -176,8 +176,6 @@ type Expr struct {
 	Expr   *Expr  `json:"expr,omitempty"`   // unary, cast
 	Left   *Expr  `json:"left,omitempty"`   // binary
 	Right  *Expr  `json:"right,omitempty"`  // binary
-	Fn     string `json:"fn,omitempty"`     // call
-	Args   []Expr `json:"args,omitempty"`   // call
 	To     string `json:"to,omitempty"`     // cast
 	Node   string `json:"node,omitempty"`   // crossings
 }

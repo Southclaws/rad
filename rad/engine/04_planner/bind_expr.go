@@ -51,10 +51,6 @@ func (b *binder) bindExpr(e lir.Expr) (bound.Expr, error) {
 	case lir.Binary:
 		return b.bindBinary(x)
 
-	case lir.Call:
-		// The function registry is empty this arc.
-		return nil, reject.Inputf("planner: unknown function %q", x.Fn)
-
 	case lir.Cast:
 		sub, err := b.bindExpr(x.X)
 		if err != nil {

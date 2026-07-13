@@ -304,16 +304,6 @@ func exprToWire(e *Expr) (lirwire.Expr, error) {
 			return lirwire.Expr{}, err
 		}
 		u = &lirwire.BinaryExpr{Kind: "binary", Op: e.Op, Left: left, Right: right}
-	case "call":
-		args := make([]lirwire.Expr, len(e.Args))
-		for i := range e.Args {
-			arg, err := exprToWire(&e.Args[i])
-			if err != nil {
-				return lirwire.Expr{}, err
-			}
-			args[i] = arg
-		}
-		u = &lirwire.CallExpr{Kind: "call", Fn: e.Fn, Args: args}
 	case "cast":
 		expr, err := exprToWire(e.Expr)
 		if err != nil {
@@ -351,16 +341,6 @@ func exprFromWire(e lirwire.Expr) (*Expr, error) {
 		}
 		right, err := exprFromWire(x.Right)
 		return &Expr{Kind: "binary", Op: x.Op, Left: left, Right: right}, err
-	case *lirwire.CallExpr:
-		args := make([]Expr, len(x.Args))
-		for i, arg := range x.Args {
-			expr, err := exprFromWire(arg)
-			if err != nil {
-				return nil, err
-			}
-			args[i] = *expr
-		}
-		return &Expr{Kind: "call", Fn: x.Fn, Args: args}, nil
 	case *lirwire.CastExpr:
 		expr, err := exprFromWire(x.Expr)
 		return &Expr{Kind: "cast", Expr: expr, To: x.To}, err
