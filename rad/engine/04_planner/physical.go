@@ -31,16 +31,34 @@ type PhysPlan struct {
 	Out      lir.RowType
 }
 
-// BindingPlan is one binding's body lowered once. The executor commits
-// each binding — in list order, so dependencies are always committed
-// first — before the root runs; every RefExec occurrence observes the
-// committed value.
+// BindingStrategy is how a binding's commitment is physically discharged.
+type BindingStrategy string
+
+const (
+	// BindingMaterialise evaluates the plan once, before the root runs, and
+	// every occurrence streams the stored frames. Required whenever more
+	// than one occurrence exists — re-execution would be wasted work at
+	// best (and, for a sensitive body under a diverged plan, a different
+	// commitment at worst).
+	BindingMaterialise BindingStrategy = "materialise"
+	// BindingReplay streams the plan inline at the occurrence. Sound only
+	// for a single reference: one occurrence's evaluation IS the
+	// commitment, so nothing else can observe a difference. Multi-reference
+	// replay of insensitive bodies is a possible future refinement; it is
+	// never valid for sensitive ones.
+	BindingReplay BindingStrategy = "replay"
+)
+
+// BindingPlan is one binding's body lowered once. Materialised bindings
+// commit in list order (dependencies first) before the root runs; replayed
+// bindings commit at their single occurrence's pull.
 type BindingPlan struct {
-	Name string
-	Plan PhysNode
-	Out  lir.RowType // canonical output
-	// Sensitive: plan-choice-sensitive body — occurrences must share this
-	// one evaluation (v1 materialises every binding, sensitive or not).
+	Name     string
+	Plan     PhysNode
+	Out      lir.RowType // canonical output
+	Strategy BindingStrategy
+	// Sensitive: plan-choice-sensitive body — the property that forbids
+	// per-occurrence plan divergence, kept visible in EXPLAIN.
 	Sensitive bool
 }
 

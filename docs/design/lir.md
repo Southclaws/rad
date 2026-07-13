@@ -417,13 +417,15 @@ Rules, each pinned by tests:
 - References are uniformly 0..many regardless of the body: static
   cardinality is not part of the contract, so `first`/`scalar` consumers of
   a reference bring their own order or slice.
-- Commit-once is the semantic obligation, not evaluate-once: the current
-  implementation materialises every binding once, in dependency order,
-  before the root runs; identical-plan replay is a valid future strategy
-  because replay determinism reproduces the commitment. The binder derives
+- Commit-once is the semantic obligation, not evaluate-once. The planner
+  picks the strategy, visible in EXPLAIN: a binding with exactly one
+  occurrence streams inline at that occurrence (replay — its single
+  evaluation is the commitment), while multi-reference bindings materialise
+  once in dependency order before the root runs, which also keeps nested
+  multi-reference bindings linear at execution. The binder derives
   *plan-choice sensitivity* (can two valid plans commit different bags?)
-  conservatively — visible in EXPLAIN — for the day occurrence strategies
-  diverge.
+  conservatively; it is what forbids per-occurrence plan divergence if
+  multi-reference replay of insensitive bodies ever lands.
 
 ## Name binding
 
@@ -560,10 +562,14 @@ present-with-null; children are arrays, never null; folds are scalar objects).
   comparisons, or relational `LATERAL`/`APPLY`. `HAVING` is already ordinary
   `Filter(Aggregate(...))`; GROUP BY is `Aggregate.groups`; CTE-style
   sharing is relation bindings (above).
-- No correlated bindings (a binding is closed; per-environment commitment is
-  designed but not built) and no per-occurrence plan divergence (every
-  binding materialises once — the sensitivity classification exists for the
-  optimisation's arrival).
+- No correlated bindings — structurally: document-level bindings have no
+  enclosing scopes at their definition site, so closedness is a theorem of
+  the surface, not a restriction. References inside correlated contexts (a
+  committed subset consulted per outer row) work. Per-environment
+  commitment semantics are reserved for a future explicitly-parameterised
+  construct. No multi-reference replay (multi-reference bindings always
+  materialise; the sensitivity classification gates that future
+  refinement).
 - No numeric widening in comparisons; no configurable NULL-distinctness
   (NULLs-distinct is the one behaviour).
 

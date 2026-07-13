@@ -1,18 +1,24 @@
 # Relation bindings: derived relations as first-class relational values
 
-Status: **implemented through step 6** (2026-07-13) — schema, forest
-preflight, binder (canonical slots, closed bindings, sensitivity,
-occurrence remapping, unique-output contract), planner (BindingPlan +
-RefExec; EXPLAIN shows each binding once with its sensitivity), executor
-(materialise-once commitment in dependency order), and the acceptance
-suite: the diagonal self-join over an arbitrary binding, alias isolation,
-hidden-scope rejection, chained bindings, uniform-0..many probes, the
-forest preflight probes, nested depth-6 linearity, and a binding query in
-the conformance corpus (path independence, oracle, replay determinism).
-Remaining: step 7 (identical-plan replay as an optimisation, gated on the
-sensitivity flag) and step 8 (correlated bindings). This was the only
-grammar change to come out of the battle-test campaign (F7 in
-tasks/3-done/lir-improvements.md).
+Status: **complete** (2026-07-13) — all eight steps of the implementation
+order resolved. Steps 1–6: schema, forest preflight, binder (canonical
+slots, closed bindings, sensitivity, occurrence remapping, unique-output
+contract), planner (BindingPlan + RefExec), executor commitment, full
+acceptance suite. Step 7 (strategy): a binding with exactly one occurrence
+streams inline (replay — its single evaluation is the commitment, so even
+sensitive bodies qualify); multi-reference bindings materialise once, which
+also keeps nested multi-reference bindings linear at execution where
+naive replay would re-run children exponentially. Strategy is chosen by the
+planner, shown in EXPLAIN, and pinned by op-count tests (two occurrences
+cost one evaluation). Multi-reference replay of insensitive bodies remains
+a documented future refinement. Step 8 (correlated bindings): resolved
+structurally — document-level bindings have no enclosing scopes at the
+binding site, so closedness is a theorem of the decided surface, not a
+restriction; per-environment commitment semantics transfer to a future
+parameterised construct if one is designed. References inside correlated
+contexts (a committed subset consulted per outer row) work today and are
+tested. This was the only grammar change to come out of the battle-test
+campaign (F7 in tasks/3-done/lir-improvements.md).
 
 The question this document answers is not "should LIR allow DAGs?" (it
 should not, and does not — see the preflight rules below). It is: **should

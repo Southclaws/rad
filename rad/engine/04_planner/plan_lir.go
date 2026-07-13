@@ -47,11 +47,58 @@ func PlanQuery(q *bound.Query, opts ...PlanOpt) *PhysPlan {
 			Sensitive: b.PlanSensitive,
 		}
 	}
+	root := pl.plan(q.Root, nil)
+
+	// Strategy: a binding with exactly one occurrence streams inline at
+	// that occurrence (its single evaluation IS the commitment); anything
+	// referenced more than once materialises, so nested multi-reference
+	// bindings execute linearly instead of exponentially re-running their
+	// children.
+	refs := map[string]int{}
+	countRefs(root, refs)
+	for i := range bindings {
+		countRefs(bindings[i].Plan, refs)
+	}
+	for i := range bindings {
+		if refs[bindings[i].Name] == 1 {
+			bindings[i].Strategy = BindingReplay
+		} else {
+			bindings[i].Strategy = BindingMaterialise
+		}
+	}
+
 	return &PhysPlan{
 		Bindings: bindings,
-		Root:     pl.plan(q.Root, nil),
+		Root:     root,
 		Card:     q.Card,
 		Out:      q.Root.Output(),
+	}
+}
+
+// countRefs tallies RefExec occurrences per binding across a plan tree,
+// including plans attached for extracted crossings.
+func countRefs(n PhysNode, refs map[string]int) {
+	switch x := n.(type) {
+	case *RefExec:
+		refs[x.Binding]++
+	case *FilterExec:
+		countRefs(x.Input, refs)
+	case *AttachExec:
+		for _, spec := range x.Specs {
+			countRefs(spec.Plan, refs)
+		}
+		countRefs(x.Input, refs)
+	case *ProjectExec:
+		countRefs(x.Input, refs)
+	case *SortExec:
+		countRefs(x.Input, refs)
+	case *SliceExec:
+		countRefs(x.Input, refs)
+	case *AggregateExec:
+		countRefs(x.Input, refs)
+	case *NestedLoopJoinExec:
+		countRefs(x.L, refs)
+		countRefs(x.R, refs)
 	}
 }
 

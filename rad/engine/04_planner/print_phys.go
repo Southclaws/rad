@@ -17,7 +17,7 @@ func PrintPlan(p *PhysPlan) string {
 		if bp.Sensitive {
 			sens = " plan-choice-sensitive"
 		}
-		fmt.Fprintf(&b, "  Binding %s%s\n", bp.Name, sens)
+		fmt.Fprintf(&b, "  Binding %s %s%s\n", bp.Name, bp.Strategy, sens)
 		printPhys(&b, bp.Plan, 2)
 	}
 	printPhys(&b, p.Root, 1)

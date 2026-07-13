@@ -202,13 +202,47 @@ func TestPlanBindings(t *testing.T) {
 	})
 	got := planner.PrintPlan(planner.PlanQuery(q))
 	wantPlan(t, got, `Plan card=many
-  Binding top plan-choice-sensitive
+  Binding top materialise plan-choice-sensitive
     Slice offset=0 limit=2
       TableScan tasks
   NestedLoopJoin inner on eq(a.id#7, b.id#14)
     Ref top
     Ref top
 `)
+}
+
+// Strategy selection: one occurrence streams inline (replay — the single
+// evaluation is the commitment); two or more materialise once, so nested
+// multi-reference bindings execute linearly.
+func TestPlanBindingStrategy(t *testing.T) {
+	q := bind(t, lir.Query{
+		Card: lir.CardMany,
+		Bindings: map[string]lir.Relation{
+			"once":  bfilter(bscan("tasks", "t"), beq(bcol("t", "status"), blit("open"))),
+			"twice": bfilter(bscan("tasks", "u"), beq(bcol("u", "status"), blit("done"))),
+		},
+		Root: lir.Join{
+			Left: lir.Ref{Binding: "once", Scope: "o"},
+			Right: lir.Join{
+				Left:  lir.Ref{Binding: "twice", Scope: "a"},
+				Right: lir.Ref{Binding: "twice", Scope: "b"},
+				Kind:  lir.InnerJoin,
+				On:    beq(bcol("a", "id"), bcol("b", "id")),
+			},
+			Kind: lir.InnerJoin,
+			On:   beq(bcol("o", "id"), bcol("a", "id")),
+		},
+	})
+	pp := planner.PlanQuery(q)
+	want := map[string]planner.BindingStrategy{
+		"once":  planner.BindingReplay,
+		"twice": planner.BindingMaterialise,
+	}
+	for _, bp := range pp.Bindings {
+		if bp.Strategy != want[bp.Name] {
+			t.Fatalf("binding %q strategy = %s, want %s", bp.Name, bp.Strategy, want[bp.Name])
+		}
+	}
 }
 
 // Sensitivity classification: a slice is conservatively sensitive; a plain

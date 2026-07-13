@@ -18,23 +18,37 @@ import (
 
 // executor builds operator trees. forceNested disables keyed batching —
 // the equivalence property the conformance suite asserts. bindings holds
-// each committed binding's canonical frames; every RefExec occurrence
-// observes exactly these.
+// each materialised binding's canonical frames; plans holds every binding
+// plan so a replayed (single-occurrence) binding can stream inline at its
+// reference.
 type executor struct {
 	view        kv.KV
 	forceNested bool
 	bindings    map[string][]Frame
+	plans       map[string]planner.BindingPlan
 }
 
 func newExecutor(view kv.KV) *executor {
-	return &executor{view: view, bindings: map[string][]Frame{}}
+	return &executor{
+		view:     view,
+		bindings: map[string][]Frame{},
+		plans:    map[string]planner.BindingPlan{},
+	}
 }
 
-// commit evaluates each binding once, in dependency order — the choice
-// point: whatever the body's plan yields against this statement snapshot
-// IS the binding's value, and every occurrence observes it.
+// commit discharges each binding's commitment, in dependency order.
+// Materialised bindings evaluate now — whatever the plan yields against
+// this statement snapshot IS the binding's value; every occurrence
+// observes it. Replayed bindings commit lazily at their single
+// occurrence's pull: one occurrence, one evaluation, same commitment.
 func (ex *executor) commit(ctx context.Context, bindings []planner.BindingPlan) error {
 	for _, b := range bindings {
+		ex.plans[b.Name] = b
+	}
+	for _, b := range bindings {
+		if b.Strategy != planner.BindingMaterialise {
+			continue
+		}
 		op, err := ex.build(ctx, b.Plan, bound.Env{})
 		if err != nil {
 			return err
@@ -109,18 +123,37 @@ func (ex *executor) build(ctx context.Context, node planner.PhysNode, outer boun
 		}
 		return &nljOp{l: l, r: r, kind: n.Kind, on: n.On, rOut: n.ROut}, nil
 	case *planner.RefExec:
-		frames, ok := ex.bindings[n.Binding]
+		if frames, ok := ex.bindings[n.Binding]; ok {
+			return &refOp{n: n, frames: frames, outer: outer}, nil
+		}
+		bp, ok := ex.plans[n.Binding]
 		if !ok {
 			return nil, fmt.Errorf("exec: binding %q was not committed before its occurrence", n.Binding)
 		}
-		return &refOp{n: n, frames: frames, outer: outer}, nil
+		// Replay: the binding's single occurrence streams the identical
+		// plan inline — its one evaluation is the commitment.
+		in, err := ex.build(ctx, bp.Plan, bound.Env{})
+		if err != nil {
+			return nil, err
+		}
+		return &replayRefOp{n: n, in: in, outer: outer}, nil
 	}
 	return nil, fmt.Errorf("exec: unknown physical node %T", node)
 }
 
-// refOp streams one occurrence of a committed binding: each canonical
-// frame re-exposed under the occurrence's fresh slots. It never mutates
-// the stored frames — every occurrence builds its own.
+// remapOccurrence re-exposes one canonical frame under an occurrence's
+// fresh slots, never mutating the source.
+func remapOccurrence(n *planner.RefExec, src Frame, outer bound.Env) Frame {
+	out := newFrame(outer)
+	for i, fld := range n.Out.Fields {
+		if d, ok := src[n.Canon[i]]; ok {
+			out[fld.Slot] = d
+		}
+	}
+	return out
+}
+
+// refOp streams one occurrence of a materialised binding.
 type refOp struct {
 	n      *planner.RefExec
 	frames []Frame
@@ -134,16 +167,28 @@ func (o *refOp) Next(context.Context) (Frame, bool, error) {
 	}
 	src := o.frames[o.pos]
 	o.pos++
-	out := newFrame(o.outer)
-	for i, fld := range o.n.Out.Fields {
-		if d, ok := src[o.n.Canon[i]]; ok {
-			out[fld.Slot] = d
-		}
-	}
-	return out, true, nil
+	return remapOccurrence(o.n, src, o.outer), true, nil
 }
 
 func (o *refOp) Close() error { return nil }
+
+// replayRefOp streams a replayed binding's single occurrence directly from
+// its plan — no buffering, the streaming win of a one-reference binding.
+type replayRefOp struct {
+	n     *planner.RefExec
+	in    Operator
+	outer bound.Env
+}
+
+func (o *replayRefOp) Next(ctx context.Context) (Frame, bool, error) {
+	src, ok, err := o.in.Next(ctx)
+	if err != nil || !ok {
+		return Frame{}, false, err
+	}
+	return remapOccurrence(o.n, src, o.outer), true, nil
+}
+
+func (o *replayRefOp) Close() error { return o.in.Close() }
 
 // resolveConst turns a planner constant — literal or outer-slot parameter —
 // into a value under the environment.
