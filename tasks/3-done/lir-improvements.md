@@ -8,8 +8,9 @@ below change lir.schema.yaml: the grammar held; everything here is behavior
 behind the schema. The one item that *would* change the grammar — F7 — is
 deliberately design-pending.
 
-Status: **F1–F6, F8, F9 are done** (2026-07-13). F7 remains open by design —
-it is a grammar change and gets its own design session.
+Status: **done** (2026-07-13) — F1 through F6, F8, and F9 all shipped, one
+commit each. F7 (DAG sharing) was split out: it is a grammar change and gets
+its own design session — see tasks/1-todo/dag-sharing.md.
 
 ## F1 — Schema-validation errors must name the problem
 
@@ -131,30 +132,12 @@ and reference its output columns instead`.
 
 **Blast radius.** 04_planner/bind_expr.go (resolution failure path) + a test.
 
-## F7 — DAG sharing (design-pending; DO NOT implement ad hoc)
+## F7 — DAG sharing
 
-**Problem.** LIR is a strict single-consumer tree: a node id names one inline
-definition consumed exactly once. Any query that needs the same derived
-relation twice — order by a crossing value *and* project it, reuse a
-filtered subset in two crossings — must either duplicate the subtree under
-fresh ids/scopes or restructure (label-project-then-order works well and is
-the documented idiom). Query compilers targeting LIR will want real sharing.
-
-**Why this is not being fixed now.** Sharing is a grammar change with
-semantic weight, not a DX patch. The current rules are load-bearing:
-single-consumer is what lets the preflight reject cycles/sharing cheaply,
-lets the binder derive correlation from free slots without capture
-analysis, and keeps "node ids have no identity" true (ids are labels, not
-variables). An explicit binding construct (`let`-style: bind a relation
-once, reference it N times, with defined evaluation and correlation-capture
-semantics) changes all three. There are hard rules on how the node DAG is
-considered; any schema change here gets designed explicitly, together —
-evaluation order, whether a shared node may be correlated and against whose
-scopes, interaction with crossings and the single-consumer preflight, and
-what sharing means physically (materialise once vs re-evaluate).
-
-**Until then.** The idiom is documented (F8): compute the value once in a
-labelled projection, then order/filter/re-project by the projection's scope.
+Moved to tasks/1-todo/dag-sharing.md: a grammar change with semantic weight,
+not a DX patch — it gets an explicit design session. The working idiom
+(compute once in a labelled projection, reference the projection's scope
+above) is documented on the LIR docs page.
 
 ## F8 — Idioms and footguns belong in the docs
 
