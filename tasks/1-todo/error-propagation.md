@@ -1,105 +1,108 @@
 # Unified error propagation and reporting
 
-Status: proposal — ideas to refine together pre-build. The goal is one
-error mechanism from any step of the engine — schema validation, preflight,
-binding, planning, execution, storage — landing in a well-structured RFC
-7807 Problem JSON with semantic codes, positional information into the LIR
-document, and (where it helps) physical execution context. Nothing here is
-settled; the sketches below are starting positions.
+Status: refined in design review (2026-07-13) — the core model, taxonomy,
+naming, and wire shape are settled below; remaining open questions are
+listed at the end. Build later; the pre-build session is done.
 
-## Where we stand (post battle-test campaign)
+The architecture in one line:
 
-Worth restating because it is the foundation this builds on, not a green
-field:
+```text
+Engine  →  structured error (E)  →  Problem builder  →  RFC 7807
+```
 
-- **Classification is typed, not textual** (F3): `rad/engine/reject` marks
-  errors `Input` (caller's fault at request time) or `Runtime`
-  (data-dependent failure of a valid query); the server maps types to
-  problem codes — `invalid`, `execution_failed`, `conflict`, `not_found`,
-  `internal` — and anything unmarked is a 500. The prefix strings
+Every engine layer only constructs an `E`; only the HTTP transport knows
+RFC 7807 exists. This extends the layering `reject` already established —
+the engine defines semantics, the transport defines representation — and
+the guiding restraint is explicit: **the core stays tiny.** Postgres grew
+SQLSTATE, DETAIL, HINT, and cursor positions organically over decades; we
+are designing the same facilities intentionally, for a structured IR
+instead of a string language, and the way to not regret it is to resist
+the everything-bagel.
+
+## Where we stand
+
+- Classification is typed (`rad/engine/reject`: Input/Runtime markers),
+  mapped to five problem codes; anything unmarked is a 500. Prefixes
   (`planner:`, `exec:`) are diagnostics only.
-- **Schema failures name the problem** (F1): the kind-directed best-match
-  pass reports `node "s" (slice): …rule…` and `binding "x": …` instead of
-  oneOf dumps.
-- **Binder messages are good prose**: named scopes/columns/tables, the
-  scope-closed diagnosis, remedy hints (cast, name-it-as-a-binding). But
-  they are *prose* — a client cannot machine-read where the error is.
-- **The wire shape is flat**: `{type, title, status, detail, code}`. All
-  structure beyond `code` lives inside the `detail` string.
+- Schema failures name node/binding + rule (the F1 best-match pass).
+- Binder prose is good but unstructured — clients parse English.
+- The wire `Problem` is one flat schema: `{type, title, status, detail,
+  code}` with a code enum.
 
-The gap, in one sentence: we classify errors well and describe them well,
-but we do not *locate* them or *type their content* — a query compiler, a
-UI, or a retry loop has to parse English.
+The gap: we classify and describe errors well but do not *locate* them or
+*type their content*.
 
-## Goals
-
-1. Any engine step can raise a structured error that survives to the wire
-   without loss: class, fine-grained reason, human message, source
-   location, and step-appropriate context.
-2. The Problem JSON carries that structure in extension members — RFC 7807
-   explicitly invites this — while `detail` stays a readable sentence.
-3. Codes are a stable, testable contract (the harness already has
-   `ExpectCode`; it grows `ExpectReason` / `ExpectSource`).
-4. Internal errors stay internal: structure must never widen what a 500
-   reveals.
-
-## Non-goals (for this ADR)
-
-- Retry policy / client backoff (belongs to the client runtime).
-- Observability plumbing (logs/traces) — same error values will feed it,
-  but transport is out of scope here.
-- Warnings/notices (non-fatal diagnostics) — possibly a `warnings: []`
-  response extension one day; noted, not designed.
-
-## Sketch 1 — one structured error value
-
-Grow `reject` (or a sibling leaf package) from binary markers into the
-engine-wide error value. Something like:
+## The error value (settled shape)
 
 ```go
 type E struct {
-    Class  Class          // invalid | execution_failed | conflict | not_found | internal
-    Reason string         // fine-grained, stable: "unknown_column", "division_by_zero"
-    Msg    string         // the human sentence (today's detail)
-    Source *Source        // where in the request document (sketch 3)
-    Meta   map[string]any // step-appropriate context (sketch 4)
-    err    error          // wrapped cause
+    Stage    Stage     // schema | preflight | binding | planning | execution | storage
+    Class    Class     // invalid | execution_failed | conflict | not_found | internal
+    Reason   Reason    // typed, stable, fine-grained
+    Detail   string    // the human sentence — RFC 7807 terminology, so
+                       // rendering is Problem.Detail = err.Detail
+    Location *Location // where in the request document
+    Meta     any       // one concrete per-class struct, never map[string]any
+    err      error     // wrapped cause
 }
 ```
 
-Constraints from today's doctrine: the package imports nothing (layer-0
-leaf, like `reject`); `errors.As`-friendly; the prose message remains
-derivable so logs stay readable without the structure. The `planner:` /
-`exec:` prefixes stop being embedded in strings and become a rendered
-property of Class — which also fixes a wart we shipped this week:
-`bindingErr` wrapping currently produces `planner: binding "x": planner:
-unknown scope …` (stacked prefixes), because prefixes live inside messages.
-Structure kills that class of bug.
+Decisions folded in from review:
 
-Migration is a second sweep over the sites the F3 sweep already visited —
-each `reject.Inputf("planner: …")` gains a reason and (where known) a
-source. Mechanical, reviewable, and the corpus's `ExpectError` assertions
-keep messages honest throughout.
+- **`Reason` is a typed string** (`type Reason string` + constants), not
+  for the compiler but for autocomplete, typo-impossibility, exhaustive
+  switches, documentation, and schema/codegen emission.
+- **`Detail`, not `Msg`** — RFC 7807's own word; the Problem builder
+  becomes mechanical.
+- **`Meta` is never `map[string]any`.** Flexibility today is
+  `meta["foo"]` archaeology in three years. Concrete structs per class
+  (e.g. `RuntimeMeta{Operator, Table, Index string}`,
+  `StorageMeta{...}`), carried as `any` but with a closed, documented set
+  — which is exactly what lets OpenAPI document them (below).
+- **`Location`, not `Source`** — "where the problem occurred" reads
+  naturally; `location.pointer` doesn't overload "source". Its fields are
+  orthogonal, not squeezed together:
 
-## Sketch 2 — the code taxonomy
+  ```go
+  type Location struct {
+      Pointer string // RFC 6901 into the request document
+      Node    string // LIR node id
+      Binding string // binding name
+      Scope   string // scope label
+      Role    string // "predicate", "order term 0", "field 2"
+  }
+  ```
 
-Two levels, not one flat namespace: **class** (the five existing codes,
-unchanged — they map to status and to retry-ability) and **reason** (new,
-fine-grained, stable). Wire shape:
+- **`Stage` is explicit, not inferred from reason.** `binding:
+  unknown_column` vs `execution: division_by_zero` is immediately useful
+  to a human debugging production, and it retires the string-prefix
+  convention entirely — logs stop inventing prefixes because the stage is
+  a field. (This also fixes the stacked-prefix wart `bindingErr` shipped:
+  prefixes were in messages; now they're structure.)
 
-```json
-{
-  "type": "urn:rad:problem:invalid",
-  "title": "Invalid Request",
-  "status": 422,
-  "detail": "planner: scope \"t\" exists but is not visible here — …",
-  "code": "invalid",
-  "reason": "scope_closed",
-  "source": { "node": "out", "pointer": "/nodes/out/terms/0/expr" }
-}
+## Taxonomy (settled)
+
+Two levels: **class** (the five existing codes — frozen; they map to
+status and to retryability) and **reason** (typed, grows forever). The
+SQLSTATE lesson kept, its taxonomy not: classes almost never change,
+reasons accumulate.
+
+**Constraint violations split by retryability, not by SQL tradition.**
+The client cares about exactly one thing — can retrying help?
+
+```text
+invalid / constraint_violation      → this request can never succeed
+conflict / serializable_conflict    → the same request might succeed in 20ms
 ```
 
-Candidate reasons, harvested from the errors we actually emit today:
+That is a cleaner and more useful split than SQLSTATE's historical
+classes, and it is now the rule for classifying any future write-path
+error.
+
+**Type URIs stay class-level** (`urn:rad:problem:invalid`). Reasons are
+enumerable members, not a second URI namespace.
+
+Candidate reasons (harvested from errors the engine emits today):
 
 - `invalid`: `schema_violation`, `unknown_table`, `unknown_column`,
   `unknown_scope`, `scope_closed`, `duplicate_scope`, `type_mismatch`,
@@ -107,141 +110,119 @@ Candidate reasons, harvested from the errors we actually emit today:
   `dependent_join`, `crossing_in_join`, `projection_collision`,
   `node_cycle`, `shared_node`, `unreachable_node`, `unknown_binding`,
   `unused_binding`, `binding_cycle`, `binding_output_collision`,
-  `constraint_violation` (writes: duplicate PK, FK, unique, not-null).
-- `execution_failed`: `division_by_zero`, `cardinality_violation` (the
-  exactly_one miss), later cast overflow etc.
-- `conflict`: single reason today (`serializable_conflict`), room for
-  `unique_race` vs `write_write` if the KV layer can distinguish.
+  `constraint_violation`.
+- `execution_failed`: `division_by_zero`, `cardinality_violation`.
+- `conflict`: `serializable_conflict`.
+- `not_found`: `transaction`, later `table`/`row` for CRUD surfaces.
 
-Precedents worth stealing from, deliberately: Postgres SQLSTATE's
-class/subclass split (coarse code stays stable while fine codes grow),
-Google's `reason` + `domain` + structured detail types, Stripe's
-`code` + `param`. The five-class ceiling is a feature — reasons may grow
-freely, classes should essentially never.
+## The wire: a discriminated union of per-class Problems
 
-Open question: does `type` stay class-level
-(`urn:rad:problem:invalid`) or gain the reason
-(`urn:rad:problem:invalid/scope-closed`)? Class-level keeps type URIs
-enumerable; the `reason` member carries the rest. I lean class-level.
+The single flat `Problem` schema becomes a `oneOf` discriminated on
+`code` — strictly typed per class, without encoding every individual
+reason into the spec:
 
-## Sketch 3 — source locations (the provenance problem)
-
-Three positional vocabularies, used where each is natural:
-
-- **JSON Pointer** (RFC 6901) into the request document —
-  `/nodes/open_b1/predicate/left`, `/bindings/x/node`. The schema
-  validation layer has instance locations essentially for free (the
-  validator reports them; we currently flatten to prose). Highest value
-  per effort: 400s get `source.pointer` almost immediately.
-- **Node id + role** — `{node: "out", role: "order term 0"}` — the
-  granularity binder errors naturally have.
-- **Binding name** — already prefixed in messages; becomes
-  `source.binding`.
-
-The real design problem: **node ids are erased before the binder runs.**
-`graphconv` materialises the wire's flat map into unbound value structs;
-by bind time an error knows the scope name but not the node id or JSON
-path. Options to weigh pre-build:
-
-1. **Provenance field on unbound nodes** — each `lir.*` relation struct
-   gains an optional `ID string` stamped by graphconv (engine-direct
-   callers leave it empty; errors degrade gracefully to scope-level
-   location). Cheap, slightly pollutes the IR.
-2. **Provenance side-channel** — graphconv returns a positions structure
-   the binder threads alongside. Keeps the IR clean; value structs can't
-   be map keys, so this needs paths mirrored structurally (fiddly).
-3. **Bind against the wire form directly** — dissolve graphconv into the
-   binder so positions are never lost. Biggest change; also removes a
-   layer of translation. Probably too much for v1 but worth saying out
-   loud.
-
-I lean (1): optionality matches how `Scope` already behaves, and the ADR
-principle that ids are labels means carrying the label is harmless.
-Physical-plan provenance follows the same thread: `AttachSpec`/`RefExec`
-already carry enough (slot, binding name) to say *which* crossing or
-occurrence failed at runtime.
-
-## Sketch 4 — execution context for runtime and conflict errors
-
-For `execution_failed` and `conflict`, positional info matters less than
-*execution* info. Candidates for `meta`:
-
-- The failing physical operator: table and index names
-  (`{op: "IndexRangeScan", table: "orders", index: "orders_cust_status_idx"}`),
-  the binding name for a commitment failure, the crossing kind for an
-  attach failure.
-- For conflicts: which logical object the tracked range belonged to
-  (table/index name), so a retry loop can report *what* raced. The KV
-  layer knows the range; mapping range → catalog object is a small
-  reverse lookup (key prefixes carry table/index ids).
-- Op counts at failure (`scans`, `gets` so far) — nearly free given the
-  counting infrastructure the tests already use, and a gift for support.
-
-**Redaction rule to settle up front**: key bytes and row values never
-appear in problem output — they are user data. Names of tables, indexes,
-columns, bindings, and node ids are schema-level and fine. (Today's
-messages already follow this instinctively — e.g. the unique-violation
-message names the index, not the value; make it a stated rule.)
-
-Cross-link: this is the same seam as the planned explain decoration —
-explain describes the plan before/while it runs; error meta describes
-where it stopped. They should share vocabulary (operator names as printed
-by EXPLAIN) and probably share the response-envelope work.
-
-## Sketch 5 — multi-error reporting
-
-The binder fails fast; a compiler or UI wants everything wrong at once,
-like a type-checker. RFC 7807 handles it with an extension member:
-
-```json
-{ "code": "invalid", "detail": "3 problems found", "errors": [ {…}, {…}, {…} ] }
+```yaml
+Problem:
+  oneOf:
+    - $ref: "#/components/schemas/InvalidProblem"
+    - $ref: "#/components/schemas/ExecutionFailedProblem"
+    - $ref: "#/components/schemas/NotFoundProblem"
+    - $ref: "#/components/schemas/ConflictProblem"
+    - $ref: "#/components/schemas/InternalProblem"
+  discriminator:
+    propertyName: code
+    mapping:
+      invalid: "#/components/schemas/InvalidProblem"
+      execution_failed: "#/components/schemas/ExecutionFailedProblem"
+      not_found: "#/components/schemas/NotFoundProblem"
+      conflict: "#/components/schemas/ConflictProblem"
+      internal: "#/components/schemas/InternalProblem"
 ```
 
-where each element is a full sub-problem (reason/source/detail). Cost: an
-error accumulator through the binder walk — real restructuring, since slot
-assignment continues past failures only if binding can proceed on a
-placeholder. Suggest phase 2, but design the wire shape now so single
-errors are just the one-element degenerate case (or `errors` is only
-present when n > 1).
+Each class carries its own extension shape — the typed replacement for
+`map[string]any` at the wire level:
 
-## Client surface
+```text
+Problem (base: type, title, status, detail, code)
+├── InvalidProblem          reason, location?, errors[]?
+├── ExecutionFailedProblem  reason, location?, execution?   (operator/table/index/binding)
+├── ConflictProblem         reason, conflict?               (raced object, when resolvable)
+├── NotFoundProblem         reason, resource?
+└── InternalProblem         incident?                       (uuid; nothing else — ever)
+```
 
-- Go: `APIError` grows typed accessors (`Reason()`, `Source()`, class
-  predicates); `IsConflict` stays.
-- TS runtime: the same fields on the thrown error object.
-- Harness: `ExpectReason("scope_closed")`,
-  `ExpectSource("/nodes/out/...")` — and the existing corpus's ~30 error
-  probes convert from message-substring assertions to reason assertions,
-  which finally decouples the *contract* (codes) from the *prose*
-  (improvable without breaking tests).
+The class shapes are stable spec surface; `reason` within each is a
+string documented by a published registry (the typed constants), not an
+OpenAPI enum per reason — categories in the spec, members in the
+registry. Blast radius to note: ogen regenerates the Problem types as a
+union (same pattern as the response unions), and `radclient.apiError` /
+the TS runtime adjust once.
 
-## Suggested shape of the work (pre-build refinement, then)
+## Provenance (settled: option 1)
 
-1. Settle the `E` type, class/reason split, and the redaction rule.
-2. Wire shape: `reason`, `source`, `meta`, `errors` extension members in
-   the Problem schema (OpenAPI change, not lir.schema.yaml).
-3. Provenance decision (sketch 3) — the only part touching the IR.
-4. Sweep: reasons onto existing sites; pointer sources onto schema/preflight
-   errors (cheap); node sources onto binder errors (needs 3).
-5. Execution meta for runtime/conflict paths.
-6. Harness + corpus conversion to reason-based assertions.
-7. Phase 2: multi-error accumulation; conflict-object resolution.
+Unbound `lir` nodes gain an optional `ID string`, stamped by graphconv.
+The justification that settled it: nodes already carry `Scope` — metadata
+with no semantic weight. `ID` is the same kind of thing; engine-created
+trees leave it empty and errors degrade gracefully to scope-level
+location. This is shared machinery with the query-trace proposal
+(tasks/1-todo/query-trace.md) — one provenance design, two consumers.
 
-## Open questions for the refinement session
+## Explain/trace convergence
 
-- Class-level vs reason-level `type` URIs.
-- Provenance option (1) vs (2) — or defer node-level sources and ship
-  pointer sources for schema errors only?
-- Do write-path constraint violations stay `invalid` or earn their own
-  class (SQLSTATE separates integrity violations from syntax)? The code
-  is load-bearing for clients (`conflict` means retry; should
-  `constraint_violation` mean "fix your data"?).
-- Is `errors[]` worth the binder restructuring, and if so which errors
-  can safely accumulate (name resolution yes; type inference after a
-  failed resolution, probably not)?
-- How much meta on 500s? (Lean: none — an opaque incident id at most.)
+Runtime errors point *into the operator graph*: an
+`ExecutionFailedProblem.execution` carries the operator name in EXPLAIN's
+vocabulary plus node/binding/index identity, so the admin UI highlights
+the failing operator in red with no bespoke visualization. Error `E` and
+the trace share Stage names, operator vocabulary, and Location — an error
+is a trace that stopped early.
 
-Related: tasks/1-todo/lir-query-validation.md and
-tasks/1-todo/validation-and-sharing-semantics.md overlap on the
-validation-side reasons and should be reconciled with this taxonomy;
-tasks/3-done/lir-improvements.md (F1/F3) is the prior art this extends.
+## Deliberately deferred
+
+- **Multi-error accumulation** — deferred not because it's bad but
+  because it infects the architecture: single errors keep every function
+  `(..., error)`; accumulators spread everywhere. The wire shape is
+  designed now (`errors[]?` on InvalidProblem, each element a full
+  sub-problem) so it can land without a contract break — built only when
+  a real IDE-shaped consumer needs it.
+- **500 content**: `incident` uuid at most. Nothing else, ever.
+
+## The work, when scheduled
+
+1. `E`, `Stage`, `Class`, typed `Reason`, `Location`, per-class meta
+   structs — grow `reject` or a sibling leaf package.
+2. OpenAPI: the discriminated Problem union + regen; client surfaces
+   (`Reason()`, `Location()`, class predicates in Go; same fields on the
+   TS error).
+3. Provenance: `ID` on unbound nodes, stamped in graphconv.
+4. Sweep reasons + stages onto existing sites (third pass over the F3
+   sites); pointer locations onto schema/preflight errors (nearly free —
+   the validator has instance locations); node locations onto binder
+   errors.
+5. Execution meta on runtime/conflict paths; conflict-object reverse
+   lookup (key prefix → catalog identity).
+6. Harness `ExpectReason`/`ExpectLocation`; convert the corpus's ~30
+   message-substring probes to reason assertions — contract decoupled
+   from prose.
+
+Redaction rule (standing, shared with query-trace): schema names — tables,
+indexes, columns, bindings, node ids — always; key bytes and row values
+never.
+
+## Remaining open questions (small)
+
+- Exact per-class meta shapes: what belongs in `execution` vs the trace
+  (lean minimal here — identity, not metrics; metrics live in the trace).
+- Does `not_found.resource` earn its structure now or when CRUD surfaces
+  grow?
+- `Stage` granularity at the bottom: is `storage` a stage of its own or
+  folded into `execution`? (Lean: separate — a KV failure is not a query
+  semantics failure.)
+- Where the Reason registry lives so docs, Go constants, and the TS
+  client stay in sync (one generated source, probably alongside the
+  schema pipeline).
+
+Related: tasks/1-todo/query-trace.md (shared provenance, stage names,
+operator vocabulary); tasks/1-todo/lir-query-validation.md and
+tasks/1-todo/validation-and-sharing-semantics.md (validation-side reasons
+reconcile with this taxonomy); tasks/3-done/lir-improvements.md (F1/F3 —
+the prior art this extends).
