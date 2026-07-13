@@ -682,8 +682,9 @@ func (s *Server) handleGetHealthRequest(args [0]string, argsEscaped bool, w http
 //
 // Register a secondary index and backfill entries for every existing row, atomically: the index never
 // becomes visible without its entries. Backfilling a unique index over data that already contains
-// duplicates fails with a `conflict` problem and the registration is rolled back with it. On a
-// schema-managed database this operation is always rejected.
+// duplicates fails with an `invalid` problem — retrying cannot succeed until the data changes —
+// and the registration is rolled back with it. On a schema-managed database this operation is always
+// rejected.
 //
 // POST /tables/{table}/indexes
 func (s *Server) handleIndexCreateRequest(args [1]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
@@ -1184,7 +1185,9 @@ func (s *Server) handleQueryRequest(args [0]string, argsEscaped bool, w http.Res
 // row, including any generated values, is returned.
 //
 // Inserting a row that would violate a unique constraint, or whose foreign key references a row that
-// does not exist, fails with a `conflict` problem and nothing is written.
+// does not exist, fails with an `invalid` problem and nothing is written — retrying the same request
+// cannot succeed until the data changes. A `conflict` here means the write lost a serializable race
+// and an immediate retry may win.
 //
 // POST /create
 func (s *Server) handleRowCreateRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
@@ -1341,7 +1344,7 @@ func (s *Server) handleRowCreateRequest(args [0]string, argsEscaped bool, w http
 // Delete the row named by `key`. The response reports whether a row was actually removed through
 // `found`. Deleting a row that does not exist is not an error and reports `found` as `false`.
 //
-// A delete that would leave a dangling foreign key reference is refused with a `conflict` problem,
+// A delete that would leave a dangling foreign key reference is refused with an `invalid` problem,
 // since Rad restricts rather than cascades.
 //
 // POST /delete
@@ -1501,8 +1504,9 @@ func (s *Server) handleRowDeleteRequest(args [0]string, argsEscaped bool, w http
 // they are.
 //
 // When the target row exists the updated record is returned with `found` set to `true`. When it does
-// not exist, `found` is `false` and nothing is written. Violating a unique constraint fails with a
-// `conflict` problem.
+// not exist, `found` is `false` and nothing is written. Violating a unique constraint fails with an
+// `invalid` problem; a `conflict` means the write lost a serializable race and an immediate retry may
+// win.
 //
 // POST /update
 func (s *Server) handleRowUpdateRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {

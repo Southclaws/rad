@@ -66,8 +66,9 @@ type Invoker interface {
 	//
 	// Register a secondary index and backfill entries for every existing row, atomically: the index never
 	// becomes visible without its entries. Backfilling a unique index over data that already contains
-	// duplicates fails with a `conflict` problem and the registration is rolled back with it. On a
-	// schema-managed database this operation is always rejected.
+	// duplicates fails with an `invalid` problem — retrying cannot succeed until the data changes —
+	// and the registration is rolled back with it. On a schema-managed database this operation is always
+	// rejected.
 	//
 	// POST /tables/{table}/indexes
 	IndexCreate(ctx context.Context, request OptIndexInfo, params IndexCreateParams) (IndexCreateRes, error)
@@ -105,7 +106,9 @@ type Invoker interface {
 	// row, including any generated values, is returned.
 	//
 	// Inserting a row that would violate a unique constraint, or whose foreign key references a row that
-	// does not exist, fails with a `conflict` problem and nothing is written.
+	// does not exist, fails with an `invalid` problem and nothing is written — retrying the same request
+	// cannot succeed until the data changes. A `conflict` here means the write lost a serializable race
+	// and an immediate retry may win.
 	//
 	// POST /create
 	RowCreate(ctx context.Context, request OptRowCreateProps) (RowCreateRes, error)
@@ -114,7 +117,7 @@ type Invoker interface {
 	// Delete the row named by `key`. The response reports whether a row was actually removed through
 	// `found`. Deleting a row that does not exist is not an error and reports `found` as `false`.
 	//
-	// A delete that would leave a dangling foreign key reference is refused with a `conflict` problem,
+	// A delete that would leave a dangling foreign key reference is refused with an `invalid` problem,
 	// since Rad restricts rather than cascades.
 	//
 	// POST /delete
@@ -126,8 +129,9 @@ type Invoker interface {
 	// they are.
 	//
 	// When the target row exists the updated record is returned with `found` set to `true`. When it does
-	// not exist, `found` is `false` and nothing is written. Violating a unique constraint fails with a
-	// `conflict` problem.
+	// not exist, `found` is `false` and nothing is written. Violating a unique constraint fails with an
+	// `invalid` problem; a `conflict` means the write lost a serializable race and an immediate retry may
+	// win.
 	//
 	// POST /update
 	RowUpdate(ctx context.Context, request OptRowUpdateProps) (RowUpdateRes, error)
@@ -727,8 +731,9 @@ func (c *Client) sendGetHealth(ctx context.Context) (res *Health, err error) {
 //
 // Register a secondary index and backfill entries for every existing row, atomically: the index never
 // becomes visible without its entries. Backfilling a unique index over data that already contains
-// duplicates fails with a `conflict` problem and the registration is rolled back with it. On a
-// schema-managed database this operation is always rejected.
+// duplicates fails with an `invalid` problem — retrying cannot succeed until the data changes —
+// and the registration is rolled back with it. On a schema-managed database this operation is always
+// rejected.
 //
 // POST /tables/{table}/indexes
 func (c *Client) IndexCreate(ctx context.Context, request OptIndexInfo, params IndexCreateParams) (IndexCreateRes, error) {
@@ -1050,7 +1055,9 @@ func (c *Client) sendQuery(ctx context.Context, request Query) (res QueryRes, er
 // row, including any generated values, is returned.
 //
 // Inserting a row that would violate a unique constraint, or whose foreign key references a row that
-// does not exist, fails with a `conflict` problem and nothing is written.
+// does not exist, fails with an `invalid` problem and nothing is written — retrying the same request
+// cannot succeed until the data changes. A `conflict` here means the write lost a serializable race
+// and an immediate retry may win.
 //
 // POST /create
 func (c *Client) RowCreate(ctx context.Context, request OptRowCreateProps) (RowCreateRes, error) {
@@ -1136,7 +1143,7 @@ func (c *Client) sendRowCreate(ctx context.Context, request OptRowCreateProps) (
 // Delete the row named by `key`. The response reports whether a row was actually removed through
 // `found`. Deleting a row that does not exist is not an error and reports `found` as `false`.
 //
-// A delete that would leave a dangling foreign key reference is refused with a `conflict` problem,
+// A delete that would leave a dangling foreign key reference is refused with an `invalid` problem,
 // since Rad restricts rather than cascades.
 //
 // POST /delete
@@ -1225,8 +1232,9 @@ func (c *Client) sendRowDelete(ctx context.Context, request OptRowDeleteProps) (
 // they are.
 //
 // When the target row exists the updated record is returned with `found` set to `true`. When it does
-// not exist, `found` is `false` and nothing is written. Violating a unique constraint fails with a
-// `conflict` problem.
+// not exist, `found` is `false` and nothing is written. Violating a unique constraint fails with an
+// `invalid` problem; a `conflict` means the write lost a serializable race and an immediate retry may
+// win.
 //
 // POST /update
 func (c *Client) RowUpdate(ctx context.Context, request OptRowUpdateProps) (RowUpdateRes, error) {

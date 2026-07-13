@@ -1000,8 +1000,8 @@ type Problem struct {
 	Detail OptString `json:"detail"`
 	// The machine readable discriminator. One of `invalid` for a malformed or rejected request,
 	// `execution_failed` for a valid query that failed on the data it met (division by zero, a violated
-	// cardinality assertion), `not_found`, `conflict` for a lost optimistic race or constraint violation,
-	// or `internal`.
+	// cardinality assertion), `not_found`, `conflict` for a lost optimistic race (an immediate retry may
+	// win — constraint violations are `invalid`, since retrying them cannot help), or `internal`.
 	Code ProblemCode `json:"code"`
 }
 
@@ -1060,8 +1060,8 @@ func (*Problem) transactionRollbackRes() {}
 
 // The machine readable discriminator. One of `invalid` for a malformed or rejected request,
 // `execution_failed` for a valid query that failed on the data it met (division by zero, a violated
-// cardinality assertion), `not_found`, `conflict` for a lost optimistic race or constraint violation,
-// or `internal`.
+// cardinality assertion), `not_found`, `conflict` for a lost optimistic race (an immediate retry may
+// win — constraint violations are `invalid`, since retrying them cannot help), or `internal`.
 type ProblemCode string
 
 const (

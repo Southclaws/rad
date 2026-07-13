@@ -315,8 +315,10 @@ paths:
         any generated values, is returned.
 
         Inserting a row that would violate a unique constraint, or whose foreign
-        key references a row that does not exist, fails with a `conflict`
-        problem and nothing is written.
+        key references a row that does not exist, fails with an `invalid`
+        problem and nothing is written — retrying the same request cannot
+        succeed until the data changes. A `conflict` here means the write
+        lost a serializable race and an immediate retry may win.
       tags: [data]
       requestBody: { $ref: "#/components/requestBodies/RowCreate" }
       responses:
@@ -336,7 +338,9 @@ paths:
 
         When the target row exists the updated record is returned with `found`
         set to `true`. When it does not exist, `found` is `false` and nothing is
-        written. Violating a unique constraint fails with a `conflict` problem.
+        written. Violating a unique constraint fails with an `invalid`
+        problem; a `conflict` means the write lost a serializable race and
+        an immediate retry may win.
       tags: [data]
       requestBody: { $ref: "#/components/requestBodies/RowUpdate" }
       responses:
@@ -355,7 +359,7 @@ paths:
         not an error and reports `found` as `false`.
 
         A delete that would leave a dangling foreign key reference is refused
-        with a `conflict` problem, since Rad restricts rather than cascades.
+        with an `invalid` problem, since Rad restricts rather than cascades.
       tags: [data]
       requestBody: { $ref: "#/components/requestBodies/RowDelete" }
       responses:
@@ -604,7 +608,7 @@ components:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
     Conflict:
-      description: The write lost an optimistic race or violated a constraint.
+      description: The write lost an optimistic race; an immediate retry may win.
       content:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
@@ -688,8 +692,9 @@ components:
             The machine readable discriminator. One of `invalid` for a malformed
             or rejected request, `execution_failed` for a valid query that
             failed on the data it met (division by zero, a violated cardinality
-            assertion), `not_found`, `conflict` for a lost optimistic race or
-            constraint violation, or `internal`.
+            assertion), `not_found`, `conflict` for a lost optimistic race
+            (an immediate retry may win — constraint violations are
+            `invalid`, since retrying them cannot help), or `internal`.
           type: string
           enum: [invalid, execution_failed, not_found, conflict, internal]
 
