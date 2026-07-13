@@ -287,6 +287,24 @@ order-preserving: it drains the batch, executes each spec by its strategy
 row when general), writes results into the frames, and re-emits them in input
 order — which is why it appears in `providedOrder` as order-transparent.
 
+### Binding lowering
+
+Each `bound.Binding` lowers once to a `BindingPlan{Name, Plan, Out, Strategy,
+Sensitive}`, in the query's dependency order. `PlanQuery` then counts how many
+times each binding is referenced across the root plan and the binding plans
+(`countRefs`) and chooses a `Strategy`. A binding referenced exactly once is
+`BindingReplay`: its single occurrence streams the plan inline, and because
+that one evaluation *is* the commitment, nothing else can observe a
+difference. Anything referenced more than once is `BindingMaterialise`:
+evaluated once before the root runs, with every occurrence streaming the
+stored frames. Materialise is mandatory for multi-reference bindings — re-
+execution would be wasted work, and for a `Sensitive` body (one whose
+membership is plan-choice-dependent, e.g. an unordered slice) a diverged
+per-occurrence plan could commit a *different* bag. The physical occurrence is
+a `RefExec`, which re-exposes the committed canonical frames under the
+occurrence's fresh slots; `Sensitive` rides into EXPLAIN so the discharge is
+visible.
+
 ## The plan printer and the goldens
 
 `PrintPlan` (`print_phys.go`) renders a physical plan as a deterministic

@@ -11,9 +11,11 @@ imports layer 02 only for the shared type vocabulary (`catalog.Type`,
 `catalog.Table`). The package comes in two forms: `lir` itself is the
 **unbound** IR, exactly as a frontend produces it, and the subpackage
 `lir/bound` is the **bound** IR the binder (04_planner) resolves it into.
-Planning and execution trust bound IR completely. The normative design —
-grammar, K3 semantics, determinism rules, the wire format — is
-`docs/design/lir.md`; this document describes the code that implements it.
+Planning and execution trust bound IR completely. The normative contract —
+the grammar, the tagged-union shapes, K3 semantics, determinism rules, and a
+behavioural spec for every node — is the LIR schema itself
+(`rad/protocol/lir.schema.yaml`, generated to `lir.schema.json`); this
+document describes the code that implements it.
 
 ## The two categories
 
@@ -22,8 +24,9 @@ projection, and nesting lives in the value model.
 
 A **`Relation`** is a possibly-empty, possibly-many stream of structurally
 typed rows. The relation operators — `Scan`, `Filter`, `Project`, `Join`,
-`Aggregate`, `Order`, `Slice` — consume relations and produce relations, and
-the output of every node is usable as an ordinary input (relational closure).
+`Aggregate`, `Order`, `Slice`, and `Ref` (an occurrence of a named binding,
+below) — consume relations and produce relations, and the output of every
+node is usable as an ordinary input (relational closure).
 
 An **`Expr`** computes exactly one typed datum in some scope: `Literal`,
 `Column`, `Unary`, `Binary`, `Call` (reserved; the registry is empty this
@@ -150,19 +153,59 @@ when later operators reference its outputs by name — as on `Aggregate`.
 `Slice.Limit` is `*int`: nil is unlimited, an explicit 0 keeps no rows.
 `JoinKind` implements `InnerJoin` and `LeftJoin`; semi and anti are reserved.
 
-`Query{Root, Card}` is the root: a relation plus its materialisation mode,
-`RootCard` ∈ `CardMany` (array of objects), `CardFirst` (object
-or null), `CardExactlyOne` (object, error otherwise), `CardScalar` (single
-value or null; root arity must be 1 and cardinality statically at most one).
+`Ref{Binding, Scope}` is one occurrence of a named binding — a fresh variable
+over the binding's committed value, exposing its output columns under `Scope`
+exactly as a scan exposes a table's. It is the one relation node that is a leaf
+rather than a tree edge to another node.
+
+`Query{Root, Card, Bindings}` is the root: a relation, its materialisation
+mode, and the named relations its `Ref`s observe. `RootCard` ∈ `CardMany`
+(array of objects), `CardFirst` (object or null), `CardExactlyOne` (object,
+error otherwise), `CardScalar` (single value or null; root arity must be 1 and
+cardinality statically at most one). `Bindings map[string]Relation` maps each
+binding name to its defining relation — the wire's node-id indirection is
+already resolved here.
+
+## Bindings and the relation forest
+
+Most relation nodes are tree edges: each names exactly one input and has
+exactly one consumer, so the graph rooted at the query root is a finite tree.
+`Bindings` are the one deliberate exception — the single sharing construct —
+and they make the query a *forest*: the root tree plus one tree per binding.
+
+A **binding** names a derived relation as a first-class relational value. The
+name is syntax; the denotation is semantics. A binding denotes exactly one
+statement-local *committed* value — one committed bag under bag semantics — so
+a nondeterministic body (a `Slice` with no total order) is resolved once and
+every occurrence observes the same choice, exactly as two scans of one table
+observe the same snapshot. A binding's public output is its root's declared
+output shape; its interior scopes never leak.
+
+A **`Ref`** is one occurrence of a binding: a fresh variable ranging over that
+committed value under its own `Scope`, uniformly zero-or-many rows regardless
+of the body. A `Ref` is therefore like a `Scan` — a leaf that introduces rows
+— not like the operators that consume an `input`, and a determinism-sensitive
+consumer brings its own `Order` or `Slice` above it, just as it must above a
+scan.
+
+Three namespaces stay separate: binding names, node ids, and scope labels.
+Binding bodies may reference other bindings, forming a second acyclic
+dependency graph over the forest, and every declared binding must be
+referenced at least once. *How* a commitment is discharged — materialised
+once, or replayed inline at a lone occurrence — is a planner choice (layer
+04); the meaning is identical either way.
 
 ## The bound IR: laws and slots
 
 Package `bound` is the resolved form: every name bound against the catalog,
 every literal typed, every relation output addressed by dense slots. Nodes
 are **pointers** (`*Scan`, `*Filter`, …) built by constructors (`NewScan`,
-`NewFilter`, …), and `Inputs()` returns child pointers. The representation can
-hold a DAG, but the LIR wire binder produces a single-consumer tree; sharing
-has no semantics in the current contract. The binder is the only producer.
+`NewFilter`, …), and `Inputs()` returns child pointers. Each tree in the
+forest is single-consumer; the one place sharing carries meaning is a
+`Binding`, and `bound.Query{Root, Card, Slots, Bindings}` holds the bound
+bindings in dependency order — each `*Binding` flagging a `PlanSensitive`
+body, one whose membership is arbitrary and so must not have its plan diverge
+per occurrence. The binder is the only producer.
 
 Every node precomputes its **laws** at construction — nothing is derived
 lazily during planning or execution. The embedded `laws` struct serves the
@@ -293,7 +336,7 @@ The layer's own tests are executable statements of the laws, no store
 required:
 
 - `tribool_test.go` pins the full K3 truth tables for `And`, `Or`, `Not` —
-  the tables `docs/design/lir.md` states in prose.
+  the tables the LIR schema states in prose.
 - `bound/bound_test.go` pins the laws against a hand-built `catalog.Table`:
   scan output slots and nullability, filter refinement (tightens, never
   loosens), correlation as free slots (and that crossings propagate them),

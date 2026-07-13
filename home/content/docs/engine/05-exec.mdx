@@ -157,6 +157,20 @@ scans (one per distinct board), two assignee gets (per-board batches, the
 NULL assignee free), three comment scans — 7 scans and 10 data-plane gets,
 asserted exactly.
 
+## Committing bindings
+
+Before the root pipeline pulls, the executor `commit`s the query's bindings in
+dependency order (a body's dependencies commit first). A `BindingMaterialise`
+binding evaluates now: its plan is drained to a slice of `Frame`s and stored
+under the binding name, so every `RefExec` occurrence later streams the *same*
+committed frames — whatever an arbitrary body chose, it chose once. A
+`BindingReplay` binding stores nothing up front; its lone occurrence commits
+lazily when that `RefExec` is first pulled, and because there is exactly one
+occurrence, that single evaluation is the commitment. Either way a `RefExec`
+re-exposes its binding's committed frames under the occurrence's own fresh
+slots, so one committed value reads through independent scopes — the execution
+counterpart of a `Ref` being a fresh variable over a committed relation.
+
 ## Storage mapping
 
 `keys.go` defines the key layouts. Top-level namespaces are literal path
@@ -324,10 +338,10 @@ replay determinism says *one* plan (indeed one query) cannot even disagree
 with itself. Between them they support deterministic replay and debugging,
 result-cache keys, explain verification (the plan you inspect is the plan
 whose behavior you observed), planner-equivalence testing, and the
-relation-binding design's identical-plan discharge (a nondeterministic
-binding may be re-executed per reference precisely because replaying the
-identical sub-plan provably re-yields the committed bag —
-tasks/1-todo/relation-bindings.md).
+relation-binding design's identical-plan discharge (a single-reference binding
+may replay its sub-plan at the occurrence precisely because replaying the
+identical plan against the same snapshot provably re-yields the committed
+bag).
 
 `TestReplayDeterminism` (replay_test.go) pins it: every conformance-corpus
 query — plus the deliberately *plan-choice-sensitive* shapes that can never
