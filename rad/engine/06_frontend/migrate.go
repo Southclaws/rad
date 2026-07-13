@@ -44,18 +44,18 @@ func (db *DB) applyStep(ctx context.Context, step migrate.Step) error {
 	case migrate.CreateTable:
 		_, err := db.CreateTable(ctx, s.Def)
 		return err
-	case migrate.AddColumn:
-		_, err := db.AddColumn(ctx, s.Table, s.Def)
+	case migrate.CreateColumn:
+		_, err := db.CreateColumn(ctx, s.Table, s.Def)
 		return err
-	case migrate.AddIndex:
-		return db.AddIndex(ctx, s.Table, s.Def)
-	case migrate.DropIndex:
-		return db.DropIndex(ctx, s.Table, s.Index)
-	case migrate.DropColumn:
-		_, err := db.DropColumn(ctx, s.Table, s.Column)
+	case migrate.CreateIndex:
+		return db.CreateIndex(ctx, s.Table, s.Def)
+	case migrate.DeleteIndex:
+		return db.DeleteIndex(ctx, s.Table, s.Index)
+	case migrate.DeleteColumn:
+		_, err := db.DeleteColumn(ctx, s.Table, s.Column)
 		return err
-	case migrate.DropTable:
-		return db.DropTable(ctx, s.Table)
+	case migrate.DeleteTable:
+		return db.DeleteTable(ctx, s.Table)
 	default:
 		return fmt.Errorf("unknown migration step %T", step)
 	}

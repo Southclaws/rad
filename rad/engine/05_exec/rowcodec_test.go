@@ -42,18 +42,18 @@ func TestRenameColumnPreservesData(t *testing.T) {
 	}
 }
 
-func TestAddColumnOldRowsReadDefaults(t *testing.T) {
+func TestCreateColumnOldRowsReadDefaults(t *testing.T) {
 	eng, ctx := setup(t)
 	if err := eng.Insert(ctx, "users", lir.Row{"id": lir.Int64(1), "name": lir.Text("Alice")}); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := eng.Catalog().AddColumn(ctx, "users", catalog.ColumnDef{
+	if _, err := eng.Catalog().CreateColumn(ctx, "users", catalog.ColumnDef{
 		Name: "active", Type: catalog.TypeBool, Default: &catalog.Default{Bool: true},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := eng.Catalog().AddColumn(ctx, "users", catalog.ColumnDef{
+	if _, err := eng.Catalog().CreateColumn(ctx, "users", catalog.ColumnDef{
 		Name: "bio", Type: catalog.TypeText, Nullable: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -71,13 +71,13 @@ func TestAddColumnOldRowsReadDefaults(t *testing.T) {
 	}
 }
 
-func TestDropColumnHidesData(t *testing.T) {
+func TestDeleteColumnHidesData(t *testing.T) {
 	eng, ctx := setup(t)
 	if err := eng.Insert(ctx, "users", lir.Row{"id": lir.Int64(1), "name": lir.Text("Alice"), "age": lir.Int64(30)}); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := eng.Catalog().DropColumn(ctx, "users", "age"); err != nil {
+	if _, err := eng.Catalog().DeleteColumn(ctx, "users", "age"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -89,7 +89,7 @@ func TestDropColumnHidesData(t *testing.T) {
 		t.Fatalf("dropped column still readable: %v", row)
 	}
 	// The name is reusable with a fresh ID; old data does not bleed in.
-	if _, err := eng.Catalog().AddColumn(ctx, "users", catalog.ColumnDef{
+	if _, err := eng.Catalog().CreateColumn(ctx, "users", catalog.ColumnDef{
 		Name: "age", Type: catalog.TypeInt64, Nullable: true,
 	}); err != nil {
 		t.Fatal(err)

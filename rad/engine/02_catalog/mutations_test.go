@@ -41,24 +41,24 @@ func TestRenameTableKeepsIdentity(t *testing.T) {
 	}
 }
 
-func TestDropTable(t *testing.T) {
+func TestDeleteTable(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
 	if _, err := cat.CreateTable(ctx, usersDef()); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := cat.DropTable(ctx, "users"); err != nil {
+	if err := cat.DeleteTable(ctx, "users"); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, _ := cat.GetTable(ctx, "users"); ok {
-		t.Fatal("dropped table still resolves")
+		t.Fatal("deleted table still resolves")
 	}
-	if err := cat.DropTable(ctx, "users"); err == nil {
-		t.Fatal("double drop accepted")
+	if err := cat.DeleteTable(ctx, "users"); err == nil {
+		t.Fatal("double delete accepted")
 	}
 }
 
-func TestAddColumnRules(t *testing.T) {
+func TestCreateColumnRules(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
 	created, err := cat.CreateTable(ctx, usersDef())
 	if err != nil {
@@ -66,11 +66,11 @@ func TestAddColumnRules(t *testing.T) {
 	}
 
 	// Nullable: fine. Literal default: fine.
-	tbl, err := cat.AddColumn(ctx, "users", catalog.ColumnDef{Name: "bio", Type: catalog.TypeText, Nullable: true})
+	tbl, err := cat.CreateColumn(ctx, "users", catalog.ColumnDef{Name: "bio", Type: catalog.TypeText, Nullable: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	tbl, err = cat.AddColumn(ctx, "users", catalog.ColumnDef{
+	tbl, err = cat.CreateColumn(ctx, "users", catalog.ColumnDef{
 		Name: "active", Type: catalog.TypeBool, Default: &catalog.Default{Bool: true},
 	})
 	if err != nil {
@@ -87,24 +87,24 @@ func TestAddColumnRules(t *testing.T) {
 	}
 
 	// Non-nullable without a default: existing rows would have no value.
-	_, err = cat.AddColumn(ctx, "users", catalog.ColumnDef{Name: "req", Type: catalog.TypeText})
+	_, err = cat.CreateColumn(ctx, "users", catalog.ColumnDef{Name: "req", Type: catalog.TypeText})
 	if err == nil || !strings.Contains(err.Error(), "nullable or have a literal default") {
 		t.Fatalf("got %v", err)
 	}
 	// Generator defaults would fabricate different values on every read.
-	_, err = cat.AddColumn(ctx, "users", catalog.ColumnDef{
+	_, err = cat.CreateColumn(ctx, "users", catalog.ColumnDef{
 		Name: "gen", Type: catalog.TypeText, Default: &catalog.Default{Func: catalog.DefaultUUID},
 	})
 	if err == nil {
 		t.Fatal("generator default on added column accepted")
 	}
 	// Duplicates rejected.
-	if _, err := cat.AddColumn(ctx, "users", catalog.ColumnDef{Name: "bio", Type: catalog.TypeText, Nullable: true}); err == nil {
+	if _, err := cat.CreateColumn(ctx, "users", catalog.ColumnDef{Name: "bio", Type: catalog.TypeText, Nullable: true}); err == nil {
 		t.Fatal("duplicate column accepted")
 	}
 }
 
-func TestDropColumnGuards(t *testing.T) {
+func TestDeleteColumnGuards(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
 	if _, err := cat.CreateTable(ctx, usersDef()); err != nil {
 		t.Fatal(err)
@@ -121,23 +121,23 @@ func TestDropColumnGuards(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := cat.DropColumn(ctx, "users", "id"); err == nil {
-		t.Fatal("dropped a primary key column")
+	if _, err := cat.DeleteColumn(ctx, "users", "id"); err == nil {
+		t.Fatal("deleted a primary key column")
 	}
-	if _, err := cat.DropColumn(ctx, "users", "name"); err == nil || !strings.Contains(err.Error(), "index") {
+	if _, err := cat.DeleteColumn(ctx, "users", "name"); err == nil || !strings.Contains(err.Error(), "index") {
 		t.Fatalf("indexed column: %v", err)
 	}
-	if _, err := cat.DropColumn(ctx, "orders", "user_id"); err == nil || !strings.Contains(err.Error(), "foreign key") {
+	if _, err := cat.DeleteColumn(ctx, "orders", "user_id"); err == nil || !strings.Contains(err.Error(), "foreign key") {
 		t.Fatalf("fk column: %v", err)
 	}
 
-	// Unreferenced columns drop fine.
-	tbl, err := cat.DropColumn(ctx, "users", "age")
+	// Unreferenced columns delete fine.
+	tbl, err := cat.DeleteColumn(ctx, "users", "age")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := tbl.Column("age"); ok {
-		t.Fatal("column still present after drop")
+		t.Fatal("column still present after delete")
 	}
 }
 
@@ -181,13 +181,13 @@ func TestRenameColumnRewritesReferences(t *testing.T) {
 	}
 }
 
-func TestAddDropIndex(t *testing.T) {
+func TestAddDeleteIndex(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
 	if _, err := cat.CreateTable(ctx, usersDef()); err != nil {
 		t.Fatal(err)
 	}
 
-	idx, err := cat.AddIndex(ctx, "users", catalog.IndexDef{Name: "users_age_idx", Columns: []string{"age"}})
+	idx, err := cat.CreateIndex(ctx, "users", catalog.IndexDef{Name: "users_age_idx", Columns: []string{"age"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,26 +199,26 @@ func TestAddDropIndex(t *testing.T) {
 		t.Fatal("index not persisted")
 	}
 
-	if _, err := cat.AddIndex(ctx, "users", catalog.IndexDef{Name: "users_age_idx", Columns: []string{"age"}}); err == nil {
+	if _, err := cat.CreateIndex(ctx, "users", catalog.IndexDef{Name: "users_age_idx", Columns: []string{"age"}}); err == nil {
 		t.Fatal("duplicate index accepted")
 	}
-	if _, err := cat.AddIndex(ctx, "users", catalog.IndexDef{Name: "bad", Columns: []string{"ghost"}}); err == nil {
+	if _, err := cat.CreateIndex(ctx, "users", catalog.IndexDef{Name: "bad", Columns: []string{"ghost"}}); err == nil {
 		t.Fatal("index on unknown column accepted")
 	}
 
-	if err := cat.DropIndex(ctx, "users", "users_age_idx"); err != nil {
+	if err := cat.DeleteIndex(ctx, "users", "users_age_idx"); err != nil {
 		t.Fatal(err)
 	}
 	tbl, _, _ = cat.GetTable(ctx, "users")
 	if _, ok := tbl.Index("users_age_idx"); ok {
-		t.Fatal("index still present after drop")
+		t.Fatal("index still present after delete")
 	}
 }
 
-// A table another table references through a foreign key cannot be dropped
+// A table another table references through a foreign key cannot be deleted
 // until the referencing table goes first; a self-reference never blocks its
-// own table's drop.
-func TestDropTableReferencedByForeignKey(t *testing.T) {
+// own table deletion.
+func TestDeleteTableReferencedByForeignKey(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
 	if _, err := cat.CreateTable(ctx, usersDef()); err != nil {
 		t.Fatal(err)
@@ -237,28 +237,28 @@ func TestDropTableReferencedByForeignKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := cat.DropTable(ctx, "users")
+	err := cat.DeleteTable(ctx, "users")
 	if err == nil {
-		t.Fatal("dropped a table another table references")
+		t.Fatal("deleted a table another table references")
 	}
 	if !strings.Contains(err.Error(), "boards_owner_fk") || !strings.Contains(err.Error(), `"boards"`) {
 		t.Errorf("error should name the referencing table and foreign key, got: %v", err)
 	}
 	if _, ok, _ := cat.GetTable(ctx, "users"); !ok {
-		t.Fatal("failed drop removed the table anyway")
+		t.Fatal("failed delete removed the table anyway")
 	}
 
 	// Referencing table first, then the parent.
-	if err := cat.DropTable(ctx, "boards"); err != nil {
+	if err := cat.DeleteTable(ctx, "boards"); err != nil {
 		t.Fatal(err)
 	}
-	if err := cat.DropTable(ctx, "users"); err != nil {
-		t.Fatalf("drop after removing the referencing table: %v", err)
+	if err := cat.DeleteTable(ctx, "users"); err != nil {
+		t.Fatalf("delete after removing the referencing table: %v", err)
 	}
 }
 
 // A self-referential foreign key dies with its own table.
-func TestDropTableWithSelfReference(t *testing.T) {
+func TestDeleteTableWithSelfReference(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
 	if _, err := cat.CreateTable(ctx, catalog.TableDef{
 		Name: "employees",
@@ -274,7 +274,7 @@ func TestDropTableWithSelfReference(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := cat.DropTable(ctx, "employees"); err != nil {
-		t.Fatalf("self-referential table should drop cleanly: %v", err)
+	if err := cat.DeleteTable(ctx, "employees"); err != nil {
+		t.Fatalf("self-referential table should delete cleanly: %v", err)
 	}
 }

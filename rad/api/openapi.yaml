@@ -40,6 +40,13 @@ tags:
     description: Liveness and schema introspection.
   - name: schema
     description: Reconciling the database with a schema.rad file.
+  - name: catalog
+    description: >
+      Imperative catalog mutation: creating, updating, and deleting tables,
+      columns, and indexes over the API. Available only on directly managed
+      databases; a schema-managed database rejects every operation in this
+      group with an `invalid` problem, since its catalog is owned by
+      `schema.rad` migrations.
   - name: data
     description: Reading and writing rows against committed state.
   - name: transactions
@@ -76,6 +83,168 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/TableListOK" }
+    post:
+      operationId: TableCreate
+      summary: Create a table.
+      description: |
+        Define a new table in one call: columns, primary key, and optionally
+        indexes and foreign keys, exactly as a `schema.rad` entry would. IDs
+        are assigned by the catalog and the whole definition commits
+        atomically — a rejected definition leaves nothing behind, including
+        the name.
+
+        Foreign keys may reference existing tables or the table being created
+        (self-references), and must target the referenced table's full
+        primary key. A definition that fails validation — duplicate or
+        missing name, unsupported column type, nullable primary key column,
+        index or key over unknown columns — is rejected with an `invalid`
+        problem. On a schema-managed database this operation is always
+        rejected.
+      tags: [catalog]
+      requestBody: { $ref: "#/components/requestBodies/TableCreate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TableOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /tables/{table}:
+    patch:
+      operationId: TableUpdate
+      summary: Update a table.
+      description: |
+        Update a table's properties. The only updatable property today is
+        `name`: data keys use the table's ID, so a name change is
+        metadata-only and instantaneous, and foreign keys referencing the
+        table are unaffected. A name that is already taken is rejected with
+        an `invalid` problem. On a schema-managed database this operation is
+        always rejected.
+      tags: [catalog]
+      parameters:
+        - { $ref: "#/components/parameters/TableName" }
+      requestBody: { $ref: "#/components/requestBodies/TableUpdate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TableOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+    delete:
+      operationId: TableDelete
+      summary: Delete a table.
+      description: |
+        Remove a table from the catalog. Its rows and index entries become
+        unreachable; table IDs are never reused. A table that another table
+        references through a foreign key cannot be deleted until the
+        referencing table goes first (self-references do not count). On a
+        schema-managed database this operation is always rejected.
+      tags: [catalog]
+      parameters:
+        - { $ref: "#/components/parameters/TableName" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "204": { $ref: "#/components/responses/NoContent" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /tables/{table}/columns:
+    post:
+      operationId: ColumnCreate
+      summary: Create a column on a table.
+      description: |
+        Append a column. Because existing rows have no value for it, the
+        column must be nullable or carry a literal default; generator
+        defaults (`uuid()`, `now_ms()`) are rejected on new columns of
+        existing tables since they would produce a different value on every
+        read of an old row. On a schema-managed database this operation is
+        always rejected.
+      tags: [catalog]
+      parameters:
+        - { $ref: "#/components/parameters/TableName" }
+      requestBody: { $ref: "#/components/requestBodies/ColumnCreate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TableOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /tables/{table}/columns/{column}:
+    patch:
+      operationId: ColumnUpdate
+      summary: Update a column.
+      description: |
+        Update a column's properties. The only updatable property today is
+        `name`; changing a column's type or nullability is not supported. A
+        name change rewrites every metadata reference to the column (primary
+        key, indexes, foreign keys), and rows are keyed by column ID, so no
+        data is touched. On a schema-managed database this operation is
+        always rejected.
+      tags: [catalog]
+      parameters:
+        - { $ref: "#/components/parameters/TableName" }
+        - { $ref: "#/components/parameters/ColumnName" }
+      requestBody: { $ref: "#/components/requestBodies/ColumnUpdate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TableOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+    delete:
+      operationId: ColumnDelete
+      summary: Delete a column.
+      description: |
+        Remove a column. Stored values for it become unreachable. A column
+        used by the primary key, an index, or a foreign key cannot be
+        deleted — delete the index or foreign key holder first. On a
+        schema-managed database this operation is always rejected.
+      tags: [catalog]
+      parameters:
+        - { $ref: "#/components/parameters/TableName" }
+        - { $ref: "#/components/parameters/ColumnName" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TableOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /tables/{table}/indexes:
+    post:
+      operationId: IndexCreate
+      summary: Create an index on a table.
+      description: |
+        Register a secondary index and backfill entries for every existing
+        row, atomically: the index never becomes visible without its
+        entries. Backfilling a unique index over data that already contains
+        duplicates fails with an `invalid` problem — retrying cannot succeed
+        until the data changes — and the registration is rolled back with
+        it. On a schema-managed database this operation is always rejected.
+      tags: [catalog]
+      parameters:
+        - { $ref: "#/components/parameters/TableName" }
+      requestBody: { $ref: "#/components/requestBodies/IndexCreate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TableOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /tables/{table}/indexes/{index}:
+    delete:
+      operationId: IndexDelete
+      summary: Delete an index.
+      description: |
+        Remove an index from the catalog. Its entries become unreachable;
+        index IDs are never reused. Queries that would have used it fall
+        back to other access paths. On a schema-managed database this
+        operation is always rejected.
+      tags: [catalog]
+      parameters:
+        - { $ref: "#/components/parameters/TableName" }
+        - { $ref: "#/components/parameters/IndexName" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TableOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
   /migrate:
     post:
@@ -90,7 +259,7 @@ paths:
         Migration is idempotent. Submitting a schema that already matches the
         database applies nothing and returns an empty step list. Renames are
         driven by `renamed_from` hints in the schema so that renaming a column
-        or table does not drop and recreate it.
+        or table does not delete and recreate it.
 
         A schema that fails to parse or validate, or that requests an
         unsupported change (such as altering a column's type), is rejected with
@@ -343,6 +512,30 @@ components:
       schema:
         type: string
 
+    TableName:
+      name: table
+      in: path
+      required: true
+      description: The table's current name.
+      schema:
+        type: string
+
+    ColumnName:
+      name: column
+      in: path
+      required: true
+      description: The column's current name.
+      schema:
+        type: string
+
+    IndexName:
+      name: index
+      in: path
+      required: true
+      description: The index's name.
+      schema:
+        type: string
+
   requestBodies:
     SchemaMigrate:
       content:
@@ -353,6 +546,31 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Query" }
+
+    TableCreate:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/TableDef" }
+
+    TableUpdate:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/TableUpdateProps" }
+
+    ColumnCreate:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ColumnInfo" }
+
+    ColumnUpdate:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ColumnUpdateProps" }
+
+    IndexCreate:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/IndexInfo" }
 
     RowCreate:
       content:
@@ -408,6 +626,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/TableList" }
+    TableOK:
+      description: The table's definition after the mutation was applied.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/TableInfo" }
     SchemaMigrateOK:
       description: The schema was reconciled and the applied steps are listed.
       content:
@@ -495,6 +718,22 @@ components:
         deliberately does not describe the LIR contract; servers validate this
         raw body against the independent LIR JSON Schema.
 
+    ColumnDefault:
+      description: |
+        A column default, applied when an insert omits the column: either a
+        builtin generator named by `func` (`uuid` on text columns, `now_ms`
+        on int64 columns) or a literal `value` of the column's type. Exactly
+        one of the two is set.
+      type: object
+      properties:
+        func:
+          description: A builtin generator, `uuid` or `now_ms`.
+          type: string
+        value:
+          description: A literal of the column's type.
+          allOf:
+            - $ref: "#/components/schemas/Value"
+
     ColumnInfo:
       description: One column of a table, as reported by introspection.
       type: object
@@ -503,13 +742,53 @@ components:
         name:
           type: string
         type:
-          description: The column's storage type, one of `string`, `int64`, `float64`, or `bool`.
+          description: The column's storage type, one of `text`, `int64`, `float64`, or `bool`.
           type: string
         nullable:
           type: boolean
         format:
           description: An optional semantic hint such as `uuid` or `unix_ms`.
           type: string
+        default:
+          $ref: "#/components/schemas/ColumnDefault"
+
+    IndexInfo:
+      description: One secondary index, in both definitions and introspection.
+      type: object
+      required: [name, columns]
+      properties:
+        name:
+          type: string
+        columns:
+          description: The indexed column names, in order.
+          type: array
+          items:
+            type: string
+        unique:
+          type: boolean
+
+    ForeignKeyInfo:
+      description: |
+        One foreign key, in both definitions and introspection. The
+        referenced columns must be the referenced table's full primary key.
+      type: object
+      required: [name, columns, ref_table, ref_columns]
+      properties:
+        name:
+          type: string
+        columns:
+          description: The referencing column names on this table.
+          type: array
+          items:
+            type: string
+        ref_table:
+          description: The referenced table's name.
+          type: string
+        ref_columns:
+          description: The referenced table's primary key columns, in order.
+          type: array
+          items:
+            type: string
 
     TableInfo:
       description: One table's definition, as reported by introspection.
@@ -526,13 +805,50 @@ components:
           type: array
           items:
             type: string
+        indexes:
+          type: array
+          items: { $ref: "#/components/schemas/IndexInfo" }
+        foreign_keys:
+          type: array
+          items: { $ref: "#/components/schemas/ForeignKeyInfo" }
+
+    TableDef:
+      description: |
+        A new table's definition: exactly what a `schema.rad` entry
+        expresses, as JSON. Column types are `text`, `int64`, `float64`, or
+        `bool`; the primary key is required and its columns must not be
+        nullable.
+      type: object
+      required: [name, columns, primary_key]
+      properties:
+        name:
+          type: string
+        columns:
+          type: array
+          items: { $ref: "#/components/schemas/ColumnInfo" }
+        primary_key:
+          type: array
+          items:
+            type: string
+        indexes:
+          type: array
+          items: { $ref: "#/components/schemas/IndexInfo" }
+        foreign_keys:
+          type: array
+          items: { $ref: "#/components/schemas/ForeignKeyInfo" }
 
     Health:
       description: The liveness status of the server.
       type: object
-      required: [status]
+      required: [status, mode]
       properties:
         status:
+          type: string
+        mode:
+          description: |
+            The database's catalog management mode: `direct` (the catalog
+            is mutable over this API) or `schema` (schema.rad migrations own
+            the catalog and the imperative catalog operations are rejected).
           type: string
 
     TableList:
@@ -579,6 +895,24 @@ components:
         result:
           allOf:
             - $ref: "#/components/schemas/Value"
+
+    TableUpdateProps:
+      description: The table properties to update.
+      type: object
+      required: [name]
+      properties:
+        name:
+          description: The table's new name.
+          type: string
+
+    ColumnUpdateProps:
+      description: The column properties to update.
+      type: object
+      required: [name]
+      properties:
+        name:
+          description: The column's new name.
+          type: string
 
     RowCreateProps:
       description: A request to insert one row.

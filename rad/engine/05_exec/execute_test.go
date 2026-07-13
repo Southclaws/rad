@@ -363,7 +363,7 @@ func TestUniqueIndexNullsDistinct(t *testing.T) {
 		}
 	}
 	// Backfilling the unique index over the NULL pair succeeds.
-	if err := eng.AddIndexWithBackfill(ctx, "invites", catalog.IndexDef{
+	if err := eng.CreateIndexWithBackfill(ctx, "invites", catalog.IndexDef{
 		Name: "invites_email_uq", Columns: []string{"email"}, Unique: true,
 	}); err != nil {
 		t.Fatal(err)

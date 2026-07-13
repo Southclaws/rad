@@ -27,15 +27,63 @@ func (s *Cells) init() Cells {
 	return m
 }
 
+type ColumnCreateConflict Problem
+
+func (*ColumnCreateConflict) columnCreateRes() {}
+
+type ColumnCreateUnprocessableEntity Problem
+
+func (*ColumnCreateUnprocessableEntity) columnCreateRes() {}
+
+// A column default, applied when an insert omits the column: either a builtin generator named by
+// `func` (`uuid` on text columns, `now_ms` on int64 columns) or a literal `value` of the column's
+// type. Exactly one of the two is set.
+// Ref: #/components/schemas/ColumnDefault
+type ColumnDefault struct {
+	// A builtin generator, `uuid` or `now_ms`.
+	Func OptString `json:"func"`
+	// A literal of the column's type.
+	Value Value `json:"value"`
+}
+
+// GetFunc returns the value of Func.
+func (s *ColumnDefault) GetFunc() OptString {
+	return s.Func
+}
+
+// GetValue returns the value of Value.
+func (s *ColumnDefault) GetValue() Value {
+	return s.Value
+}
+
+// SetFunc sets the value of Func.
+func (s *ColumnDefault) SetFunc(val OptString) {
+	s.Func = val
+}
+
+// SetValue sets the value of Value.
+func (s *ColumnDefault) SetValue(val Value) {
+	s.Value = val
+}
+
+type ColumnDeleteConflict Problem
+
+func (*ColumnDeleteConflict) columnDeleteRes() {}
+
+type ColumnDeleteUnprocessableEntity Problem
+
+func (*ColumnDeleteUnprocessableEntity) columnDeleteRes() {}
+
 // One column of a table, as reported by introspection.
 // Ref: #/components/schemas/ColumnInfo
 type ColumnInfo struct {
 	Name string `json:"name"`
-	// The column's storage type, one of `string`, `int64`, `float64`, or `bool`.
+	// The column's storage type, one of `text`, `int64`, `float64`, or `bool`.
 	Type     string  `json:"type"`
 	Nullable OptBool `json:"nullable"`
 	// An optional semantic hint such as `uuid` or `unix_ms`.
-	Format OptString `json:"format"`
+	Format  OptString        `json:"format"`
+	Default OptColumnDefault `json:"default"`
 }
 
 // GetName returns the value of Name.
@@ -58,6 +106,11 @@ func (s *ColumnInfo) GetFormat() OptString {
 	return s.Format
 }
 
+// GetDefault returns the value of Default.
+func (s *ColumnInfo) GetDefault() OptColumnDefault {
+	return s.Default
+}
+
 // SetName sets the value of Name.
 func (s *ColumnInfo) SetName(val string) {
 	s.Name = val
@@ -77,6 +130,36 @@ func (s *ColumnInfo) SetNullable(val OptBool) {
 func (s *ColumnInfo) SetFormat(val OptString) {
 	s.Format = val
 }
+
+// SetDefault sets the value of Default.
+func (s *ColumnInfo) SetDefault(val OptColumnDefault) {
+	s.Default = val
+}
+
+type ColumnUpdateConflict Problem
+
+func (*ColumnUpdateConflict) columnUpdateRes() {}
+
+// The column properties to update.
+// Ref: #/components/schemas/ColumnUpdateProps
+type ColumnUpdateProps struct {
+	// The column's new name.
+	Name string `json:"name"`
+}
+
+// GetName returns the value of Name.
+func (s *ColumnUpdateProps) GetName() string {
+	return s.Name
+}
+
+// SetName sets the value of Name.
+func (s *ColumnUpdateProps) SetName(val string) {
+	s.Name = val
+}
+
+type ColumnUpdateUnprocessableEntity Problem
+
+func (*ColumnUpdateUnprocessableEntity) columnUpdateRes() {}
 
 // The result of a delete.
 // Ref: #/components/schemas/DeleteResult
@@ -98,10 +181,66 @@ func (s *DeleteResult) SetFound(val bool) {
 func (*DeleteResult) rowDeleteRes()            {}
 func (*DeleteResult) transactionRowDeleteRes() {}
 
+// One foreign key, in both definitions and introspection. The referenced columns must be the
+// referenced table's full primary key.
+// Ref: #/components/schemas/ForeignKeyInfo
+type ForeignKeyInfo struct {
+	Name string `json:"name"`
+	// The referencing column names on this table.
+	Columns []string `json:"columns"`
+	// The referenced table's name.
+	RefTable string `json:"ref_table"`
+	// The referenced table's primary key columns, in order.
+	RefColumns []string `json:"ref_columns"`
+}
+
+// GetName returns the value of Name.
+func (s *ForeignKeyInfo) GetName() string {
+	return s.Name
+}
+
+// GetColumns returns the value of Columns.
+func (s *ForeignKeyInfo) GetColumns() []string {
+	return s.Columns
+}
+
+// GetRefTable returns the value of RefTable.
+func (s *ForeignKeyInfo) GetRefTable() string {
+	return s.RefTable
+}
+
+// GetRefColumns returns the value of RefColumns.
+func (s *ForeignKeyInfo) GetRefColumns() []string {
+	return s.RefColumns
+}
+
+// SetName sets the value of Name.
+func (s *ForeignKeyInfo) SetName(val string) {
+	s.Name = val
+}
+
+// SetColumns sets the value of Columns.
+func (s *ForeignKeyInfo) SetColumns(val []string) {
+	s.Columns = val
+}
+
+// SetRefTable sets the value of RefTable.
+func (s *ForeignKeyInfo) SetRefTable(val string) {
+	s.RefTable = val
+}
+
+// SetRefColumns sets the value of RefColumns.
+func (s *ForeignKeyInfo) SetRefColumns(val []string) {
+	s.RefColumns = val
+}
+
 // The liveness status of the server.
 // Ref: #/components/schemas/Health
 type Health struct {
 	Status string `json:"status"`
+	// The database's catalog management mode: `direct` (the catalog is mutable over this API) or `schema`
+	// (schema.rad migrations own the catalog and the imperative catalog operations are rejected).
+	Mode string `json:"mode"`
 }
 
 // GetStatus returns the value of Status.
@@ -109,9 +248,74 @@ func (s *Health) GetStatus() string {
 	return s.Status
 }
 
+// GetMode returns the value of Mode.
+func (s *Health) GetMode() string {
+	return s.Mode
+}
+
 // SetStatus sets the value of Status.
 func (s *Health) SetStatus(val string) {
 	s.Status = val
+}
+
+// SetMode sets the value of Mode.
+func (s *Health) SetMode(val string) {
+	s.Mode = val
+}
+
+type IndexCreateConflict Problem
+
+func (*IndexCreateConflict) indexCreateRes() {}
+
+type IndexCreateUnprocessableEntity Problem
+
+func (*IndexCreateUnprocessableEntity) indexCreateRes() {}
+
+type IndexDeleteConflict Problem
+
+func (*IndexDeleteConflict) indexDeleteRes() {}
+
+type IndexDeleteUnprocessableEntity Problem
+
+func (*IndexDeleteUnprocessableEntity) indexDeleteRes() {}
+
+// One secondary index, in both definitions and introspection.
+// Ref: #/components/schemas/IndexInfo
+type IndexInfo struct {
+	Name string `json:"name"`
+	// The indexed column names, in order.
+	Columns []string `json:"columns"`
+	Unique  OptBool  `json:"unique"`
+}
+
+// GetName returns the value of Name.
+func (s *IndexInfo) GetName() string {
+	return s.Name
+}
+
+// GetColumns returns the value of Columns.
+func (s *IndexInfo) GetColumns() []string {
+	return s.Columns
+}
+
+// GetUnique returns the value of Unique.
+func (s *IndexInfo) GetUnique() OptBool {
+	return s.Unique
+}
+
+// SetName sets the value of Name.
+func (s *IndexInfo) SetName(val string) {
+	s.Name = val
+}
+
+// SetColumns sets the value of Columns.
+func (s *IndexInfo) SetColumns(val []string) {
+	s.Columns = val
+}
+
+// SetUnique sets the value of Unique.
+func (s *IndexInfo) SetUnique(val OptBool) {
+	s.Unique = val
 }
 
 // InternalServerErrorStatusCode wraps Problem with StatusCode.
@@ -180,6 +384,7 @@ func (*MigrateResult) schemaMigrateRes() {}
 // Ref: #/components/responses/NoContent
 type NoContent struct{}
 
+func (*NoContent) tableDeleteRes()         {}
 func (*NoContent) transactionCommitRes()   {}
 func (*NoContent) transactionRollbackRes() {}
 
@@ -223,6 +428,190 @@ func (o OptBool) Get() (v bool, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptBool) Or(d bool) bool {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptColumnDefault returns new OptColumnDefault with value set to v.
+func NewOptColumnDefault(v ColumnDefault) OptColumnDefault {
+	return OptColumnDefault{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptColumnDefault is optional ColumnDefault.
+type OptColumnDefault struct {
+	Value ColumnDefault
+	Set   bool
+}
+
+// IsSet returns true if OptColumnDefault was set.
+func (o OptColumnDefault) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptColumnDefault) Reset() {
+	var v ColumnDefault
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptColumnDefault) SetTo(v ColumnDefault) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptColumnDefault) Get() (v ColumnDefault, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptColumnDefault) Or(d ColumnDefault) ColumnDefault {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptColumnInfo returns new OptColumnInfo with value set to v.
+func NewOptColumnInfo(v ColumnInfo) OptColumnInfo {
+	return OptColumnInfo{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptColumnInfo is optional ColumnInfo.
+type OptColumnInfo struct {
+	Value ColumnInfo
+	Set   bool
+}
+
+// IsSet returns true if OptColumnInfo was set.
+func (o OptColumnInfo) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptColumnInfo) Reset() {
+	var v ColumnInfo
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptColumnInfo) SetTo(v ColumnInfo) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptColumnInfo) Get() (v ColumnInfo, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptColumnInfo) Or(d ColumnInfo) ColumnInfo {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptColumnUpdateProps returns new OptColumnUpdateProps with value set to v.
+func NewOptColumnUpdateProps(v ColumnUpdateProps) OptColumnUpdateProps {
+	return OptColumnUpdateProps{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptColumnUpdateProps is optional ColumnUpdateProps.
+type OptColumnUpdateProps struct {
+	Value ColumnUpdateProps
+	Set   bool
+}
+
+// IsSet returns true if OptColumnUpdateProps was set.
+func (o OptColumnUpdateProps) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptColumnUpdateProps) Reset() {
+	var v ColumnUpdateProps
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptColumnUpdateProps) SetTo(v ColumnUpdateProps) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptColumnUpdateProps) Get() (v ColumnUpdateProps, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptColumnUpdateProps) Or(d ColumnUpdateProps) ColumnUpdateProps {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptIndexInfo returns new OptIndexInfo with value set to v.
+func NewOptIndexInfo(v IndexInfo) OptIndexInfo {
+	return OptIndexInfo{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptIndexInfo is optional IndexInfo.
+type OptIndexInfo struct {
+	Value IndexInfo
+	Set   bool
+}
+
+// IsSet returns true if OptIndexInfo was set.
+func (o OptIndexInfo) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptIndexInfo) Reset() {
+	var v IndexInfo
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptIndexInfo) SetTo(v IndexInfo) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptIndexInfo) Get() (v IndexInfo, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptIndexInfo) Or(d IndexInfo) IndexInfo {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -499,6 +888,98 @@ func (o OptString) Get() (v string, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptString) Or(d string) string {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptTableDef returns new OptTableDef with value set to v.
+func NewOptTableDef(v TableDef) OptTableDef {
+	return OptTableDef{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptTableDef is optional TableDef.
+type OptTableDef struct {
+	Value TableDef
+	Set   bool
+}
+
+// IsSet returns true if OptTableDef was set.
+func (o OptTableDef) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptTableDef) Reset() {
+	var v TableDef
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptTableDef) SetTo(v TableDef) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptTableDef) Get() (v TableDef, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptTableDef) Or(d TableDef) TableDef {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptTableUpdateProps returns new OptTableUpdateProps with value set to v.
+func NewOptTableUpdateProps(v TableUpdateProps) OptTableUpdateProps {
+	return OptTableUpdateProps{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptTableUpdateProps is optional TableUpdateProps.
+type OptTableUpdateProps struct {
+	Value TableUpdateProps
+	Set   bool
+}
+
+// IsSet returns true if OptTableUpdateProps was set.
+func (o OptTableUpdateProps) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptTableUpdateProps) Reset() {
+	var v TableUpdateProps
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptTableUpdateProps) SetTo(v TableUpdateProps) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptTableUpdateProps) Get() (v TableUpdateProps, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptTableUpdateProps) Or(d TableUpdateProps) TableUpdateProps {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -856,13 +1337,93 @@ type RowUpdateUnprocessableEntity Problem
 
 func (*RowUpdateUnprocessableEntity) rowUpdateRes() {}
 
+type TableCreateConflict Problem
+
+func (*TableCreateConflict) tableCreateRes() {}
+
+type TableCreateUnprocessableEntity Problem
+
+func (*TableCreateUnprocessableEntity) tableCreateRes() {}
+
+// A new table's definition: exactly what a `schema.rad` entry expresses, as JSON. Column types are
+// `text`, `int64`, `float64`, or `bool`; the primary key is required and its columns must not be
+// nullable.
+// Ref: #/components/schemas/TableDef
+type TableDef struct {
+	Name        string           `json:"name"`
+	Columns     []ColumnInfo     `json:"columns"`
+	PrimaryKey  []string         `json:"primary_key"`
+	Indexes     []IndexInfo      `json:"indexes"`
+	ForeignKeys []ForeignKeyInfo `json:"foreign_keys"`
+}
+
+// GetName returns the value of Name.
+func (s *TableDef) GetName() string {
+	return s.Name
+}
+
+// GetColumns returns the value of Columns.
+func (s *TableDef) GetColumns() []ColumnInfo {
+	return s.Columns
+}
+
+// GetPrimaryKey returns the value of PrimaryKey.
+func (s *TableDef) GetPrimaryKey() []string {
+	return s.PrimaryKey
+}
+
+// GetIndexes returns the value of Indexes.
+func (s *TableDef) GetIndexes() []IndexInfo {
+	return s.Indexes
+}
+
+// GetForeignKeys returns the value of ForeignKeys.
+func (s *TableDef) GetForeignKeys() []ForeignKeyInfo {
+	return s.ForeignKeys
+}
+
+// SetName sets the value of Name.
+func (s *TableDef) SetName(val string) {
+	s.Name = val
+}
+
+// SetColumns sets the value of Columns.
+func (s *TableDef) SetColumns(val []ColumnInfo) {
+	s.Columns = val
+}
+
+// SetPrimaryKey sets the value of PrimaryKey.
+func (s *TableDef) SetPrimaryKey(val []string) {
+	s.PrimaryKey = val
+}
+
+// SetIndexes sets the value of Indexes.
+func (s *TableDef) SetIndexes(val []IndexInfo) {
+	s.Indexes = val
+}
+
+// SetForeignKeys sets the value of ForeignKeys.
+func (s *TableDef) SetForeignKeys(val []ForeignKeyInfo) {
+	s.ForeignKeys = val
+}
+
+type TableDeleteConflict Problem
+
+func (*TableDeleteConflict) tableDeleteRes() {}
+
+type TableDeleteUnprocessableEntity Problem
+
+func (*TableDeleteUnprocessableEntity) tableDeleteRes() {}
+
 // One table's definition, as reported by introspection.
 // Ref: #/components/schemas/TableInfo
 type TableInfo struct {
 	Name    string       `json:"name"`
 	Columns []ColumnInfo `json:"columns"`
 	// The column names that make up the primary key, in order.
-	PrimaryKey []string `json:"primary_key"`
+	PrimaryKey  []string         `json:"primary_key"`
+	Indexes     []IndexInfo      `json:"indexes"`
+	ForeignKeys []ForeignKeyInfo `json:"foreign_keys"`
 }
 
 // GetName returns the value of Name.
@@ -880,6 +1441,16 @@ func (s *TableInfo) GetPrimaryKey() []string {
 	return s.PrimaryKey
 }
 
+// GetIndexes returns the value of Indexes.
+func (s *TableInfo) GetIndexes() []IndexInfo {
+	return s.Indexes
+}
+
+// GetForeignKeys returns the value of ForeignKeys.
+func (s *TableInfo) GetForeignKeys() []ForeignKeyInfo {
+	return s.ForeignKeys
+}
+
 // SetName sets the value of Name.
 func (s *TableInfo) SetName(val string) {
 	s.Name = val
@@ -894,6 +1465,24 @@ func (s *TableInfo) SetColumns(val []ColumnInfo) {
 func (s *TableInfo) SetPrimaryKey(val []string) {
 	s.PrimaryKey = val
 }
+
+// SetIndexes sets the value of Indexes.
+func (s *TableInfo) SetIndexes(val []IndexInfo) {
+	s.Indexes = val
+}
+
+// SetForeignKeys sets the value of ForeignKeys.
+func (s *TableInfo) SetForeignKeys(val []ForeignKeyInfo) {
+	s.ForeignKeys = val
+}
+
+func (*TableInfo) columnCreateRes() {}
+func (*TableInfo) columnDeleteRes() {}
+func (*TableInfo) columnUpdateRes() {}
+func (*TableInfo) indexCreateRes()  {}
+func (*TableInfo) indexDeleteRes()  {}
+func (*TableInfo) tableCreateRes()  {}
+func (*TableInfo) tableUpdateRes()  {}
 
 // The set of tables defined in the database.
 // Ref: #/components/schemas/TableList
@@ -910,6 +1499,31 @@ func (s *TableList) GetTables() []TableInfo {
 func (s *TableList) SetTables(val []TableInfo) {
 	s.Tables = val
 }
+
+type TableUpdateConflict Problem
+
+func (*TableUpdateConflict) tableUpdateRes() {}
+
+// The table properties to update.
+// Ref: #/components/schemas/TableUpdateProps
+type TableUpdateProps struct {
+	// The table's new name.
+	Name string `json:"name"`
+}
+
+// GetName returns the value of Name.
+func (s *TableUpdateProps) GetName() string {
+	return s.Name
+}
+
+// SetName sets the value of Name.
+func (s *TableUpdateProps) SetName(val string) {
+	s.Name = val
+}
+
+type TableUpdateUnprocessableEntity Problem
+
+func (*TableUpdateUnprocessableEntity) tableUpdateRes() {}
 
 type TransactionCommitConflict Problem
 

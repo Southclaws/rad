@@ -5,13 +5,13 @@ package catalog
 //
 //   - Renames are free: rows are stored keyed by column ID and data keys by
 //     table ID, so renaming updates nothing but the catalog.
-//   - DropTable / DropIndex orphan their data and index entries. IDs are
+//   - DeleteTable / DeleteIndex orphan their data and index entries. IDs are
 //     never reused, so orphans are unreachable garbage awaiting a future
 //     vacuum — acceptable for the POC.
-//   - AddIndex records metadata only; backfilling entries for existing rows
+//   - CreateIndex records metadata only; backfilling entries for existing rows
 //     is the executor's job. The two must commit together — a registered
 //     index with no entries would let the planner return wrong results — so
-//     the executor composes AddIndexIn with its backfill in one transaction.
+//     the executor composes CreateIndexIn with its backfill in one transaction.
 
 import (
 	"context"
@@ -73,11 +73,11 @@ func (c *Catalog) mutateTable(ctx context.Context, tableName string, fn func(vie
 	return out, nil
 }
 
-// DropTable removes the table from the catalog. Row and index data become
+// DeleteTable removes the table from the catalog. Row and index data become
 // unreachable garbage (IDs are never reused). A table another table still
-// references through a foreign key cannot be dropped — drop the referencing
+// references through a foreign key cannot be deleted — delete the referencing
 // table first (self-references don't count; they die with the table).
-func (c *Catalog) DropTable(ctx context.Context, tableName string) error {
+func (c *Catalog) DeleteTable(ctx context.Context, tableName string) error {
 	return c.mutate(ctx, func(view kv.KV) error {
 		nameKey := []byte(tableNamePrefix + tableName)
 		id, ok, err := view.Get(ctx, nameKey)
@@ -97,7 +97,7 @@ func (c *Catalog) DropTable(ctx context.Context, tableName string) error {
 			}
 			for _, fk := range t.ForeignKeys {
 				if fk.RefTableID == string(id) {
-					return reject.Inputf("catalog: table %q is referenced by foreign key %q on table %q; drop that table first", tableName, fk.Name, t.Name)
+					return reject.Inputf("catalog: table %q is referenced by foreign key %q on table %q; delete that table first", tableName, fk.Name, t.Name)
 				}
 			}
 		}
@@ -149,10 +149,10 @@ func (c *Catalog) RenameTable(ctx context.Context, oldName, newName string) erro
 	})
 }
 
-// AddColumn appends a column. Because existing rows lack the column, it
+// CreateColumn appends a column. Because existing rows lack the column, it
 // must be nullable or carry a literal default (generator defaults would
 // yield a different value on every read of an old row).
-func (c *Catalog) AddColumn(ctx context.Context, tableName string, def ColumnDef) (Table, error) {
+func (c *Catalog) CreateColumn(ctx context.Context, tableName string, def ColumnDef) (Table, error) {
 	return c.mutateTable(ctx, tableName, func(view kv.KV, tbl *Table) error {
 		if _, exists := tbl.Column(def.Name); exists {
 			return reject.Inputf("catalog: column %q already exists in table %q", def.Name, tableName)
@@ -180,24 +180,24 @@ func (c *Catalog) AddColumn(ctx context.Context, tableName string, def ColumnDef
 	})
 }
 
-// DropColumn removes a column. The column must not be part of the primary
-// key, any index, or any foreign key — drop those first.
-func (c *Catalog) DropColumn(ctx context.Context, tableName, colName string) (Table, error) {
+// DeleteColumn removes a column. The column must not be part of the primary
+// key, any index, or any foreign key — delete those first.
+func (c *Catalog) DeleteColumn(ctx context.Context, tableName, colName string) (Table, error) {
 	return c.mutateTable(ctx, tableName, func(view kv.KV, tbl *Table) error {
 		if _, ok := tbl.Column(colName); !ok {
 			return reject.Inputf("catalog: column %q does not exist in table %q", colName, tableName)
 		}
 		if slices.Contains(tbl.PrimaryKey, colName) {
-			return reject.Inputf("catalog: cannot drop primary key column %q", colName)
+			return reject.Inputf("catalog: cannot delete primary key column %q", colName)
 		}
 		for _, idx := range tbl.Indexes {
 			if slices.Contains(idx.Columns, colName) {
-				return reject.Inputf("catalog: column %q is used by index %q; drop the index first", colName, idx.Name)
+				return reject.Inputf("catalog: column %q is used by index %q; delete the index first", colName, idx.Name)
 			}
 		}
 		for _, fk := range tbl.ForeignKeys {
 			if slices.Contains(fk.Columns, colName) {
-				return reject.Inputf("catalog: column %q is used by foreign key %q; drop the foreign key first", colName, fk.Name)
+				return reject.Inputf("catalog: column %q is used by foreign key %q; delete the foreign key first", colName, fk.Name)
 			}
 		}
 		tbl.Columns = slices.DeleteFunc(tbl.Columns, func(c Column) bool { return c.Name == colName })
@@ -242,12 +242,12 @@ func (c *Catalog) RenameColumn(ctx context.Context, tableName, oldName, newName 
 	})
 }
 
-// AddIndexIn records a new index in the catalog against the caller's view
+// CreateIndexIn records a new index in the catalog against the caller's view
 // and returns the updated table plus the new index. Entries for existing
 // rows are NOT written here — the executor backfills them, in the same
 // transaction, so the registration and its entries commit or fail together
 // (a registered index with no entries would silently drop rows from reads).
-func AddIndexIn(ctx context.Context, view kv.KV, tableName string, def IndexDef) (Table, Index, error) {
+func CreateIndexIn(ctx context.Context, view kv.KV, tableName string, def IndexDef) (Table, Index, error) {
 	var added Index
 	tbl, err := mutateTableIn(ctx, view, tableName, func(view kv.KV, tbl *Table) error {
 		if _, exists := tbl.Index(def.Name); exists {
@@ -275,13 +275,13 @@ func AddIndexIn(ctx context.Context, view kv.KV, tableName string, def IndexDef)
 	return tbl, added, nil
 }
 
-// AddIndex is AddIndexIn in its own catalog transaction, for indexes over tables
+// CreateIndex is CreateIndexIn in its own catalog transaction, for indexes over tables
 // with no existing rows to backfill.
-func (c *Catalog) AddIndex(ctx context.Context, tableName string, def IndexDef) (Index, error) {
+func (c *Catalog) CreateIndex(ctx context.Context, tableName string, def IndexDef) (Index, error) {
 	var added Index
 	err := c.mutate(ctx, func(view kv.KV) error {
 		var err error
-		_, added, err = AddIndexIn(ctx, view, tableName, def)
+		_, added, err = CreateIndexIn(ctx, view, tableName, def)
 		return err
 	})
 	if err != nil {
@@ -290,9 +290,9 @@ func (c *Catalog) AddIndex(ctx context.Context, tableName string, def IndexDef) 
 	return added, nil
 }
 
-// DropIndex removes an index from the catalog. Its entries become
+// DeleteIndex removes an index from the catalog. Its entries become
 // unreachable garbage (index IDs are never reused).
-func (c *Catalog) DropIndex(ctx context.Context, tableName, indexName string) error {
+func (c *Catalog) DeleteIndex(ctx context.Context, tableName, indexName string) error {
 	_, err := c.mutateTable(ctx, tableName, func(view kv.KV, tbl *Table) error {
 		if _, ok := tbl.Index(indexName); !ok {
 			return reject.Inputf("catalog: index %q does not exist on table %q", indexName, tableName)

@@ -31,6 +31,10 @@ import (
 type dbAPI struct {
 	db  *frontend.DB
 	cat *catalog.Catalog
+	// mode is read once at construction: the catalog management mode is set
+	// when the database is initialised and never changes, so caching it
+	// keeps the gate on the imperative catalog operations free.
+	mode catalog.Mode
 
 	mu       sync.Mutex
 	sessions map[string]*txSession
@@ -38,8 +42,8 @@ type dbAPI struct {
 
 var _ oas.Handler = (*dbAPI)(nil)
 
-func newDBAPI(db *frontend.DB, cat *catalog.Catalog) *dbAPI {
-	a := &dbAPI{db: db, cat: cat, sessions: map[string]*txSession{}}
+func newDBAPI(db *frontend.DB, cat *catalog.Catalog, mode catalog.Mode) *dbAPI {
+	a := &dbAPI{db: db, cat: cat, mode: mode, sessions: map[string]*txSession{}}
 	go a.reapSessions()
 	return a
 }
@@ -141,7 +145,7 @@ func (a *dbAPI) doDelete(ctx context.Context, v view, table string, key map[stri
 }
 
 func (a *dbAPI) GetHealth(ctx context.Context) (*oas.Health, error) {
-	return &oas.Health{Status: "ok"}, nil
+	return &oas.Health{Status: "ok", Mode: string(a.mode)}, nil
 }
 
 func (a *dbAPI) TableList(ctx context.Context) (*oas.TableList, error) {
@@ -151,11 +155,9 @@ func (a *dbAPI) TableList(ctx context.Context) (*oas.TableList, error) {
 	}
 	infos := make([]protocol.TableInfo, len(tables))
 	for i, t := range tables {
-		info := protocol.TableInfo{Name: t.Name, PrimaryKey: t.PrimaryKey}
-		for _, c := range t.Columns {
-			info.Columns = append(info.Columns, protocol.ColumnInfo{
-				Name: c.Name, Type: string(c.Type), Nullable: c.Nullable, Format: c.Format,
-			})
+		info, err := a.tableInfo(ctx, t)
+		if err != nil {
+			return nil, err
 		}
 		infos[i] = info
 	}
@@ -388,7 +390,13 @@ func (a *dbAPI) TransactionRollback(ctx context.Context, params oas.TransactionR
 
 // New builds the wire-protocol HTTP handler: the generated OpenAPI database
 // API. Unmatched routes return 404; the parent server wraps it with shared
-// middleware and pairs it with the admin UI on a separate port.
+// middleware and pairs it with the admin UI on a separate port. The catalog
+// management mode is read once here — it is set at database initialisation
+// and immutable, so the imperative catalog operations gate on a cached value.
 func New(db *frontend.DB, cat *catalog.Catalog) (http.Handler, error) {
-	return newDBAPI(db, cat).httpHandler(http.NotFoundHandler())
+	mode, err := cat.Mode(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	return newDBAPI(db, cat, mode).httpHandler(http.NotFoundHandler())
 }

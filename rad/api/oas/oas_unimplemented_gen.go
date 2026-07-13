@@ -13,6 +13,41 @@ type UnimplementedHandler struct{}
 
 var _ Handler = UnimplementedHandler{}
 
+// ColumnCreate implements ColumnCreate operation.
+//
+// Append a column. Because existing rows have no value for it, the column must be nullable or carry a
+// literal default; generator defaults (`uuid()`, `now_ms()`) are rejected on new columns of existing
+// tables since they would produce a different value on every read of an old row. On a schema-managed
+// database this operation is always rejected.
+//
+// POST /tables/{table}/columns
+func (UnimplementedHandler) ColumnCreate(ctx context.Context, req OptColumnInfo, params ColumnCreateParams) (r ColumnCreateRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ColumnDelete implements ColumnDelete operation.
+//
+// Remove a column. Stored values for it become unreachable. A column used by the primary key, an
+// index, or a foreign key cannot be deleted — delete the index or foreign key holder first. On a
+// schema-managed database this operation is always rejected.
+//
+// DELETE /tables/{table}/columns/{column}
+func (UnimplementedHandler) ColumnDelete(ctx context.Context, params ColumnDeleteParams) (r ColumnDeleteRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ColumnUpdate implements ColumnUpdate operation.
+//
+// Update a column's properties. The only updatable property today is `name`; changing a column's type
+// or nullability is not supported. A name change rewrites every metadata reference to the column
+// (primary key, indexes, foreign keys), and rows are keyed by column ID, so no data is touched. On a
+// schema-managed database this operation is always rejected.
+//
+// PATCH /tables/{table}/columns/{column}
+func (UnimplementedHandler) ColumnUpdate(ctx context.Context, req OptColumnUpdateProps, params ColumnUpdateParams) (r ColumnUpdateRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetHealth implements GetHealth operation.
 //
 // A cheap liveness probe that touches no storage. It always returns `200` with a small status body
@@ -21,6 +56,29 @@ var _ Handler = UnimplementedHandler{}
 //
 // GET /health
 func (UnimplementedHandler) GetHealth(ctx context.Context) (r *Health, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// IndexCreate implements IndexCreate operation.
+//
+// Register a secondary index and backfill entries for every existing row, atomically: the index never
+// becomes visible without its entries. Backfilling a unique index over data that already contains
+// duplicates fails with a `conflict` problem and the registration is rolled back with it. On a
+// schema-managed database this operation is always rejected.
+//
+// POST /tables/{table}/indexes
+func (UnimplementedHandler) IndexCreate(ctx context.Context, req OptIndexInfo, params IndexCreateParams) (r IndexCreateRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// IndexDelete implements IndexDelete operation.
+//
+// Remove an index from the catalog. Its entries become unreachable; index IDs are never reused.
+// Queries that would have used it fall back to other access paths. On a schema-managed database this
+// operation is always rejected.
+//
+// DELETE /tables/{table}/indexes/{index}
+func (UnimplementedHandler) IndexDelete(ctx context.Context, params IndexDeleteParams) (r IndexDeleteRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -96,13 +154,42 @@ func (UnimplementedHandler) RowUpdate(ctx context.Context, req OptRowUpdateProps
 //
 // Migration is idempotent. Submitting a schema that already matches the database applies nothing and
 // returns an empty step list. Renames are driven by `renamed_from` hints in the schema so that
-// renaming a column or table does not drop and recreate it.
+// renaming a column or table does not delete and recreate it.
 //
 // A schema that fails to parse or validate, or that requests an unsupported change (such as altering a
 // column's type), is rejected with an `invalid` problem and the database is left untouched.
 //
 // POST /migrate
 func (UnimplementedHandler) SchemaMigrate(ctx context.Context, req OptMigrateProps) (r SchemaMigrateRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// TableCreate implements TableCreate operation.
+//
+// Define a new table in one call: columns, primary key, and optionally indexes and foreign keys,
+// exactly as a `schema.rad` entry would. IDs are assigned by the catalog and the whole definition
+// commits atomically — a rejected definition leaves nothing behind, including the name.
+//
+// Foreign keys may reference existing tables or the table being created (self-references), and must
+// target the referenced table's full primary key. A definition that fails validation — duplicate or
+// missing name, unsupported column type, nullable primary key column, index or key over unknown
+// columns — is rejected with an `invalid` problem. On a schema-managed database this operation is
+// always rejected.
+//
+// POST /tables
+func (UnimplementedHandler) TableCreate(ctx context.Context, req OptTableDef) (r TableCreateRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// TableDelete implements TableDelete operation.
+//
+// Remove a table from the catalog. Its rows and index entries become unreachable; table IDs are never
+// reused. A table that another table references through a foreign key cannot be deleted until the
+// referencing table goes first (self-references do not count). On a schema-managed database this
+// operation is always rejected.
+//
+// DELETE /tables/{table}
+func (UnimplementedHandler) TableDelete(ctx context.Context, params TableDeleteParams) (r TableDeleteRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -116,6 +203,18 @@ func (UnimplementedHandler) SchemaMigrate(ctx context.Context, req OptMigratePro
 //
 // GET /tables
 func (UnimplementedHandler) TableList(ctx context.Context) (r *TableList, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// TableUpdate implements TableUpdate operation.
+//
+// Update a table's properties. The only updatable property today is `name`: data keys use the table's
+// ID, so a name change is metadata-only and instantaneous, and foreign keys referencing the table are
+// unaffected. A name that is already taken is rejected with an `invalid` problem. On a schema-managed
+// database this operation is always rejected.
+//
+// PATCH /tables/{table}
+func (UnimplementedHandler) TableUpdate(ctx context.Context, req OptTableUpdateProps, params TableUpdateParams) (r TableUpdateRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 

@@ -28,6 +28,32 @@ func trimTrailingSlashes(u *url.URL) {
 
 // Invoker invokes operations described by OpenAPI v3 specification.
 type Invoker interface {
+	// ColumnCreate invokes ColumnCreate operation.
+	//
+	// Append a column. Because existing rows have no value for it, the column must be nullable or carry a
+	// literal default; generator defaults (`uuid()`, `now_ms()`) are rejected on new columns of existing
+	// tables since they would produce a different value on every read of an old row. On a schema-managed
+	// database this operation is always rejected.
+	//
+	// POST /tables/{table}/columns
+	ColumnCreate(ctx context.Context, request OptColumnInfo, params ColumnCreateParams) (ColumnCreateRes, error)
+	// ColumnDelete invokes ColumnDelete operation.
+	//
+	// Remove a column. Stored values for it become unreachable. A column used by the primary key, an
+	// index, or a foreign key cannot be deleted — delete the index or foreign key holder first. On a
+	// schema-managed database this operation is always rejected.
+	//
+	// DELETE /tables/{table}/columns/{column}
+	ColumnDelete(ctx context.Context, params ColumnDeleteParams) (ColumnDeleteRes, error)
+	// ColumnUpdate invokes ColumnUpdate operation.
+	//
+	// Update a column's properties. The only updatable property today is `name`; changing a column's type
+	// or nullability is not supported. A name change rewrites every metadata reference to the column
+	// (primary key, indexes, foreign keys), and rows are keyed by column ID, so no data is touched. On a
+	// schema-managed database this operation is always rejected.
+	//
+	// PATCH /tables/{table}/columns/{column}
+	ColumnUpdate(ctx context.Context, request OptColumnUpdateProps, params ColumnUpdateParams) (ColumnUpdateRes, error)
 	// GetHealth invokes GetHealth operation.
 	//
 	// A cheap liveness probe that touches no storage. It always returns `200` with a small status body
@@ -36,6 +62,23 @@ type Invoker interface {
 	//
 	// GET /health
 	GetHealth(ctx context.Context) (*Health, error)
+	// IndexCreate invokes IndexCreate operation.
+	//
+	// Register a secondary index and backfill entries for every existing row, atomically: the index never
+	// becomes visible without its entries. Backfilling a unique index over data that already contains
+	// duplicates fails with a `conflict` problem and the registration is rolled back with it. On a
+	// schema-managed database this operation is always rejected.
+	//
+	// POST /tables/{table}/indexes
+	IndexCreate(ctx context.Context, request OptIndexInfo, params IndexCreateParams) (IndexCreateRes, error)
+	// IndexDelete invokes IndexDelete operation.
+	//
+	// Remove an index from the catalog. Its entries become unreachable; index IDs are never reused.
+	// Queries that would have used it fall back to other access paths. On a schema-managed database this
+	// operation is always rejected.
+	//
+	// DELETE /tables/{table}/indexes/{index}
+	IndexDelete(ctx context.Context, params IndexDeleteParams) (IndexDeleteRes, error)
 	// Query invokes Query operation.
 	//
 	// Execute a single-consumer relation tree encoded as named relation nodes — scans, filters,
@@ -96,13 +139,36 @@ type Invoker interface {
 	//
 	// Migration is idempotent. Submitting a schema that already matches the database applies nothing and
 	// returns an empty step list. Renames are driven by `renamed_from` hints in the schema so that
-	// renaming a column or table does not drop and recreate it.
+	// renaming a column or table does not delete and recreate it.
 	//
 	// A schema that fails to parse or validate, or that requests an unsupported change (such as altering a
 	// column's type), is rejected with an `invalid` problem and the database is left untouched.
 	//
 	// POST /migrate
 	SchemaMigrate(ctx context.Context, request OptMigrateProps) (SchemaMigrateRes, error)
+	// TableCreate invokes TableCreate operation.
+	//
+	// Define a new table in one call: columns, primary key, and optionally indexes and foreign keys,
+	// exactly as a `schema.rad` entry would. IDs are assigned by the catalog and the whole definition
+	// commits atomically — a rejected definition leaves nothing behind, including the name.
+	//
+	// Foreign keys may reference existing tables or the table being created (self-references), and must
+	// target the referenced table's full primary key. A definition that fails validation — duplicate or
+	// missing name, unsupported column type, nullable primary key column, index or key over unknown
+	// columns — is rejected with an `invalid` problem. On a schema-managed database this operation is
+	// always rejected.
+	//
+	// POST /tables
+	TableCreate(ctx context.Context, request OptTableDef) (TableCreateRes, error)
+	// TableDelete invokes TableDelete operation.
+	//
+	// Remove a table from the catalog. Its rows and index entries become unreachable; table IDs are never
+	// reused. A table that another table references through a foreign key cannot be deleted until the
+	// referencing table goes first (self-references do not count). On a schema-managed database this
+	// operation is always rejected.
+	//
+	// DELETE /tables/{table}
+	TableDelete(ctx context.Context, params TableDeleteParams) (TableDeleteRes, error)
 	// TableList invokes TableList operation.
 	//
 	// Return every table currently defined in the catalog, along with its columns and primary key. This
@@ -113,6 +179,15 @@ type Invoker interface {
 	//
 	// GET /tables
 	TableList(ctx context.Context) (*TableList, error)
+	// TableUpdate invokes TableUpdate operation.
+	//
+	// Update a table's properties. The only updatable property today is `name`: data keys use the table's
+	// ID, so a name change is metadata-only and instantaneous, and foreign keys referencing the table are
+	// unaffected. A name that is already taken is rejected with an `invalid` problem. On a schema-managed
+	// database this operation is always rejected.
+	//
+	// PATCH /tables/{table}
+	TableUpdate(ctx context.Context, request OptTableUpdateProps, params TableUpdateParams) (TableUpdateRes, error)
 	// TransactionBegin invokes TransactionBegin operation.
 	//
 	// Start a server held serializable transaction and return an opaque transaction id. Subsequent reads
@@ -219,6 +294,353 @@ func (c *Client) requestURL(ctx context.Context) *url.URL {
 	return u
 }
 
+// ColumnCreate invokes ColumnCreate operation.
+//
+// Append a column. Because existing rows have no value for it, the column must be nullable or carry a
+// literal default; generator defaults (`uuid()`, `now_ms()`) are rejected on new columns of existing
+// tables since they would produce a different value on every read of an old row. On a schema-managed
+// database this operation is always rejected.
+//
+// POST /tables/{table}/columns
+func (c *Client) ColumnCreate(ctx context.Context, request OptColumnInfo, params ColumnCreateParams) (ColumnCreateRes, error) {
+	res, err := c.sendColumnCreate(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendColumnCreate(ctx context.Context, request OptColumnInfo, params ColumnCreateParams) (res ColumnCreateRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("ColumnCreate"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/tables/{table}/columns"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ColumnCreateOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/tables/"
+	{
+		// Encode "table" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "table",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.Table))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/columns"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeColumnCreateRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeColumnCreateResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ColumnDelete invokes ColumnDelete operation.
+//
+// Remove a column. Stored values for it become unreachable. A column used by the primary key, an
+// index, or a foreign key cannot be deleted — delete the index or foreign key holder first. On a
+// schema-managed database this operation is always rejected.
+//
+// DELETE /tables/{table}/columns/{column}
+func (c *Client) ColumnDelete(ctx context.Context, params ColumnDeleteParams) (ColumnDeleteRes, error) {
+	res, err := c.sendColumnDelete(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendColumnDelete(ctx context.Context, params ColumnDeleteParams) (res ColumnDeleteRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("ColumnDelete"),
+		semconv.HTTPRequestMethodKey.String("DELETE"),
+		semconv.URLTemplateKey.String("/tables/{table}/columns/{column}"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ColumnDeleteOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [4]string
+	pathParts[0] = "/tables/"
+	{
+		// Encode "table" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "table",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.Table))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/columns/"
+	{
+		// Encode "column" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "column",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.Column))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[3] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "DELETE", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeColumnDeleteResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ColumnUpdate invokes ColumnUpdate operation.
+//
+// Update a column's properties. The only updatable property today is `name`; changing a column's type
+// or nullability is not supported. A name change rewrites every metadata reference to the column
+// (primary key, indexes, foreign keys), and rows are keyed by column ID, so no data is touched. On a
+// schema-managed database this operation is always rejected.
+//
+// PATCH /tables/{table}/columns/{column}
+func (c *Client) ColumnUpdate(ctx context.Context, request OptColumnUpdateProps, params ColumnUpdateParams) (ColumnUpdateRes, error) {
+	res, err := c.sendColumnUpdate(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendColumnUpdate(ctx context.Context, request OptColumnUpdateProps, params ColumnUpdateParams) (res ColumnUpdateRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("ColumnUpdate"),
+		semconv.HTTPRequestMethodKey.String("PATCH"),
+		semconv.URLTemplateKey.String("/tables/{table}/columns/{column}"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ColumnUpdateOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [4]string
+	pathParts[0] = "/tables/"
+	{
+		// Encode "table" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "table",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.Table))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/columns/"
+	{
+		// Encode "column" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "column",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.Column))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[3] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PATCH", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeColumnUpdateRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeColumnUpdateResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetHealth invokes GetHealth operation.
 //
 // A cheap liveness probe that touches no storage. It always returns `200` with a small status body
@@ -294,6 +716,230 @@ func (c *Client) sendGetHealth(ctx context.Context) (res *Health, err error) {
 
 	stage = "DecodeResponse"
 	result, err := decodeGetHealthResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// IndexCreate invokes IndexCreate operation.
+//
+// Register a secondary index and backfill entries for every existing row, atomically: the index never
+// becomes visible without its entries. Backfilling a unique index over data that already contains
+// duplicates fails with a `conflict` problem and the registration is rolled back with it. On a
+// schema-managed database this operation is always rejected.
+//
+// POST /tables/{table}/indexes
+func (c *Client) IndexCreate(ctx context.Context, request OptIndexInfo, params IndexCreateParams) (IndexCreateRes, error) {
+	res, err := c.sendIndexCreate(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendIndexCreate(ctx context.Context, request OptIndexInfo, params IndexCreateParams) (res IndexCreateRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("IndexCreate"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/tables/{table}/indexes"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, IndexCreateOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/tables/"
+	{
+		// Encode "table" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "table",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.Table))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/indexes"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeIndexCreateRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeIndexCreateResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// IndexDelete invokes IndexDelete operation.
+//
+// Remove an index from the catalog. Its entries become unreachable; index IDs are never reused.
+// Queries that would have used it fall back to other access paths. On a schema-managed database this
+// operation is always rejected.
+//
+// DELETE /tables/{table}/indexes/{index}
+func (c *Client) IndexDelete(ctx context.Context, params IndexDeleteParams) (IndexDeleteRes, error) {
+	res, err := c.sendIndexDelete(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendIndexDelete(ctx context.Context, params IndexDeleteParams) (res IndexDeleteRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("IndexDelete"),
+		semconv.HTTPRequestMethodKey.String("DELETE"),
+		semconv.URLTemplateKey.String("/tables/{table}/indexes/{index}"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, IndexDeleteOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [4]string
+	pathParts[0] = "/tables/"
+	{
+		// Encode "table" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "table",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.Table))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/indexes/"
+	{
+		// Encode "index" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "index",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.Index))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[3] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "DELETE", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeIndexDeleteResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -669,7 +1315,7 @@ func (c *Client) sendRowUpdate(ctx context.Context, request OptRowUpdateProps) (
 //
 // Migration is idempotent. Submitting a schema that already matches the database applies nothing and
 // returns an empty step list. Renames are driven by `renamed_from` hints in the schema so that
-// renaming a column or table does not drop and recreate it.
+// renaming a column or table does not delete and recreate it.
 //
 // A schema that fails to parse or validate, or that requests an unsupported change (such as altering a
 // column's type), is rejected with an `invalid` problem and the database is left untouched.
@@ -746,6 +1392,198 @@ func (c *Client) sendSchemaMigrate(ctx context.Context, request OptMigrateProps)
 
 	stage = "DecodeResponse"
 	result, err := decodeSchemaMigrateResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// TableCreate invokes TableCreate operation.
+//
+// Define a new table in one call: columns, primary key, and optionally indexes and foreign keys,
+// exactly as a `schema.rad` entry would. IDs are assigned by the catalog and the whole definition
+// commits atomically — a rejected definition leaves nothing behind, including the name.
+//
+// Foreign keys may reference existing tables or the table being created (self-references), and must
+// target the referenced table's full primary key. A definition that fails validation — duplicate or
+// missing name, unsupported column type, nullable primary key column, index or key over unknown
+// columns — is rejected with an `invalid` problem. On a schema-managed database this operation is
+// always rejected.
+//
+// POST /tables
+func (c *Client) TableCreate(ctx context.Context, request OptTableDef) (TableCreateRes, error) {
+	res, err := c.sendTableCreate(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendTableCreate(ctx context.Context, request OptTableDef) (res TableCreateRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("TableCreate"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/tables"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, TableCreateOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/tables"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeTableCreateRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeTableCreateResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// TableDelete invokes TableDelete operation.
+//
+// Remove a table from the catalog. Its rows and index entries become unreachable; table IDs are never
+// reused. A table that another table references through a foreign key cannot be deleted until the
+// referencing table goes first (self-references do not count). On a schema-managed database this
+// operation is always rejected.
+//
+// DELETE /tables/{table}
+func (c *Client) TableDelete(ctx context.Context, params TableDeleteParams) (TableDeleteRes, error) {
+	res, err := c.sendTableDelete(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendTableDelete(ctx context.Context, params TableDeleteParams) (res TableDeleteRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("TableDelete"),
+		semconv.HTTPRequestMethodKey.String("DELETE"),
+		semconv.URLTemplateKey.String("/tables/{table}"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, TableDeleteOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [2]string
+	pathParts[0] = "/tables/"
+	{
+		// Encode "table" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "table",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.Table))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "DELETE", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeTableDeleteResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -830,6 +1668,110 @@ func (c *Client) sendTableList(ctx context.Context) (res *TableList, err error) 
 
 	stage = "DecodeResponse"
 	result, err := decodeTableListResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// TableUpdate invokes TableUpdate operation.
+//
+// Update a table's properties. The only updatable property today is `name`: data keys use the table's
+// ID, so a name change is metadata-only and instantaneous, and foreign keys referencing the table are
+// unaffected. A name that is already taken is rejected with an `invalid` problem. On a schema-managed
+// database this operation is always rejected.
+//
+// PATCH /tables/{table}
+func (c *Client) TableUpdate(ctx context.Context, request OptTableUpdateProps, params TableUpdateParams) (TableUpdateRes, error) {
+	res, err := c.sendTableUpdate(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendTableUpdate(ctx context.Context, request OptTableUpdateProps, params TableUpdateParams) (res TableUpdateRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("TableUpdate"),
+		semconv.HTTPRequestMethodKey.String("PATCH"),
+		semconv.URLTemplateKey.String("/tables/{table}"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, TableUpdateOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [2]string
+	pathParts[0] = "/tables/"
+	{
+		// Encode "table" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "table",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.Table))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PATCH", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeTableUpdateRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeTableUpdateResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

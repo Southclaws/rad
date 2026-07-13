@@ -258,16 +258,68 @@ type TxResponse struct {
 	ID string `json:"id"`
 }
 
-// TableInfo describes one table for GET /tables.
+// TableInfo describes one table for introspection (GET /tables and the
+// catalog mutation responses). It is the definition vocabulary read back:
+// indexes and foreign keys reuse the def shapes, with foreign keys naming
+// their referenced table rather than carrying internal IDs.
 type TableInfo struct {
-	Name       string       `json:"name"`
-	Columns    []ColumnInfo `json:"columns"`
-	PrimaryKey []string     `json:"primary_key"`
+	Name        string          `json:"name"`
+	Columns     []ColumnInfo    `json:"columns"`
+	PrimaryKey  []string        `json:"primary_key"`
+	Indexes     []IndexDef      `json:"indexes,omitempty"`
+	ForeignKeys []ForeignKeyDef `json:"foreign_keys,omitempty"`
 }
 
 type ColumnInfo struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Nullable bool   `json:"nullable,omitempty"`
-	Format   string `json:"format,omitempty"`
+	Name     string         `json:"name"`
+	Type     string         `json:"type"`
+	Nullable bool           `json:"nullable,omitempty"`
+	Format   string         `json:"format,omitempty"`
+	Default  *ColumnDefault `json:"default,omitempty"`
+}
+
+// Catalog mutation vocabulary: the definition shapes accepted by the
+// imperative catalog endpoints (direct-mode databases only). These mirror
+// the engine's definitions with plain JSON values; the server owns all
+// coercion and validation.
+
+// TableDef defines a new table for TableCreate.
+type TableDef struct {
+	Name        string          `json:"name"`
+	Columns     []ColumnDef     `json:"columns"`
+	PrimaryKey  []string        `json:"primary_key"`
+	Indexes     []IndexDef      `json:"indexes,omitempty"`
+	ForeignKeys []ForeignKeyDef `json:"foreign_keys,omitempty"`
+}
+
+// ColumnDef defines one column. Type is one of text, int64, float64, bool.
+type ColumnDef struct {
+	Name     string         `json:"name"`
+	Type     string         `json:"type"`
+	Nullable bool           `json:"nullable,omitempty"`
+	Format   string         `json:"format,omitempty"`
+	Default  *ColumnDefault `json:"default,omitempty"`
+}
+
+// ColumnDefault is either a builtin generator (func: uuid | now_ms) or a
+// literal of the column's type (value); exactly one is set.
+type ColumnDefault struct {
+	Func  string `json:"func,omitempty"`
+	Value any    `json:"value,omitempty"`
+}
+
+// IndexDef defines one secondary index.
+type IndexDef struct {
+	Name    string   `json:"name"`
+	Columns []string `json:"columns"`
+	Unique  bool     `json:"unique,omitempty"`
+}
+
+// ForeignKeyDef defines one foreign key. RefColumns must be the referenced
+// table's full primary key.
+type ForeignKeyDef struct {
+	Name       string   `json:"name"`
+	Columns    []string `json:"columns"`
+	RefTable   string   `json:"ref_table"`
+	RefColumns []string `json:"ref_columns"`
 }

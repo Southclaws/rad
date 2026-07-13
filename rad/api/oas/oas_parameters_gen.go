@@ -14,6 +14,630 @@ import (
 	"github.com/ogen-go/ogen/validate"
 )
 
+// ColumnCreateParams is parameters of ColumnCreate operation.
+type ColumnCreateParams struct {
+	// The table's current name.
+	Table string
+}
+
+func unpackColumnCreateParams(packed middleware.Parameters) (params ColumnCreateParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "table",
+			In:   "path",
+		}
+		params.Table = packed[key].(string)
+	}
+	return params
+}
+
+func decodeColumnCreateParams(args [1]string, argsEscaped bool, r *http.Request) (params ColumnCreateParams, _ error) {
+	// Decode path: table.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "table",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.Table = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "table",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// ColumnDeleteParams is parameters of ColumnDelete operation.
+type ColumnDeleteParams struct {
+	// The table's current name.
+	Table string
+	// The column's current name.
+	Column string
+}
+
+func unpackColumnDeleteParams(packed middleware.Parameters) (params ColumnDeleteParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "table",
+			In:   "path",
+		}
+		params.Table = packed[key].(string)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "column",
+			In:   "path",
+		}
+		params.Column = packed[key].(string)
+	}
+	return params
+}
+
+func decodeColumnDeleteParams(args [2]string, argsEscaped bool, r *http.Request) (params ColumnDeleteParams, _ error) {
+	// Decode path: table.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "table",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.Table = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "table",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode path: column.
+	if err := func() error {
+		param := args[1]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[1])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "column",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.Column = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "column",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// ColumnUpdateParams is parameters of ColumnUpdate operation.
+type ColumnUpdateParams struct {
+	// The table's current name.
+	Table string
+	// The column's current name.
+	Column string
+}
+
+func unpackColumnUpdateParams(packed middleware.Parameters) (params ColumnUpdateParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "table",
+			In:   "path",
+		}
+		params.Table = packed[key].(string)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "column",
+			In:   "path",
+		}
+		params.Column = packed[key].(string)
+	}
+	return params
+}
+
+func decodeColumnUpdateParams(args [2]string, argsEscaped bool, r *http.Request) (params ColumnUpdateParams, _ error) {
+	// Decode path: table.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "table",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.Table = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "table",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode path: column.
+	if err := func() error {
+		param := args[1]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[1])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "column",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.Column = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "column",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// IndexCreateParams is parameters of IndexCreate operation.
+type IndexCreateParams struct {
+	// The table's current name.
+	Table string
+}
+
+func unpackIndexCreateParams(packed middleware.Parameters) (params IndexCreateParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "table",
+			In:   "path",
+		}
+		params.Table = packed[key].(string)
+	}
+	return params
+}
+
+func decodeIndexCreateParams(args [1]string, argsEscaped bool, r *http.Request) (params IndexCreateParams, _ error) {
+	// Decode path: table.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "table",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.Table = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "table",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// IndexDeleteParams is parameters of IndexDelete operation.
+type IndexDeleteParams struct {
+	// The table's current name.
+	Table string
+	// The index's name.
+	Index string
+}
+
+func unpackIndexDeleteParams(packed middleware.Parameters) (params IndexDeleteParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "table",
+			In:   "path",
+		}
+		params.Table = packed[key].(string)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "index",
+			In:   "path",
+		}
+		params.Index = packed[key].(string)
+	}
+	return params
+}
+
+func decodeIndexDeleteParams(args [2]string, argsEscaped bool, r *http.Request) (params IndexDeleteParams, _ error) {
+	// Decode path: table.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "table",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.Table = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "table",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode path: index.
+	if err := func() error {
+		param := args[1]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[1])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "index",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.Index = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "index",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// TableDeleteParams is parameters of TableDelete operation.
+type TableDeleteParams struct {
+	// The table's current name.
+	Table string
+}
+
+func unpackTableDeleteParams(packed middleware.Parameters) (params TableDeleteParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "table",
+			In:   "path",
+		}
+		params.Table = packed[key].(string)
+	}
+	return params
+}
+
+func decodeTableDeleteParams(args [1]string, argsEscaped bool, r *http.Request) (params TableDeleteParams, _ error) {
+	// Decode path: table.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "table",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.Table = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "table",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// TableUpdateParams is parameters of TableUpdate operation.
+type TableUpdateParams struct {
+	// The table's current name.
+	Table string
+}
+
+func unpackTableUpdateParams(packed middleware.Parameters) (params TableUpdateParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "table",
+			In:   "path",
+		}
+		params.Table = packed[key].(string)
+	}
+	return params
+}
+
+func decodeTableUpdateParams(args [1]string, argsEscaped bool, r *http.Request) (params TableUpdateParams, _ error) {
+	// Decode path: table.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "table",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.Table = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "table",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // TransactionCommitParams is parameters of TransactionCommit operation.
 type TransactionCommitParams struct {
 	// The opaque id returned by `TransactionBegin`.

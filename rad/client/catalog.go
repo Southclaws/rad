@@ -1,0 +1,188 @@
+package radclient
+
+// The imperative catalog operations: create/update/delete for tables,
+// columns, and indexes. These work only against a directly managed database;
+// a schema-managed server rejects them with an invalid problem (use Migrate
+// there instead). Mutations returning the updated table reflect the state
+// after the change, including catalog-resolved details such as index and
+// foreign key definitions.
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/Southclaws/rad/rad/api"
+	"github.com/Southclaws/rad/rad/api/oas"
+	"github.com/Southclaws/rad/rad/protocol"
+)
+
+// Mode reports the database's catalog management mode: "direct" (the
+// catalog is mutable over this API) or "schema" (schema.rad migrations own
+// the catalog).
+func (c *Client) Mode(ctx context.Context) (string, error) {
+	res, err := c.oas.GetHealth(ctx)
+	if err != nil {
+		return "", transportError(err)
+	}
+	return res.Mode, nil
+}
+
+// TableCreate creates a table: columns, primary key, and optionally indexes
+// and foreign keys, in one atomic call.
+func (c *Client) TableCreate(ctx context.Context, def protocol.TableDef) (protocol.TableInfo, error) {
+	res, err := c.oas.TableCreate(ctx, oas.NewOptTableDef(api.TableDefToOAS(def)))
+	if err != nil {
+		return protocol.TableInfo{}, transportError(err)
+	}
+	switch v := res.(type) {
+	case *oas.TableInfo:
+		return api.TableFromOAS(*v), nil
+	case *oas.TableCreateConflict:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.TableCreateUnprocessableEntity:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	default:
+		return protocol.TableInfo{}, fmt.Errorf("rad: unexpected catalog response %T", res)
+	}
+}
+
+// TableDelete removes a table. Tables referenced by other tables' foreign
+// keys must have their referencing tables deleted first.
+func (c *Client) TableDelete(ctx context.Context, table string) error {
+	res, err := c.oas.TableDelete(ctx, oas.TableDeleteParams{Table: table})
+	if err != nil {
+		return transportError(err)
+	}
+	switch v := res.(type) {
+	case *oas.NoContent:
+		return nil
+	case *oas.TableDeleteConflict:
+		return apiError(oas.Problem(*v))
+	case *oas.TableDeleteUnprocessableEntity:
+		return apiError(oas.Problem(*v))
+	default:
+		return fmt.Errorf("rad: unexpected catalog response %T", res)
+	}
+}
+
+// TableUpdate updates a table's properties; the only updatable property
+// today is its name.
+func (c *Client) TableUpdate(ctx context.Context, table, name string) (protocol.TableInfo, error) {
+	res, err := c.oas.TableUpdate(ctx,
+		oas.NewOptTableUpdateProps(oas.TableUpdateProps{Name: name}),
+		oas.TableUpdateParams{Table: table})
+	if err != nil {
+		return protocol.TableInfo{}, transportError(err)
+	}
+	switch v := res.(type) {
+	case *oas.TableInfo:
+		return api.TableFromOAS(*v), nil
+	case *oas.TableUpdateConflict:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.TableUpdateUnprocessableEntity:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	default:
+		return protocol.TableInfo{}, fmt.Errorf("rad: unexpected catalog response %T", res)
+	}
+}
+
+// ColumnCreate appends a column to a table. The column must be nullable or
+// carry a literal default, since existing rows need a value.
+func (c *Client) ColumnCreate(ctx context.Context, table string, col protocol.ColumnDef) (protocol.TableInfo, error) {
+	res, err := c.oas.ColumnCreate(ctx,
+		oas.NewOptColumnInfo(api.ColumnToOAS(protocol.ColumnInfo(col))),
+		oas.ColumnCreateParams{Table: table})
+	if err != nil {
+		return protocol.TableInfo{}, transportError(err)
+	}
+	switch v := res.(type) {
+	case *oas.TableInfo:
+		return api.TableFromOAS(*v), nil
+	case *oas.ColumnCreateConflict:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.ColumnCreateUnprocessableEntity:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	default:
+		return protocol.TableInfo{}, fmt.Errorf("rad: unexpected catalog response %T", res)
+	}
+}
+
+// ColumnDelete removes a column not used by the primary key, an index, or a
+// foreign key.
+func (c *Client) ColumnDelete(ctx context.Context, table, column string) (protocol.TableInfo, error) {
+	res, err := c.oas.ColumnDelete(ctx, oas.ColumnDeleteParams{Table: table, Column: column})
+	if err != nil {
+		return protocol.TableInfo{}, transportError(err)
+	}
+	switch v := res.(type) {
+	case *oas.TableInfo:
+		return api.TableFromOAS(*v), nil
+	case *oas.ColumnDeleteConflict:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.ColumnDeleteUnprocessableEntity:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	default:
+		return protocol.TableInfo{}, fmt.Errorf("rad: unexpected catalog response %T", res)
+	}
+}
+
+// ColumnUpdate updates a column's properties; the only updatable property
+// today is its name.
+func (c *Client) ColumnUpdate(ctx context.Context, table, column, name string) (protocol.TableInfo, error) {
+	res, err := c.oas.ColumnUpdate(ctx,
+		oas.NewOptColumnUpdateProps(oas.ColumnUpdateProps{Name: name}),
+		oas.ColumnUpdateParams{Table: table, Column: column})
+	if err != nil {
+		return protocol.TableInfo{}, transportError(err)
+	}
+	switch v := res.(type) {
+	case *oas.TableInfo:
+		return api.TableFromOAS(*v), nil
+	case *oas.ColumnUpdateConflict:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.ColumnUpdateUnprocessableEntity:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	default:
+		return protocol.TableInfo{}, fmt.Errorf("rad: unexpected catalog response %T", res)
+	}
+}
+
+// IndexCreate registers an index and backfills entries for existing rows
+// atomically; backfilling a unique index over duplicate data fails with a
+// conflict and nothing is registered.
+func (c *Client) IndexCreate(ctx context.Context, table string, idx protocol.IndexDef) (protocol.TableInfo, error) {
+	res, err := c.oas.IndexCreate(ctx,
+		oas.NewOptIndexInfo(api.IndexToOAS(idx)),
+		oas.IndexCreateParams{Table: table})
+	if err != nil {
+		return protocol.TableInfo{}, transportError(err)
+	}
+	switch v := res.(type) {
+	case *oas.TableInfo:
+		return api.TableFromOAS(*v), nil
+	case *oas.IndexCreateConflict:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.IndexCreateUnprocessableEntity:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	default:
+		return protocol.TableInfo{}, fmt.Errorf("rad: unexpected catalog response %T", res)
+	}
+}
+
+// IndexDelete removes an index; queries fall back to other access paths.
+func (c *Client) IndexDelete(ctx context.Context, table, index string) (protocol.TableInfo, error) {
+	res, err := c.oas.IndexDelete(ctx, oas.IndexDeleteParams{Table: table, Index: index})
+	if err != nil {
+		return protocol.TableInfo{}, transportError(err)
+	}
+	switch v := res.(type) {
+	case *oas.TableInfo:
+		return api.TableFromOAS(*v), nil
+	case *oas.IndexDeleteConflict:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.IndexDeleteUnprocessableEntity:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	default:
+		return protocol.TableInfo{}, fmt.Errorf("rad: unexpected catalog response %T", res)
+	}
+}

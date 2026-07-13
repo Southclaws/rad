@@ -30,7 +30,7 @@ func TestConcurrentSchemaChangeConflictsWithOpenTxn(t *testing.T) {
 	}
 
 	// A schema change on the same table commits while the transaction is open.
-	if _, err := eng.Catalog().AddColumn(ctx, "users", catalog.ColumnDef{
+	if _, err := eng.Catalog().CreateColumn(ctx, "users", catalog.ColumnDef{
 		Name: "bio", Type: catalog.TypeText, Nullable: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestConcurrentSchemaChangeOnOtherTableDoesNotConflict(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := eng.Catalog().AddColumn(ctx, "users", catalog.ColumnDef{
+	if _, err := eng.Catalog().CreateColumn(ctx, "users", catalog.ColumnDef{
 		Name: "bio", Type: catalog.TypeText, Nullable: true,
 	}); err != nil {
 		t.Fatal(err)

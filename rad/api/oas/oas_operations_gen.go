@@ -6,13 +6,21 @@ package oas
 type OperationName = string
 
 const (
+	ColumnCreateOperation         OperationName = "ColumnCreate"
+	ColumnDeleteOperation         OperationName = "ColumnDelete"
+	ColumnUpdateOperation         OperationName = "ColumnUpdate"
 	GetHealthOperation            OperationName = "GetHealth"
+	IndexCreateOperation          OperationName = "IndexCreate"
+	IndexDeleteOperation          OperationName = "IndexDelete"
 	QueryOperation                OperationName = "Query"
 	RowCreateOperation            OperationName = "RowCreate"
 	RowDeleteOperation            OperationName = "RowDelete"
 	RowUpdateOperation            OperationName = "RowUpdate"
 	SchemaMigrateOperation        OperationName = "SchemaMigrate"
+	TableCreateOperation          OperationName = "TableCreate"
+	TableDeleteOperation          OperationName = "TableDelete"
 	TableListOperation            OperationName = "TableList"
+	TableUpdateOperation          OperationName = "TableUpdate"
 	TransactionBeginOperation     OperationName = "TransactionBegin"
 	TransactionCommitOperation    OperationName = "TransactionCommit"
 	TransactionQueryOperation     OperationName = "TransactionQuery"

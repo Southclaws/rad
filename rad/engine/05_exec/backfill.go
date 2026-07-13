@@ -9,7 +9,7 @@ import (
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 )
 
-// AddIndexWithBackfill registers a new index in the catalog and writes index
+// CreateIndexWithBackfill registers a new index in the catalog and writes index
 // entries for every existing row, in ONE transaction. If the backfill fails —
 // most notably two rows sharing a value under a unique index — the
 // registration rolls back with it, so the catalog never exposes an index
@@ -19,9 +19,9 @@ import (
 // The serializable transaction also closes the race with concurrent writers:
 // the backfill's table scan tracks its range, so a row inserted while the
 // backfill runs conflicts at commit rather than being missed.
-func (e *Engine) AddIndexWithBackfill(ctx context.Context, table string, def catalog.IndexDef) error {
+func (e *Engine) CreateIndexWithBackfill(ctx context.Context, table string, def catalog.IndexDef) error {
 	return e.Txn(ctx, func(tx *Tx) error {
-		tbl, idx, err := catalog.AddIndexIn(ctx, tx.txn, table, def)
+		tbl, idx, err := catalog.CreateIndexIn(ctx, tx.txn, table, def)
 		if err != nil {
 			return err
 		}

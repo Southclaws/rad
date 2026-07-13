@@ -200,12 +200,12 @@ tuple value order.
 
 `rowcodec.go` is the row storage format: a JSON object keyed by **column
 ID**, not column name. Renaming a column is a pure catalog operation — no row
-rewrite — and dropping a column simply orphans its field, which
+rewrite — and deleting a column simply orphans its field, which
 `UnmarshalRow` discards. Reading a row written before a column existed yields
 the column's *literal* default when one is defined, otherwise NULL; generator
 defaults (`uuid`, `now_ms`) are never fabricated on read. `rowcodec_test.go`
 holds the whole cheap-migration story: rename preserves data and index
-service, added columns read defaults or NULL, and a dropped-then-recreated
+service, added columns read defaults or NULL, and a deleted-then-recreated
 column name gets a fresh ID so old data does not bleed back in.
 
 ## Index range scans
@@ -293,7 +293,7 @@ parent with children is restricted while a leaf deletes cleanly
 the row deleted, atomically with the check under the serializable
 transaction.
 
-**Backfill** (`backfill.go`): `AddIndexWithBackfill` registers the index and
+**Backfill** (`backfill.go`): `CreateIndexWithBackfill` registers the index and
 writes entries for every existing row in *one* transaction. If the backfill
 fails — most notably two rows sharing a value under a unique index, detected
 by an in-memory `seen` map with the same NULL exemption — the registration

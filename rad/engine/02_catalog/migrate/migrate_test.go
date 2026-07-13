@@ -1,5 +1,5 @@
 // These tests document the migration differ: which schema edits produce
-// which steps, how renamed_from hints turn drop+add into renames, how new
+// which steps, how renamed_from hints turn delete+create into renames, how new
 // tables are dependency-ordered, and which transformations are refused.
 package migrate_test
 
@@ -95,7 +95,7 @@ func TestNoChanges(t *testing.T) {
 	}
 }
 
-func TestAddColumnAndIndex(t *testing.T) {
+func TestCreateColumnAndIndex(t *testing.T) {
 	steps := diff(t, currentFrom(t, v1), `
 tables:
   - name: users
@@ -110,9 +110,9 @@ tables:
 `)
 	got := stepStrings(steps)
 	want := []string{
-		"add column users.email",
-		"add index boards_user_id_idx on boards",
-		"add index users_email_uq on users",
+		"create column users.email",
+		"create index boards_user_id_idx on boards",
+		"create index users_email_uq on users",
 	}
 	// Order within groups is deterministic; adds come before index adds.
 	if len(got) != 3 || got[0] != want[0] {
@@ -120,8 +120,8 @@ tables:
 	}
 }
 
-// A rename hint converts what would be drop+add into a rename; without the
-// hint the same edit is a drop plus an add.
+// A rename hint converts what would be delete+create into a rename; without the
+// hint the same edit is a delete plus a create.
 func TestColumnRenameHint(t *testing.T) {
 	current := currentFrom(t, v1)
 
@@ -138,7 +138,7 @@ tables:
 `)
 	got := stepStrings(hinted)
 	// One step only: the index over the renamed column is structurally
-	// unchanged (indexes are compared by shape, not name), so no drop or
+	// unchanged (indexes are compared by shape, not name), so no delete or
 	// backfill happens.
 	if len(got) != 1 || got[0] != "rename column users.name -> full_name" {
 		t.Fatalf("hinted rename: %v", got)
@@ -157,8 +157,8 @@ tables:
 `)
 	gotU := stepStrings(unhinted)
 	joined := strings.Join(gotU, "; ")
-	if !strings.Contains(joined, "add column users.full_name") || !strings.Contains(joined, "drop column users.name") {
-		t.Fatalf("unhinted rename should be add+drop: %v", gotU)
+	if !strings.Contains(joined, "create column users.full_name") || !strings.Contains(joined, "delete column users.name") {
+		t.Fatalf("unhinted rename should be create+delete: %v", gotU)
 	}
 }
 
@@ -181,7 +181,7 @@ tables:
 	}
 }
 
-func TestDropTable(t *testing.T) {
+func TestDeleteTable(t *testing.T) {
 	steps := diff(t, currentFrom(t, v1), `
 tables:
   - name: users
@@ -190,13 +190,13 @@ tables:
       - { name: name, type: string, index: true }
 `)
 	got := stepStrings(steps)
-	if len(got) != 1 || got[0] != "drop table boards" {
+	if len(got) != 1 || got[0] != "delete table boards" {
 		t.Fatalf("got %v", got)
 	}
 }
 
-// Dropping a table that survivors still reference is refused.
-func TestDropReferencedTableRejected(t *testing.T) {
+// Deleting a table that survivors still reference is refused.
+func TestDeleteReferencedTableRejected(t *testing.T) {
 	_, err := migrate.Diff(currentFrom(t, v1), parse(t, `
 tables:
   - name: boards
@@ -204,7 +204,7 @@ tables:
       - { name: id,      type: string, pk: true }
       - { name: user_id, type: string, ref: users.id }
 `))
-	if err == nil || !strings.Contains(err.Error(), "references dropped table") {
+	if err == nil || !strings.Contains(err.Error(), "references deleted table") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -303,11 +303,11 @@ tables:
 	}
 }
 
-// Dropping a parent and its referencing child together must drop the child
-// first — the catalog refuses to drop a table that is still referenced. The
+// Deleting a parent and its referencing child together must delete the child
+// first — the catalog refuses to delete a table that is still referenced. The
 // names are chosen adversarially: the parent sorts before the child, so a
-// name-ordered plan would drop the parent first and fail at apply time.
-func TestDropsOrderedReferencingTableFirst(t *testing.T) {
+// name-ordered plan would delete the parent first and fail at apply time.
+func TestDeletesOrderedReferencingTableFirst(t *testing.T) {
 	current := currentFrom(t, `
 tables:
   - name: accounts
@@ -328,8 +328,8 @@ tables:
 
 	want := []string{
 		"create table unrelated",
-		"drop table zposts",
-		"drop table accounts",
+		"delete table zposts",
+		"delete table accounts",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("steps = %v, want %v", got, want)

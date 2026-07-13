@@ -7,7 +7,7 @@
 // execution concerns.
 //
 // Renames are recognized only through @renamed_from hints — without a hint,
-// a renamed table or column diffs as a drop plus an add, exactly as SQL
+// a renamed table or column diffs as a delete plus a create, exactly as SQL
 // migration tools behave.
 //
 // Unsupported transformations (column type or nullability changes, foreign
@@ -28,8 +28,8 @@ import (
 
 // Step is one schema-change operation of a migration plan. Steps are ordered so that
 // applying them sequentially is always valid: renames first, then new
-// tables (dependency-ordered), added columns, index changes, and drops
-// last (table drops referencing-table-first, mirroring creation order).
+// tables (dependency-ordered), created columns, index changes, and deletes
+// last (table deletes referencing-table-first, mirroring creation order).
 type Step interface {
 	step()
 	String() string
@@ -38,41 +38,41 @@ type Step interface {
 type RenameTable struct{ From, To string }
 type RenameColumn struct{ Table, From, To string }
 type CreateTable struct{ Def catalog.TableDef }
-type AddColumn struct {
+type CreateColumn struct {
 	Table string
 	Def   catalog.ColumnDef
 }
-type AddIndex struct {
+type CreateIndex struct {
 	Table string
 	Def   catalog.IndexDef
 }
-type DropIndex struct{ Table, Index string }
-type DropColumn struct{ Table, Column string }
-type DropTable struct{ Table string }
+type DeleteIndex struct{ Table, Index string }
+type DeleteColumn struct{ Table, Column string }
+type DeleteTable struct{ Table string }
 
 func (RenameTable) step()  {}
 func (RenameColumn) step() {}
 func (CreateTable) step()  {}
-func (AddColumn) step()    {}
-func (AddIndex) step()     {}
-func (DropIndex) step()    {}
-func (DropColumn) step()   {}
-func (DropTable) step()    {}
+func (CreateColumn) step()    {}
+func (CreateIndex) step()     {}
+func (DeleteIndex) step()    {}
+func (DeleteColumn) step()   {}
+func (DeleteTable) step()    {}
 
 func (s RenameTable) String() string { return fmt.Sprintf("rename table %s -> %s", s.From, s.To) }
 func (s RenameColumn) String() string {
 	return fmt.Sprintf("rename column %s.%s -> %s", s.Table, s.From, s.To)
 }
 func (s CreateTable) String() string { return fmt.Sprintf("create table %s", s.Def.Name) }
-func (s AddColumn) String() string   { return fmt.Sprintf("add column %s.%s", s.Table, s.Def.Name) }
-func (s AddIndex) String() string    { return fmt.Sprintf("add index %s on %s", s.Def.Name, s.Table) }
-func (s DropIndex) String() string   { return fmt.Sprintf("drop index %s on %s", s.Index, s.Table) }
-func (s DropColumn) String() string  { return fmt.Sprintf("drop column %s.%s", s.Table, s.Column) }
-func (s DropTable) String() string   { return fmt.Sprintf("drop table %s", s.Table) }
+func (s CreateColumn) String() string   { return fmt.Sprintf("create column %s.%s", s.Table, s.Def.Name) }
+func (s CreateIndex) String() string    { return fmt.Sprintf("create index %s on %s", s.Def.Name, s.Table) }
+func (s DeleteIndex) String() string   { return fmt.Sprintf("delete index %s on %s", s.Index, s.Table) }
+func (s DeleteColumn) String() string  { return fmt.Sprintf("delete column %s.%s", s.Table, s.Column) }
+func (s DeleteTable) String() string   { return fmt.Sprintf("delete table %s", s.Table) }
 
 // Diff computes the ordered steps that take current to desired.
 func Diff(current []catalog.Table, desired *schema.Schema) ([]Step, error) {
-	var renames, adds, indexDrops, indexAdds, colDrops, tableDrops []Step
+	var renames, adds, indexDeletes, indexCreates, columnDeletes, tableDeletes []Step
 
 	curByName := map[string]catalog.Table{}
 	for _, t := range current {
@@ -98,27 +98,27 @@ func Diff(current []catalog.Table, desired *schema.Schema) ([]Step, error) {
 		}
 	}
 
-	// Current tables with no desired counterpart get dropped. Drops are
-	// ordered referencing-table-first: the catalog refuses to drop a table
+	// Current tables with no desired counterpart get deleted. Deletes are
+	// ordered referencing-table-first: the catalog refuses to delete a table
 	// another table still points at through a foreign key, so children must
 	// go before their parents.
-	dropped := map[string]bool{}
-	var droppedTables []catalog.Table
+	deleted := map[string]bool{}
+	var deletedTables []catalog.Table
 	for _, t := range current {
 		if _, ok := matched[t.Name]; !ok {
-			dropped[t.Name] = true
-			droppedTables = append(droppedTables, t)
+			deleted[t.Name] = true
+			deletedTables = append(deletedTables, t)
 		}
 	}
-	for _, t := range orderDrops(droppedTables) {
-		tableDrops = append(tableDrops, DropTable{Table: t.Name})
+	for _, t := range orderDeletes(deletedTables) {
+		tableDeletes = append(tableDeletes, DeleteTable{Table: t.Name})
 	}
 
-	// No surviving or new table may reference a dropped one.
+	// No surviving or new table may reference a deleted one.
 	for _, d := range desired.Tables {
 		for _, fk := range d.Def.ForeignKeys {
-			if dropped[fk.RefTable] {
-				return nil, reject.Inputf("migrate: table %q references dropped table %q", d.Def.Name, fk.RefTable)
+			if deleted[fk.RefTable] {
+				return nil, reject.Inputf("migrate: table %q references deleted table %q", d.Def.Name, fk.RefTable)
 			}
 		}
 	}
@@ -141,19 +141,19 @@ func Diff(current []catalog.Table, desired *schema.Schema) ([]Step, error) {
 		}
 		renames = append(renames, steps.renames...)
 		adds = append(adds, steps.adds...)
-		indexDrops = append(indexDrops, steps.indexDrops...)
-		indexAdds = append(indexAdds, steps.indexAdds...)
-		colDrops = append(colDrops, steps.colDrops...)
+		indexDeletes = append(indexDeletes, steps.indexDeletes...)
+		indexCreates = append(indexCreates, steps.indexCreates...)
+		columnDeletes = append(columnDeletes, steps.columnDeletes...)
 	}
 
 	var out []Step
 	out = append(out, renames...)
 	out = append(out, tableCreates...)
 	out = append(out, adds...)
-	out = append(out, indexDrops...)
-	out = append(out, indexAdds...)
-	out = append(out, colDrops...)
-	out = append(out, tableDrops...)
+	out = append(out, indexDeletes...)
+	out = append(out, indexCreates...)
+	out = append(out, columnDeletes...)
+	out = append(out, tableDeletes...)
 	return out, nil
 }
 
@@ -163,7 +163,7 @@ func hasTable(m map[string]catalog.Table, name string) bool {
 }
 
 type tableSteps struct {
-	renames, adds, indexDrops, indexAdds, colDrops []Step
+	renames, adds, indexDeletes, indexCreates, columnDeletes []Step
 }
 
 func diffTable(cur catalog.Table, d schema.Table) (tableSteps, error) {
@@ -193,10 +193,10 @@ func diffTable(cur catalog.Table, d schema.Table) (tableSteps, error) {
 				continue
 			}
 		}
-		out.adds = append(out.adds, AddColumn{Table: name, Def: dc})
+		out.adds = append(out.adds, CreateColumn{Table: name, Def: dc})
 	}
 
-	// Validate matched columns and collect drops.
+	// Validate matched columns and collect deletes.
 	for _, dc := range d.Def.Columns {
 		c, ok := curCols[dc.Name]
 		if !ok {
@@ -211,7 +211,7 @@ func diffTable(cur catalog.Table, d schema.Table) (tableSteps, error) {
 	}
 	for colName := range curCols {
 		if !desiredCols[colName] {
-			out.colDrops = append(out.colDrops, DropColumn{Table: name, Column: colName})
+			out.columnDeletes = append(out.columnDeletes, DeleteColumn{Table: name, Column: colName})
 		}
 	}
 
@@ -229,7 +229,7 @@ func diffTable(cur catalog.Table, d schema.Table) (tableSteps, error) {
 	}
 
 	// Indexes: compared structurally (columns + uniqueness) on post-rename
-	// column lists, not by name — renames must not force a drop and
+	// column lists, not by name — renames must not force a delete and
 	// backfill of an index whose shape is unchanged. Names are identifiers
 	// only.
 	sig := func(cols []string, unique bool) string {
@@ -250,20 +250,20 @@ func diffTable(cur catalog.Table, d schema.Table) (tableSteps, error) {
 	}
 	for key, di := range desiredIdx {
 		if _, ok := curIdx[key]; !ok {
-			out.indexAdds = append(out.indexAdds, AddIndex{Table: name, Def: di})
+			out.indexCreates = append(out.indexCreates, CreateIndex{Table: name, Def: di})
 		}
 	}
 	for key, ci := range curIdx {
 		if _, ok := desiredIdx[key]; !ok {
-			out.indexDrops = append(out.indexDrops, DropIndex{Table: name, Index: ci.Name})
+			out.indexDeletes = append(out.indexDeletes, DeleteIndex{Table: name, Index: ci.Name})
 		}
 	}
 
 	sortSteps(out.renames)
 	sortSteps(out.adds)
-	sortSteps(out.indexDrops)
-	sortSteps(out.indexAdds)
-	sortSteps(out.colDrops)
+	sortSteps(out.indexDeletes)
+	sortSteps(out.indexCreates)
+	sortSteps(out.columnDeletes)
 	return out, nil
 }
 
@@ -366,17 +366,17 @@ func orderCreates(creates []schema.Table) ([]schema.Table, error) {
 	return ordered, nil
 }
 
-// orderDrops sorts tables to drop so that every table precedes the tables
+// orderDeletes sorts tables to delete so that every table precedes the tables
 // it references — the reverse of creation order. Foreign keys cannot be
 // added to existing tables and creation rejects cycles, so only
-// self-references can exist among a drop set; they don't constrain order.
+// self-references can exist among a delete set; they don't constrain order.
 // Input arrives name-sorted (ListTables), which keeps the result stable.
-func orderDrops(tables []catalog.Table) []catalog.Table {
-	byID := map[string]string{} // table ID -> name, drop set only
+func orderDeletes(tables []catalog.Table) []catalog.Table {
+	byID := map[string]string{} // table ID -> name, delete set only
 	for _, t := range tables {
 		byID[t.ID] = t.Name
 	}
-	// refs[parent] counts dropped tables still referencing parent.
+	// refs[parent] counts deleted tables still referencing parent.
 	refs := map[string]int{}
 	for _, t := range tables {
 		for _, fk := range t.ForeignKeys {

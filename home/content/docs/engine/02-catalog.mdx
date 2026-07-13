@@ -44,7 +44,7 @@ prefix plus a number — `t3` for tables, `c17` for columns, `i5` for indexes,
 `/rad/catalog/meta/next_id` by `nextID`. Because the counter is shared, IDs
 are unique across kinds, not merely within one (the tests assert no ID
 collides across a table, its columns, and its indexes). IDs are never reused,
-including after drops.
+including after deletes.
 
 Callers define schema in terms of names (`TableDef`, `ColumnDef`, `IndexDef`,
 `ForeignKeyDef` carry no IDs); the catalog assigns IDs at creation time.
@@ -57,7 +57,7 @@ column ID, index entries by table and index ID. Two properties follow:
   inside the blob. No row or index entry is touched, and the ID — and
   therefore the data — is preserved (`TestRenameColumnRewritesReferences`,
   `TestRenameTableKeepsIdentity`).
-- **Drops orphan data safely.** `DropTable` and `DropIndex` delete metadata
+- **Deletes orphan data safely.** `DeleteTable` and `DeleteIndex` delete metadata
   only; the abandoned rows and index entries are unreachable garbage awaiting
   a future vacuum (a documented POC trade-off). Since IDs are never reused, a
   later table can never accidentally adopt an orphan's keys.
@@ -109,7 +109,7 @@ transaction itself (`tableIn`). Two consequences fall out:
   sibling pins that a schema change on an untouched table does not conflict).
 
 ID stability is still the backstop for readers who do use committed state:
-within one `GetTable`, a drop or rename between the name read and the
+within one `GetTable`, a delete or rename between the name read and the
 metadata read resolves as "not found" or as the pre-rename blob — never as
 another table's data, because IDs are never reused.
 
@@ -132,12 +132,12 @@ built on `mutateTableIn` (load blob, apply closure, save blob):
 
 - `RenameTable(ctx, old, new)`, `RenameColumn(ctx, table, old, new)` —
   metadata-only, as above.
-- `AddColumn(ctx, table, def)` — appends a column with a fresh `c<N>` ID.
-- `DropColumn(ctx, table, col)` — removes the column after reference checks.
-- `AddIndex(ctx, table, def) (Index, error)` — registers an index; suitable
+- `CreateColumn(ctx, table, def)` — appends a column with a fresh `c<N>` ID.
+- `DeleteColumn(ctx, table, col)` — removes the column after reference checks.
+- `CreateIndex(ctx, table, def) (Index, error)` — registers an index; suitable
   only for tables with no rows (see the backfill contract below).
-- `DropIndex(ctx, table, index)` — removes the index metadata.
-- `DropTable(ctx, table)` — deletes the blob and name key.
+- `DeleteIndex(ctx, table, index)` — removes the index metadata.
+- `DeleteTable(ctx, table)` — deletes the blob and name key.
 
 ### Transaction-scoped mutations and the backfill contract
 
@@ -145,7 +145,7 @@ One mutation is exported in a caller's-transaction form: the
 package-level function
 
 ```go
-func AddIndexIn(ctx, view kv.KV, tableName string, def IndexDef) (Table, Index, error)
+func CreateIndexIn(ctx, view kv.KV, tableName string, def IndexDef) (Table, Index, error)
 ```
 
 mutates the catalog against `view` — expected to be a transaction the caller
@@ -154,17 +154,17 @@ only inside that transaction until commit). It exists because index
 registration and index backfill must be atomic: a committed index with no
 entries would let the planner choose an access path that silently drops rows,
 violating the invariant that access-path choice never changes results.
-`exec.Engine.AddIndexWithBackfill` (rad/engine/05_exec/backfill.go) is the
-composition: inside one `Engine.Txn` it calls `catalog.AddIndexIn` and then
+`exec.Engine.CreateIndexWithBackfill` (rad/engine/05_exec/backfill.go) is the
+composition: inside one `Engine.Txn` it calls `catalog.CreateIndexIn` and then
 writes index entries for every existing row. A backfill failure — notably a
 uniqueness violation — rolls the registration back with it, and the
-serializable scan closes the race with concurrent inserts. `Catalog.AddIndex`
-is `AddIndexIn` in its own transaction, for empty tables. The frontend's
-migration applier always routes `AddIndex` steps through
-`AddIndexWithBackfill`.
+serializable scan closes the race with concurrent inserts. `Catalog.CreateIndex`
+is `CreateIndexIn` in its own transaction, for empty tables. The frontend's
+migration applier always routes `CreateIndex` steps through
+`CreateIndexWithBackfill`.
 
 `mutateTableIn` (unexported) follows the same pattern for the other
-mutations but is not exposed; `AddIndexIn` is the only *In variant in the
+mutations but is not exposed; `CreateIndexIn` is the only *In variant in the
 public surface today.
 
 ## Validation: what the catalog enforces, what it leaves above
@@ -180,20 +180,39 @@ generators rejected); a primary key is required, its columns must exist and
 be non-nullable; indexes need at least one existing column; foreign keys must
 reference an existing table's *full primary key, in order* (a POC
 restriction), with matching column counts and types. Evolution adds:
-`AddColumn` requires new columns to be nullable or carry a *literal* default,
+`CreateColumn` requires new columns to be nullable or carry a *literal* default,
 because existing rows need a stable value (a generator would fabricate a
-different one on every read); `DropColumn` refuses columns used by the
-primary key, any index, or any of the table's own foreign keys — drop the
+different one on every read); `DeleteColumn` refuses columns used by the
+primary key, any index, or any of the table's own foreign keys — delete the
 dependent object first.
 
 Everything value-level is deliberately left to 05_exec: NOT NULL enforcement
 on writes, unique-index checking, FK parent-existence on insert and
 child-existence on delete (`checkForeignKeys`, `checkNoReferences`), default
-materialization, and index maintenance. The catalog also does *not* guard
-`DropTable` against inbound foreign keys from other tables — dropping a
-referenced parent leaves children with dangling `RefTableID`s. Only the
-migration differ checks this (`migrate: table %q references dropped table`);
-direct `Catalog.DropTable` calls are unguarded.
+materialization, and index maintenance. `DeleteTable` does guard the
+*metadata* level: a table another table references through a foreign key
+cannot be deleted (self-references excepted), so a `RefTableID` never
+dangles. The migration differ orders multi-table deletes
+referencing-table-first to satisfy the same rule
+(`TestDeletesOrderedReferencingTableFirst`).
+
+## Catalog management mode
+
+Every database carries a management mode, stored as catalog metadata under
+`/rad/catalog/meta/mode`: **direct** (the live catalog is the source of
+truth; the transport's imperative catalog operations are allowed) or
+**schema** (a `schema.rad` document is the source of truth; migration is the
+only mutation channel). The mode is settled once, at first initialisation
+(`InitMode`, driven by `rad serve --catalog-mode` / `RAD_CATALOG_MODE`), and
+never changes; a boot that explicitly requests a different mode than the
+stored one fails loudly. A database never initialised through `InitMode` —
+embedded engines, tests — reads as direct.
+
+Enforcement deliberately does *not* live here. The reconciler and the
+imperative endpoints drive the same mutation surface, so the catalog cannot
+tell the channels apart; the transport gates its imperative endpoints on the
+stored mode, reading it once at startup (the mode is immutable, so caching
+is sound). This package only records and reports it.
 
 ## Subpackages: schema and migrate
 
@@ -210,11 +229,11 @@ the definition proper.
 
 `migrate` is a pure differ: `Diff(current []catalog.Table, desired
 *schema.Schema) ([]Step, error)` returns an ordered plan (renames, creates in
-FK-dependency order, added columns, index drops, index adds, column drops,
-table drops) without touching the store. Renames are recognized only through
-hints — otherwise a rename diffs as drop-plus-add. Indexes are matched
+FK-dependency order, created columns, index deletes, index creates, column deletes,
+table deletes, referencing-table-first) without touching the store. Renames are recognized only through
+hints — otherwise a rename diffs as delete-plus-create. Indexes are matched
 structurally (post-rename columns + uniqueness), not by name, so a column
-rename never forces a needless drop-and-backfill. Unsupported changes (column
+rename never forces a needless delete-and-backfill. Unsupported changes (column
 type or nullability, primary keys, FKs on existing tables) are errors, not
 destructive guesses. Applying the plan is the frontend's job
 (`DB.Migrate` in rad/engine/06_frontend/migrate.go), one step per transaction — the
@@ -227,7 +246,7 @@ steps committed.
   are built from IDs, so any committed `Table` value, however stale, points
   at real keys.
 - A committed index has entries for every committed row of its table (the
-  `AddIndexIn` + backfill contract).
+  `CreateIndexIn` + backfill contract).
 - `Table.PrimaryKey` is non-empty and its columns are non-nullable — the
   executor's tuple encoding and the binder's uniqueness-based cardinality
   inference both assume it.
