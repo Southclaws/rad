@@ -39,11 +39,15 @@ func TestWireUnknownNodeKindRejected(t *testing.T) {
 	if status != 400 && status != 422 {
 		t.Fatalf("unknown kind: status %d, want schema rejection (400/422)\n%s", status, body)
 	}
+	if !strings.Contains(body, `node \"m\": unknown relation kind \"mapreduce\"`) {
+		t.Fatalf("rejection does not name the node and kind:\n%s", body)
+	}
 }
 
 func TestWireCrossVariantFieldRejected(t *testing.T) {
 	d := shop(t)
-	// A scan carrying a filter's payload — closed unions must reject it.
+	// A scan carrying a filter's payload — closed unions must reject it, and
+	// the error must name the node and its variant.
 	status, body := postQuery(t, d, `{
 		"nodes": {"s": {"kind": "scan", "table": "orders", "scope": "o",
 			"predicate": {"kind": "lit", "value": true}}},
@@ -51,6 +55,9 @@ func TestWireCrossVariantFieldRejected(t *testing.T) {
 	}`)
 	if status != 400 && status != 422 {
 		t.Fatalf("cross-variant field: status %d, want schema rejection\n%s", status, body)
+	}
+	if !strings.Contains(body, `node \"s\" (scan)`) {
+		t.Fatalf("rejection does not name the node and variant:\n%s", body)
 	}
 }
 
@@ -74,13 +81,45 @@ func TestWireNegativeLimitRejected(t *testing.T) {
 	if status != 400 && status != 422 {
 		t.Fatalf("negative limit: status %d, want rejection\n%s", status, body)
 	}
-	// FINDING: the rejection is correct but the detail is a raw jsonschema
-	// dump — `oneOf: did not validate against any of [<anonymous schema> ×7]`
-	// — which tells the caller nothing about the negative limit. Closed
-	// unions need titled variants or a post-validation "best match" pass to
-	// produce actionable 400s.
-	if !strings.Contains(body, "schema validation failed") {
-		t.Fatalf("unexpected rejection shape:\n%s", body)
+	// The kind-directed best-match pass names the node, its variant, and the
+	// violated rule — no more anonymous oneOf dumps.
+	if !strings.Contains(body, `node \"s\" (slice)`) || !strings.Contains(body, "limit") {
+		t.Fatalf("rejection does not name node and rule:\n%s", body)
+	}
+}
+
+func TestWireBadExpressionInsideNode(t *testing.T) {
+	d := shop(t)
+	// A binary comparison missing its right operand: the failure names the
+	// node AND drills into the offending expression variant.
+	status, body := postQuery(t, d, `{
+		"nodes": {
+			"o": {"kind": "scan", "table": "orders", "scope": "o"},
+			"f": {"kind": "filter", "input": "o",
+				"predicate": {"kind": "binary", "op": "eq",
+					"left": {"kind": "col", "scope": "o", "column": "status"}}}
+		},
+		"root": {"node": "f", "cardinality": "many"}
+	}`)
+	if status != 400 && status != 422 {
+		t.Fatalf("bad expr: status %d, want rejection\n%s", status, body)
+	}
+	if !strings.Contains(body, `node \"f\" (filter)`) || !strings.Contains(body, "binary") {
+		t.Fatalf("rejection does not locate the bad expression:\n%s", body)
+	}
+}
+
+func TestWireMissingKindRejected(t *testing.T) {
+	d := shop(t)
+	status, body := postQuery(t, d, `{
+		"nodes": {"x": {"table": "orders", "scope": "o"}},
+		"root": {"node": "x", "cardinality": "many"}
+	}`)
+	if status != 400 && status != 422 {
+		t.Fatalf("missing kind: status %d, want rejection\n%s", status, body)
+	}
+	if !strings.Contains(body, `node \"x\": missing \"kind\"`) {
+		t.Fatalf("rejection does not say the kind is missing:\n%s", body)
 	}
 }
 

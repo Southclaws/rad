@@ -55,7 +55,7 @@ func ValidateLIRJSON(raw []byte) error {
 		return err
 	}
 	if err := resolved.Validate(instance); err != nil {
-		return fmt.Errorf("protocol: LIR schema validation failed: %w", err)
+		return validationDetail(instance, fmt.Errorf("protocol: LIR schema validation failed: %w", err))
 	}
 	return nil
 }
