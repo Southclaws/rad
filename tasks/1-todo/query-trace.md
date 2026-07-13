@@ -250,6 +250,6 @@ counters → 10. (later) click a result field, trace it to storage.
 
 Related: tasks/1-todo/error-propagation.md (shared provenance and status
 model), the deferred EXPLAIN + per-op metrics item from
-docs/design/next-steps.md (this subsumes it), rad/ui devtool (the consumer),
+tasks/1-todo/next-steps.md (this subsumes it), rad/ui devtool (the consumer),
 replay determinism (home/content/docs/engine/05-exec.mdx) as the enabling
 invariant.

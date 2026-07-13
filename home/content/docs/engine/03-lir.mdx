@@ -120,8 +120,9 @@ deterministically without an explicit ordering. The determinism rules are:
 explicit logical `Order` (take-first over an unordered multi-row relation is
 a plan choice leaking into results, and is rejected at bind time); `Scalar`
 is a cardinality assertion — exactly one output column, statically at most
-one row. `Slice` is the one documented exception to path-independence:
-slicing an unordered relation is a declared-arbitrary selection.
+one row. Root `many` and `Array` crossings always require an explicit order,
+and a positive `Slice` offset requires an ordered input. An unordered limit is
+allowed only until a later observable boundary requires that order.
 
 Every bound constructor computes its node's bounds (see the laws below), and
 `RefineCard` lets the binder *tighten* them with knowledge the constructors

@@ -277,7 +277,8 @@ func datumRecords(d any) ([]protocol.Record, error) {
 
 // get fetches one row by primary key. There is no dedicated wire endpoint: a
 // point read is a three-node graph — scan, filter on the key columns, slice
-// of one — riding the same operation the fluent query builder uses.
+// of one — materialised as root first through the same operation the fluent
+// query builder uses.
 func get(ctx context.Context, c *Client, txID, table string, key map[string]any) (protocol.Record, bool, error) {
 	preds := make([]*protocol.Expr, 0, len(key))
 	for col, val := range key {
@@ -289,7 +290,7 @@ func get(ctx context.Context, c *Client, txID, table string, key map[string]any)
 			"keyed": {Kind: "filter", Input: "s", Predicate: protocol.AndAll(preds)},
 			"one":   {Kind: "slice", Input: "keyed", Limit: new(int(1))},
 		},
-		Root: protocol.Root{Node: "one", Cardinality: "many"},
+		Root: protocol.Root{Node: "one", Cardinality: "first"},
 	})
 	if err != nil {
 		return nil, false, err

@@ -241,13 +241,6 @@ func scopeExpr(e *protocol.Expr, scope string) *protocol.Expr {
 	c.Expr = scopeExpr(c.Expr, scope)
 	c.Left = scopeExpr(c.Left, scope)
 	c.Right = scopeExpr(c.Right, scope)
-	if len(c.Args) > 0 {
-		args := make([]protocol.Expr, len(c.Args))
-		for i := range c.Args {
-			args[i] = *scopeExpr(&c.Args[i], scope)
-		}
-		c.Args = args
-	}
 	return &c
 }
 

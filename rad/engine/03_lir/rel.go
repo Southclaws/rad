@@ -112,9 +112,9 @@ type Order struct {
 }
 
 // Slice keeps Limit rows after skipping Offset. A nil Limit is unlimited;
-// an explicit 0 keeps no rows. Slicing an unordered relation is a
-// declared-arbitrary selection — the one documented exception to
-// path-independence.
+// an explicit 0 keeps no rows. A positive offset requires an ordered input;
+// an unordered limit is allowed only until an observable boundary imposes its
+// own ordering requirement.
 type Slice struct {
 	Input  Relation
 	Offset int

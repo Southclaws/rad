@@ -1,11 +1,12 @@
 # Design: Aggregations
 
-Status: implemented (count/sum/avg/min/max); superseded in structure by
-docs/design/lir.md — the unification this document deferred ("where this
-wants to go") was built: `Read`/`Include` dissolved into the relation graph,
-aggregation became the `aggregate` node (grouped or global), and folded
-relations cross into projections via `first`/`scalar`. The semantics below
-(NULL-skipping, empty-set rules, typing) carried over unchanged.
+Status: done — implemented (count/sum/avg/min/max); superseded in structure by the
+canonical LIR documentation in `home/content/docs/lir.mdx`. The unification
+this document deferred ("where this wants to go") was built: `Read`/`Include`
+dissolved into the relation graph, aggregation became the `aggregate` node
+(grouped or global), and folded relations cross into projections via
+`first`/`scalar`. The semantics below (NULL-skipping, empty-set rules,
+typing) carried over unchanged.
 
 Basics only: `count`, `sum`, `avg`, `min`, `max`. No `GROUP BY`, no
 `HAVING`, no `DISTINCT`, no expressions inside aggregates, no window

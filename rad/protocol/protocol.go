@@ -114,8 +114,9 @@ func NewProblem(code string, status int, detail string) Problem {
 // Query is LIR's flat encoding of a single-consumer relation tree: named
 // inline relation definitions plus a root selector. Node names carry no
 // sharing or materialisation identity. The schema is lir.schema.json; the
-// semantics are docs/design/lir.md. The contract is intentionally unversioned
-// while LIR remains an internal, freely breakable API surface.
+// semantics are documented in home/content/docs/lir.mdx. The contract is
+// intentionally unversioned while LIR remains an internal, freely breakable
+// API surface.
 type Query struct {
 	Nodes map[string]Node `json:"nodes"`
 	// Bindings are named relational values: each identifies the root of its

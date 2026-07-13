@@ -178,8 +178,9 @@ func TestClassifyGeneral(t *testing.T) {
 		Input:  bscan("boards", "b"),
 		Spread: []string{"b"},
 		Fields: []lir.ProjField{{As: "later", Expr: lir.Array{
-			Rel: bfilter(bscan("tasks", "t"),
+			Rel: lir.Order{Input: bfilter(bscan("tasks", "t"),
 				lir.Binary{Op: lir.OpGt, L: bcol("t", "title"), R: bcol("b", "name")}),
+				Terms: []lir.OrderTerm{{Expr: bcol("t", "id")}}},
 		}}},
 	}})
 	arr := q.Root.(*bound.Project).Fields[3].Expr.(bound.Array)
@@ -192,9 +193,10 @@ func TestClassifyGeneral(t *testing.T) {
 		Input:  bscan("boards", "b"),
 		Spread: []string{"b"},
 		Fields: []lir.ProjField{{As: "odd", Expr: lir.Array{
-			Rel: bfilter(bscan("tasks", "t"),
+			Rel: lir.Order{Input: bfilter(bscan("tasks", "t"),
 				band(beq(bcol("t", "board_id"), bcol("b", "id")),
 					lir.Binary{Op: lir.OpGt, L: bcol("t", "title"), R: bcol("b", "name")})),
+				Terms: []lir.OrderTerm{{Expr: bcol("t", "id")}}},
 		}}},
 	}})
 	arr = q.Root.(*bound.Project).Fields[3].Expr.(bound.Array)

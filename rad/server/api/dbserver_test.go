@@ -86,11 +86,15 @@ func TestQueryHTTPRejectsMalformedLIRBeforePlanning(t *testing.T) {
 	}
 }
 
-// tableQ is the simplest graph: scan every row of one table.
+// tableQ is the simplest observable collection: scan every row in primary-key
+// order.
 func tableQ(table string) protocol.Query {
 	return protocol.Query{
-		Nodes: map[string]protocol.Node{"t": {Kind: "scan", Table: table, Scope: "t"}},
-		Root:  protocol.Root{Node: "t", Cardinality: "many"},
+		Nodes: map[string]protocol.Node{
+			"t": {Kind: "scan", Table: table, Scope: "t"},
+			"o": {Kind: "order", Input: "t", Terms: []protocol.OrderTerm{{Expr: *protocol.Col("t", "id")}}},
+		},
+		Root: protocol.Root{Node: "o", Cardinality: "many"},
 	}
 }
 
@@ -100,8 +104,9 @@ func filteredQ(table string, pred *protocol.Expr) protocol.Query {
 		Nodes: map[string]protocol.Node{
 			"t": {Kind: "scan", Table: table, Scope: "t"},
 			"f": {Kind: "filter", Input: "t", Predicate: pred},
+			"o": {Kind: "order", Input: "f", Terms: []protocol.OrderTerm{{Expr: *protocol.Col("t", "id")}}},
 		},
-		Root: protocol.Root{Node: "f", Cardinality: "many"},
+		Root: protocol.Root{Node: "o", Cardinality: "many"},
 	}
 }
 
@@ -294,7 +299,7 @@ func TestClientNestedQuery(t *testing.T) {
 			"out": {Kind: "project", Input: "ada", Spread: []string{"u"},
 				Fields: []protocol.Field{{As: "posts", Expr: *protocol.ArrayOf("sorted")}}},
 		},
-		Root: protocol.Root{Node: "out", Cardinality: "many"},
+		Root: protocol.Root{Node: "out", Cardinality: "first"},
 	})
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("recs=%d err=%v", len(recs), err)
@@ -369,7 +374,7 @@ func TestClientAggregateOverTheWire(t *testing.T) {
 			"out": {Kind: "project", Input: "ada", Spread: []string{"u"},
 				Fields: []protocol.Field{{As: "post_stats", Expr: *protocol.FirstOf("folded")}}},
 		},
-		Root: protocol.Root{Node: "out", Cardinality: "many"},
+		Root: protocol.Root{Node: "out", Cardinality: "first"},
 	})
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("recs=%d err=%v", len(recs), err)

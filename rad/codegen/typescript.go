@@ -251,7 +251,7 @@ class WireView implements View {
         keyed: { kind: "filter", input: "s", predicate: andAll(preds) },
         one: { kind: "slice", input: "keyed", limit: 1 },
       },
-      root: { node: "one", cardinality: "many" },
+      root: { node: "one", cardinality: "first" },
     });
     return recs.length ? recs[0] : null;
   }
@@ -334,7 +334,6 @@ function scopeExpr(e: Expr, scope: string): Expr {
   if (c.expr) c.expr = scopeExpr(c.expr, scope);
   if (c.left) c.left = scopeExpr(c.left, scope);
   if (c.right) c.right = scopeExpr(c.right, scope);
-  if (c.args) c.args = c.args.map((a) => scopeExpr(a, scope));
   return c;
 }
 

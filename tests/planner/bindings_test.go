@@ -14,6 +14,11 @@ import (
 
 // qb is q plus a bindings section.
 func qb(nodes map[string]protocol.Node, bindings map[string]protocol.Binding, root, cardinality string) protocol.Query {
+	for name, node := range nodes {
+		walkNode(nodes, name, &node)
+		nodes[name] = node
+	}
+	root = observableRoot(nodes, root, cardinality)
 	return protocol.Query{
 		Nodes:    nodes,
 		Bindings: bindings,

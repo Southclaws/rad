@@ -170,7 +170,12 @@ func qscan(tbl, scope string) lir.Scan   { return lir.Scan{Table: tbl, Scope: sc
 func qfilter(in lir.Relation, p lir.Expr) lir.Filter {
 	return lir.Filter{Input: in, Pred: p}
 }
-func many(root lir.Relation) lir.Query { return lir.Query{Card: lir.CardMany, Root: root} }
+func many(root lir.Relation) lir.Query {
+	return lir.Query{Card: lir.CardMany, Root: lir.Order{
+		Input: root,
+		Terms: []lir.OrderTerm{{Expr: qlit(true)}},
+	}}
+}
 
 // jsonish flattens a Datum for readable assertions.
 func jsonish(d lir.Datum) any {

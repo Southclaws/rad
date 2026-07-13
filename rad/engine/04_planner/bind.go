@@ -84,6 +84,9 @@ func Bind(ctx context.Context, cat Catalog, q lir.Query) (*bound.Query, error) {
 	if q.Card == lir.CardScalar && !root.Card().AtMostOne() {
 		return nil, reject.Inputf("planner: root scalar asserts at most one row, but the relation may produce more — aggregate it, slice it, or pin a unique key")
 	}
+	if q.Card == lir.CardMany && !bound.Ordered(root) {
+		return nil, reject.Inputf("planner: root cardinality %q needs an explicit order — observable collections must not depend on the access path", q.Card)
+	}
 	// first is deliberate row selection, same determinism rule as the First
 	// crossing: at most one row statically, or an explicit logical order.
 	if q.Card == lir.CardFirst && !root.Card().AtMostOne() && !bound.Ordered(root) {
@@ -288,6 +291,9 @@ func (b *binder) bindRel(r lir.Relation) (bound.Relation, error) {
 		}
 		if n.Limit != nil && *n.Limit < 0 {
 			return nil, reject.Inputf("planner: slice limit must be >= 0, got %d", *n.Limit)
+		}
+		if n.Offset > 0 && !bound.Ordered(in) {
+			return nil, reject.Inputf("planner: slice offset over an unordered relation would make membership depend on the access path — add an order")
 		}
 		return bound.NewSlice(in, n.Offset, n.Limit), nil
 

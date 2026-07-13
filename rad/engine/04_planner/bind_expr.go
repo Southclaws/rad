@@ -100,6 +100,9 @@ func (b *binder) bindExpr(e lir.Expr) (bound.Expr, error) {
 		if err != nil {
 			return nil, err
 		}
+		if !bound.Ordered(rel) {
+			return nil, reject.Inputf("planner: array over an unordered relation would make observable collection order depend on the access path — add an order")
+		}
 		return bound.NewArray(rel), nil
 
 	case nil:

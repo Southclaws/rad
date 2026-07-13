@@ -49,11 +49,11 @@ type Value = json.RawMessage
 //
 // A key-value scan's encounter order is physical, never logical, and the
 // engine's access-path choice must never change results. Wherever a stream of
-// rows collapses to a single row or value (root `first`, root `scalar`, the
-// `first` and `scalar` crossings) the relation must be provably at most one
-// row, or carry an explicit `order`. `slice` is the single declared exception:
-// slicing an unordered relation is an arbitrary but deliberate selection, as
-// `LIMIT` without `ORDER BY` is in SQL.
+// rows becomes observable, its order must be explicit. Root `many` results and
+// `array` crossings require an `order`; root and crossing `first` permit either
+// an `order` or a proof of at most one row. A positive `slice.offset` also
+// requires an ordered input. An unordered `limit` is permitted only until a
+// later observable boundary imposes its own ordering requirement.
 //
 // # NULL and three-valued logic
 //
@@ -395,11 +395,11 @@ type OrderTerm struct {
 //
 // A key-value scan's encounter order is physical, never logical, and the
 // engine's access-path choice must never change results. Wherever a stream of
-// rows collapses to a single row or value (root `first`, root `scalar`, the
-// `first` and `scalar` crossings) the relation must be provably at most one
-// row, or carry an explicit `order`. `slice` is the single declared exception:
-// slicing an unordered relation is an arbitrary but deliberate selection, as
-// `LIMIT` without `ORDER BY` is in SQL.
+// rows becomes observable, its order must be explicit. Root `many` results and
+// `array` crossings require an `order`; root and crossing `first` permit either
+// an `order` or a proof of at most one row. A positive `slice.offset` also
+// requires an ordered input. An unordered `limit` is permitted only until a
+// later observable boundary imposes its own ordering requirement.
 //
 // # NULL and three-valued logic
 //

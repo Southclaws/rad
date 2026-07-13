@@ -17,7 +17,7 @@
 // trust bound IR completely.
 //
 // The discipline, before adding any node here: could this be expressed as an
-// ordinary relation? If yes, resist the special node. The normative design —
-// grammar, three-valued logic, determinism rules, the wire format — is
-// docs/design/lir.md.
+// ordinary relation? If yes, resist the special node. The maintained design
+// documentation — grammar, three-valued logic, determinism rules, and wire
+// format — is home/content/docs/lir.mdx.
 package lir

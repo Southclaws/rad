@@ -10,12 +10,6 @@ relations, materialised into output shapes. This page specifies the grammar,
 how a query lowers through the engine, the physical key-value layout it
 targets, and the exact KV operations each construct issues.
 
-<Callout>
-  The normative design — grammar, three-valued logic, determinism rules —
-  lives in `docs/design/lir.md` in the repository. This page tracks the
-  implementation.
-</Callout>
-
 ## The discipline
 
 Before anything else, the rule that shapes the IR: **could this be expressed
@@ -278,10 +272,12 @@ two scans of one table observe the same snapshot:
     "j":    { "kind": "join", "left": "a", "right": "b", "join": "inner",
               "on": { "kind": "binary", "op": "eq",
                 "left":  { "kind": "col", "scope": "a", "column": "customer_id" },
-                "right": { "kind": "col", "scope": "b", "column": "customer_id" } } }
+                "right": { "kind": "col", "scope": "b", "column": "customer_id" } } },
+    "sorted": { "kind": "order", "input": "j",
+                "terms": [ { "expr": { "kind": "col", "scope": "a", "column": "customer_id" } } ] }
   },
   "bindings": { "expensive": { "node": "per" } },
-  "root": { "node": "j", "cardinality": "many" }
+  "root": { "node": "sorted", "cardinality": "many" }
 }
 ```
 

@@ -111,13 +111,11 @@ tighten). This uniqueness-aware refinement is what lets the to-parent pattern
 The determinism rules themselves: `First` over a relation that is neither
 statically at-most-one nor explicitly ordered (`bound.Ordered`, which sees an
 `Order` through Filter/Project/Slice) is rejected, because take-first over an
-unordered relation would let the access path leak into results. `Scalar` is a
-cardinality *assertion* — single column, statically at most one row — and
-never accepts ordering as a substitute; "first scalar" must be spelled
-`Scalar(Slice₁(Order(...)))`. The root cardinalities `first` and `scalar` are
-held to the same rule as the `First` crossing, with the one documented
-exception that a `Slice` is declared-arbitrary selection, so `first` over
-`Slice(limit 1)` is legal (`TestRootCardinalityRules`).
+unordered relation would let the access path leak into results. Root `many`
+and `Array` crossings always require an explicit order, and a positive slice
+offset requires an ordered input. `Scalar` is a cardinality *assertion* —
+single column, statically at most one row — and never accepts ordering as a
+substitute; "first scalar" must be spelled `Scalar(Slice₁(Order(...)))`.
 
 ### The order tie-breaker
 
@@ -315,7 +313,7 @@ with `name#slot` fields and the law suffix `[card … free …]`.
 
 Both printers exist for the goldens that pin the arc's acceptance shape: the
 forcing query (boards → owner → first 20 open tasks by priority → assignee +
-comment count, `docs/design/lir.md`). `TestBindForcingQueryGolden` pins
+comment count). `TestBindForcingQueryGolden` pins
 the bound form — slot allocation order, spread slot reuse, correlation as
 free slots, both `First` relations uniqueness-refined to `0..1`, the appended
 id tie-breaker, every inferred type. `TestPlanForcingQueryGolden` pins the

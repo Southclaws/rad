@@ -103,12 +103,30 @@ func bfilter(in lir.Relation, pred lir.Expr) lir.Filter {
 	return lir.Filter{Input: in, Pred: pred}
 }
 
+// testQuery adds an explicit (but otherwise uninteresting) order around test
+// roots that exercise a lower binding/planning concern. Individual tests that
+// assert materialisation semantics use a meaningful order themselves.
+func testQuery(q lir.Query) (lir.Query, bool) {
+	if q.Card != lir.CardMany {
+		return q, false
+	}
+	if _, ordered := q.Root.(lir.Order); ordered {
+		return q, false
+	}
+	q.Root = lir.Order{Input: q.Root, Terms: []lir.OrderTerm{{Expr: blit(true)}}}
+	return q, true
+}
+
 func bind(t *testing.T, q lir.Query) *bound.Query {
 	t.Helper()
 	cat, ctx := trackerCat(t)
+	q, wrapped := testQuery(q)
 	bq, err := planner.Bind(ctx, cat, q)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if wrapped {
+		bq.Root = bq.Root.(*bound.Order).In
 	}
 	return bq
 }
@@ -116,6 +134,7 @@ func bind(t *testing.T, q lir.Query) *bound.Query {
 func bindErr(t *testing.T, q lir.Query, want string) {
 	t.Helper()
 	cat, ctx := trackerCat(t)
+	q, _ = testQuery(q)
 	_, err := planner.Bind(ctx, cat, q)
 	if err == nil {
 		t.Fatalf("bind succeeded, want error containing %q", want)
@@ -284,7 +303,7 @@ func TestRootCardinalityRules(t *testing.T) {
 	bindErr(t, lir.Query{Card: "some", Root: bscan("tasks", "t")}, "unknown root cardinality")
 	bindErr(t, lir.Query{Card: lir.CardScalar, Root: bscan("tasks", "t")}, "single-column root")
 	bindErr(t, lir.Query{Card: lir.CardFirst, Root: bscan("tasks", "t")}, "depend on the access path")
-	// Slice 1 makes first legal (declared-arbitrary selection).
+	// Slice 1 proves that first can observe at most one row.
 	bind(t, lir.Query{Card: lir.CardFirst, Root: lir.Slice{Input: bscan("tasks", "t"), Limit: new(int(1))}})
 
 	// Ordering makes first deterministic, but scalar is an at-most-one
@@ -537,10 +556,18 @@ func TestValidationMatrix(t *testing.T) {
 			lir.Query{Card: lir.CardMany, Root: lir.Order{Input: bscan("tasks", "t")}},
 			"order needs at least one term"},
 		{"order by array",
-			lir.Query{Card: lir.CardMany, Root: lir.Order{
-				Input: bscan("boards", "b"),
-				Terms: []lir.OrderTerm{{Expr: lir.Array{Rel: bfilter(bscan("tasks", "t"),
-					beq(bcol("t", "board_id"), bcol("b", "id")))}}}}},
+			lir.Query{
+				Card: lir.CardMany,
+				Root: lir.Order{
+					Input: bscan("boards", "b"),
+					Terms: []lir.OrderTerm{
+						{Expr: lir.Array{Rel: lir.Order{
+							Input: bfilter(bscan("tasks", "t"), beq(bcol("t", "board_id"), bcol("b", "id"))),
+							Terms: []lir.OrderTerm{{Expr: bcol("t", "id")}},
+						}}},
+					},
+				},
+			},
 			"cannot order by a array value"},
 		{"negative offset",
 			lir.Query{Card: lir.CardMany, Root: lir.Slice{Input: bscan("tasks", "t"), Offset: -1}},
@@ -614,22 +641,31 @@ func TestJoinScopesAndZeroLimit(t *testing.T) {
 // A join input may be correlated with an enclosing query — only sibling
 // dependence is rejected. Both sides here reference the outer board scope.
 func TestJoinCorrelatedWithEnclosingScope(t *testing.T) {
-	bind(t, lir.Query{Card: lir.CardMany, Root: lir.Project{
-		Input:  bscan("boards", "b"),
-		Spread: []string{"b"},
-		Fields: []lir.ProjField{{As: "pairs", Expr: lir.Array{Rel: lir.Project{
-			Input: lir.Join{
-				Left: bfilter(bscan("tasks", "t"),
-					beq(bcol("t", "board_id"), bcol("b", "id"))),
-				Right: bfilter(bscan("users", "u"),
-					beq(bcol("u", "id"), bcol("b", "owner_id"))),
-				Kind: lir.InnerJoin,
-				On:   beq(bcol("t", "assignee_id"), bcol("u", "id")),
-			},
+	bind(t, lir.Query{
+		Card: lir.CardMany,
+		Root: lir.Project{
+			Input:  bscan("boards", "b"),
+			Spread: []string{"b"},
 			Fields: []lir.ProjField{
-				{As: "task", Expr: bcol("t", "title")},
-				{As: "user", Expr: bcol("u", "name")},
+				{As: "pairs", Expr: lir.Array{Rel: lir.Order{
+					Input: lir.Project{
+						Input: lir.Join{
+							Left: bfilter(bscan("tasks", "t"),
+								beq(bcol("t", "board_id"), bcol("b", "id"))),
+							Right: bfilter(bscan("users", "u"),
+								beq(bcol("u", "id"), bcol("b", "owner_id"))),
+							Kind: lir.InnerJoin,
+							On:   beq(bcol("t", "assignee_id"), bcol("u", "id")),
+						},
+						Fields: []lir.ProjField{
+							{As: "task", Expr: bcol("t", "title")},
+							{As: "user", Expr: bcol("u", "name")},
+						},
+						Scope: "pair",
+					},
+					Terms: []lir.OrderTerm{{Expr: bcol("pair", "task")}},
+				}}},
 			},
-		}}}},
-	}})
+		},
+	})
 }

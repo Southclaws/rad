@@ -1,7 +1,7 @@
 # LIR improvements
 
 The work list distilled from the battle-test campaign
-(docs/design/battle-test-findings.md, 127 tests, zero correctness bugs — all
+(tasks/3-done/battle-test-findings.md, 127 tests, zero correctness bugs — all
 findings are contract and developer experience). Each item records the
 problem, the evidence, the fix, and its blast radius. None of the fixes
 below change lir.schema.yaml: the grammar held; everything here is behavior

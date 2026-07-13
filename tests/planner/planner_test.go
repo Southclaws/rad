@@ -11,11 +11,6 @@ import (
 	"github.com/Southclaws/rad/tests/harness"
 )
 
-// q is the query shape under test: named relation nodes plus a root selector.
-func q(nodes map[string]protocol.Node, root string, cardinality string) protocol.Query {
-	return protocol.Query{Nodes: nodes, Root: protocol.Root{Node: root, Cardinality: cardinality}}
-}
-
 // tracker is the shared fixture: the boards/tasks/users shape that exercises
 // point gets, index prefixes, correlation, and folds. Tests that need a
 // different schema build their own inline — a fixture is a convenience,
@@ -144,6 +139,8 @@ func TestNestedShape(t *testing.T) {
 	// priority (correlated array) — the forcing shape, hand-written.
 	d.Query(q(map[string]protocol.Node{
 		"b": {Kind: "scan", Table: "boards", Scope: "b"},
+		"boards_by_id": {Kind: "order", Input: "b",
+			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("b", "id")}}},
 		"o": {Kind: "scan", Table: "users", Scope: "o"},
 		"owner": {Kind: "filter", Input: "o",
 			Predicate: protocol.Eq(protocol.Col("o", "id"), protocol.Col("b", "owner_id"))},
@@ -157,7 +154,7 @@ func TestNestedShape(t *testing.T) {
 			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("t", "priority"), Desc: true}}},
 		"titles": {Kind: "project", Input: "open_by_priority",
 			Fields: []protocol.Field{{As: "title", Expr: *protocol.Col("t", "title")}}},
-		"out": {Kind: "project", Input: "b", Fields: []protocol.Field{
+		"out": {Kind: "project", Input: "boards_by_id", Fields: []protocol.Field{
 			{As: "board", Expr: *protocol.Col("b", "name")},
 			{As: "owner", Expr: *protocol.FirstOf("owner")},
 			{As: "open", Expr: *protocol.ArrayOf("titles")},

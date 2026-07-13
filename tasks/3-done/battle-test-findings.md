@@ -1,6 +1,6 @@
 # LIR battle-test findings
 
-Status: report of the 2026-07-13 battle-test campaign. The work list lives
+Status: archived report of the 2026-07-13 battle-test campaign. The work list lives
 in tasks/: F1–F6, F8, F9 are fixed (tasks/3-done/lir-improvements.md); F7
 (DAG sharing) awaits an explicit design session
 (tasks/1-todo/relation-bindings.md). This document remains the record of what the

@@ -1,5 +1,7 @@
 # Rad architecture review and directional roadmap
 
+Status: active roadmap.
+
 ## Executive assessment
 
 Rad is a strong and coherent proof of concept. LIR is the right foundation and should be evolved, not replaced. Its two-category model—relations and expressions, connected through explicit `Exists`, `First`, `Scalar`, and `Array` crossings—is substantially cleaner than an AST that accumulates special-purpose query constructs ([LIR contract](/Users/barney/Documents/rad/rad/engine/03_lir/doc.go:3)).

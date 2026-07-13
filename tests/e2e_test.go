@@ -84,14 +84,17 @@ func TestRelationalStackOverBothBackends(t *testing.T) {
 			// A join returns each order with its user; the projection is
 			// where the joined row takes its output shape.
 			d, err := eng.Execute(ctx, lir.Query{Card: lir.CardMany, Root: lir.Project{
-				Input: lir.Join{
-					Left:  lir.Scan{Table: "users", Scope: "u"},
-					Right: lir.Scan{Table: "orders", Scope: "o"},
-					Kind:  lir.InnerJoin,
-					On: lir.Binary{Op: lir.OpEq,
-						L: lir.Column{Scope: "u", Name: "id"},
-						R: lir.Column{Scope: "o", Name: "user_id"},
+				Input: lir.Order{
+					Input: lir.Join{
+						Left:  lir.Scan{Table: "users", Scope: "u"},
+						Right: lir.Scan{Table: "orders", Scope: "o"},
+						Kind:  lir.InnerJoin,
+						On: lir.Binary{Op: lir.OpEq,
+							L: lir.Column{Scope: "u", Name: "id"},
+							R: lir.Column{Scope: "o", Name: "user_id"},
+						},
 					},
+					Terms: []lir.OrderTerm{{Expr: lir.Column{Scope: "o", Name: "id"}}},
 				},
 				Fields: []lir.ProjField{
 					{As: "user_id", Expr: lir.Column{Scope: "u", Name: "id"}},
@@ -181,7 +184,10 @@ func TestTransactionsOverBothBackends(t *testing.T) {
 					return err
 				}
 				d, err := tx.Execute(ctx, lir.Query{Card: lir.CardMany,
-					Root: lir.Scan{Table: "users", Scope: "u"}})
+					Root: lir.Order{
+						Input: lir.Scan{Table: "users", Scope: "u"},
+						Terms: []lir.OrderTerm{{Expr: lir.Column{Scope: "u", Name: "id"}}},
+					}})
 				if err != nil {
 					return err
 				}

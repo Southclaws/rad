@@ -362,10 +362,10 @@ func TestStressUnreachableNodeRejected(t *testing.T) {
 func TestStressDanglingReferenceRejected(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
+	d.Query(protocol.Query{Nodes: map[string]protocol.Node{
 		"bad": {Kind: "filter", Input: "nope",
 			Predicate: protocol.Eq(protocol.Lit(1), protocol.Lit(1))},
-	}, "bad", "many")).ExpectError(`unknown node "nope"`)
+	}, Root: protocol.Root{Node: "bad", Cardinality: "many"}}).ExpectError(`unknown node "nope"`)
 }
 
 // 16. Single-consumer law: one sub-node consumed by TWO crossings in the same
@@ -390,12 +390,12 @@ func TestStressSharedNodeRejected(t *testing.T) {
 func TestStressCycleRejected(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
+	d.Query(protocol.Query{Nodes: map[string]protocol.Node{
 		"a": {Kind: "filter", Input: "b",
 			Predicate: protocol.Eq(protocol.Lit(1), protocol.Lit(1))},
 		"b": {Kind: "filter", Input: "a",
 			Predicate: protocol.Eq(protocol.Lit(1), protocol.Lit(1))},
-	}, "a", "many")).ExpectError("part of a cycle")
+	}, Root: protocol.Root{Node: "a", Cardinality: "many"}}).ExpectError("part of a cycle")
 }
 
 // 18. Root cardinality "first" over an ordered relation: exactly one record,

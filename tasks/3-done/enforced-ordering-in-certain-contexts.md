@@ -1,4 +1,13 @@
-would it make sense to actually just force order-by in relations for UX? because physical order is undefined anyway, and in sql doing most queries without ordering is a footgun
+# Enforced ordering in certain contexts
+
+Status: **done** (2026-07-13) — binding now requires explicit order for root
+`many` and `array` crossings, and for a slice with a positive offset. `first`
+continues to accept a statically at-most-one relation; unordered limits remain
+valid until an observable collection boundary.
+
+Would it make sense to actually just force order-by in relations for UX?
+Physical order is undefined anyway, and in SQL doing most queries without
+ordering is a footgun.
 
 I think **forcing an explicit order at materialisation boundaries** could be a very good RAD UX decision.
 
