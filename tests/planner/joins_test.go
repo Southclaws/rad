@@ -147,13 +147,13 @@ func TestJoin_OrderByComputedThenSlice(t *testing.T) {
 		"j": {Kind: "join", Left: "i", Right: "p", Join: "inner",
 			On: protocol.Eq(protocol.Col("i", "product_id"), protocol.Col("p", "id"))},
 		"by_total": {Kind: "order", Input: "j", Terms: []protocol.OrderTerm{
-			{Expr: mul(protocol.Col("i", "quantity"), protocol.Col("i", "unit_price")), Desc: true},
+			{Expr: *protocol.Mul(protocol.Col("i", "quantity"), protocol.Col("i", "unit_price")), Desc: true},
 		}},
 		"top3": {Kind: "slice", Input: "by_total", Limit: new(int(3))},
 		"out": {Kind: "project", Input: "top3", Fields: []protocol.Field{
 			{As: "item", Expr: *protocol.Col("i", "id")},
 			{As: "product", Expr: *protocol.Col("p", "name")},
-			{As: "total", Expr: mul(protocol.Col("i", "quantity"), protocol.Col("i", "unit_price"))},
+			{As: "total", Expr: *protocol.Mul(protocol.Col("i", "quantity"), protocol.Col("i", "unit_price"))},
 		}},
 	}, "out", "many")).Equals(`[
 		{"item":"i7","product":"Chair","total":500},

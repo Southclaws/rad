@@ -23,9 +23,18 @@ func Gt(l, r *Expr) *Expr  { return binary("gt", l, r) }
 func Gte(l, r *Expr) *Expr { return binary("gte", l, r) }
 func Or(l, r *Expr) *Expr  { return binary("or", l, r) }
 
+func Add(l, r *Expr) *Expr { return binary("add", l, r) }
+func Sub(l, r *Expr) *Expr { return binary("sub", l, r) }
+func Mul(l, r *Expr) *Expr { return binary("mul", l, r) }
+func Div(l, r *Expr) *Expr { return binary("div", l, r) }
+
 func Not(e *Expr) *Expr       { return &Expr{Kind: "unary", Op: "not", Expr: e} }
+func Neg(e *Expr) *Expr       { return &Expr{Kind: "unary", Op: "negate", Expr: e} }
 func IsNull(e *Expr) *Expr    { return &Expr{Kind: "unary", Op: "is_null", Expr: e} }
 func IsNotNull(e *Expr) *Expr { return &Expr{Kind: "unary", Op: "is_not_null", Expr: e} }
+
+// CastTo converts to a scalar kind: "int64", "float64", "text", "bool".
+func CastTo(e *Expr, kind string) *Expr { return &Expr{Kind: "cast", Expr: e, To: kind} }
 
 // AndAll left-folds predicates into a binary and-chain: nil for none, the
 // predicate itself for one.

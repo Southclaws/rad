@@ -380,11 +380,12 @@ func TestClosureAboveAggregate(t *testing.T) {
 		Pred:  lir.Binary{Op: lir.OpGt, L: bcol("stats", "n"), R: blit(10)},
 	}})
 
-	// The scan's scope is gone above the aggregate.
+	// The scan's scope is gone above the aggregate — and the error says so,
+	// instead of claiming the scope never existed.
 	bindErr(t, lir.Query{Card: lir.CardMany, Root: lir.Filter{
 		Input: grouped,
 		Pred:  beq(bcol("t", "status"), blit("open")),
-	}}, `unknown scope "t"`)
+	}}, `scope "t" exists but is not visible here`)
 
 	// Unlabelled aggregates cannot be referenced — the error says why.
 	bindErr(t, lir.Query{Card: lir.CardMany, Root: lir.Filter{
@@ -413,7 +414,7 @@ func TestClosureAboveProject(t *testing.T) {
 	bindErr(t, lir.Query{Card: lir.CardMany, Root: lir.Filter{
 		Input: shaped,
 		Pred:  beq(bcol("t", "title"), blit("x")),
-	}}, `unknown scope "t"`)
+	}}, `scope "t" exists but is not visible here`)
 }
 
 // ── literal coercion ────────────────────────────────────────────────────────
@@ -432,7 +433,7 @@ func TestLiteralCoercion(t *testing.T) {
 	bindErr(t, lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
 		beq(bcol("t", "status"), blit(5)))}, "expected a text value")
 	bindErr(t, lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
-		beq(bcol("t", "priority"), blit(1.5)))}, "expected a int64 value")
+		beq(bcol("t", "priority"), blit(1.5)))}, "expected an int64 value, got 1.5 — cast the column to float64")
 	bindErr(t, lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
 		beq(blit(nil), blit(nil)))}, "bare NULL")
 }

@@ -70,15 +70,8 @@ package planner
 import (
 	"testing"
 
-	"github.com/Southclaws/rad/rad/protocol"
 	"github.com/Southclaws/rad/tests/harness"
 )
-
-// mul is qty*price-style arithmetic, spelled once — protocol has no
-// arithmetic constructors (a finding in its own right).
-func mul(l, r *protocol.Expr) protocol.Expr {
-	return protocol.Expr{Kind: "binary", Op: "mul", Left: l, Right: r}
-}
 
 func shop(t *testing.T) *harness.DB {
 	d := harness.New(t)

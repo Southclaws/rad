@@ -304,13 +304,13 @@ func TestStressArithmeticOverComputedColumn(t *testing.T) {
 			Predicate: protocol.Eq(protocol.Col("i", "order_id"), protocol.Lit("o1"))},
 		"l": {Kind: "project", Input: "o1_items", Scope: "l", Fields: []protocol.Field{
 			{As: "id", Expr: *protocol.Col("i", "id")},
-			{As: "total", Expr: mul(protocol.Col("i", "quantity"), protocol.Col("i", "unit_price"))},
+			{As: "total", Expr: *protocol.Mul(protocol.Col("i", "quantity"), protocol.Col("i", "unit_price"))},
 		}},
 		"by_id": {Kind: "order", Input: "l",
 			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("l", "id")}}},
 		"out": {Kind: "project", Input: "by_id", Fields: []protocol.Field{
 			{As: "id", Expr: *protocol.Col("l", "id")},
-			{As: "taxed", Expr: mul(protocol.Col("l", "total"), protocol.Lit(2))},
+			{As: "taxed", Expr: *protocol.Mul(protocol.Col("l", "total"), protocol.Lit(2))},
 		}},
 	}, "out", "many")).Equals(`[{"id":"i1","taxed":160},{"id":"i2","taxed":100}]`)
 }

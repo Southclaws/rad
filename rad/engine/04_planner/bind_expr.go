@@ -135,6 +135,12 @@ func (b *binder) resolveColumn(c lir.Column) (bound.SlotRef, error) {
 	}
 	entry, ok := b.findScope(c.Scope, 0)
 	if !ok {
+		// A label that was bound somewhere but is not visible here was either
+		// closed by a projection/aggregate boundary or belongs to another
+		// sub-relation — the most common authoring mistake, worth naming.
+		if b.labels[c.Scope] {
+			return bound.SlotRef{}, fmt.Errorf("planner: scope %q exists but is not visible here — a projection or aggregate closed it, or it belongs to a different sub-relation; label that node's output scope and reference its columns instead", c.Scope)
+		}
 		return bound.SlotRef{}, fmt.Errorf("planner: unknown scope %q", c.Scope)
 	}
 	f, ok := entry.rel.Output().Lookup(c.Name)
@@ -266,7 +272,7 @@ func coerceLiteral(raw any, want lir.Type) (bound.Literal, error) {
 		case catalog.TypeInt64:
 			n, err := strconv.ParseInt(v.String(), 10, 64)
 			if err != nil {
-				return bound.Literal{}, fmt.Errorf("planner: expected an int64 value, got %q", v.String())
+				return bound.Literal{}, fmt.Errorf("planner: expected an int64 value, got %q — cast the column to float64 to compare against fractional values", v.String())
 			}
 			return bound.Literal{V: lir.Int64(n)}, nil
 		case catalog.TypeFloat64:
@@ -282,6 +288,9 @@ func coerceLiteral(raw any, want lir.Type) (bound.Literal, error) {
 	case int64:
 		return coerceGoInt(v, ct)
 	case float64:
+		if ct == catalog.TypeInt64 {
+			return bound.Literal{}, fmt.Errorf("planner: expected an int64 value, got %v — cast the column to float64 to compare against fractional values", v)
+		}
 		if ct != catalog.TypeFloat64 {
 			return fail()
 		}
