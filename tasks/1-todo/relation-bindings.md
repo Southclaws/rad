@@ -1,11 +1,12 @@
 # Relation bindings: derived relations as first-class relational values
 
-Status: problem and semantics settled, ready for review. Surface syntax,
-binder/preflight mechanics, and the physical seam are the remaining design
-work. This is a grammar change to lir.schema.yaml — the only one to come
-out of the battle-test campaign (F7 in tasks/3-done/lir-improvements.md) —
-and nothing lands until the open questions below are settled with the same
-care.
+Status: reviewed 2026-07-13 — **ready for implementation design**. The
+semantics, the surface shape, and the contract questions are settled below;
+what remains (binder representation, the physical seam) is decided
+concretely against the current binder and planner, following the
+implementation order at the end. This is a grammar change to
+lir.schema.yaml — the only one to come out of the battle-test campaign
+(F7 in tasks/3-done/lir-improvements.md).
 
 The question this document answers is not "should LIR allow DAGs?" (it
 should not, and does not — see the preflight rules below). It is: **should
@@ -121,25 +122,39 @@ the binding site or the query is ill-formed) denotes one committed value
 implements: the attach machinery's per-DISTINCT-key deduplication is
 compute-once-per-environment for correlated crossings.
 
-**5. The planner rule.** Compute-once is the semantic obligation, not
-materialisation. LIR's nondeterminism is logical (which bag), never
-physical: the executor is deterministic given a plan and the statement
-snapshot. Therefore the obligation is discharged by either
+**5. The planner rule.** *Commit-once* is the semantic obligation — not
+evaluate-once, not materialise-once. Every occurrence must observe the
+binding's single committed relational value; how many times anything
+physically runs is invisible. Then:
 
-- materialising the binding once and re-scoping per occurrence, or
-- re-executing the *identical* sub-plan per occurrence.
+- materialisation preserves the commitment directly;
+- identical-plan replay is valid because replay determinism reproduces the
+  commitment (physically multiple computations, one committed value);
+- divergent planning of a plan-choice-sensitive body is invalid because a
+  different plan may select a different legal bag — a different
+  commitment.
 
-What is forbidden: planning occurrences of a nondeterministic body
-*differently* — distinct access paths may legitimately choose distinct
-bags. Deterministic bodies keep full per-occurrence planning freedom
-(path independence guarantees any two correct plans agree).
+Bodies that are not plan-choice-sensitive keep full per-occurrence
+planning freedom (path independence guarantees any two correct plans
+agree). Plan-replay is sound because of **replay determinism**, a stated
+and tested engine invariant: the same query against the same statement
+snapshot produces the exact same result — same rows and multiplicities,
+same chosen arbitrary subsets, same observable order
+(`TestReplayDeterminism` in rad/engine/05_exec, which deliberately
+includes plan-choice-sensitive shapes; documented in the executor layer
+docs, home/content/docs/engine/05-exec.mdx).
 
-Plan-replay is sound because of **replay determinism**, now a stated and
-tested engine invariant rather than an implementation accident: the same
-query against the same statement snapshot produces the exact same result
-(`TestReplayDeterminism` in rad/engine/05_exec; documented in the executor
-layer docs, home/content/docs/engine/05-exec.mdx). LIR's nondeterminism is
-logical — which bag a declared-arbitrary relation denotes — never physical.
+**Plan-choice sensitivity** is the property the implementation must derive
+and propagate. The question is never "is this relation nondeterministic?"
+(the executor is deterministic) but: *can two valid physical plans select
+different legal bags?* A bare scan is path-independent as a bag — its
+encounter order is arbitrary but unobserved. `slice(scan, limit: 100)`
+converts arbitrary order into arbitrary *membership*: sensitive. An order
+over a keyless output plus a limit is sensitive at the tie boundary.
+The property propagates structurally, and the initial classifier may be
+conservative — mark a body sensitive whenever it contains a selection
+whose membership is not uniquely determined (a slice not above a proven
+total order) — trading optimisation freedom for correctness.
 
 **6. Bindings are an abstraction boundary.** A reference exposes the
 binding's *declared output* under the reference's own alias — exactly
@@ -152,16 +167,17 @@ a contract:
 > the internal implementation without changing the output schema does not
 > affect referring queries.
 
-One sub-question this raises for the design session: what exactly is in
-the public contract besides the output row type (column names and types,
-including nullability)? Static *cardinality* is derived from the body
-today — a `first` crossing over a reference would be legal iff the body is
-provably at-most-one, which lets an implementation change alter referrer
-validity. Either cardinality joins the declared contract (a binding may
-declare `at_most_one` and the binder verifies the body against it) or
-references are uniformly 0..many and determinism-sensitive consumers
-require their own order/slice. Decide explicitly; the second is the purer
-boundary, the first the more ergonomic.
+The public contract is (decided in review): **column names, types, and
+nullability** — with declared key/uniqueness properties as a possible
+later addition. References are **uniformly 0..many**: static cardinality
+remains a property of the actual body and does not become a user-declared
+promise, so determinism-sensitive consumers (`first`, `scalar`) of a
+reference bring their own order or slice. Rationale: a binding lives
+inside the same query document — its body is not truly private from the
+statement author or compiler, so the boundary means scope and row-shape
+encapsulation, not separate compilation. If bindings ever become
+catalog-stored views or reusable prepared modules, declared cardinality
+contracts become worth revisiting.
 
 ## What does not change
 
@@ -182,40 +198,52 @@ boundary, the first the more ergonomic.
   functions) are a separate future construct if wanted, likely designed
   alongside `apply`.
 
-## Open questions (the implementation design session)
+## Decided in review (2026-07-13)
 
-1. **Surface.** A document-level `bindings` map beside `nodes` with a
-   `{kind: "ref", binding: name, scope: label}` node? A `let` node kind?
-   Strawman for review, not decided:
+1. **Surface: document-level bindings that name roots within `nodes`.**
+   A `let` relation operator was rejected — it would mix naming/environment
+   structure into the operator tree; a document-level map establishes the
+   second namespace and preserves the statement-wide base-table analogy.
+   Bindings do not contain inline bodies; they *identify a root* among
+   ordinary nodes, preserving one encoding model for relation trees:
 
    ```yaml
    bindings:
-     expensive: { kind: aggregate, input: ..., scope: e, groups: ..., aggs: ... }
+     expensive: { node: aggregate_expensive }
    nodes:
+     scan_orders:         { kind: scan, table: orders, scope: o }
+     aggregate_expensive: { kind: aggregate, input: scan_orders, scope: e, ... }
      a:   { kind: ref, binding: expensive, scope: a }
      b:   { kind: ref, binding: expensive, scope: b }
      j:   { kind: join, left: a, right: b, on: { eq a.user_id b.user_id } }
    root: { node: j, cardinality: many }
    ```
 
-   Design against the adjacent family at the same time: `apply` (lateral),
-   `recursive`/`recursive_ref`, `union` all want "reference a named
-   relation" machinery (schema-flexibility.md).
-2. **Preflight extension.** Ordinary relation edges remain tree-shaped;
-   references are edges into the binding namespace, not ordinary
-   node-consumer edges — the single-consumer rule over node edges is
-   unchanged, and binding bodies are themselves trees. Reject: cycles
-   through binding references, refs to unknown bindings, unused bindings
-   (unreachable-definition rule extended), bindings shadowing node ids.
-3. **Binder mechanics.** Where binding output slots live, how the
-   occurrence renaming is represented in bound IR, how free slots of a
-   correlated binding interact with the environment at each ref.
-4. **Physical seam.** How the plan represents the committed choice — an
+   The preflight views the document as a **forest**: one tree rooted at
+   `root.node`, one tree per `bindings.*.node`. Ordinary relation edges
+   remain tree-shaped; references are edges into the binding namespace,
+   never node-consumer edges. Reject: cycles through binding references,
+   refs to unknown bindings, unused bindings (unreachable-definition rule
+   extended over the forest). Binding names, node ids, and scope labels are
+   three separate namespaces; if name/id collisions are rejected, that is a
+   readability diagnostic, not a semantic invariant. Design the surface
+   alongside the adjacent family (`apply`, `recursive`/`recursive_ref`,
+   `union` — schema-flexibility.md), which wants the same reference
+   machinery.
+2. **Cardinality contract: uniform 0..many references** (folded into
+   settled rule 6 above).
+
+## Remaining implementation questions
+
+1. **Binder mechanics.** Representing `BoundBinding` (body, output schema,
+   free slots/capture, plan-choice sensitivity) and `BoundRef` (binding
+   identity, fresh occurrence slots, canonical-output → occurrence-slot
+   mapping); how a correlated binding's free slots interact with the
+   environment at each ref.
+2. **Physical seam.** How the plan represents the committed choice — an
    explicit materialise/spool operator, an attach-like spec, or plan-replay
    annotation — and what EXPLAIN shows (the binding once, occurrences as
    references).
-5. **The cardinality contract** (from settled rule 6): declared
-   `at_most_one` vs uniform 0..many references.
 
 ## Acceptance criteria (tests that must exist before this ships)
 
@@ -233,9 +261,33 @@ boundary, the first the more ergonomic.
 - **Cost shape**: nested bindings, each referenced twice, depth ~10 —
   binder and planner stay linear in wire size (the anti-exponential
   guarantee).
+- **Alias isolation**: self-join a deterministic binding whose occurrences
+  project identically named columns; slots and null-extension behavior
+  stay independent per occurrence — catches accidental reuse of canonical
+  binding slots instead of proper occurrence remapping.
+- **Hidden-scope rejection**: referencing a scope internal to the binding
+  body from outside fails to bind; the output alias works — locks the
+  abstraction boundary.
 - **Preflight probes**: cyclic binding, dangling ref, unused binding,
   ordinary-node sharing (still rejected), binding/node id collision.
 - **EXPLAIN**: one definition, N occurrence references, strategy visible.
+
+## Implementation order
+
+1. Wire schema: document-level `bindings` + `RefNode` (lir.schema.yaml →
+   schemagen → lirwire).
+2. Preflight: validate the forest and the binding dependency graph.
+3. Binder: bind each definition once into canonical output slots; derive
+   plan-choice sensitivity conservatively.
+4. Binder: bind each ref as fresh slots plus canonical→occurrence
+   remapping.
+5. Planner/executor: lower every binding to explicit materialisation
+   first — the clearest correctness oracle.
+6. Land the full semantic acceptance suite against materialisation.
+7. Add identical-plan replay as an optimisation, checked against the
+   materialisation oracle.
+8. Correlated bindings after closed bindings work, unless the first
+   implementation finds correlation essential.
 
 ## Decision record
 

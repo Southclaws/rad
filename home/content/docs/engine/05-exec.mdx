@@ -299,6 +299,14 @@ A foundational invariant, stated on its own because so much consumes it:
 > the same query and the same snapshot produce the exact same result,
 > field order and all, every time.
 
+"Exact same result" is scoped precisely, because the useful cases are the
+uncomfortable ones: the same rows *and multiplicities*; the same chosen
+subset where membership is arbitrary (a `slice` with no order); the same
+observable order wherever order is observable — including the physical
+encounter order a `many` root materialises. What it does not promise is
+anything about internal iteration of intermediate bags that no later
+selection observes.
+
 It decomposes into two layers. The binder and planner are deterministic
 functions (same query, same catalog state → same bound tree, same physical
 plan), and the executor is deterministic given a plan and a snapshot. Both
@@ -322,9 +330,12 @@ identical sub-plan provably re-yields the committed bag —
 tasks/1-todo/relation-bindings.md).
 
 `TestReplayDeterminism` (replay_test.go) pins it: every conformance-corpus
-query executed ten times against one snapshot must produce deep-equal
-datums. Go randomises map iteration per range loop, so in-process
-repetition genuinely probes for map-order leaks.
+query — plus the deliberately *plan-choice-sensitive* shapes that can never
+join the path-independence corpus (an arbitrary slice, a tied order above a
+keyless projection, raw join encounter order) — executed ten times against
+one snapshot must produce deep-equal datums. Go randomises map iteration
+per range loop, so in-process repetition genuinely probes for map-order
+leaks.
 
 ## The test architecture
 
