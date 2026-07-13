@@ -15,10 +15,10 @@ import (
 	"github.com/Southclaws/rad/rad/server"
 )
 
-// serveCmd runs the Rad server: the database API (what clients connect
-// to via rad://host:7237) plus the devtool UI and its /api endpoints, on a
-// single port. Storage comes from the environment (RAD_STORAGE et al; see
-// server.Config), with flags overriding.
+// serveCmd runs the Rad server on two ports: the database API clients connect
+// to via rad://host:7237 (the wire protocol), and the admin UI with its /api
+// inspection endpoints on the next port up, 7238. Storage comes from the
+// environment (RAD_STORAGE et al; see server.Config), with flags overriding.
 func serveCmd() *cobra.Command {
 	cfg := server.LoadConfig()
 	var addr, storage, dataDir string
@@ -46,20 +46,31 @@ func serveCmd() *cobra.Command {
 			cat := catalog.New(store)
 			db := frontend.Open(store)
 
-			handler, err := server.New(store, db, cat, location)
+			dataHandler, err := server.New(db, cat)
 			if err != nil {
 				return err
 			}
-			srv := server.NewHTTPServer(cfg.Addr, handler)
+			adminAddr, err := server.AdminAddr(cfg.Addr)
+			if err != nil {
+				return err
+			}
+			adminHandler := server.NewAdmin(store, cat, location)
+
+			dataSrv := server.NewHTTPServer(cfg.Addr, dataHandler)
+			adminSrv := server.NewHTTPServer(adminAddr, adminHandler)
 
 			// Graceful shutdown on SIGINT/SIGTERM.
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
-			errCh := make(chan error, 1)
+			errCh := make(chan error, 2)
 			go func() {
 				log.Printf("rad %s serving on %s (storage: %s @ %s)", version, cfg.Addr, cfg.Storage, location)
-				errCh <- srv.ListenAndServe()
+				errCh <- dataSrv.ListenAndServe()
+			}()
+			go func() {
+				log.Printf("admin UI on %s", adminAddr)
+				errCh <- adminSrv.ListenAndServe()
 			}()
 
 			select {
@@ -69,8 +80,13 @@ func serveCmd() *cobra.Command {
 				log.Printf("shutting down…")
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
-					return err
+				dataErr := dataSrv.Shutdown(shutdownCtx)
+				adminErr := adminSrv.Shutdown(shutdownCtx)
+				if dataErr != nil && !errors.Is(dataErr, context.DeadlineExceeded) {
+					return dataErr
+				}
+				if adminErr != nil && !errors.Is(adminErr, context.DeadlineExceeded) {
+					return adminErr
 				}
 				return nil
 			}

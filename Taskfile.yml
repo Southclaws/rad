@@ -167,7 +167,7 @@ tasks:
       - npm install
 
   ui:build:
-    desc: Build the SPA into rad/server/dist (embedded by go:embed)
+    desc: Build the SPA into rad/server/ui/dist (embedded by go:embed)
     dir: rad/ui
     deps: [ui:install]
     cmds:
@@ -181,7 +181,7 @@ tasks:
       - npm run dev
 
   serve:
-    desc: Build the UI and run the Rad server (API + devtool UI on :7237)
+    desc: Build the UI and run the Rad server (wire API on :7237, admin UI on :7238)
     deps: [ui:build]
     env:
       CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"

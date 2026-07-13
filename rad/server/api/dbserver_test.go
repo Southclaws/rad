@@ -1,4 +1,4 @@
-package server
+package api
 
 // Client ↔ server integration: the radclient runtime speaking the full wire
 // protocol against real handlers over real HTTP (httptest), on an in-memory
@@ -57,11 +57,11 @@ func testHTTPServer(t *testing.T) *httptest.Server {
 
 	cat := catalog.New(store)
 	db := frontend.Open(store)
-	api, err := newDBAPI(db, cat).httpHandler(http.NotFoundHandler())
+	handler, err := New(db, cat)
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(withRecovery(api))
+	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	return srv
 }

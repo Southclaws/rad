@@ -1,4 +1,4 @@
-package server
+package ui
 
 import (
 	"context"
@@ -31,6 +31,10 @@ const (
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func httpError(w http.ResponseWriter, code int, err error) {
+	http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), code)
 }
 
 func limitParam(r *http.Request) int {

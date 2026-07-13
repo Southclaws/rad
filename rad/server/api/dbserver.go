@@ -1,4 +1,4 @@
-package server
+package api
 
 // The Rad database API: an implementation of the ogen-generated oas.Handler
 // (the OpenAPI contract in api/openapi.yaml). The generated server owns
@@ -12,35 +12,20 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"sync"
 	"time"
-
-	"github.com/ogen-go/ogen/ogenerrors"
 
 	"github.com/Southclaws/rad/rad/api"
 	"github.com/Southclaws/rad/rad/api/oas"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
-	"github.com/Southclaws/rad/rad/engine/reject"
 	"github.com/Southclaws/rad/rad/protocol"
 )
-
-const (
-	maxBodyBytes  = 4 << 20 // schema files and batch payloads stay small
-	txIdleTimeout = 60 * time.Second
-)
-
-// errTxNotFound marks a reference to a transaction that is unknown, expired,
-// or already finished. It maps to a not_found problem on the wire.
-var errTxNotFound = errors.New("unknown or expired transaction")
 
 // dbAPI serves the wire protocol over one database. It implements oas.Handler.
 type dbAPI struct {
@@ -53,24 +38,15 @@ type dbAPI struct {
 
 var _ oas.Handler = (*dbAPI)(nil)
 
-// txSession is one server-held transaction. Requests within a session are
-// serialized (transactions are not concurrency-safe).
-type txSession struct {
-	mu       sync.Mutex
-	tx       *frontend.Tx
-	lastUsed time.Time
-	done     bool
-}
-
 func newDBAPI(db *frontend.DB, cat *catalog.Catalog) *dbAPI {
 	a := &dbAPI{db: db, cat: cat, sessions: map[string]*txSession{}}
 	go a.reapSessions()
 	return a
 }
 
-// httpHandler builds the generated HTTP server, delegating any path that is
-// not a contract route to notFound (the devtool UI and its API ride along on
-// the same port).
+// httpHandler builds the generated HTTP server. Unmatched paths fall through
+// to notFound; New passes a plain 404, since the admin UI is a separate
+// server on its own port.
 func (a *dbAPI) httpHandler(notFound http.Handler) (http.Handler, error) {
 	return oas.NewServer(a,
 		oas.WithNotFound(notFound.ServeHTTP),
@@ -86,12 +62,6 @@ type view interface {
 	Get(ctx context.Context, table string, key lir.Row) (lir.Row, bool, error)
 	Execute(ctx context.Context, q lir.Query) (lir.Datum, error)
 }
-
-// ── core operations (transport free) ─────────────────────────────────────
-//
-// Each runs one wire operation against a view, coercing wire values by the
-// catalog's column types and returning wire-shaped results. They are shared
-// verbatim by the autocommit and transaction handlers below.
 
 // doQuery executes a query and returns its result datum as raw JSON — the
 // response carries one datum shaped exactly as the root materialised, so a
@@ -170,8 +140,6 @@ func (a *dbAPI) doDelete(ctx context.Context, v view, table string, key map[stri
 	return v.Delete(ctx, table, krow)
 }
 
-// ── meta and schema ───────────────────────────────────────────────────────
-
 func (a *dbAPI) GetHealth(ctx context.Context) (*oas.Health, error) {
 	return &oas.Health{Status: "ok"}, nil
 }
@@ -209,8 +177,6 @@ func (a *dbAPI) SchemaMigrate(ctx context.Context, req oas.OptMigrateProps) (oas
 	}
 	return &oas.MigrateResult{Steps: out}, nil
 }
-
-// ── autocommit data operations ────────────────────────────────────────────
 
 func (a *dbAPI) Query(ctx context.Context, req oas.Query) (oas.QueryRes, error) {
 	q, err := protocol.UnmarshalQuery(req)
@@ -276,8 +242,6 @@ func (a *dbAPI) RowDelete(ctx context.Context, req oas.OptRowDeleteProps) (oas.R
 	}
 	return &oas.DeleteResult{Found: found}, nil
 }
-
-// ── transactions ──────────────────────────────────────────────────────────
 
 func (a *dbAPI) TransactionBegin(ctx context.Context) (*oas.TransactionCredentials, error) {
 	// Sessions outlive the request; use a background context.
@@ -422,210 +386,9 @@ func (a *dbAPI) TransactionRollback(ctx context.Context, params oas.TransactionR
 	return &oas.NoContent{}, nil
 }
 
-// ── session management ────────────────────────────────────────────────────
-
-// withSession resolves and locks a transaction session, running fn against
-// its view. It returns errTxNotFound if the id is unknown, expired, or
-// already finished.
-func (a *dbAPI) withSession(id string, fn func(v view) error) error {
-	s, ok := a.session(id)
-	if !ok {
-		return errTxNotFound
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.done {
-		return errTxNotFound
-	}
-	s.lastUsed = time.Now()
-	return fn(s.tx)
-}
-
-// finish marks a session done, removes it, and runs the terminal operation
-// (commit or rollback) under its lock.
-func (a *dbAPI) finish(id string, fn func(*txSession) error) error {
-	s, ok := a.session(id)
-	if !ok {
-		return errTxNotFound
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.done {
-		return errTxNotFound
-	}
-	s.done = true
-	a.mu.Lock()
-	delete(a.sessions, id)
-	a.mu.Unlock()
-	return fn(s)
-}
-
-func (a *dbAPI) session(id string) (*txSession, bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	s, ok := a.sessions[id]
-	return s, ok
-}
-
-// reapSessions rolls back transactions idle past txIdleTimeout — abandoned
-// sessions must not pin SlateDB's conflict-tracking state forever.
-func (a *dbAPI) reapSessions() {
-	for range time.Tick(txIdleTimeout / 4) {
-		cutoff := time.Now().Add(-txIdleTimeout)
-		a.mu.Lock()
-		var expired []*txSession
-		for id, s := range a.sessions {
-			if s.lastUsed.Before(cutoff) {
-				expired = append(expired, s)
-				delete(a.sessions, id)
-			}
-		}
-		a.mu.Unlock()
-		for _, s := range expired {
-			s.mu.Lock()
-			if !s.done {
-				s.done = true
-				_ = s.tx.Rollback()
-			}
-			s.mu.Unlock()
-		}
-	}
-}
-
-func newSessionID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic(err)
-	}
-	return hex.EncodeToString(b[:])
-}
-
-// ── error and result mapping ──────────────────────────────────────────────
-
-// clientProblem classifies an engine or conversion error as a client-facing
-// problem, or returns nil when it is an unexpected internal error that should
-// surface as a 500 through NewError. Classification is by error type, marked
-// at the source (rad/engine/reject) — never by message text: input errors
-// are the caller's fault at request time, runtime errors are data-dependent
-// failures of a valid request, conflicts are retryable optimistic races.
-// Anything unmarked is internal and stays hidden.
-func clientProblem(err error) *protocol.Problem {
-	var we wireErr
-	switch {
-	case errors.As(err, &we):
-		p := protocol.NewProblem(protocol.CodeInvalid, http.StatusUnprocessableEntity, err.Error())
-		return &p
-	case frontend.IsConflict(err):
-		p := protocol.NewProblem(protocol.CodeConflict, http.StatusConflict, err.Error())
-		return &p
-	case reject.IsInput(err):
-		p := protocol.NewProblem(protocol.CodeInvalid, http.StatusUnprocessableEntity, err.Error())
-		return &p
-	case reject.IsRuntime(err):
-		p := protocol.NewProblem(protocol.CodeExecutionFailed, http.StatusUnprocessableEntity, err.Error())
-		return &p
-	default:
-		return nil
-	}
-}
-
-// txNotFound builds the not_found problem for a spent or unknown transaction.
-func txNotFound() oas.Problem {
-	return api.ProblemToOAS(protocol.NewProblem(protocol.CodeNotFound, http.StatusNotFound, errTxNotFound.Error()))
-}
-
-// recordResult wraps a single-row result, omitting the record when absent.
-func recordResult(rec protocol.Record, found bool) *oas.RecordResult {
-	res := &oas.RecordResult{Found: found}
-	if found {
-		res.Record = oas.NewOptRecord(api.MapToRecord(rec))
-	}
-	return res
-}
-
-// NewError renders an unexpected internal error as the contract's default
-// response. The detail is deliberately generic; the real error is logged.
-func (a *dbAPI) NewError(ctx context.Context, err error) *oas.InternalServerErrorStatusCode {
-	log.Printf("internal error: %v", err)
-	return &oas.InternalServerErrorStatusCode{
-		StatusCode: http.StatusInternalServerError,
-		Response:   api.ProblemToOAS(protocol.NewProblem(protocol.CodeInternal, http.StatusInternalServerError, "internal error")),
-	}
-}
-
-// problemErrorHandler renders request decoding and routing failures raised by
-// the generated server as RFC 7807 problems, so even malformed requests get a
-// contract-shaped body rather than ogen's plain text default.
-func problemErrorHandler(ctx context.Context, w http.ResponseWriter, r *http.Request, err error) {
-	status := ogenerrors.ErrorCode(err)
-	w.Header().Set("Content-Type", api.ProblemContentType)
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(protocol.NewProblem(protocol.CodeInvalid, status, err.Error()))
-}
-
-func rowJSON(row lir.Row) protocol.Record {
-	if row == nil {
-		return nil
-	}
-	return frontend.RowJSON(row)
-}
-
-// ── middleware ──────────────────────────────────────────────────────────
-
-func withRecovery(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if p := recover(); p != nil {
-				log.Printf("panic serving %s %s: %v", r.Method, r.URL.Path, p)
-				w.Header().Set("Content-Type", api.ProblemContentType)
-				w.WriteHeader(http.StatusInternalServerError)
-				_ = json.NewEncoder(w).Encode(protocol.NewProblem(protocol.CodeInternal, http.StatusInternalServerError, "internal error"))
-			}
-		}()
-		next.ServeHTTP(w, r)
-	})
-}
-
-// withBodyLimit caps request bodies. The generated server imposes no limit of
-// its own on JSON payloads; an oversized body surfaces to the client as an
-// invalid-request problem via the error handler.
-func withBodyLimit(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Body != nil {
-			r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (s *statusRecorder) WriteHeader(code int) {
-	s.status = code
-	s.ResponseWriter.WriteHeader(code)
-}
-
-func withLogging(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
-		log.Printf("%s %s %d %s", r.Method, r.URL.Path, rec.status, time.Since(start).Round(time.Microsecond))
-	})
-}
-
-// newHTTPServer applies the standard timeouts.
-func newHTTPServer(addr string, handler http.Handler) *http.Server {
-	return &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    1 << 20,
-	}
+// New builds the wire-protocol HTTP handler: the generated OpenAPI database
+// API. Unmatched routes return 404; the parent server wraps it with shared
+// middleware and pairs it with the admin UI on a separate port.
+func New(db *frontend.DB, cat *catalog.Catalog) (http.Handler, error) {
+	return newDBAPI(db, cat).httpHandler(http.NotFoundHandler())
 }

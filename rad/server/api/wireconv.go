@@ -1,4 +1,4 @@
-package server
+package api
 
 // Coercion of wire cells (plain JSON values) into typed engine rows for the
 // CRUD operations, driven by the catalog's column types: JSON numbers become

@@ -68,7 +68,7 @@ func New(t *testing.T) *DB {
 
 	cat := catalog.New(store)
 	db := frontend.Open(store)
-	handler, err := server.New(store, db, cat, "memory:///")
+	handler, err := server.New(db, cat)
 	if err != nil {
 		t.Fatalf("harness: build server: %v", err)
 	}

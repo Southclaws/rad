@@ -1,60 +1,57 @@
-// Package server owns Rad's HTTP server: the public database API, transaction
-// sessions, request middleware, and the embedded development UI.
+// Package server composes Rad's two HTTP surfaces. The wire protocol (the
+// generated database API) and the admin UI live in the api and ui
+// subpackages; this package pairs each with the shared middleware and runs
+// them on their own ports.
 package server
 
 import (
 	"fmt"
+	"net"
 	"net/http"
+	"strconv"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
-	exec "github.com/Southclaws/rad/rad/engine/05_exec"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
+	"github.com/Southclaws/rad/rad/server/api"
+	"github.com/Southclaws/rad/rad/server/ui"
 )
 
-// New builds the complete Rad HTTP handler. OpenAPI routes are served by the
-// database API; unmatched routes fall through to the development API and UI.
-func New(store kv.TransactionalKV, db *frontend.DB, cat *catalog.Catalog, location string) (http.Handler, error) {
-	mux := http.NewServeMux()
-	devtool := &devtool{
-		store:  store,
-		cat:    cat,
-		eng:    exec.New(store, cat),
-		dbPath: location,
-	}
-	mux.HandleFunc("GET /api/meta", devtool.handleMeta)
-	mux.HandleFunc("GET /api/schema", devtool.handleSchema)
-	mux.HandleFunc("GET /api/kv/scan", devtool.handleKVScan)
-	mux.HandleFunc("GET /api/kv/get", devtool.handleKVGet)
-	mux.HandleFunc("GET /api/tables/{table}/rows", devtool.handleTableRows)
-	mux.HandleFunc("GET /api/tables/{table}/indexscan", devtool.handleIndexScan)
-	mux.Handle("/", uiHandler())
-
-	api, err := newDBAPI(db, cat).httpHandler(mux)
+// New builds the data-plane handler: the rad:// wire protocol (the generated
+// OpenAPI database API) wrapped in the shared middleware. Clients connect here
+// on the default port; the admin UI lives on its own port, via NewAdmin.
+func New(db *frontend.DB, cat *catalog.Catalog) (http.Handler, error) {
+	h, err := api.New(db, cat)
 	if err != nil {
 		return nil, err
 	}
-	return withRecovery(withLogging(withCORS(withBodyLimit(api)))), nil
+	return withRecovery(withLogging(withCORS(withBodyLimit(h)))), nil
+}
+
+// NewAdmin builds the admin-plane handler: the development UI and the
+// inspection API it speaks to, wrapped in the shared middleware. It runs on
+// its own port so the browser surface never shares an origin with client
+// traffic.
+func NewAdmin(store kv.TransactionalKV, cat *catalog.Catalog, location string) http.Handler {
+	return withRecovery(withLogging(withCORS(ui.Handler(store, cat, location))))
+}
+
+// AdminAddr derives the admin/UI listen address from the data address by
+// incrementing the port by one (the default 7237 wire port yields 7238), so
+// the UI never collides with the protocol and the pairing is predictable.
+func AdminAddr(dataAddr string) (string, error) {
+	host, portStr, err := net.SplitHostPort(dataAddr)
+	if err != nil {
+		return "", fmt.Errorf("server: cannot derive admin address from %q: %w", dataAddr, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return "", fmt.Errorf("server: non-numeric port in listen address %q: %w", dataAddr, err)
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port+1)), nil
 }
 
 // NewHTTPServer applies Rad's standard production timeouts.
 func NewHTTPServer(addr string, handler http.Handler) *http.Server {
 	return newHTTPServer(addr, handler)
-}
-
-// withCORS allows the Vite development server to call the API.
-func withCORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func httpError(w http.ResponseWriter, code int, err error) {
-	http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), code)
 }

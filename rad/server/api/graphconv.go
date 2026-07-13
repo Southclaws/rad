@@ -1,4 +1,4 @@
-package server
+package api
 
 // graphQuery materialises the wire's query tree — string node references —
 // into the engine's unbound IR value tree. It is mechanical and needs no

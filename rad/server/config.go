@@ -54,8 +54,6 @@ func LoadConfig() Config {
 	}
 }
 
-// OpenStorage opens the configured SlateDB backend. Everything is SlateDB;
-// the backends differ only by object-store URL.
 func (c Config) OpenStorage() (*kvslate.Store, string, error) {
 	switch c.Storage {
 	case "memory":
