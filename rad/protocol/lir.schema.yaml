@@ -80,7 +80,9 @@ description: |
 $ref: "#/$defs/Query"
 
 $defs:
-  # ── The query graph ──────────────────────────────────────────────────────
+  # -
+  # The query graph
+  # -
 
   Query:
     title: Query
@@ -139,7 +141,9 @@ $defs:
         type: string
         enum: [many, first, exactly_one, scalar]
 
-  # ── Relation operators (the Node union) ──────────────────────────────────
+  # -
+  # Relation operators (the Node union)
+  # -
 
   Node:
     title: Node
@@ -394,7 +398,9 @@ $defs:
         type: integer
         minimum: 0
 
-  # ── Scalar expressions (the Expr union) ──────────────────────────────────
+  # -
+  # Scalar expressions (the Expr union)
+  # -
 
   Expr:
     title: Expr
@@ -615,7 +621,9 @@ $defs:
         type: string
         minLength: 1
 
-  # ── Projection and aggregation terms ─────────────────────────────────────
+  # -
+  # Projection and aggregation terms
+  # -
 
   Field:
     title: Field
@@ -705,7 +713,9 @@ $defs:
         description: Sort descending instead of the default ascending.
         type: boolean
 
-  # ── Scalar values (the leaf) ─────────────────────────────────────────────
+  # -
+  # Scalar values (the leaf)
+  # -
 
   Value:
     title: Value
