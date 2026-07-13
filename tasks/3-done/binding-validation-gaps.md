@@ -1,5 +1,10 @@
 # Binding validation gaps
 
+Status: **done** (2026-07-13) — all four gaps closed in one commit;
+minProperties floor, binding-level best-match errors, the engine-boundary
+name check, and the two pinning tests (alias bindings, duplicate ref
+scopes) all landed with wire probes.
+
 Small hardening items found by auditing the new schema shape (bindings +
 ref) across all four validation layers: JSON Schema, the kind-directed
 best-match pass (lirvalidate.go), the forest preflight (graphconv.go), and

@@ -46,6 +46,21 @@ var nodeKinds = map[string]bool{
 	"aggregate": true, "order": true, "slice": true, "ref": true,
 }
 
+// resolveBindingDef compiles the Binding definition standalone, for naming
+// binding-level failures the way node failures are named.
+var resolveBindingDef = sync.OnceValues(func() (*jsonschema.Resolved, error) {
+	var doc jsonschema.Schema
+	if err := json.Unmarshal(lirSchemaJSON, &doc); err != nil {
+		return nil, fmt.Errorf("protocol: decode embedded LIR schema: %w", err)
+	}
+	wrapper := &jsonschema.Schema{Defs: doc.Defs, Ref: "#/$defs/Binding"}
+	resolved, err := wrapper.Resolve(nil)
+	if err != nil {
+		return nil, fmt.Errorf("protocol: resolve LIR Binding def: %w", err)
+	}
+	return resolved, nil
+})
+
 // resolveVariants compiles one standalone resolved schema per kind: the
 // embedded document's $defs with the variant as the root reference.
 var resolveVariants = sync.OnceValues(func() (map[string]*jsonschema.Resolved, error) {
@@ -105,7 +120,40 @@ func validationDetail(instance any, original error) error {
 			return fmt.Errorf("protocol: node %q (%s): %w", id, kind, err)
 		}
 	}
+	if err := bindingsDetail(doc); err != nil {
+		return err
+	}
 	return original
+}
+
+// bindingsDetail names failures inside the bindings section, which is not
+// a union and so never fans out — but the errors should still say which
+// binding broke and how.
+func bindingsDetail(doc map[string]any) error {
+	raw, present := doc["bindings"]
+	if !present {
+		return nil
+	}
+	bindings, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("protocol: bindings must be an object")
+	}
+	if len(bindings) == 0 {
+		return fmt.Errorf("protocol: bindings must not be empty when present")
+	}
+	def, err := resolveBindingDef()
+	if err != nil {
+		return nil // fall back to the raw error
+	}
+	for _, name := range slices.Sorted(maps.Keys(bindings)) {
+		if name == "" {
+			return fmt.Errorf("protocol: binding names must not be empty")
+		}
+		if err := def.Validate(bindings[name]); err != nil {
+			return fmt.Errorf("protocol: binding %q: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // firstExprFailure walks a node payload for objects carrying an expression

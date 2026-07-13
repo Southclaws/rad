@@ -611,6 +611,7 @@
             "$ref": "#/$defs/Binding"
           },
           "description": "Named relational values, each identifying the root node of its\ndefining tree within `nodes`. A binding's tree is subject to the\nsame single-consumer rules as the main tree; `ref` nodes are edges\ninto this namespace, never ordinary node-consumer edges. Binding\ntrees may themselves reference other bindings: those references\nform a separate acyclic dependency graph over the relation forest.\nEvery declared binding must be referenced at least once.\n",
+          "minProperties": 1,
           "propertyNames": {
             "minLength": 1
           },

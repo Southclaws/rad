@@ -6,6 +6,7 @@ package planner
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/Southclaws/rad/rad/protocol"
@@ -206,4 +207,77 @@ func TestBindingDuplicateOutputRejected(t *testing.T) {
 	}, map[string]protocol.Binding{
 		"wide": {Node: "j"},
 	}, "r", "many")).ExpectError(`binding "wide" output has duplicate column "id"`)
+}
+
+// ── validation hardening ────────────────────────────────────────────────────
+
+func TestBindingEmptyBindingsRejected(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	status, body := postQuery(t, d, `{
+		"nodes": {"o": {"kind": "scan", "table": "orders", "scope": "o"}},
+		"bindings": {},
+		"root": {"node": "o", "cardinality": "many"}
+	}`)
+	if status != 400 && status != 422 {
+		t.Fatalf("empty bindings: status %d, want rejection\n%s", status, body)
+	}
+	if !strings.Contains(body, "bindings must not be empty when present") {
+		t.Fatalf("rejection does not name the rule:\n%s", body)
+	}
+}
+
+func TestBindingMalformedValueNamed(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	// An empty node string inside a binding value: the failure names the
+	// binding, not a raw validator path.
+	status, body := postQuery(t, d, `{
+		"nodes": {
+			"o": {"kind": "scan", "table": "orders", "scope": "o"},
+			"r": {"kind": "ref", "binding": "x", "scope": "r"}
+		},
+		"bindings": {"x": {"node": ""}},
+		"root": {"node": "r", "cardinality": "many"}
+	}`)
+	if status != 400 && status != 422 {
+		t.Fatalf("malformed binding: status %d, want rejection\n%s", status, body)
+	}
+	if !strings.Contains(body, `binding \"x\"`) {
+		t.Fatalf("rejection does not name the binding:\n%s", body)
+	}
+}
+
+// An alias binding — a binding whose root node is itself a ref — is legal:
+// it denotes the same committed value under another name.
+func TestBindingAlias(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(qb(map[string]protocol.Node{
+		"o": {Kind: "scan", Table: "orders", Scope: "o"},
+		"open": {Kind: "filter", Input: "o",
+			Predicate: protocol.Eq(protocol.Col("o", "status"), protocol.Lit("pending"))},
+		"alias_root": {Kind: "ref", Binding: "base", Scope: "ar"},
+		"use":        {Kind: "ref", Binding: "alias", Scope: "u"},
+		"fold": {Kind: "aggregate", Input: "use",
+			Aggs: []protocol.AggTerm{{Fn: "count", As: "n"}}},
+	}, map[string]protocol.Binding{
+		"base":  {Node: "open"},
+		"alias": {Node: "alias_root"},
+	}, "fold", "exactly_one")).Equals(`[{"n":2}]`)
+}
+
+// Two references may not share a scope label — same query-wide rule as scans.
+func TestBindingDuplicateRefScopeRejected(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(qb(map[string]protocol.Node{
+		"o": {Kind: "scan", Table: "orders", Scope: "o"},
+		"x": {Kind: "ref", Binding: "b", Scope: "same"},
+		"y": {Kind: "ref", Binding: "b", Scope: "same"},
+		"j": {Kind: "join", Left: "x", Right: "y", Join: "inner",
+			On: protocol.Eq(protocol.Col("same", "id"), protocol.Col("same", "id"))},
+	}, map[string]protocol.Binding{
+		"b": {Node: "o"},
+	}, "j", "many")).ExpectError(`duplicate scope "same"`)
 }

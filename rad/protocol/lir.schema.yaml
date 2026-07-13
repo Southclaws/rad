@@ -127,6 +127,7 @@ $defs:
           form a separate acyclic dependency graph over the relation forest.
           Every declared binding must be referenced at least once.
         type: object
+        minProperties: 1
         propertyNames: { minLength: 1 }
         additionalProperties: { $ref: "#/$defs/Binding" }
       root: { $ref: "#/$defs/Root" }

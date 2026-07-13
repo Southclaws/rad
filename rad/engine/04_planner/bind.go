@@ -116,6 +116,9 @@ func bindingErr(name string, err error) error {
 func bindingOrder(bindings map[string]lir.Relation) ([]string, error) {
 	names := make([]string, 0, len(bindings))
 	for name := range bindings {
+		if name == "" {
+			return nil, reject.Inputf("planner: binding names must not be empty")
+		}
 		names = append(names, name)
 	}
 	slices.Sort(names)
