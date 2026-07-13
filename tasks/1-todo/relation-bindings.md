@@ -1,4 +1,4 @@
-# Relation bindings: sharing a derived relation across sibling contexts
+# Relation bindings: derived relations as first-class relational values
 
 Status: problem and semantics settled, ready for review. Surface syntax,
 binder/preflight mechanics, and the physical seam are the remaining design
@@ -6,6 +6,16 @@ work. This is a grammar change to lir.schema.yaml — the only one to come
 out of the battle-test campaign (F7 in tasks/3-done/lir-improvements.md) —
 and nothing lands until the open questions below are settled with the same
 care.
+
+The question this document answers is not "should LIR allow DAGs?" (it
+should not, and does not — see the preflight rules below). It is: **should
+a derived relation be nameable as a first-class relational value**, the way
+a base table already is? One model then explains CTEs, repeated
+subqueries, nondeterministic choice, self-joins, planner freedom,
+materialisation, and lexical correlation together. The construct adds no
+new relational operation — it adds the ability to *name a relational
+value*, which is why it fits the four-primitive discipline rather than
+straining it.
 
 ## The problem
 
@@ -122,10 +132,36 @@ snapshot. Therefore the obligation is discharged by either
 What is forbidden: planning occurrences of a nondeterministic body
 *differently* — distinct access paths may legitimately choose distinct
 bags. Deterministic bodies keep full per-occurrence planning freedom
-(path independence guarantees any two correct plans agree). If plan-replay
-is relied on, "executor is deterministic given plan + snapshot" is
-promoted from implementation property to stated invariant, with a
-conformance test.
+(path independence guarantees any two correct plans agree).
+
+Plan-replay is sound because of **replay determinism**, now a stated and
+tested engine invariant rather than an implementation accident: the same
+query against the same statement snapshot produces the exact same result
+(`TestReplayDeterminism` in rad/engine/05_exec; documented in the executor
+layer docs, home/content/docs/engine/05-exec.mdx). LIR's nondeterminism is
+logical — which bag a declared-arbitrary relation denotes — never physical.
+
+**6. Bindings are an abstraction boundary.** A reference exposes the
+binding's *declared output* under the reference's own alias — exactly
+`ref expensive AS e`, mirroring `scan(orders, "a")`. Interior scopes never
+leak: a body built as `scan users → join orders → aggregate` exposes its
+aggregate output, not `u`, `o`, and the intermediates. And the boundary is
+a contract:
+
+> A binding's public output schema is fixed at its definition. Changing
+> the internal implementation without changing the output schema does not
+> affect referring queries.
+
+One sub-question this raises for the design session: what exactly is in
+the public contract besides the output row type (column names and types,
+including nullability)? Static *cardinality* is derived from the body
+today — a `first` crossing over a reference would be legal iff the body is
+provably at-most-one, which lets an implementation change alter referrer
+validity. Either cardinality joins the declared contract (a binding may
+declare `at_most_one` and the binder verifies the body against it) or
+references are uniformly 0..many and determinism-sensitive consumers
+require their own order/slice. Decide explicitly; the second is the purer
+boundary, the first the more ergonomic.
 
 ## What does not change
 
@@ -165,22 +201,21 @@ conformance test.
    Design against the adjacent family at the same time: `apply` (lateral),
    `recursive`/`recursive_ref`, `union` all want "reference a named
    relation" machinery (schema-flexibility.md).
-2. **Scope re-exposure.** Does a ref expose the binding's output under the
-   ref's scope label (mirroring `scan(orders, "a")` — keeps the base-table
-   symmetry total, forces bindings to have a labelled/closed output)? Or
-   re-expose interior scopes (breaks the symmetry, leaks the body)?
-   Labelled output is the presumptive answer; confirm.
-3. **Preflight extension.** Single-consumer everywhere except refs;
-   binding bodies are trees; refs are the only fan-in. Reject: cycles
-   through bindings, refs to unknown bindings, unused bindings
+2. **Preflight extension.** Ordinary relation edges remain tree-shaped;
+   references are edges into the binding namespace, not ordinary
+   node-consumer edges — the single-consumer rule over node edges is
+   unchanged, and binding bodies are themselves trees. Reject: cycles
+   through binding references, refs to unknown bindings, unused bindings
    (unreachable-definition rule extended), bindings shadowing node ids.
-4. **Binder mechanics.** Where binding output slots live, how the
+3. **Binder mechanics.** Where binding output slots live, how the
    occurrence renaming is represented in bound IR, how free slots of a
    correlated binding interact with the environment at each ref.
-5. **Physical seam.** How the plan represents the committed choice — an
+4. **Physical seam.** How the plan represents the committed choice — an
    explicit materialise/spool operator, an attach-like spec, or plan-replay
    annotation — and what EXPLAIN shows (the binding once, occurrences as
    references).
+5. **The cardinality contract** (from settled rule 6): declared
+   `at_most_one` vs uniform 0..many references.
 
 ## Acceptance criteria (tests that must exist before this ships)
 
@@ -210,5 +245,12 @@ and LIR is deliberately not confined to it; a "self-join" of a
 nondeterministic binding would not be a self-join, materialise-vs-recompute
 would become observable (breaking path independence), and the conformance
 oracle could not pin results. Also rejected: shared output slots across
-occurrences (cannot express self-joins) and capture-at-reference (an
-implicit lambda; parameterisation should be explicit if ever added).
+occurrences (cannot express self-joins), capture-at-reference (an implicit
+lambda; parameterisation should be explicit if ever added), and interior
+scope leakage through references (destroys the abstraction boundary).
+
+The discussion also reframed the question itself: this began as "should we
+allow DAG sharing?" and resolved into "should derived relations be
+first-class relational values?" — the title question. The DAG framing was
+retired because references are not ordinary node edges at all; they are
+edges into the binding namespace, and the node graph stays a tree.

@@ -291,6 +291,41 @@ backfill runs conflicts at commit rather than being missed.
 `backfillIndexIn` takes resolved catalog values rather than names because the
 index it fills is visible only inside the caller's transaction.
 
+## Replay determinism
+
+A foundational invariant, stated on its own because so much consumes it:
+
+> Executing a query against a statement snapshot is deterministic —
+> the same query and the same snapshot produce the exact same result,
+> field order and all, every time.
+
+It decomposes into two layers. The binder and planner are deterministic
+functions (same query, same catalog state → same bound tree, same physical
+plan), and the executor is deterministic given a plan and a snapshot. Both
+hold structurally: every result-path collection is a slice (projection
+fields, order terms, attach specs, datum fields), grouped aggregation emits
+in first-seen order over a recorded key list, sorts are stable, and scans
+iterate the KV in key order. Nothing on the result path ranges over a Go
+map, and nothing reads a clock or a random source — LIR's nondeterminism is
+*logical* (a declared-arbitrary `slice` denotes *some* N rows), never
+physical (which rows a given plan yields against a given snapshot).
+
+This is distinct from — and stronger machinery than — path independence.
+Path independence says *different* plans for one query agree on the result;
+replay determinism says *one* plan (indeed one query) cannot even disagree
+with itself. Between them they support deterministic replay and debugging,
+result-cache keys, explain verification (the plan you inspect is the plan
+whose behavior you observed), planner-equivalence testing, and the
+relation-binding design's identical-plan discharge (a nondeterministic
+binding may be re-executed per reference precisely because replaying the
+identical sub-plan provably re-yields the committed bag —
+tasks/1-todo/relation-bindings.md).
+
+`TestReplayDeterminism` (replay_test.go) pins it: every conformance-corpus
+query executed ten times against one snapshot must produce deep-equal
+datums. Go randomises map iteration per range loop, so in-process
+repetition genuinely probes for map-order leaks.
+
 ## The test architecture
 
 The suite is outcome-oriented: rather than asserting plan shapes, it holds

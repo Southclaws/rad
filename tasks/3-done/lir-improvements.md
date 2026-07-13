@@ -10,7 +10,7 @@ deliberately design-pending.
 
 Status: **done** (2026-07-13) — F1 through F6, F8, and F9 all shipped, one
 commit each. F7 (DAG sharing) was split out: it is a grammar change and gets
-its own design session — see tasks/1-todo/dag-sharing.md.
+its own design session — see tasks/1-todo/relation-bindings.md.
 
 ## F1 — Schema-validation errors must name the problem
 
@@ -134,7 +134,7 @@ and reference its output columns instead`.
 
 ## F7 — DAG sharing
 
-Moved to tasks/1-todo/dag-sharing.md: a grammar change with semantic weight,
+Moved to tasks/1-todo/relation-bindings.md: a grammar change with semantic weight,
 not a DX patch — it gets an explicit design session. The working idiom
 (compute once in a labelled projection, reference the projection's scope
 above) is documented on the LIR docs page.
