@@ -35,12 +35,12 @@
 package schema
 
 import (
-	"bytes"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 
-	"github.com/santhosh-tekuri/jsonschema/v6"
-	"gopkg.in/yaml.v3"
+	yaml "github.com/goccy/go-yaml"
+	"github.com/google/jsonschema-go/jsonschema"
 
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 )
@@ -49,16 +49,16 @@ import (
 var jsonSchemaSrc []byte
 
 // compiled JSON Schema, built once at package init.
-var jsonSchema = func() *jsonschema.Schema {
-	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(jsonSchemaSrc))
-	if err != nil {
+var jsonSchema = func() *jsonschema.Resolved {
+	var s jsonschema.Schema
+	if err := json.Unmarshal(jsonSchemaSrc, &s); err != nil {
 		panic(fmt.Sprintf("schema: embedded radschema.json is invalid JSON: %v", err))
 	}
-	c := jsonschema.NewCompiler()
-	if err := c.AddResource("radschema.json", doc); err != nil {
-		panic(err)
+	resolved, err := s.Resolve(nil)
+	if err != nil {
+		panic(fmt.Sprintf("schema: embedded radschema.json failed to resolve: %v", err))
 	}
-	return c.MustCompile("radschema.json")
+	return resolved
 }()
 
 // Schema is a parsed schema file.
@@ -231,6 +231,17 @@ func buildTable(filename string, ft fileTable) (Table, error) {
 // Strings may be the generators uuid() / now_ms(); everything else is a
 // literal that must match the column type.
 func parseDefault(raw any, typ catalog.Type) (*catalog.Default, error) {
+	// Integers first: the YAML decoder yields them as uint64/int64, so match on
+	// value rather than a single Go type.
+	if n, ok := asInt64(raw); ok {
+		if typ == catalog.TypeFloat64 {
+			return &catalog.Default{Float64: float64(n)}, nil
+		}
+		if typ != catalog.TypeInt64 {
+			return nil, fmt.Errorf("integer default on %s column", typ)
+		}
+		return &catalog.Default{Int64: n}, nil
+	}
 	switch v := raw.(type) {
 	case string:
 		switch v {
@@ -248,14 +259,6 @@ func parseDefault(raw any, typ catalog.Type) (*catalog.Default, error) {
 			return nil, fmt.Errorf("bool default on %s column", typ)
 		}
 		return &catalog.Default{Bool: v}, nil
-	case int:
-		if typ == catalog.TypeFloat64 {
-			return &catalog.Default{Float64: float64(v)}, nil
-		}
-		if typ != catalog.TypeInt64 {
-			return nil, fmt.Errorf("integer default on %s column", typ)
-		}
-		return &catalog.Default{Int64: int64(v)}, nil
 	case float64:
 		if typ != catalog.TypeFloat64 {
 			return nil, fmt.Errorf("float default on %s column", typ)
@@ -290,9 +293,10 @@ func cutRef(ref string) (table, column string, ok bool) {
 }
 
 // normalizeForJSON converts YAML-decoded values into the shapes the JSON
-// Schema validator expects (json.Number-free, string-keyed maps — yaml.v3
-// already produces map[string]interface{} for string keys, but nested
-// non-string keys or ints need normalizing).
+// Schema validator expects: string-keyed maps and float64 numbers. goccy
+// produces map[string]interface{} for string keys, but decodes integers as
+// uint64/int64, which the validator does not accept, so numbers are widened
+// to float64 here.
 func normalizeForJSON(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
@@ -317,7 +321,35 @@ func normalizeForJSON(v any) any {
 		return float64(x)
 	case int64:
 		return float64(x)
+	case uint64:
+		return float64(x)
+	case uint:
+		return float64(x)
 	default:
 		return v
+	}
+}
+
+// asInt64 reports whether raw is an integer value and returns it. The YAML
+// decoder yields integers as uint64 (non-negative) or int64, so this accepts
+// the signed and unsigned integer kinds rather than a single type.
+func asInt64(raw any) (int64, bool) {
+	switch n := raw.(type) {
+	case int:
+		return int64(n), true
+	case int64:
+		return n, true
+	case uint:
+		if uint64(n)>>63 != 0 {
+			return 0, false
+		}
+		return int64(n), true
+	case uint64:
+		if n>>63 != 0 {
+			return 0, false
+		}
+		return int64(n), true
+	default:
+		return 0, false
 	}
 }

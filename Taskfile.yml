@@ -107,15 +107,13 @@ tasks:
   protocol:generate:
     desc: Regenerate LIR wire types, OpenAPI transport, and the public LIR schema
     cmds:
-      - '${SCHEMANCER:-$HOME/go/bin/schemancer} rad/protocol/lir.schema.json golang rad/protocol/lirwire --package lirwire --optional-style pointer'
-      # Preserve literal numbers as raw JSON. Schemancer otherwise emits the
-      # multi-type Value definition as interface{}, whose decoder uses
-      # float64 and loses integers beyond JavaScript's safe range.
-      - perl -pi -e 's/type Value = interface\{\}/type Value = json.RawMessage/' rad/protocol/lirwire/lirwire.go
-      - rg -q 'type Value = json.RawMessage' rad/protocol/lirwire/lirwire.go
+      # lir.schema.yaml is the source of truth; schemagen writes lir.schema.json
+      # and publishes the website copy.
+      - go generate ./rad/protocol
+      # schemancer.yaml maps the LIR Value's `format: raw` to json.RawMessage,
+      # keeping literals as raw bytes for full int64 precision.
+      - '${SCHEMANCER:-$HOME/go/bin/schemancer} rad/protocol/lir.schema.json golang rad/protocol/lirwire --package lirwire --optional-style pointer --config rad/protocol/schemancer.yaml'
       - go generate ./rad/api
-      - mkdir -p home/public/schema
-      - cp rad/protocol/lir.schema.json home/public/schema/lir.json
 
   demo:ts:
     desc: "Run the TypeScript demo: fresh Rad server + node app over rad://"

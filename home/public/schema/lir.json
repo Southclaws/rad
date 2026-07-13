@@ -1,322 +1,672 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://www.radengine.dev/schema/lir.json",
-  "title": "Rad LIR",
-  "description": "A strict, single-consumer relation tree encoded as named inline node definitions plus a root selector. The normative semantics live in docs/design/lir.md.",
-  "$ref": "#/$defs/Query",
   "$defs": {
-    "Value": {
-      "title": "Value",
-      "description": "One raw JSON scalar: string, number, boolean, or null. The binder preserves JSON numbers and types literals from context.",
-      "type": ["string", "number", "boolean", "null"]
-    },
-    "Query": {
-      "title": "Query",
-      "type": "object",
+    "AggTerm": {
       "additionalProperties": false,
-      "required": ["nodes", "root"],
       "properties": {
-        "nodes": {
-          "description": "A flat encoding of one finite, single-consumer relation tree. Node IDs name inline definitions and carry no sharing identity.",
-          "type": "object",
-          "minProperties": 1,
-          "propertyNames": { "minLength": 1 },
-          "additionalProperties": { "$ref": "#/$defs/Node" }
+        "arg": {
+          "$ref": "#/$defs/Expr"
         },
-        "root": { "$ref": "#/$defs/Root" }
-      }
-    },
-    "Root": {
-      "title": "Root",
-      "description": "Selects the root relation and its materialisation mode. Scalar requires one output column and statically at most one row.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["node", "cardinality"],
-      "properties": {
-        "node": { "type": "string", "minLength": 1 },
-        "cardinality": {
-          "type": "string",
-          "enum": ["many", "first", "exactly_one", "scalar"]
+        "as": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "fn": {
+          "enum": [
+            "count",
+            "sum",
+            "avg",
+            "min",
+            "max"
+          ],
+          "type": "string"
         }
-      }
-    },
-
-    "Node": {
-      "title": "Node",
-      "description": "A closed tagged union of the seven LIR relation operators.",
-      "oneOf": [
-        { "$ref": "#/$defs/ScanNode" },
-        { "$ref": "#/$defs/FilterNode" },
-        { "$ref": "#/$defs/ProjectNode" },
-        { "$ref": "#/$defs/JoinNode" },
-        { "$ref": "#/$defs/AggregateNode" },
-        { "$ref": "#/$defs/OrderNode" },
-        { "$ref": "#/$defs/SliceNode" }
-      ]
-    },
-    "ScanNode": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "table", "scope"],
-      "properties": {
-        "kind": { "type": "string", "const": "scan" },
-        "table": { "type": "string", "minLength": 1 },
-        "scope": { "type": "string", "minLength": 1 }
-      }
-    },
-    "FilterNode": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "input", "predicate"],
-      "properties": {
-        "kind": { "type": "string", "const": "filter" },
-        "input": { "type": "string", "minLength": 1 },
-        "predicate": { "$ref": "#/$defs/Expr" }
-      }
-    },
-    "ProjectNode": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "input"],
-      "anyOf": [
-        { "required": ["spread"] },
-        { "required": ["fields"] }
+      },
+      "required": [
+        "fn",
+        "as"
       ],
-      "properties": {
-        "kind": { "type": "string", "const": "project" },
-        "input": { "type": "string", "minLength": 1 },
-        "scope": { "type": "string", "minLength": 1 },
-        "spread": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1 }
-        },
-        "fields": {
-          "type": "array",
-          "minItems": 1,
-          "items": { "$ref": "#/$defs/Field" }
-        }
-      }
-    },
-    "JoinNode": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "left", "right", "join", "on"],
-      "properties": {
-        "kind": { "type": "string", "const": "join" },
-        "left": { "type": "string", "minLength": 1 },
-        "right": { "type": "string", "minLength": 1 },
-        "join": { "type": "string", "enum": ["inner", "left"] },
-        "on": { "$ref": "#/$defs/Expr" }
-      }
+      "title": "AggTerm",
+      "type": "object"
     },
     "AggregateNode": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "input"],
       "anyOf": [
-        { "required": ["groups"] },
-        { "required": ["aggs"] }
+        {
+          "required": [
+            "groups"
+          ]
+        },
+        {
+          "required": [
+            "aggs"
+          ]
+        }
       ],
       "properties": {
-        "kind": { "type": "string", "const": "aggregate" },
-        "input": { "type": "string", "minLength": 1 },
-        "scope": { "type": "string", "minLength": 1 },
-        "groups": {
-          "type": "array",
-          "minItems": 1,
-          "items": { "$ref": "#/$defs/GroupTerm" }
-        },
         "aggs": {
-          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AggTerm"
+          },
           "minItems": 1,
-          "items": { "$ref": "#/$defs/AggTerm" }
-        }
-      }
-    },
-    "OrderNode": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "input", "terms"],
-      "properties": {
-        "kind": { "type": "string", "const": "order" },
-        "input": { "type": "string", "minLength": 1 },
-        "terms": {
-          "type": "array",
+          "type": "array"
+        },
+        "groups": {
+          "items": {
+            "$ref": "#/$defs/GroupTerm"
+          },
           "minItems": 1,
-          "items": { "$ref": "#/$defs/OrderTerm" }
+          "type": "array"
+        },
+        "input": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "aggregate",
+          "type": "string"
+        },
+        "scope": {
+          "minLength": 1,
+          "type": "string"
         }
-      }
-    },
-    "SliceNode": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "input"],
-      "properties": {
-        "kind": { "type": "string", "const": "slice" },
-        "input": { "type": "string", "minLength": 1 },
-        "offset": { "type": "integer", "minimum": 0 },
-        "limit": { "type": "integer", "minimum": 0 }
-      }
-    },
-
-    "Expr": {
-      "title": "Expr",
-      "description": "A closed tagged union. Every expression computes one typed datum; crossings are the only relation-to-datum boundary.",
-      "oneOf": [
-        { "$ref": "#/$defs/LiteralExpr" },
-        { "$ref": "#/$defs/ColumnExpr" },
-        { "$ref": "#/$defs/UnaryExpr" },
-        { "$ref": "#/$defs/BinaryExpr" },
-        { "$ref": "#/$defs/CallExpr" },
-        { "$ref": "#/$defs/CastExpr" },
-        { "$ref": "#/$defs/CrossingExprExists" },
-        { "$ref": "#/$defs/CrossingExprFirst" },
-        { "$ref": "#/$defs/CrossingExprScalar" },
-        { "$ref": "#/$defs/CrossingExprArray" }
-      ]
-    },
-    "LiteralExpr": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "value"],
-      "properties": {
-        "kind": { "type": "string", "const": "lit" },
-        "value": { "$ref": "#/$defs/Value" }
-      }
-    },
-    "ColumnExpr": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "scope", "column"],
-      "properties": {
-        "kind": { "type": "string", "const": "col" },
-        "scope": { "type": "string", "minLength": 1 },
-        "column": { "type": "string", "minLength": 1 }
-      }
-    },
-    "UnaryExpr": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "op", "expr"],
-      "properties": {
-        "kind": { "type": "string", "const": "unary" },
-        "op": { "type": "string", "enum": ["not", "negate", "is_null", "is_not_null"] },
-        "expr": { "$ref": "#/$defs/Expr" }
-      }
+      },
+      "required": [
+        "kind",
+        "input"
+      ],
+      "type": "object"
     },
     "BinaryExpr": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "op", "left", "right"],
       "properties": {
-        "kind": { "type": "string", "const": "binary" },
-        "op": { "type": "string", "enum": ["eq", "ne", "lt", "lte", "gt", "gte", "and", "or", "add", "sub", "mul", "div"] },
-        "left": { "$ref": "#/$defs/Expr" },
-        "right": { "$ref": "#/$defs/Expr" }
-      }
+        "kind": {
+          "const": "binary",
+          "type": "string"
+        },
+        "left": {
+          "$ref": "#/$defs/Expr"
+        },
+        "op": {
+          "enum": [
+            "eq",
+            "ne",
+            "lt",
+            "lte",
+            "gt",
+            "gte",
+            "and",
+            "or",
+            "add",
+            "sub",
+            "mul",
+            "div"
+          ],
+          "type": "string"
+        },
+        "right": {
+          "$ref": "#/$defs/Expr"
+        }
+      },
+      "required": [
+        "kind",
+        "op",
+        "left",
+        "right"
+      ],
+      "type": "object"
     },
     "CallExpr": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "fn", "args"],
       "properties": {
-        "kind": { "type": "string", "const": "call" },
-        "fn": { "type": "string", "minLength": 1 },
         "args": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/Expr" }
+          "items": {
+            "$ref": "#/$defs/Expr"
+          },
+          "type": "array"
+        },
+        "fn": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "call",
+          "type": "string"
         }
-      }
+      },
+      "required": [
+        "kind",
+        "fn",
+        "args"
+      ],
+      "type": "object"
     },
     "CastExpr": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "expr", "to"],
       "properties": {
-        "kind": { "type": "string", "const": "cast" },
-        "expr": { "$ref": "#/$defs/Expr" },
-        "to": { "type": "string", "enum": ["text", "int64", "float64", "bool"] }
-      }
+        "expr": {
+          "$ref": "#/$defs/Expr"
+        },
+        "kind": {
+          "const": "cast",
+          "type": "string"
+        },
+        "to": {
+          "enum": [
+            "text",
+            "int64",
+            "float64",
+            "bool"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "expr",
+        "to"
+      ],
+      "type": "object"
     },
-    "CrossingExprExists": {
-      "type": "object",
+    "ColumnExpr": {
       "additionalProperties": false,
-      "required": ["kind", "node"],
       "properties": {
-        "kind": { "type": "string", "const": "exists" },
-        "node": { "type": "string", "minLength": 1 }
-      }
-    },
-    "CrossingExprFirst": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "node"],
-      "properties": {
-        "kind": { "type": "string", "const": "first" },
-        "node": { "type": "string", "minLength": 1 }
-      }
-    },
-    "CrossingExprScalar": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "node"],
-      "properties": {
-        "kind": { "type": "string", "const": "scalar" },
-        "node": { "type": "string", "minLength": 1 }
-      }
+        "column": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "col",
+          "type": "string"
+        },
+        "scope": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "scope",
+        "column"
+      ],
+      "type": "object"
     },
     "CrossingExprArray": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "node"],
       "properties": {
-        "kind": { "type": "string", "const": "array" },
-        "node": { "type": "string", "minLength": 1 }
-      }
+        "kind": {
+          "const": "array",
+          "type": "string"
+        },
+        "node": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "node"
+      ],
+      "type": "object"
     },
-
-    "Field": {
-      "title": "Field",
-      "type": "object",
+    "CrossingExprExists": {
       "additionalProperties": false,
-      "required": ["as", "expr"],
       "properties": {
-        "as": { "type": "string", "minLength": 1 },
-        "expr": { "$ref": "#/$defs/Expr" }
-      }
+        "kind": {
+          "const": "exists",
+          "type": "string"
+        },
+        "node": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "node"
+      ],
+      "type": "object"
+    },
+    "CrossingExprFirst": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "first",
+          "type": "string"
+        },
+        "node": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "node"
+      ],
+      "type": "object"
+    },
+    "CrossingExprScalar": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "scalar",
+          "type": "string"
+        },
+        "node": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "node"
+      ],
+      "type": "object"
+    },
+    "Expr": {
+      "description": "A closed tagged union. Every expression computes one typed datum; crossings are the only relation-to-datum boundary.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/LiteralExpr"
+        },
+        {
+          "$ref": "#/$defs/ColumnExpr"
+        },
+        {
+          "$ref": "#/$defs/UnaryExpr"
+        },
+        {
+          "$ref": "#/$defs/BinaryExpr"
+        },
+        {
+          "$ref": "#/$defs/CallExpr"
+        },
+        {
+          "$ref": "#/$defs/CastExpr"
+        },
+        {
+          "$ref": "#/$defs/CrossingExprExists"
+        },
+        {
+          "$ref": "#/$defs/CrossingExprFirst"
+        },
+        {
+          "$ref": "#/$defs/CrossingExprScalar"
+        },
+        {
+          "$ref": "#/$defs/CrossingExprArray"
+        }
+      ],
+      "title": "Expr"
+    },
+    "Field": {
+      "additionalProperties": false,
+      "properties": {
+        "as": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "expr": {
+          "$ref": "#/$defs/Expr"
+        }
+      },
+      "required": [
+        "as",
+        "expr"
+      ],
+      "title": "Field",
+      "type": "object"
+    },
+    "FilterNode": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "filter",
+          "type": "string"
+        },
+        "predicate": {
+          "$ref": "#/$defs/Expr"
+        }
+      },
+      "required": [
+        "kind",
+        "input",
+        "predicate"
+      ],
+      "type": "object"
     },
     "GroupTerm": {
+      "additionalProperties": false,
+      "properties": {
+        "as": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "expr": {
+          "$ref": "#/$defs/Expr"
+        }
+      },
+      "required": [
+        "expr"
+      ],
       "title": "GroupTerm",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["expr"],
-      "properties": {
-        "as": { "type": "string", "minLength": 1 },
-        "expr": { "$ref": "#/$defs/Expr" }
-      }
+      "type": "object"
     },
-    "AggTerm": {
-      "title": "AggTerm",
-      "type": "object",
+    "JoinNode": {
       "additionalProperties": false,
-      "required": ["fn", "as"],
       "properties": {
-        "fn": { "type": "string", "enum": ["count", "sum", "avg", "min", "max"] },
-        "arg": { "$ref": "#/$defs/Expr" },
-        "as": { "type": "string", "minLength": 1 }
-      }
+        "join": {
+          "enum": [
+            "inner",
+            "left"
+          ],
+          "type": "string"
+        },
+        "kind": {
+          "const": "join",
+          "type": "string"
+        },
+        "left": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "on": {
+          "$ref": "#/$defs/Expr"
+        },
+        "right": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "left",
+        "right",
+        "join",
+        "on"
+      ],
+      "type": "object"
+    },
+    "LiteralExpr": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "lit",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "type": "object"
+    },
+    "Node": {
+      "description": "A closed tagged union of the seven LIR relation operators.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ScanNode"
+        },
+        {
+          "$ref": "#/$defs/FilterNode"
+        },
+        {
+          "$ref": "#/$defs/ProjectNode"
+        },
+        {
+          "$ref": "#/$defs/JoinNode"
+        },
+        {
+          "$ref": "#/$defs/AggregateNode"
+        },
+        {
+          "$ref": "#/$defs/OrderNode"
+        },
+        {
+          "$ref": "#/$defs/SliceNode"
+        }
+      ],
+      "title": "Node"
+    },
+    "OrderNode": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "order",
+          "type": "string"
+        },
+        "terms": {
+          "items": {
+            "$ref": "#/$defs/OrderTerm"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "input",
+        "terms"
+      ],
+      "type": "object"
     },
     "OrderTerm": {
-      "title": "OrderTerm",
-      "type": "object",
       "additionalProperties": false,
-      "required": ["expr"],
       "properties": {
-        "expr": { "$ref": "#/$defs/Expr" },
-        "desc": { "type": "boolean" }
-      }
+        "desc": {
+          "type": "boolean"
+        },
+        "expr": {
+          "$ref": "#/$defs/Expr"
+        }
+      },
+      "required": [
+        "expr"
+      ],
+      "title": "OrderTerm",
+      "type": "object"
+    },
+    "ProjectNode": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "spread"
+          ]
+        },
+        {
+          "required": [
+            "fields"
+          ]
+        }
+      ],
+      "properties": {
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/Field"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "input": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "project",
+          "type": "string"
+        },
+        "scope": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "spread": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "kind",
+        "input"
+      ],
+      "type": "object"
+    },
+    "Query": {
+      "additionalProperties": false,
+      "properties": {
+        "nodes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Node"
+          },
+          "description": "A flat encoding of one finite, single-consumer relation tree. Node IDs name inline definitions and carry no sharing identity.",
+          "minProperties": 1,
+          "propertyNames": {
+            "minLength": 1
+          },
+          "type": "object"
+        },
+        "root": {
+          "$ref": "#/$defs/Root"
+        }
+      },
+      "required": [
+        "nodes",
+        "root"
+      ],
+      "title": "Query",
+      "type": "object"
+    },
+    "Root": {
+      "additionalProperties": false,
+      "description": "Selects the root relation and its materialisation mode. Scalar requires one output column and statically at most one row.",
+      "properties": {
+        "cardinality": {
+          "enum": [
+            "many",
+            "first",
+            "exactly_one",
+            "scalar"
+          ],
+          "type": "string"
+        },
+        "node": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "node",
+        "cardinality"
+      ],
+      "title": "Root",
+      "type": "object"
+    },
+    "ScanNode": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "scan",
+          "type": "string"
+        },
+        "scope": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "table": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "table",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "SliceNode": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "slice",
+          "type": "string"
+        },
+        "limit": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "input"
+      ],
+      "type": "object"
+    },
+    "UnaryExpr": {
+      "additionalProperties": false,
+      "properties": {
+        "expr": {
+          "$ref": "#/$defs/Expr"
+        },
+        "kind": {
+          "const": "unary",
+          "type": "string"
+        },
+        "op": {
+          "enum": [
+            "not",
+            "negate",
+            "is_null",
+            "is_not_null"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "op",
+        "expr"
+      ],
+      "type": "object"
+    },
+    "Value": {
+      "description": "One raw JSON scalar: string, number, boolean, or null. The binder preserves JSON numbers and types literals from context.",
+      "format": "raw",
+      "title": "Value",
+      "type": [
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ]
     }
-  }
+  },
+  "$id": "https://www.radengine.dev/schema/lir.json",
+  "$ref": "#/$defs/Query",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A strict, single-consumer relation tree encoded as named inline node definitions plus a root selector. The normative semantics live in docs/design/lir.md.",
+  "title": "Rad LIR"
 }

@@ -14,6 +14,12 @@ import (
 	"github.com/Southclaws/rad/rad/protocol/lirwire"
 )
 
+// lir.schema.yaml is the authored source of truth. schemagen converts it to
+// lir.schema.json (embedded below, read by Schemancer) and publishes a copy to
+// the website route so the $id URL resolves.
+//
+//go:generate go run github.com/Southclaws/rad/tools/schemagen -yaml lir.schema.yaml -json lir.schema.json -web ../../home/public/schema/lir.json
+
 // lirSchemaJSON is the independent LIR contract. OpenAPI deliberately treats
 // query bodies as raw JSON and does not import this schema.
 //
