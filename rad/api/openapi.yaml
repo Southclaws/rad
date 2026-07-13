@@ -53,6 +53,21 @@ tags:
     description: Server held serializable transactions.
 
 paths:
+  /info:
+    get:
+      operationId: GetInfo
+      summary: Describe this database.
+      description: |
+        Return stable metadata for the database behind this endpoint. `mode`
+        tells management tools whether catalog changes are available directly
+        through the API or are owned by `schema.rad` migrations. `location` is
+        the server's configured storage location and is intended for local
+        development and administrative tooling.
+      tags: [meta]
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/GetInfoOK" }
+
   /health:
     get:
       operationId: GetHealth
@@ -625,6 +640,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Health" }
+    GetInfoOK:
+      description: Metadata about the database behind this endpoint.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/DatabaseInfo" }
     TableListOK:
       description: The current set of tables.
       content:
@@ -854,6 +874,22 @@ components:
             The database's catalog management mode: `direct` (the catalog
             is mutable over this API) or `schema` (schema.rad migrations own
             the catalog and the imperative catalog operations are rejected).
+          type: string
+
+    DatabaseInfo:
+      description: Stable metadata about a Rad database.
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          description: |
+            The database's catalog management mode: `direct` (the catalog
+            is mutable over this API) or `schema` (schema.rad migrations own
+            the catalog and the imperative catalog operations are rejected).
+          type: string
+          enum: [direct, schema]
+        location:
+          description: The configured backing-store location, when the server exposes one.
           type: string
 
     TableList:

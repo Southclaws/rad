@@ -161,6 +161,79 @@ type ColumnUpdateUnprocessableEntity Problem
 
 func (*ColumnUpdateUnprocessableEntity) columnUpdateRes() {}
 
+// Stable metadata about a Rad database.
+// Ref: #/components/schemas/DatabaseInfo
+type DatabaseInfo struct {
+	// The database's catalog management mode: `direct` (the catalog is mutable over this API) or `schema`
+	// (schema.rad migrations own the catalog and the imperative catalog operations are rejected).
+	Mode DatabaseInfoMode `json:"mode"`
+	// The configured backing-store location, when the server exposes one.
+	Location OptString `json:"location"`
+}
+
+// GetMode returns the value of Mode.
+func (s *DatabaseInfo) GetMode() DatabaseInfoMode {
+	return s.Mode
+}
+
+// GetLocation returns the value of Location.
+func (s *DatabaseInfo) GetLocation() OptString {
+	return s.Location
+}
+
+// SetMode sets the value of Mode.
+func (s *DatabaseInfo) SetMode(val DatabaseInfoMode) {
+	s.Mode = val
+}
+
+// SetLocation sets the value of Location.
+func (s *DatabaseInfo) SetLocation(val OptString) {
+	s.Location = val
+}
+
+// The database's catalog management mode: `direct` (the catalog is mutable over this API) or `schema`
+// (schema.rad migrations own the catalog and the imperative catalog operations are rejected).
+type DatabaseInfoMode string
+
+const (
+	DatabaseInfoModeDirect DatabaseInfoMode = "direct"
+	DatabaseInfoModeSchema DatabaseInfoMode = "schema"
+)
+
+// AllValues returns all DatabaseInfoMode values.
+func (DatabaseInfoMode) AllValues() []DatabaseInfoMode {
+	return []DatabaseInfoMode{
+		DatabaseInfoModeDirect,
+		DatabaseInfoModeSchema,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s DatabaseInfoMode) MarshalText() ([]byte, error) {
+	switch s {
+	case DatabaseInfoModeDirect:
+		return []byte(s), nil
+	case DatabaseInfoModeSchema:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *DatabaseInfoMode) UnmarshalText(data []byte) error {
+	switch DatabaseInfoMode(data) {
+	case DatabaseInfoModeDirect:
+		*s = DatabaseInfoModeDirect
+		return nil
+	case DatabaseInfoModeSchema:
+		*s = DatabaseInfoModeSchema
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // The result of a delete.
 // Ref: #/components/schemas/DeleteResult
 type DeleteResult struct {

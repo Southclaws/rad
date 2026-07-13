@@ -29,8 +29,9 @@ import (
 
 // dbAPI serves the wire protocol over one database. It implements oas.Handler.
 type dbAPI struct {
-	db  *frontend.DB
-	cat *catalog.Catalog
+	db       *frontend.DB
+	cat      *catalog.Catalog
+	location string
 	// mode is read once at construction: the catalog management mode is set
 	// when the database is initialised and never changes, so caching it
 	// keeps the gate on the imperative catalog operations free.
@@ -42,8 +43,8 @@ type dbAPI struct {
 
 var _ oas.Handler = (*dbAPI)(nil)
 
-func newDBAPI(db *frontend.DB, cat *catalog.Catalog, mode catalog.Mode) *dbAPI {
-	a := &dbAPI{db: db, cat: cat, mode: mode, sessions: map[string]*txSession{}}
+func newDBAPI(db *frontend.DB, cat *catalog.Catalog, mode catalog.Mode, location string) *dbAPI {
+	a := &dbAPI{db: db, cat: cat, mode: mode, location: location, sessions: map[string]*txSession{}}
 	go a.reapSessions()
 	return a
 }
@@ -146,6 +147,14 @@ func (a *dbAPI) doDelete(ctx context.Context, v view, table string, key map[stri
 
 func (a *dbAPI) GetHealth(ctx context.Context) (*oas.Health, error) {
 	return &oas.Health{Status: "ok", Mode: string(a.mode)}, nil
+}
+
+func (a *dbAPI) GetInfo(ctx context.Context) (*oas.DatabaseInfo, error) {
+	info := &oas.DatabaseInfo{Mode: oas.DatabaseInfoMode(a.mode)}
+	if a.location != "" {
+		info.Location = oas.NewOptString(a.location)
+	}
+	return info, nil
 }
 
 func (a *dbAPI) TableList(ctx context.Context) (*oas.TableList, error) {
@@ -393,10 +402,14 @@ func (a *dbAPI) TransactionRollback(ctx context.Context, params oas.TransactionR
 // middleware and pairs it with the admin UI on a separate port. The catalog
 // management mode is read once here — it is set at database initialisation
 // and immutable, so the imperative catalog operations gate on a cached value.
-func New(db *frontend.DB, cat *catalog.Catalog) (http.Handler, error) {
+func New(db *frontend.DB, cat *catalog.Catalog, locations ...string) (http.Handler, error) {
 	mode, err := cat.Mode(context.Background())
 	if err != nil {
 		return nil, err
 	}
-	return newDBAPI(db, cat, mode).httpHandler(http.NotFoundHandler())
+	location := ""
+	if len(locations) > 0 {
+		location = locations[0]
+	}
+	return newDBAPI(db, cat, mode, location).httpHandler(http.NotFoundHandler())
 }

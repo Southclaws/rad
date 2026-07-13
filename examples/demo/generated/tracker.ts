@@ -513,7 +513,7 @@ export class UserTable {
 
   /** Finds the row by the unique index on (username). */
   async byUsername(username: string): Promise<User | null> {
-    const recs = await this.v.query(assemble({ table: "users", filters: [eq(col("", "username"), lit(username))], orders: [], includes: [], limit: 1 }));
+    const recs = await this.v.query(assemble({ table: "users", filters: [eq(col("", "username"), lit(username))], orders: [{ expr: col("", "id") }], includes: [], limit: 1 }));
     return recs.length ? (recs[0] as unknown as User) : null;
   }
 
@@ -625,6 +625,7 @@ export class UserQuery {
   }
 
   async first(): Promise<User | null> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "id") }];
     this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
@@ -969,6 +970,7 @@ export class SessionQuery {
   }
 
   async first(): Promise<Session | null> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "token") }];
     this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
@@ -1186,7 +1188,7 @@ export class TeamTable {
 
   /** Finds the row by the unique index on (name). */
   async byName(name: string): Promise<Team | null> {
-    const recs = await this.v.query(assemble({ table: "teams", filters: [eq(col("", "name"), lit(name))], orders: [], includes: [], limit: 1 }));
+    const recs = await this.v.query(assemble({ table: "teams", filters: [eq(col("", "name"), lit(name))], orders: [{ expr: col("", "id") }], includes: [], limit: 1 }));
     return recs.length ? (recs[0] as unknown as Team) : null;
   }
 
@@ -1258,6 +1260,7 @@ export class TeamQuery {
   }
 
   async first(): Promise<Team | null> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "id") }];
     this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
@@ -1523,6 +1526,7 @@ export class TeamMemberQuery {
   }
 
   async first(): Promise<TeamMember | null> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "team_id") }, { expr: col("", "user_id") }];
     this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
@@ -1741,7 +1745,7 @@ export class BoardTable {
 
   /** Finds the row by the unique index on (team_id, name). */
   async byTeamIdName(teamId: string, name: string): Promise<Board | null> {
-    const recs = await this.v.query(assemble({ table: "boards", filters: [eq(col("", "team_id"), lit(teamId)), eq(col("", "name"), lit(name))], orders: [], includes: [], limit: 1 }));
+    const recs = await this.v.query(assemble({ table: "boards", filters: [eq(col("", "team_id"), lit(teamId)), eq(col("", "name"), lit(name))], orders: [{ expr: col("", "id") }], includes: [], limit: 1 }));
     return recs.length ? (recs[0] as unknown as Board) : null;
   }
 
@@ -1819,6 +1823,7 @@ export class BoardQuery {
   }
 
   async first(): Promise<Board | null> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "id") }];
     this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
@@ -2254,6 +2259,7 @@ export class TaskQuery {
   }
 
   async first(): Promise<Task | null> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "id") }];
     this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
@@ -2802,6 +2808,7 @@ export class CommentQuery {
   }
 
   async first(): Promise<Comment | null> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "id") }];
     this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
@@ -3040,7 +3047,7 @@ export class LabelTable {
 
   /** Finds the row by the unique index on (team_id, name). */
   async byTeamIdName(teamId: string, name: string): Promise<Label | null> {
-    const recs = await this.v.query(assemble({ table: "labels", filters: [eq(col("", "team_id"), lit(teamId)), eq(col("", "name"), lit(name))], orders: [], includes: [], limit: 1 }));
+    const recs = await this.v.query(assemble({ table: "labels", filters: [eq(col("", "team_id"), lit(teamId)), eq(col("", "name"), lit(name))], orders: [{ expr: col("", "id") }], includes: [], limit: 1 }));
     return recs.length ? (recs[0] as unknown as Label) : null;
   }
 
@@ -3114,6 +3121,7 @@ export class LabelQuery {
   }
 
   async first(): Promise<Label | null> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "id") }];
     this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;
@@ -3364,6 +3372,7 @@ export class TaskLabelQuery {
   }
 
   async first(): Promise<TaskLabel | null> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "task_id") }, { expr: col("", "label_id") }];
     this.spec.limit = 1;
     const rows = await this.all();
     return rows.length ? rows[0] : null;

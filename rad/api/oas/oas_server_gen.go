@@ -42,6 +42,15 @@ type Handler interface {
 	//
 	// GET /health
 	GetHealth(ctx context.Context) (*Health, error)
+	// GetInfo implements GetInfo operation.
+	//
+	// Return stable metadata for the database behind this endpoint. `mode` tells management tools whether
+	// catalog changes are available directly through the API or are owned by `schema.rad` migrations.
+	// `location` is the server's configured storage location and is intended for local development and
+	// administrative tooling.
+	//
+	// GET /info
+	GetInfo(ctx context.Context) (*DatabaseInfo, error)
 	// IndexCreate implements IndexCreate operation.
 	//
 	// Register a secondary index and backfill entries for every existing row, atomically: the index never

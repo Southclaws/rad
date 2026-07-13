@@ -155,6 +155,8 @@ func TestGenerateDemoSchema(t *testing.T) {
 		"type TaskPatch struct",
 		"func (t TaskTable) Create(ctx context.Context, in TaskCreate) (Task, error)",
 		"func (t UserTable) ByUsername(ctx context.Context, username string) (User, bool, error)",
+		"orders: []protocol.OrderTerm{protocol.OrderTerm{Expr: *protocol.Col(\"\", \"id\")}}",
+		"if len(q.spec.orders) == 0 {",
 		"func (t BoardTable) ByTeamIDName(ctx context.Context, teamID string, name string) (Board, bool, error)",
 		"func (t TeamMemberTable) Get(ctx context.Context, teamID string, userID string) (TeamMember, bool, error)",
 		"func (q *TaskQuery) StatusEq(v string) *TaskQuery",

@@ -1,6 +1,6 @@
-// Package ui is Rad's admin plane: the development single-page app and the
-// inspection API (/api/*) it speaks to. It is served on its own port,
-// separate from the wire protocol, and is not part of the OpenAPI contract.
+// Package ui is Rad's admin plane: the development single-page app and its
+// private KV inspection API (/api/kv/*). It is served on its own port,
+// separate from the wire protocol and its OpenAPI contract.
 package ui
 
 import (
@@ -9,27 +9,16 @@ import (
 	"net/http"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
-	exec "github.com/Southclaws/rad/rad/engine/05_exec"
 )
 
-// Handler builds the admin handler: the inspection endpoints the SPA calls,
-// plus the embedded SPA at the root. The parent server wraps it in the shared
-// middleware and runs it on the admin port.
-func Handler(store kv.TransactionalKV, cat *catalog.Catalog, location string) http.Handler {
+// Handler builds the admin handler: the private KV endpoints the SPA calls,
+// plus the embedded SPA at the root. Every database call goes to the public
+// API port instead. The parent server wraps this handler in shared middleware.
+func Handler(store kv.TransactionalKV) http.Handler {
 	mux := http.NewServeMux()
-	dt := &devtool{
-		store:  store,
-		cat:    cat,
-		eng:    exec.New(store, cat),
-		dbPath: location,
-	}
-	mux.HandleFunc("GET /api/meta", dt.handleMeta)
-	mux.HandleFunc("GET /api/schema", dt.handleSchema)
+	dt := &devtool{store: store}
 	mux.HandleFunc("GET /api/kv/scan", dt.handleKVScan)
 	mux.HandleFunc("GET /api/kv/get", dt.handleKVGet)
-	mux.HandleFunc("GET /api/tables/{table}/rows", dt.handleTableRows)
-	mux.HandleFunc("GET /api/tables/{table}/indexscan", dt.handleIndexScan)
 	mux.Handle("/", uiHandler())
 	return mux
 }

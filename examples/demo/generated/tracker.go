@@ -435,7 +435,7 @@ func (t UserTable) Delete(ctx context.Context, id string) (bool, error) {
 
 // ByUsername finds the row by the unique index on (username).
 func (t UserTable) ByUsername(ctx context.Context, username string) (User, bool, error) {
-	recs, err := t.v.Query(ctx, assemble(querySpec{table: "users", limit: 1, limitSet: true, filters: []*protocol.Expr{
+	recs, err := t.v.Query(ctx, assemble(querySpec{table: "users", orders: []protocol.OrderTerm{protocol.OrderTerm{Expr: *protocol.Col("", "id")}}, limit: 1, limitSet: true, filters: []*protocol.Expr{
 		protocol.Eq(protocol.Col("", "username"), protocol.Lit(username)),
 	}}))
 	if err != nil || len(recs) == 0 {
@@ -737,6 +737,9 @@ func (q *UserQuery) All(ctx context.Context) ([]User, error) {
 
 // First executes the query with limit 1.
 func (q *UserQuery) First(ctx context.Context) (User, bool, error) {
+	if len(q.spec.orders) == 0 {
+		q.spec.orders = []protocol.OrderTerm{protocol.OrderTerm{Expr: *protocol.Col("", "id")}}
+	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
@@ -1576,6 +1579,9 @@ func (q *SessionQuery) All(ctx context.Context) ([]Session, error) {
 
 // First executes the query with limit 1.
 func (q *SessionQuery) First(ctx context.Context) (Session, bool, error) {
+	if len(q.spec.orders) == 0 {
+		q.spec.orders = []protocol.OrderTerm{protocol.OrderTerm{Expr: *protocol.Col("", "token")}}
+	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
@@ -2039,7 +2045,7 @@ func (t TeamTable) Delete(ctx context.Context, id string) (bool, error) {
 
 // ByName finds the row by the unique index on (name).
 func (t TeamTable) ByName(ctx context.Context, name string) (Team, bool, error) {
-	recs, err := t.v.Query(ctx, assemble(querySpec{table: "teams", limit: 1, limitSet: true, filters: []*protocol.Expr{
+	recs, err := t.v.Query(ctx, assemble(querySpec{table: "teams", orders: []protocol.OrderTerm{protocol.OrderTerm{Expr: *protocol.Col("", "id")}}, limit: 1, limitSet: true, filters: []*protocol.Expr{
 		protocol.Eq(protocol.Col("", "name"), protocol.Lit(name)),
 	}}))
 	if err != nil || len(recs) == 0 {
@@ -2207,6 +2213,9 @@ func (q *TeamQuery) All(ctx context.Context) ([]Team, error) {
 
 // First executes the query with limit 1.
 func (q *TeamQuery) First(ctx context.Context) (Team, bool, error) {
+	if len(q.spec.orders) == 0 {
+		q.spec.orders = []protocol.OrderTerm{protocol.OrderTerm{Expr: *protocol.Col("", "id")}}
+	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
@@ -2792,6 +2801,9 @@ func (q *TeamMemberQuery) All(ctx context.Context) ([]TeamMember, error) {
 
 // First executes the query with limit 1.
 func (q *TeamMemberQuery) First(ctx context.Context) (TeamMember, bool, error) {
+	if len(q.spec.orders) == 0 {
+		q.spec.orders = []protocol.OrderTerm{protocol.OrderTerm{Expr: *protocol.Col("", "team_id")}, protocol.OrderTerm{Expr: *protocol.Col("", "user_id")}}
+	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
@@ -3264,7 +3276,7 @@ func (t BoardTable) Delete(ctx context.Context, id string) (bool, error) {
 
 // ByTeamIDName finds the row by the unique index on (team_id, name).
 func (t BoardTable) ByTeamIDName(ctx context.Context, teamID string, name string) (Board, bool, error) {
-	recs, err := t.v.Query(ctx, assemble(querySpec{table: "boards", limit: 1, limitSet: true, filters: []*protocol.Expr{
+	recs, err := t.v.Query(ctx, assemble(querySpec{table: "boards", orders: []protocol.OrderTerm{protocol.OrderTerm{Expr: *protocol.Col("", "id")}}, limit: 1, limitSet: true, filters: []*protocol.Expr{
 		protocol.Eq(protocol.Col("", "team_id"), protocol.Lit(teamID)),
 		protocol.Eq(protocol.Col("", "name"), protocol.Lit(name)),
 	}}))
@@ -3470,6 +3482,9 @@ func (q *BoardQuery) All(ctx context.Context) ([]Board, error) {
 
 // First executes the query with limit 1.
 func (q *BoardQuery) First(ctx context.Context) (Board, bool, error) {
+	if len(q.spec.orders) == 0 {
+		q.spec.orders = []protocol.OrderTerm{protocol.OrderTerm{Expr: *protocol.Col("", "id")}}
+	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
@@ -4614,6 +4629,9 @@ func (q *TaskQuery) All(ctx context.Context) ([]Task, error) {
 
 // First executes the query with limit 1.
 func (q *TaskQuery) First(ctx context.Context) (Task, bool, error) {
+	if len(q.spec.orders) == 0 {
+		q.spec.orders = []protocol.OrderTerm{protocol.OrderTerm{Expr: *protocol.Col("", "id")}}
+	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
@@ -6038,6 +6056,9 @@ func (q *CommentQuery) All(ctx context.Context) ([]Comment, error) {
 
 // First executes the query with limit 1.
 func (q *CommentQuery) First(ctx context.Context) (Comment, bool, error) {
+	if len(q.spec.orders) == 0 {
+		q.spec.orders = []protocol.OrderTerm{protocol.OrderTerm{Expr: *protocol.Col("", "id")}}
+	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
@@ -6574,7 +6595,7 @@ func (t LabelTable) Delete(ctx context.Context, id string) (bool, error) {
 
 // ByTeamIDName finds the row by the unique index on (team_id, name).
 func (t LabelTable) ByTeamIDName(ctx context.Context, teamID string, name string) (Label, bool, error) {
-	recs, err := t.v.Query(ctx, assemble(querySpec{table: "labels", limit: 1, limitSet: true, filters: []*protocol.Expr{
+	recs, err := t.v.Query(ctx, assemble(querySpec{table: "labels", orders: []protocol.OrderTerm{protocol.OrderTerm{Expr: *protocol.Col("", "id")}}, limit: 1, limitSet: true, filters: []*protocol.Expr{
 		protocol.Eq(protocol.Col("", "team_id"), protocol.Lit(teamID)),
 		protocol.Eq(protocol.Col("", "name"), protocol.Lit(name)),
 	}}))
@@ -6764,6 +6785,9 @@ func (q *LabelQuery) All(ctx context.Context) ([]Label, error) {
 
 // First executes the query with limit 1.
 func (q *LabelQuery) First(ctx context.Context) (Label, bool, error) {
+	if len(q.spec.orders) == 0 {
+		q.spec.orders = []protocol.OrderTerm{protocol.OrderTerm{Expr: *protocol.Col("", "id")}}
+	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
@@ -7304,6 +7328,9 @@ func (q *TaskLabelQuery) All(ctx context.Context) ([]TaskLabel, error) {
 
 // First executes the query with limit 1.
 func (q *TaskLabelQuery) First(ctx context.Context) (TaskLabel, bool, error) {
+	if len(q.spec.orders) == 0 {
+		q.spec.orders = []protocol.OrderTerm{protocol.OrderTerm{Expr: *protocol.Col("", "task_id")}, protocol.OrderTerm{Expr: *protocol.Col("", "label_id")}}
+	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {

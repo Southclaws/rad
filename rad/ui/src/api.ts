@@ -1,7 +1,8 @@
-// Thin client for the rad REST API (same origin; Vite dev server proxies).
+// The admin surface has two deliberately separate clients. KV inspection is
+// private to the admin port; catalog and query operations use the public API.
 
 export interface KVEntry {
-  key: string // base64
+  key: string
   keyDisplay: string
   valueSize: number
   valueDisplay: string
@@ -23,111 +24,109 @@ export interface KVDetail {
   valueJSON?: unknown
 }
 
-export interface Column {
+export interface DatabaseInfo {
+  mode: 'direct' | 'schema'
+  location?: string
+}
+
+export interface ColumnDefault {
+  func?: string
+  value?: string | number | boolean
+}
+
+export interface ColumnInfo {
   name: string
-  type: string
-  nullable: boolean
-  pk: boolean
+  type: 'text' | 'int64' | 'float64' | 'bool'
+  nullable?: boolean
+  format?: string
+  default?: ColumnDefault
+}
+
+export interface IndexInfo {
+  name: string
+  columns: string[]
+  unique?: boolean
+}
+
+export interface ForeignKeyInfo {
+  name: string
+  columns: string[]
+  ref_table: string
+  ref_columns: string[]
 }
 
 export interface TableInfo {
   name: string
-  id: string
-  columns: Column[]
-}
-
-export interface CatalogIndex {
-  id: string
-  name: string
-  columns: string[]
-  unique: boolean
-}
-
-export interface CatalogFK {
-  id: string
-  name: string
-  columns: string[]
-  ref_table_id: string
-  ref_columns: string[]
-}
-
-export interface CatalogColumn {
-  id: string
-  name: string
-  type: string
-  nullable: boolean
-}
-
-export interface CatalogTable {
-  id: string
-  schema_id: string
-  name: string
-  columns: CatalogColumn[]
+  columns: ColumnInfo[]
   primary_key: string[]
-  indexes: CatalogIndex[] | null
-  foreign_keys: CatalogFK[] | null
+  indexes?: IndexInfo[]
+  foreign_keys?: ForeignKeyInfo[]
 }
 
-export interface SchemaResult {
-  schema: string
-  tables: CatalogTable[]
+export interface Health {
+  status: string
+  mode: 'direct' | 'schema'
 }
 
-export interface Cell {
-  d: string
-  null?: boolean
-}
+const publicURL = new URL(window.location.href)
+const adminPort = Number(publicURL.port)
+publicURL.port = String(adminPort > 0 ? adminPort - 1 : 7237)
+const publicBase = publicURL.origin
 
-export interface RowResult {
-  key?: string
-  keyDisplay?: string
-  cells: Cell[]
-}
-
-export interface RowsResult {
-  table: TableInfo
-  rows: RowResult[]
-  truncated?: boolean
-  nextAfter?: string
-}
-
-export interface Meta {
-  schema: string
-  dbPath: string
-}
-
-async function get<T>(url: string): Promise<T> {
-  const res = await fetch(url)
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init)
   if (!res.ok) {
-    let msg = `${res.status} ${res.statusText}`
+    let message = `${res.status} ${res.statusText}`
     try {
       const body = await res.json()
-      if (body.error) msg = body.error
+      message = body.detail ?? body.error ?? message
     } catch {
-      /* keep status text */
+      // Keep the HTTP status when the response is not JSON.
     }
-    throw new Error(msg)
+    throw new Error(message)
   }
-  return res.json()
+  if (res.status === 204) return undefined as T
+  return res.json() as Promise<T>
 }
 
-export const api = {
-  meta: () => get<Meta>('/api/meta'),
-  schema: () => get<SchemaResult>('/api/schema'),
+function publicRequest<T>(path: string, init?: RequestInit) {
+  return request<T>(`${publicBase}${path}`, init)
+}
+
+function json(method: string, body?: unknown): RequestInit {
+  return {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }
+}
+
+export const adminAPI = {
   kvScan: (prefix: string, after?: string, limit = 100) => {
     const p = new URLSearchParams({ prefix, limit: String(limit) })
     if (after) p.set('after', after)
-    return get<KVScanResult>(`/api/kv/scan?${p}`)
+    return request<KVScanResult>(`/api/kv/scan?${p}`)
   },
-  kvGet: (key64: string) => get<KVDetail>(`/api/kv/get?key=${encodeURIComponent(key64)}`),
-  tableRows: (table: string, after?: string, limit = 100) => {
-    const p = new URLSearchParams({ limit: String(limit) })
-    if (after) p.set('after', after)
-    return get<RowsResult>(`/api/tables/${encodeURIComponent(table)}/rows?${p}`)
-  },
-  indexScan: (table: string, index: string, values: string[]) => {
-    const p = new URLSearchParams({ index })
-    for (const v of values) p.append('v', v)
-    return get<RowsResult>(`/api/tables/${encodeURIComponent(table)}/indexscan?${p}`)
-  },
+  kvGet: (key64: string) => request<KVDetail>(`/api/kv/get?key=${encodeURIComponent(key64)}`),
+}
+
+export const publicAPI = {
+  info: () => publicRequest<DatabaseInfo>('/info'),
+  health: () => publicRequest<Health>('/health'),
+  tables: () => publicRequest<{ tables: TableInfo[] }>('/tables'),
+  createTable: (table: TableInfo) => publicRequest<TableInfo>('/tables', json('POST', table)),
+  renameTable: (table: string, name: string) =>
+    publicRequest<TableInfo>(`/tables/${encodeURIComponent(table)}`, json('PATCH', { name })),
+  deleteTable: (table: string) => publicRequest<void>(`/tables/${encodeURIComponent(table)}`, json('DELETE')),
+  createColumn: (table: string, column: ColumnInfo) =>
+    publicRequest<TableInfo>(`/tables/${encodeURIComponent(table)}/columns`, json('POST', column)),
+  renameColumn: (table: string, column: string, name: string) =>
+    publicRequest<TableInfo>(`/tables/${encodeURIComponent(table)}/columns/${encodeURIComponent(column)}`, json('PATCH', { name })),
+  deleteColumn: (table: string, column: string) =>
+    publicRequest<TableInfo>(`/tables/${encodeURIComponent(table)}/columns/${encodeURIComponent(column)}`, json('DELETE')),
+  createIndex: (table: string, index: IndexInfo) =>
+    publicRequest<TableInfo>(`/tables/${encodeURIComponent(table)}/indexes`, json('POST', index)),
+  deleteIndex: (table: string, index: string) =>
+    publicRequest<TableInfo>(`/tables/${encodeURIComponent(table)}/indexes/${encodeURIComponent(index)}`, json('DELETE')),
+  query: (query: unknown) => publicRequest<{ result: unknown }>('/query', json('POST', query)),
 }

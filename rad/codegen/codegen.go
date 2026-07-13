@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"go/format"
+	"strings"
 
 	"github.com/Southclaws/rad/rad/engine/02_catalog/schema"
 )
@@ -340,7 +341,7 @@ func emitTableHandle(p func(string, ...any), t *genTable) {
 		}
 		p("// %s finds the row by the unique index on (%s).", name, uqCols(uq))
 		p("func (t %s) %s(ctx context.Context, %s) (%s, bool, error) {", h, name, params, t.Model)
-		p("\trecs, err := t.v.Query(ctx, assemble(querySpec{table: %q, limit: 1, limitSet: true, filters: []*protocol.Expr{", t.SQLName)
+		p("\trecs, err := t.v.Query(ctx, assemble(querySpec{table: %q, orders: %s, limit: 1, limitSet: true, filters: []*protocol.Expr{", t.SQLName, defaultOrderTerms(t))
 		for _, c := range uq {
 			p("\t\tprotocol.Eq(protocol.Col(\"\", %q), protocol.Lit(%s)),", c.SQLName, lowerFirst(c.Field))
 		}
@@ -417,6 +418,9 @@ func emitQuery(p func(string, ...any), t *genTable) {
 	p("")
 	p("// First executes the query with limit 1.")
 	p("func (q *%s) First(ctx context.Context) (%s, bool, error) {", q, t.Model)
+	p("\tif len(q.spec.orders) == 0 {")
+	p("\t\tq.spec.orders = %s", defaultOrderTerms(t))
+	p("\t}")
 	p("\tq.spec.limit, q.spec.limitSet = 1, true")
 	p("\trows, err := q.All(ctx)")
 	p("\tif err != nil || len(rows) == 0 {")
@@ -427,6 +431,16 @@ func emitQuery(p func(string, ...any), t *genTable) {
 	p("")
 
 	emitAggregates(p, t, q)
+}
+
+// defaultOrderTerms renders primary-key ordering for queries that promise one
+// deterministic row without accepting an explicit ordering method.
+func defaultOrderTerms(t *genTable) string {
+	terms := make([]string, len(t.PK))
+	for i, c := range t.PK {
+		terms[i] = fmt.Sprintf("protocol.OrderTerm{Expr: *protocol.Col(\"\", %q)}", c.SQLName)
+	}
+	return "[]protocol.OrderTerm{" + strings.Join(terms, ", ") + "}"
 }
 
 // emitAggregates writes the terminal fold methods on the query builder. They

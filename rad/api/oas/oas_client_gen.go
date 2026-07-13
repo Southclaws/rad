@@ -62,6 +62,15 @@ type Invoker interface {
 	//
 	// GET /health
 	GetHealth(ctx context.Context) (*Health, error)
+	// GetInfo invokes GetInfo operation.
+	//
+	// Return stable metadata for the database behind this endpoint. `mode` tells management tools whether
+	// catalog changes are available directly through the API or are owned by `schema.rad` migrations.
+	// `location` is the server's configured storage location and is intended for local development and
+	// administrative tooling.
+	//
+	// GET /info
+	GetInfo(ctx context.Context) (*DatabaseInfo, error)
 	// IndexCreate invokes IndexCreate operation.
 	//
 	// Register a secondary index and backfill entries for every existing row, atomically: the index never
@@ -720,6 +729,89 @@ func (c *Client) sendGetHealth(ctx context.Context) (res *Health, err error) {
 
 	stage = "DecodeResponse"
 	result, err := decodeGetHealthResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetInfo invokes GetInfo operation.
+//
+// Return stable metadata for the database behind this endpoint. `mode` tells management tools whether
+// catalog changes are available directly through the API or are owned by `schema.rad` migrations.
+// `location` is the server's configured storage location and is intended for local development and
+// administrative tooling.
+//
+// GET /info
+func (c *Client) GetInfo(ctx context.Context) (*DatabaseInfo, error) {
+	res, err := c.sendGetInfo(ctx)
+	return res, err
+}
+
+func (c *Client) sendGetInfo(ctx context.Context) (res *DatabaseInfo, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("GetInfo"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/info"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetInfoOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/info"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetInfoResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

@@ -57,7 +57,7 @@ func run() error {
 	}
 	fmt.Printf("── migrate: %d schema steps applied\n\n", len(steps))
 
-	// ── 1. Accounts: username+password signup and login. ────────────────
+	// Accounts: username and password signup and login.
 	fmt.Println("── signup & login")
 	ada, err := signup(ctx, db, "ada", "hunter2", ptr("ada@tracker.dev"))
 	if err != nil {
@@ -91,7 +91,7 @@ func run() error {
 	}
 	fmt.Printf("   session resolves to %s\n\n", who.Username)
 
-	// ── 2. A team, its board, and labels — atomically. ──────────────────
+	// Create a team, board, and labels atomically.
 	fmt.Println("── seed team, board, labels, tasks (one transaction)")
 	var board tracker.Board
 	var bugLabel, shipLabel tracker.Label
@@ -171,7 +171,7 @@ func run() error {
 		fmt.Printf("   dangling board_id rejected: %v\n\n", err)
 	}
 
-	// ── 3. The board view: one query, nested JSON. ──────────────────────
+	// The board view is one query with a nested JSON include tree.
 	fmt.Println("── board view (nested include tree, 3 levels deep)")
 	launch, ok, err := db.Boards.Query().
 		IDEq(board.ID).
@@ -179,10 +179,10 @@ func run() error {
 			t.OrderByPriority().OrderByCreatedAt().
 				IncludeAssignee().
 				IncludeComments(func(c *tracker.CommentInclude) {
-					c.IncludeAuthor()
+					c.OrderByID().IncludeAuthor()
 				}).
 				IncludeTaskLabels(func(tl *tracker.TaskLabelInclude) {
-					tl.IncludeLabel()
+					tl.OrderByTaskID().OrderByLabelID().IncludeLabel()
 				})
 		}).
 		First(ctx)
@@ -192,7 +192,7 @@ func run() error {
 	pretty, _ := json.MarshalIndent(launch, "   ", "  ")
 	fmt.Printf("   %s\n\n", pretty)
 
-	// ── 4. Typed queries: filters, ordering, pagination, NULL. ──────────
+	// Typed queries: filters, ordering, pagination, and NULL.
 	fmt.Println("── queries")
 	graceTasks, err := db.Tasks.Query().
 		AssigneeIDEq(grace.ID).
@@ -207,6 +207,7 @@ func run() error {
 	unassigned, err := db.Tasks.Query().
 		BoardIDEq(board.ID).
 		AssigneeIDNull().
+		OrderByID().
 		All(ctx)
 	if err != nil {
 		return err
@@ -225,13 +226,14 @@ func run() error {
 
 	dueSoon, err := db.Tasks.Query().
 		DueAtLte(time.Now().Add(72 * time.Hour).UnixMilli()).
+		OrderByDueAt().OrderByID().
 		All(ctx)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("   due within 72h: %d\n\n", len(dueSoon))
 
-	// ── 4b. Aggregates: board stats without fetching the tasks. ─────────
+	// Aggregates: board stats without fetching the tasks.
 	// The card a Tracker board would show — counts by status, an average
 	// estimate, the next deadline — each one query that folds server-side.
 	fmt.Println("── board stats (aggregates, no rows fetched)")
@@ -270,7 +272,7 @@ func run() error {
 		fmt.Printf("   next deadline: %s\n\n", time.UnixMilli(*nextDue).Format(time.RFC3339))
 	}
 
-	// ── 5. Mutations: patch, clear-to-NULL, delete-restrict. ────────────
+	// Mutations: patch, clear-to-NULL, and delete-restrict.
 	fmt.Println("── mutations")
 	fix := unassigned[0]
 	fix, _, err = db.Tasks.Update(ctx, fix.ID, tracker.TaskPatch{
@@ -294,7 +296,7 @@ func run() error {
 		fmt.Printf("   deleting grace blocked: %v\n", err)
 	}
 
-	// ── 6. Optimistic concurrency: claim races retry cleanly. ───────────
+	// Optimistic concurrency: claim races retry cleanly.
 	fmt.Println("\n── conflict & retry")
 	target := graceTasks[0]
 	attempt := 0
@@ -325,12 +327,12 @@ func run() error {
 	}
 	fmt.Printf("   retry: %v (linus won the race, ada saw fresh state)\n", err)
 
-	// ── 7. Cleanup path: children first, then the parent row. ───────────
+	// Cleanup path: children first, then the parent row.
 	fmt.Println("\n── delete (restrict ordering)")
 	if _, err := db.Labels.Delete(ctx, shipLabel.ID); err != nil {
 		fmt.Printf("   label in use: %v\n", err)
 	}
-	tls, err := db.TaskLabels.Query().LabelIDEq(shipLabel.ID).All(ctx)
+	tls, err := db.TaskLabels.Query().LabelIDEq(shipLabel.ID).OrderByTaskID().OrderByLabelID().All(ctx)
 	if err != nil {
 		return err
 	}
@@ -349,7 +351,7 @@ func run() error {
 	return nil
 }
 
-// ── auth helpers (application code, generated client only) ──────────────
+// hash is application code using only the generated client API.
 
 func hash(password string) string {
 	sum := sha256.Sum256([]byte(password))

@@ -550,7 +550,7 @@ func emitTSTable(p func(string, ...any), t *genTable) {
 		p("")
 		p("  /** Finds the row by the unique index on (%s). */", uqCols(uq))
 		p("  async %s(%s): Promise<%s | null> {", name, params, t.Model)
-		p("    const recs = await this.v.query(assemble({ table: %q, filters: [%s], orders: [], includes: [], limit: 1 }));", t.SQLName, strings.Join(filters, ", "))
+		p("    const recs = await this.v.query(assemble({ table: %q, filters: [%s], orders: %s, includes: [], limit: 1 }));", t.SQLName, strings.Join(filters, ", "), tsDefaultOrderTerms(t))
 		p("    return recs.length ? (recs[0] as unknown as %s) : null;", t.Model)
 		p("  }")
 	}
@@ -646,6 +646,7 @@ func emitTSQuery(p func(string, ...any), t *genTable) {
 	p("  }")
 	p("")
 	p("  async first(): Promise<%s | null> {", t.Model)
+	p("    if (!this.spec.orders.length) this.spec.orders = %s;", tsDefaultOrderTerms(t))
 	p("    this.spec.limit = 1;")
 	p("    const rows = await this.all();")
 	p("    return rows.length ? rows[0] : null;")
@@ -654,6 +655,14 @@ func emitTSQuery(p func(string, ...any), t *genTable) {
 	emitTSAggregates(p, t)
 	p("}")
 	p("")
+}
+
+func tsDefaultOrderTerms(t *genTable) string {
+	terms := make([]string, len(t.PK))
+	for i, c := range t.PK {
+		terms[i] = fmt.Sprintf("{ expr: col(\"\", %q) }", c.SQLName)
+	}
+	return "[" + strings.Join(terms, ", ") + "]"
 }
 
 // emitTSAggregates writes the terminal fold methods. They reuse the builder's

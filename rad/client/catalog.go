@@ -20,11 +20,11 @@ import (
 // catalog is mutable over this API) or "schema" (schema.rad migrations own
 // the catalog).
 func (c *Client) Mode(ctx context.Context) (string, error) {
-	res, err := c.oas.GetHealth(ctx)
+	res, err := c.oas.GetInfo(ctx)
 	if err != nil {
 		return "", transportError(err)
 	}
-	return res.Mode, nil
+	return string(res.Mode), nil
 }
 
 // TableCreate creates a table: columns, primary key, and optionally indexes

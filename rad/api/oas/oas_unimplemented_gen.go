@@ -59,6 +59,18 @@ func (UnimplementedHandler) GetHealth(ctx context.Context) (r *Health, _ error) 
 	return r, ht.ErrNotImplemented
 }
 
+// GetInfo implements GetInfo operation.
+//
+// Return stable metadata for the database behind this endpoint. `mode` tells management tools whether
+// catalog changes are available directly through the API or are owned by `schema.rad` migrations.
+// `location` is the server's configured storage location and is intended for local development and
+// administrative tooling.
+//
+// GET /info
+func (UnimplementedHandler) GetInfo(ctx context.Context) (r *DatabaseInfo, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // IndexCreate implements IndexCreate operation.
 //
 // Register a secondary index and backfill entries for every existing row, atomically: the index never

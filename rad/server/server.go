@@ -20,8 +20,8 @@ import (
 // New builds the data-plane handler: the rad:// wire protocol (the generated
 // OpenAPI database API) wrapped in the shared middleware. Clients connect here
 // on the default port; the admin UI lives on its own port, via NewAdmin.
-func New(db *frontend.DB, cat *catalog.Catalog) (http.Handler, error) {
-	h, err := api.New(db, cat)
+func New(db *frontend.DB, cat *catalog.Catalog, locations ...string) (http.Handler, error) {
+	h, err := api.New(db, cat, locations...)
 	if err != nil {
 		return nil, err
 	}
@@ -32,8 +32,8 @@ func New(db *frontend.DB, cat *catalog.Catalog) (http.Handler, error) {
 // inspection API it speaks to, wrapped in the shared middleware. It runs on
 // its own port so the browser surface never shares an origin with client
 // traffic.
-func NewAdmin(store kv.TransactionalKV, cat *catalog.Catalog, location string) http.Handler {
-	return withRecovery(withLogging(withCORS(ui.Handler(store, cat, location))))
+func NewAdmin(store kv.TransactionalKV) http.Handler {
+	return withRecovery(withLogging(withCORS(ui.Handler(store))))
 }
 
 // AdminAddr derives the admin/UI listen address from the data address by

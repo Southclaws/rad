@@ -10,6 +10,7 @@ const (
 	ColumnDeleteOperation         OperationName = "ColumnDelete"
 	ColumnUpdateOperation         OperationName = "ColumnUpdate"
 	GetHealthOperation            OperationName = "GetHealth"
+	GetInfoOperation              OperationName = "GetInfo"
 	IndexCreateOperation          OperationName = "IndexCreate"
 	IndexDeleteOperation          OperationName = "IndexDelete"
 	QueryOperation                OperationName = "Query"

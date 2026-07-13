@@ -66,7 +66,7 @@ func serveCmd() *cobra.Command {
 			}
 			db := frontend.Open(store)
 
-			dataHandler, err := server.New(db, cat)
+			dataHandler, err := server.New(db, cat, location)
 			if err != nil {
 				return err
 			}
@@ -74,7 +74,7 @@ func serveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			adminHandler := server.NewAdmin(store, cat, location)
+			adminHandler := server.NewAdmin(store)
 
 			dataSrv := server.NewHTTPServer(cfg.Addr, dataHandler)
 			adminSrv := server.NewHTTPServer(adminAddr, adminHandler)
