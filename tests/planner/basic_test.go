@@ -12,6 +12,7 @@ import (
 )
 
 func TestBasicFullScan(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -25,6 +26,7 @@ func TestBasicFullScan(t *testing.T) {
 }
 
 func TestBasicProjectRename(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -36,6 +38,7 @@ func TestBasicProjectRename(t *testing.T) {
 }
 
 func TestBasicComputedField(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// line total = quantity * unit_price (int64 * float64 promotes to float).
 	d.Query(q(map[string]protocol.Node{
@@ -51,6 +54,7 @@ func TestBasicComputedField(t *testing.T) {
 }
 
 func TestBasicFilterEq(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"o": {Kind: "scan", Table: "orders", Scope: "o"},
@@ -62,6 +66,7 @@ func TestBasicFilterEq(t *testing.T) {
 }
 
 func TestBasicFilterNe(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"p": {Kind: "scan", Table: "products", Scope: "p"},
@@ -73,6 +78,7 @@ func TestBasicFilterNe(t *testing.T) {
 }
 
 func TestBasicRangeBetween(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// 40 <= price < 300.
 	d.Query(q(map[string]protocol.Node{
@@ -90,6 +96,7 @@ func TestBasicRangeBetween(t *testing.T) {
 }
 
 func TestBasicOr(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -103,6 +110,7 @@ func TestBasicOr(t *testing.T) {
 }
 
 func TestBasicNotOverOr(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// NOT (cancelled OR pending) over a non-null column = delivered+shipped.
 	d.Query(q(map[string]protocol.Node{
@@ -117,6 +125,7 @@ func TestBasicNotOverOr(t *testing.T) {
 }
 
 func TestBasicOrderDesc(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"o": {Kind: "scan", Table: "orders", Scope: "o"},
@@ -128,6 +137,7 @@ func TestBasicOrderDesc(t *testing.T) {
 }
 
 func TestBasicOrderMultiTerm(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// category ascending, then price descending inside each category.
 	d.Query(q(map[string]protocol.Node{
@@ -142,6 +152,7 @@ func TestBasicOrderMultiTerm(t *testing.T) {
 }
 
 func TestBasicOrderByComputed(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Top 3 line items by quantity * unit_price.
 	d.Query(q(map[string]protocol.Node{
@@ -157,6 +168,7 @@ func TestBasicOrderByComputed(t *testing.T) {
 }
 
 func TestBasicPagination(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Page 2 of orders by placed_at, page size 2: o1,o3 | o4,o2 | ...
 	d.Query(q(map[string]protocol.Node{
@@ -170,6 +182,7 @@ func TestBasicPagination(t *testing.T) {
 }
 
 func TestBasicLimitZero(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Limit 0 is explicit: zero rows, not "no limit".
 	d.Query(q(map[string]protocol.Node{
@@ -179,6 +192,7 @@ func TestBasicLimitZero(t *testing.T) {
 }
 
 func TestBasicOffsetPastEnd(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c":      {Kind: "scan", Table: "customers", Scope: "c"},
@@ -187,6 +201,7 @@ func TestBasicOffsetPastEnd(t *testing.T) {
 }
 
 func TestBasicSpreadPlusComputed(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -201,6 +216,7 @@ func TestBasicSpreadPlusComputed(t *testing.T) {
 }
 
 func TestBasicStackedFilters(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Two filter nodes stacked — same meaning as one conjunction.
 	d.Query(q(map[string]protocol.Node{
@@ -215,6 +231,7 @@ func TestBasicStackedFilters(t *testing.T) {
 }
 
 func TestBasicBareBoolPredicate(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// A bool column IS a predicate.
 	d.Query(q(map[string]protocol.Node{
@@ -227,6 +244,7 @@ func TestBasicBareBoolPredicate(t *testing.T) {
 }
 
 func TestBasicScanIsPrimaryKeyOrder(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// A bare scan arrives in primary-key order — the one physical order the
 	// storage engine guarantees.

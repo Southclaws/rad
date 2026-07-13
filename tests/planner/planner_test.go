@@ -61,6 +61,7 @@ func tracker(t *testing.T) *harness.DB {
 // ── access paths ────────────────────────────────────────────────────────────
 
 func TestPointGetByPrimaryKey(t *testing.T) {
+	t.Parallel()
 	d := tracker(t)
 	d.Query(q(map[string]protocol.Node{
 		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
@@ -72,6 +73,7 @@ func TestPointGetByPrimaryKey(t *testing.T) {
 }
 
 func TestIndexPrefixWithResidual(t *testing.T) {
+	t.Parallel()
 	d := tracker(t)
 	// board_id+status ride the index; the whole predicate still filters.
 	d.Query(q(map[string]protocol.Node{
@@ -88,6 +90,7 @@ func TestIndexPrefixWithResidual(t *testing.T) {
 }
 
 func TestOrderedIndexWithLimit(t *testing.T) {
+	t.Parallel()
 	d := tracker(t)
 	d.Query(q(map[string]protocol.Node{
 		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
@@ -106,6 +109,7 @@ func TestOrderedIndexWithLimit(t *testing.T) {
 // ── three-valued logic ──────────────────────────────────────────────────────
 
 func TestNotEqSkipsNulls(t *testing.T) {
+	t.Parallel()
 	d := tracker(t)
 	// NOT (assignee = 'ada') must not match tasks with a NULL assignee.
 	d.Query(q(map[string]protocol.Node{
@@ -120,6 +124,7 @@ func TestNotEqSkipsNulls(t *testing.T) {
 }
 
 func TestIsNullIsTheOnlyNullMatch(t *testing.T) {
+	t.Parallel()
 	d := tracker(t)
 	d.Query(q(map[string]protocol.Node{
 		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
@@ -133,6 +138,7 @@ func TestIsNullIsTheOnlyNullMatch(t *testing.T) {
 // ── crossings ───────────────────────────────────────────────────────────────
 
 func TestNestedShape(t *testing.T) {
+	t.Parallel()
 	d := tracker(t)
 	// Each board with its owner (to-parent first) and its open tasks by
 	// priority (correlated array) — the forcing shape, hand-written.
@@ -163,6 +169,7 @@ func TestNestedShape(t *testing.T) {
 }
 
 func TestExistsInFilter(t *testing.T) {
+	t.Parallel()
 	d := tracker(t)
 	d.Query(q(map[string]protocol.Node{
 		"b": {Kind: "scan", Table: "boards", Scope: "b"},
@@ -181,6 +188,7 @@ func TestExistsInFilter(t *testing.T) {
 // ── aggregation ─────────────────────────────────────────────────────────────
 
 func TestGroupedFold(t *testing.T) {
+	t.Parallel()
 	d := tracker(t)
 	d.Query(q(map[string]protocol.Node{
 		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
@@ -199,6 +207,7 @@ func TestGroupedFold(t *testing.T) {
 }
 
 func TestGlobalFoldOverNothing(t *testing.T) {
+	t.Parallel()
 	d := tracker(t)
 	// count of an empty set is 0; every other fold is NULL.
 	d.Query(q(map[string]protocol.Node{
@@ -215,6 +224,7 @@ func TestGlobalFoldOverNothing(t *testing.T) {
 // ── joins ───────────────────────────────────────────────────────────────────
 
 func TestInnerJoinProjection(t *testing.T) {
+	t.Parallel()
 	d := tracker(t)
 	d.Query(q(map[string]protocol.Node{
 		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
@@ -235,6 +245,7 @@ func TestInnerJoinProjection(t *testing.T) {
 // ── the error contract ──────────────────────────────────────────────────────
 
 func TestBinderRejections(t *testing.T) {
+	t.Parallel()
 	d := tracker(t)
 
 	d.Query(q(map[string]protocol.Node{

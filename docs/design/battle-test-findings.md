@@ -1,7 +1,9 @@
 # LIR battle-test findings
 
-Status: report of the 2026-07-13 battle-test campaign. Nothing here has been
-fixed yet — this document is the work list.
+Status: report of the 2026-07-13 battle-test campaign. The work list moved
+to LIR_IMPROVEMENTS.md at the repo root; F1–F6, F8, and F9 are fixed, F7
+(DAG sharing) awaits an explicit design session. This document remains the
+record of what the campaign covered and found.
 
 ## What was done
 

@@ -14,6 +14,7 @@ import (
 // 1. Three projections stacked, each renaming the previous one's output via
 // its scope label. The filter sits below everything.
 func TestStressTripleProjectionChain(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -31,6 +32,7 @@ func TestStressTripleProjectionChain(t *testing.T) {
 // 2. Order, project, order again — the LAST order wins. placed_at desc would
 // give o7-first; the re-order by v.id asc restores o1..o7.
 func TestStressOrderProjectOrderSandwich(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"o": {Kind: "scan", Table: "orders", Scope: "o"},
@@ -52,6 +54,7 @@ func TestStressOrderProjectOrderSandwich(t *testing.T) {
 // 3. Filter ABOVE a slice: take the 3 newest orders (o7,o5,o6), THEN keep
 // delivered. Only o6 survives — slice-then-filter is not filter-then-slice.
 func TestStressFilterAboveSlice(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"o": {Kind: "scan", Table: "orders", Scope: "o"},
@@ -68,6 +71,7 @@ func TestStressFilterAboveSlice(t *testing.T) {
 // 4. Aggregate above a slice: fold over exactly the top-3 page (o7,o5,o6),
 // not the whole table.
 func TestStressAggregateAboveSlice(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"o": {Kind: "scan", Table: "orders", Scope: "o"},
@@ -85,6 +89,7 @@ func TestStressAggregateAboveSlice(t *testing.T) {
 // total spend = sum(qty*unit_price) over their orders joined to items.
 // c1: o1(130)+o2(300)+o7(120)=550; c3: o5(500)=500.
 func TestStressCrossingContainingJoin(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -111,6 +116,7 @@ func TestStressCrossingContainingJoin(t *testing.T) {
 // scalar crossing (per-customer order count), joined against a plain orders
 // scan, filtered to pending above the join.
 func TestStressJoinOfProjectionsWithCrossing(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c":  {Kind: "scan", Table: "customers", Scope: "c"},
@@ -145,6 +151,7 @@ func TestStressJoinOfProjectionsWithCrossing(t *testing.T) {
 // o3,o4,o2,o6,o5,o7; offset 1 limit 4 keeps o4,o2,o6,o5; the filter above
 // the labelled projection drops cancelled o4.
 func TestStressSixDeepChain(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"o": {Kind: "scan", Table: "orders", Scope: "o"},
@@ -168,6 +175,7 @@ func TestStressSixDeepChain(t *testing.T) {
 // object, projecting only the product's name at the deepest level. Item ids
 // are TEXT, so "by id" is lexicographic: o7's items order i10 before i9.
 func TestStressFourLevelNesting(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -229,6 +237,7 @@ func TestStressFourLevelNesting(t *testing.T) {
 // rows). Per lir.md, Order puts NULLs LAST under desc, so c5 cannot reach the
 // top of the ranking — this assertion pins that rule.
 func TestStressTopNBySpendCrossing(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -259,6 +268,7 @@ func TestStressTopNBySpendCrossing(t *testing.T) {
 // count. FOOTGUN: c5 has no orders, so it never forms a group — the average
 // is over the 4 customers who DO have orders: (3+2+1+1)/4 = 1.75, not 7/5.
 func TestStressAggregateOfAggregate(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"o": {Kind: "scan", Table: "orders", Scope: "o"},
@@ -275,6 +285,7 @@ func TestStressAggregateOfAggregate(t *testing.T) {
 // count >= 1. Delivered: c1 (o1), c2 (o3), c4 (o6); c3 and c5 have zero
 // (count is never NULL, so gte(0,1) is plain FALSE, not UNKNOWN).
 func TestStressWrappedCrossingHaving(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -297,6 +308,7 @@ func TestStressWrappedCrossingHaving(t *testing.T) {
 // projection below: total = qty*unit_price, then taxed = total*2.
 // o1's items: i1 total 80 → 160, i2 total 50 → 100.
 func TestStressArithmeticOverComputedColumn(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"i": {Kind: "scan", Table: "order_items", Scope: "i"},
@@ -319,6 +331,7 @@ func TestStressArithmeticOverComputedColumn(t *testing.T) {
 // original names (email, tier) are gone above "v"; only v.handle and v.t
 // exist there.
 func TestStressFilterAboveRenamedProjection(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -335,6 +348,7 @@ func TestStressFilterAboveRenamedProjection(t *testing.T) {
 
 // 14. An orphan node nothing references is rejected by the preflight.
 func TestStressUnreachableNodeRejected(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -346,6 +360,7 @@ func TestStressUnreachableNodeRejected(t *testing.T) {
 
 // 15. A reference to a node id that does not exist is rejected.
 func TestStressDanglingReferenceRejected(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"bad": {Kind: "filter", Input: "nope",
@@ -356,6 +371,7 @@ func TestStressDanglingReferenceRejected(t *testing.T) {
 // 16. Single-consumer law: one sub-node consumed by TWO crossings in the same
 // projection is sharing, and LIR has no sharing semantics.
 func TestStressSharedNodeRejected(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -372,6 +388,7 @@ func TestStressSharedNodeRejected(t *testing.T) {
 // 17. Two filters consuming each other form a wire cycle; value nodes cannot
 // mean anything cyclic, so the graph decoder rejects it outright.
 func TestStressCycleRejected(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"a": {Kind: "filter", Input: "b",
@@ -384,6 +401,7 @@ func TestStressCycleRejected(t *testing.T) {
 // 18. Root cardinality "first" over an ordered relation: exactly one record,
 // which the wire (and thus the harness) sees as a single-element record list.
 func TestStressRootFirst(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"o": {Kind: "scan", Table: "orders", Scope: "o"},
@@ -398,6 +416,7 @@ func TestStressRootFirst(t *testing.T) {
 // violation. It surfaces as an "exec:" engine error, which the server relays
 // as a 422 client problem — not a 500.
 func TestStressExactlyOneViolation(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"o": {Kind: "scan", Table: "orders", Scope: "o"},
@@ -408,6 +427,7 @@ func TestStressExactlyOneViolation(t *testing.T) {
 // tiebreak) sliced at [0,3) and [3,6) yields disjoint, exactly-adjacent
 // pages. Ascending placed_at: o1,o3,o4,o2,o6,o5,o7.
 func TestStressPaginationDisjoint(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	page := func(offset int) protocol.Query {
 		return q(map[string]protocol.Node{

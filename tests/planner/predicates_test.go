@@ -15,6 +15,7 @@ import (
 // ── three-valued logic ──────────────────────────────────────────────────────
 
 func TestPredEqNullLiteralMatchesNothing(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// referrer_id = NULL is UNKNOWN for every row — including the rows where
 	// referrer_id IS NULL. Nothing matches; is_null is the only door.
@@ -26,6 +27,7 @@ func TestPredEqNullLiteralMatchesNothing(t *testing.T) {
 }
 
 func TestPredNeSkipsNullRows(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// referrer_id ne 'c1': c1/c5 have NULL referrers (UNKNOWN, filtered),
 	// c2/c3 are referred by c1 (FALSE) — only c4 (referred by c2) remains.
@@ -39,6 +41,7 @@ func TestPredNeSkipsNullRows(t *testing.T) {
 }
 
 func TestPredNotEqSkipsNullRows(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// NOT (referrer_id = 'c1') is the same set as ne: NOT UNKNOWN is UNKNOWN,
 	// so the NULL-referrer rows stay filtered out.
@@ -52,6 +55,7 @@ func TestPredNotEqSkipsNullRows(t *testing.T) {
 }
 
 func TestPredIsNullMatchesOnlyNulls(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Orders with no discount: o1, o3, o4, o6, o7.
 	d.Query(q(map[string]protocol.Node{
@@ -66,6 +70,7 @@ func TestPredIsNullMatchesOnlyNulls(t *testing.T) {
 }
 
 func TestPredIsNotNullMatchesOnlyPresent(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Orders with a discount: o2 (10.0), o5 (25.0).
 	d.Query(q(map[string]protocol.Node{
@@ -80,6 +85,7 @@ func TestPredIsNotNullMatchesOnlyPresent(t *testing.T) {
 }
 
 func TestPredDeMorganAgreesOverNulls(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// a = (referrer_id = 'c1'), b = (referrer_id = 'c2').
 	// Every customer either has a referrer in {c1, c2} (predicate FALSE) or a
@@ -111,6 +117,7 @@ func TestPredDeMorganAgreesOverNulls(t *testing.T) {
 // ── type boundaries: coercion and casts ─────────────────────────────────────
 
 func TestPredFloatLiteralAgainstIntColumnRejected(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// FINDING: a fractional literal against an int64 column is rejected at
 	// bind time (422) — cross-type comparison requires an explicit cast.
@@ -122,6 +129,7 @@ func TestPredFloatLiteralAgainstIntColumnRejected(t *testing.T) {
 }
 
 func TestPredCastIntColumnToFloatComparesAgainstFraction(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// The escape hatch for the previous test: cast(stock to float64) > 1.5
 	// keeps products with stock >= 2 — p1(12), p3(5), p4(2), p6(40), p7(100).
@@ -139,6 +147,7 @@ func TestPredCastIntColumnToFloatComparesAgainstFraction(t *testing.T) {
 }
 
 func TestPredCastFloatToIntTruncates(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// cast(price to int64) over category 'paper': p7 price 5.0 → 5.
 	d.Query(q(map[string]protocol.Node{
@@ -156,6 +165,7 @@ func TestPredCastFloatToIntTruncates(t *testing.T) {
 // ── arithmetic ──────────────────────────────────────────────────────────────
 
 func TestPredArithmeticPropagatesNull(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// discount + 5 over o1 (NULL discount) and o2 (10.0): NULL in, NULL out.
 	d.Query(q(map[string]protocol.Node{
@@ -175,6 +185,7 @@ func TestPredArithmeticPropagatesNull(t *testing.T) {
 }
 
 func TestPredDivisionByZeroErrors(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// p2 has stock 0; price / stock must fail loudly, not yield NULL or Inf.
 	// FINDING: runtime evaluation errors surface as HTTP 422.
@@ -190,6 +201,7 @@ func TestPredDivisionByZeroErrors(t *testing.T) {
 }
 
 func TestPredNestedArithmetic(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// (price - 10) * 2 for p2 (price 40.0) → 60.
 	d.Query(q(map[string]protocol.Node{
@@ -207,6 +219,7 @@ func TestPredNestedArithmetic(t *testing.T) {
 }
 
 func TestPredNegate(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// -price for p7 (price 5.0) → -5.
 	d.Query(q(map[string]protocol.Node{
@@ -224,6 +237,7 @@ func TestPredNegate(t *testing.T) {
 // ── comparisons over other scalar types ─────────────────────────────────────
 
 func TestPredBoolColumnEqualsLiteral(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// discontinued = false → everything except p5.
 	d.Query(q(map[string]protocol.Node{
@@ -238,6 +252,7 @@ func TestPredBoolColumnEqualsLiteral(t *testing.T) {
 }
 
 func TestPredTextRange(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// 'B' <= name < 'D' over customers: Bob (c2), Cyn (c3).
 	d.Query(q(map[string]protocol.Node{
@@ -255,6 +270,7 @@ func TestPredTextRange(t *testing.T) {
 }
 
 func TestPredOrOverNullableColumn(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// discount = 10 OR discount = 25: NULL discounts make both sides UNKNOWN
 	// (UNKNOWN ∨ UNKNOWN = UNKNOWN, filtered) — only o2 and o5 match.
@@ -274,6 +290,7 @@ func TestPredOrOverNullableColumn(t *testing.T) {
 // ── predicate type errors ───────────────────────────────────────────────────
 
 func TestPredNotOverNonBoolRejected(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// not(name) — negating a text column is a bind-time type error (422),
 	// not a coercion.

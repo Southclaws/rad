@@ -13,6 +13,7 @@ import (
 )
 
 func TestJoin_InnerBasic(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Every order with its customer's name. o1..o7 → Ada Ada Bob Bob Cyn Dee Ada.
 	d.Query(q(map[string]protocol.Node{
@@ -38,6 +39,7 @@ func TestJoin_InnerBasic(t *testing.T) {
 }
 
 func TestJoin_LeftNullPadding(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Products with their review ratings; p4, p6, p7 have no reviews and get
 	// a null-padded right side. Rating sorts ascending with NULLs first — the
@@ -68,6 +70,7 @@ func TestJoin_LeftNullPadding(t *testing.T) {
 }
 
 func TestJoin_LeftOrphansViaIsNull(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// The classic anti-join spelling: left join, keep the null-padded rows.
 	d.Query(q(map[string]protocol.Node{
@@ -85,6 +88,7 @@ func TestJoin_LeftOrphansViaIsNull(t *testing.T) {
 }
 
 func TestJoin_ResidualFilterAbove(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Both join scopes stay visible above the join, so a filter can mix them.
 	// Gold customers: c1, c3. Pending orders: o5 (c3), o7 (c1).
@@ -111,6 +115,7 @@ func TestJoin_ResidualFilterAbove(t *testing.T) {
 }
 
 func TestJoin_AggregateRevenuePerCustomer(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Order totals: o1=130 o2=300 o3=115 o4=450 o5=500 o6=100 o7=120.
 	// c1 = 130+300+120 = 550, c2 = 115+450 = 565, c3 = 500, c4 = 100.
@@ -137,6 +142,7 @@ func TestJoin_AggregateRevenuePerCustomer(t *testing.T) {
 }
 
 func TestJoin_OrderByComputedThenSlice(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Top 3 line items by total. The unlabelled projection closes the scan
 	// scopes, so the computed order sits below it, on the raw join output.
@@ -163,6 +169,7 @@ func TestJoin_OrderByComputedThenSlice(t *testing.T) {
 }
 
 func TestJoin_ThreeWayChain(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// items → orders → customers, two join nodes. c4's only order is o6,
 	// whose only item is i8.
@@ -184,6 +191,7 @@ func TestJoin_ThreeWayChain(t *testing.T) {
 }
 
 func TestJoin_SelfLeftJoinReferrals(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Scope labels are query-wide unique, so the self-join binds "a" and "b".
 	// c1 and c5 have NULL referrer_id: the ON is UNKNOWN, so they null-pad.
@@ -208,6 +216,7 @@ func TestJoin_SelfLeftJoinReferrals(t *testing.T) {
 }
 
 func TestJoin_FilteredScansAsInputs(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Join inputs are ordinary relations: delivered orders (o1, o3, o6)
 	// against gold customers (c1, c3). Only o1 belongs to a gold customer.
@@ -226,6 +235,7 @@ func TestJoin_FilteredScansAsInputs(t *testing.T) {
 }
 
 func TestJoin_LabelledProjectionsAsInputs(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Labelled projections are joinable relations; their scopes ("lc", "ro")
 	// address the join output. Pending orders: o5 → c3, o7 → c1.
@@ -257,6 +267,7 @@ func TestJoin_LabelledProjectionsAsInputs(t *testing.T) {
 }
 
 func TestJoin_NonEqualityCondition(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// ON o.placed_at < c.created_at * 10 — a pure theta join. Orders placed
 	// strictly before each customer's created_at*10:
@@ -284,6 +295,7 @@ func TestJoin_NonEqualityCondition(t *testing.T) {
 }
 
 func TestJoin_SpreadBothSidesCollides(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// customers and orders both produce "id": spreading both scopes over a
 	// join collides at bind time. Raw join rows need an explicit projection.
@@ -297,6 +309,7 @@ func TestJoin_SpreadBothSidesCollides(t *testing.T) {
 }
 
 func TestJoin_LeftJoinCountKeepsZeroCustomers(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// count(o.id) — count of the ARGUMENT — skips the null-padded right side,
 	// so c5 (no orders) survives the left join with n=0, the SQL-standard
@@ -321,6 +334,7 @@ func TestJoin_LeftJoinCountKeepsZeroCustomers(t *testing.T) {
 }
 
 func TestJoin_DuplicateScopeRejected(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Scope labels are query-wide unique — two scans cannot share "x".
 	d.Query(q(map[string]protocol.Node{
@@ -332,6 +346,7 @@ func TestJoin_DuplicateScopeRejected(t *testing.T) {
 }
 
 func TestJoin_CrossingInOnRejected(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// A join condition may not contain a sub-relation crossing — the binder
 	// says to filter above the join instead.

@@ -14,6 +14,7 @@ import (
 // 1. To-parent: each order with its customer as a nested object. The inner
 // filter is an equality on the customers PK, so first is statically ≤1.
 func TestNestToParentFirst(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"o": {Kind: "scan", Table: "orders", Scope: "o"},
@@ -39,6 +40,7 @@ func TestNestToParentFirst(t *testing.T) {
 
 // 2. To-children: each customer with the ids of its orders; c5 has none.
 func TestNestChildrenArray(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -67,6 +69,7 @@ func TestNestChildrenArray(t *testing.T) {
 // 3. Top-N per parent: each customer's 2 most recent orders — a per-key
 // slice under an array crossing.
 func TestNestTopNPerParent(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -96,6 +99,7 @@ func TestNestTopNPerParent(t *testing.T) {
 // 4. Scalar count per parent: an ungrouped fold is exactly-one-row and
 // one-column, so it crosses as a scalar; count over no rows is 0.
 func TestNestScalarCountPerParent(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -121,6 +125,7 @@ func TestNestScalarCountPerParent(t *testing.T) {
 
 // 5. Exists in a filter: customers who have placed any order.
 func TestNestExistsFilter(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -137,6 +142,7 @@ func TestNestExistsFilter(t *testing.T) {
 
 // 6. Not-exists in a filter: customers with no orders at all.
 func TestNestNotExistsFilter(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -152,6 +158,7 @@ func TestNestNotExistsFilter(t *testing.T) {
 // 7. First over an explicitly ordered multi-row relation: the latest order
 // per customer. The order node below the crossing is what makes it legal.
 func TestNestFirstOverOrderedMultiRow(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -179,6 +186,7 @@ func TestNestFirstOverOrderedMultiRow(t *testing.T) {
 // 8. First legal without any order: an equality on a unique index (email)
 // is statically at-most-one.
 func TestNestFirstViaUniqueIndex(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -198,6 +206,7 @@ func TestNestFirstViaUniqueIndex(t *testing.T) {
 
 // 9. Two levels of nesting: customer → orders → items.
 func TestNestTwoLevels(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -237,6 +246,7 @@ func TestNestTwoLevels(t *testing.T) {
 // 10. Three levels: customer → order → items → each item's product (a
 // to-parent first at the deepest level, projected down to the name).
 func TestNestThreeLevelsWithParent(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -283,6 +293,7 @@ func TestNestThreeLevelsWithParent(t *testing.T) {
 // 11. Three sibling crossings on one projection: referrer (first), order ids
 // (array), order count (scalar) — each with its own sub-tree and scope.
 func TestNestSiblingCrossings(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -320,6 +331,7 @@ func TestNestSiblingCrossings(t *testing.T) {
 // 12. A crossing with a residual predicate inside a filter: orders that
 // contain any line of 10 or more units.
 func TestNestCrossingInFilter(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"o": {Kind: "scan", Table: "orders", Scope: "o"},
@@ -339,6 +351,7 @@ func TestNestCrossingInFilter(t *testing.T) {
 
 // 13. Anti-join via not-exists: products nobody has reviewed.
 func TestNestAntiJoin(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"p": {Kind: "scan", Table: "products", Scope: "p"},
@@ -357,6 +370,7 @@ func TestNestAntiJoin(t *testing.T) {
 // 14. Scalar fold per parent including empty inputs: avg over no reviews is
 // NULL, and the field is still present.
 func TestNestScalarAvgIncludingEmpty(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"p": {Kind: "scan", Table: "products", Scope: "p"},
@@ -385,6 +399,7 @@ func TestNestScalarAvgIncludingEmpty(t *testing.T) {
 // 15. A scalar crossing wrapped in arithmetic: order count + 100. Wrapping a
 // crossing must not change how it executes.
 func TestNestScalarInArithmetic(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -412,6 +427,7 @@ func TestNestScalarInArithmetic(t *testing.T) {
 // 16. is_null over a first crossing, referenced through a labelled
 // projection's scope: customers whose referrer lookup came back empty.
 func TestNestIsNullFirstInFilter(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -435,6 +451,7 @@ func TestNestIsNullFirstInFilter(t *testing.T) {
 // 17. A crossing as an order term: customers by descending order count, ties
 // broken by id — c3/c4 both have one order.
 func TestNestCrossingAsOrderTerm(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -456,6 +473,7 @@ func TestNestCrossingAsOrderTerm(t *testing.T) {
 // sub-relation references the grandparent customer scope, not the order. Ada
 // wrote 2 reviews (r1, r3), so every one of her orders reports 2.
 func TestNestGrandparentCorrelation(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -492,6 +510,7 @@ func TestNestGrandparentCorrelation(t *testing.T) {
 // a discontinued product. Only the Chair (p5) is discontinued; it appears on
 // i7 → o5 → c3.
 func TestNestDoubleNestedExists(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -523,6 +542,7 @@ func TestNestDoubleNestedExists(t *testing.T) {
 // status for each customer. The aggregate binds a scope so the order above
 // it can address its outputs.
 func TestNestGroupedAggArray(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -559,6 +579,7 @@ func TestNestGroupedAggArray(t *testing.T) {
 
 // 21. An empty child set renders as [], never null.
 func TestNestEmptyArrayRendersEmpty(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},
@@ -578,6 +599,7 @@ func TestNestEmptyArrayRendersEmpty(t *testing.T) {
 
 // 22. An absent first renders as a present key with null.
 func TestNestAbsentFirstRendersNull(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"c": {Kind: "scan", Table: "customers", Scope: "c"},

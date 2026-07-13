@@ -8,6 +8,9 @@ below change lir.schema.yaml: the grammar held; everything here is behavior
 behind the schema. The one item that *would* change the grammar — F7 — is
 deliberately design-pending.
 
+Status: **F1–F6, F8, F9 are done** (2026-07-13). F7 remains open by design —
+it is a grammar change and gets its own design session.
+
 ## F1 — Schema-validation errors must name the problem
 
 **Problem.** A structurally invalid node is correctly rejected (400), but the

@@ -12,6 +12,7 @@ import (
 )
 
 func TestAggGlobalCount(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// 5 customers: c1..c5.
 	d.Query(q(map[string]protocol.Node{
@@ -23,6 +24,7 @@ func TestAggGlobalCount(t *testing.T) {
 }
 
 func TestAggCountRowsVsCountNonNull(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// 7 orders; discount is non-NULL only on o2 (10.0) and o5 (25.0).
 	d.Query(q(map[string]protocol.Node{
@@ -35,6 +37,7 @@ func TestAggCountRowsVsCountNonNull(t *testing.T) {
 }
 
 func TestAggIntFolds(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// ratings: 5, 4, 2, 5, 1 → sum 17, min 1, max 5, avg 3.4 (avg is float).
 	d.Query(q(map[string]protocol.Node{
@@ -49,6 +52,7 @@ func TestAggIntFolds(t *testing.T) {
 }
 
 func TestAggFloatSum(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// prices: 80+40+300+450+250+35+5 = 1160.
 	d.Query(q(map[string]protocol.Node{
@@ -60,6 +64,7 @@ func TestAggFloatSum(t *testing.T) {
 }
 
 func TestAggGroupByStatus(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// delivered o1,o3,o6 = 3; shipped o2 = 1; pending o5,o7 = 2; cancelled o4 = 1.
 	d.Query(q(map[string]protocol.Node{
@@ -78,6 +83,7 @@ func TestAggGroupByStatus(t *testing.T) {
 }
 
 func TestAggHavingCountAtLeastTwo(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// HAVING n >= 2: a filter above the labelled aggregate — keeps
 	// delivered (3) and pending (2), drops cancelled (1) and shipped (1).
@@ -97,6 +103,7 @@ func TestAggHavingCountAtLeastTwo(t *testing.T) {
 }
 
 func TestAggOrderByCountDesc(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// count desc, status asc breaks the cancelled/shipped tie at 1.
 	d.Query(q(map[string]protocol.Node{
@@ -117,6 +124,7 @@ func TestAggOrderByCountDesc(t *testing.T) {
 }
 
 func TestAggGroupByTwoColumns(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// (category, discontinued): furniture/false p4,p6 = 2; furniture/true p5 = 1;
 	// gear/false p1,p2,p3 = 3; paper/false p7 = 1.
@@ -141,6 +149,7 @@ func TestAggGroupByTwoColumns(t *testing.T) {
 }
 
 func TestAggGroupByComputedExpression(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// expensive = price >= 100: false p1,p2,p6,p7 = 4; true p3,p4,p5 = 3.
 	// A computed group expression requires As.
@@ -160,6 +169,7 @@ func TestAggGroupByComputedExpression(t *testing.T) {
 }
 
 func TestAggOverFilteredInput(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// gear prices: 80, 40, 300 → avg (80+40+300)/3 = 140.
 	d.Query(q(map[string]protocol.Node{
@@ -173,6 +183,7 @@ func TestAggOverFilteredInput(t *testing.T) {
 }
 
 func TestAggOverJoin(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Revenue per status, sum(quantity*unit_price) over orders ⋈ items:
 	// cancelled o4 = 450; delivered o1 130 + o3 115 + o6 100 = 345;
@@ -199,6 +210,7 @@ func TestAggOverJoin(t *testing.T) {
 }
 
 func TestAggOverProjection(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Line totals: i1 80, i2 50, i3 300, i4 80, i5 35, i6 450, i7 500,
 	// i8 100, i9 80, i10 40 → sum 1715.
@@ -216,6 +228,7 @@ func TestAggOverProjection(t *testing.T) {
 }
 
 func TestAggFoldsOverEmptySet(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// count of nothing is 0; every other fold over nothing is NULL.
 	d.Query(q(map[string]protocol.Node{
@@ -230,6 +243,7 @@ func TestAggFoldsOverEmptySet(t *testing.T) {
 }
 
 func TestAggTopGroupsBySlice(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// Top 2 statuses by count desc (status asc breaks the 1-count tie
 	// below the cut): delivered 3, pending 2.
@@ -250,6 +264,7 @@ func TestAggTopGroupsBySlice(t *testing.T) {
 }
 
 func TestAggMinMaxOverText(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// names: Ada, Bob, Cyn, Dee, Eli → min "Ada", max "Eli".
 	d.Query(q(map[string]protocol.Node{
@@ -262,6 +277,7 @@ func TestAggMinMaxOverText(t *testing.T) {
 }
 
 func TestAggSumInt64StaysInteger(t *testing.T) {
+	t.Parallel()
 	d := shop(t)
 	// stock: 12+0+5+2+0+40+100 = 159 — sum over int64 stays integer.
 	// (avg over int64 being float is covered by TestAggIntFolds: 3.4.)

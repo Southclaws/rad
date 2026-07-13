@@ -74,6 +74,13 @@ tasks:
       - go test ./... {{.CLI_ARGS}}
       - cd examples/demo && go build -o /dev/null .
 
+  test:planner:
+    desc: Run only the planner battle-test corpus (tight loop; pass -- -run X to filter)
+    env:
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
+    cmds:
+      - go test ./tests/planner/ -count=1 {{.CLI_ARGS}}
+
   vet:
     desc: Go vet all packages
     env:

@@ -227,7 +227,35 @@ board card's "3 tasks · 2 open · 1 done" in a single round trip.
 A query returns a typed value tree — null, scalar, object, array — rendered
 to JSON exactly as shaped: a `first` field is an object or a present key
 with `null`, an `array` field is an array (empty, never null), a folded
-relation is an object of scalars. Rad never exposes a flattened join.
+relation is an object of scalars, and a `scalar` root is a naked value.
+Rad never exposes a flattened join.
+
+## Idioms
+
+Patterns that come up constantly when writing LIR by hand, each the correct
+spelling of something SQL habits get wrong:
+
+- **Order below the projection, or label it.** A projection establishes a
+  new row type and closes its input's scopes, so ordering above an
+  unlabelled projection cannot reference the scan's columns. Either order
+  before projecting (projection preserves order), or give the projection a
+  `scope` and order by its output columns.
+- **Keep zero-row parents in grouped folds.** `aggregate(orders, group by
+  customer_id)` produces one row per customer *with orders* — a customer
+  with none never forms a group. When absent parents matter (averages,
+  dashboards), LEFT-join the parent to the child and count a non-NULL child
+  column: the padded rows keep the parent, the NULL-skipping fold gives 0.
+- **Project joins explicitly.** Raw join rows are never flattened; spreading
+  both sides collides when column names repeat (`id` almost always).
+  Enumerate the fields you want.
+- **Reuse a computed value by labelling, not repeating.** To order by a
+  derived value *and* return it, compute it once in a labelled projection
+  and order by the projection's column above. Node definitions are
+  single-consumer — the same node cannot feed two operators — so the
+  labelled-projection idiom is the sharing mechanism until an explicit
+  binding construct exists.
+- **Text keys order lexicographically**: `"i10" < "i9"`. Zero-pad, or use
+  int64 keys where humans will read the order.
 
 ## What this deliberately does not do
 
