@@ -1,125 +1,96 @@
-# Direct catalog mode and admin UI foundation
+# Direct catalog mode and imperative catalog operations
 
-Status: proposed (2026-07-13) — user-authored ADR, reviewed and grounded
-against the codebase. Direction accepted; the grounding notes below adjust
-the mechanism, not the goals.
+Status: scoped (2026-07-13) — user-authored ADR reviewed, grounded, and
+the three review findings resolved. This phase lays the foundation:
+catalog modes + the imperative (REST-ish) catalog mutation API. Admin UI
+editors build on it next; catalog revisions are split out
+([catalog-revisions](catalog-revisions.md)).
 
-## The proposal (summary)
+## The model
 
-Two explicit catalog management modes per database:
+Two catalog management modes per database, **set once at boot, never
+changed** (for now — adoption Direct→Schema is future work and must not
+be architecturally precluded):
 
-- **Direct** — the database is the source of truth. Create/modify/drop
-  tables, indexes, import data, all through the Admin UI or HTTP API. The
-  playground mode: `rad serve` → browser → build a schema with no files.
-- **Schema** — `schema.rad` is the source of truth. Direct catalog
-  modification is rejected server-side before any change occurs; the Admin
-  UI becomes inspection/debugging only.
+- **Direct** (default — easy demo/playground) — the database is the
+  source of truth. Imperative catalog mutation endpoints and the Admin UI
+  editors work. `rad serve` → browser → build a schema with no files.
+- **Schema** — `schema.rad` is the source of truth. Imperative catalog
+  endpoints are rejected before any change occurs; `SchemaMigrate` is the
+  only mutation path; the Admin UI is inspection/debugging only.
 
-Every catalog mutation checks the mode first. Codegen works in both modes:
-`rad schema pull` reads the live catalog into a local schema representation
-that `rad generate` consumes. Adoption path Direct → pull → commit
-schema.rad → Schema mode; the adoption *mechanism* is out of scope but must
-not be architecturally precluded.
+`SchemaMigrate` stays available in **both** modes — in Direct mode it is
+just another way to mutate. Read-only catalog APIs stay open in both
+modes. Codegen works in both: `rad schema pull` (future, with the
+catalog→schema.rad renderer) reads the live catalog for `rad generate`.
 
-Non-goals (explicit, endorsed): no drift reconciliation, no mixed
-ownership, no auto-merge, no partial management, no Terraform-style state.
+Non-goals (from the ADR, endorsed): no drift reconciliation, no mixed
+ownership, no auto-merge, no partial management, no Terraform-style
+state.
 
-Success shape: download → `rad serve` → Admin UI (:7238) → create schema →
-insert data → query → inspect plans/traces → generate a typed client.
+## Settled decisions
 
-## Grounding against what exists (2026-07-13)
+1. **Imperative REST-ish endpoints, not a reconciler wrapper.** The
+   direct channel is fine-grained: create table, modify table, delete
+   table, plus column CRUD (and index create/drop — the ADR's "manage
+   indexes"). These map onto the same engine operations
+   (02_catalog/ddl.go) the reconciler drives, so capability parity is a
+   rule: anything the reconciler rejects (e.g. column type changes) the
+   imperative API rejects identically — one capability surface, two
+   grammars over it.
+2. **Mode is stored in the catalog** — one KV entry, written when fresh
+   storage is initialised, read inside the same transaction as each
+   mutation check (snapshot-consistent, restart-proof, cheap).
+3. **Set at boot only**: `rad serve` flag/env (e.g. `RAD_CATALOG_MODE`)
+   applies **only when initialising a fresh database**; absent flag ⇒
+   Direct. On an existing database the persisted mode wins; an explicitly
+   mismatched flag is a startup error (loud beats silent — mode is
+   set-once, so a mismatch is operator confusion).
+4. **Error shape: don't sweat it yet.** Rejections in Schema mode use the
+   existing `reject` input-classification (422 invalid today is fine);
+   the settled taxonomy work (tasks/1-todo/error-propagation.md) sweeps
+   this site later — noted there as the first test of the retryability
+   rule (schema-managed rejection is never retryable, so it is *not*
+   `conflict` despite the ADR's 409 sketch).
+5. **Catalog revisions deferred** → [catalog-revisions](catalog-revisions.md).
+   Nothing in this phase depends on them.
 
-- **There are no fine-grained catalog mutation endpoints to gate.** The
-  wire's only catalog mutation today is `SchemaMigrate`
-  (rad/api/openapi.yaml → rad/server/api/dbserver.go): reconcile the
-  database with a `schema.rad` document — declarative, idempotent,
-  diff-based, rename hints via `renamed_from`. The fine-grained surface
-  (`Catalog.CreateTable`, ddl.go) is engine-internal, reachable only
-  through the reconciler.
-- **Therefore the central design question the ADR glosses: migration IS a
-  catalog mutation, through the same pathway.** "Schema mode rejects
-  catalog mutations" cannot mean "reject the mutation endpoints as a set"
-  — SchemaMigrate must stay open in Schema mode; it is how Schema mode
-  changes anything. The mode gates a *direct channel*, not mutations.
-- **Catalog revisions do not exist yet.** The ADR says mutations should
-  "continue to produce a catalog revision" — this is new work, not
-  preservation. There is already a second consumer queued: the query-trace
-  proposal's `InputTrace` carries the catalog revision
-  (tasks/1-todo/query-trace.md).
-- **`rad schema pull` needs the inverse renderer.** cmd/rad has serve,
-  validate, migrate, generate; generate reads `-f schema.rad`. The
-  parser direction (schema source → catalog defs) exists in
-  02_catalog/{schema,migrate}; catalog → schema.rad source does not.
-- **The Admin UI is inspection-only today** (TableView, KVBrowser; wire
-  :7237, UI :7238) — consistent with the ADR's Schema-mode UI, so Direct
-  mode is the additive half.
+## Grounding (what exists, 2026-07-13)
 
-## Mechanism refinements (from review)
+- Wire catalog mutation today = `SchemaMigrate` only
+  (rad/server/api/dbserver.go); the fine-grained surface
+  (`Catalog.CreateTable`, ddl.go mutations) is engine-internal, reachable
+  only through the reconciler. The imperative API exposes it.
+- Admin UI (rad/ui: TableView, KVBrowser; served on :7238) is
+  inspection-only — Direct-mode editors are the additive half, built
+  after this phase.
+- `rad generate` reads `-f schema.rad`; `rad schema pull` needs the
+  catalog→schema.rad renderer (inverse of the 02_catalog/schema parser)
+  — future work, three consumers (pull, UI schema view, adoption). A
+  pull is a snapshot: no `renamed_from` history.
 
-1. **The direct channel is a second endpoint sharing the reconciler.**
-   Cheapest correct v1: a mode-gated `CatalogApply` (structured table/index
-   defs as JSON — a UI speaks structs, not schema.rad text) that feeds the
-   same diff/apply engine SchemaMigrate uses. One mutation engine, two
-   doors; validation, rename handling, and idempotence for free.
-   Fine-grained REST-ish DDL endpoints (TableCreate, IndexDrop, …) are a
-   UX decision for later — nothing here precludes them, and they'd gate on
-   the same mode check.
-2. **SchemaMigrate stays available in both modes.** In Direct mode it is
-   just another way to mutate (and the natural adoption on-ramp — a
-   successful migrate against a Direct database is where an explicit
-   mode-flip step would slot in later). Gate check therefore lives on the
-   direct channel only.
-3. **Mode is stored in the catalog itself**, one KV entry read inside the
-   same transaction as the mutation — snapshot-consistent, restart-proof,
-   and "inexpensive to determine" as the ADR requires. New databases
-   default to Direct (the playground goal). A `rad serve` flag/env may set
-   the initial mode on an *empty* database only — no config-vs-stored
-   disagreement.
-4. **Rejection shape must follow the error ADR, and the ADR's own sketch
-   doesn't.** `urn:rad:problem:catalog-schema-managed` violates the
-   settled rule that type URIs stay class-level; and 409/`conflict` is
-   settled as *retryable* ("the same request might succeed in 20ms"),
-   which this is not — no retry succeeds until an operator changes the
-   mode. By the retryability rule this is `invalid` (422), reason
-   `schema_managed`, detail as proposed ("Direct catalog modifications are
-   disabled because this database is managed by schema migrations."). This
-   is the first real test of the retryability split; note it in
-   tasks/1-todo/error-propagation.md when built.
-5. **Catalog revisions**: monotonic counter bumped inside every ddl
-   transaction, independent of migration history (as the ADR requires).
-   Serves auditing/diffing later, the trace artifact now, and client
-   compatibility checks eventually. Keep v1 to the counter (+ timestamp);
-   the mutation log is future work.
-6. **The catalog → schema.rad renderer is one artifact, three consumers**:
-   `rad schema pull`, the Admin UI's "show me this database as a schema
-   document" view, and the adoption workflow. `renamed_from` hints are
-   inherently absent from a pull — it is a snapshot, not a history; say so
-   in the command's help.
-7. **The UI learns the mode from a read endpoint** (health or a catalog
-   metadata response) and greys out mutation affordances in Schema mode
-   with the ADR's banner text. Read-only catalog APIs stay open in both
-   modes.
+## The work
 
-## The work, when scheduled
+1. Mode storage in 02_catalog: KV entry + accessor, stamped on fresh
+   init, `rad serve` bootstrap flag/env, mismatch = startup error.
+2. Engine: ensure ddl.go exposes the imperative set the API needs
+   (create/drop table, add/drop/rename column, add/drop index) as
+   transactional operations with the same validation the reconciler uses.
+3. Wire: OpenAPI endpoints for table/column/index CRUD, mode-gated;
+   regen; client surfaces as needed by the UI.
+4. Expose mode (and later revision) on a read endpoint so the UI can
+   grey out mutation affordances in Schema mode with the ADR's banner.
+5. Tests: mode gating matrix (imperative × migrate × both modes),
+   set-once semantics (fresh init honours flag; existing DB ignores
+   absent flag, errors on mismatch), imperative-vs-reconciler capability
+   parity, DDL through the wire end-to-end.
 
-1. Mode storage in 02_catalog (KV entry, default Direct, bootstrap-only
-   serve override) + catalog revision counter in the ddl txn.
-2. Wire: `CatalogApply` (structured defs → shared reconciler) gated by
-   mode; mode + revision exposed on a read endpoint; rejection as
-   `invalid`/`schema_managed` per the error taxonomy.
-3. Catalog → schema.rad renderer; `rad schema pull` command.
-4. Admin UI direct-mode surfaces: table/column/index editors, data
-   import/insert, driven by CatalogApply; mode banner in Schema mode.
-5. Tests: mode gating (both channels × both modes), revision monotonicity,
-   pull→generate round-trip (pulled schema migrates to an identical
-   catalog — the reconciler's idempotence makes this a one-line
-   assertion), UI api surface.
+Then (follow-on phases): Admin UI editors + data import over the
+imperative API; catalog revisions; `rad schema pull` + renderer;
+adoption workflow.
 
-Future work (unchanged from the ADR): schema explorer, planner/trace
-visualisers, storage browser, import formats, adoption workflow — none
-require changes to the mode model.
-
-Related: tasks/1-todo/query-trace.md (UI consumer; catalog revision in
-InputTrace), tasks/1-todo/error-propagation.md (rejection taxonomy),
+Related: tasks/1-todo/catalog-revisions.md,
+tasks/1-todo/error-propagation.md (rejection taxonomy sweep),
+tasks/1-todo/query-trace.md (UI consumer),
 tasks/1-todo/schema-flexibility.md (whatever loosens the schema loosens
 both channels equally).
