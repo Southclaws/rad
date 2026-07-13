@@ -58,6 +58,25 @@ ranging over one snapshot-pinned value; two references to a binding are
 two variables ranging over one committed value. Nobody considers two scans
 of the same table a DAG — this construct is no more a DAG than that.
 
+## The normative kernel
+
+The whole semantics in four sentences — the paragraph the eventual spec
+section grows from:
+
+> A binding evaluates to one statement-local relational value (one value
+> per instantiation of its lexical environment, if correlated bindings are
+> admitted). Every reference observes that same bag of rows and values.
+> Each reference exposes it under a fresh local alias. The physical
+> planner may inline, duplicate, stream, cache, or materialise the binding
+> only where doing so is observationally indistinguishable.
+
+The parenthetical in the first sentence tracks open question #1: if the
+surface is document-level bindings (no enclosing scopes visible at the
+binding site), every binding is closed and "statement-local" is exact with
+no parenthetical needed. The fourth sentence is the criterion, not a
+mechanism — materialise-once and identical-plan replay (below) are the two
+known ways to discharge it, not its definition.
+
 ## Settled semantics
 
 **1. References instantiate.** Each occurrence gets a fresh scope label
