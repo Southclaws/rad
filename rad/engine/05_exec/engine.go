@@ -13,7 +13,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
+	"github.com/Southclaws/rad/rad/engine/reject"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
 	keyenc "github.com/Southclaws/rad/rad/engine/01_kv/keyenc"
@@ -88,7 +88,7 @@ func tableIn(ctx context.Context, view kv.KV, name string) (catalog.Table, error
 		return catalog.Table{}, err
 	}
 	if !ok {
-		return catalog.Table{}, fmt.Errorf("exec: table %q does not exist", name)
+		return catalog.Table{}, reject.Inputf("exec: table %q does not exist", name)
 	}
 	return tbl, nil
 }
@@ -98,7 +98,7 @@ func tableIn(ctx context.Context, view kv.KV, name string) (catalog.Table, error
 func normalizeRow(tbl catalog.Table, row lir.Row) (lir.Row, error) {
 	for name := range row {
 		if _, ok := tbl.Column(name); !ok {
-			return nil, fmt.Errorf("exec: table %q has no column %q", tbl.Name, name)
+			return nil, reject.Inputf("exec: table %q has no column %q", tbl.Name, name)
 		}
 	}
 	out := make(lir.Row, len(tbl.Columns))
@@ -106,13 +106,13 @@ func normalizeRow(tbl catalog.Table, row lir.Row) (lir.Row, error) {
 		v, ok := row[col.Name]
 		if !ok || v.Null {
 			if !col.Nullable {
-				return nil, fmt.Errorf("exec: column %q is not nullable", col.Name)
+				return nil, reject.Inputf("exec: column %q is not nullable", col.Name)
 			}
 			out[col.Name] = lir.Null(col.Type)
 			continue
 		}
 		if v.Type != col.Type {
-			return nil, fmt.Errorf("exec: column %q expects %s, got %s", col.Name, col.Type, v.Type)
+			return nil, reject.Inputf("exec: column %q expects %s, got %s", col.Name, col.Type, v.Type)
 		}
 		out[col.Name] = v
 	}
@@ -172,7 +172,7 @@ func (e *Engine) insert(ctx context.Context, view kv.KV, table string, row lir.R
 	if _, ok, err := view.Get(ctx, rowKey); err != nil {
 		return nil, err
 	} else if ok {
-		return nil, fmt.Errorf("exec: duplicate primary key in table %q", table)
+		return nil, reject.Inputf("exec: duplicate primary key in table %q", table)
 	}
 
 	if err := checkForeignKeys(ctx, view, tbl, stored); err != nil {
@@ -225,7 +225,7 @@ func checkForeignKeys(ctx context.Context, view kv.KV, tbl catalog.Table, row li
 			return err
 		}
 		if !ok {
-			return fmt.Errorf("exec: foreign key %q violation: referenced row does not exist", fk.Name)
+			return reject.Inputf("exec: foreign key %q violation: referenced row does not exist", fk.Name)
 		}
 	}
 	return nil
@@ -262,7 +262,7 @@ func checkUniqueIndexes(ctx context.Context, view kv.KV, tbl catalog.Table, row 
 		for it.Next() {
 			if !bytes.Equal(it.Value(), pkTuple) {
 				_ = it.Close()
-				return fmt.Errorf("exec: unique index %q violation in table %q", idx.Name, tbl.Name)
+				return reject.Inputf("exec: unique index %q violation in table %q", idx.Name, tbl.Name)
 			}
 		}
 		err = it.Err()
@@ -307,7 +307,7 @@ func getByPrimaryKey(ctx context.Context, view kv.KV, table string, key lir.Row)
 		return nil, false, err
 	}
 	if len(key) != len(tbl.PrimaryKey) {
-		return nil, false, fmt.Errorf("exec: primary key of %q has %d columns, got %d values", table, len(tbl.PrimaryKey), len(key))
+		return nil, false, reject.Inputf("exec: primary key of %q has %d columns, got %d values", table, len(tbl.PrimaryKey), len(key))
 	}
 	pkTuple, err := encodeRowTuple(key, tbl.PrimaryKey)
 	if err != nil {

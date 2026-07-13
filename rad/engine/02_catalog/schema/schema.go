@@ -39,6 +39,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/Southclaws/rad/rad/engine/reject"
+
 	yaml "github.com/goccy/go-yaml"
 	"github.com/google/jsonschema-go/jsonschema"
 
@@ -119,8 +121,17 @@ type fileIndex struct {
 }
 
 // Parse parses and validates a schema.rad source. The filename is used in
-// error messages only.
+// error messages only. Every parse error is the schema author's to fix, so
+// the whole surface is marked caller-fault for transport classification.
 func Parse(filename string, src []byte) (*Schema, error) {
+	s, err := parse(filename, src)
+	if err != nil {
+		return nil, reject.Input(err)
+	}
+	return s, nil
+}
+
+func parse(filename string, src []byte) (*Schema, error) {
 	// Structural validation against the JSON Schema first: decode
 	// generically, validate, then decode into typed structs.
 	var generic any

@@ -3,6 +3,8 @@ package bound
 import (
 	"fmt"
 
+	"github.com/Southclaws/rad/rad/engine/reject"
+
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 )
@@ -255,7 +257,7 @@ func evalArith(b Binary, env Env) (lir.Value, error) {
 
 	if resultType == catalog.TypeInt64 {
 		if b.Op == lir.OpDiv && r.Int64 == 0 {
-			return lir.Value{}, fmt.Errorf("exec: division by zero")
+			return lir.Value{}, reject.Runtimef("exec: division by zero")
 		}
 		switch b.Op {
 		case lir.OpAdd:
@@ -271,7 +273,7 @@ func evalArith(b Binary, env Env) (lir.Value, error) {
 
 	lf, rf := asFloat(l), asFloat(r)
 	if b.Op == lir.OpDiv && rf == 0 {
-		return lir.Value{}, fmt.Errorf("exec: division by zero")
+		return lir.Value{}, reject.Runtimef("exec: division by zero")
 	}
 	switch b.Op {
 	case lir.OpAdd:

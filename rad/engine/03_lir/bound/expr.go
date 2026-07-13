@@ -1,7 +1,7 @@
 package bound
 
 import (
-	"fmt"
+	"github.com/Southclaws/rad/rad/engine/reject"
 
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 )
@@ -158,7 +158,7 @@ type Scalar struct {
 func NewScalar(rel Relation) (Scalar, error) {
 	fields := rel.Output().Fields
 	if len(fields) != 1 {
-		return Scalar{}, fmt.Errorf("planner: scalar crossing needs a single-column relation, got %d columns", len(fields))
+		return Scalar{}, reject.Inputf("planner: scalar crossing needs a single-column relation, got %d columns", len(fields))
 	}
 	t := fields[0].Type
 	t.Nullable = true

@@ -66,10 +66,11 @@ func ParseURL(raw string) (string, error) {
 
 // Error codes carried in the Problem "code" extension member.
 const (
-	CodeInvalid  = "invalid" // malformed request, unknown table/column, constraint violation
-	CodeNotFound = "not_found"
-	CodeConflict = "conflict" // optimistic transaction conflict — retry
-	CodeInternal = "internal"
+	CodeInvalid         = "invalid"          // malformed request, unknown table/column, constraint violation
+	CodeExecutionFailed = "execution_failed" // a valid query failed on the data it met (division by zero, cardinality assertion)
+	CodeNotFound        = "not_found"
+	CodeConflict        = "conflict" // optimistic transaction conflict — retry
+	CodeInternal        = "internal"
 )
 
 // ProblemTypeBase prefixes the "type" URI of every problem; the code is
@@ -91,10 +92,11 @@ type Problem struct {
 // NewProblem builds a Problem for a code, status, and detail message.
 func NewProblem(code string, status int, detail string) Problem {
 	titles := map[string]string{
-		CodeInvalid:  "Invalid Request",
-		CodeNotFound: "Not Found",
-		CodeConflict: "Transaction Conflict",
-		CodeInternal: "Internal Server Error",
+		CodeInvalid:         "Invalid Request",
+		CodeExecutionFailed: "Query Execution Failed",
+		CodeNotFound:        "Not Found",
+		CodeConflict:        "Transaction Conflict",
+		CodeInternal:        "Internal Server Error",
 	}
 	title := titles[code]
 	if title == "" {

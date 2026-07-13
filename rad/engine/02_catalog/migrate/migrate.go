@@ -17,6 +17,8 @@ package migrate
 
 import (
 	"fmt"
+
+	"github.com/Southclaws/rad/rad/engine/reject"
 	"slices"
 	"strings"
 
@@ -109,7 +111,7 @@ func Diff(current []catalog.Table, desired *schema.Schema) ([]Step, error) {
 	for _, d := range desired.Tables {
 		for _, fk := range d.Def.ForeignKeys {
 			if dropped[fk.RefTable] {
-				return nil, fmt.Errorf("migrate: table %q references dropped table %q", d.Def.Name, fk.RefTable)
+				return nil, reject.Inputf("migrate: table %q references dropped table %q", d.Def.Name, fk.RefTable)
 			}
 		}
 	}
@@ -194,10 +196,10 @@ func diffTable(cur catalog.Table, d schema.Table) (tableSteps, error) {
 			continue // newly added above
 		}
 		if c.Type != dc.Type {
-			return tableSteps{}, fmt.Errorf("migrate: %s.%s: changing type %s -> %s is not supported", name, dc.Name, c.Type, dc.Type)
+			return tableSteps{}, reject.Inputf("migrate: %s.%s: changing type %s -> %s is not supported", name, dc.Name, c.Type, dc.Type)
 		}
 		if c.Nullable != dc.Nullable {
-			return tableSteps{}, fmt.Errorf("migrate: %s.%s: changing nullability is not supported", name, dc.Name)
+			return tableSteps{}, reject.Inputf("migrate: %s.%s: changing nullability is not supported", name, dc.Name)
 		}
 	}
 	for colName := range curCols {
@@ -211,7 +213,7 @@ func diffTable(cur catalog.Table, d schema.Table) (tableSteps, error) {
 	copy(renamedPK, cur.PrimaryKey)
 	applyRenames(renamedPK, out.renames)
 	if !slices.Equal(renamedPK, d.Def.PrimaryKey) {
-		return tableSteps{}, fmt.Errorf("migrate: %s: changing the primary key is not supported", name)
+		return tableSteps{}, reject.Inputf("migrate: %s: changing the primary key is not supported", name)
 	}
 
 	// Foreign keys are immutable on existing tables.
@@ -297,11 +299,11 @@ func compareFKs(cur catalog.Table, d schema.Table, renames []Step) error {
 		desSet[canon(fk.Columns, fk.RefColumns)] = true
 	}
 	if len(curSet) != len(desSet) {
-		return fmt.Errorf("migrate: %s: adding or removing foreign keys on an existing table is not supported", d.Def.Name)
+		return reject.Inputf("migrate: %s: adding or removing foreign keys on an existing table is not supported", d.Def.Name)
 	}
 	for k := range desSet {
 		if !curSet[k] {
-			return fmt.Errorf("migrate: %s: changing foreign keys on an existing table is not supported", d.Def.Name)
+			return reject.Inputf("migrate: %s: changing foreign keys on an existing table is not supported", d.Def.Name)
 		}
 	}
 	return nil
@@ -352,7 +354,7 @@ func orderCreates(creates []schema.Table) ([]schema.Table, error) {
 		}
 	}
 	if len(ordered) != len(creates) {
-		return nil, fmt.Errorf("migrate: circular foreign key dependency among new tables")
+		return nil, reject.Inputf("migrate: circular foreign key dependency among new tables")
 	}
 	return ordered, nil
 }

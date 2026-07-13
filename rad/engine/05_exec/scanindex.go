@@ -6,7 +6,7 @@ package exec
 
 import (
 	"context"
-	"fmt"
+	"github.com/Southclaws/rad/rad/engine/reject"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
@@ -26,7 +26,7 @@ func (e *Engine) ScanIndex(ctx context.Context, table, index string, prefix lir.
 	}
 	idx, ok := tbl.Index(index)
 	if !ok {
-		return nil, fmt.Errorf("exec: table %q has no index %q", table, index)
+		return nil, reject.Inputf("exec: table %q has no index %q", table, index)
 	}
 
 	var eqVals []lir.Value
@@ -38,7 +38,7 @@ func (e *Engine) ScanIndex(ctx context.Context, table, index string, prefix lir.
 		eqVals = append(eqVals, v)
 	}
 	if len(prefix) != len(eqVals) {
-		return nil, fmt.Errorf("exec: index scan prefix must cover a leading subset of index %q columns %v", idx.Name, idx.Columns)
+		return nil, reject.Inputf("exec: index scan prefix must cover a leading subset of index %q columns %v", idx.Name, idx.Columns)
 	}
 
 	it, err := scanIndexRange(ctx, txn, tbl, idx, eqVals, nil)

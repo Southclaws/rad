@@ -401,7 +401,7 @@ func TestStressExactlyOneViolation(t *testing.T) {
 	d := shop(t)
 	d.Query(q(map[string]protocol.Node{
 		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-	}, "o", "exactly_one")).ExpectStatus(422).ExpectError("exactly one")
+	}, "o", "exactly_one")).ExpectStatus(422).ExpectCode("execution_failed").ExpectError("exactly one")
 }
 
 // 20. Pagination disjointness: the same total order (placed_at asc, id

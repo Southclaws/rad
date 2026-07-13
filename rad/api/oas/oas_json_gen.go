@@ -1024,6 +1024,8 @@ func (s *ProblemCode) Decode(d *jx.Decoder) error {
 	switch ProblemCode(v) {
 	case ProblemCodeInvalid:
 		*s = ProblemCodeInvalid
+	case ProblemCodeExecutionFailed:
+		*s = ProblemCodeExecutionFailed
 	case ProblemCodeNotFound:
 		*s = ProblemCodeNotFound
 	case ProblemCodeConflict:

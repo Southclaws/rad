@@ -15,6 +15,8 @@ package planner
 import (
 	"context"
 	"fmt"
+
+	"github.com/Southclaws/rad/rad/engine/reject"
 	"slices"
 
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
@@ -36,7 +38,7 @@ func Bind(ctx context.Context, cat Catalog, q lir.Query) (*bound.Query, error) {
 	switch q.Card {
 	case lir.CardMany, lir.CardFirst, lir.CardExactlyOne, lir.CardScalar:
 	default:
-		return nil, fmt.Errorf("planner: unknown root cardinality %q", q.Card)
+		return nil, reject.Inputf("planner: unknown root cardinality %q", q.Card)
 	}
 
 	b := &binder{ctx: ctx, cat: cat, labels: map[string]bool{}}
@@ -46,15 +48,15 @@ func Bind(ctx context.Context, cat Catalog, q lir.Query) (*bound.Query, error) {
 	}
 
 	if q.Card == lir.CardScalar && len(root.Output().Fields) != 1 {
-		return nil, fmt.Errorf("planner: a scalar query needs a single-column root, got %d columns", len(root.Output().Fields))
+		return nil, reject.Inputf("planner: a scalar query needs a single-column root, got %d columns", len(root.Output().Fields))
 	}
 	if q.Card == lir.CardScalar && !root.Card().AtMostOne() {
-		return nil, fmt.Errorf("planner: root scalar asserts at most one row, but the relation may produce more — aggregate it, slice it, or pin a unique key")
+		return nil, reject.Inputf("planner: root scalar asserts at most one row, but the relation may produce more — aggregate it, slice it, or pin a unique key")
 	}
 	// first is deliberate row selection, same determinism rule as the First
 	// crossing: at most one row statically, or an explicit logical order.
 	if q.Card == lir.CardFirst && !root.Card().AtMostOne() && !bound.Ordered(root) {
-		return nil, fmt.Errorf("planner: root cardinality %q over an unordered multi-row relation would make results depend on the access path — add an order or make the relation at-most-one", q.Card)
+		return nil, reject.Inputf("planner: root cardinality %q over an unordered multi-row relation would make results depend on the access path — add an order or make the relation at-most-one", q.Card)
 	}
 
 	return &bound.Query{Root: root, Card: q.Card, Slots: b.nextSlot}, nil
@@ -90,7 +92,7 @@ func (b *binder) bindRel(r lir.Relation) (bound.Relation, error) {
 			return nil, err
 		}
 		if pred.Type().Kind != lir.KindBool {
-			return nil, fmt.Errorf("planner: filter predicate must be boolean, got %s", pred.Type())
+			return nil, reject.Inputf("planner: filter predicate must be boolean, got %s", pred.Type())
 		}
 		f := bound.NewFilter(in, pred)
 		b.refineUnique(f)
@@ -111,7 +113,7 @@ func (b *binder) bindRel(r lir.Relation) (bound.Relation, error) {
 			return nil, err
 		}
 		if len(n.Terms) == 0 {
-			return nil, fmt.Errorf("planner: order needs at least one term")
+			return nil, reject.Inputf("planner: order needs at least one term")
 		}
 		terms := make([]bound.OrderTerm, 0, len(n.Terms)+2)
 		for _, t := range n.Terms {
@@ -120,7 +122,7 @@ func (b *binder) bindRel(r lir.Relation) (bound.Relation, error) {
 				return nil, err
 			}
 			if !e.Type().Kind.Scalar() {
-				return nil, fmt.Errorf("planner: cannot order by a %s value", e.Type().Kind)
+				return nil, reject.Inputf("planner: cannot order by a %s value", e.Type().Kind)
 			}
 			terms = append(terms, bound.OrderTerm{Expr: e, Desc: t.Desc})
 		}
@@ -132,33 +134,33 @@ func (b *binder) bindRel(r lir.Relation) (bound.Relation, error) {
 			return nil, err
 		}
 		if n.Offset < 0 {
-			return nil, fmt.Errorf("planner: slice offset must be >= 0, got %d", n.Offset)
+			return nil, reject.Inputf("planner: slice offset must be >= 0, got %d", n.Offset)
 		}
 		if n.Limit != nil && *n.Limit < 0 {
-			return nil, fmt.Errorf("planner: slice limit must be >= 0, got %d", *n.Limit)
+			return nil, reject.Inputf("planner: slice limit must be >= 0, got %d", *n.Limit)
 		}
 		return bound.NewSlice(in, n.Offset, n.Limit), nil
 
 	case nil:
-		return nil, fmt.Errorf("planner: missing relation")
+		return nil, reject.Inputf("planner: missing relation")
 	default:
-		return nil, fmt.Errorf("planner: unknown relation node %T", r)
+		return nil, reject.Inputf("planner: unknown relation node %T", r)
 	}
 }
 
 func (b *binder) bindScan(n lir.Scan) (*bound.Scan, error) {
 	if n.Scope == "" {
-		return nil, fmt.Errorf("planner: scan of %q needs a scope label", n.Table)
+		return nil, reject.Inputf("planner: scan of %q needs a scope label", n.Table)
 	}
 	if b.labels[n.Scope] {
-		return nil, fmt.Errorf("planner: duplicate scope %q", n.Scope)
+		return nil, reject.Inputf("planner: duplicate scope %q", n.Scope)
 	}
 	tbl, ok, err := b.cat.GetTable(b.ctx, n.Table)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("planner: unknown table %q", n.Table)
+		return nil, reject.Inputf("planner: unknown table %q", n.Table)
 	}
 	slots := make([]lir.SlotID, len(tbl.Columns))
 	for i := range slots {
@@ -186,10 +188,10 @@ func (b *binder) bindProject(n lir.Project) (*bound.Project, error) {
 	var fields []bound.ProjField
 	addField := func(name string, slot lir.SlotID, e bound.Expr) error {
 		if name == "" {
-			return fmt.Errorf("planner: projection field needs a name (as)")
+			return reject.Inputf("planner: projection field needs a name (as)")
 		}
 		if names[name] {
-			return fmt.Errorf("planner: duplicate projection field %q", name)
+			return reject.Inputf("planner: duplicate projection field %q", name)
 		}
 		names[name] = true
 		fields = append(fields, bound.ProjField{Name: name, Slot: slot, Expr: e})
@@ -199,7 +201,7 @@ func (b *binder) bindProject(n lir.Project) (*bound.Project, error) {
 	for _, label := range n.Spread {
 		entry, ok := b.findScope(label, mark)
 		if !ok {
-			return nil, fmt.Errorf("planner: spread scope %q is not produced beneath the projection", label)
+			return nil, reject.Inputf("planner: spread scope %q is not produced beneath the projection", label)
 		}
 		for _, f := range entry.rel.Output().Fields {
 			if err := addField(f.Name, f.Slot, bound.SlotRef{Slot: f.Slot, Name: label + "." + f.Name, T: f.Type}); err != nil {
@@ -218,14 +220,14 @@ func (b *binder) bindProject(n lir.Project) (*bound.Project, error) {
 		}
 	}
 	if len(fields) == 0 {
-		return nil, fmt.Errorf("planner: projection has no fields")
+		return nil, reject.Inputf("planner: projection has no fields")
 	}
 
 	b.scopes = b.scopes[:mark]
 	p := bound.NewProject(in, n.Scope, fields)
 	if n.Scope != "" {
 		if b.labels[n.Scope] {
-			return nil, fmt.Errorf("planner: duplicate scope %q", n.Scope)
+			return nil, reject.Inputf("planner: duplicate scope %q", n.Scope)
 		}
 		b.labels[n.Scope] = true
 		b.scopes = append(b.scopes, scopeEntry{label: n.Scope, rel: p})
@@ -237,7 +239,7 @@ func (b *binder) bindJoin(n lir.Join) (*bound.Join, error) {
 	switch n.Kind {
 	case lir.InnerJoin, lir.LeftJoin:
 	default:
-		return nil, fmt.Errorf("planner: unsupported join kind %q", n.Kind)
+		return nil, reject.Inputf("planner: unsupported join kind %q", n.Kind)
 	}
 	l, err := b.bindRel(n.Left)
 	if err != nil {
@@ -256,7 +258,7 @@ func (b *binder) bindJoin(n lir.Join) (*bound.Join, error) {
 			if desc == "" {
 				desc = "a column"
 			}
-			return nil, fmt.Errorf("planner: join right side references %s from the left side; a join input cannot depend on the other input — put the condition in the join's `on`, or correlate through a crossing instead", desc)
+			return nil, reject.Inputf("planner: join right side references %s from the left side; a join input cannot depend on the other input — put the condition in the join's `on`, or correlate through a crossing instead", desc)
 		}
 	}
 	on, err := b.bindExpr(n.On)
@@ -264,13 +266,13 @@ func (b *binder) bindJoin(n lir.Join) (*bound.Join, error) {
 		return nil, err
 	}
 	if on.Type().Kind != lir.KindBool {
-		return nil, fmt.Errorf("planner: join condition must be boolean, got %s", on.Type())
+		return nil, reject.Inputf("planner: join condition must be boolean, got %s", on.Type())
 	}
 	// A crossing in the join condition would need evaluation per candidate
 	// pair — a shape the executor does not batch. Filtering above the join
 	// says the same thing and gets the full attach machinery.
 	if containsCrossing(on) {
-		return nil, fmt.Errorf("planner: a join condition cannot contain a sub-relation crossing — filter above the join instead")
+		return nil, reject.Inputf("planner: a join condition cannot contain a sub-relation crossing — filter above the join instead")
 	}
 	return bound.NewJoin(l, r, n.Kind, on), nil
 }
@@ -311,7 +313,7 @@ func (b *binder) bindAggregate(n lir.Aggregate) (*bound.Aggregate, error) {
 	names := map[string]bool{}
 	unique := func(name string) error {
 		if names[name] {
-			return fmt.Errorf("planner: duplicate aggregate output name %q", name)
+			return reject.Inputf("planner: duplicate aggregate output name %q", name)
 		}
 		names[name] = true
 		return nil
@@ -324,13 +326,13 @@ func (b *binder) bindAggregate(n lir.Aggregate) (*bound.Aggregate, error) {
 			return nil, err
 		}
 		if !e.Type().Kind.Scalar() {
-			return nil, fmt.Errorf("planner: cannot group by a %s value", e.Type().Kind)
+			return nil, reject.Inputf("planner: cannot group by a %s value", e.Type().Kind)
 		}
 		name := g.As
 		if name == "" {
 			col, ok := g.Expr.(lir.Column)
 			if !ok {
-				return nil, fmt.Errorf("planner: group expression needs an output name (as)")
+				return nil, reject.Inputf("planner: group expression needs an output name (as)")
 			}
 			name = col.Name
 		}
@@ -343,7 +345,7 @@ func (b *binder) bindAggregate(n lir.Aggregate) (*bound.Aggregate, error) {
 	terms := make([]bound.AggTerm, 0, len(n.Terms))
 	for _, t := range n.Terms {
 		if t.As == "" {
-			return nil, fmt.Errorf("planner: aggregate %s needs an output name (as)", t.Fn)
+			return nil, reject.Inputf("planner: aggregate %s needs an output name (as)", t.Fn)
 		}
 		if err := unique(t.As); err != nil {
 			return nil, err
@@ -357,38 +359,38 @@ func (b *binder) bindAggregate(n lir.Aggregate) (*bound.Aggregate, error) {
 		switch t.Fn {
 		case lir.AggCount:
 			if arg != nil && !arg.Type().Kind.Scalar() {
-				return nil, fmt.Errorf("planner: count needs a scalar argument, got %s", arg.Type().Kind)
+				return nil, reject.Inputf("planner: count needs a scalar argument, got %s", arg.Type().Kind)
 			}
 		case lir.AggSum, lir.AggAvg:
 			if arg == nil {
-				return nil, fmt.Errorf("planner: %s needs an argument", t.Fn)
+				return nil, reject.Inputf("planner: %s needs an argument", t.Fn)
 			}
 			if !arg.Type().Kind.Numeric() {
-				return nil, fmt.Errorf("planner: %s requires a numeric argument, got %s", t.Fn, arg.Type())
+				return nil, reject.Inputf("planner: %s requires a numeric argument, got %s", t.Fn, arg.Type())
 			}
 		case lir.AggMin, lir.AggMax:
 			if arg == nil {
-				return nil, fmt.Errorf("planner: %s needs an argument", t.Fn)
+				return nil, reject.Inputf("planner: %s needs an argument", t.Fn)
 			}
 			if !arg.Type().Kind.Scalar() {
-				return nil, fmt.Errorf("planner: %s needs a scalar argument, got %s", t.Fn, arg.Type().Kind)
+				return nil, reject.Inputf("planner: %s needs a scalar argument, got %s", t.Fn, arg.Type().Kind)
 			}
 		default:
-			return nil, fmt.Errorf("planner: unknown aggregate function %q", t.Fn)
+			return nil, reject.Inputf("planner: unknown aggregate function %q", t.Fn)
 		}
 		slot := b.nextSlot
 		b.nextSlot++
 		terms = append(terms, bound.AggTerm{Fn: t.Fn, Arg: arg, Name: t.As, Slot: slot, T: bound.AggTermType(t.Fn, arg)})
 	}
 	if len(groups) == 0 && len(terms) == 0 {
-		return nil, fmt.Errorf("planner: aggregate needs at least one group or term")
+		return nil, reject.Inputf("planner: aggregate needs at least one group or term")
 	}
 
 	b.scopes = b.scopes[:mark]
 	a := bound.NewAggregate(in, groups, terms)
 	if n.Scope != "" {
 		if b.labels[n.Scope] {
-			return nil, fmt.Errorf("planner: duplicate scope %q", n.Scope)
+			return nil, reject.Inputf("planner: duplicate scope %q", n.Scope)
 		}
 		b.labels[n.Scope] = true
 		b.scopes = append(b.scopes, scopeEntry{label: n.Scope, rel: a})

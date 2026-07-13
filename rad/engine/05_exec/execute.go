@@ -9,7 +9,7 @@ package exec
 
 import (
 	"context"
-	"fmt"
+	"github.com/Southclaws/rad/rad/engine/reject"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
@@ -80,12 +80,12 @@ func (e *Engine) execute(ctx context.Context, view kv.KV, q lir.Query, forceNest
 			return lir.Datum{}, err
 		}
 		if !ok {
-			return lir.Datum{}, fmt.Errorf("exec: expected exactly one row, got none")
+			return lir.Datum{}, reject.Runtimef("exec: expected exactly one row, got none")
 		}
 		if _, more, err := op.Next(ctx); err != nil {
 			return lir.Datum{}, err
 		} else if more {
-			return lir.Datum{}, fmt.Errorf("exec: expected exactly one row, got more")
+			return lir.Datum{}, reject.Runtimef("exec: expected exactly one row, got more")
 		}
 		return frameToObject(pp.Out, f), nil
 

@@ -3,7 +3,7 @@ package exec
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"github.com/Southclaws/rad/rad/engine/reject"
 	"slices"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
@@ -46,10 +46,10 @@ func (e *Engine) update(ctx context.Context, view kv.KV, table string, key, set 
 	// Validate the patch: known columns, immutable PK.
 	for name := range set {
 		if _, ok := tbl.Column(name); !ok {
-			return nil, false, fmt.Errorf("exec: table %q has no column %q", table, name)
+			return nil, false, reject.Inputf("exec: table %q has no column %q", table, name)
 		}
 		if slices.Contains(tbl.PrimaryKey, name) {
-			return nil, false, fmt.Errorf("exec: cannot update primary key column %q", name)
+			return nil, false, reject.Inputf("exec: cannot update primary key column %q", name)
 		}
 	}
 
@@ -158,7 +158,7 @@ func (e *Engine) delete(ctx context.Context, view kv.KV, table string, key lir.R
 // not found.
 func loadByPK(ctx context.Context, view kv.KV, tbl catalog.Table, key lir.Row) (lir.Row, []byte, error) {
 	if len(key) != len(tbl.PrimaryKey) {
-		return nil, nil, fmt.Errorf("exec: primary key of %q has %d columns, got %d values", tbl.Name, len(tbl.PrimaryKey), len(key))
+		return nil, nil, reject.Inputf("exec: primary key of %q has %d columns, got %d values", tbl.Name, len(tbl.PrimaryKey), len(key))
 	}
 	pkTuple, err := encodeRowTuple(key, tbl.PrimaryKey)
 	if err != nil {
@@ -235,7 +235,7 @@ func (e *Engine) checkNoReferences(ctx context.Context, view kv.KV, tbl catalog.
 				return err
 			}
 			if found {
-				return fmt.Errorf("exec: cannot delete from %q: row is referenced by %q via %q", tbl.Name, child.Name, fk.Name)
+				return reject.Inputf("exec: cannot delete from %q: row is referenced by %q via %q", tbl.Name, child.Name, fk.Name)
 			}
 		}
 	}

@@ -3,6 +3,8 @@ package exec
 import (
 	"crypto/rand"
 	"fmt"
+
+	"github.com/Southclaws/rad/rad/engine/reject"
 	"maps"
 	"time"
 
@@ -38,7 +40,7 @@ func defaultValue(col catalog.Column) (lir.Value, error) {
 		return lir.Int64(time.Now().UnixMilli()), nil
 	case "":
 	default:
-		return lir.Value{}, fmt.Errorf("exec: column %q: unknown default function %q", col.Name, d.Func)
+		return lir.Value{}, reject.Inputf("exec: column %q: unknown default function %q", col.Name, d.Func)
 	}
 	switch col.Type {
 	case catalog.TypeText:
@@ -50,7 +52,7 @@ func defaultValue(col catalog.Column) (lir.Value, error) {
 	case catalog.TypeBool:
 		return lir.Bool(d.Bool), nil
 	}
-	return lir.Value{}, fmt.Errorf("exec: column %q: cannot default type %q", col.Name, col.Type)
+	return lir.Value{}, reject.Inputf("exec: column %q: cannot default type %q", col.Name, col.Type)
 }
 
 // newUUID returns a random RFC 4122 version-4 UUID string.

@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/Southclaws/rad/rad/engine/reject"
 	"slices"
 	"strconv"
 	"strings"
@@ -192,14 +194,14 @@ func validateDefault(cd ColumnDef) error {
 		return nil
 	case DefaultUUID:
 		if cd.Type != TypeText {
-			return fmt.Errorf("catalog: column %q: uuid() default requires a string column", cd.Name)
+			return reject.Inputf("catalog: column %q: uuid() default requires a string column", cd.Name)
 		}
 	case DefaultNowMS:
 		if cd.Type != TypeInt64 {
-			return fmt.Errorf("catalog: column %q: now_ms() default requires an int64 column", cd.Name)
+			return reject.Inputf("catalog: column %q: now_ms() default requires an int64 column", cd.Name)
 		}
 	default:
-		return fmt.Errorf("catalog: column %q: unknown default function %q", cd.Name, cd.Default.Func)
+		return reject.Inputf("catalog: column %q: unknown default function %q", cd.Name, cd.Default.Func)
 	}
 	return nil
 }
@@ -219,13 +221,13 @@ func (c *Catalog) CreateTable(ctx context.Context, def TableDef) (Table, error) 
 
 func createTable(ctx context.Context, view kv.KV, def TableDef) (Table, error) {
 	if def.Name == "" {
-		return Table{}, fmt.Errorf("catalog: table name is required")
+		return Table{}, reject.Inputf("catalog: table name is required")
 	}
 	nameKey := tableNamePrefix + def.Name
 	if _, ok, err := view.Get(ctx, []byte(nameKey)); err != nil {
 		return Table{}, err
 	} else if ok {
-		return Table{}, fmt.Errorf("catalog: table %q already exists", def.Name)
+		return Table{}, reject.Inputf("catalog: table %q already exists", def.Name)
 	}
 
 	tbl := Table{Name: def.Name}
@@ -238,13 +240,13 @@ func createTable(ctx context.Context, view kv.KV, def TableDef) (Table, error) {
 	seen := map[string]bool{}
 	for _, cd := range def.Columns {
 		if seen[cd.Name] {
-			return Table{}, fmt.Errorf("catalog: duplicate column %q", cd.Name)
+			return Table{}, reject.Inputf("catalog: duplicate column %q", cd.Name)
 		}
 		seen[cd.Name] = true
 		switch cd.Type {
 		case TypeText, TypeInt64, TypeFloat64, TypeBool:
 		default:
-			return Table{}, fmt.Errorf("catalog: column %q has unsupported type %q", cd.Name, cd.Type)
+			return Table{}, reject.Inputf("catalog: column %q has unsupported type %q", cd.Name, cd.Type)
 		}
 		if err := validateDefault(cd); err != nil {
 			return Table{}, err
@@ -260,26 +262,26 @@ func createTable(ctx context.Context, view kv.KV, def TableDef) (Table, error) {
 	}
 
 	if len(def.PrimaryKey) == 0 {
-		return Table{}, fmt.Errorf("catalog: table %q needs a primary key", def.Name)
+		return Table{}, reject.Inputf("catalog: table %q needs a primary key", def.Name)
 	}
 	for _, name := range def.PrimaryKey {
 		col, ok := tbl.Column(name)
 		if !ok {
-			return Table{}, fmt.Errorf("catalog: primary key column %q does not exist", name)
+			return Table{}, reject.Inputf("catalog: primary key column %q does not exist", name)
 		}
 		if col.Nullable {
-			return Table{}, fmt.Errorf("catalog: primary key column %q must not be nullable", name)
+			return Table{}, reject.Inputf("catalog: primary key column %q must not be nullable", name)
 		}
 	}
 	tbl.PrimaryKey = def.PrimaryKey
 
 	for _, id := range def.Indexes {
 		if len(id.Columns) == 0 {
-			return Table{}, fmt.Errorf("catalog: index %q has no columns", id.Name)
+			return Table{}, reject.Inputf("catalog: index %q has no columns", id.Name)
 		}
 		for _, name := range id.Columns {
 			if _, ok := tbl.Column(name); !ok {
-				return Table{}, fmt.Errorf("catalog: index %q references unknown column %q", id.Name, name)
+				return Table{}, reject.Inputf("catalog: index %q references unknown column %q", id.Name, name)
 			}
 		}
 		iid, err := nextID(ctx, view, "i")
@@ -304,30 +306,30 @@ func createTable(ctx context.Context, view kv.KV, def TableDef) (Table, error) {
 				return Table{}, err
 			}
 			if !ok {
-				return Table{}, fmt.Errorf("catalog: foreign key %q references unknown table %q", fd.Name, fd.RefTable)
+				return Table{}, reject.Inputf("catalog: foreign key %q references unknown table %q", fd.Name, fd.RefTable)
 			}
 		}
 		// POC restriction: foreign keys may only reference the parent's
 		// full primary key.
 		if len(fd.RefColumns) != len(ref.PrimaryKey) {
-			return Table{}, fmt.Errorf("catalog: foreign key %q must reference %q's primary key", fd.Name, fd.RefTable)
+			return Table{}, reject.Inputf("catalog: foreign key %q must reference %q's primary key", fd.Name, fd.RefTable)
 		}
 		for i, name := range fd.RefColumns {
 			if name != ref.PrimaryKey[i] {
-				return Table{}, fmt.Errorf("catalog: foreign key %q must reference %q's primary key", fd.Name, fd.RefTable)
+				return Table{}, reject.Inputf("catalog: foreign key %q must reference %q's primary key", fd.Name, fd.RefTable)
 			}
 		}
 		if len(fd.Columns) != len(fd.RefColumns) {
-			return Table{}, fmt.Errorf("catalog: foreign key %q column count mismatch", fd.Name)
+			return Table{}, reject.Inputf("catalog: foreign key %q column count mismatch", fd.Name)
 		}
 		for i, name := range fd.Columns {
 			col, ok := tbl.Column(name)
 			if !ok {
-				return Table{}, fmt.Errorf("catalog: foreign key %q references unknown column %q", fd.Name, name)
+				return Table{}, reject.Inputf("catalog: foreign key %q references unknown column %q", fd.Name, name)
 			}
 			refCol, _ := ref.Column(fd.RefColumns[i])
 			if col.Type != refCol.Type {
-				return Table{}, fmt.Errorf("catalog: foreign key %q type mismatch on %q", fd.Name, name)
+				return Table{}, reject.Inputf("catalog: foreign key %q type mismatch on %q", fd.Name, name)
 			}
 		}
 		fid, err := nextID(ctx, view, "fk")

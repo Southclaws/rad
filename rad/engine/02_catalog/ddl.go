@@ -16,7 +16,7 @@ package catalog
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"github.com/Southclaws/rad/rad/engine/reject"
 	"slices"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
@@ -40,14 +40,14 @@ func mutateTableIn(ctx context.Context, view kv.KV, tableName string, fn func(vi
 		return Table{}, err
 	}
 	if !ok {
-		return Table{}, fmt.Errorf("catalog: table %q does not exist", tableName)
+		return Table{}, reject.Inputf("catalog: table %q does not exist", tableName)
 	}
 	raw, ok, err := view.Get(ctx, []byte(tablePrefix+string(id)))
 	if err != nil {
 		return Table{}, err
 	}
 	if !ok {
-		return Table{}, fmt.Errorf("catalog: table %q metadata missing", tableName)
+		return Table{}, reject.Inputf("catalog: table %q metadata missing", tableName)
 	}
 	var tbl Table
 	if err := json.Unmarshal(raw, &tbl); err != nil {
@@ -83,7 +83,7 @@ func (c *Catalog) DropTable(ctx context.Context, tableName string) error {
 			return err
 		}
 		if !ok {
-			return fmt.Errorf("catalog: table %q does not exist", tableName)
+			return reject.Inputf("catalog: table %q does not exist", tableName)
 		}
 		if err := view.Delete(ctx, []byte(tablePrefix+string(id))); err != nil {
 			return err
@@ -106,17 +106,17 @@ func (c *Catalog) RenameTable(ctx context.Context, oldName, newName string) erro
 			return err
 		}
 		if !ok {
-			return fmt.Errorf("catalog: table %q does not exist", oldName)
+			return reject.Inputf("catalog: table %q does not exist", oldName)
 		}
 		if _, taken, err := view.Get(ctx, newKey); err != nil {
 			return err
 		} else if taken {
-			return fmt.Errorf("catalog: table %q already exists", newName)
+			return reject.Inputf("catalog: table %q already exists", newName)
 		}
 
 		raw, ok, err := view.Get(ctx, []byte(tablePrefix+string(id)))
 		if err != nil || !ok {
-			return fmt.Errorf("catalog: table %q metadata missing (%v)", oldName, err)
+			return reject.Inputf("catalog: table %q metadata missing (%v)", oldName, err)
 		}
 		var tbl Table
 		if err := json.Unmarshal(raw, &tbl); err != nil {
@@ -139,18 +139,18 @@ func (c *Catalog) RenameTable(ctx context.Context, oldName, newName string) erro
 func (c *Catalog) AddColumn(ctx context.Context, tableName string, def ColumnDef) (Table, error) {
 	return c.mutateTable(ctx, tableName, func(view kv.KV, tbl *Table) error {
 		if _, exists := tbl.Column(def.Name); exists {
-			return fmt.Errorf("catalog: column %q already exists in table %q", def.Name, tableName)
+			return reject.Inputf("catalog: column %q already exists in table %q", def.Name, tableName)
 		}
 		switch def.Type {
 		case TypeText, TypeInt64, TypeFloat64, TypeBool:
 		default:
-			return fmt.Errorf("catalog: column %q has unsupported type %q", def.Name, def.Type)
+			return reject.Inputf("catalog: column %q has unsupported type %q", def.Name, def.Type)
 		}
 		if err := validateDefault(def); err != nil {
 			return err
 		}
 		if !def.Nullable && (def.Default == nil || def.Default.Func != "") {
-			return fmt.Errorf("catalog: new column %q must be nullable or have a literal default (existing rows need a value)", def.Name)
+			return reject.Inputf("catalog: new column %q must be nullable or have a literal default (existing rows need a value)", def.Name)
 		}
 		id, err := nextID(ctx, view, "c")
 		if err != nil {
@@ -169,19 +169,19 @@ func (c *Catalog) AddColumn(ctx context.Context, tableName string, def ColumnDef
 func (c *Catalog) DropColumn(ctx context.Context, tableName, colName string) (Table, error) {
 	return c.mutateTable(ctx, tableName, func(view kv.KV, tbl *Table) error {
 		if _, ok := tbl.Column(colName); !ok {
-			return fmt.Errorf("catalog: column %q does not exist in table %q", colName, tableName)
+			return reject.Inputf("catalog: column %q does not exist in table %q", colName, tableName)
 		}
 		if slices.Contains(tbl.PrimaryKey, colName) {
-			return fmt.Errorf("catalog: cannot drop primary key column %q", colName)
+			return reject.Inputf("catalog: cannot drop primary key column %q", colName)
 		}
 		for _, idx := range tbl.Indexes {
 			if slices.Contains(idx.Columns, colName) {
-				return fmt.Errorf("catalog: column %q is used by index %q; drop the index first", colName, idx.Name)
+				return reject.Inputf("catalog: column %q is used by index %q; drop the index first", colName, idx.Name)
 			}
 		}
 		for _, fk := range tbl.ForeignKeys {
 			if slices.Contains(fk.Columns, colName) {
-				return fmt.Errorf("catalog: column %q is used by foreign key %q; drop the foreign key first", colName, fk.Name)
+				return reject.Inputf("catalog: column %q is used by foreign key %q; drop the foreign key first", colName, fk.Name)
 			}
 		}
 		tbl.Columns = slices.DeleteFunc(tbl.Columns, func(c Column) bool { return c.Name == colName })
@@ -198,10 +198,10 @@ func (c *Catalog) RenameColumn(ctx context.Context, tableName, oldName, newName 
 			return nil
 		}
 		if _, ok := tbl.Column(oldName); !ok {
-			return fmt.Errorf("catalog: column %q does not exist in table %q", oldName, tableName)
+			return reject.Inputf("catalog: column %q does not exist in table %q", oldName, tableName)
 		}
 		if _, exists := tbl.Column(newName); exists {
-			return fmt.Errorf("catalog: column %q already exists in table %q", newName, tableName)
+			return reject.Inputf("catalog: column %q already exists in table %q", newName, tableName)
 		}
 		rename := func(names []string) {
 			for i, n := range names {
@@ -235,14 +235,14 @@ func AddIndexIn(ctx context.Context, view kv.KV, tableName string, def IndexDef)
 	var added Index
 	tbl, err := mutateTableIn(ctx, view, tableName, func(view kv.KV, tbl *Table) error {
 		if _, exists := tbl.Index(def.Name); exists {
-			return fmt.Errorf("catalog: index %q already exists on table %q", def.Name, tableName)
+			return reject.Inputf("catalog: index %q already exists on table %q", def.Name, tableName)
 		}
 		if len(def.Columns) == 0 {
-			return fmt.Errorf("catalog: index %q has no columns", def.Name)
+			return reject.Inputf("catalog: index %q has no columns", def.Name)
 		}
 		for _, col := range def.Columns {
 			if _, ok := tbl.Column(col); !ok {
-				return fmt.Errorf("catalog: index %q references unknown column %q", def.Name, col)
+				return reject.Inputf("catalog: index %q references unknown column %q", def.Name, col)
 			}
 		}
 		id, err := nextID(ctx, view, "i")
@@ -279,7 +279,7 @@ func (c *Catalog) AddIndex(ctx context.Context, tableName string, def IndexDef) 
 func (c *Catalog) DropIndex(ctx context.Context, tableName, indexName string) error {
 	_, err := c.mutateTable(ctx, tableName, func(view kv.KV, tbl *Table) error {
 		if _, ok := tbl.Index(indexName); !ok {
-			return fmt.Errorf("catalog: index %q does not exist on table %q", indexName, tableName)
+			return reject.Inputf("catalog: index %q does not exist on table %q", indexName, tableName)
 		}
 		tbl.Indexes = slices.DeleteFunc(tbl.Indexes, func(i Index) bool { return i.Name == indexName })
 		return nil

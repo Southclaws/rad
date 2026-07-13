@@ -518,7 +518,9 @@ type Problem struct {
 	// A human readable explanation specific to this occurrence.
 	Detail OptString `json:"detail"`
 	// The machine readable discriminator. One of `invalid` for a malformed or rejected request,
-	// `not_found`, `conflict` for a lost optimistic race or constraint violation, or `internal`.
+	// `execution_failed` for a valid query that failed on the data it met (division by zero, a violated
+	// cardinality assertion), `not_found`, `conflict` for a lost optimistic race or constraint violation,
+	// or `internal`.
 	Code ProblemCode `json:"code"`
 }
 
@@ -576,20 +578,24 @@ func (*Problem) schemaMigrateRes()       {}
 func (*Problem) transactionRollbackRes() {}
 
 // The machine readable discriminator. One of `invalid` for a malformed or rejected request,
-// `not_found`, `conflict` for a lost optimistic race or constraint violation, or `internal`.
+// `execution_failed` for a valid query that failed on the data it met (division by zero, a violated
+// cardinality assertion), `not_found`, `conflict` for a lost optimistic race or constraint violation,
+// or `internal`.
 type ProblemCode string
 
 const (
-	ProblemCodeInvalid  ProblemCode = "invalid"
-	ProblemCodeNotFound ProblemCode = "not_found"
-	ProblemCodeConflict ProblemCode = "conflict"
-	ProblemCodeInternal ProblemCode = "internal"
+	ProblemCodeInvalid         ProblemCode = "invalid"
+	ProblemCodeExecutionFailed ProblemCode = "execution_failed"
+	ProblemCodeNotFound        ProblemCode = "not_found"
+	ProblemCodeConflict        ProblemCode = "conflict"
+	ProblemCodeInternal        ProblemCode = "internal"
 )
 
 // AllValues returns all ProblemCode values.
 func (ProblemCode) AllValues() []ProblemCode {
 	return []ProblemCode{
 		ProblemCodeInvalid,
+		ProblemCodeExecutionFailed,
 		ProblemCodeNotFound,
 		ProblemCodeConflict,
 		ProblemCodeInternal,
@@ -600,6 +606,8 @@ func (ProblemCode) AllValues() []ProblemCode {
 func (s ProblemCode) MarshalText() ([]byte, error) {
 	switch s {
 	case ProblemCodeInvalid:
+		return []byte(s), nil
+	case ProblemCodeExecutionFailed:
 		return []byte(s), nil
 	case ProblemCodeNotFound:
 		return []byte(s), nil
@@ -617,6 +625,9 @@ func (s *ProblemCode) UnmarshalText(data []byte) error {
 	switch ProblemCode(data) {
 	case ProblemCodeInvalid:
 		*s = ProblemCodeInvalid
+		return nil
+	case ProblemCodeExecutionFailed:
+		*s = ProblemCodeExecutionFailed
 		return nil
 	case ProblemCodeNotFound:
 		*s = ProblemCodeNotFound

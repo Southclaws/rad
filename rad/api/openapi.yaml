@@ -463,10 +463,12 @@ components:
         code:
           description: |
             The machine readable discriminator. One of `invalid` for a malformed
-            or rejected request, `not_found`, `conflict` for a lost optimistic
-            race or constraint violation, or `internal`.
+            or rejected request, `execution_failed` for a valid query that
+            failed on the data it met (division by zero, a violated cardinality
+            assertion), `not_found`, `conflict` for a lost optimistic race or
+            constraint violation, or `internal`.
           type: string
-          enum: [invalid, not_found, conflict, internal]
+          enum: [invalid, execution_failed, not_found, conflict, internal]
 
     Value:
       description: An arbitrary JSON value carried by the HTTP protocol.

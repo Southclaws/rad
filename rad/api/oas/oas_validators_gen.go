@@ -82,6 +82,8 @@ func (s ProblemCode) Validate() error {
 	switch s {
 	case "invalid":
 		return nil
+	case "execution_failed":
+		return nil
 	case "not_found":
 		return nil
 	case "conflict":

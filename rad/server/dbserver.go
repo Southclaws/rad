@@ -18,7 +18,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +28,7 @@ import (
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
+	"github.com/Southclaws/rad/rad/engine/reject"
 	"github.com/Southclaws/rad/rad/protocol"
 )
 
@@ -518,8 +518,11 @@ func newSessionID() string {
 
 // clientProblem classifies an engine or conversion error as a client-facing
 // problem, or returns nil when it is an unexpected internal error that should
-// surface as a 500 through NewError. Conflicts are retryable optimistic
-// races; the rest are the caller's fault and safe to relay.
+// surface as a 500 through NewError. Classification is by error type, marked
+// at the source (rad/engine/reject) — never by message text: input errors
+// are the caller's fault at request time, runtime errors are data-dependent
+// failures of a valid request, conflicts are retryable optimistic races.
+// Anything unmarked is internal and stays hidden.
 func clientProblem(err error) *protocol.Problem {
 	var we wireErr
 	switch {
@@ -529,25 +532,15 @@ func clientProblem(err error) *protocol.Problem {
 	case frontend.IsConflict(err):
 		p := protocol.NewProblem(protocol.CodeConflict, http.StatusConflict, err.Error())
 		return &p
-	case isEngineClientError(err):
+	case reject.IsInput(err):
 		p := protocol.NewProblem(protocol.CodeInvalid, http.StatusUnprocessableEntity, err.Error())
+		return &p
+	case reject.IsRuntime(err):
+		p := protocol.NewProblem(protocol.CodeExecutionFailed, http.StatusUnprocessableEntity, err.Error())
 		return &p
 	default:
 		return nil
 	}
-}
-
-// isEngineClientError distinguishes constraint/validation failures (the
-// caller's fault, safe to relay) from unexpected internals. The engine
-// prefixes its own errors.
-func isEngineClientError(err error) bool {
-	msg := err.Error()
-	for _, prefix := range []string{"exec:", "catalog:", "planner:", "migrate:", "schema.rad:"} {
-		if strings.HasPrefix(msg, prefix) || strings.Contains(msg, ": "+prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 // txNotFound builds the not_found problem for a spent or unknown transaction.

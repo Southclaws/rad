@@ -296,6 +296,21 @@ func (r *Result) ExpectStatus(status int) *Result {
 	return r
 }
 
+// ExpectCode asserts the query failed with the given problem code — the
+// classification contract ("invalid" for bind-time rejections,
+// "execution_failed" for data-dependent runtime failures).
+func (r *Result) ExpectCode(code string) *Result {
+	r.T.Helper()
+	var ae *radclient.APIError
+	if r.Err == nil || !errors.As(r.Err, &ae) {
+		r.T.Fatalf("harness: want an API error with code %q, got err=%v", code, r.Err)
+	}
+	if ae.Problem.Code != code {
+		r.T.Fatalf("harness: code = %q (%s), want %q", ae.Problem.Code, ae.Problem.Detail, code)
+	}
+	return r
+}
+
 func (r *Result) ok() {
 	r.T.Helper()
 	if r.Err != nil {

@@ -186,7 +186,7 @@ func TestPredDivisionByZeroErrors(t *testing.T) {
 			{As: "ratio", Expr: protocol.Expr{Kind: "binary", Op: "div",
 				Left: protocol.Col("p", "price"), Right: protocol.Col("p", "stock")}},
 		}},
-	}, "out", "many")).ExpectStatus(422).ExpectError("division by zero")
+	}, "out", "many")).ExpectStatus(422).ExpectCode("execution_failed").ExpectError("division by zero")
 }
 
 func TestPredNestedArithmetic(t *testing.T) {
