@@ -1,5 +1,5 @@
-// Package migrate computes the DDL steps that reconcile a live catalog with
-// a desired schema (a parsed schema.rad file).
+// Package migrate computes the schema-change steps that reconcile a live
+// catalog with a desired schema (a parsed schema.rad file).
 //
 // The differ is pure: it takes the current tables and the desired schema and
 // returns an ordered list of steps. Applying them (catalog mutations plus
@@ -26,10 +26,10 @@ import (
 	"github.com/Southclaws/rad/rad/engine/02_catalog/schema"
 )
 
-// Step is one DDL operation of a migration plan. Steps are ordered so that
+// Step is one schema-change operation of a migration plan. Steps are ordered so that
 // applying them sequentially is always valid: renames first, then new
 // tables (dependency-ordered), added columns, index changes, and drops
-// last.
+// last (table drops referencing-table-first, mirroring creation order).
 type Step interface {
 	step()
 	String() string
@@ -98,13 +98,20 @@ func Diff(current []catalog.Table, desired *schema.Schema) ([]Step, error) {
 		}
 	}
 
-	// Current tables with no desired counterpart get dropped.
+	// Current tables with no desired counterpart get dropped. Drops are
+	// ordered referencing-table-first: the catalog refuses to drop a table
+	// another table still points at through a foreign key, so children must
+	// go before their parents.
 	dropped := map[string]bool{}
+	var droppedTables []catalog.Table
 	for _, t := range current {
 		if _, ok := matched[t.Name]; !ok {
 			dropped[t.Name] = true
-			tableDrops = append(tableDrops, DropTable{Table: t.Name})
+			droppedTables = append(droppedTables, t)
 		}
+	}
+	for _, t := range orderDrops(droppedTables) {
+		tableDrops = append(tableDrops, DropTable{Table: t.Name})
 	}
 
 	// No surviving or new table may reference a dropped one.
@@ -357,6 +364,63 @@ func orderCreates(creates []schema.Table) ([]schema.Table, error) {
 		return nil, reject.Inputf("migrate: circular foreign key dependency among new tables")
 	}
 	return ordered, nil
+}
+
+// orderDrops sorts tables to drop so that every table precedes the tables
+// it references — the reverse of creation order. Foreign keys cannot be
+// added to existing tables and creation rejects cycles, so only
+// self-references can exist among a drop set; they don't constrain order.
+// Input arrives name-sorted (ListTables), which keeps the result stable.
+func orderDrops(tables []catalog.Table) []catalog.Table {
+	byID := map[string]string{} // table ID -> name, drop set only
+	for _, t := range tables {
+		byID[t.ID] = t.Name
+	}
+	// refs[parent] counts dropped tables still referencing parent.
+	refs := map[string]int{}
+	for _, t := range tables {
+		for _, fk := range t.ForeignKeys {
+			if fk.RefTableID == t.ID {
+				continue // self-reference dies with the table
+			}
+			if parent, ok := byID[fk.RefTableID]; ok {
+				refs[parent]++
+			}
+		}
+	}
+
+	var ordered []catalog.Table
+	done := map[string]bool{}
+	for len(ordered) < len(tables) {
+		progressed := false
+		for _, t := range tables {
+			if done[t.Name] || refs[t.Name] > 0 {
+				continue
+			}
+			ordered = append(ordered, t)
+			done[t.Name] = true
+			progressed = true
+			for _, fk := range t.ForeignKeys {
+				if fk.RefTableID == t.ID {
+					continue
+				}
+				if parent, ok := byID[fk.RefTableID]; ok {
+					refs[parent]--
+				}
+			}
+		}
+		if !progressed {
+			// Unreachable while FK creation rejects cycles; emit the rest
+			// in name order rather than dropping steps on the floor.
+			for _, t := range tables {
+				if !done[t.Name] {
+					ordered = append(ordered, t)
+				}
+			}
+			break
+		}
+	}
+	return ordered
 }
 
 // sortSteps orders steps deterministically by their string form so plans

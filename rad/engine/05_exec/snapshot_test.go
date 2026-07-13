@@ -2,8 +2,8 @@ package exec
 
 // Every statement binds and executes against one KV view. The observable
 // half of that contract: schema lookups made inside a transaction join its
-// read set, so DDL committed while the transaction is open conflicts at
-// commit instead of passing unseen beneath a stale binding.
+// read set, so a schema change committed while the transaction is open
+// conflicts at commit instead of passing unseen beneath a stale binding.
 
 import (
 	"testing"
@@ -12,7 +12,7 @@ import (
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 )
 
-func TestConcurrentDDLConflictsWithOpenTxn(t *testing.T) {
+func TestConcurrentSchemaChangeConflictsWithOpenTxn(t *testing.T) {
 	eng, ctx, _, _ := lirSetup(t)
 
 	tx, err := eng.Begin(ctx)
@@ -29,7 +29,7 @@ func TestConcurrentDDLConflictsWithOpenTxn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// DDL on the same table commits while the transaction is open.
+	// A schema change on the same table commits while the transaction is open.
 	if _, err := eng.Catalog().AddColumn(ctx, "users", catalog.ColumnDef{
 		Name: "bio", Type: catalog.TypeText, Nullable: true,
 	}); err != nil {
@@ -38,12 +38,12 @@ func TestConcurrentDDLConflictsWithOpenTxn(t *testing.T) {
 
 	err = tx.Commit(ctx)
 	if !IsConflict(err) {
-		t.Fatalf("commit after concurrent DDL = %v, want a conflict", err)
+		t.Fatalf("commit after concurrent schema change = %v, want a conflict", err)
 	}
 }
 
 // A transaction that never touched the altered table is unaffected.
-func TestConcurrentDDLOnOtherTableDoesNotConflict(t *testing.T) {
+func TestConcurrentSchemaChangeOnOtherTableDoesNotConflict(t *testing.T) {
 	eng, ctx, _, _ := lirSetup(t)
 
 	tx, err := eng.Begin(ctx)
@@ -53,7 +53,7 @@ func TestConcurrentDDLOnOtherTableDoesNotConflict(t *testing.T) {
 	defer tx.Rollback()
 
 	// Touches boards' schema and users' data (the FK parent row) — but not
-	// users' schema, which is all the concurrent DDL writes.
+	// users' schema, which is all the concurrent schema change writes.
 	if err := tx.Insert(ctx, "boards", lir.Row{
 		"id": lir.Text("b-snap"), "name": lir.Text("Snap"), "owner_id": lir.Text("ada"),
 	}); err != nil {

@@ -302,3 +302,41 @@ tables:
 		t.Fatalf("got %v", err)
 	}
 }
+
+// Dropping a parent and its referencing child together must drop the child
+// first — the catalog refuses to drop a table that is still referenced. The
+// names are chosen adversarially: the parent sorts before the child, so a
+// name-ordered plan would drop the parent first and fail at apply time.
+func TestDropsOrderedReferencingTableFirst(t *testing.T) {
+	current := currentFrom(t, `
+tables:
+  - name: accounts
+    columns:
+      - { name: id, type: string, pk: true }
+  - name: zposts
+    columns:
+      - { name: id,         type: string, pk: true }
+      - { name: account_id, type: string, ref: accounts.id }
+`)
+
+	got := stepStrings(diff(t, current, `
+tables:
+  - name: unrelated
+    columns:
+      - { name: id, type: string, pk: true }
+`))
+
+	want := []string{
+		"create table unrelated",
+		"drop table zposts",
+		"drop table accounts",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("steps = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("step %d = %q, want %q (full plan %v)", i, got[i], want[i], got)
+		}
+	}
+}

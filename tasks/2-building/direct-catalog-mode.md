@@ -34,7 +34,7 @@ state.
    direct channel is fine-grained: create table, modify table, delete
    table, plus column CRUD (and index create/drop — the ADR's "manage
    indexes"). These map onto the same engine operations
-   (02_catalog/ddl.go) the reconciler drives, so capability parity is a
+   (02_catalog/mutations.go) the reconciler drives, so capability parity is a
    rule: anything the reconciler rejects (e.g. column type changes) the
    imperative API rejects identically — one capability surface, two
    grammars over it.
@@ -59,7 +59,7 @@ state.
 
 - Wire catalog mutation today = `SchemaMigrate` only
   (rad/server/api/dbserver.go); the fine-grained surface
-  (`Catalog.CreateTable`, ddl.go mutations) is engine-internal, reachable
+  (`Catalog.CreateTable`, mutations.go) is engine-internal, reachable
   only through the reconciler. The imperative API exposes it.
 - Admin UI (rad/ui: TableView, KVBrowser; served on :7238) is
   inspection-only — Direct-mode editors are the additive half, built
@@ -73,7 +73,7 @@ state.
 
 1. Mode storage in 02_catalog: KV entry + accessor, stamped on fresh
    init, `rad serve` bootstrap flag/env, mismatch = startup error.
-2. Engine: ensure ddl.go exposes the imperative set the API needs
+2. Engine: ensure the catalog exposes the imperative set the API needs
    (create/drop table, add/drop/rename column, add/drop index) as
    transactional operations with the same validation the reconciler uses.
 3. Wire: OpenAPI endpoints for table/column/index CRUD, mode-gated;
@@ -83,7 +83,7 @@ state.
 5. Tests: mode gating matrix (imperative × migrate × both modes),
    set-once semantics (fresh init honours flag; existing DB ignores
    absent flag, errors on mismatch), imperative-vs-reconciler capability
-   parity, DDL through the wire end-to-end.
+   parity, schema changes through the wire end-to-end.
 
 Then (follow-on phases): Admin UI editors + data import over the
 imperative API; catalog revisions; `rad schema pull` + renderer;

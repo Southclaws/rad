@@ -102,9 +102,9 @@ check.
 implicitly single-op transactional. A `Txn` is itself a `KV` — this embedding
 is the load-bearing design decision of the layer, because it means every
 function above that takes a `kv.KV` "view" works identically inside or
-outside a transaction. The catalog's DDL helpers and the executor's
+outside a transaction. The catalog's mutation helpers and the executor's
 constraint checks are all written against `kv.KV` and get transactionality
-for free (see `catalog.Catalog.ddl`, `exec.Engine.Txn`).
+for free (see `catalog.Catalog.mutate`, `exec.Engine.Txn`).
 
 A `Txn` reads from a stable snapshot taken at `Begin`, overlaid with its own
 buffered writes: its own `Put`s appear in its `Get`s and `Scan`s, its own
@@ -134,7 +134,7 @@ returns, success or failure. `Rollback` discards the transaction and is a
 no-op after `Commit` or a prior `Rollback`, so `defer txn.Rollback()` is
 always safe — every caller in the tree uses that pattern.
 
-Writes always run under `SerializableSnapshot`: `catalog.Catalog.ddl` and
+Writes always run under `SerializableSnapshot`: `catalog.Catalog.mutate` and
 `exec.Engine.Begin` both hard-code it. `Snapshot` is the read-side level —
 05_exec opens one per autocommit statement (`Engine.Execute`,
 `GetByPrimaryKey`, `ScanTable`, `ScanIndex`) so schema resolution and data

@@ -103,19 +103,19 @@ transaction itself (`tableIn`). Two consequences fall out:
 - Schema resolution and data reads can never observe different storage
   moments: one statement, one view.
 - Inside a `SerializableSnapshot` transaction, the catalog keys a statement
-  touches join the read set, so a concurrent DDL commit on a touched table
+  touches join the read set, so a concurrent schema-change commit on a touched table
   conflicts at commit instead of passing unseen
-  (`TestConcurrentDDLConflictsWithOpenTxn` in 05_exec pins this, and its
-  sibling pins that DDL on an untouched table does not conflict).
+  (`TestConcurrentSchemaChangeConflictsWithOpenTxn` in 05_exec pins this, and its
+  sibling pins that a schema change on an untouched table does not conflict).
 
 ID stability is still the backstop for readers who do use committed state:
 within one `GetTable`, a drop or rename between the name read and the
 metadata read resolves as "not found" or as the pre-rename blob — never as
 another table's data, because IDs are never reused.
 
-## DDL
+## Catalog mutations
 
-All DDL is transactional. The `ddl` helper begins a `SerializableSnapshot`
+Every catalog mutation is transactional. The `mutate` helper begins a `SerializableSnapshot`
 transaction, runs the mutation against the transaction's view, and commits;
 any error rolls the whole operation back. `TestCreateTableValidation` pins
 the atomicity: a rejected `CreateTable` leaves nothing behind — not the name
@@ -127,7 +127,7 @@ allocates IDs for the table and every column, index, and FK, resolves FK
 created), and writes both the table blob and the name-index key in one
 commit.
 
-Schema evolution lives in `ddl.go`, each operation in its own transaction
+Schema evolution lives in `mutations.go`, each operation in its own transaction
 built on `mutateTableIn` (load blob, apply closure, save blob):
 
 - `RenameTable(ctx, old, new)`, `RenameColumn(ctx, table, old, new)` —
@@ -139,9 +139,9 @@ built on `mutateTableIn` (load blob, apply closure, save blob):
 - `DropIndex(ctx, table, index)` — removes the index metadata.
 - `DropTable(ctx, table)` — deletes the blob and name key.
 
-### Transaction-scoped DDL and the backfill contract
+### Transaction-scoped mutations and the backfill contract
 
-One DDL operation is exported in a caller's-transaction form: the
+One mutation is exported in a caller's-transaction form: the
 package-level function
 
 ```go
@@ -170,7 +170,7 @@ public surface today.
 ## Validation: what the catalog enforces, what it leaves above
 
 `CreateTable` and the evolution operations enforce definitional consistency,
-each rule pinned by a case in `TestCreateTableValidation` or the DDL tests:
+each rule pinned by a case in `TestCreateTableValidation` or the schema-evolution tests:
 
 table names are required and unique database-wide; column names are unique
 within a table and types must be one of `TypeText`, `TypeInt64`,
@@ -246,7 +246,7 @@ The layer is tested as executable documentation against a real store:
 (`kvslate.Open(name, "memory:///")`) per test, so JSON persistence, the
 name index, and transactional atomicity are exercised for real rather than
 mocked. `TestCreateTableValidation` is the validation matrix as a table of
-rejected definitions, each asserting atomic rollback; the DDL tests pin the
+rejected definitions, each asserting atomic rollback; the schema-evolution tests pin the
 identity-preservation invariants (rename keeps IDs, freed names are
 reusable). `schema` tests parse fixtures through the real JSON Schema;
 `migrate` tests build a live catalog, then assert `Diff`'s plans by their

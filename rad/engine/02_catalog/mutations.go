@@ -1,6 +1,6 @@
 package catalog
 
-// Schema-evolution DDL. Each operation runs in its own serializable
+// Schema-evolution operations. Each runs in its own serializable
 // transaction, mutating table metadata only:
 //
 //   - Renames are free: rows are stored keyed by column ID and data keys by
@@ -59,10 +59,10 @@ func mutateTableIn(ctx context.Context, view kv.KV, tableName string, fn func(vi
 	return tbl, saveTable(ctx, view, tbl)
 }
 
-// mutateTable is mutateTableIn in its own DDL transaction.
+// mutateTable is mutateTableIn in its own catalog transaction.
 func (c *Catalog) mutateTable(ctx context.Context, tableName string, fn func(view kv.KV, tbl *Table) error) (Table, error) {
 	var out Table
-	err := c.ddl(ctx, func(view kv.KV) error {
+	err := c.mutate(ctx, func(view kv.KV) error {
 		var err error
 		out, err = mutateTableIn(ctx, view, tableName, fn)
 		return err
@@ -74,9 +74,11 @@ func (c *Catalog) mutateTable(ctx context.Context, tableName string, fn func(vie
 }
 
 // DropTable removes the table from the catalog. Row and index data become
-// unreachable garbage (IDs are never reused).
+// unreachable garbage (IDs are never reused). A table another table still
+// references through a foreign key cannot be dropped — drop the referencing
+// table first (self-references don't count; they die with the table).
 func (c *Catalog) DropTable(ctx context.Context, tableName string) error {
-	return c.ddl(ctx, func(view kv.KV) error {
+	return c.mutate(ctx, func(view kv.KV) error {
 		nameKey := []byte(tableNamePrefix + tableName)
 		id, ok, err := view.Get(ctx, nameKey)
 		if err != nil {
@@ -84,6 +86,20 @@ func (c *Catalog) DropTable(ctx context.Context, tableName string) error {
 		}
 		if !ok {
 			return reject.Inputf("catalog: table %q does not exist", tableName)
+		}
+		tables, err := listTables(ctx, view)
+		if err != nil {
+			return err
+		}
+		for _, t := range tables {
+			if t.ID == string(id) {
+				continue
+			}
+			for _, fk := range t.ForeignKeys {
+				if fk.RefTableID == string(id) {
+					return reject.Inputf("catalog: table %q is referenced by foreign key %q on table %q; drop that table first", tableName, fk.Name, t.Name)
+				}
+			}
 		}
 		if err := view.Delete(ctx, []byte(tablePrefix+string(id))); err != nil {
 			return err
@@ -98,7 +114,7 @@ func (c *Catalog) RenameTable(ctx context.Context, oldName, newName string) erro
 	if oldName == newName {
 		return nil
 	}
-	return c.ddl(ctx, func(view kv.KV) error {
+	return c.mutate(ctx, func(view kv.KV) error {
 		oldKey := []byte(tableNamePrefix + oldName)
 		newKey := []byte(tableNamePrefix + newName)
 		id, ok, err := view.Get(ctx, oldKey)
@@ -259,11 +275,11 @@ func AddIndexIn(ctx context.Context, view kv.KV, tableName string, def IndexDef)
 	return tbl, added, nil
 }
 
-// AddIndex is AddIndexIn in its own DDL transaction, for indexes over tables
+// AddIndex is AddIndexIn in its own catalog transaction, for indexes over tables
 // with no existing rows to backfill.
 func (c *Catalog) AddIndex(ctx context.Context, tableName string, def IndexDef) (Index, error) {
 	var added Index
-	err := c.ddl(ctx, func(view kv.KV) error {
+	err := c.mutate(ctx, func(view kv.KV) error {
 		var err error
 		_, added, err = AddIndexIn(ctx, view, tableName, def)
 		return err

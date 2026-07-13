@@ -179,7 +179,7 @@ func TestPersistenceAcrossInstances(t *testing.T) {
 
 // Every validation rule CreateTable enforces, as executable documentation.
 // Definitions are rejected atomically: a failed CreateTable leaves nothing
-// behind (its DDL transaction rolls back), so the same name can be retried.
+// behind (its transaction rolls back), so the same name can be retried.
 func TestCreateTableValidation(t *testing.T) {
 	cases := []struct {
 		name    string

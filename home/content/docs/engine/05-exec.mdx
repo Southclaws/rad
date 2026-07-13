@@ -37,11 +37,11 @@ names through whatever view the caller passes.
 
 Inside a transaction this has a second consequence: schema lookups go through
 the transaction's serializable txn, so the catalog keys a statement resolved
-join the transaction's read set. DDL committed on that table while the
+join the transaction's read set. A schema change committed on that table while the
 transaction is open makes `Commit` return a conflict
-(`TestConcurrentDDLConflictsWithOpenTxn`), while a transaction that never
+(`TestConcurrentSchemaChangeConflictsWithOpenTxn`), while a transaction that never
 touched the altered table's schema commits fine
-(`TestConcurrentDDLOnOtherTableDoesNotConflict`). Stale bindings cannot pass
+(`TestConcurrentSchemaChangeOnOtherTableDoesNotConflict`). Stale bindings cannot pass
 unseen beneath an open transaction.
 
 After binding, `planner.PlanQuery` produces a `PhysPlan` and the executor
@@ -401,6 +401,6 @@ The remaining files cover the mutation and snapshot contracts directly:
 non-collision, transactional atomicity, read-your-writes, and both
 concurrency conflicts), `mutate_test.go` (index rewrite on update, scoped
 re-checks, delete-restrict via index and via full scan), `snapshot_test.go`
-(DDL-vs-transaction conflicts and `ScanTable`'s snapshot stability under a
+(schema-change-vs-transaction conflicts and `ScanTable`'s snapshot stability under a
 concurrent insert), `defaults_test.go` (generated and literal defaults, bool
 index keys), `rowcodec_test.go`, and `tuple_test.go`.

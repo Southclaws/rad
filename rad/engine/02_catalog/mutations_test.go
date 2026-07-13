@@ -1,4 +1,4 @@
-// These tests document schema evolution at the catalog layer: what each DDL
+// These tests document schema evolution at the catalog layer: what each schema-change
 // operation changes, what it refuses, and the invariant that renames never
 // touch data (rows are keyed by column ID, data keys by table ID).
 package catalog_test
@@ -212,5 +212,69 @@ func TestAddDropIndex(t *testing.T) {
 	tbl, _, _ = cat.GetTable(ctx, "users")
 	if _, ok := tbl.Index("users_age_idx"); ok {
 		t.Fatal("index still present after drop")
+	}
+}
+
+// A table another table references through a foreign key cannot be dropped
+// until the referencing table goes first; a self-reference never blocks its
+// own table's drop.
+func TestDropTableReferencedByForeignKey(t *testing.T) {
+	cat, _, ctx := newCatalog(t)
+	if _, err := cat.CreateTable(ctx, usersDef()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.CreateTable(ctx, catalog.TableDef{
+		Name: "boards",
+		Columns: []catalog.ColumnDef{
+			{Name: "id", Type: catalog.TypeInt64},
+			{Name: "owner_id", Type: catalog.TypeInt64},
+		},
+		PrimaryKey: []string{"id"},
+		ForeignKeys: []catalog.ForeignKeyDef{
+			{Name: "boards_owner_fk", Columns: []string{"owner_id"}, RefTable: "users", RefColumns: []string{"id"}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := cat.DropTable(ctx, "users")
+	if err == nil {
+		t.Fatal("dropped a table another table references")
+	}
+	if !strings.Contains(err.Error(), "boards_owner_fk") || !strings.Contains(err.Error(), `"boards"`) {
+		t.Errorf("error should name the referencing table and foreign key, got: %v", err)
+	}
+	if _, ok, _ := cat.GetTable(ctx, "users"); !ok {
+		t.Fatal("failed drop removed the table anyway")
+	}
+
+	// Referencing table first, then the parent.
+	if err := cat.DropTable(ctx, "boards"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.DropTable(ctx, "users"); err != nil {
+		t.Fatalf("drop after removing the referencing table: %v", err)
+	}
+}
+
+// A self-referential foreign key dies with its own table.
+func TestDropTableWithSelfReference(t *testing.T) {
+	cat, _, ctx := newCatalog(t)
+	if _, err := cat.CreateTable(ctx, catalog.TableDef{
+		Name: "employees",
+		Columns: []catalog.ColumnDef{
+			{Name: "id", Type: catalog.TypeInt64},
+			{Name: "manager_id", Type: catalog.TypeInt64, Nullable: true},
+		},
+		PrimaryKey: []string{"id"},
+		ForeignKeys: []catalog.ForeignKeyDef{
+			{Name: "employees_manager_fk", Columns: []string{"manager_id"}, RefTable: "employees", RefColumns: []string{"id"}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cat.DropTable(ctx, "employees"); err != nil {
+		t.Fatalf("self-referential table should drop cleanly: %v", err)
 	}
 }

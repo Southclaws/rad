@@ -10,7 +10,7 @@ migrations still has revisions).
 
 ## Shape (v1: keep it to the counter)
 
-- Monotonic counter, bumped inside the same ddl transaction as the
+- Monotonic counter, bumped inside the same catalog transaction as the
   mutation — never drifts from the catalog state it describes.
 - Timestamp alongside it, nothing more. A mutation log (what changed,
   by which channel) is future work; design the counter so a log can hang

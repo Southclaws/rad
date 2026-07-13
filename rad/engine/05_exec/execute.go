@@ -24,7 +24,7 @@ func (e *Engine) Execute(ctx context.Context, q lir.Query) (lir.Datum, error) {
 }
 
 // Execute inside a transaction sees its snapshot plus its own writes. The
-// schema lookups join the transaction's read set, so concurrent DDL on a
+// schema lookups join the transaction's read set, so a concurrent schema change on a
 // table the statement touched conflicts at commit.
 func (tx *Tx) Execute(ctx context.Context, q lir.Query) (lir.Datum, error) {
 	return tx.e.execute(ctx, tx.txn, q, false)

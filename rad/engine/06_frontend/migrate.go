@@ -10,7 +10,7 @@ import (
 )
 
 // Migrate reconciles the database with a desired schema: it creates the
-// schema namespace if needed, computes the DDL diff, and applies each step
+// schema namespace if needed, computes the schema diff, and applies each step
 // (catalog mutations, plus index backfills for added indexes). It returns
 // the steps it applied — an empty plan means the database already matches.
 func (db *DB) Migrate(ctx context.Context, desired *schema.Schema) ([]migrate.Step, error) {
@@ -31,31 +31,31 @@ func (db *DB) Migrate(ctx context.Context, desired *schema.Schema) ([]migrate.St
 	return steps, nil
 }
 
+// applyStep lowers one plan step onto the shared catalog-mutation façade
+// (catalog.go) — the same entry points the imperative catalog endpoints
+// use, so both channels exercise identical semantics.
 func (db *DB) applyStep(ctx context.Context, step migrate.Step) error {
 	switch s := step.(type) {
 	case migrate.RenameTable:
-		return db.cat.RenameTable(ctx, s.From, s.To)
+		return db.RenameTable(ctx, s.From, s.To)
 	case migrate.RenameColumn:
-		_, err := db.cat.RenameColumn(ctx, s.Table, s.From, s.To)
+		_, err := db.RenameColumn(ctx, s.Table, s.From, s.To)
 		return err
 	case migrate.CreateTable:
-		_, err := db.cat.CreateTable(ctx, s.Def)
+		_, err := db.CreateTable(ctx, s.Def)
 		return err
 	case migrate.AddColumn:
-		_, err := db.cat.AddColumn(ctx, s.Table, s.Def)
+		_, err := db.AddColumn(ctx, s.Table, s.Def)
 		return err
 	case migrate.AddIndex:
-		// Registration and backfill commit together: a failed backfill (e.g.
-		// duplicate values under a unique index) rolls the registration back
-		// too, so the catalog never exposes an index missing its entries.
-		return db.eng.AddIndexWithBackfill(ctx, s.Table, s.Def)
+		return db.AddIndex(ctx, s.Table, s.Def)
 	case migrate.DropIndex:
-		return db.cat.DropIndex(ctx, s.Table, s.Index)
+		return db.DropIndex(ctx, s.Table, s.Index)
 	case migrate.DropColumn:
-		_, err := db.cat.DropColumn(ctx, s.Table, s.Column)
+		_, err := db.DropColumn(ctx, s.Table, s.Column)
 		return err
 	case migrate.DropTable:
-		return db.cat.DropTable(ctx, s.Table)
+		return db.DropTable(ctx, s.Table)
 	default:
 		return fmt.Errorf("unknown migration step %T", step)
 	}

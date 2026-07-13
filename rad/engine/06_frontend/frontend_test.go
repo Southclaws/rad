@@ -1,5 +1,5 @@
 // These tests document the frontend (06): the public surface of Rad. A
-// caller sees a DB handle with DDL, writes, point reads, logical queries,
+// caller sees a DB handle with schema changes, writes, point reads, logical queries,
 // and transactions — and nothing else. Everything below (planning, key
 // encoding, SlateDB) is reachable only through this API.
 //

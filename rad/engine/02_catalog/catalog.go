@@ -105,9 +105,10 @@ type ForeignKeyDef struct {
 
 // Catalog reads and writes table metadata in the KV store. A Rad instance
 // is exactly one database — there is no schema or database hierarchy; two
-// databases are two Rad deployments. DDL runs in a SerializableSnapshot
-// transaction, so the ID counter and name-key writes commit atomically and
-// concurrent DDL conflicts instead of corrupting the counter.
+// databases are two Rad deployments. Every mutation runs in a
+// SerializableSnapshot transaction, so the ID counter and name-key writes
+// commit atomically and concurrent schema changes conflict instead of
+// corrupting the counter.
 type Catalog struct {
 	store kv.TransactionalKV
 }
@@ -119,7 +120,7 @@ func New(store kv.TransactionalKV) *Catalog {
 // Reader is the catalog read API over one KV view. A Reader taken from a
 // transaction sees that transaction's snapshot plus its own writes, and its
 // lookups join the transaction's read set — under SerializableSnapshot,
-// concurrent DDL on a table the statement touched conflicts at commit
+// a concurrent schema change on a table the statement touched conflicts at commit
 // instead of passing unseen. Catalog methods read committed state; anything
 // that must be consistent with data reads goes through a Reader.
 type Reader struct {
@@ -141,8 +142,8 @@ func (r Reader) ListTables(ctx context.Context) ([]Table, error) {
 	return listTables(ctx, r.view)
 }
 
-// ddl runs fn in a transaction and commits it if fn returns nil.
-func (c *Catalog) ddl(ctx context.Context, fn func(view kv.KV) error) error {
+// mutate runs fn in a transaction and commits it if fn returns nil.
+func (c *Catalog) mutate(ctx context.Context, fn func(view kv.KV) error) error {
 	txn, err := c.store.Begin(ctx, kv.SerializableSnapshot)
 	if err != nil {
 		return err
@@ -208,7 +209,7 @@ func validateDefault(cd ColumnDef) error {
 
 func (c *Catalog) CreateTable(ctx context.Context, def TableDef) (Table, error) {
 	var tbl Table
-	err := c.ddl(ctx, func(view kv.KV) error {
+	err := c.mutate(ctx, func(view kv.KV) error {
 		var err error
 		tbl, err = createTable(ctx, view, def)
 		return err

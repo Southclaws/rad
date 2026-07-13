@@ -30,7 +30,7 @@ func Open(store kv.TransactionalKV) *DB {
 	}
 }
 
-// Catalog exposes schema metadata (table definitions, DDL).
+// Catalog exposes schema metadata (table definitions, schema changes).
 func (db *DB) Catalog() *catalog.Catalog { return db.cat }
 
 // CreateTable defines a new table.
