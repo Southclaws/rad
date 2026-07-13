@@ -1,9 +1,10 @@
 # DAG sharing: an explicit binding construct for LIR
 
-Status: design-pending. This is the one battle-test finding (F7 in
-tasks/3-done/lir-improvements.md) that is a grammar change, and the node-DAG
-rules it touches are hard rules — nothing here gets implemented until the
-design is settled explicitly.
+Status: semantics settled (2026-07-13 design discussion — see "The settled
+framing" below); surface syntax, scope re-exposure, preflight extension, and
+the physical seam remain open. This is the one battle-test finding (F7 in
+tasks/3-done/lir-improvements.md) that is a grammar change; nothing gets
+implemented until the remaining questions are settled too.
 
 ## The problem
 
@@ -43,19 +44,38 @@ Two points are agreed:
 - **Physical reuse is the planner's.** Materialise-once vs recompute must be
   invisible.
 
-The one open question: **do two occurrences of a binding range over the same
-bag?** For a declared-arbitrary body (`slice` with no order), macro
-semantics (each ref independently re-denotes the definition) permits the
-occurrences to differ — which makes a "self-join" of such a binding not a
-self-join, and makes materialise-vs-recompute observable, breaking path
-independence. Value semantics (occurrences are variables over one bag, as
-scans are over one snapshot) keeps self-joins honest, keeps the conformance
-oracle able to pin results, and mirrors SQL precedent (a query name denotes
-a table; Postgres materialises multi-referenced CTEs by default, divergence
-is the opt-in). Cost of value semantics: nondeterministic bodies are
-compute-once (or provably-equal recompute), and a correlated binding means
-"one value per outer environment" — which is exactly the semantics the
-attach machinery's per-DISTINCT-key deduplication already implements.
+The third point is now also settled: **occurrences range over one bag.**
+Fresh-occurrence (macro) semantics is semantics-preserving only on the
+fully deterministic fragment, and LIR deliberately permits
+declared-arbitrary relations (`slice` with no order denotes "some hundred
+events," not a determined hundred). Expanding `let top = any-100(events)`
+twice silently changes its meaning to two independent draws — so a binding
+is the *choice point*: it commits to one member of the set of valid bags,
+and every occurrence observes that choice. Hand-duplicated subtrees remain
+two independent draws, which is now expressive rather than a footgun —
+write it twice for two choices, reference it twice for one.
+
+Consequences:
+
+- A correlated binding commits one choice *per outer environment* — the
+  semantics the attach machinery's per-DISTINCT-key deduplication already
+  implements.
+- **Planner rule**: compute-once is the semantic obligation, not
+  materialisation. Replaying the identical physical plan against the one
+  statement snapshot is deterministic (LIR's nondeterminism is logical —
+  which bag — not physical), so materialise-once and same-plan-replay both
+  discharge it. What is forbidden: planning occurrences of a
+  nondeterministic body *differently* — different access paths may choose
+  different bags. Deterministic bodies keep full per-occurrence planning
+  freedom. Relying on plan-replay promotes "executor is deterministic given
+  plan + snapshot" from implementation accident to stated invariant, with a
+  conformance test.
+- **Testable even though the bag isn't**: occurrence-consistency is exact —
+  e.g. `let top = any-100(events)`, self-join on the full primary key, must
+  return exactly 100 diagonal rows. That test goes in the battle corpus the
+  day the construct lands.
+- SQL precedent aligns: a query name denotes a table; Postgres materialises
+  multi-referenced CTEs by default and makes divergence the opt-in.
 
 ## Why the current rules are load-bearing (do not weaken casually)
 
@@ -87,12 +107,9 @@ attach machinery's per-DISTINCT-key deduplication already implements.
    relation's scopes, or does binding force a labelled output (aggregate/
    project-style closure)? Forcing a labelled output keeps the closure rules
    uniform.
-4. **Evaluation semantics**: is a binding evaluated at most once
-   (memoised), exactly once (materialised), or is that deliberately
-   unspecified (logical sharing only, physical choice free)? Unspecified-
-   but-result-equivalent fits the path-independence doctrine; it must then
-   be provable that re-evaluation and memoisation agree (pure relations do,
-   but only against one statement snapshot — already guaranteed).
+4. **Evaluation semantics**: SETTLED (see above) — one committed choice per
+   binding per environment; physical strategy free among provably-equal
+   options (materialise, or replay the identical sub-plan).
 5. **Preflight**: the single-consumer rule becomes "single-consumer except
    through refs to declared bindings"; cycle rejection must extend through
    binding references (no recursive bindings — recursion is its own future
