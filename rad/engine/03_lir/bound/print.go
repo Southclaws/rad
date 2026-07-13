@@ -13,6 +13,14 @@ import (
 func Print(q *Query) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Query card=%s\n", q.Card)
+	for _, bnd := range q.Bindings {
+		sens := ""
+		if bnd.PlanSensitive {
+			sens = " plan-choice-sensitive"
+		}
+		fmt.Fprintf(&b, "  Binding %s%s\n", bnd.Name, sens)
+		printRel(&b, bnd.Root, 2)
+	}
 	printRel(&b, q.Root, 1)
 	return b.String()
 }
@@ -22,6 +30,8 @@ func printRel(b *strings.Builder, rel Relation, depth int) {
 	switch n := rel.(type) {
 	case *Scan:
 		fmt.Fprintf(b, "%sScan %s (%s) %s\n", pad, n.Table.Name, n.Scope, rowType(n.Output()))
+	case *Ref:
+		fmt.Fprintf(b, "%sRef %s (%s) %s\n", pad, n.Binding, n.Scope, rowType(n.Output()))
 	case *Filter:
 		fmt.Fprintf(b, "%sFilter %s%s\n", pad, printExpr(n.Pred), suffix(n))
 		printRel(b, n.In, depth+1)

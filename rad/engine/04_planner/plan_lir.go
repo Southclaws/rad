@@ -38,10 +38,20 @@ func PlanQuery(q *bound.Query, opts ...PlanOpt) *PhysPlan {
 		o(&cfg)
 	}
 	pl := &planner{cfg: cfg, nextSlot: q.Slots}
+	bindings := make([]BindingPlan, len(q.Bindings))
+	for i, b := range q.Bindings {
+		bindings[i] = BindingPlan{
+			Name:      b.Name,
+			Plan:      pl.plan(b.Root, nil),
+			Out:       b.Root.Output(),
+			Sensitive: b.PlanSensitive,
+		}
+	}
 	return &PhysPlan{
-		Root: pl.plan(q.Root, nil),
-		Card: q.Card,
-		Out:  q.Root.Output(),
+		Bindings: bindings,
+		Root:     pl.plan(q.Root, nil),
+		Card:     q.Card,
+		Out:      q.Root.Output(),
 	}
 }
 
@@ -130,6 +140,9 @@ func (pl *planner) plan(rel bound.Relation, req []bound.OrderTerm) PhysNode {
 	case *bound.Join:
 		// The binder rejects crossings in join conditions, so On is pure.
 		return &NestedLoopJoinExec{L: pl.plan(n.L, nil), R: pl.plan(n.R, nil), Kind: n.Kind, On: n.On, ROut: n.R.Output()}
+
+	case *bound.Ref:
+		return &RefExec{Binding: n.Binding, Out: n.Output(), Canon: n.Canon}
 	}
 	panic("planner: unplannable relation") // sealed interface; unreachable
 }

@@ -41,7 +41,38 @@ func Bind(ctx context.Context, cat Catalog, q lir.Query) (*bound.Query, error) {
 		return nil, reject.Inputf("planner: unknown root cardinality %q", q.Card)
 	}
 
-	b := &binder{ctx: ctx, cat: cat, labels: map[string]bool{}}
+	b := &binder{ctx: ctx, cat: cat, labels: map[string]bool{}, bindings: map[string]*bound.Binding{}}
+
+	// Bindings bind first, in dependency order, each body against an empty
+	// scope stack — a binding is closed by construction: any reference to a
+	// scope outside its own tree fails to resolve. The body binds once into
+	// canonical slots; each occurrence re-exposes them under fresh slots.
+	order, err := bindingOrder(q.Bindings)
+	if err != nil {
+		return nil, err
+	}
+	bindings := make([]*bound.Binding, 0, len(order))
+	for _, name := range order {
+		body, err := b.bindRel(q.Bindings[name])
+		b.scopes = b.scopes[:0] // interior scopes never escape the binding
+		if err != nil {
+			return nil, bindingErr(name, err)
+		}
+		// A binding's public contract is its output schema, so that schema
+		// must be well-formed: a raw join body with colliding column names
+		// has no addressable output through a single occurrence scope.
+		seen := map[string]bool{}
+		for _, f := range body.Output().Fields {
+			if seen[f.Name] {
+				return nil, reject.Inputf("planner: binding %q output has duplicate column %q — project the body to a unique set of columns", name, f.Name)
+			}
+			seen[f.Name] = true
+		}
+		bnd := &bound.Binding{Name: name, Root: body, PlanSensitive: bound.PlanSensitive(body)}
+		b.bindings[name] = bnd
+		bindings = append(bindings, bnd)
+	}
+
 	root, err := b.bindRel(q.Root)
 	if err != nil {
 		return nil, err
@@ -59,7 +90,7 @@ func Bind(ctx context.Context, cat Catalog, q lir.Query) (*bound.Query, error) {
 		return nil, reject.Inputf("planner: root cardinality %q over an unordered multi-row relation would make results depend on the access path — add an order or make the relation at-most-one", q.Card)
 	}
 
-	return &bound.Query{Root: root, Card: q.Card, Slots: b.nextSlot}, nil
+	return &bound.Query{Root: root, Card: q.Card, Bindings: bindings, Slots: b.nextSlot}, nil
 }
 
 // binder carries the walk state: the dense slot allocator and the scope
@@ -70,6 +101,123 @@ type binder struct {
 	nextSlot lir.SlotID
 	scopes   []scopeEntry    // innermost last
 	labels   map[string]bool // every label bound anywhere (query-wide uniqueness)
+	bindings map[string]*bound.Binding
+}
+
+// bindingErr annotates a binding-body error with the binding's name; %w
+// keeps the reject classification intact through the wrap.
+func bindingErr(name string, err error) error {
+	return fmt.Errorf("planner: binding %q: %w", name, err)
+}
+
+// bindingOrder returns binding names in dependency order — every binding a
+// body references precedes it. Cycles are rejected (the wire preflight also
+// rejects them; direct engine callers get the same rule).
+func bindingOrder(bindings map[string]lir.Relation) ([]string, error) {
+	names := make([]string, 0, len(bindings))
+	for name := range bindings {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+
+	const (
+		visiting = 1
+		visited  = 2
+	)
+	state := map[string]uint8{}
+	var order []string
+	var visit func(string) error
+	visit = func(name string) error {
+		if _, ok := bindings[name]; !ok {
+			return nil // dangling refs surface as unknown-binding at bind time
+		}
+		switch state[name] {
+		case visiting:
+			return reject.Inputf("planner: binding %q is part of a binding cycle", name)
+		case visited:
+			return nil
+		}
+		state[name] = visiting
+		for _, dep := range lirBindingDeps(bindings[name]) {
+			if err := visit(dep); err != nil {
+				return err
+			}
+		}
+		state[name] = visited
+		order = append(order, name)
+		return nil
+	}
+	for _, name := range names {
+		if err := visit(name); err != nil {
+			return nil, err
+		}
+	}
+	return order, nil
+}
+
+// lirBindingDeps collects the binding names an unbound relation references.
+func lirBindingDeps(r lir.Relation) []string {
+	var deps []string
+	var rel func(lir.Relation)
+	var expr func(lir.Expr)
+	rel = func(r lir.Relation) {
+		switch n := r.(type) {
+		case lir.Ref:
+			deps = append(deps, n.Binding)
+		case lir.Filter:
+			rel(n.Input)
+			expr(n.Pred)
+		case lir.Project:
+			rel(n.Input)
+			for _, f := range n.Fields {
+				expr(f.Expr)
+			}
+		case lir.Join:
+			rel(n.Left)
+			rel(n.Right)
+			expr(n.On)
+		case lir.Aggregate:
+			rel(n.Input)
+			for _, g := range n.Groups {
+				expr(g.Expr)
+			}
+			for _, t := range n.Terms {
+				expr(t.Arg)
+			}
+		case lir.Order:
+			rel(n.Input)
+			for _, t := range n.Terms {
+				expr(t.Expr)
+			}
+		case lir.Slice:
+			rel(n.Input)
+		}
+	}
+	expr = func(e lir.Expr) {
+		switch x := e.(type) {
+		case lir.Unary:
+			expr(x.X)
+		case lir.Binary:
+			expr(x.L)
+			expr(x.R)
+		case lir.Cast:
+			expr(x.X)
+		case lir.Call:
+			for _, a := range x.Args {
+				expr(a)
+			}
+		case lir.Exists:
+			rel(x.Rel)
+		case lir.First:
+			rel(x.Rel)
+		case lir.Scalar:
+			rel(x.Rel)
+		case lir.Array:
+			rel(x.Rel)
+		}
+	}
+	rel(r)
+	return deps
 }
 
 type scopeEntry struct {
@@ -81,6 +229,9 @@ func (b *binder) bindRel(r lir.Relation) (bound.Relation, error) {
 	switch n := r.(type) {
 	case lir.Scan:
 		return b.bindScan(n)
+
+	case lir.Ref:
+		return b.bindRef(n)
 
 	case lir.Filter:
 		in, err := b.bindRel(n.Input)
@@ -171,6 +322,35 @@ func (b *binder) bindScan(n lir.Scan) (*bound.Scan, error) {
 	b.labels[n.Scope] = true
 	b.scopes = append(b.scopes, scopeEntry{label: n.Scope, rel: s})
 	return s, nil
+}
+
+// bindRef binds one occurrence of a binding: fresh slots over the
+// binding's canonical output, exposed under the occurrence's own scope —
+// exactly a scan's shape, with the binding's committed value where the
+// table would be. Interior scopes of the binding are not re-exposed.
+func (b *binder) bindRef(n lir.Ref) (*bound.Ref, error) {
+	if n.Scope == "" {
+		return nil, reject.Inputf("planner: ref of binding %q needs a scope label", n.Binding)
+	}
+	if b.labels[n.Scope] {
+		return nil, reject.Inputf("planner: duplicate scope %q", n.Scope)
+	}
+	bnd, ok := b.bindings[n.Binding]
+	if !ok {
+		return nil, reject.Inputf("planner: unknown binding %q", n.Binding)
+	}
+	out := bnd.Root.Output()
+	fields := make([]lir.Field, len(out.Fields))
+	canon := make([]lir.SlotID, len(out.Fields))
+	for i, f := range out.Fields {
+		fields[i] = lir.Field{Name: f.Name, Slot: b.nextSlot, Type: f.Type}
+		canon[i] = f.Slot
+		b.nextSlot++
+	}
+	r := bound.NewRef(n.Binding, n.Scope, fields, canon)
+	b.labels[n.Scope] = true
+	b.scopes = append(b.scopes, scopeEntry{label: n.Scope, rel: r})
+	return r, nil
 }
 
 // bindProject establishes a new row type. The scopes its subtree bound stop

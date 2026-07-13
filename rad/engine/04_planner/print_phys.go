@@ -12,6 +12,14 @@ import (
 func PrintPlan(p *PhysPlan) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Plan card=%s\n", p.Card)
+	for _, bp := range p.Bindings {
+		sens := ""
+		if bp.Sensitive {
+			sens = " plan-choice-sensitive"
+		}
+		fmt.Fprintf(&b, "  Binding %s%s\n", bp.Name, sens)
+		printPhys(&b, bp.Plan, 2)
+	}
 	printPhys(&b, p.Root, 1)
 	return b.String()
 }
@@ -39,6 +47,8 @@ func printPhys(b *strings.Builder, n PhysNode, depth int) {
 	case *FilterExec:
 		fmt.Fprintf(b, "%sFilter %s\n", pad, bound.PrintExpr(x.Pred))
 		printPhys(b, x.Input, depth+1)
+	case *RefExec:
+		fmt.Fprintf(b, "%sRef %s\n", pad, x.Binding)
 	case *AttachExec:
 		fmt.Fprintf(b, "%sAttach\n", pad)
 		for _, a := range x.Specs {

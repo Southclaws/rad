@@ -27,6 +27,7 @@ var kindDefs = map[string]string{
 	"aggregate": "AggregateNode",
 	"order":     "OrderNode",
 	"slice":     "SliceNode",
+	"ref":       "RefNode",
 
 	"lit":    "LiteralExpr",
 	"col":    "ColumnExpr",
@@ -42,7 +43,7 @@ var kindDefs = map[string]string{
 
 var nodeKinds = map[string]bool{
 	"scan": true, "filter": true, "project": true, "join": true,
-	"aggregate": true, "order": true, "slice": true,
+	"aggregate": true, "order": true, "slice": true, "ref": true,
 }
 
 // resolveVariants compiles one standalone resolved schema per kind: the

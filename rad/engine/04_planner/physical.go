@@ -22,11 +22,26 @@ import (
 type PhysNode interface{ phys() }
 
 // PhysPlan is a planned query: the operator tree, the root materialisation
-// cardinality, and the output row type.
+// cardinality, and the output row type — plus the bindings, each lowered
+// once, in dependency order.
 type PhysPlan struct {
-	Root PhysNode
-	Card lir.RootCard
-	Out  lir.RowType
+	Bindings []BindingPlan
+	Root     PhysNode
+	Card     lir.RootCard
+	Out      lir.RowType
+}
+
+// BindingPlan is one binding's body lowered once. The executor commits
+// each binding — in list order, so dependencies are always committed
+// first — before the root runs; every RefExec occurrence observes the
+// committed value.
+type BindingPlan struct {
+	Name string
+	Plan PhysNode
+	Out  lir.RowType // canonical output
+	// Sensitive: plan-choice-sensitive body — occurrences must share this
+	// one evaluation (v1 materialises every binding, sensitive or not).
+	Sensitive bool
 }
 
 // PKGetExec fetches at most one row by primary key. Key values may be
@@ -129,6 +144,15 @@ type SliceExec struct {
 	Limit  *int
 }
 
+// RefExec is one occurrence of a binding: it re-exposes the committed
+// canonical frames under the occurrence's fresh slots. Canon aligns with
+// Out.Fields.
+type RefExec struct {
+	Binding string
+	Out     lir.RowType
+	Canon   []lir.SlotID
+}
+
 // NestedLoopJoinExec joins by materialising the right input and probing it
 // per left row. Inner and left only; ROut is the right side's row type, for
 // NULL-padding unmatched left rows.
@@ -156,6 +180,7 @@ func (*ProjectExec) phys()        {}
 func (*SortExec) phys()           {}
 func (*SliceExec) phys()          {}
 func (*NestedLoopJoinExec) phys() {}
+func (*RefExec) phys()            {}
 func (*AggregateExec) phys()      {}
 
 // ── physical ordering properties ────────────────────────────────────────────

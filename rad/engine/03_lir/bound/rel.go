@@ -329,10 +329,62 @@ func NewSlice(in Relation, offset int, limit *int) *Slice {
 
 func (s *Slice) Inputs() []Relation { return []Relation{s.In} }
 
+// Ref is one occurrence of a named binding: fresh occurrence slots ranging
+// over the binding's committed value. Its cardinality is uniformly 0..many
+// regardless of the body — the binding's public contract is its output
+// shape, never derived properties of its implementation. The binding's
+// body is not an input: occurrences observe a value, they do not consume a
+// subtree.
+type Ref struct {
+	laws
+	Binding string
+	Scope   string
+	// Canon aligns with Output().Fields: Canon[i] is the binding's
+	// canonical slot for occurrence field i.
+	Canon []lir.SlotID
+}
+
+// NewRef binds one occurrence: fields carry fresh occurrence slots, canon
+// the binding's canonical slots in the same order.
+func NewRef(binding, scope string, fields []lir.Field, canon []lir.SlotID) *Ref {
+	slots := make([]lir.SlotID, len(fields))
+	for i, f := range fields {
+		slots[i] = f.Slot
+	}
+	return &Ref{
+		laws: laws{
+			out:      lir.RowType{Fields: fields},
+			produced: NewSlotSet(slots...),
+			card:     lir.Cardinality{Min: 0, Max: lir.Unbounded},
+		},
+		Binding: binding,
+		Scope:   scope,
+		Canon:   canon,
+	}
+}
+
+func (r *Ref) Inputs() []Relation { return nil }
+
+// Binding is one bound named relational value: the body bound once into
+// canonical output slots, plus the derived plan-choice sensitivity — can
+// two valid physical plans commit different legal bags?
+type Binding struct {
+	Name string
+	Root Relation
+	// PlanSensitive: the body contains a selection whose membership (or an
+	// order-materialising crossing whose datum) is not uniquely determined,
+	// so all occurrences must share one committed evaluation.
+	PlanSensitive bool
+}
+
 // Query is a bound root relation plus its materialisation mode.
 type Query struct {
 	Root Relation
 	Card lir.RootCard
+	// Bindings in dependency order: every binding a body references
+	// precedes it, so evaluation in list order always finds its
+	// dependencies committed.
+	Bindings []*Binding
 	// Slots is how many slots the binder allocated. The planner's crossing
 	// extraction allocates fresh slots starting here.
 	Slots lir.SlotID

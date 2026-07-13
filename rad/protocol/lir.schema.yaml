@@ -87,15 +87,22 @@ $defs:
   Query:
     title: Query
     description: |
-      A complete query: the relation graph plus its root selector.
+      A complete query: the relation forest plus its root selector.
 
       `nodes` is a flat map from caller-chosen id to relation node. Edges are
       the string ids a node names in its `input`, `left`, `right`, or a
-      crossing's `node`. This encoding carries no sharing: an id names exactly
-      one inline definition, referenced by exactly one consumer, and the graph
-      must be a finite tree (acyclic, every node reachable from `root.node`).
-      Cyclic, dangling, shared, or unreachable references are rejected before
-      binding.
+      crossing's `node`. This encoding carries no sharing among ordinary
+      nodes: an id names exactly one inline definition, referenced by exactly
+      one consumer. The document is a finite forest — one tree rooted at
+      `root.node` plus one tree per binding root — and cyclic, dangling,
+      shared, or unreachable definitions are rejected before binding.
+
+      `bindings` is the one deliberate sharing construct. A binding names a
+      derived relation as a first-class relational value: it denotes one
+      statement-local committed bag, and every `ref` node observes that same
+      bag under its own fresh scope — exactly as two scans of one table
+      observe the same snapshot. Binding names, node ids, and scope labels
+      are three separate namespaces.
     type: object
     additionalProperties: false
     required: [nodes, root]
@@ -109,7 +116,34 @@ $defs:
         minProperties: 1
         propertyNames: { minLength: 1 }
         additionalProperties: { $ref: "#/$defs/Node" }
+      bindings:
+        description: |
+          Named relational values, each identifying the root node of its
+          defining tree within `nodes`. A binding's tree is subject to the
+          same single-consumer rules as the main tree; `ref` nodes are edges
+          into this namespace, never ordinary node-consumer edges. Every
+          declared binding must be referenced at least once.
+        type: object
+        propertyNames: { minLength: 1 }
+        additionalProperties: { $ref: "#/$defs/Binding" }
       root: { $ref: "#/$defs/Root" }
+
+  Binding:
+    title: Binding
+    description: |
+      One named relational value. The binding denotes the single committed
+      bag its defining tree produces for this statement: a nondeterministic
+      body (a slice with no total order) is resolved once, and every
+      reference observes the same choice. The binding's public output is its
+      root's declared output shape — interior scopes never leak.
+    type: object
+    additionalProperties: false
+    required: [node]
+    properties:
+      node:
+        description: The id of the binding's defining root node in `nodes`.
+        type: string
+        minLength: 1
 
   Root:
     title: Root
@@ -148,8 +182,8 @@ $defs:
   Node:
     title: Node
     description: |
-      A relation operator: one node of the relation graph. A closed tagged
-      union of the seven LIR operators, selected by `kind`. Every operator
+      A relation operator: one node of the relation forest. A closed tagged
+      union of the LIR operators, selected by `kind`. Every operator
       consumes relations and produces a relation whose every output attribute
       is addressable by its consumer (relational closure).
     oneOf:
@@ -160,6 +194,32 @@ $defs:
       - { $ref: "#/$defs/AggregateNode" }
       - { $ref: "#/$defs/OrderNode" }
       - { $ref: "#/$defs/SliceNode" }
+      - { $ref: "#/$defs/RefNode" }
+
+  RefNode:
+    description: |
+      One occurrence of a named binding: a fresh variable ranging over the
+      binding's committed value, exactly as a scan is a fresh variable over
+      a table's snapshot. The occurrence exposes the binding's declared
+      output columns under its own `scope`; the binding's interior scopes
+      are not visible through it. References are uniformly zero-or-many
+      rows regardless of the body — determinism-sensitive consumers bring
+      their own order or slice.
+    type: object
+    additionalProperties: false
+    required: [kind, binding, scope]
+    properties:
+      kind: { type: string, const: ref }
+      binding:
+        description: The name of the binding this occurrence observes.
+        type: string
+        minLength: 1
+      scope:
+        description: |
+          The label this occurrence's rows are bound to. Must be unique
+          across the query, like a scan's scope.
+        type: string
+        minLength: 1
 
   ScanNode:
     description: |

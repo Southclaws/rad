@@ -128,6 +128,22 @@
       ],
       "type": "object"
     },
+    "Binding": {
+      "additionalProperties": false,
+      "description": "One named relational value. The binding denotes the single committed\nbag its defining tree produces for this statement: a nondeterministic\nbody (a slice with no total order) is resolved once, and every\nreference observes the same choice. The binding's public output is its\nroot's declared output shape — interior scopes never leak.\n",
+      "properties": {
+        "node": {
+          "description": "The id of the binding's defining root node in `nodes`.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "node"
+      ],
+      "title": "Binding",
+      "type": "object"
+    },
     "CallExpr": {
       "additionalProperties": false,
       "description": "Invoke a named function on `args`. Reserved: the function registry is\nempty in this revision and the binder rejects every call. The node\nexists so that the grammar is stable as functions are added.\n",
@@ -454,7 +470,7 @@
       "type": "object"
     },
     "Node": {
-      "description": "A relation operator: one node of the relation graph. A closed tagged\nunion of the seven LIR operators, selected by `kind`. Every operator\nconsumes relations and produces a relation whose every output attribute\nis addressable by its consumer (relational closure).\n",
+      "description": "A relation operator: one node of the relation forest. A closed tagged\nunion of the LIR operators, selected by `kind`. Every operator\nconsumes relations and produces a relation whose every output attribute\nis addressable by its consumer (relational closure).\n",
       "oneOf": [
         {
           "$ref": "#/$defs/ScanNode"
@@ -476,6 +492,9 @@
         },
         {
           "$ref": "#/$defs/SliceNode"
+        },
+        {
+          "$ref": "#/$defs/RefNode"
         }
       ],
       "title": "Node"
@@ -585,8 +604,18 @@
     },
     "Query": {
       "additionalProperties": false,
-      "description": "A complete query: the relation graph plus its root selector.\n\n`nodes` is a flat map from caller-chosen id to relation node. Edges are\nthe string ids a node names in its `input`, `left`, `right`, or a\ncrossing's `node`. This encoding carries no sharing: an id names exactly\none inline definition, referenced by exactly one consumer, and the graph\nmust be a finite tree (acyclic, every node reachable from `root.node`).\nCyclic, dangling, shared, or unreachable references are rejected before\nbinding.\n",
+      "description": "A complete query: the relation forest plus its root selector.\n\n`nodes` is a flat map from caller-chosen id to relation node. Edges are\nthe string ids a node names in its `input`, `left`, `right`, or a\ncrossing's `node`. This encoding carries no sharing among ordinary\nnodes: an id names exactly one inline definition, referenced by exactly\none consumer. The document is a finite forest — one tree rooted at\n`root.node` plus one tree per binding root — and cyclic, dangling,\nshared, or unreachable definitions are rejected before binding.\n\n`bindings` is the one deliberate sharing construct. A binding names a\nderived relation as a first-class relational value: it denotes one\nstatement-local committed bag, and every `ref` node observes that same\nbag under its own fresh scope — exactly as two scans of one table\nobserve the same snapshot. Binding names, node ids, and scope labels\nare three separate namespaces.\n",
       "properties": {
+        "bindings": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Binding"
+          },
+          "description": "Named relational values, each identifying the root node of its\ndefining tree within `nodes`. A binding's tree is subject to the\nsame single-consumer rules as the main tree; `ref` nodes are edges\ninto this namespace, never ordinary node-consumer edges. Every\ndeclared binding must be referenced at least once.\n",
+          "propertyNames": {
+            "minLength": 1
+          },
+          "type": "object"
+        },
         "nodes": {
           "additionalProperties": {
             "$ref": "#/$defs/Node"
@@ -607,6 +636,32 @@
         "root"
       ],
       "title": "Query",
+      "type": "object"
+    },
+    "RefNode": {
+      "additionalProperties": false,
+      "description": "One occurrence of a named binding: a fresh variable ranging over the\nbinding's committed value, exactly as a scan is a fresh variable over\na table's snapshot. The occurrence exposes the binding's declared\noutput columns under its own `scope`; the binding's interior scopes\nare not visible through it. References are uniformly zero-or-many\nrows regardless of the body — determinism-sensitive consumers bring\ntheir own order or slice.\n",
+      "properties": {
+        "binding": {
+          "description": "The name of the binding this occurrence observes.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "ref",
+          "type": "string"
+        },
+        "scope": {
+          "description": "The label this occurrence's rows are bound to. Must be unique\nacross the query, like a scan's scope.\n",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "binding",
+        "scope"
+      ],
       "type": "object"
     },
     "Root": {

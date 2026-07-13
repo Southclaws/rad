@@ -23,7 +23,7 @@ func graphQuery(q protocol.Query) (lir.Query, error) {
 	if err := validateWireShapes(q); err != nil {
 		return lir.Query{}, err
 	}
-	if err := validateRelationTree(q); err != nil {
+	if err := validateRelationForest(q); err != nil {
 		return lir.Query{}, err
 	}
 	g := &graphConv{nodes: q.Nodes, building: map[string]bool{}}
@@ -31,7 +31,18 @@ func graphQuery(q protocol.Query) (lir.Query, error) {
 	if err != nil {
 		return lir.Query{}, err
 	}
-	return lir.Query{Root: root, Card: lir.RootCard(q.Root.Cardinality)}, nil
+	var bindings map[string]lir.Relation
+	if len(q.Bindings) > 0 {
+		bindings = make(map[string]lir.Relation, len(q.Bindings))
+		for name, b := range q.Bindings {
+			body, err := g.rel(b.Node)
+			if err != nil {
+				return lir.Query{}, err
+			}
+			bindings[name] = body
+		}
+	}
+	return lir.Query{Root: root, Card: lir.RootCard(q.Root.Cardinality), Bindings: bindings}, nil
 }
 
 // validateWireShapes mirrors the schema's structural checks for callers that
@@ -137,6 +148,13 @@ func validateWireShapes(q protocol.Query) error {
 			if n.Limit != nil && *n.Limit < 0 {
 				return wireErrf("node %q slice limit must be >= 0", name)
 			}
+		case "ref":
+			if n.Binding == "" {
+				return missing("binding")
+			}
+			if n.Scope == "" {
+				return missing("scope")
+			}
 		default:
 			return wireErrf("node %q has unknown kind %q", name, n.Kind)
 		}
@@ -198,17 +216,34 @@ func validateWireExpr(e *protocol.Expr, where string) error {
 	return nil
 }
 
-// validateRelationTree proves that the flat node map encodes exactly one
-// finite, single-consumer relation tree. Node IDs are references to inline
-// definitions only: they carry no sharing, memoisation, or evaluation
-// identity. General DAG semantics require an explicit binding construct and
-// are intentionally outside the current LIR contract.
-func validateRelationTree(q protocol.Query) error {
+// validateRelationForest proves that the flat node map encodes a finite,
+// single-consumer relation forest: one tree rooted at root.node plus one
+// tree per binding root. Ordinary node ids carry no sharing identity —
+// every node has exactly one consumer (its parent edge, or the root/binding
+// declaration that names it). References are edges into the binding
+// namespace, never node-consumer edges; sharing exists only there, and the
+// binding dependency graph must itself be acyclic with every binding used.
+func validateRelationForest(q protocol.Query) error {
 	if q.Root.Node == "" {
 		return wireErrf("missing root node reference")
 	}
 	if _, ok := q.Nodes[q.Root.Node]; !ok {
 		return wireErrf("unknown node %q", q.Root.Node)
+	}
+
+	bindingNames := make([]string, 0, len(q.Bindings))
+	for name := range q.Bindings {
+		bindingNames = append(bindingNames, name)
+	}
+	slices.Sort(bindingNames)
+	for _, name := range bindingNames {
+		b := q.Bindings[name]
+		if b.Node == "" {
+			return wireErrf("binding %q is missing its defining node", name)
+		}
+		if _, ok := q.Nodes[b.Node]; !ok {
+			return wireErrf("binding %q names unknown node %q", name, b.Node)
+		}
 	}
 
 	const (
@@ -218,6 +253,9 @@ func validateRelationTree(q protocol.Query) error {
 	state := map[string]uint8{}
 	consumers := map[string]int{}
 	reachable := map[string]bool{}
+	refUses := map[string]int{}
+	var currentTree string // "" = the main tree; else the binding being walked
+	bindingDeps := map[string][]string{}
 
 	var visit func(string) error
 	visit = func(name string) error {
@@ -236,6 +274,15 @@ func validateRelationTree(q protocol.Query) error {
 		}
 		state[name] = visiting
 		reachable[name] = true
+		if n.Kind == "ref" {
+			if _, ok := q.Bindings[n.Binding]; !ok {
+				return wireErrf("node %q references unknown binding %q", name, n.Binding)
+			}
+			refUses[n.Binding]++
+			if currentTree != "" {
+				bindingDeps[currentTree] = append(bindingDeps[currentTree], n.Binding)
+			}
+		}
 		for _, ref := range relationRefs(n) {
 			if ref == "" {
 				return wireErrf("node %q has a missing node reference", name)
@@ -245,18 +292,47 @@ func validateRelationTree(q protocol.Query) error {
 				return err
 			}
 			if consumers[ref] > 1 {
-				return wireErrf("node %q has multiple consumers; LIR requires a single-consumer relation tree", ref)
+				return wireErrf("node %q has multiple consumers; LIR requires a single-consumer relation forest — name it as a binding to share it", ref)
 			}
 		}
 		state[name] = visited
 		return nil
 	}
 
+	// Tree roots must be distinct: root.node and every binding root each
+	// head exactly one tree.
+	roots := map[string]string{q.Root.Node: "the query root"}
+	for _, name := range bindingNames {
+		bn := q.Bindings[name].Node
+		if prev, taken := roots[bn]; taken {
+			return wireErrf("node %q roots both %s and binding %q", bn, prev, name)
+		}
+		roots[bn] = fmt.Sprintf("binding %q", name)
+	}
+
 	if err := visit(q.Root.Node); err != nil {
 		return err
 	}
-	if consumers[q.Root.Node] != 0 {
-		return wireErrf("root node %q is also consumed by another node", q.Root.Node)
+	for _, name := range bindingNames {
+		currentTree = name
+		if err := visit(q.Bindings[name].Node); err != nil {
+			return err
+		}
+	}
+	currentTree = ""
+
+	for root, owner := range roots {
+		if consumers[root] != 0 {
+			return wireErrf("node %q heads %s and is also consumed by another node", root, owner)
+		}
+	}
+	for _, name := range bindingNames {
+		if refUses[name] == 0 {
+			return wireErrf("binding %q is never referenced", name)
+		}
+	}
+	if err := checkBindingCycles(bindingNames, bindingDeps); err != nil {
+		return err
 	}
 	if len(reachable) != len(q.Nodes) {
 		var unused []string
@@ -267,6 +343,40 @@ func validateRelationTree(q protocol.Query) error {
 		}
 		slices.Sort(unused)
 		return wireErrf("unreachable node definitions: %s", fmt.Sprint(unused))
+	}
+	return nil
+}
+
+// checkBindingCycles rejects cyclic dependencies among bindings (a binding
+// whose tree references itself, directly or through other bindings).
+// Recursion is a future construct with its own rules, never an accident.
+func checkBindingCycles(names []string, deps map[string][]string) error {
+	const (
+		visiting = 1
+		visited  = 2
+	)
+	state := map[string]uint8{}
+	var visit func(string) error
+	visit = func(name string) error {
+		switch state[name] {
+		case visiting:
+			return wireErrf("binding %q is part of a binding cycle", name)
+		case visited:
+			return nil
+		}
+		state[name] = visiting
+		for _, dep := range deps[name] {
+			if err := visit(dep); err != nil {
+				return err
+			}
+		}
+		state[name] = visited
+		return nil
+	}
+	for _, name := range names {
+		if err := visit(name); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -444,6 +554,9 @@ func (g *graphConv) rel(name string) (lir.Relation, error) {
 			offset = *n.Offset
 		}
 		return lir.Slice{Input: in, Offset: offset, Limit: n.Limit}, nil
+
+	case "ref":
+		return lir.Ref{Binding: n.Binding, Scope: n.Scope}, nil
 
 	default:
 		return nil, wireErrf("node %q has unknown kind %q", name, n.Kind)

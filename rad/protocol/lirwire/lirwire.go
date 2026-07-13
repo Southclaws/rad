@@ -329,6 +329,16 @@ type AggTerm struct {
 	Fn string `json:"fn"`
 }
 
+// One named relational value. The binding denotes the single committed
+// bag its defining tree produces for this statement: a nondeterministic
+// body (a slice with no total order) is resolved once, and every
+// reference observes the same choice. The binding's public output is its
+// root's declared output shape — interior scopes never leak.
+type Binding struct {
+	// The id of the binding's defining root node in `nodes`.
+	Node string `json:"node"`
+}
+
 // One computed output attribute of a projection: the expression `expr`
 // under the output name `as`. When `expr` is a crossing the field
 // materialises a nested value: `first` renders an object (or null), `array`
@@ -474,6 +484,8 @@ func (w *Node) UnmarshalJSON(data []byte) error {
 		v = &OrderNode{}
 	case "slice":
 		v = &SliceNode{}
+	case "ref":
+		v = &RefNode{}
 	default:
 		return fmt.Errorf("Node: unknown type %q", peek.Type)
 	}
@@ -669,6 +681,27 @@ func (SliceNode) isNode() {}
 
 func (SliceNode) NodeType() string { return "slice" }
 
+// One occurrence of a named binding: a fresh variable ranging over the
+// binding's committed value, exactly as a scan is a fresh variable over
+// a table's snapshot. The occurrence exposes the binding's declared
+// output columns under its own `scope`; the binding's interior scopes
+// are not visible through it. References are uniformly zero-or-many
+// rows regardless of the body — determinism-sensitive consumers bring
+// their own order or slice.
+type RefNode struct {
+	// The name of the binding this occurrence observes.
+	Binding string `json:"binding"`
+	Kind    string `json:"kind"`
+	// The label this occurrence's rows are bound to. Must be unique
+	// across the query, like a scan's scope.
+	//
+	Scope string `json:"scope"`
+}
+
+func (RefNode) isNode() {}
+
+func (RefNode) NodeType() string { return "ref" }
+
 // Selects the result relation and how its rows materialise into the
 // response body:
 //
@@ -690,16 +723,30 @@ type Root struct {
 	Node string `json:"node"`
 }
 
-// A complete query: the relation graph plus its root selector.
+// A complete query: the relation forest plus its root selector.
 //
 // `nodes` is a flat map from caller-chosen id to relation node. Edges are
 // the string ids a node names in its `input`, `left`, `right`, or a
-// crossing's `node`. This encoding carries no sharing: an id names exactly
-// one inline definition, referenced by exactly one consumer, and the graph
-// must be a finite tree (acyclic, every node reachable from `root.node`).
-// Cyclic, dangling, shared, or unreachable references are rejected before
-// binding.
+// crossing's `node`. This encoding carries no sharing among ordinary
+// nodes: an id names exactly one inline definition, referenced by exactly
+// one consumer. The document is a finite forest — one tree rooted at
+// `root.node` plus one tree per binding root — and cyclic, dangling,
+// shared, or unreachable definitions are rejected before binding.
+//
+// `bindings` is the one deliberate sharing construct. A binding names a
+// derived relation as a first-class relational value: it denotes one
+// statement-local committed bag, and every `ref` node observes that same
+// bag under its own fresh scope — exactly as two scans of one table
+// observe the same snapshot. Binding names, node ids, and scope labels
+// are three separate namespaces.
 type Query struct {
+	// Named relational values, each identifying the root node of its
+	// defining tree within `nodes`. A binding's tree is subject to the
+	// same single-consumer rules as the main tree; `ref` nodes are edges
+	// into this namespace, never ordinary node-consumer edges. Every
+	// declared binding must be referenced at least once.
+	//
+	Bindings map[string]Binding `json:"bindings,omitempty"`
 	// The relation nodes of the query, keyed by caller-chosen id. Ids are
 	// opaque labels with no meaning beyond linking a consumer to its
 	// input; they carry no sharing or materialisation identity.

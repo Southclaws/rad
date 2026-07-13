@@ -70,6 +70,22 @@ func conformanceQueries() map[string]lir.Query {
 			},
 			Pred: lir.Unary{Op: lir.OpIsNotNull, X: qcol("p", "assignee")},
 		}),
+		"binding self-join": {
+			Card: lir.CardMany,
+			Bindings: map[string]lir.Relation{
+				"b1tasks": qfilter(qscan("tasks", "t"),
+					qeq(qcol("t", "board_id"), qlit("b1"))),
+			},
+			Root: lir.Order{
+				Input: lir.Join{
+					Left:  lir.Ref{Binding: "b1tasks", Scope: "a"},
+					Right: lir.Ref{Binding: "b1tasks", Scope: "b"},
+					Kind:  lir.InnerJoin,
+					On:    qeq(qcol("a", "id"), qcol("b", "id")),
+				},
+				Terms: []lir.OrderTerm{{Expr: qcol("a", "id")}},
+			},
+		},
 	}
 }
 
@@ -104,6 +120,9 @@ func executeFullScan(ctx context.Context, e *Engine, q lir.Query) (lir.Datum, er
 	pp := planner.PlanQuery(bq, planner.FullScanOnly())
 
 	ex := newExecutor(e.store)
+	if err := ex.commit(ctx, pp.Bindings); err != nil {
+		return lir.Datum{}, err
+	}
 	op, err := ex.build(ctx, pp.Root, bound.Env{})
 	if err != nil {
 		return lir.Datum{}, err

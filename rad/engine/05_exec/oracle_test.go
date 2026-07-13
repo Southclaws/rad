@@ -66,7 +66,16 @@ func interpQuery(ctx context.Context, e *Engine, q lir.Query) (lir.Datum, error)
 	if err != nil {
 		return lir.Datum{}, err
 	}
-	in := &interp{ctx: ctx, view: e.store, next: bq.Slots}
+	in := &interp{ctx: ctx, view: e.store, next: bq.Slots, bindings: map[string][]bound.Env{}}
+	// Commit-once in the oracle too: each binding evaluates exactly once,
+	// in dependency order, and every occurrence observes that value.
+	for _, bnd := range bq.Bindings {
+		committed, err := in.rel(bnd.Root, bound.Env{})
+		if err != nil {
+			return lir.Datum{}, err
+		}
+		in.bindings[bnd.Name] = committed
+	}
 	rows, err := in.rel(bq.Root, bound.Env{})
 	if err != nil {
 		return lir.Datum{}, err
@@ -102,13 +111,31 @@ func interpQuery(ctx context.Context, e *Engine, q lir.Query) (lir.Datum, error)
 }
 
 type interp struct {
-	ctx  context.Context
-	view kv.KV
-	next lir.SlotID // scratch slots for crossing substitution
+	ctx      context.Context
+	view     kv.KV
+	next     lir.SlotID // scratch slots for crossing substitution
+	bindings map[string][]bound.Env
 }
 
 func (in *interp) rel(r bound.Relation, outer bound.Env) ([]bound.Env, error) {
 	switch n := r.(type) {
+	case *bound.Ref:
+		src, ok := in.bindings[n.Binding]
+		if !ok {
+			return nil, fmt.Errorf("oracle: binding %q not committed", n.Binding)
+		}
+		out := make([]bound.Env, len(src))
+		for i, row := range src {
+			env := newFrame(outer)
+			for j, fld := range n.Output().Fields {
+				if d, has := row[n.Canon[j]]; has {
+					env[fld.Slot] = d
+				}
+			}
+			out[i] = env
+		}
+		return out, nil
+
 	case *bound.Scan:
 		it, err := scanTable(in.ctx, in.view, n.Table)
 		if err != nil {

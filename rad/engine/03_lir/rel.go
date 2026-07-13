@@ -121,6 +121,15 @@ type Slice struct {
 	Limit  *int
 }
 
+// Ref is one occurrence of a named binding: a fresh variable ranging over
+// the binding's committed value, exactly as a scan is a fresh variable over
+// a table's snapshot. The occurrence exposes the binding's output columns
+// under Scope; the binding's interior scopes are not visible through it.
+type Ref struct {
+	Binding string
+	Scope   string
+}
+
 func (Scan) rel()      {}
 func (Filter) rel()    {}
 func (Project) rel()   {}
@@ -128,6 +137,7 @@ func (Join) rel()      {}
 func (Aggregate) rel() {}
 func (Order) rel()     {}
 func (Slice) rel()     {}
+func (Ref) rel()       {}
 
 // RootCard states how the root relation materialises on the wire.
 type RootCard string
@@ -139,8 +149,11 @@ const (
 	CardScalar     RootCard = "scalar"      // single value or null; root arity 1, at most one row
 )
 
-// Query is a root relation plus its materialisation mode.
+// Query is a root relation plus its materialisation mode, and the named
+// bindings its Ref occurrences observe. Each binding denotes one
+// statement-local committed relational value.
 type Query struct {
-	Root Relation
-	Card RootCard
+	Root     Relation
+	Card     RootCard
+	Bindings map[string]Relation
 }

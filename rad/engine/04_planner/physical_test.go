@@ -183,3 +183,61 @@ const forcingPlanGolden = `Plan card=many
                   IndexRangeScan tasks tasks_board_status_idx [board_id = @0, status = "open"]
       TableScan boards
 `
+
+// A binding lowers once and prints once; each occurrence is a Ref line.
+// The arbitrary slice marks its binding plan-choice-sensitive; the
+// deterministic filter binding is not.
+func TestPlanBindings(t *testing.T) {
+	q := bind(t, lir.Query{
+		Card: lir.CardMany,
+		Bindings: map[string]lir.Relation{
+			"top": lir.Slice{Input: bscan("tasks", "t"), Limit: new(int(2))},
+		},
+		Root: lir.Join{
+			Left:  lir.Ref{Binding: "top", Scope: "a"},
+			Right: lir.Ref{Binding: "top", Scope: "b"},
+			Kind:  lir.InnerJoin,
+			On:    beq(bcol("a", "id"), bcol("b", "id")),
+		},
+	})
+	got := planner.PrintPlan(planner.PlanQuery(q))
+	wantPlan(t, got, `Plan card=many
+  Binding top plan-choice-sensitive
+    Slice offset=0 limit=2
+      TableScan tasks
+  NestedLoopJoin inner on eq(a.id#7, b.id#14)
+    Ref top
+    Ref top
+`)
+}
+
+// Sensitivity classification: a slice is conservatively sensitive; a plain
+// filter is not; a reference to a sensitive binding is NOT itself sensitive
+// (it observes an already-committed value).
+func TestPlanBindingSensitivity(t *testing.T) {
+	q := bind(t, lir.Query{
+		Card: lir.CardMany,
+		Bindings: map[string]lir.Relation{
+			"arb":  lir.Slice{Input: bscan("tasks", "t"), Limit: new(int(2))},
+			"det":  bfilter(bscan("tasks", "u"), beq(bcol("u", "status"), blit("open"))),
+			"over": bfilter(lir.Ref{Binding: "arb", Scope: "r"}, beq(bcol("r", "status"), blit("open"))),
+		},
+		Root: lir.Join{
+			Left: lir.Ref{Binding: "det", Scope: "d"},
+			Right: lir.Join{
+				Left:  lir.Ref{Binding: "over", Scope: "o"},
+				Right: lir.Ref{Binding: "arb", Scope: "a"},
+				Kind:  lir.InnerJoin,
+				On:    beq(bcol("o", "id"), bcol("a", "id")),
+			},
+			Kind: lir.InnerJoin,
+			On:   beq(bcol("d", "id"), bcol("o", "id")),
+		},
+	})
+	want := map[string]bool{"arb": true, "det": false, "over": false}
+	for _, b := range q.Bindings {
+		if b.PlanSensitive != want[b.Name] {
+			t.Fatalf("binding %q sensitivity = %v, want %v", b.Name, b.PlanSensitive, want[b.Name])
+		}
+	}
+}

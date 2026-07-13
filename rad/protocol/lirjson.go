@@ -111,9 +111,17 @@ func queryToWire(q Query) (lirwire.Query, error) {
 		}
 		nodes[name] = w
 	}
+	var bindings map[string]lirwire.Binding
+	if len(q.Bindings) > 0 {
+		bindings = make(map[string]lirwire.Binding, len(q.Bindings))
+		for name, b := range q.Bindings {
+			bindings[name] = lirwire.Binding{Node: b.Node}
+		}
+	}
 	return lirwire.Query{
-		Nodes: nodes,
-		Root:  lirwire.Root{Node: q.Root.Node, Cardinality: q.Root.Cardinality},
+		Nodes:    nodes,
+		Bindings: bindings,
+		Root:     lirwire.Root{Node: q.Root.Node, Cardinality: q.Root.Cardinality},
 	}, nil
 }
 
@@ -126,7 +134,14 @@ func queryFromWire(w lirwire.Query) (Query, error) {
 		}
 		nodes[name] = n
 	}
-	return Query{Nodes: nodes, Root: Root{Node: w.Root.Node, Cardinality: w.Root.Cardinality}}, nil
+	var bindings map[string]Binding
+	if len(w.Bindings) > 0 {
+		bindings = make(map[string]Binding, len(w.Bindings))
+		for name, b := range w.Bindings {
+			bindings[name] = Binding{Node: b.Node}
+		}
+	}
+	return Query{Nodes: nodes, Bindings: bindings, Root: Root{Node: w.Root.Node, Cardinality: w.Root.Cardinality}}, nil
 }
 
 func nodeToWire(n Node) (lirwire.Node, error) {
@@ -190,6 +205,8 @@ func nodeToWire(n Node) (lirwire.Node, error) {
 		u = &lirwire.OrderNode{Kind: "order", Input: n.Input, Terms: terms}
 	case "slice":
 		u = &lirwire.SliceNode{Kind: "slice", Input: n.Input, Offset: n.Offset, Limit: n.Limit}
+	case "ref":
+		u = &lirwire.RefNode{Kind: "ref", Binding: n.Binding, Scope: n.Scope}
 	default:
 		return lirwire.Node{}, fmt.Errorf("unknown relation kind %q", n.Kind)
 	}
@@ -250,6 +267,8 @@ func nodeFromWire(n lirwire.Node) (Node, error) {
 		return Node{Kind: "order", Input: x.Input, Terms: terms}, nil
 	case *lirwire.SliceNode:
 		return Node{Kind: "slice", Input: x.Input, Offset: x.Offset, Limit: x.Limit}, nil
+	case *lirwire.RefNode:
+		return Node{Kind: "ref", Binding: x.Binding, Scope: x.Scope}, nil
 	default:
 		return Node{}, fmt.Errorf("unknown generated relation variant %T", n.NodeUnion)
 	}

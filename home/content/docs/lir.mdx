@@ -248,14 +248,50 @@ spelling of something SQL habits get wrong:
 - **Project joins explicitly.** Raw join rows are never flattened; spreading
   both sides collides when column names repeat (`id` almost always).
   Enumerate the fields you want.
-- **Reuse a computed value by labelling, not repeating.** To order by a
-  derived value *and* return it, compute it once in a labelled projection
-  and order by the projection's column above. Node definitions are
-  single-consumer — the same node cannot feed two operators — so the
-  labelled-projection idiom is the sharing mechanism until an explicit
-  binding construct exists.
+- **Reuse a computed column by labelling; reuse a relation by binding.**
+  To order by a derived value *and* return it inside one pipeline, compute
+  it once in a labelled projection and order by the projection's column
+  above. To use the same derived *relation* in sibling contexts — a
+  self-join of per-customer stats, one subset both folded and listed —
+  name it in `bindings` and reference it (see below); ordinary node
+  definitions remain single-consumer.
 - **Text keys order lexicographically**: `"i10" < "i9"`. Zero-pad, or use
   int64 keys where humans will read the order.
+
+## Relation bindings
+
+A binding names a derived relation as a first-class relational value — the
+CTE, without the SQL. It denotes **one statement-local committed bag**;
+every `ref` observes that same bag under its own fresh scope, exactly as
+two scans of one table observe the same snapshot:
+
+```json
+{
+  "nodes": {
+    "o":    { "kind": "scan", "table": "orders", "scope": "o" },
+    "per":  { "kind": "aggregate", "input": "o", "scope": "e",
+              "groups": [ { "expr": { "kind": "col", "scope": "o", "column": "customer_id" } } ],
+              "aggs":   [ { "fn": "count", "as": "n" } ] },
+    "a":    { "kind": "ref", "binding": "expensive", "scope": "a" },
+    "b":    { "kind": "ref", "binding": "expensive", "scope": "b" },
+    "j":    { "kind": "join", "left": "a", "right": "b", "join": "inner",
+              "on": { "kind": "binary", "op": "eq",
+                "left":  { "kind": "col", "scope": "a", "column": "customer_id" },
+                "right": { "kind": "col", "scope": "b", "column": "customer_id" } } }
+  },
+  "bindings": { "expensive": { "node": "per" } },
+  "root": { "node": "j", "cardinality": "many" }
+}
+```
+
+Commitment matters most when the body is declared-arbitrary: `bindings`
+over an orderless `slice` resolves the choice *once*, so a self-join of
+"any hundred events" is genuinely a self-join. Writing a subtree twice
+remains two independent draws — reference for one choice, duplicate for
+two. Bindings are closed (no reaching out to enclosing scopes), expose
+only their output columns through the reference (interior scopes stay
+hidden, duplicate output names are rejected), and references are always
+zero-or-many rows — bring your own order or slice for `first`/`scalar`.
 
 ## What this deliberately does not do
 

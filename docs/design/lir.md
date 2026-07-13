@@ -275,12 +275,13 @@ N+1 is no longer the semantics; it is at most an implementation fallback.
 
 ## The wire format
 
-`POST /query` takes a strict LIR relation tree encoded as a flat map of
-caller-chosen node ids. References are plain strings, but every definition is
-inline: node ids have no sharing, memoisation, or materialisation identity.
-The preflight rejects cycles, dangling references, shared definitions, and
-unreachable definitions. General DAG sharing requires a future explicit
-binding construct.
+`POST /query` takes a strict LIR relation forest encoded as a flat map of
+caller-chosen node ids. References among ordinary nodes are plain strings,
+and every definition is inline: node ids have no sharing, memoisation, or
+materialisation identity. The preflight validates the document as a forest —
+one tree rooted at `root.node`, one tree per binding root — rejecting
+cycles, dangling references, shared definitions, and unreachable
+definitions.
 
 Nodes and expressions are closed JSON Schema `oneOf` unions selected by
 `kind`. Unknown fields, fields belonging to another variant, invalid operators,
@@ -292,8 +293,9 @@ tagged unions from `rad/protocol/lir.schema.json`; the server validates the raw
 document against that same schema before decoding or planning it.
 
 ```text
-Query   { nodes: { <id>: RelNode }, root: { node, cardinality } }
-RelNode kind ∈ scan filter project join aggregate order slice
+Query   { nodes: { <id>: RelNode }, bindings?: { <name>: {node} },
+          root: { node, cardinality } }
+RelNode kind ∈ scan filter project join aggregate order slice ref
 Expr    kind ∈ lit col unary binary call cast exists first scalar array
 ```
 
@@ -382,11 +384,52 @@ Nobody hand-writes this. The generated clients keep their fluent surface —
 a graphical builder, or a terser DSL can emit it later. The canonical IR
 optimises for unambiguous semantics, not keystrokes.
 
-## Binding
+## Relation bindings
 
-The wire tree first passes strict tagged-union and exact-tree validation, then
-decodes into *unbound* IR: table and column names, raw JSON literals, scope
-labels. The binder — the engine's front door — produces
+Bindings are the one deliberate sharing construct — derived relations as
+first-class relational values. The normative kernel:
+
+> A binding denotes one statement-local relational value. Every reference
+> observes that same bag of rows and values. Each reference exposes it
+> under a fresh local alias. The physical planner may evaluate that value
+> by inlining, duplicating, streaming, caching, or materialising the
+> binding — anywhere doing so is observationally indistinguishable.
+
+The model mirrors base tables exactly: one definition (the binding's tree),
+one value per statement (a *committed* bag — a binding over a
+declared-arbitrary body such as an orderless `slice` resolves the choice
+once), N occurrences (`ref` nodes, each a fresh scope over the same value,
+as two scans of one table are two variables over one snapshot). A self-join
+of a binding is therefore genuinely a self-join: the diagonal exists no
+matter how arbitrary the body.
+
+Rules, each pinned by tests:
+
+- `bindings` maps names to root nodes within `nodes`; ordinary edges remain
+  tree-shaped, `ref` edges point into the binding namespace. The preflight
+  rejects unused bindings, refs to unknown bindings, and binding cycles
+  (recursion is a future construct, never an accident).
+- Bindings are closed: a body referencing scopes outside its own tree fails
+  to bind. Interior scopes never leak through a reference — the public
+  contract is the output schema (names, types, nullability), which must be
+  well-formed (duplicate output columns are rejected with the
+  project-explicitly remedy).
+- References are uniformly 0..many regardless of the body: static
+  cardinality is not part of the contract, so `first`/`scalar` consumers of
+  a reference bring their own order or slice.
+- Commit-once is the semantic obligation, not evaluate-once: the current
+  implementation materialises every binding once, in dependency order,
+  before the root runs; identical-plan replay is a valid future strategy
+  because replay determinism reproduces the commitment. The binder derives
+  *plan-choice sensitivity* (can two valid plans commit different bags?)
+  conservatively — visible in EXPLAIN — for the day occurrence strategies
+  diverge.
+
+## Name binding
+
+The wire tree first passes strict tagged-union and exact-forest validation,
+then decodes into *unbound* IR: table and column names, raw JSON literals,
+scope labels. The binder — the engine's front door — produces
 *bound* IR in one recursive walk:
 
 ```text
@@ -513,16 +556,21 @@ present-with-null; children are arrays, never null; folds are scalar objects).
   scans; no descending scans.
 - No `Call` registry, no expression arithmetic on the wire from the generated
   clients (the grammar carries it; nothing emits it yet).
-- No dedicated `DISTINCT`, window functions, recursive queries, CTE bindings,
-  quantified comparisons, or relational `LATERAL`/`APPLY`. `HAVING` is already
-  ordinary `Filter(Aggregate(...))`; GROUP BY is `Aggregate.groups`.
+- No dedicated `DISTINCT`, window functions, recursive queries, quantified
+  comparisons, or relational `LATERAL`/`APPLY`. `HAVING` is already ordinary
+  `Filter(Aggregate(...))`; GROUP BY is `Aggregate.groups`; CTE-style
+  sharing is relation bindings (above).
+- No correlated bindings (a binding is closed; per-environment commitment is
+  designed but not built) and no per-occurrence plan divergence (every
+  binding materialises once — the sensitivity classification exists for the
+  optimisation's arrival).
 - No numeric widening in comparisons; no configurable NULL-distinctness
   (NULLs-distinct is the one behaviour).
 
 Each is a future feature, not a reason to weaken the contract: relation
 features remain relation operators, expression features compute datums, and
-future sharing or recursion must introduce explicit semantics rather than
-turning arbitrary wire cycles into meaning.
+recursion must introduce explicit semantics rather than turning arbitrary
+wire cycles into meaning.
 
 ## Disposition of earlier POC deviations
 

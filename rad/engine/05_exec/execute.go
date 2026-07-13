@@ -57,6 +57,9 @@ func (e *Engine) execute(ctx context.Context, view kv.KV, q lir.Query, forceNest
 
 	ex := newExecutor(view)
 	ex.forceNested = forceNested
+	if err := ex.commit(ctx, pp.Bindings); err != nil {
+		return lir.Datum{}, err
+	}
 	op, err := ex.build(ctx, pp.Root, bound.Env{})
 	if err != nil {
 		return lir.Datum{}, err

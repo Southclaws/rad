@@ -118,7 +118,18 @@ func NewProblem(code string, status int, detail string) Problem {
 // while LIR remains an internal, freely breakable API surface.
 type Query struct {
 	Nodes map[string]Node `json:"nodes"`
-	Root  Root            `json:"root"`
+	// Bindings are named relational values: each identifies the root of its
+	// defining tree in Nodes. A binding denotes one statement-local
+	// committed bag; every ref node observes the same bag under a fresh
+	// scope. Binding names, node ids, and scope labels are separate
+	// namespaces.
+	Bindings map[string]Binding `json:"bindings,omitempty"`
+	Root     Root               `json:"root"`
+}
+
+// Binding names one relational value by its defining root node.
+type Binding struct {
+	Node string `json:"node"`
 }
 
 // Root selects the result node and how it materialises: many | first |
@@ -135,7 +146,8 @@ type Node struct {
 	Kind string `json:"kind"`
 
 	Table     string      `json:"table,omitempty"`     // scan
-	Scope     string      `json:"scope,omitempty"`     // scan (required), project, aggregate
+	Scope     string      `json:"scope,omitempty"`     // scan/ref (required), project, aggregate
+	Binding   string      `json:"binding,omitempty"`   // ref
 	Input     string      `json:"input,omitempty"`     // filter, project, aggregate, order, slice
 	Left      string      `json:"left,omitempty"`      // join
 	Right     string      `json:"right,omitempty"`     // join

@@ -1,12 +1,18 @@
 # Relation bindings: derived relations as first-class relational values
 
-Status: reviewed 2026-07-13 — **ready for implementation design**. The
-semantics, the surface shape, and the contract questions are settled below;
-what remains (binder representation, the physical seam) is decided
-concretely against the current binder and planner, following the
-implementation order at the end. This is a grammar change to
-lir.schema.yaml — the only one to come out of the battle-test campaign
-(F7 in tasks/3-done/lir-improvements.md).
+Status: **implemented through step 6** (2026-07-13) — schema, forest
+preflight, binder (canonical slots, closed bindings, sensitivity,
+occurrence remapping, unique-output contract), planner (BindingPlan +
+RefExec; EXPLAIN shows each binding once with its sensitivity), executor
+(materialise-once commitment in dependency order), and the acceptance
+suite: the diagonal self-join over an arbitrary binding, alias isolation,
+hidden-scope rejection, chained bindings, uniform-0..many probes, the
+forest preflight probes, nested depth-6 linearity, and a binding query in
+the conformance corpus (path independence, oracle, replay determinism).
+Remaining: step 7 (identical-plan replay as an optimisation, gated on the
+sensitivity flag) and step 8 (correlated bindings). This was the only
+grammar change to come out of the battle-test campaign (F7 in
+tasks/3-done/lir-improvements.md).
 
 The question this document answers is not "should LIR allow DAGs?" (it
 should not, and does not — see the preflight rules below). It is: **should
