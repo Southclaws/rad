@@ -8,23 +8,54 @@ design is settled explicitly.
 ## The problem
 
 LIR is a strict single-consumer tree: a node id names one inline definition,
-consumed exactly once, with no sharing or materialisation identity. Any
-query that needs the same derived relation twice must either:
+consumed exactly once, with no sharing or materialisation identity. A query
+that needs the same derived relation in two *sibling* contexts — a self-join
+of a CTE-shaped derived table, or one derived relation used as both a nested
+array and a fold — must duplicate the subtree under fresh ids and scopes.
 
-- duplicate the subtree under fresh ids and scopes, or
-- restructure via the labelled-projection idiom (compute the value once in a
-  `project` with a `scope`, then order/filter/re-project by that scope's
-  columns above).
+(Scoped out after design discussion: "order by a computed value and also
+return it" is NOT a motivating case. The labelled projection is the proper
+relational expression of that — a column-level data dependency in one linear
+pipeline — not a workaround. Sharing is only about sibling contexts.)
 
-The idiom covers the common cases well — the battle corpus expressed
-"order by a crossing value and also return it" this way without friction —
-but two pressures will grow:
+The pressures:
 
-- **Query compilers.** A SQL frontend lowering a CTE, a repeated subquery,
-  or `SELECT expr … ORDER BY expr` wants to emit one definition and
-  reference it, not run its own duplication/restructuring pass.
+- **Query compilers.** A SQL frontend lowering a multi-referenced CTE or
+  repeated subquery wants to emit one definition and reference it, not run
+  its own duplication pass.
 - **Physical reuse.** Duplicated subtrees are re-planned and re-executed;
   a binding construct is the natural seam for materialise-once.
+
+## The settled framing: definition / value / occurrence
+
+Design discussion (2026-07-13) settled the model. Base tables already
+exhibit the full structure: one *definition* (the catalog entry), one
+*value* per statement (the bag the snapshot pins), N *occurrences*
+(`scan(orders, "a")`, `scan(orders, "b")` — fresh scopes and slots each).
+
+Two points are agreed:
+
+- **References instantiate.** Each occurrence of a binding gets fresh scope
+  and slots — a self-join `join(ref expensive AS a, ref expensive AS b)`
+  needs `a.user_id` and `b.user_id` as distinct bindings; literally shared
+  output slots cannot express it. (This retracts the earlier "bound-once
+  shared slots" framing in this file's first draft.)
+- **Physical reuse is the planner's.** Materialise-once vs recompute must be
+  invisible.
+
+The one open question: **do two occurrences of a binding range over the same
+bag?** For a declared-arbitrary body (`slice` with no order), macro
+semantics (each ref independently re-denotes the definition) permits the
+occurrences to differ — which makes a "self-join" of such a binding not a
+self-join, and makes materialise-vs-recompute observable, breaking path
+independence. Value semantics (occurrences are variables over one bag, as
+scans are over one snapshot) keeps self-joins honest, keeps the conformance
+oracle able to pin results, and mirrors SQL precedent (a query name denotes
+a table; Postgres materialises multi-referenced CTEs by default, divergence
+is the opt-in). Cost of value semantics: nondeterministic bodies are
+compute-once (or provably-equal recompute), and a correlated binding means
+"one value per outer environment" — which is exactly the semantics the
+attach machinery's per-DISTINCT-key deduplication already implements.
 
 ## Why the current rules are load-bearing (do not weaken casually)
 
@@ -66,11 +97,11 @@ but two pressures will grow:
    through refs to declared bindings"; cycle rejection must extend through
    binding references (no recursive bindings — recursion is its own future
    construct with its own rules).
-6. **Binder mechanics**: bound-once slot assignment means a shared relation
-   has ONE set of output slots — two refs see the same slots. That is
-   exactly what makes "order by it and project it" work, and exactly what a
-   correlated-per-consumer semantics would break. This tension (shared
-   slots vs per-consumer correlation) is the heart of the design.
+6. **Binder mechanics**: bind the definition once; each reference mints
+   fresh slots for the binding's *output row type* only, plus an
+   occurrence→binding slot renaming. Linear in occurrences × output width —
+   unlike macro expansion, which re-binds the whole subtree per occurrence
+   and goes exponential under nested bindings.
 7. **Physical seam**: where does the plan represent the binding —
    an explicit materialise operator, an attach-like spec, or planner
    freedom? What does EXPLAIN show?
