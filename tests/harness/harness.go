@@ -192,12 +192,15 @@ func (d *DB) Insert(table string, rows ...Row) {
 
 // ── querying ────────────────────────────────────────────────────────────────
 
-// Result is one executed query: what was sent, what came back. Explain
-// output (plan shape, metrics, planner internals) lands here when the wire
-// grows it; assertions then extend without churning existing tests.
+// Result is one executed query: what was sent, what came back. Datum is the
+// result exactly as the root materialised (array / object / naked value /
+// nil); Records is its record view when one exists. Explain output (plan
+// shape, metrics, planner internals) lands here when the wire grows it;
+// assertions then extend without churning existing tests.
 type Result struct {
 	T       *testing.T
 	Query   protocol.Query
+	Datum   any
 	Records []protocol.Record
 	Err     error
 }
@@ -206,8 +209,22 @@ type Result struct {
 // assertion chaining.
 func (d *DB) Query(q protocol.Query) *Result {
 	d.T.Helper()
-	recs, err := d.Client.Query(d.ctx, q)
-	return &Result{T: d.T, Query: q, Records: recs, Err: err}
+	datum, err := d.Client.QueryDatum(d.ctx, q)
+	r := &Result{T: d.T, Query: q, Datum: datum, Err: err}
+	if err == nil {
+		switch v := datum.(type) {
+		case nil:
+		case []any:
+			for _, el := range v {
+				if rec, ok := el.(map[string]any); ok {
+					r.Records = append(r.Records, rec)
+				}
+			}
+		case map[string]any:
+			r.Records = []protocol.Record{v}
+		}
+	}
+	return r
 }
 
 // Rows returns the records, failing the test on any query error.
@@ -250,6 +267,18 @@ func (r *Result) EqualsUnordered(wantJSON string) *Result {
 	if !reflect.DeepEqual(got, want) {
 		r.fail("result mismatch (order-insensitive)",
 			canonical(r.T, r.Records), canonical(r.T, parsed))
+	}
+	return r
+}
+
+// EqualsDatum asserts the exact result datum — the assertion for scalar and
+// first roots, where the result is not a record list.
+func (r *Result) EqualsDatum(wantJSON string) *Result {
+	r.T.Helper()
+	r.ok()
+	got, want := canonical(r.T, r.Datum), canonical(r.T, parseJSON(r.T, wantJSON))
+	if got != want {
+		r.fail("result datum mismatch", got, want)
 	}
 	return r
 }

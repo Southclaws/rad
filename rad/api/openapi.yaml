@@ -116,10 +116,10 @@ paths:
         boolean, object, value, or array. Aggregation is the `aggregate`
         node, grouped or global, and rides this one operation.
 
-        The result is `records`: an array of objects shaped like the root
-        projection. A root cardinality of `first` yields zero or one record,
-        `exactly_one` errors unless exactly one row exists, and `scalar`
-        unwraps a single value.
+        The result is one datum, shaped exactly as the root materialises:
+        `many` yields an array of records, `first` a record or `null`,
+        `exactly_one` a record (erroring unless exactly one row exists), and
+        `scalar` a naked value or `null`.
 
         The tree is structurally validated before binding. Unknown fields,
         cyclic, dangling, shared, or unreachable node definitions are invalid.
@@ -568,15 +568,17 @@ components:
 
     QueryResult:
       description: |
-        The result of a shaped read: a list of records. A row read returns the
-        matching rows. An aggregate read returns exactly one record whose fields
-        are the folded scalars.
+        The result of a query: one datum, shaped exactly as the root
+        materialises. A `many` root is an array of records; `first` is a
+        record or `null`; `exactly_one` is a record; `scalar` is a naked
+        value or `null`. Nested `first` fields are objects (or `null`) and
+        nested `array` fields are arrays, recursively.
       type: object
-      required: [records]
+      required: [result]
       properties:
-        records:
-          type: array
-          items: { $ref: "#/components/schemas/Record" }
+        result:
+          allOf:
+            - $ref: "#/components/schemas/Value"
 
     RowCreateProps:
       description: A request to insert one row.

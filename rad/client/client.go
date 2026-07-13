@@ -13,7 +13,9 @@
 package radclient
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -141,6 +143,7 @@ func (c *Client) Migrate(ctx context.Context, schemaSrc string) ([]string, error
 // (transactional). Generated table handles operate on a View.
 type View interface {
 	Query(ctx context.Context, q protocol.Query) ([]protocol.Record, error)
+	QueryDatum(ctx context.Context, q protocol.Query) (any, error)
 	Get(ctx context.Context, table string, key map[string]any) (protocol.Record, bool, error)
 	Create(ctx context.Context, table string, values map[string]any) (protocol.Record, error)
 	Update(ctx context.Context, table string, key, set map[string]any, clear []string) (protocol.Record, bool, error)
@@ -152,8 +155,18 @@ var (
 	_ View = (*Tx)(nil)
 )
 
+// Query runs a query and returns its result as records: an array result
+// verbatim, an object result (first / exactly_one roots) as one record, a
+// null result as none. A scalar root has no record shape — use QueryDatum.
 func (c *Client) Query(ctx context.Context, q protocol.Query) ([]protocol.Record, error) {
 	return query(ctx, c, "", q)
+}
+
+// QueryDatum runs a query and returns the result datum exactly as the root
+// materialised: []any for many, map[string]any or nil for first/exactly_one,
+// a naked value or nil for scalar. Numbers decode as json.Number.
+func (c *Client) QueryDatum(ctx context.Context, q protocol.Query) (any, error) {
+	return queryDatum(ctx, c, "", q)
 }
 
 func (c *Client) Get(ctx context.Context, table string, key map[string]any) (protocol.Record, bool, error) {
@@ -179,6 +192,14 @@ func (c *Client) Delete(ctx context.Context, table string, key map[string]any) (
 // its id is unknown or expired.
 
 func query(ctx context.Context, c *Client, txID string, q protocol.Query) ([]protocol.Record, error) {
+	d, err := queryDatum(ctx, c, txID, q)
+	if err != nil {
+		return nil, err
+	}
+	return datumRecords(d)
+}
+
+func queryDatum(ctx context.Context, c *Client, txID string, q protocol.Query) (any, error) {
 	raw, err := protocol.MarshalQuery(q)
 	if err != nil {
 		return nil, err
@@ -191,7 +212,7 @@ func query(ctx context.Context, c *Client, txID string, q protocol.Query) ([]pro
 		}
 		switch v := res.(type) {
 		case *oas.QueryResult:
-			return api.RecordsFromOAS(v.Records), nil
+			return decodeResult(v.Result)
 		case *oas.QueryBadRequest:
 			return nil, apiError(oas.Problem(*v))
 		case *oas.QueryUnprocessableEntity:
@@ -205,7 +226,7 @@ func query(ctx context.Context, c *Client, txID string, q protocol.Query) ([]pro
 	}
 	switch v := res.(type) {
 	case *oas.QueryResult:
-		return api.RecordsFromOAS(v.Records), nil
+		return decodeResult(v.Result)
 	case *oas.TransactionQueryBadRequest:
 		return nil, apiError(oas.Problem(*v))
 	case *oas.TransactionQueryNotFound:
@@ -214,6 +235,44 @@ func query(ctx context.Context, c *Client, txID string, q protocol.Query) ([]pro
 		return nil, apiError(oas.Problem(*v))
 	}
 	return nil, fmt.Errorf("rad: unexpected query response %T", res)
+}
+
+// decodeResult decodes the response's raw result datum with json.Number so
+// int64 values keep full precision.
+func decodeResult(raw oas.Value) (any, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var d any
+	if err := dec.Decode(&d); err != nil {
+		return nil, fmt.Errorf("rad: decode result datum: %w", err)
+	}
+	return d, nil
+}
+
+// datumRecords views a result datum as records. A scalar root's naked value
+// has no record shape and needs QueryDatum.
+func datumRecords(d any) ([]protocol.Record, error) {
+	switch v := d.(type) {
+	case nil:
+		return nil, nil
+	case []any:
+		recs := make([]protocol.Record, len(v))
+		for i, el := range v {
+			rec, ok := el.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("rad: result element %d is %T, not a record", i, el)
+			}
+			recs[i] = rec
+		}
+		return recs, nil
+	case map[string]any:
+		return []protocol.Record{v}, nil
+	default:
+		return nil, fmt.Errorf("rad: result is a scalar (%T) — use QueryDatum for scalar-rooted queries", v)
+	}
 }
 
 // get fetches one row by primary key. There is no dedicated wire endpoint: a
@@ -363,6 +422,10 @@ type Tx struct {
 
 func (t *Tx) Query(ctx context.Context, q protocol.Query) ([]protocol.Record, error) {
 	return query(ctx, t.c, t.id, q)
+}
+
+func (t *Tx) QueryDatum(ctx context.Context, q protocol.Query) (any, error) {
+	return queryDatum(ctx, t.c, t.id, q)
 }
 
 func (t *Tx) Get(ctx context.Context, table string, key map[string]any) (protocol.Record, bool, error) {

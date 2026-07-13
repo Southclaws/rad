@@ -649,21 +649,23 @@ type QueryBadRequest Problem
 
 func (*QueryBadRequest) queryRes() {}
 
-// The result of a shaped read: a list of records. A row read returns the matching rows. An aggregate
-// read returns exactly one record whose fields are the folded scalars.
+// The result of a query: one datum, shaped exactly as the root materialises. A `many` root is an array
+// of records; `first` is a record or `null`; `exactly_one` is a record; `scalar` is a naked value or
+// `null`. Nested `first` fields are objects (or `null`) and nested `array` fields are arrays,
+// recursively.
 // Ref: #/components/schemas/QueryResult
 type QueryResult struct {
-	Records []Record `json:"records"`
+	Result Value `json:"result"`
 }
 
-// GetRecords returns the value of Records.
-func (s *QueryResult) GetRecords() []Record {
-	return s.Records
+// GetResult returns the value of Result.
+func (s *QueryResult) GetResult() Value {
+	return s.Result
 }
 
-// SetRecords sets the value of Records.
-func (s *QueryResult) SetRecords(val []Record) {
-	s.Records = val
+// SetResult sets the value of Result.
+func (s *QueryResult) SetResult(val Value) {
+	s.Result = val
 }
 
 func (*QueryResult) queryRes()            {}

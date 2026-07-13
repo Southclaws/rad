@@ -1142,17 +1142,13 @@ func (s *QueryResult) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *QueryResult) encodeFields(e *jx.Encoder) {
 	{
-		e.FieldStart("records")
-		e.ArrStart()
-		for _, elem := range s.Records {
-			elem.Encode(e)
-		}
-		e.ArrEnd()
+		e.FieldStart("result")
+		s.Result.Encode(e)
 	}
 }
 
 var jsonFieldsNameOfQueryResult = [1]string{
-	0: "records",
+	0: "result",
 }
 
 // Decode decodes QueryResult from json.
@@ -1164,23 +1160,15 @@ func (s *QueryResult) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
-		case "records":
+		case "result":
 			requiredBitSet[0] |= 1 << 0
 			if err := func() error {
-				s.Records = make([]Record, 0)
-				if err := d.Arr(func(d *jx.Decoder) error {
-					var elem Record
-					if err := elem.Decode(d); err != nil {
-						return err
-					}
-					s.Records = append(s.Records, elem)
-					return nil
-				}); err != nil {
+				if err := s.Result.Decode(d); err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
-				return errors.Wrap(err, "decode field \"records\"")
+				return errors.Wrap(err, "decode field \"result\"")
 			}
 		default:
 			return d.Skip()

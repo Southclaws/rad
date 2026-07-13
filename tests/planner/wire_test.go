@@ -134,6 +134,52 @@ func TestWireRootMustReferenceANode(t *testing.T) {
 	}
 }
 
+// The response envelope carries one datum shaped exactly as the root
+// materialises — a scalar root is a naked value, not a smuggled record.
+func TestWireScalarRootIsNakedValue(t *testing.T) {
+	d := shop(t)
+	d.Query(q(map[string]protocol.Node{
+		"o": {Kind: "scan", Table: "orders", Scope: "o"},
+		"fold": {Kind: "aggregate", Input: "o",
+			Aggs: []protocol.AggTerm{{Fn: "count", As: "n"}}},
+	}, "fold", "scalar")).EqualsDatum(`7`)
+}
+
+func TestWireScalarRootNull(t *testing.T) {
+	d := shop(t)
+	// max over the empty set is NULL — the scalar root carries it as null.
+	d.Query(q(map[string]protocol.Node{
+		"o": {Kind: "scan", Table: "orders", Scope: "o"},
+		"none": {Kind: "filter", Input: "o",
+			Predicate: protocol.Eq(protocol.Col("o", "status"), protocol.Lit("ghost"))},
+		"fold": {Kind: "aggregate", Input: "none",
+			Aggs: []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("o", "placed_at"), As: "m"}}},
+	}, "fold", "scalar")).EqualsDatum(`null`)
+}
+
+func TestWireFirstRootIsObjectOrNull(t *testing.T) {
+	d := shop(t)
+	newest := map[string]protocol.Node{
+		"o": {Kind: "scan", Table: "orders", Scope: "o"},
+		"mine": {Kind: "filter", Input: "o",
+			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Lit("c4"))},
+		"latest": {Kind: "order", Input: "mine",
+			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "placed_at"), Desc: true}}},
+		"out": {Kind: "project", Input: "latest",
+			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("o", "id")}}},
+	}
+	d.Query(q(newest, "out", "first")).EqualsDatum(`{"id":"o6"}`)
+
+	none := map[string]protocol.Node{
+		"o": {Kind: "scan", Table: "orders", Scope: "o"},
+		"mine": {Kind: "filter", Input: "o",
+			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Lit("c5"))},
+		"latest": {Kind: "order", Input: "mine",
+			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "placed_at"), Desc: true}}},
+	}
+	d.Query(q(none, "latest", "first")).EqualsDatum(`null`)
+}
+
 func TestWireInt64PrecisionRoundTrip(t *testing.T) {
 	d := shop(t)
 	// 2^53+1 is unrepresentable in float64 — it must survive the whole

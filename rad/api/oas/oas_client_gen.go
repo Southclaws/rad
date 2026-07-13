@@ -44,9 +44,9 @@ type Invoker interface {
 	// `scalar`, `array`) materialises a correlated sub-relation as a nested boolean, object, value, or
 	// array. Aggregation is the `aggregate` node, grouped or global, and rides this one operation.
 	//
-	// The result is `records`: an array of objects shaped like the root projection. A root cardinality of
-	// `first` yields zero or one record, `exactly_one` errors unless exactly one row exists, and `scalar`
-	// unwraps a single value.
+	// The result is one datum, shaped exactly as the root materialises: `many` yields an array of records,
+	// `first` a record or `null`, `exactly_one` a record (erroring unless exactly one row exists), and
+	// `scalar` a naked value or `null`.
 	//
 	// The tree is structurally validated before binding. Unknown fields, cyclic, dangling, shared, or
 	// unreachable node definitions are invalid. Binding then rejects unknown tables, columns, or scopes,
@@ -309,9 +309,9 @@ func (c *Client) sendGetHealth(ctx context.Context) (res *Health, err error) {
 // `scalar`, `array`) materialises a correlated sub-relation as a nested boolean, object, value, or
 // array. Aggregation is the `aggregate` node, grouped or global, and rides this one operation.
 //
-// The result is `records`: an array of objects shaped like the root projection. A root cardinality of
-// `first` yields zero or one record, `exactly_one` errors unless exactly one row exists, and `scalar`
-// unwraps a single value.
+// The result is one datum, shaped exactly as the root materialises: `many` yields an array of records,
+// `first` a record or `null`, `exactly_one` a record (erroring unless exactly one row exists), and
+// `scalar` a naked value or `null`.
 //
 // The tree is structurally validated before binding. Unknown fields, cyclic, dangling, shared, or
 // unreachable node definitions are invalid. Binding then rejects unknown tables, columns, or scopes,

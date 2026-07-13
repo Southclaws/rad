@@ -103,24 +103,6 @@ func MapToRecord(m protocol.Record) oas.Record {
 	return r
 }
 
-// RecordsToOAS converts a list of result records for a query response.
-func RecordsToOAS(recs []protocol.Record) []oas.Record {
-	out := make([]oas.Record, len(recs))
-	for i, r := range recs {
-		out[i] = MapToRecord(r)
-	}
-	return out
-}
-
-// RecordsFromOAS converts a query response's records back to the wire type.
-func RecordsFromOAS(recs []oas.Record) []protocol.Record {
-	out := make([]protocol.Record, len(recs))
-	for i, r := range recs {
-		out[i] = RecordToMap(r)
-	}
-	return out
-}
-
 // ── introspection ───────────────────────────────────────────────────────────
 
 // TablesToOAS converts table definitions for a TableList response.

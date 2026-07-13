@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"sync"
@@ -92,7 +93,10 @@ type view interface {
 // catalog's column types and returning wire-shaped results. They are shared
 // verbatim by the autocommit and transaction handlers below.
 
-func (a *dbAPI) doQuery(ctx context.Context, v view, wq protocol.Query) ([]protocol.Record, error) {
+// doQuery executes a query and returns its result datum as raw JSON — the
+// response carries one datum shaped exactly as the root materialised, so a
+// scalar root is a naked value, not a smuggled empty record.
+func (a *dbAPI) doQuery(ctx context.Context, v view, wq protocol.Query) (oas.Value, error) {
 	q, err := graphQuery(wq)
 	if err != nil {
 		return nil, err
@@ -101,29 +105,11 @@ func (a *dbAPI) doQuery(ctx context.Context, v view, wq protocol.Query) ([]proto
 	if err != nil {
 		return nil, err
 	}
-	return datumRecords(d), nil
-}
-
-// datumRecords renders a result as the wire's record list: an array yields
-// its objects, a single object (a root fold) yields one record.
-func datumRecords(d lir.Datum) []protocol.Record {
-	toRecord := func(el lir.Datum) protocol.Record {
-		if m, ok := frontend.DatumJSON(el).(map[string]any); ok {
-			return m
-		}
-		return protocol.Record{}
+	raw, err := json.Marshal(frontend.DatumJSON(d))
+	if err != nil {
+		return nil, fmt.Errorf("encode result datum: %w", err)
 	}
-	switch d.Kind {
-	case lir.DatumArray:
-		out := make([]protocol.Record, len(d.Elems))
-		for i, el := range d.Elems {
-			out[i] = toRecord(el)
-		}
-		return out
-	case lir.DatumNull:
-		return []protocol.Record{}
-	}
-	return []protocol.Record{toRecord(d)}
+	return oas.Value(raw), nil
 }
 
 func (a *dbAPI) doCreate(ctx context.Context, v view, table string, values map[string]any) (protocol.Record, error) {
@@ -232,7 +218,7 @@ func (a *dbAPI) Query(ctx context.Context, req oas.Query) (oas.QueryRes, error) 
 		op := api.ProblemToOAS(protocol.NewProblem(protocol.CodeInvalid, http.StatusBadRequest, err.Error()))
 		return (*oas.QueryBadRequest)(&op), nil
 	}
-	recs, err := a.doQuery(ctx, a.db, q)
+	result, err := a.doQuery(ctx, a.db, q)
 	if err != nil {
 		if p := clientProblem(err); p != nil {
 			op := api.ProblemToOAS(*p)
@@ -240,7 +226,7 @@ func (a *dbAPI) Query(ctx context.Context, req oas.Query) (oas.QueryRes, error) 
 		}
 		return nil, err
 	}
-	return &oas.QueryResult{Records: api.RecordsToOAS(recs)}, nil
+	return &oas.QueryResult{Result: result}, nil
 }
 
 func (a *dbAPI) RowCreate(ctx context.Context, req oas.OptRowCreateProps) (oas.RowCreateRes, error) {
@@ -312,10 +298,10 @@ func (a *dbAPI) TransactionQuery(ctx context.Context, req oas.Query, params oas.
 		op := api.ProblemToOAS(protocol.NewProblem(protocol.CodeInvalid, http.StatusBadRequest, err.Error()))
 		return (*oas.TransactionQueryBadRequest)(&op), nil
 	}
-	var recs []protocol.Record
+	var result oas.Value
 	err = a.withSession(params.ID, func(v view) error {
 		var e error
-		recs, e = a.doQuery(ctx, v, q)
+		result, e = a.doQuery(ctx, v, q)
 		return e
 	})
 	if err != nil {
@@ -329,7 +315,7 @@ func (a *dbAPI) TransactionQuery(ctx context.Context, req oas.Query, params oas.
 		}
 		return nil, err
 	}
-	return &oas.QueryResult{Records: api.RecordsToOAS(recs)}, nil
+	return &oas.QueryResult{Result: result}, nil
 }
 
 func (a *dbAPI) TransactionRowCreate(ctx context.Context, req oas.OptRowCreateProps, params oas.TransactionRowCreateParams) (oas.TransactionRowCreateRes, error) {

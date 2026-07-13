@@ -250,8 +250,13 @@ class WireView implements View {
   }
 
   async query(q: GraphQuery): Promise<Rec[]> {
-    const res = await this.rpc.req<{ records: Rec[] }>(this.prefix + "/query", q);
-    return res.records;
+    // The response carries one datum shaped as the root materialised: an
+    // array for many, an object for first/exactly_one, null for an absent
+    // first. View it as records.
+    const res = await this.rpc.req<{ result: unknown }>(this.prefix + "/query", q);
+    if (res.result === null || res.result === undefined) return [];
+    if (Array.isArray(res.result)) return res.result as Rec[];
+    return [res.result as Rec];
   }
   async get(table: string, key: Rec): Promise<Rec | null> {
     // A point read is a three-node graph — scan, filter on the key columns,
