@@ -208,18 +208,24 @@ Redaction rule (standing, shared with query-trace): schema names — tables,
 indexes, columns, bindings, node ids — always; key bytes and row values
 never.
 
+## Late decisions (2026-07-13, second pass)
+
+- **`storage` is its own stage.** A KV failure is not a query-semantics
+  failure; the stage list stands at six.
+- **The Reason registry is JSON Schema**, riding the existing pipeline:
+  an authored schema document (lir.schema.yaml-style source of truth)
+  from which the Go constants, the TS client's types, the OpenAPI
+  per-class `reason` documentation, and the human registry page all
+  generate. One source, four artifacts — the same discipline as the wire
+  grammar. Exact shape refined at build time.
+
 ## Remaining open questions (small)
 
-- Exact per-class meta shapes: what belongs in `execution` vs the trace
-  (lean minimal here — identity, not metrics; metrics live in the trace).
+- Exact per-class meta shapes: what belongs in `execution` vs the trace.
+  (Lean minimal — identity, not metrics; metrics live in the trace.
+  Explicitly unresolved; decide at build.)
 - Does `not_found.resource` earn its structure now or when CRUD surfaces
   grow?
-- `Stage` granularity at the bottom: is `storage` a stage of its own or
-  folded into `execution`? (Lean: separate — a KV failure is not a query
-  semantics failure.)
-- Where the Reason registry lives so docs, Go constants, and the TS
-  client stay in sync (one generated source, probably alongside the
-  schema pipeline).
 
 Related: tasks/1-todo/query-trace.md (shared provenance, stage names,
 operator vocabulary); tasks/1-todo/lir-query-validation.md and
