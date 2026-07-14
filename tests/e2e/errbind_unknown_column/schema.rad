@@ -1,0 +1,8 @@
+# e2e/errbind_unknown_column — a col referencing an attribute absent from a
+# real scope must be rejected by the binder as invalid, reason unknown_column.
+tables:
+  - name: widgets
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+      - { name: qty,  type: int64 }

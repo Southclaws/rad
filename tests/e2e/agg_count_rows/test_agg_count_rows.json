@@ -1,0 +1,19 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "count_rows",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "events", "scope": "t" },
+            "agg": { "kind": "aggregate", "input": "t", "scope": "g",
+              "aggs": [ { "fn": "count", "as": "n" } ] }
+          },
+          "root": { "node": "agg", "cardinality": "scalar" }
+        }
+      }
+    ]
+  },
+  "result": 3
+}

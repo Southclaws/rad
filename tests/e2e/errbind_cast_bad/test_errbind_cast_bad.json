@@ -1,0 +1,24 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "r": { "kind": "rows", "scope": "r",
+              "columns": [ { "name": "t", "type": "text" } ],
+              "rows": [ ["not-a-number"] ] },
+            "p": { "kind": "project", "input": "r", "fields": [
+              { "as": "n", "expr": { "kind": "cast", "to": "int64",
+                "expr": { "kind": "col", "scope": "r", "column": "t" } } }
+            ] },
+            "s": { "kind": "slice", "input": "p", "limit": 1 }
+          },
+          "root": { "node": "s", "cardinality": "scalar" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "invalid", "contains": "cannot cast text to int64" }
+}

@@ -1,0 +1,8 @@
+# e2e/errbind_cast_bad — negative: casting a non-numeric text to int64 has no
+# valid conversion. Code and detail captured by running.
+tables:
+  - name: widgets
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+      - { name: qty,  type: int64 }

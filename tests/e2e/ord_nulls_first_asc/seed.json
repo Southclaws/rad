@@ -1,0 +1,8 @@
+[
+  { "table": "nums", "rows": [
+    { "id": "c", "val": 10 },
+    { "id": "a", "val": null },
+    { "id": "d", "val": 5 },
+    { "id": "b", "val": null }
+  ] }
+]

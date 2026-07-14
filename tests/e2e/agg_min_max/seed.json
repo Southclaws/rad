@@ -1,0 +1,7 @@
+[
+  { "table": "readings", "rows": [
+    { "id": "r1", "n": 5, "label": "banana" },
+    { "id": "r2", "n": 2, "label": "apple" },
+    { "id": "r3", "n": 8, "label": "cherry" }
+  ] }
+]

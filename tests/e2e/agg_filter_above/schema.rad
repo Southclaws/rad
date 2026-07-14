@@ -1,0 +1,9 @@
+# e2e/agg_filter_above — a filter placed ABOVE an aggregate references a fold's
+# output (keep groups whose count > 1), proving relational closure. The
+# aggregate binds an output scope so the filter can name its terms.
+tables:
+  - name: sales
+    columns:
+      - { name: id,     type: string, pk: true }
+      - { name: region, type: string }
+      - { name: amount, type: int64 }

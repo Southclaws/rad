@@ -1,0 +1,8 @@
+# e2e/ord_tiebreak_by_pk — all rows tie on the sole order column, so the engine
+# appends the primary key as a trailing ascending tie-breaker: output is in PK
+# order regardless of physical/seed order.
+tables:
+  - name: nums
+    columns:
+      - { name: id,  type: string, pk: true }
+      - { name: val, type: int64 }

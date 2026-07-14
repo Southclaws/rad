@@ -1,0 +1,24 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "sum_avg",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "measurements", "scope": "t" },
+            "agg": { "kind": "aggregate", "input": "t", "scope": "g",
+              "aggs": [
+                { "fn": "sum", "as": "total",
+                  "arg": { "kind": "col", "scope": "t", "column": "amount" } },
+                { "fn": "avg", "as": "mean",
+                  "arg": { "kind": "col", "scope": "t", "column": "amount" } }
+              ] }
+          },
+          "root": { "node": "agg", "cardinality": "exactly_one" }
+        }
+      }
+    ]
+  },
+  "result": { "total": 14, "mean": 3.5 }
+}

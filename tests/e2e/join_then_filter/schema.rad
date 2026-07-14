@@ -1,0 +1,14 @@
+# e2e/join_then_filter — a filter stacked above an inner join, keeping only the
+# combined rows whose (right-side) department name matches, proving relational
+# closure: the filter addresses a joined attribute exactly like a scanned one.
+tables:
+  - name: departments
+    columns:
+      - { name: dept_id,   type: string, pk: true }
+      - { name: dept_name, type: string }
+
+  - name: employees
+    columns:
+      - { name: emp_id,   type: string, pk: true }
+      - { name: emp_name, type: string }
+      - { name: emp_dept, type: string, nullable: true, ref: departments.dept_id }

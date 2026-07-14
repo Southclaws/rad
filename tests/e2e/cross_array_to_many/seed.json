@@ -1,0 +1,16 @@
+[
+  {
+    "table": "boards",
+    "rows": [
+      { "id": "board-1", "name": "Launch" },
+      { "id": "board-2", "name": "Empty" }
+    ]
+  },
+  {
+    "table": "tasks",
+    "rows": [
+      { "id": "task-b", "board_id": "board-1", "title": "Second" },
+      { "id": "task-a", "board_id": "board-1", "title": "First" }
+    ]
+  }
+]

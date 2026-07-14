@@ -1,0 +1,8 @@
+# e2e/mut_update_reassign — a single-row update that reassigns a non-null
+# column and leaves the primary key and other rows untouched.
+tables:
+  - name: items
+    columns:
+      - { name: id,    type: string, pk: true }
+      - { name: name,  type: string }
+      - { name: qty,   type: int64 }

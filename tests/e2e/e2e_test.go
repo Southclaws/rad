@@ -166,16 +166,19 @@ func runFixture(t *testing.T, dir, testFile string) {
 		if want := fx.Error.Contains; want != "" && !strings.Contains(ae.Problem.Detail, want) {
 			t.Fatalf("problem detail = %q, want it to contain %q", ae.Problem.Detail, want)
 		}
-		return // negative fixtures assert only the failure
-	}
-	if err != nil {
-		t.Fatalf("execute program: %v", err)
-	}
+		// A negative fixture has no successful result to diff, but its
+		// assertions still run below — a failing program's effect on the
+		// stored state is exactly what pins down atomic rollback.
+	} else {
+		if err != nil {
+			t.Fatalf("execute program: %v", err)
+		}
 
-	// 4. Diff the program result, when the fixture pins one.
-	if len(fx.Result) > 0 {
-		if got, want := canonical(t, res.Result), canonicalRaw(t, fx.Result); got != want {
-			t.Fatalf("program result mismatch\n got: %s\nwant: %s", got, want)
+		// 4. Diff the program result, when the fixture pins one.
+		if len(fx.Result) > 0 {
+			if got, want := canonical(t, res.Result), canonicalRaw(t, fx.Result); got != want {
+				t.Fatalf("program result mismatch\n got: %s\nwant: %s", got, want)
+			}
 		}
 	}
 

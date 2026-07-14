@@ -1,0 +1,47 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "u",
+        "kind": "update",
+        "table": "items",
+        "relation": {
+          "nodes": {
+            "r": {
+              "kind": "rows",
+              "scope": "r",
+              "columns": [
+                { "name": "id", "type": "text" },
+                { "name": "name", "type": "text" },
+                { "name": "qty", "type": "int64" }
+              ],
+              "rows": [ ["i1", "widget-mk2", 42] ]
+            }
+          },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [ { "id": "i1", "name": "widget-mk2", "qty": 42 } ],
+  "assertions": [
+    {
+      "name": "both rows, i1 reassigned and i2 untouched",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "items", "scope": "t" },
+          "o": {
+            "kind": "order",
+            "input": "t",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ]
+          }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "i1", "name": "widget-mk2", "qty": 42 },
+        { "id": "i2", "name": "gadget", "qty": 9 }
+      ]
+    }
+  ]
+}

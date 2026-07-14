@@ -1,0 +1,14 @@
+[
+  {
+    "table": "departments",
+    "rows": [
+      { "dept_id": "dept-eng", "dept_name": "Engineering" }
+    ]
+  },
+  {
+    "table": "employees",
+    "rows": [
+      { "emp_id": "emp-1", "emp_name": "Ada", "emp_dept": "dept-eng" }
+    ]
+  }
+]

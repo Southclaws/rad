@@ -1,0 +1,24 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "min_max",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "readings", "scope": "t" },
+            "agg": { "kind": "aggregate", "input": "t", "scope": "g",
+              "aggs": [
+                { "fn": "min", "as": "min_n",     "arg": { "kind": "col", "scope": "t", "column": "n" } },
+                { "fn": "max", "as": "max_n",     "arg": { "kind": "col", "scope": "t", "column": "n" } },
+                { "fn": "min", "as": "min_label", "arg": { "kind": "col", "scope": "t", "column": "label" } },
+                { "fn": "max", "as": "max_label", "arg": { "kind": "col", "scope": "t", "column": "label" } }
+              ] }
+          },
+          "root": { "node": "agg", "cardinality": "exactly_one" }
+        }
+      }
+    ]
+  },
+  "result": { "min_n": 2, "max_n": 8, "min_label": "apple", "max_label": "cherry" }
+}

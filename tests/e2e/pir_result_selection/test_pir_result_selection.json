@@ -1,0 +1,54 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "first",
+        "kind": "create",
+        "table": "items",
+        "relation": {
+          "nodes": { "r": { "kind": "rows", "scope": "r",
+            "columns": [ { "name": "id", "type": "text" }, { "name": "label", "type": "text" } ],
+            "rows": [ ["a", "alpha"] ] } },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      },
+      {
+        "name": "middle",
+        "kind": "create",
+        "table": "items",
+        "relation": {
+          "nodes": { "r": { "kind": "rows", "scope": "r",
+            "columns": [ { "name": "id", "type": "text" }, { "name": "label", "type": "text" } ],
+            "rows": [ ["b", "bravo"] ] } },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      },
+      {
+        "name": "last",
+        "kind": "create",
+        "table": "items",
+        "relation": {
+          "nodes": { "r": { "kind": "rows", "scope": "r",
+            "columns": [ { "name": "id", "type": "text" }, { "name": "label", "type": "text" } ],
+            "rows": [ ["c", "charlie"] ] } },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ],
+    "result": "middle"
+  },
+  "result": [ { "id": "b", "label": "bravo" } ],
+  "assertions": [
+    {
+      "name": "all three rows were created regardless of which is the result",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "items", "scope": "t" },
+          "o": { "kind": "order", "input": "t", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "a", "label": "alpha" }, { "id": "b", "label": "bravo" }, { "id": "c", "label": "charlie" } ]
+    }
+  ]
+}

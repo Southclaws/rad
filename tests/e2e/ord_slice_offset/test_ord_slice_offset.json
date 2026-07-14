@@ -1,0 +1,25 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "skip1",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "o": { "kind": "order", "input": "t", "terms": [
+              { "expr": { "kind": "col", "scope": "t", "column": "val" } }
+            ] },
+            "s": { "kind": "slice", "input": "o", "offset": 1 }
+          },
+          "root": { "node": "s", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "b", "val": 20 },
+    { "id": "c", "val": 30 },
+    { "id": "d", "val": 40 }
+  ]
+}

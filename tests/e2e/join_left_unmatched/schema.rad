@@ -1,0 +1,15 @@
+# e2e/join_left_unmatched — a left join where the left employee row has no
+# matching right department (its FK is NULL, so the `on` comparison is
+# UNKNOWN); the right attributes must be padded with NULL, and the left row is
+# still kept.
+tables:
+  - name: departments
+    columns:
+      - { name: dept_id,   type: string, pk: true }
+      - { name: dept_name, type: string }
+
+  - name: employees
+    columns:
+      - { name: emp_id,   type: string, pk: true }
+      - { name: emp_name, type: string }
+      - { name: emp_dept, type: string, nullable: true, ref: departments.dept_id }

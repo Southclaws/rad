@@ -1,0 +1,8 @@
+# e2e/errbind_type_mismatch — comparing an int64 column to a string literal is
+# a type error the binder must reject. Code captured by running (invalid).
+tables:
+  - name: widgets
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+      - { name: qty,  type: int64 }

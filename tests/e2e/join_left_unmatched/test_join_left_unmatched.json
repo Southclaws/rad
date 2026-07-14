@@ -1,0 +1,36 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "left_join_unmatched",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "employees": { "kind": "scan", "table": "employees", "scope": "e" },
+            "departments": { "kind": "scan", "table": "departments", "scope": "d" },
+            "joined": {
+              "kind": "join",
+              "left": "employees",
+              "right": "departments",
+              "join": "left",
+              "on": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "e", "column": "emp_dept" },
+                "right": { "kind": "col", "scope": "d", "column": "dept_id" }
+              }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "joined",
+              "terms": [ { "expr": { "kind": "col", "scope": "e", "column": "emp_id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "emp_id": "emp-9", "emp_name": "Zed", "emp_dept": null, "dept_id": null, "dept_name": null }
+  ]
+}

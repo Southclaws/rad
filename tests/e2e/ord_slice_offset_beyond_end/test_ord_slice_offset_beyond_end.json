@@ -1,0 +1,21 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "beyond",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "o": { "kind": "order", "input": "t", "terms": [
+              { "expr": { "kind": "col", "scope": "t", "column": "val" } }
+            ] },
+            "s": { "kind": "slice", "input": "o", "offset": 4 }
+          },
+          "root": { "node": "s", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": []
+}

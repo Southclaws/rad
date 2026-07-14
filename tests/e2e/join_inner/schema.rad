@@ -1,0 +1,14 @@
+# e2e/join_inner — an inner join of employees onto their department on the FK.
+# Column names are distinct across the two tables so the combined join row
+# renders without attribute collisions.
+tables:
+  - name: departments
+    columns:
+      - { name: dept_id,   type: string, pk: true }
+      - { name: dept_name, type: string }
+
+  - name: employees
+    columns:
+      - { name: emp_id,   type: string, pk: true }
+      - { name: emp_name, type: string }
+      - { name: emp_dept, type: string, nullable: true, ref: departments.dept_id }

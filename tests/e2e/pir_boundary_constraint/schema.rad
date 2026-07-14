@@ -1,0 +1,11 @@
+# e2e/pir_boundary_constraint — statement-boundary constraint checking:
+# apply the whole batch, THEN validate. `slot` is unique. A single update
+# swaps two rows' slots (a: 1->2, b: 2->1). Mid-statement the state is
+# momentarily inconsistent — after writing a.slot=2 there are two rows with
+# slot=2 — but uniqueness is checked only once both writes land, so the
+# program SUCCEEDS. Per-row checking would reject it.
+tables:
+  - name: seats
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: slot, type: int64, unique: true }

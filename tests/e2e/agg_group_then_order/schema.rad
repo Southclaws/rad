@@ -1,0 +1,8 @@
+# e2e/agg_group_then_order — group by a column, then order the groups by an
+# aggregate term (per-group count, descending).
+tables:
+  - name: sales
+    columns:
+      - { name: id,     type: string, pk: true }
+      - { name: region, type: string }
+      - { name: amount, type: int64 }

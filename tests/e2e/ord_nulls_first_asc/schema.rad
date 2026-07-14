@@ -1,0 +1,6 @@
+# e2e/ord_nulls_first_asc — nullable int64 column ordered ascending: NULLs first.
+tables:
+  - name: nums
+    columns:
+      - { name: id,  type: string, pk: true }
+      - { name: val, type: int64, nullable: true }

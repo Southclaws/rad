@@ -1,0 +1,15 @@
+[
+  {
+    "table": "boards",
+    "rows": [
+      { "id": "board-1", "name": "Has tasks" },
+      { "id": "board-2", "name": "Empty" }
+    ]
+  },
+  {
+    "table": "tasks",
+    "rows": [
+      { "id": "task-1", "board_id": "board-1", "title": "One" }
+    ]
+  }
+]

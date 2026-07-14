@@ -1,0 +1,8 @@
+# e2e/errbind_cast — positive control: a valid cast of a float64 to int64
+# succeeds (truncating toward zero) and produces the expected scalar.
+tables:
+  - name: widgets
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+      - { name: qty,  type: int64 }

@@ -1,0 +1,43 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "asc",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "o": { "kind": "order", "input": "t", "terms": [
+              { "expr": { "kind": "col", "scope": "t", "column": "val" } }
+            ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "b", "val": 1 },
+    { "id": "c", "val": 2 },
+    { "id": "a", "val": 3 }
+  ],
+  "assertions": [
+    {
+      "name": "descending by val",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "nums", "scope": "t" },
+          "o": { "kind": "order", "input": "t", "terms": [
+            { "expr": { "kind": "col", "scope": "t", "column": "val" }, "desc": true }
+          ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "a", "val": 3 },
+        { "id": "c", "val": 2 },
+        { "id": "b", "val": 1 }
+      ]
+    }
+  ]
+}

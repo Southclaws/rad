@@ -1,0 +1,8 @@
+# e2e/errbind_scalar_arity — a root scalar over a relation with more than one
+# output column must be rejected as invalid. Detail captured by running.
+tables:
+  - name: widgets
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+      - { name: qty,  type: int64 }

@@ -1,0 +1,8 @@
+# e2e/errbind_dangling_ref — a node whose input names an id absent from the
+# graph must be rejected before binding. Code captured by running.
+tables:
+  - name: widgets
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+      - { name: qty,  type: int64 }

@@ -1,0 +1,7 @@
+[
+  { "table": "items", "rows": [
+    { "id": "i1", "name": "one" },
+    { "id": "i2", "name": "two" },
+    { "id": "i3", "name": "three" }
+  ] }
+]

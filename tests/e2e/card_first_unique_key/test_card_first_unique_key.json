@@ -1,0 +1,27 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "one",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "widgets", "scope": "t" },
+            "hit": {
+              "kind": "filter",
+              "input": "t",
+              "predicate": {
+                "kind": "binary",
+                "op": "eq",
+                "left": { "kind": "col", "scope": "t", "column": "id" },
+                "right": { "kind": "lit", "value": "w2" }
+              }
+            }
+          },
+          "root": { "node": "hit", "cardinality": "first" }
+        }
+      }
+    ]
+  },
+  "result": { "id": "w2", "name": "Beta", "rank": 20 }
+}

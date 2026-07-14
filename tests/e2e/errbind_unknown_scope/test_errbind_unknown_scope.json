@@ -1,0 +1,20 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "w": { "kind": "scan", "table": "widgets", "scope": "w" },
+            "f": { "kind": "filter", "input": "w", "predicate": { "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "nosuch", "column": "id" },
+              "right": { "kind": "lit", "value": "x" } } }
+          },
+          "root": { "node": "f", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "invalid", "reason": "unknown_scope" }
+}

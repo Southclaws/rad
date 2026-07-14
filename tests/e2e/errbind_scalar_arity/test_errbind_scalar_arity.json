@@ -1,0 +1,17 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "w": { "kind": "scan", "table": "widgets", "scope": "w" }
+          },
+          "root": { "node": "w", "cardinality": "scalar" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "invalid", "contains": "a scalar query needs a single-column root" }
+}

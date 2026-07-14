@@ -1,0 +1,7 @@
+# e2e/mut_create_dup_pk — a negative fixture: a single create statement whose
+# `rows` relation carries two rows sharing a primary key must fail.
+tables:
+  - name: notes
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: body, type: string }

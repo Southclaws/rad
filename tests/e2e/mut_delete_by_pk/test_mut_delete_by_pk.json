@@ -1,0 +1,38 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "del",
+        "kind": "delete",
+        "table": "items",
+        "relation": {
+          "nodes": { "r": { "kind": "rows", "scope": "r",
+            "columns": [ { "name": "id", "type": "text" } ],
+            "rows": [ ["i2"] ] } },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [ { "id": "i2", "name": "two" } ],
+  "assertions": [
+    {
+      "name": "i2 gone, siblings remain in id order",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "items", "scope": "t" },
+          "o": {
+            "kind": "order",
+            "input": "t",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ]
+          }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "i1", "name": "one" },
+        { "id": "i3", "name": "three" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+[
+  {
+    "table": "departments",
+    "rows": [
+      { "dept_id": "dept-eng", "dept_name": "Engineering" },
+      { "dept_id": "dept-ops", "dept_name": "Operations" }
+    ]
+  },
+  {
+    "table": "employees",
+    "rows": [
+      { "emp_id": "emp-1", "emp_name": "Ada", "emp_dept": "dept-eng" },
+      { "emp_id": "emp-2", "emp_name": "Bob", "emp_dept": "dept-ops" },
+      { "emp_id": "emp-3", "emp_name": "Cy", "emp_dept": "dept-eng" }
+    ]
+  }
+]

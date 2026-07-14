@@ -1,0 +1,9 @@
+# e2e/f3vl_or_kleene — Kleene OR. (x = 1) or (y = 1): TRUE or UNKNOWN = TRUE
+# (kept), UNKNOWN or TRUE = TRUE (kept), FALSE or FALSE = FALSE (dropped),
+# FALSE or UNKNOWN = UNKNOWN (dropped), UNKNOWN or UNKNOWN = UNKNOWN (dropped).
+tables:
+  - name: t
+    columns:
+      - { name: id, type: string, pk: true }
+      - { name: x,  type: int64, nullable: true }
+      - { name: y,  type: int64, nullable: true }

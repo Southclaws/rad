@@ -1,0 +1,73 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "boards_tasks_creators",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "boards": { "kind": "scan", "table": "boards", "scope": "b" },
+            "tasks": { "kind": "scan", "table": "tasks", "scope": "t" },
+            "users": { "kind": "scan", "table": "users", "scope": "u" },
+            "mine": {
+              "kind": "filter",
+              "input": "tasks",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "t", "column": "board_id" },
+                "right": { "kind": "col", "scope": "b", "column": "id" }
+              }
+            },
+            "creator_of": {
+              "kind": "filter",
+              "input": "users",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "u", "column": "id" },
+                "right": { "kind": "col", "scope": "t", "column": "creator_id" }
+              }
+            },
+            "task_proj": {
+              "kind": "project",
+              "input": "mine",
+              "scope": "tp",
+              "spread": ["t"],
+              "fields": [
+                { "as": "creator", "expr": { "kind": "first", "node": "creator_of" } }
+              ]
+            },
+            "task_sorted": {
+              "kind": "order",
+              "input": "task_proj",
+              "terms": [ { "expr": { "kind": "col", "scope": "tp", "column": "id" } } ]
+            },
+            "out": {
+              "kind": "project",
+              "input": "boards",
+              "scope": "o",
+              "spread": ["b"],
+              "fields": [
+                { "as": "tasks", "expr": { "kind": "array", "node": "task_sorted" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    {
+      "id": "board-1", "name": "Launch",
+      "tasks": [
+        { "id": "task-a", "board_id": "board-1", "creator_id": "user-ada", "title": "First", "creator": { "id": "user-ada", "name": "Ada" } },
+        { "id": "task-b", "board_id": "board-1", "creator_id": "user-bob", "title": "Second", "creator": { "id": "user-bob", "name": "Bob" } }
+      ]
+    }
+  ]
+}

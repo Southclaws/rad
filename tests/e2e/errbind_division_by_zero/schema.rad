@@ -1,0 +1,8 @@
+# e2e/errbind_division_by_zero — a binary div by a zero denominator evaluated
+# at runtime. Code and detail captured by running (likely execution_failed).
+tables:
+  - name: widgets
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+      - { name: qty,  type: int64 }

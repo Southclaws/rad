@@ -1,0 +1,9 @@
+# e2e/f3vl_bool_column_direct — a filter whose predicate is a bare bool column
+# (no comparison), and its not(). The column is nullable, so it also shows that
+# both `flag` and `not(flag)` drop the NULL row (UNKNOWN, and not UNKNOWN =
+# UNKNOWN) — the two do not partition the table.
+tables:
+  - name: t
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: flag, type: bool, nullable: true }

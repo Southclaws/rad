@@ -1,0 +1,8 @@
+# e2e/mut_update_ambiguous — a negative fixture: an update whose `rows`
+# relation names the same primary key twice must fail with
+# mutation_target_ambiguous (the batch cannot resolve one row from two images).
+tables:
+  - name: items
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }

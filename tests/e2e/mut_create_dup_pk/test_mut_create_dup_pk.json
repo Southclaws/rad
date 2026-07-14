@@ -1,0 +1,32 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "insert_dupes",
+        "kind": "create",
+        "table": "notes",
+        "relation": {
+          "nodes": {
+            "r": {
+              "kind": "rows",
+              "scope": "r",
+              "columns": [
+                { "name": "id", "type": "text" },
+                { "name": "body", "type": "text" }
+              ],
+              "rows": [
+                ["dup", "first"],
+                ["dup", "second"]
+              ]
+            }
+          },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "error": {
+    "code": "invalid",
+    "contains": "same primary key"
+  }
+}

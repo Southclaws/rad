@@ -1,0 +1,13 @@
+# e2e/cross_exists — each board embeds an `exists(...)` boolean: true when it
+# has at least one correlated task, false otherwise.
+tables:
+  - name: boards
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+
+  - name: tasks
+    columns:
+      - { name: id,       type: string, pk: true }
+      - { name: board_id, type: string, nullable: true, ref: boards.id }
+      - { name: title,    type: string }

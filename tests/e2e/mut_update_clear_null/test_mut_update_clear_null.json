@@ -1,0 +1,46 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "u",
+        "kind": "update",
+        "table": "items",
+        "relation": {
+          "nodes": {
+            "r": {
+              "kind": "rows",
+              "scope": "r",
+              "columns": [
+                { "name": "id", "type": "text" },
+                { "name": "name", "type": "text" },
+                { "name": "note", "type": "text", "nullable": true }
+              ],
+              "rows": [ ["i1", "one", null] ]
+            }
+          },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [ { "id": "i1", "name": "one", "note": null } ],
+  "assertions": [
+    {
+      "name": "note cleared to NULL",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "items", "scope": "t" },
+          "one": {
+            "kind": "filter",
+            "input": "t",
+            "predicate": { "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "t", "column": "id" },
+              "right": { "kind": "lit", "value": "i1" } }
+          }
+        },
+        "root": { "node": "one", "cardinality": "exactly_one" }
+      },
+      "expect": { "id": "i1", "name": "one", "note": null }
+    }
+  ]
+}

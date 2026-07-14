@@ -1,0 +1,20 @@
+# e2e/cross_nested — a crossing inside a crossing: each board embeds an ordered
+# `array(...)` of its tasks, and each task in turn embeds a `first(...)` of its
+# own creator (a user), proving crossings recurse.
+tables:
+  - name: users
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+
+  - name: boards
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+
+  - name: tasks
+    columns:
+      - { name: id,         type: string, pk: true }
+      - { name: board_id,   type: string, nullable: true, ref: boards.id }
+      - { name: creator_id, type: string, nullable: true, ref: users.id }
+      - { name: title,      type: string }

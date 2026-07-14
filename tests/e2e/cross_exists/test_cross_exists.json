@@ -1,0 +1,44 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "boards_with_exists",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "boards": { "kind": "scan", "table": "boards", "scope": "b" },
+            "tasks": { "kind": "scan", "table": "tasks", "scope": "t" },
+            "mine": {
+              "kind": "filter",
+              "input": "tasks",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "t", "column": "board_id" },
+                "right": { "kind": "col", "scope": "b", "column": "id" }
+              }
+            },
+            "out": {
+              "kind": "project",
+              "input": "boards",
+              "scope": "o",
+              "spread": ["b"],
+              "fields": [
+                { "as": "has_tasks", "expr": { "kind": "exists", "node": "mine" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "board-1", "name": "Has tasks", "has_tasks": true },
+    { "id": "board-2", "name": "Empty", "has_tasks": false }
+  ]
+}

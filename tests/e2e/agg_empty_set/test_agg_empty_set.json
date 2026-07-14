@@ -1,0 +1,29 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "empty_fold",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "ledger", "scope": "t" },
+            "none": { "kind": "filter", "input": "t",
+              "predicate": { "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "t", "column": "amount" },
+                "right": { "kind": "lit", "value": 999 } } },
+            "agg": { "kind": "aggregate", "input": "none", "scope": "g",
+              "aggs": [
+                { "fn": "count", "as": "c" },
+                { "fn": "sum", "as": "s",  "arg": { "kind": "col", "scope": "t", "column": "amount" } },
+                { "fn": "avg", "as": "a",  "arg": { "kind": "col", "scope": "t", "column": "amount" } },
+                { "fn": "min", "as": "mn", "arg": { "kind": "col", "scope": "t", "column": "amount" } },
+                { "fn": "max", "as": "mx", "arg": { "kind": "col", "scope": "t", "column": "amount" } }
+              ] }
+          },
+          "root": { "node": "agg", "cardinality": "exactly_one" }
+        }
+      }
+    ]
+  },
+  "result": { "c": 0, "s": null, "a": null, "mn": null, "mx": null }
+}

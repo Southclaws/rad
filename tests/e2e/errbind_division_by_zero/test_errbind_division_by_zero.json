@@ -1,0 +1,25 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "r": { "kind": "rows", "scope": "r",
+              "columns": [ { "name": "num", "type": "int64" }, { "name": "den", "type": "int64" } ],
+              "rows": [ [1, 0] ] },
+            "p": { "kind": "project", "input": "r", "fields": [
+              { "as": "q", "expr": { "kind": "binary", "op": "div",
+                "left": { "kind": "col", "scope": "r", "column": "num" },
+                "right": { "kind": "col", "scope": "r", "column": "den" } } }
+            ] },
+            "s": { "kind": "slice", "input": "p", "limit": 1 }
+          },
+          "root": { "node": "s", "cardinality": "scalar" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "execution_failed", "contains": "division by zero" }
+}

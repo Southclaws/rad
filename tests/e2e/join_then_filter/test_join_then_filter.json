@@ -1,0 +1,46 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "engineers_only",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "employees": { "kind": "scan", "table": "employees", "scope": "e" },
+            "departments": { "kind": "scan", "table": "departments", "scope": "d" },
+            "joined": {
+              "kind": "join",
+              "left": "employees",
+              "right": "departments",
+              "join": "inner",
+              "on": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "e", "column": "emp_dept" },
+                "right": { "kind": "col", "scope": "d", "column": "dept_id" }
+              }
+            },
+            "eng": {
+              "kind": "filter",
+              "input": "joined",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "d", "column": "dept_name" },
+                "right": { "kind": "lit", "value": "Engineering" }
+              }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "eng",
+              "terms": [ { "expr": { "kind": "col", "scope": "e", "column": "emp_id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "emp_id": "emp-1", "emp_name": "Ada", "emp_dept": "dept-eng", "dept_id": "dept-eng", "dept_name": "Engineering" },
+    { "emp_id": "emp-3", "emp_name": "Cy", "emp_dept": "dept-eng", "dept_id": "dept-eng", "dept_name": "Engineering" }
+  ]
+}

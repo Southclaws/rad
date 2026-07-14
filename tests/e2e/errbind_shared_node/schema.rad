@@ -1,0 +1,8 @@
+# e2e/errbind_shared_node — one node consumed by two different consumers
+# violates the single-consumer rule. Code captured by running.
+tables:
+  - name: widgets
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+      - { name: qty,  type: int64 }

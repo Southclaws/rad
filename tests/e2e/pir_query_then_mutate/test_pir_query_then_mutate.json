@@ -1,0 +1,50 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "found",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "u": { "kind": "scan", "table": "users", "scope": "u" },
+            "one": { "kind": "filter", "input": "u", "predicate": { "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "u", "column": "id" }, "right": { "kind": "lit", "value": "u1" } } },
+            "o": { "kind": "order", "input": "one", "terms": [ { "expr": { "kind": "col", "scope": "u", "column": "id" } } ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      },
+      {
+        "name": "retitle",
+        "kind": "update",
+        "table": "posts",
+        "relation": {
+          "nodes": {
+            "f": { "kind": "ref", "binding": "found", "scope": "f" },
+            "p": { "kind": "project", "input": "f", "fields": [
+              { "as": "id",    "expr": { "kind": "lit", "value": "p1" } },
+              { "as": "title", "expr": { "kind": "col", "scope": "f", "column": "name" } }
+            ] }
+          },
+          "root": { "node": "p", "cardinality": "many" }
+        }
+      }
+    ],
+    "result": "retitle"
+  },
+  "result": [ { "id": "p1", "user_id": "u1", "title": "Ada" } ],
+  "assertions": [
+    {
+      "name": "the post's title was driven from the queried user's name",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "posts", "scope": "t" },
+          "one": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "eq",
+            "left": { "kind": "col", "scope": "t", "column": "id" }, "right": { "kind": "lit", "value": "p1" } } }
+        },
+        "root": { "node": "one", "cardinality": "exactly_one" }
+      },
+      "expect": { "id": "p1", "user_id": "u1", "title": "Ada" }
+    }
+  ]
+}

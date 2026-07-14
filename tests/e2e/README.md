@@ -109,8 +109,11 @@ be (through `Create`), so values coerce exactly as production data does.
     detail substring. Any field omitted is not asserted.
 
   Asserting `reason` is what the conformance suite pins down: the five codes
-  are coarse, but the reason names exactly which check fired. When set,
-  `result` and `assertions` are ignored.
+  are coarse, but the reason names exactly which check fired. When `error` is
+  set the program's `result` is not diffed (a failed program has none), but
+  any `assertions` **still run** against the post-failure state — which is how
+  a fixture verifies that a failing program left the store untouched (atomic
+  rollback).
 
 Comparison is by canonical JSON (object keys sorted, numbers as
 `json.Number`), so key order never matters and an int64 column's `1000`

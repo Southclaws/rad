@@ -1,0 +1,4 @@
+[
+  { "table": "teams", "rows": [ { "id": "team-eng", "name": "Engineering" } ] },
+  { "table": "boards", "rows": [ { "id": "board-launch", "team_id": "team-eng", "name": "Launch" } ] }
+]

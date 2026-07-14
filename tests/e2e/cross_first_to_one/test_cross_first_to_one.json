@@ -1,0 +1,44 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "tasks_with_board",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "tasks": { "kind": "scan", "table": "tasks", "scope": "t" },
+            "boards": { "kind": "scan", "table": "boards", "scope": "b" },
+            "board_of": {
+              "kind": "filter",
+              "input": "boards",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "b", "column": "id" },
+                "right": { "kind": "col", "scope": "t", "column": "board_id" }
+              }
+            },
+            "out": {
+              "kind": "project",
+              "input": "tasks",
+              "scope": "o",
+              "spread": ["t"],
+              "fields": [
+                { "as": "board", "expr": { "kind": "first", "node": "board_of" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "task-1", "board_id": "board-1", "title": "Draft spec", "board": { "id": "board-1", "name": "Launch" } },
+    { "id": "task-2", "board_id": "board-2", "title": "Triage bugs", "board": { "id": "board-2", "name": "Backlog" } }
+  ]
+}

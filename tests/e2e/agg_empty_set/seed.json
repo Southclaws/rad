@@ -1,0 +1,7 @@
+[
+  { "table": "ledger", "rows": [
+    { "id": "l1", "amount": 1 },
+    { "id": "l2", "amount": 2 },
+    { "id": "l3", "amount": 3 }
+  ] }
+]

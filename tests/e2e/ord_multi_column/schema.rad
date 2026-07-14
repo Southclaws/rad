@@ -1,0 +1,7 @@
+# e2e/ord_multi_column — order by (a asc, b desc); rows tie on a, break on b.
+tables:
+  - name: nums
+    columns:
+      - { name: id, type: string, pk: true }
+      - { name: a,  type: int64 }
+      - { name: b,  type: int64 }

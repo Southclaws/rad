@@ -1,0 +1,25 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "desc",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "o": { "kind": "order", "input": "t", "terms": [
+              { "expr": { "kind": "col", "scope": "t", "column": "val" }, "desc": true }
+            ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "c", "val": 10 },
+    { "id": "d", "val": 5 },
+    { "id": "a", "val": null },
+    { "id": "b", "val": null }
+  ]
+}

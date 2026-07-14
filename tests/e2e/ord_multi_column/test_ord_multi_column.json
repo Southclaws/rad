@@ -1,0 +1,26 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "multi",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "o": { "kind": "order", "input": "t", "terms": [
+              { "expr": { "kind": "col", "scope": "t", "column": "a" } },
+              { "expr": { "kind": "col", "scope": "t", "column": "b" }, "desc": true }
+            ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "r2", "a": 1, "b": 9 },
+    { "id": "r1", "a": 1, "b": 5 },
+    { "id": "r4", "a": 2, "b": 7 },
+    { "id": "r3", "a": 2, "b": 1 }
+  ]
+}

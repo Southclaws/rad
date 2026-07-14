@@ -1,0 +1,43 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "author",
+        "kind": "create",
+        "table": "users",
+        "relation": {
+          "nodes": { "r": { "kind": "rows", "scope": "r",
+            "columns": [ { "name": "id", "type": "text" }, { "name": "name", "type": "text" } ],
+            "rows": [ ["u1", "Ada"] ] } },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      },
+      {
+        "name": "orphan_post",
+        "kind": "create",
+        "table": "posts",
+        "relation": {
+          "nodes": { "r": { "kind": "rows", "scope": "r",
+            "columns": [ { "name": "id", "type": "text" }, { "name": "user_id", "type": "text" }, { "name": "title", "type": "text" } ],
+            "rows": [ ["p1", "ghost", "hello"] ] } },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ],
+    "result": "orphan_post"
+  },
+  "error": { "code": "invalid", "contains": "foreign key" },
+  "assertions": [
+    {
+      "name": "the whole program rolled back — statement A's user was never committed",
+      "query": {
+        "nodes": {
+          "u": { "kind": "scan", "table": "users", "scope": "u" },
+          "n": { "kind": "aggregate", "input": "u", "scope": "g", "aggs": [ { "fn": "count", "as": "n" } ] }
+        },
+        "root": { "node": "n", "cardinality": "scalar" }
+      },
+      "expect": 0
+    }
+  ]
+}

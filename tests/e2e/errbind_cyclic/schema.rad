@@ -1,0 +1,8 @@
+# e2e/errbind_cyclic — two nodes referencing each other form a cycle; the graph
+# must be acyclic. Code captured by running.
+tables:
+  - name: widgets
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+      - { name: qty,  type: int64 }

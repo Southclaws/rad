@@ -1,0 +1,6 @@
+# e2e/ord_slice_limit — slice over an ordered relation.
+tables:
+  - name: nums
+    columns:
+      - { name: id,  type: string, pk: true }
+      - { name: val, type: int64 }

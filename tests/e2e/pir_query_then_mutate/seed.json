@@ -1,0 +1,4 @@
+[
+  { "table": "users", "rows": [ { "id": "u1", "name": "Ada" } ] },
+  { "table": "posts", "rows": [ { "id": "p1", "user_id": "u1", "title": "untitled" } ] }
+]

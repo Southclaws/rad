@@ -1,0 +1,9 @@
+[
+  { "table": "t", "rows": [
+    { "id": "r1", "x": 1,    "y": null },
+    { "id": "r2", "x": null, "y": 1 },
+    { "id": "r3", "x": 2,    "y": 2 },
+    { "id": "r4", "x": 2,    "y": null },
+    { "id": "r5", "x": null, "y": null }
+  ] }
+]

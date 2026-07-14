@@ -1,0 +1,22 @@
+[
+  {
+    "table": "users",
+    "rows": [
+      { "id": "user-ada", "name": "Ada" },
+      { "id": "user-bob", "name": "Bob" }
+    ]
+  },
+  {
+    "table": "boards",
+    "rows": [
+      { "id": "board-1", "name": "Launch" }
+    ]
+  },
+  {
+    "table": "tasks",
+    "rows": [
+      { "id": "task-a", "board_id": "board-1", "creator_id": "user-ada", "title": "First" },
+      { "id": "task-b", "board_id": "board-1", "creator_id": "user-bob", "title": "Second" }
+    ]
+  }
+]

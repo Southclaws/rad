@@ -1,0 +1,19 @@
+# e2e/pir_ref_chain — a three-statement PIR program forming a create chain
+# A -> B -> C, each later statement pulling the previous statement's created id
+# into its own foreign key via a `ref` binding + `project`. Extends the
+# program_compose pattern to a longer backward-only reference chain.
+tables:
+  - name: users
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+  - name: posts
+    columns:
+      - { name: id,      type: string, pk: true }
+      - { name: user_id, type: string, ref: users.id }
+      - { name: title,   type: string }
+  - name: comments
+    columns:
+      - { name: id,      type: string, pk: true }
+      - { name: post_id, type: string, ref: posts.id }
+      - { name: body,    type: string }

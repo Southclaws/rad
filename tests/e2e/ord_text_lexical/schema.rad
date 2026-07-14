@@ -1,0 +1,7 @@
+# e2e/ord_text_lexical — ordering a text column lexically (by codepoint), not
+# numerically: "1" < "10" < "2".
+tables:
+  - name: words
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
