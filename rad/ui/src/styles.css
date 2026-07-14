@@ -395,12 +395,35 @@ input:disabled, select:disabled { color: var(--muted); opacity: .8; }
 .kv-inspector__detail h3:first-child { margin-top: 0; }
 .kv-inspector__detail details summary { margin-top: 8px; color: var(--muted); cursor: pointer; font-size: 12px; }
 
+.plan-view__split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: stretch; gap: 16px; }
+.plan-view__pane { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.plan-view__label { color: var(--muted); font: 11px/1.3 var(--mono); text-transform: uppercase; }
+.plan-view__stale { margin-left: 6px; color: var(--warning); text-transform: none; }
+
+.plan-view__input {
+  flex: 1;
+  min-height: 62vh;
+  padding: 11px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.55 var(--mono);
+  resize: vertical;
+  tab-size: 2;
+}
+
+.plan-view__output { flex: 1; min-height: 62vh; margin: 0; overflow: auto; white-space: pre; }
+.plan-view .ui-notice { margin-top: 12px; }
+
 @media (max-width: 780px) {
   .admin-shell__database { display: none; }
   .admin-nav { width: 176px; }
   .admin-shell__content { padding: 20px; }
   .table-view__header, .catalog-form__header, .data-table__toolbar, .catalog-editor__toolbar, .table-settings__item { align-items: stretch; flex-direction: column; }
   .kv-inspector__split { grid-template-columns: 1fr; }
+  .plan-view__split { grid-template-columns: 1fr; }
+  .plan-view__input, .plan-view__output { min-height: 40vh; }
   .kv-inspector__detail { position: static; }
   .catalog-editor__row, .catalog-editor__row--index { grid-template-columns: 1fr 1fr; }
   .catalog-editor__actions { grid-column: 1 / -1; justify-content: flex-start; }

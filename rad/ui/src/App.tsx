@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { publicAPI, type DatabaseInfo, type TableInfo } from './api'
 import { KVBrowser } from './KVBrowser'
+import { PlanView } from './PlanView'
 import { NewTableView, TableView } from './TableView'
 
-export type View = { kind: 'kv'; prefix?: string } | { kind: 'table'; name: string } | { kind: 'new-table' }
+export type View = { kind: 'kv'; prefix?: string } | { kind: 'plan' } | { kind: 'table'; name: string } | { kind: 'new-table' }
 
 export default function App() {
   const [view, setView] = useState<View>({ kind: 'kv', prefix: '/rad/' })
@@ -37,6 +38,9 @@ export default function App() {
           <button className={`admin-nav__item ${view.kind === 'kv' ? 'admin-nav__item--active' : ''}`} onClick={() => setView({ kind: 'kv', prefix: '/rad/' })}>
             <span className="admin-nav__icon">⌘</span> KV inspector
           </button>
+          <button className={`admin-nav__item ${view.kind === 'plan' ? 'admin-nav__item--active' : ''}`} onClick={() => setView({ kind: 'plan' })}>
+            <span className="admin-nav__icon">⋔</span> Query plan
+          </button>
           <div className="admin-nav__section">
             <span>tables</span>
             <button className="admin-nav__refresh" title="Refresh tables" onClick={refreshTables}>↻</button>
@@ -55,6 +59,7 @@ export default function App() {
         <main className="admin-shell__content">
           {error && <div className="ui-notice ui-notice--error" role="alert">{error}</div>}
           {view.kind === 'kv' && <KVBrowser initialPrefix={view.prefix ?? '/rad/'} />}
+          {view.kind === 'plan' && <PlanView />}
           {view.kind === 'new-table' && (
             <NewTableView
               onCreated={(table) => {

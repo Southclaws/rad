@@ -33,7 +33,12 @@ func New(db *frontend.DB, cat *catalog.Catalog, locations ...string) (http.Handl
 // its own port so the browser surface never shares an origin with client
 // traffic.
 func NewAdmin(store kv.TransactionalKV) http.Handler {
-	return withRecovery(withLogging(withCORS(ui.Handler(store))))
+	mux := http.NewServeMux()
+	// Supplemental admin endpoint (not in the OpenAPI contract): render a
+	// query plan for the UI's plan viewer, reading schema live from the store.
+	mux.HandleFunc("POST /api/plan", api.PlanHandler(catalog.NewReader(store)))
+	mux.Handle("/", ui.Handler(store))
+	return withRecovery(withLogging(withCORS(mux)))
 }
 
 // AdminAddr derives the admin/UI listen address from the data address by

@@ -108,6 +108,14 @@ export const adminAPI = {
     return request<KVScanResult>(`/api/kv/scan?${p}`)
   },
   kvGet: (key64: string) => request<KVDetail>(`/api/kv/get?key=${encodeURIComponent(key64)}`),
+  // The body is the raw LIR document as typed; the server validates it and
+  // returns the rendered physical plan (or an error to surface).
+  plan: (query: string) =>
+    request<{ plan: string }>('/api/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: query,
+    }),
 }
 
 export const publicAPI = {
