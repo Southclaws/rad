@@ -29,6 +29,11 @@ type PhysPlan struct {
 	Root     PhysNode
 	Card     lir.RootCard
 	Out      lir.RowType
+	// Slots is the high-water slot after planning: the binder's slots plus
+	// the fresh slots the planner allocated for extracted crossings. A PIR
+	// program threads this into the next statement's binding so the whole
+	// program shares one dense slot space.
+	Slots lir.SlotID
 }
 
 // BindingStrategy is how a binding's commitment is physically discharged.

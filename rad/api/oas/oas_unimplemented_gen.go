@@ -48,6 +48,32 @@ func (UnimplementedHandler) ColumnUpdate(ctx context.Context, req OptColumnUpdat
 	return r, ht.ErrNotImplemented
 }
 
+// Execute implements Execute operation.
+//
+// Execute a program: an ordered list of named statements run as one atomic transaction. Each statement
+// is a `query`, `create`, `update`, or `delete` over an LIR relation, and evaluates against the
+// transaction's snapshot plus the effects of all preceding statements. A statement's result is
+// available to later statements, by name, through an LIR `ref` — statement names share the binding
+// namespace.
+//
+// Mutations consume relations rather than literal rows: `create` inserts a relation's rows, `update`
+// and `delete` identify target rows by the relation's primary-key columns. A literal row is simply a
+// one-row `rows` relation.
+//
+// Exactly one statement's result is returned, named by `result` (or the sole statement of a
+// single-statement program). The response also carries a per-statement summary of affected row counts.
+// If any statement fails validation or execution, or the commit loses a serializable race, the whole
+// program fails and no effects become visible; a failed statement is named in the error.
+//
+// The program envelope is validated before binding, and each statement's LIR relation against the
+// independent LIR schema. Binding then resolves tables, columns, scopes, and statement references
+// (which must point at earlier statements).
+//
+// POST /execute
+func (UnimplementedHandler) Execute(ctx context.Context, req Program) (r ExecuteRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetHealth implements GetHealth operation.
 //
 // A cheap liveness probe that touches no storage. It always returns `200` with a small status body

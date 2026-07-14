@@ -38,6 +38,12 @@ func (db *DB) CreateTable(ctx context.Context, def catalog.TableDef) (catalog.Ta
 	return db.cat.CreateTable(ctx, def)
 }
 
+// ExecuteProgram runs a PIR program as one atomic transaction and returns the
+// declared result statement's datum plus a per-statement summary.
+func (db *DB) ExecuteProgram(ctx context.Context, prog exec.Program) (exec.ProgramResult, error) {
+	return db.eng.ExecuteProgram(ctx, prog)
+}
+
 // Insert adds one row atomically (the row and its index entries commit
 // together).
 func (db *DB) Insert(ctx context.Context, table string, row lir.Row) error {

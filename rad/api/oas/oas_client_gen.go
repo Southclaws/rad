@@ -54,6 +54,29 @@ type Invoker interface {
 	//
 	// PATCH /tables/{table}/columns/{column}
 	ColumnUpdate(ctx context.Context, request OptColumnUpdateProps, params ColumnUpdateParams) (ColumnUpdateRes, error)
+	// Execute invokes Execute operation.
+	//
+	// Execute a program: an ordered list of named statements run as one atomic transaction. Each statement
+	// is a `query`, `create`, `update`, or `delete` over an LIR relation, and evaluates against the
+	// transaction's snapshot plus the effects of all preceding statements. A statement's result is
+	// available to later statements, by name, through an LIR `ref` — statement names share the binding
+	// namespace.
+	//
+	// Mutations consume relations rather than literal rows: `create` inserts a relation's rows, `update`
+	// and `delete` identify target rows by the relation's primary-key columns. A literal row is simply a
+	// one-row `rows` relation.
+	//
+	// Exactly one statement's result is returned, named by `result` (or the sole statement of a
+	// single-statement program). The response also carries a per-statement summary of affected row counts.
+	// If any statement fails validation or execution, or the commit loses a serializable race, the whole
+	// program fails and no effects become visible; a failed statement is named in the error.
+	//
+	// The program envelope is validated before binding, and each statement's LIR relation against the
+	// independent LIR schema. Binding then resolves tables, columns, scopes, and statement references
+	// (which must point at earlier statements).
+	//
+	// POST /execute
+	Execute(ctx context.Context, request Program) (ExecuteRes, error)
 	// GetHealth invokes GetHealth operation.
 	//
 	// A cheap liveness probe that touches no storage. It always returns `200` with a small status body
@@ -647,6 +670,106 @@ func (c *Client) sendColumnUpdate(ctx context.Context, request OptColumnUpdatePr
 
 	stage = "DecodeResponse"
 	result, err := decodeColumnUpdateResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// Execute invokes Execute operation.
+//
+// Execute a program: an ordered list of named statements run as one atomic transaction. Each statement
+// is a `query`, `create`, `update`, or `delete` over an LIR relation, and evaluates against the
+// transaction's snapshot plus the effects of all preceding statements. A statement's result is
+// available to later statements, by name, through an LIR `ref` — statement names share the binding
+// namespace.
+//
+// Mutations consume relations rather than literal rows: `create` inserts a relation's rows, `update`
+// and `delete` identify target rows by the relation's primary-key columns. A literal row is simply a
+// one-row `rows` relation.
+//
+// Exactly one statement's result is returned, named by `result` (or the sole statement of a
+// single-statement program). The response also carries a per-statement summary of affected row counts.
+// If any statement fails validation or execution, or the commit loses a serializable race, the whole
+// program fails and no effects become visible; a failed statement is named in the error.
+//
+// The program envelope is validated before binding, and each statement's LIR relation against the
+// independent LIR schema. Binding then resolves tables, columns, scopes, and statement references
+// (which must point at earlier statements).
+//
+// POST /execute
+func (c *Client) Execute(ctx context.Context, request Program) (ExecuteRes, error) {
+	res, err := c.sendExecute(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendExecute(ctx context.Context, request Program) (res ExecuteRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("Execute"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/execute"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ExecuteOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/execute"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeExecuteRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeExecuteResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

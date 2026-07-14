@@ -13,6 +13,10 @@ type ColumnUpdateRes interface {
 	columnUpdateRes()
 }
 
+type ExecuteRes interface {
+	executeRes()
+}
+
 type IndexCreateRes interface {
 	indexCreateRes()
 }

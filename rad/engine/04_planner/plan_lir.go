@@ -72,6 +72,7 @@ func PlanQuery(q *bound.Query, opts ...PlanOpt) *PhysPlan {
 		Root:     root,
 		Card:     q.Card,
 		Out:      q.Root.Output(),
+		Slots:    pl.nextSlot,
 	}
 }
 

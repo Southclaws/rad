@@ -13,8 +13,16 @@ import (
 	"github.com/Southclaws/rad/rad/protocol"
 )
 
-// graphQuery converts a wire query into an unbound lir.Query.
+// graphQuery converts a standalone wire query into an unbound lir.Query.
 func graphQuery(q protocol.Query) (lir.Query, error) {
+	return graphQueryExternal(q, nil)
+}
+
+// graphQueryExternal converts a wire query whose `ref` nodes may resolve to
+// external bindings — a PIR statement's refs to earlier statement results,
+// which are not among its own local bindings. external is the set of those
+// names; nil for a standalone query.
+func graphQueryExternal(q protocol.Query, external map[string]bool) (lir.Query, error) {
 	switch q.Root.Cardinality {
 	case "many", "first", "exactly_one", "scalar":
 	default:
@@ -23,7 +31,7 @@ func graphQuery(q protocol.Query) (lir.Query, error) {
 	if err := validateWireShapes(q); err != nil {
 		return lir.Query{}, err
 	}
-	if err := validateRelationForest(q); err != nil {
+	if err := validateRelationForest(q, external); err != nil {
 		return lir.Query{}, err
 	}
 	g := &graphConv{nodes: q.Nodes, building: map[string]bool{}}
@@ -236,7 +244,7 @@ func validateWireExpr(e *protocol.Expr, where string) error {
 // declaration that names it). References are edges into the binding
 // namespace, never node-consumer edges; sharing exists only there, and the
 // binding dependency graph must itself be acyclic with every binding used.
-func validateRelationForest(q protocol.Query) error {
+func validateRelationForest(q protocol.Query, external map[string]bool) error {
 	if q.Root.Node == "" {
 		return wireErrf("missing root node reference")
 	}
@@ -288,12 +296,20 @@ func validateRelationForest(q protocol.Query) error {
 		state[name] = visiting
 		reachable[name] = true
 		if n.Kind == "ref" {
-			if _, ok := q.Bindings[n.Binding]; !ok {
+			_, isLocal := q.Bindings[n.Binding]
+			switch {
+			case isLocal:
+				refUses[n.Binding]++
+				if currentTree != "" {
+					bindingDeps[currentTree] = append(bindingDeps[currentTree], n.Binding)
+				}
+			case external[n.Binding]:
+				// Resolves to an external (program) binding — an earlier PIR
+				// statement's result, neither a local binding to count nor a
+				// dependency to order here. The planner resolves it at bind
+				// time.
+			default:
 				return wireErrf("node %q references unknown binding %q", name, n.Binding)
-			}
-			refUses[n.Binding]++
-			if currentTree != "" {
-				bindingDeps[currentTree] = append(bindingDeps[currentTree], n.Binding)
 			}
 		}
 		for _, ref := range relationRefs(n) {

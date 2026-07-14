@@ -9,6 +9,7 @@ const (
 	ColumnCreateOperation         OperationName = "ColumnCreate"
 	ColumnDeleteOperation         OperationName = "ColumnDelete"
 	ColumnUpdateOperation         OperationName = "ColumnUpdate"
+	ExecuteOperation              OperationName = "Execute"
 	GetHealthOperation            OperationName = "GetHealth"
 	GetInfoOperation              OperationName = "GetInfo"
 	IndexCreateOperation          OperationName = "IndexCreate"

@@ -319,6 +319,43 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
+  /execute:
+    post:
+      operationId: Execute
+      summary: Run an execution program.
+      description: |
+        Execute a program: an ordered list of named statements run as one
+        atomic transaction. Each statement is a `query`, `create`, `update`,
+        or `delete` over an LIR relation, and evaluates against the
+        transaction's snapshot plus the effects of all preceding statements.
+        A statement's result is available to later statements, by name,
+        through an LIR `ref` — statement names share the binding namespace.
+
+        Mutations consume relations rather than literal rows: `create` inserts
+        a relation's rows, `update` and `delete` identify target rows by the
+        relation's primary-key columns. A literal row is simply a one-row
+        `rows` relation.
+
+        Exactly one statement's result is returned, named by `result` (or the
+        sole statement of a single-statement program). The response also
+        carries a per-statement summary of affected row counts. If any
+        statement fails validation or execution, or the commit loses a
+        serializable race, the whole program fails and no effects become
+        visible; a failed statement is named in the error.
+
+        The program envelope is validated before binding, and each statement's
+        LIR relation against the independent LIR schema. Binding then resolves
+        tables, columns, scopes, and statement references (which must point at
+        earlier statements).
+      tags: [data]
+      requestBody: { $ref: "#/components/requestBodies/Execute" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/ExecuteOK" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
   /create:
     post:
       operationId: RowCreate
@@ -566,6 +603,11 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Query" }
 
+    Execute:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Program" }
+
     TableCreate:
       content:
         application/json:
@@ -665,6 +707,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/QueryResult" }
+    ExecuteOK:
+      description: The result statement's datum plus a per-statement summary.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ProgramResult" }
     RowCreateOK:
       description: The stored row, including any server generated values.
       content:
@@ -742,6 +789,13 @@ components:
         An arbitrary JSON object containing an LIR payload. The HTTP protocol
         deliberately does not describe the LIR contract; servers validate this
         raw body against the independent LIR JSON Schema.
+
+    Program:
+      description: |
+        An arbitrary JSON object containing a PIR execution program. As with
+        `Query`, the HTTP contract does not describe the PIR grammar; servers
+        validate this raw body against the independent PIR JSON Schema, and
+        each statement's relation against the LIR schema.
 
     ColumnDefault:
       description: |
@@ -936,6 +990,32 @@ components:
         result:
           allOf:
             - $ref: "#/components/schemas/Value"
+
+    ProgramResult:
+      description: |
+        The result of a program: the declared result statement's datum (shaped
+        exactly as its LIR root materialises, as in `QueryResult`), plus a
+        per-statement summary in execution order.
+      type: object
+      required: [result, statements]
+      properties:
+        result:
+          allOf:
+            - $ref: "#/components/schemas/Value"
+        statements:
+          type: array
+          items: { $ref: "#/components/schemas/StatementResult" }
+
+    StatementResult:
+      description: One statement's lightweight outcome.
+      type: object
+      required: [name, affected]
+      properties:
+        name:
+          type: string
+        affected:
+          description: The number of rows the statement produced, created, updated, or deleted.
+          type: integer
 
     TableUpdateProps:
       description: The table properties to update.

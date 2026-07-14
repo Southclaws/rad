@@ -36,13 +36,28 @@ type Catalog interface {
 // carries the "planner:" prefix the server maps to an invalid-request
 // problem.
 func Bind(ctx context.Context, cat Catalog, q lir.Query) (*bound.Query, error) {
+	b := &binder{ctx: ctx, cat: cat, labels: map[string]bool{}, bindings: map[string]*bound.Binding{}}
+	return b.bindQuery(q, nil)
+}
+
+// bindQuery binds one query against the catalog, with `program` bindings
+// (prior statement results, in PIR) available for `ref` resolution but not
+// re-planned as this query's own. It resets the per-query scope/label/binding
+// state but keeps the slot counter, so a program's statements share one dense
+// slot space and each result's frames remap cleanly through later refs.
+func (b *binder) bindQuery(q lir.Query, program map[string]*bound.Binding) (*bound.Query, error) {
 	switch q.Card {
 	case lir.CardMany, lir.CardFirst, lir.CardExactlyOne, lir.CardScalar:
 	default:
 		return nil, reject.Inputf("planner: unknown root cardinality %q", q.Card)
 	}
 
-	b := &binder{ctx: ctx, cat: cat, labels: map[string]bool{}, bindings: map[string]*bound.Binding{}}
+	b.labels = map[string]bool{}
+	b.scopes = b.scopes[:0]
+	b.bindings = make(map[string]*bound.Binding, len(program))
+	for name, bnd := range program {
+		b.bindings[name] = bnd
+	}
 
 	// Bindings bind first, in dependency order, each body against an empty
 	// scope stack — a binding is closed by construction: any reference to a
@@ -54,6 +69,11 @@ func Bind(ctx context.Context, cat Catalog, q lir.Query) (*bound.Query, error) {
 	}
 	bindings := make([]*bound.Binding, 0, len(order))
 	for _, name := range order {
+		// A local binding may not shadow a program (statement-result) name:
+		// resolution must never have to choose between the two.
+		if _, isProgram := program[name]; isProgram {
+			return nil, reject.Inputf("planner: binding %q shadows a statement name", name)
+		}
 		body, err := b.bindRel(q.Bindings[name])
 		b.scopes = b.scopes[:0] // interior scopes never escape the binding
 		if err != nil {

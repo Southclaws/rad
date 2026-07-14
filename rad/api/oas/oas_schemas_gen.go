@@ -254,6 +254,18 @@ func (s *DeleteResult) SetFound(val bool) {
 func (*DeleteResult) rowDeleteRes()            {}
 func (*DeleteResult) transactionRowDeleteRes() {}
 
+type ExecuteBadRequest Problem
+
+func (*ExecuteBadRequest) executeRes() {}
+
+type ExecuteConflict Problem
+
+func (*ExecuteConflict) executeRes() {}
+
+type ExecuteUnprocessableEntity Problem
+
+func (*ExecuteUnprocessableEntity) executeRes() {}
+
 // One foreign key, in both definitions and introspection. The referenced columns must be the
 // referenced table's full primary key.
 // Ref: #/components/schemas/ForeignKeyInfo
@@ -1197,6 +1209,38 @@ func (s *ProblemCode) UnmarshalText(data []byte) error {
 	}
 }
 
+type Program jx.Raw
+
+// The result of a program: the declared result statement's datum (shaped exactly as its LIR root
+// materialises, as in `QueryResult`), plus a per-statement summary in execution order.
+// Ref: #/components/schemas/ProgramResult
+type ProgramResult struct {
+	Result     Value             `json:"result"`
+	Statements []StatementResult `json:"statements"`
+}
+
+// GetResult returns the value of Result.
+func (s *ProgramResult) GetResult() Value {
+	return s.Result
+}
+
+// GetStatements returns the value of Statements.
+func (s *ProgramResult) GetStatements() []StatementResult {
+	return s.Statements
+}
+
+// SetResult sets the value of Result.
+func (s *ProgramResult) SetResult(val Value) {
+	s.Result = val
+}
+
+// SetStatements sets the value of Statements.
+func (s *ProgramResult) SetStatements(val []StatementResult) {
+	s.Statements = val
+}
+
+func (*ProgramResult) executeRes() {}
+
 type Query jx.Raw
 
 type QueryBadRequest Problem
@@ -1409,6 +1453,34 @@ func (s *RowUpdateProps) SetClear(val []string) {
 type RowUpdateUnprocessableEntity Problem
 
 func (*RowUpdateUnprocessableEntity) rowUpdateRes() {}
+
+// One statement's lightweight outcome.
+// Ref: #/components/schemas/StatementResult
+type StatementResult struct {
+	Name string `json:"name"`
+	// The number of rows the statement produced, created, updated, or deleted.
+	Affected int `json:"affected"`
+}
+
+// GetName returns the value of Name.
+func (s *StatementResult) GetName() string {
+	return s.Name
+}
+
+// GetAffected returns the value of Affected.
+func (s *StatementResult) GetAffected() int {
+	return s.Affected
+}
+
+// SetName sets the value of Name.
+func (s *StatementResult) SetName(val string) {
+	s.Name = val
+}
+
+// SetAffected sets the value of Affected.
+func (s *StatementResult) SetAffected(val int) {
+	s.Affected = val
+}
 
 type TableCreateConflict Problem
 
