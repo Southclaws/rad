@@ -244,6 +244,26 @@ func TestExecuteUpdateMissFails(t *testing.T) {
 	}
 }
 
+// A delete input identifying the same row twice is rejected — the same
+// strict invariant as update, exposing accidental join multiplication.
+func TestExecuteDeleteAmbiguousFails(t *testing.T) {
+	c := migrated(t)
+	ctx := context.Background()
+
+	if _, err := c.Execute(ctx, protocol.Program{Statements: []protocol.Statement{
+		protocol.Create("seed", "users", rowsRel("r",
+			tcol("id", "text", "name", "text"), [][]any{{"u1", "ada"}})),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	prog := protocol.Program{Statements: []protocol.Statement{
+		protocol.Delete("dup", "users", rowsRel("r",
+			tcol("id", "text"), [][]any{{"u1"}, {"u1"}})),
+	}}
+	_, err := c.Execute(ctx, prog)
+	assertProblem(t, err, protocol.CodeInvalid, "same row twice")
+}
+
 // An update input identifying the same row twice is an ambiguous request.
 func TestExecuteUpdateAmbiguousFails(t *testing.T) {
 	c := migrated(t)

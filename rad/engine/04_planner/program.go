@@ -56,17 +56,25 @@ type BoundStatement struct {
 // falls out of registering each result only after binding it. Names must be
 // unique.
 func BindProgram(ctx context.Context, cat Catalog, stmts []ProgramStmt) ([]BoundStatement, error) {
-	b := &binder{ctx: ctx, cat: cat, labels: map[string]bool{}, bindings: map[string]*bound.Binding{}}
-	program := map[string]*bound.Binding{}
-	out := make([]BoundStatement, 0, len(stmts))
-
+	// Reserve every statement name up front so a statement-local binding
+	// cannot shadow a statement defined later in the program, not just an
+	// earlier one.
+	reserved := make(map[string]bool, len(stmts))
 	for _, s := range stmts {
 		if s.Name == "" {
 			return nil, reject.Inputf("planner: statement name must not be empty")
 		}
-		if _, dup := program[s.Name]; dup {
+		if reserved[s.Name] {
 			return nil, reject.Inputf("planner: duplicate statement name %q", s.Name)
 		}
+		reserved[s.Name] = true
+	}
+
+	b := &binder{ctx: ctx, cat: cat, labels: map[string]bool{}, bindings: map[string]*bound.Binding{}, reserved: reserved}
+	program := map[string]*bound.Binding{}
+	out := make([]BoundStatement, 0, len(stmts))
+
+	for _, s := range stmts {
 
 		var (
 			bq         *bound.Query

@@ -122,6 +122,37 @@ func TestExecuteForwardReferenceRejected(t *testing.T) {
 	assertProblem(t, err, protocol.CodeInvalid, "unknown binding")
 }
 
+// A statement-local binding may not shadow any program statement name, even
+// one defined by a later statement — the whole program's namespace is
+// collision-free regardless of order.
+func TestExecuteLocalBindingCannotShadowStatement(t *testing.T) {
+	c := migrated(t)
+	ctx := context.Background()
+
+	// Statement "first" has a local binding named "second"; a later
+	// statement is also named "second".
+	first := protocol.Query{
+		Nodes: map[string]protocol.Node{
+			"base": {Kind: "rows", Scope: "b",
+				Columns: []protocol.RowsColumn{{Name: "n", Type: "int64"}},
+				Rows:    [][]any{{1}}},
+			"u": {Kind: "ref", Binding: "second", Scope: "u"},
+			"o": {Kind: "order", Input: "u", Terms: []protocol.OrderTerm{{Expr: *protocol.Col("u", "n")}}},
+		},
+		Bindings: map[string]protocol.Binding{"second": {Node: "base"}},
+		Root:     protocol.Root{Node: "o", Cardinality: "many"},
+	}
+	prog := protocol.Program{
+		Statements: []protocol.Statement{
+			protocol.Read("first", first),
+			protocol.Read("second", oneRow("n", 2)),
+		},
+		Result: "second",
+	}
+	_, err := c.Execute(ctx, prog)
+	assertProblem(t, err, protocol.CodeInvalid, "shadows a statement name")
+}
+
 func TestExecuteMultiStatementNeedsResult(t *testing.T) {
 	c := migrated(t)
 	ctx := context.Background()

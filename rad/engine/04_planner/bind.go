@@ -111,9 +111,12 @@ func (b *binder) bindBody(q lir.Query, program map[string]*bound.Binding) (bound
 	}
 	bindings := make([]*bound.Binding, 0, len(order))
 	for _, name := range order {
-		// A local binding may not shadow a program (statement-result) name:
-		// resolution must never have to choose between the two.
-		if _, isProgram := program[name]; isProgram {
+		// A local binding may not shadow any program statement name — not
+		// just an already-bound earlier one — so the whole program's
+		// namespace is collision-free regardless of statement order, and
+		// resolution never has to choose between a local and a statement
+		// result.
+		if b.reserved[name] {
 			return nil, nil, reject.Inputf("planner: binding %q shadows a statement name", name)
 		}
 		body, err := b.bindRel(q.Bindings[name])
@@ -152,6 +155,10 @@ type binder struct {
 	scopes   []scopeEntry    // innermost last
 	labels   map[string]bool // every label bound anywhere (query-wide uniqueness)
 	bindings map[string]*bound.Binding
+	// reserved holds every PIR program statement name, so a statement-local
+	// binding cannot shadow any statement — even one defined later. Empty
+	// for a standalone query.
+	reserved map[string]bool
 }
 
 // bindingErr annotates a binding-body error with the binding's name; %w
