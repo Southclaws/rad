@@ -1,11 +1,17 @@
 # Execution programs (PIR): data mutation and the transaction protocol
 
-Status: settled design, third revision (2026-07-14). Revision one planned
-incremental hardening of the CRUD + `/tx` surface; revision two replaced it
-with the execution-programs ADR grounded in the codebase; this revision
-folds in the design review that settled the open questions. The layer has a
-name: **PIR — Program Intermediate Representation**. Ready to build;
-staging plan at the end. Grounding notes are marked ▸.
+Status: BUILT (2026-07-14) — stages 1–6 shipped; stage 7 (deleting the
+legacy endpoints) is intentionally held, see "Cutover" below. PIR is the
+canonical execution model: `POST /execute` runs programs of query, create,
+update, and delete statements; the whole battle-test corpus runs through
+it. The prior revisions (incremental CRUD hardening → the execution-programs
+ADR → the design review that settled the open questions) are folded in
+below as the design record. The layer's name: **PIR — Program Intermediate
+Representation**. Grounding notes are marked ▸.
+
+Landed across commits: `1110033` (rows prerequisite), `1f7e1b7` (stage 2
+spec), stages 3–4 (planning + binding scope + /execute), stage 5 (mutation
+execution), stage 6 (harness + corpus on /execute).
 
 ## The kernel (normative)
 
@@ -352,43 +358,52 @@ constant satisfies `first` with no order.
 - Immutable primary keys, composite-PK identification, and documented
   generated-defaults semantics carry over as statement rules.
 
-## Cutover (zero-legacy, staged)
+## Cutover (staged)
 
 ```text
-1. LIR rows node, end to end (independent, pure, corpus-tested). LANDED.
-2. PIR spec + validation: `pir.schema.yaml` on the LIR pipeline (schemagen
-   → `pirwire`, `pirjson.go`, `pirvalidate.go`), envelope + statement
-   grammar; opaque raw LIR payloads validated by the existing LIR
-   validator (see "PIR is a separate spec" above).
-3. Ordered program planning and the statement binding scope.
-4. Query statements through /execute.
-5. Create/update/delete statements through /execute.
-6. Switch generated clients and harness — MINIMAL port only (below).
-7. Delete old endpoints, explicit transactions, sessions, and old
-   mutation request types. No compatibility aliases.
+1. LIR rows node, end to end (independent, pure, corpus-tested).   DONE
+2. PIR spec + validation: pir.schema.yaml on the LIR pipeline.      DONE
+3. Ordered program planning and the statement binding scope.       DONE
+4. Query statements through /execute.                              DONE
+5. Create/update/delete statements through /execute.               DONE
+6. Route the harness (and the whole corpus) through /execute.      DONE
+7. Delete old endpoints, explicit transactions, sessions.          HELD
 ```
 
-Each stage is testable without maintaining public compatibility.
-`task demo` and `task demo:ts` remain the acceptance gates.
+Each stage was testable without maintaining public compatibility;
+`task test` green throughout, `task demo` / `task demo:ts` still run.
 
-▸ Grounded inventory:
+▸ **Why stage 7 is held (a finding from building 6).** Deleting the CRUD
+and `/tx` endpoints turns out to be entangled with the deferred
+generated-client rethink, and one assumption behind "delete `/tx`" did not
+survive contact with the demo:
 
-- The battle-test corpus (~150 tests) and `tests/harness` speak
-  `POST /query` via radclient; the harness `Result` seam absorbs the
-  envelope change in one place. Harness `Insert`'s txn-batching workaround
-  becomes one `rows`-fed create statement in one program — strictly
-  better, and it tests the intended execution path.
-- `client.Txn`/`Begin` are used by the generated Go client, the TS
-  runtime, the harness, and `tests/e2e_test.go`.
-  **Generated clients: do the minimum to compile and keep the demo
-  running — no redesign this arc.** The client/codegen world gets its own
-  rethink later (big separate todo). The one semantic note to carry into
-  that rethink: a program-building callback is _construction_, not live
-  interaction — callback code cannot branch on actual query results, so
-  `Txn(fn)` ergonomics translate only partially and the name itself
-  (`Program`/`Atomic`/`Execute`?) is part of that future discussion.
-- `rad/server/api/sessions.go` and the `/tx` handler tree delete;
-  dbserver_test's transaction cases become program cases.
+- **Typed single-row CRUD → PIR needs schema at the client.** A
+  create/update/delete becomes a program with a `rows`/PK relation whose
+  columns are *typed*. The generated client knows its schema (typed
+  structs) and can build that; the hand-written `radclient.Create(map)`
+  cannot without a schema round-trip. So migrating CRUD off `/create`,
+  `/update`, `/delete` is properly the generated-client rethink's job —
+  the client that has the types. The harness could move (it holds the
+  catalog), and did; the generic client cannot, cleanly.
+- **Read-branch-write is a genuine interactive transaction.** The demo
+  does `tx.Get(id)` then branches in Go on the value before writing, in
+  one atomic transaction. That is application work *between* statements on
+  a held snapshot — exactly the case the ADR reserves interactive
+  transactions for. It is not expressible as one submit-once program, so
+  `/tx` is not purely legacy to be deleted; part of it is the sanctioned
+  interactive surface. (Create-chains that only feed generated ids
+  forward — `tx.Teams.Create` → `tx.Boards.Create(team.ID)` — *are*
+  expressible as a program via statement-result refs; those migrate with
+  the client rethink. Read-branch-write does not.)
+
+So the legacy endpoints remaining are not compatibility shims: they are
+the live surface the generated clients still speak, pending the rethink
+that gives typed clients a program-building API (and settles which
+interactive-transaction subset survives). The deletion moves there:
+tasks/1-todo/generated-clients-rethink.md. Nothing new depends on the old
+endpoints — new work targets `/execute`.
+
 - Devtool UI/keydecode are read-path, untouched; the catalog API
   (direct-catalog-mode) is control-plane, untouched.
 
