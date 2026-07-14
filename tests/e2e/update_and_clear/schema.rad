@@ -1,0 +1,8 @@
+# e2e/update_and_clear — one table with a nullable column, to exercise a PIR
+# update that both reassigns a column and clears a nullable one to NULL.
+tables:
+  - name: items
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+      - { name: note, type: string, nullable: true }

@@ -1,0 +1,18 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "u",
+        "kind": "update",
+        "table": "items",
+        "relation": {
+          "nodes": { "r": { "kind": "rows", "scope": "r",
+            "columns": [ { "name": "id", "type": "text" }, { "name": "name", "type": "text" } ],
+            "rows": [ ["ghost", "nobody"] ] } },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "error": "target not found"
+}

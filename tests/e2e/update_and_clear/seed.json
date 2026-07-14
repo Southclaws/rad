@@ -1,0 +1,3 @@
+[
+  { "table": "items", "rows": [ { "id": "i1", "name": "one", "note": "hello" } ] }
+]

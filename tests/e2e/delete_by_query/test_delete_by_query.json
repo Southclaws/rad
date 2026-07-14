@@ -1,0 +1,53 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "purge",
+        "kind": "delete",
+        "table": "items",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "items", "scope": "t" },
+            "gone": {
+              "kind": "filter",
+              "input": "t",
+              "predicate": { "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "t", "column": "keep" },
+                "right": { "kind": "lit", "value": false } }
+            },
+            "ids": {
+              "kind": "project",
+              "input": "gone",
+              "fields": [ { "as": "id", "expr": { "kind": "col", "scope": "t", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "ids", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "name": "only the kept row remains",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "items", "scope": "t" },
+          "o": { "kind": "order", "input": "t", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "i1", "keep": true } ]
+    },
+    {
+      "name": "one row left",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "items", "scope": "t" },
+          "n": { "kind": "aggregate", "input": "t", "scope": "g", "aggs": [ { "fn": "count", "as": "n" } ] }
+        },
+        "root": { "node": "n", "cardinality": "scalar" }
+      },
+      "expect": 1
+    }
+  ]
+}

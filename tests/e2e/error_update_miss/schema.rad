@@ -1,0 +1,7 @@
+# e2e/error_update_miss — a negative fixture: updating a row that does not
+# exist must fail the whole program.
+tables:
+  - name: items
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
