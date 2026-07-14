@@ -130,7 +130,7 @@ func (b *binder) tableSchema(table string) (bound.Relation, error) {
 		return nil, err
 	}
 	if !ok {
-		return nil, reject.Inputf("planner: unknown table %q", table)
+		return nil, reject.Fail(reject.ReasonUnknownTable, "planner: unknown table %q", table)
 	}
 	slots := make([]lir.SlotID, len(tbl.Columns))
 	for i := range slots {

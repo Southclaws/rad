@@ -138,13 +138,13 @@ func (b *binder) resolveColumn(c lir.Column) (bound.SlotRef, error) {
 		// closed by a projection/aggregate boundary or belongs to another
 		// sub-relation — the most common authoring mistake, worth naming.
 		if b.labels[c.Scope] {
-			return bound.SlotRef{}, reject.Inputf("planner: scope %q exists but is not visible here — a projection or aggregate closed it, or it belongs to a different sub-relation; label that node's output scope and reference its columns instead", c.Scope)
+			return bound.SlotRef{}, reject.Fail(reject.ReasonUnknownScope, "planner: scope %q exists but is not visible here — a projection or aggregate closed it, or it belongs to a different sub-relation; label that node's output scope and reference its columns instead", c.Scope)
 		}
-		return bound.SlotRef{}, reject.Inputf("planner: unknown scope %q", c.Scope)
+		return bound.SlotRef{}, reject.Fail(reject.ReasonUnknownScope, "planner: unknown scope %q", c.Scope)
 	}
 	f, ok := entry.rel.Output().Lookup(c.Name)
 	if !ok {
-		return bound.SlotRef{}, reject.Inputf("planner: scope %q has no column %q", c.Scope, c.Name)
+		return bound.SlotRef{}, reject.Fail(reject.ReasonUnknownColumn, "planner: scope %q has no column %q", c.Scope, c.Name)
 	}
 	return bound.SlotRef{Slot: f.Slot, Name: c.Scope + "." + c.Name, T: f.Type}, nil
 }

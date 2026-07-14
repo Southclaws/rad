@@ -373,7 +373,7 @@ func (b *binder) bindScan(n lir.Scan) (*bound.Scan, error) {
 		return nil, err
 	}
 	if !ok {
-		return nil, reject.Inputf("planner: unknown table %q", n.Table)
+		return nil, reject.Fail(reject.ReasonUnknownTable, "planner: unknown table %q", n.Table)
 	}
 	slots := make([]lir.SlotID, len(tbl.Columns))
 	for i := range slots {

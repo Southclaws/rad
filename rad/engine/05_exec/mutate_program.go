@@ -99,10 +99,10 @@ func (e *Engine) applyUpdate(ctx context.Context, view kv.KV, tbl catalog.Table,
 			return nil, err
 		}
 		if current == nil {
-			return nil, reject.Runtimef("exec: update target not found in %q", tbl.Name)
+			return nil, reject.Fail(reject.ReasonMutationNotFound, "exec: update target not found in %q", tbl.Name)
 		}
 		if seen[string(pkTuple)] {
-			return nil, reject.Inputf("exec: update of %q identifies the same row twice", tbl.Name)
+			return nil, reject.Fail(reject.ReasonMutationAmbiguous, "exec: update of %q identifies the same row twice", tbl.Name)
 		}
 		seen[string(pkTuple)] = true
 
@@ -167,10 +167,10 @@ func (e *Engine) applyDelete(ctx context.Context, view kv.KV, tbl catalog.Table,
 			return nil, err
 		}
 		if current == nil {
-			return nil, reject.Runtimef("exec: delete target not found in %q", tbl.Name)
+			return nil, reject.Fail(reject.ReasonMutationNotFound, "exec: delete target not found in %q", tbl.Name)
 		}
 		if seen[string(pkTuple)] {
-			return nil, reject.Inputf("exec: delete of %q identifies the same row twice", tbl.Name)
+			return nil, reject.Fail(reject.ReasonMutationAmbiguous, "exec: delete of %q identifies the same row twice", tbl.Name)
 		}
 		seen[string(pkTuple)] = true
 		work = append(work, pending{current: current, pkTuple: pkTuple})

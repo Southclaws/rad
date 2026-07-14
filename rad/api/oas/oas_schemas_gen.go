@@ -863,11 +863,16 @@ type Problem struct {
 	Status int `json:"status"`
 	// A human readable explanation specific to this occurrence.
 	Detail OptString `json:"detail"`
-	// The machine readable discriminator. One of `invalid` for a malformed or rejected request,
-	// `execution_failed` for a valid query that failed on the data it met (division by zero, a violated
-	// cardinality assertion), `not_found`, `conflict` for a lost optimistic race (an immediate retry may
-	// win — constraint violations are `invalid`, since retrying them cannot help), or `internal`.
+	// The machine readable class. One of `invalid` for a malformed or rejected request, `execution_failed`
+	// for a valid query that failed on the data it met (division by zero, a violated cardinality
+	// assertion), `not_found`, `conflict` for a lost optimistic race (an immediate retry may win —
+	// constraint violations are `invalid`, since retrying them cannot help), or `internal`.
 	Code ProblemCode `json:"code"`
+	// The stable, fine-grained reason within the `code` class — for example `unknown_table`,
+	// `division_by_zero`, or `mutation_target_not_found`. Reasons accumulate over time while the five
+	// codes stay fixed; a client may switch on `reason` for precise handling, or fall back to `code`. When
+	// the server did not name a specific reason it equals `code` (the class catch-all).
+	Reason string `json:"reason"`
 }
 
 // GetType returns the value of Type.
@@ -895,6 +900,11 @@ func (s *Problem) GetCode() ProblemCode {
 	return s.Code
 }
 
+// GetReason returns the value of Reason.
+func (s *Problem) GetReason() string {
+	return s.Reason
+}
+
 // SetType sets the value of Type.
 func (s *Problem) SetType(val string) {
 	s.Type = val
@@ -920,12 +930,17 @@ func (s *Problem) SetCode(val ProblemCode) {
 	s.Code = val
 }
 
+// SetReason sets the value of Reason.
+func (s *Problem) SetReason(val string) {
+	s.Reason = val
+}
+
 func (*Problem) schemaMigrateRes() {}
 
-// The machine readable discriminator. One of `invalid` for a malformed or rejected request,
-// `execution_failed` for a valid query that failed on the data it met (division by zero, a violated
-// cardinality assertion), `not_found`, `conflict` for a lost optimistic race (an immediate retry may
-// win — constraint violations are `invalid`, since retrying them cannot help), or `internal`.
+// The machine readable class. One of `invalid` for a malformed or rejected request, `execution_failed`
+// for a valid query that failed on the data it met (division by zero, a violated cardinality
+// assertion), `not_found`, `conflict` for a lost optimistic race (an immediate retry may win —
+// constraint violations are `invalid`, since retrying them cannot help), or `internal`.
 type ProblemCode string
 
 const (

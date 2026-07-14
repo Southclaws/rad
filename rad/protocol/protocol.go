@@ -87,9 +87,14 @@ type Problem struct {
 	Status int    `json:"status"`
 	Detail string `json:"detail,omitempty"`
 	Code   string `json:"code"`
+	// Reason is the stable, fine-grained error identity within a code
+	// (unknown_table, division_by_zero, …). It defaults to the code — the
+	// class catch-all — when the source did not name a specific reason.
+	Reason string `json:"reason"`
 }
 
-// NewProblem builds a Problem for a code, status, and detail message.
+// NewProblem builds a Problem for a code, status, and detail message. Reason
+// defaults to the code; use WithReason to name a specific one.
 func NewProblem(code string, status int, detail string) Problem {
 	titles := map[string]string{
 		CodeInvalid:         "Invalid Request",
@@ -108,7 +113,16 @@ func NewProblem(code string, status int, detail string) Problem {
 		Status: status,
 		Detail: detail,
 		Code:   code,
+		Reason: code,
 	}
+}
+
+// WithReason sets a specific reason, returning the updated Problem.
+func (p Problem) WithReason(reason string) Problem {
+	if reason != "" {
+		p.Reason = reason
+	}
+	return p
 }
 
 // Query is LIR's flat encoding of a single-consumer relation tree: named

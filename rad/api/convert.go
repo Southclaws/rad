@@ -52,7 +52,6 @@ func anyToRaw(v any) jx.Raw {
 	return jx.Raw(raw)
 }
 
-
 // ── introspection and catalog definitions ──────────────────────────────────
 
 // DefaultToOAS converts a column default.
@@ -210,6 +209,7 @@ func ProblemToOAS(p protocol.Problem) oas.Problem {
 		Title:  p.Title,
 		Status: p.Status,
 		Code:   oas.ProblemCode(p.Code),
+		Reason: p.Reason,
 	}
 	if p.Detail != "" {
 		o.Detail = oas.NewOptString(p.Detail)
@@ -225,5 +225,6 @@ func ProblemFromOAS(o oas.Problem) protocol.Problem {
 		Status: o.Status,
 		Detail: o.Detail.Or(""),
 		Code:   string(o.Code),
+		Reason: o.Reason,
 	}
 }

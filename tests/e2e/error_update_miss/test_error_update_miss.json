@@ -14,5 +14,9 @@
       }
     ]
   },
-  "error": "target not found"
+  "error": {
+    "code": "execution_failed",
+    "reason": "mutation_target_not_found",
+    "contains": "target not found"
+  }
 }

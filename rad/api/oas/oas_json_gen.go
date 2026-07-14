@@ -1955,14 +1955,19 @@ func (s *Problem) encodeFields(e *jx.Encoder) {
 		e.FieldStart("code")
 		s.Code.Encode(e)
 	}
+	{
+		e.FieldStart("reason")
+		e.Str(s.Reason)
+	}
 }
 
-var jsonFieldsNameOfProblem = [5]string{
+var jsonFieldsNameOfProblem = [6]string{
 	0: "type",
 	1: "title",
 	2: "status",
 	3: "detail",
 	4: "code",
+	5: "reason",
 }
 
 // Decode decodes Problem from json.
@@ -2030,6 +2035,18 @@ func (s *Problem) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"code\"")
 			}
+		case "reason":
+			requiredBitSet[0] |= 1 << 5
+			if err := func() error {
+				v, err := d.Str()
+				s.Reason = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"reason\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -2040,7 +2057,7 @@ func (s *Problem) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00010111,
+		0b00110111,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

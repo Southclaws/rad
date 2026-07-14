@@ -14,11 +14,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	radclient "github.com/Southclaws/rad/rad/client"
 	"github.com/Southclaws/rad/rad/protocol"
 	"github.com/Southclaws/rad/tests/harness"
 )
@@ -30,11 +32,38 @@ type fixture struct {
 	// Result, when present, is the exact ProgramResult.Result the program
 	// must produce (shaped by the result statement's cardinality).
 	Result json.RawMessage `json:"result"`
-	// Error, when present, asserts the program fails and the problem detail
-	// contains this substring — the negative-test path.
-	Error string `json:"error"`
+	// Error, when present, asserts the program fails — the negative-test path.
+	// Accepts either a bare string (a substring the problem detail must
+	// contain) or an object {code?, reason?, contains?} asserting the wire
+	// problem's class, its fine-grained reason, and/or a detail substring.
+	Error *errorExpect `json:"error"`
 	// Assertions run after the program and pin the state it left behind.
 	Assertions []assertion `json:"assertions"`
+}
+
+// errorExpect is a fixture's negative-path assertion. Its JSON form is either
+// a bare string (detail substring) or an object naming the problem's class
+// (code), fine-grained reason, and/or a detail substring (contains). Any field
+// left empty is not asserted.
+type errorExpect struct {
+	Code     string `json:"code"`
+	Reason   string `json:"reason"`
+	Contains string `json:"contains"`
+}
+
+func (e *errorExpect) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		e.Contains = s
+		return nil
+	}
+	type alias errorExpect
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*e = errorExpect(a)
+	return nil
 }
 
 // assertion is one post-program query and its expected datum.
@@ -120,12 +149,22 @@ func runFixture(t *testing.T, dir, testFile string) {
 	}
 	res, err := d.Client.Execute(ctx, prog)
 
-	if fx.Error != "" {
+	if fx.Error != nil {
 		if err == nil {
-			t.Fatalf("expected program to fail with %q, but it succeeded", fx.Error)
+			t.Fatalf("expected program to fail (%+v), but it succeeded", *fx.Error)
 		}
-		if !strings.Contains(err.Error(), fx.Error) {
-			t.Fatalf("error = %q, want it to contain %q", err, fx.Error)
+		var ae *radclient.APIError
+		if !errors.As(err, &ae) {
+			t.Fatalf("error = %v, want a *radclient.APIError carrying a wire problem", err)
+		}
+		if want := fx.Error.Code; want != "" && ae.Problem.Code != want {
+			t.Fatalf("problem code = %q, want %q (detail: %s)", ae.Problem.Code, want, ae.Problem.Detail)
+		}
+		if want := fx.Error.Reason; want != "" && ae.Problem.Reason != want {
+			t.Fatalf("problem reason = %q, want %q (detail: %s)", ae.Problem.Reason, want, ae.Problem.Detail)
+		}
+		if want := fx.Error.Contains; want != "" && !strings.Contains(ae.Problem.Detail, want) {
+			t.Fatalf("problem detail = %q, want it to contain %q", ae.Problem.Detail, want)
 		}
 		return // negative fixtures assert only the failure
 	}

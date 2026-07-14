@@ -98,9 +98,19 @@ be (through `Create`), so values coerce exactly as production data does.
   `"many"` (compared as an exact ordered row list), or a single JSON object
   for `"first"` / `"exactly_one"`, or a naked value for `"scalar"`.
 - **`error`** — instead of `result`/`assertions`, a fixture may assert the
-  program *fails*: `error` is a substring the problem detail must contain.
-  The negative path — malformed programs, constraint violations, mutation
-  misses. When set, `result` and `assertions` are ignored.
+  program *fails* — the negative path (malformed programs, constraint
+  violations, mutation misses). Two forms:
+  - a bare string — a substring the problem *detail* must contain (shorthand
+    for `{"contains": "…"}`); or
+  - an object `{code?, reason?, contains?}` — `code` pins the wire problem
+    class (`invalid` · `execution_failed` · `not_found` · `conflict` ·
+    `internal`), `reason` pins the stable fine-grained reason
+    (`unknown_table`, `mutation_target_not_found`, …), and `contains` pins a
+    detail substring. Any field omitted is not asserted.
+
+  Asserting `reason` is what the conformance suite pins down: the five codes
+  are coarse, but the reason names exactly which check fired. When set,
+  `result` and `assertions` are ignored.
 
 Comparison is by canonical JSON (object keys sorted, numbers as
 `json.Number`), so key order never matters and an int64 column's `1000`

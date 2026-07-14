@@ -452,7 +452,7 @@ components:
         The `code` member mirrors the last segment of `type` so clients can
         branch on a stable string without parsing the URI.
       type: object
-      required: [type, title, status, code]
+      required: [type, title, status, code, reason]
       properties:
         type:
           description: A stable URN identifying the problem kind, for example `urn:rad:problem:conflict`.
@@ -468,7 +468,7 @@ components:
           type: string
         code:
           description: |
-            The machine readable discriminator. One of `invalid` for a malformed
+            The machine readable class. One of `invalid` for a malformed
             or rejected request, `execution_failed` for a valid query that
             failed on the data it met (division by zero, a violated cardinality
             assertion), `not_found`, `conflict` for a lost optimistic race
@@ -476,6 +476,15 @@ components:
             `invalid`, since retrying them cannot help), or `internal`.
           type: string
           enum: [invalid, execution_failed, not_found, conflict, internal]
+        reason:
+          description: |
+            The stable, fine-grained reason within the `code` class — for
+            example `unknown_table`, `division_by_zero`, or
+            `mutation_target_not_found`. Reasons accumulate over time while the
+            five codes stay fixed; a client may switch on `reason` for precise
+            handling, or fall back to `code`. When the server did not name a
+            specific reason it equals `code` (the class catch-all).
+          type: string
 
     Value:
       description: An arbitrary JSON value carried by the HTTP protocol.

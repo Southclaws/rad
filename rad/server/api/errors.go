@@ -32,16 +32,25 @@ func clientProblem(err error) *protocol.Problem {
 		return &p
 	case frontend.IsConflict(err):
 		p := protocol.NewProblem(protocol.CodeConflict, http.StatusConflict, err.Error())
-		return &p
+		return withReason(&p, err)
 	case reject.IsInput(err):
 		p := protocol.NewProblem(protocol.CodeInvalid, http.StatusUnprocessableEntity, err.Error())
-		return &p
+		return withReason(&p, err)
 	case reject.IsRuntime(err):
 		p := protocol.NewProblem(protocol.CodeExecutionFailed, http.StatusUnprocessableEntity, err.Error())
-		return &p
+		return withReason(&p, err)
 	default:
 		return nil
 	}
+}
+
+// withReason overwrites the problem's default (class catch-all) reason with the
+// specific reason the source named via reject.Fail, when there is one.
+func withReason(p *protocol.Problem, err error) *protocol.Problem {
+	if r, ok := reject.ReasonOf(err); ok {
+		p.Reason = string(r)
+	}
+	return p
 }
 
 // NewError renders an unexpected internal error as the contract's default
