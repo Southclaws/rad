@@ -1,27 +1,37 @@
-# Execution programs: data mutation and the transaction protocol
+# Execution programs (PIR): data mutation and the transaction protocol
 
-Status: proposed ADR, second revision (2026-07-14). The first revision of
-this task planned incremental hardening of the CRUD + `/tx` surface; the
-execution-programs ADR supersedes most of it. This revision integrates the
-ADR with the codebase as it exists, adds concrete proposals for its open
-questions, and keeps the parts of the old plan that still bind. Grounding
-notes and proposals beyond the original ADR text are marked ▸.
+Status: settled design, third revision (2026-07-14). Revision one planned
+incremental hardening of the CRUD + `/tx` surface; revision two replaced it
+with the execution-programs ADR grounded in the codebase; this revision
+folds in the design review that settled the open questions. The layer has a
+name: **PIR — Program Intermediate Representation**. Ready to build;
+staging plan at the end. Grounding notes are marked ▸.
 
-## Decision (proposed)
+## The kernel (normative)
 
-Introduce **execution programs** as the top-level execution abstraction:
-one `POST /execute` accepting a bounded collection of statements executed
-atomically inside one implicit transaction. Statements are `query`,
-`create`, `update`, `delete`. Mutations consume *relations*, not literal
-row payloads — a literal row is a one-row relation. The `/query`,
-`/create`, `/update`, `/delete`, and `/tx/{id}/...` endpoints are removed.
+> A PIR program is an ordered array of named statements executed
+> sequentially within one implicit transaction. Each statement evaluates
+> against the transaction's initial snapshot plus the complete effects of
+> all preceding statements, but never observes its own effects while
+> deriving its mutation input. Statements may expose their result relation
+> as a materialised program binding for later statements. Mutation
+> statements validate and apply their complete input relation as one
+> logical set. If any statement or the transaction commit fails, the
+> entire program fails and no effects become externally visible. Exactly
+> one statement result is returned to the caller, defaulting to the sole
+> statement when the program contains only one.
 
-The layering — the strongest outcome of this design:
+The design removes three sources of accidental nondeterminism at once:
+unordered statement scheduling, per-row constraint checking over bags, and
+replayable effectful references. It is not merely an API redesign; it is a
+better statement semantics model.
+
+## The layering
 
 ```text
 HTTP
   │
-Execution program        (effectful orchestration; owns ordering + atomicity)
+PIR — execution program  (effectful orchestration; owns ordering + atomicity)
   │
 Statements               (query | create | update | delete)
   │
@@ -30,177 +40,254 @@ Pure relation LIR        (no side effects, no execution-order semantics)
 Planner → physical plan → KV operations
 ```
 
-LIR stays a pure relational language; programs introduce effects one level
-above it, exactly as the planner sits above LIR today. Alongside the schema
-IR (catalog) this completes the pattern: each layer has one responsibility
-and compiles into the next.
+LIR stays a pure relational language; PIR introduces effects one level
+above it, exactly as the planner sits above LIR today. Alongside the
+schema IR (catalog) the pattern completes: each layer has one
+responsibility and compiles into the next.
 
-▸ Grounding: the layering is not aspirational — it matches the engine as
-built. `frontend.Tx.Execute` already binds and executes statements against
-a transaction's view (snapshot + own writes), so read-your-writes exists at
-the engine layer today; the program executor is a loop over statements
-inside one `engine.Txn`. The statement snapshot is already a stated
-invariant (one statement, one KV view). And the relation-bindings kernel
-was deliberately worded "a binding denotes one *statement-local* relational
-value" — programs make "statement" a first-class construct, and that
-sentence survives verbatim. The pieces were built for this shape before the
-shape had a name.
+The transport collapses to one data-plane endpoint, **`POST /execute`**.
+`/query`, `/create`, `/update`, `/delete`, and `/tx/{id}/...` are removed —
+**decided: `/query` does not survive as a shorthand, and no second
+wire-level grammar normalises into a one-statement program.** One protocol
+model, one validation path, one trace shape, one error model, one
+transaction lifecycle; ergonomics are the job of client libraries, a
+`rad query` CLI frontend, and the devtool making PIR pleasant — not of a
+sibling endpoint that would grow into the weird restricted cousin.
+
+▸ Grounding: the layering matches the engine as built. `frontend.Tx.Execute`
+already binds and executes statements against a transaction's view
+(snapshot + own writes), so read-your-writes exists at the engine layer
+today; the program executor is a loop over statements inside one
+`engine.Txn`. The statement snapshot is already a stated invariant. And the
+relation-bindings kernel was deliberately worded "a binding denotes one
+_statement-local_ relational value" — PIR makes "statement" a first-class
+construct and that sentence survives verbatim.
 
 ## What this dissolves (from revision one)
 
-Programs make several planned decisions unnecessary — worth naming, since
-it is most of the win:
-
-- **Interactive sessions and everything they dragged in.** No `/tx`
-  endpoints means no session registry, no lease/expiry contract, no
-  ambiguous-commit terminal states, no owner-routing or deployment-honesty
-  rule: every request is a complete atomic unit, so Rad becomes
-  stateless-per-request — a big deployment story win, not just an API
-  cleanup. Interactive transactions return later only if a real workflow
-  needs application work *between* statements while holding a snapshot.
-- **The transaction-context mechanism** (header vs envelope): moot, no
-  transaction outlives a request.
+- **Interactive sessions and everything they dragged in.** No `/tx` means
+  no session registry, no lease/expiry contract, no ambiguous-commit
+  terminal states, no owner-routing rule: every request is a complete
+  atomic unit, so Rad becomes stateless-per-request — a deployment story
+  win, not just an API cleanup. Interactive transactions return only if a
+  workflow genuinely needs application work between statements while
+  holding a snapshot.
+- **The transaction-context mechanism** (header vs envelope): moot.
 - **The bounded batch IR** (`Mutate([]Mutation)` with no dataflow):
-  superseded. Programs are the batch, with dataflow — the thing revision
-  one deferred is now the design's centre.
-- **The `set`/`clear` overlap edge case**: dies structurally; see the
-  update statement rules below.
+  superseded — programs are the batch, with dataflow.
+- **The `set`/`clear` overlap edge case**: dies structurally (update
+  rules below).
 
-## Statement model and wire shape
-
-▸ Proposal (resolves open questions 1 and 6 together):
+## Wire shape
 
 ```jsonc
 {
   "statements": [
     { "name": "author",
       "kind": "create", "table": "users",
-      "input": { "nodes": { ... }, "root": "..." } },
+      "input": { "nodes": { /* … */ }, "root": "..." } },
     { "name": "posts",
       "kind": "query",
-      "query": { "nodes": { ... }, "bindings": { ... }, "root": { ... } } }
+      "query": { "nodes": { /* … */ }, "bindings": { /* … */ }, "root": { /* … */ } } }
   ],
   "result": "author"
 }
 ```
 
-- **Statements are an ordered JSON array of named entries, not a map.**
-  Query.nodes can be a map because node order is meaningless; statement
-  order is semantic (below), and JSON objects are unordered. The array *is*
-  the DAG answer: a list of named statements whose references must point
-  backwards is exactly a topologically-sorted DAG, so the wire is
-  DAG-capable while the executor stays linear — the ADR's "don't decide
-  yet" position, made concrete.
-- **Statement results are program-level relation bindings.** Each
-  statement's name enters a program binding namespace; later statements'
-  LIR trees consume earlier results with the ordinary `ref` node — no new
-  reference construct. This is the binding kernel doing its job: a
-  statement result is one committed relational value, observed under fresh
-  scopes by any number of refs. One rule carries over hard: statement
-  results are **always materialised, never replayed** — mutations are not
-  re-executable, so the single-ref replay strategy is off the table here.
-- **Namespaces**: each statement's LIR document keeps its own local
-  `bindings`; `ref` resolution is local-first, and a local binding that
-  shadows a statement name is rejected outright (deterministic, no lookup
-  ambiguity). Statement names, node ids, binding names, and scope labels
-  remain four separate namespaces.
+Statements are an ordered **JSON array** of named entries — never a map.
+Query.nodes can be a map because node order is meaningless; statement order
+is semantic and JSON objects are unordered. The array is also the DAG
+answer: a list of named statements whose references must point backwards is
+a topologically-sorted DAG, so the wire is DAG-capable while the executor
+stays linear.
 
-## Ordering: document order is the semantics
+`protocol.Query` (nodes/bindings/root) survives intact as the statement
+payload; PIR is the new outer document. The LIR format, schema, validation,
+and graphconv do not change beyond the `rows` node below.
 
-▸ Pushback on the ADR's "execution order is derived from dependencies":
-ref-edges are not the only dependencies. Two statements with no reference
-between them still interact through *tables* — `create` into `users`
-followed by an unrelated-looking `query` over `users` must observe the
-insert. A scheduler that derives order from the ref graph alone would be
-free to reorder them and change results; deriving table-footprint edges is
-possible (the binder knows each statement's read/write sets) but is planner
-sophistication with no v1 payoff.
+## Ordering (normative)
 
-Proposal: **document order is the semantic execution order.** Validation
-requires references to point to earlier statements (the user hands us a
-topological order; cycles are unrepresentable). A future planner may
-reorder or parallelise only where it can prove independence on *both* the
-ref graph and table footprints — an optimisation invisible by construction,
-which is the only kind allowed. This also deletes the deterministic
-tie-breaking open question: there is nothing to tie-break.
+> A program is an ordered array of statements. Statements execute
+> sequentially in document order within one transaction.
+
+- Statement-result references may only point backwards; forward references
+  are invalid; cycles are unrepresentable.
+- Every statement sees the effects of all earlier statements.
+- No topological sort is required for correctness; no deterministic
+  tie-breaking question exists.
+- The v1 planner simply preserves statement order. Reordering or
+  parallelisation is a future optimisation that requires proof of
+  observational equivalence — covering at least read/write table
+  footprints, constraint interactions, generated/default expression
+  effects, statement-result references, future trigger/hook effects, and
+  catalog reads where relevant. Even disjoint tables may be insufficient
+  once foreign keys connect them, so the proof system is deliberately not
+  specified narrowly here; the bar is "invisible by construction".
+
+▸ This replaced the original "order derived from dependencies" model: refs
+are not the only dependencies — statements also interact through tables
+(a `create` into `users` followed by a ref-independent `query` over
+`users` must observe the insert), so ref-graph scheduling was wrong.
+
+## Statement lifecycle (normative)
+
+For every mutation statement, the logical sequence is:
+
+```text
+1. Evaluate the complete input relation against the statement start state.
+2. Derive the complete proposed mutation set.
+3. Validate the proposed post-statement state.
+4. Apply the complete mutation set.
+5. Produce the statement result relation.
+```
+
+The statement start state is:
+
+```text
+program transaction snapshot
++ effects of statements 0..n-1
+= start state of statement n
+```
+
+**The Halloween rule falls out**: a statement's relations evaluate against
+its start state, so an update whose input reads its own target table cannot
+observe its own writes. Read-your-writes gets its precise wording:
+
+> Each statement executes against the transaction's snapshot plus the
+> effects of all _preceding_ statements — never its own.
+
+**Constraint validation happens at step 3, against the proposed
+post-statement state** — not per row in encounter order. Today `mutate.go`
+checks per row immediately; over an unordered bag that makes failure order
+nondeterministic. Statement-boundary validation is a real semantic upgrade:
+
+- A create statement may contain mutually-referential rows (an `employees`
+  batch whose `manager_id` values point inside the batch) — valid if the
+  post-statement state satisfies the FK.
+- A single update statement may swap unique values (A and B exchange
+  usernames) — valid because only the end state is checked.
+
+Intra-batch duplicates (two input rows minting the same PK) are caught at
+the same step. Across statements the current model stands: constraints are
+immediate at each statement boundary, none are deferrable to commit,
+restrict remains the only FK delete action.
+
+**Two validation layers, two error categories** (already settled taxonomy,
+commit `350058c`): statement constraint validation against the
+transaction-visible state plus the proposed delta → `invalid` (retry
+cannot help); transaction commit validation against concurrent activity →
+`conflict` (immediate retry of the whole program may win). A failed
+statement rolls back the whole program and the error names the failing
+statement.
+
+## Statement results are bindings (normative rules)
+
+Statement names enter a program-level binding namespace; later statements'
+LIR consumes earlier results with the ordinary `ref` node — no
+`statement_ref`, no second reference system. The rules:
+
+1. Statement names are unique within the program.
+2. A statement name becomes bound only after that statement succeeds.
+3. References resolve only to preceding statements.
+4. Statement-result bindings are logically materialised and evaluated
+   exactly once — **never replayed**; mutations are not re-executable, so
+   the single-ref replay strategy is off the table at program scope.
+5. Statement-local bindings may not shadow program statement names —
+   rejected outright, so resolution never distinguishes "local relation
+   binding" from "program result binding".
+6. Forward references are invalid.
+7. The result statement's output remains available for the program
+   response after commit.
+
+"Materialised" is logical, not necessarily RAM: the executor may buffer,
+spool, retain an iterator under safe conditions, or reconstruct from an
+internal write set — anything except re-running the producing statement.
 
 ## Statement semantics
 
-▸ Proposals for the rules the ADR leaves open:
-
-**Statement-internal snapshot (the Halloween rule).** Every relation in a
-statement evaluates against the program state as of the statement's start;
-the statement's effects become visible only to subsequent statements. So an
-update whose input reads its own target table cannot observe its own
-writes, and read-your-writes gets its precise wording for free:
-
-> Each statement executes against the transaction's snapshot plus the
-> effects of all *preceding* statements — never its own.
-
-This is the engine's existing statement-snapshot invariant applied
-per-statement inside one transaction; the machinery exists.
-
 **Create.** `input`'s output columns map to target columns by name;
 missing columns take defaults (generators applied per row, as today);
-unknown columns are an error; types must match the catalog (binder
-validation, same as everywhere else). Result relation: the created rows,
-defaults included — the wire generalisation of today's `Create` returning
-the stored row.
+unknown columns are an error; types must be assignable per the catalog.
+Result relation: the created rows, defaults included.
 
-**Update.** The input relation's *schema* declares the assignment: its
-output must include the target's full primary key (identifying which rows
-change) and at least one non-key column (the columns being set). Columns
-absent from the input schema are untouched; a NULL in a nullable input
-column assigns NULL. This kills the `set`/`clear` split — "clear" is just
-projecting a NULL — and the old silent-overlap bug with it. Rules that
-need stating: a PK value that matches no row is an error or a skip
-(propose: error — programs are atomic, silent partial application is
-poison); two input rows targeting the same PK are an error (deterministic,
-no last-wins). Result relation: the post-image of updated rows.
+**Update.** The input relation's _schema_ is the assignment contract: for
+`users(id PK, name, age)`, an input of `id | name` means "identify by id,
+assign name"; `id | age` means "identify by id, assign age". NULL assigns
+null; absence from the schema means leave unchanged. No `set`, no `clear`,
+no overlap validation, no per-row patch objects, no mutation-specific
+assignment language. The set of assigned columns is fixed by the input
+schema for the entire statement — not an implementation limit but what
+makes the statement statically understandable; different update shapes are
+separate statements, which PIR makes cheap and atomic. Validation rules:
 
-**Delete.** Input's output must be exactly the target's primary key
-columns (extra columns rejected — say what you mean). Result relation: the
-pre-image of the deleted rows (their last committed state), which is the
-only useful answer and doubles as the `returning` story.
+- all primary-key columns must appear; PK columns identify and are not
+  assignable in v1 (immutable keys carry over);
+- no non-target columns may appear;
+- generated/non-writable columns are rejected if present;
+- input column types must be assignable to target columns;
+- the input schema must be statically known before execution;
+- **every target identity may occur at most once in the input bag** — two
+  rows targeting the same PK are an ambiguity error even if they assign
+  identical values (relations are bags; last-wins is not a thing);
+- **every input row must identify exactly one existing target row** — a
+  miss fails the statement and therefore the program. Update is
+  declarative ("these are the rows to update"), not aspirational ("update
+  whichever happen to exist"). Distinct reasons for the error registry:
+  `mutation_target_not_found`, `mutation_target_ambiguous`.
 
-**Constraint timing moves to the statement boundary.** Today `mutate.go`
-checks constraints per row, immediately. A mutation statement consumes a
-*bag* — unordered by definition — so per-row immediate checking would make
-failure order nondeterministic, and self-referential rows created in one
-statement (an `employees` batch with `manager_id` pointing inside the
-batch) would fail on encounter order. Rule: a statement's constraint
-checks (unique, FK, NOT NULL) run against the statement's *end* state,
-after all its rows apply; intra-batch duplicates are caught there too.
-Across statements the current model stands: constraints are immediate at
-each statement boundary, none are deferrable to commit, restrict remains
-the only FK delete action.
+Result relation: the post-image of updated rows.
+
+**Delete.** Input's output must be exactly the target's primary-key
+columns (extra columns rejected). Same strictness as update on misses in
+v1, for consistency — when the input derives from scanning the target
+itself, misses cannot naturally occur anyway. A tolerant
+`missing: ignore` statement option is conceivable later, not in v1;
+skip-and-report is a different mutation contract and makes downstream
+result cardinality unpredictable. Result relation: the pre-image of
+deleted rows — the `returning` story for free.
+
+**Query.** Unchanged LIR semantics; root cardinality shapes the result as
+today.
 
 ## Result model
 
-▸ Proposal (resolves open questions 2 and 5):
+Two different concepts: statement relational outputs (for composition) and
+the program transport output. Only the declared `result` statement's
+relation crosses the wire — a query-driven delete may touch 100k rows and
+shipping every relation punishes exactly the workloads programs exist for.
 
-- Every statement logically produces a relation (consumable via refs), but
-  **only the program's declared `result` statement materialises to the
-  wire** — a delete driven by a query may touch 100k rows, and shipping
-  every statement's relation by default punishes exactly the workloads
-  programs exist for. The response envelope carries the result datum
-  (shaped by the result statement's cardinality, `{"result": ...}` as
-  today) plus a small per-statement summary (affected-row counts) that the
-  trace work can later enrich.
-- `result` is explicit, with one ergonomic default: a single-statement
-  program needs no `result` field. Multi-statement programs must name one
-  (fail closed on ambiguity).
-- Old/new both for updates: deferred. When change capture is really
-  wanted, model pre/post images as explicit relations, not flags.
+```jsonc
+{
+  "statements": [
+    { "name": "create_users", "affected": 10 },
+    { "name": "delete_legacy", "affected": 100000 }
+  ],
+  "result": {
+    "statement": "create_users",
+    "relation": { /* datum, shaped by the statement's cardinality */ }
+  }
+}
+```
 
-## LIR grows one pure node: the literal relation
+- `result` selection: omitted ⇒ the sole statement of a one-statement
+  program; multi-statement programs must name it explicitly. **Never
+  default to the last statement** — appending an audit statement must not
+  silently change the API response.
+- Whether every successful statement earns an envelope entry (vs counts
+  living only in trace/debug output) is deliberately open; start with the
+  lightweight counts and let the trace work own the rich version.
+- Old/new both for updates: deferred; if change capture is wanted, model
+  pre/post images as explicit relations, not flags.
 
-▸ The ADR's "a literal row is simply a one-row relation" is currently
-false — LIR has exactly eight node kinds (`scan`, `filter`, `project`,
-`join`, `aggregate`, `order`, `slice`, `ref`) and `scan` is the only leaf.
-There is no way to write a constant relation. Programs need one, and it is
-a *pure, generally useful* addition (SELECT-from-VALUES queries, test
-fixtures, seeding) rather than program-specific machinery:
+## Prerequisite: LIR grows the constant relation
+
+**PIR implementation depends on constant relation support in LIR.**
+
+▸ "A literal row is simply a one-row relation" is currently false: LIR has
+eight node kinds (`scan`, `filter`, `project`, `join`, `aggregate`,
+`order`, `slice`, `ref`) and `scan` is the only leaf — there is no way to
+write a constant relation. The abstraction is not "PIR has literal
+mutation values"; it is "LIR can represent finite constant relations":
 
 ```jsonc
 { "kind": "rows", "scope": "r",
@@ -208,114 +295,113 @@ fixtures, seeding) rather than program-specific machinery:
   "rows": [["ada", 36], ["grace", 41]] }
 ```
 
-Deterministic, never plan-choice-sensitive, cardinality = row count,
-column types inferred per the literal-coercion rules the binder already
-owns (raw JSON in, catalog-free wire converter, binder coerces — same as
-`lit`). Touches the whole vertical (schema YAML → schemagen → lirwire →
-validate → graphconv → bind → plan → execute → oracle interpreter), but
-each piece is small and the corpus conventions make testing it mechanical.
-Note the typeless-value footgun (tasks/1-todo/typeless-value-encoding.md)
-applies to the row literals; encode with the explicit-null rule.
+Pure, deterministic, never plan-choice-sensitive, cardinality = row count;
+literal coercion follows the binder's existing rules (raw JSON through the
+catalog-free wire converter, binder coerces — same as `lit`; exact shape
+must fit the type/expression model). It unlocks far more than creation:
+literal queries, joins against ad hoc data, fixtures, generated-client
+bulk input, small lookup tables, mutation inputs, and planner/oracle
+conformance cases. It lands **first and independently**, proven as a
+normal pure LIR node through the whole vertical (schema YAML → schemagen →
+lirwire → validate → graphconv → bind → plan → execute → oracle). The
+typeless-value footgun (tasks/1-todo/typeless-value-encoding.md) applies
+to row literals; encode with the explicit-null rule.
 
 ## What survives from revision one
 
-- **Prove the isolation claim at the storage seam** — unchanged, and
-  *more* urgent: programs put multi-statement read-your-writes at the
-  centre of the contract. The test list stands: write-skew
-  (two-doctors), phantom ranges, constraint races (duplicate unique
-  values, FK parent deletion), backend conformance beyond in-memory
-  SlateDB.
-- **The error taxonomy split** — `invalid`/constraint violation (retry
-  cannot help) vs `conflict`/serializable race (immediate retry may win) —
-  now settled and enforced on the wire (commit `350058c`); programs adopt
-  it wholesale. A failed statement rolls back the whole program and
-  reports which statement failed and why.
+- **Prove the isolation claim at the storage seam** — more urgent now:
+  programs put multi-statement read-your-writes at the centre of the
+  contract. Write-skew (two-doctors), phantom ranges, constraint races
+  (duplicate unique values, FK parent deletion), backend conformance
+  beyond in-memory SlateDB.
 - **Idempotency stays open.** Programs do not solve the lost-response
-  problem: a client that never hears back from `/execute` cannot know
-  whether the program committed. The client-supplied idempotency key with
-  a bounded result record remains the likely mechanism, and matters more
-  once one request carries a whole workflow.
-- Immutable primary keys, composite-PK cell maps at the edges, and the
-  documented generated-defaults semantics carry over as statement rules.
+  problem — a client that never hears back from `/execute` cannot know
+  whether the program committed. Client-supplied idempotency key with a
+  bounded result record remains the likely mechanism, and matters more
+  when one request carries a whole workflow.
+- Immutable primary keys, composite-PK identification, and documented
+  generated-defaults semantics carry over as statement rules.
 
-## Cutover blast radius (zero-legacy, one arc)
+## Cutover (zero-legacy, staged)
 
-▸ Grounded inventory, so the estimate is honest:
+```text
+1. LIR rows node, end to end (independent, pure, corpus-tested).
+2. PIR schemas and validation (program envelope, statement grammar).
+3. Ordered program planning and the statement binding scope.
+4. Query statements through /execute.
+5. Create/update/delete statements through /execute.
+6. Switch generated clients and harness — MINIMAL port only (below).
+7. Delete old endpoints, explicit transactions, sessions, and old
+   mutation request types. No compatibility aliases.
+```
 
-- **Keep `protocol.Query` (nodes/bindings/root) intact as the statement
-  payload.** The program envelope wraps it; the LIR document format,
-  schema, validation, and graphconv do not change (beyond the `rows`
-  node). This bounds the blast radius to the envelope.
+Each stage is testable without maintaining public compatibility.
+`task demo` and `task demo:ts` remain the acceptance gates.
+
+▸ Grounded inventory:
+
 - The battle-test corpus (~150 tests) and `tests/harness` speak
-  `POST /query` via `radclient`; the harness `Result` seam absorbs the
-  envelope change in one place. Harness `Insert` currently batches via
-  `client.Txn` — it becomes a single program (or one `create` with a
-  `rows` relation), which is strictly better and deletes its workaround
-  comment.
-- `client.Txn`/`Begin` are used by the generated Go client
-  (codegen.go → tracker.go), the TS runtime, the harness, and
-  `tests/e2e_test.go`. Generated clients re-emit their CRUD helpers as
-  one-statement programs; their `Txn(fn)` becomes a program *builder*
-  (statements accumulate, one `/execute` at the end) — same ergonomics,
-  fewer round-trips, no session.
+  `POST /query` via radclient; the harness `Result` seam absorbs the
+  envelope change in one place. Harness `Insert`'s txn-batching workaround
+  becomes one `rows`-fed create statement in one program — strictly
+  better, and it tests the intended execution path.
+- `client.Txn`/`Begin` are used by the generated Go client, the TS
+  runtime, the harness, and `tests/e2e_test.go`.
+  **Generated clients: do the minimum to compile and keep the demo
+  running — no redesign this arc.** The client/codegen world gets its own
+  rethink later (big separate todo). The one semantic note to carry into
+  that rethink: a program-building callback is _construction_, not live
+  interaction — callback code cannot branch on actual query results, so
+  `Txn(fn)` ergonomics translate only partially and the name itself
+  (`Program`/`Atomic`/`Execute`?) is part of that future discussion.
 - `rad/server/api/sessions.go` and the `/tx` handler tree delete;
-  dbserver_test's transaction cases become program cases (RYW inside one
-  request instead of across requests).
-- The devtool UI and keydecode are read-path; untouched. The catalog API
-  (direct-catalog-mode) is control-plane; untouched.
-
-Sequencing: land `rows` in LIR first (pure, independently testable), then
-the program envelope + executor alongside the old endpoints, port harness
-→ corpus → codegen → demo, then delete the five old endpoint families in
-the same arc. `task demo` and `task demo:ts` remain the acceptance gates.
+  dbserver_test's transaction cases become program cases.
+- Devtool UI/keydecode are read-path, untouched; the catalog API
+  (direct-catalog-mode) is control-plane, untouched.
 
 ## Cross-ADR effects
 
-- **error-propagation.md**: `Location` gains a `Statement` field; the
-  stage list likely gains `program` (dependency/namespace validation
-  failures are neither schema nor binding). The whole-program-rolled-back
-  error must name the failing statement.
-- **query-trace.md**: the trace artifact becomes program-scoped — one
-  trace per program, statement spans at the top level, per-statement
-  KV/planning sections under them. "An error is a trace that stopped
-  early" now stops at a statement boundary.
+- **error-propagation.md**: `Location` gains `Statement`; the stage list
+  likely gains `program` (namespace/reference validation is neither schema
+  nor binding). New reasons: `mutation_target_not_found`,
+  `mutation_target_ambiguous`. Statement-constraint vs commit-conflict
+  remain distinct classes.
+- **query-trace.md**: the trace becomes program-scoped — statement spans
+  at the top, per-statement planning/KV sections beneath; "an error is a
+  trace that stopped early" stops at a statement boundary. Per-statement
+  affected-counts may live richer here than in the response envelope.
 - **relation bindings** (tasks/3-done/relation-bindings.md): the kernel
-  extends, unmodified, to program scope; the only new rule is
-  statement-result bindings are always materialised.
+  extends unmodified to program scope; the one new rule is that
+  statement-result bindings always materialise.
 
-## Remaining open questions
+## Remaining open questions (small)
 
-1. **Does `/query` survive as a read-only shorthand?** Internally
-   everything becomes a program either way. Leaning no (one endpoint, one
-   model; the client library gives back the ergonomics), but the devtool
-   and any curl-ability argument say maybe. Decide at build.
-2. **Per-statement result summaries**: counts only, or keys? (Counts
-   until a consumer demands more.)
-3. **Program limits**: statement count, total input rows, result size —
-   the execution-limits deferral (node/depth/payload) now has one more
-   axis. Bound something before demos get creative.
-4. **Update misses**: error vs skip-and-report. Proposed error above;
-   revisit if import workflows want merge-ish tolerance (that's an upsert
-   discussion, explicitly out of scope).
-5. **Result selection shape**: string naming one statement (proposed) vs
-   list of names → named results object. Start with one; a list is
-   backwards-compatible later.
+1. Per-statement metadata in every successful response, or counts in the
+   envelope + rich detail only in traces? (Start light; trace work owns
+   the rest.)
+2. Program limits: statement count, total input rows, result size — the
+   execution-limits deferral gains an axis; bound something before demos
+   get creative.
+3. Result selection as a list (named-results object) — backwards-
+   compatible extension if ever wanted; start with one.
 
-## Non-goals (carried and extended)
+## Non-goals
 
 - Replacing HTTP/JSON; HTTP/2 + programs-as-batch is the early
-  optimisation. Streaming/alternate codecs later, same semantics.
-- Distributing live transactions; programs deliberately make requests
+  optimisation; streaming/alternate codecs later, same semantics.
+- Distributing live transactions — programs deliberately make requests
   stateless instead.
-- Upsert, cascades, deferred constraints, expression-assignment UPDATE
-  (`set x = x + 1` is expressible as a query feeding an update — that *is*
-  the design), or a second condition language.
-- Interactive transactions — reintroduce only with a workflow that
-  genuinely needs to hold a snapshot across user think-time.
+- Upsert, cascades, deferred constraints, tolerant misses, or an
+  expression-assignment UPDATE dialect (`set x = x + 1` is a query
+  feeding an update — that _is_ the design).
+- Interactive transactions — only with a workflow that genuinely needs a
+  held snapshot across think-time.
+- Generated-client redesign (separate future task; this arc only keeps
+  them compiling).
 
 Related: tasks/3-done/relation-bindings.md (the reference machinery),
 tasks/1-todo/error-propagation.md and query-trace.md (program-scoped
 provenance), tasks/1-todo/typeless-value-encoding.md (row literals),
-tasks/1-todo/enforced-ordering-in-certain-contexts.md (interacts with
-mutation input determinism), rad/engine/06_frontend (Tx.Execute — the
-read-your-writes seam that makes the executor a loop).
+tasks/1-todo/enforced-ordering-in-certain-contexts.md (mutation input
+determinism), rad/engine/06_frontend (Tx.Execute — the read-your-writes
+seam that makes the executor a loop).
