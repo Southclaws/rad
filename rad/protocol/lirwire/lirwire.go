@@ -358,6 +358,16 @@ type OrderTerm struct {
 	Expr Expr `json:"expr"`
 }
 
+// One declared output column of a constant relation.
+type RowsColumn struct {
+	// The output attribute name.
+	Name string `json:"name"`
+	// Whether cells in this column may be NULL.
+	Nullable *bool `json:"nullable,omitempty"`
+	// The column's scalar type.
+	Type string `json:"type"`
+}
+
 // LIR is Rad's low-level intermediate representation: the relation tree a
 // client sends to `POST /query`, and the tree the engine binds, plans, and
 // executes. This schema is its normative specification. The type definitions
@@ -457,6 +467,8 @@ func (w *Node) UnmarshalJSON(data []byte) error {
 	switch peek.Type {
 	case "scan":
 		v = &ScanNode{}
+	case "rows":
+		v = &RowsNode{}
 	case "filter":
 		v = &FilterNode{}
 	case "project":
@@ -484,8 +496,8 @@ func (w *Node) UnmarshalJSON(data []byte) error {
 }
 
 // Introduce a base table as a relation and bind a `scope` label to its
-// rows. Scans are the only source of rows; every other operator derives
-// from them.
+// rows. Scans introduce stored rows; `rows` introduces literal ones —
+// every other operator derives from these leaves.
 //
 // A scan's row order is physical (whatever the chosen access path yields)
 // and never logical: to depend on order, place an explicit `order` above
@@ -503,6 +515,52 @@ type ScanNode struct {
 func (ScanNode) isNode() {}
 
 func (ScanNode) NodeType() string { return "scan" }
+
+// Introduce a finite constant relation: literal rows with explicitly
+// declared columns, bound to a `scope` label exactly as a scan is. It is
+// the second relational leaf beside `scan`, useful for literal queries,
+// joins against ad hoc data, fixtures, and mutation input where a
+// literal row is simply a one-row relation.
+//
+// Column types and nullability are declared, never inferred from the
+// row values: a bare JSON number cannot choose between int64 and
+// float64, and the schema of a relation must not depend on its data.
+// Each row is a positional array parallel to `columns`, and its arity
+// must equal the number of declared columns. Each cell uses the
+// protocol `Value` encoding — raw JSON scalars whose number precision
+// is preserved end to end (see `Value`) — and is validated and decoded
+// against its declared column type under the same rules as scalar
+// literals. A JSON null represents a typed NULL and is valid only for
+// a nullable column.
+//
+// `rows` may be empty. Because type and nullability are declared
+// independently of the values, an empty constant relation remains
+// fully typed.
+//
+// The relation is a bag containing exactly `rows.length` rows,
+// including duplicates. Document order is not a logical relation
+// order; observing an order requires an explicit `order` node above
+// it. Its bag contents are deterministic and independent of storage
+// access paths or physical plan choice.
+type RowsNode struct {
+	// The output columns in positional order. Column names must be
+	// unique.
+	//
+	Columns []RowsColumn `json:"columns"`
+	Kind    string       `json:"kind"`
+	// Literal rows represented as positional arrays parallel to
+	// `columns`. May be empty.
+	//
+	Rows [][]Value `json:"rows"`
+	// The label this relation's output attributes are bound to. Must be
+	// unique across the query, under the same rules as a scan's scope.
+	//
+	Scope string `json:"scope"`
+}
+
+func (RowsNode) isNode() {}
+
+func (RowsNode) NodeType() string { return "rows" }
 
 // Keep the rows of `input` whose `predicate` evaluates to `TRUE` under
 // three-valued logic. Rows evaluating to `FALSE` or `UNKNOWN` are dropped;

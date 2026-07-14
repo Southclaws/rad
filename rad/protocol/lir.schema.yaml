@@ -194,6 +194,7 @@ $defs:
       is addressable by its consumer (relational closure).
     oneOf:
       - { $ref: "#/$defs/ScanNode" }
+      - { $ref: "#/$defs/RowsNode" }
       - { $ref: "#/$defs/FilterNode" }
       - { $ref: "#/$defs/ProjectNode" }
       - { $ref: "#/$defs/JoinNode" }
@@ -230,8 +231,8 @@ $defs:
   ScanNode:
     description: |
       Introduce a base table as a relation and bind a `scope` label to its
-      rows. Scans are the only source of rows; every other operator derives
-      from them.
+      rows. Scans introduce stored rows; `rows` introduces literal ones —
+      every other operator derives from these leaves.
 
       A scan's row order is physical (whatever the chosen access path yields)
       and never logical: to depend on order, place an explicit `order` above
@@ -251,6 +252,81 @@ $defs:
           elsewhere in the query. Must be unique across the query.
         type: string
         minLength: 1
+
+  RowsNode:
+    description: |
+      Introduce a finite constant relation: literal rows with explicitly
+      declared columns, bound to a `scope` label exactly as a scan is. It is
+      the second relational leaf beside `scan`, useful for literal queries,
+      joins against ad hoc data, fixtures, and mutation input where a
+      literal row is simply a one-row relation.
+
+      Column types and nullability are declared, never inferred from the
+      row values: a bare JSON number cannot choose between int64 and
+      float64, and the schema of a relation must not depend on its data.
+      Each row is a positional array parallel to `columns`, and its arity
+      must equal the number of declared columns. Each cell uses the
+      protocol `Value` encoding — raw JSON scalars whose number precision
+      is preserved end to end (see `Value`) — and is validated and decoded
+      against its declared column type under the same rules as scalar
+      literals. A JSON null represents a typed NULL and is valid only for
+      a nullable column.
+
+      `rows` may be empty. Because type and nullability are declared
+      independently of the values, an empty constant relation remains
+      fully typed.
+
+      The relation is a bag containing exactly `rows.length` rows,
+      including duplicates. Document order is not a logical relation
+      order; observing an order requires an explicit `order` node above
+      it. Its bag contents are deterministic and independent of storage
+      access paths or physical plan choice.
+    type: object
+    additionalProperties: false
+    required: [kind, scope, columns, rows]
+    properties:
+      kind: { type: string, const: rows }
+      scope:
+        description: |
+          The label this relation's output attributes are bound to. Must be
+          unique across the query, under the same rules as a scan's scope.
+        type: string
+        minLength: 1
+      columns:
+        description: |
+          The output columns in positional order. Column names must be
+          unique.
+        type: array
+        minItems: 1
+        items: { $ref: "#/$defs/RowsColumn" }
+      rows:
+        description: |
+          Literal rows represented as positional arrays parallel to
+          `columns`. May be empty.
+        type: array
+        items:
+          type: array
+          items: { $ref: "#/$defs/Value" }
+
+  RowsColumn:
+    title: RowsColumn
+    description: One declared output column of a constant relation.
+    type: object
+    additionalProperties: false
+    required: [name, type]
+    properties:
+      name:
+        description: The output attribute name.
+        type: string
+        minLength: 1
+      type:
+        description: The column's scalar type.
+        type: string
+        enum: [text, int64, float64, bool]
+      nullable:
+        description: Whether cells in this column may be NULL.
+        type: boolean
+        default: false
 
   FilterNode:
     description: |

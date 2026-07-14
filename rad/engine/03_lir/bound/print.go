@@ -30,6 +30,8 @@ func printRel(b *strings.Builder, rel Relation, depth int) {
 	switch n := rel.(type) {
 	case *Scan:
 		fmt.Fprintf(b, "%sScan %s (%s) %s\n", pad, n.Table.Name, n.Scope, rowType(n.Output()))
+	case *Rows:
+		fmt.Fprintf(b, "%sRows ×%d (%s) %s\n", pad, len(n.Vals), n.Scope, rowType(n.Output()))
 	case *Ref:
 		fmt.Fprintf(b, "%sRef %s (%s) %s\n", pad, n.Binding, n.Scope, rowType(n.Output()))
 	case *Filter:

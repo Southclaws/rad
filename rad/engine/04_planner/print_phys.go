@@ -31,6 +31,8 @@ func printPhys(b *strings.Builder, n PhysNode, depth int) {
 		fmt.Fprintf(b, "%sPKGet %s [%s]\n", pad, x.Scan.Table.Name, keyEqs(x.Scan.Table.PrimaryKey, x.Key))
 	case *TableScanExec:
 		fmt.Fprintf(b, "%sTableScan %s\n", pad, x.Scan.Table.Name)
+	case *RowsExec:
+		fmt.Fprintf(b, "%sRows ×%d (%s)\n", pad, len(x.Rows.Vals), x.Rows.Scope)
 	case *IndexRangeScanExec:
 		s := fmt.Sprintf("%sIndexRangeScan %s %s", pad, x.Scan.Table.Name, x.Index.Name)
 		var parts []string

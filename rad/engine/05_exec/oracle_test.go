@@ -136,6 +136,17 @@ func (in *interp) rel(r bound.Relation, outer bound.Env) ([]bound.Env, error) {
 		}
 		return out, nil
 
+	case *bound.Rows:
+		out := make([]bound.Env, len(n.Vals))
+		for i, cells := range n.Vals {
+			env := newFrame(outer)
+			for j, f := range n.Output().Fields {
+				env.SetScalar(f.Slot, cells[j])
+			}
+			out[i] = env
+		}
+		return out, nil
+
 	case *bound.Scan:
 		it, err := scanTable(in.ctx, in.view, n.Table)
 		if err != nil {

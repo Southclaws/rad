@@ -21,6 +21,7 @@ import (
 // kindDefs maps a wire `kind` to its named variant in the schema's $defs.
 var kindDefs = map[string]string{
 	"scan":      "ScanNode",
+	"rows":      "RowsNode",
 	"filter":    "FilterNode",
 	"project":   "ProjectNode",
 	"join":      "JoinNode",
@@ -41,7 +42,7 @@ var kindDefs = map[string]string{
 }
 
 var nodeKinds = map[string]bool{
-	"scan": true, "filter": true, "project": true, "join": true,
+	"scan": true, "rows": true, "filter": true, "project": true, "join": true,
 	"aggregate": true, "order": true, "slice": true, "ref": true,
 }
 

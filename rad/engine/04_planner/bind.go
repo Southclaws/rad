@@ -15,6 +15,7 @@ package planner
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/Southclaws/rad/rad/engine/reject"
 	"slices"
@@ -232,6 +233,9 @@ func (b *binder) bindRel(r lir.Relation) (bound.Relation, error) {
 	case lir.Scan:
 		return b.bindScan(n)
 
+	case lir.Rows:
+		return b.bindRows(n)
+
 	case lir.Ref:
 		return b.bindRef(n)
 
@@ -327,6 +331,71 @@ func (b *binder) bindScan(n lir.Scan) (*bound.Scan, error) {
 	b.labels[n.Scope] = true
 	b.scopes = append(b.scopes, scopeEntry{label: n.Scope, rel: s})
 	return s, nil
+}
+
+// bindRows binds a constant relation: each cell is validated and decoded
+// against its declared column type under the same rules as scalar literals
+// (declared, never inferred — a relation's schema must not depend on its
+// data), a NULL cell is valid only for a nullable column, and the scope
+// enters the stack exactly as a scan's does.
+func (b *binder) bindRows(n lir.Rows) (*bound.Rows, error) {
+	if n.Scope == "" {
+		return nil, reject.Inputf("planner: rows needs a scope label")
+	}
+	if b.labels[n.Scope] {
+		return nil, reject.Inputf("planner: duplicate scope %q", n.Scope)
+	}
+	if len(n.Columns) == 0 {
+		return nil, reject.Inputf("planner: rows (%s) needs at least one column", n.Scope)
+	}
+	seen := map[string]bool{}
+	for _, c := range n.Columns {
+		if c.Name == "" {
+			return nil, reject.Inputf("planner: rows (%s) has a column with no name", n.Scope)
+		}
+		if seen[c.Name] {
+			return nil, reject.Inputf("planner: rows (%s) declares column %q twice", n.Scope, c.Name)
+		}
+		seen[c.Name] = true
+		if !c.Kind.Scalar() {
+			return nil, reject.Inputf("planner: rows (%s) column %q has unsupported type %q", n.Scope, c.Name, c.Kind)
+		}
+	}
+
+	vals := make([][]lir.Value, len(n.Values))
+	for i, row := range n.Values {
+		if len(row) != len(n.Columns) {
+			return nil, reject.Inputf("planner: rows (%s) row %d has %d values, want %d", n.Scope, i, len(row), len(n.Columns))
+		}
+		cells := make([]lir.Value, len(row))
+		for j, raw := range row {
+			col := n.Columns[j]
+			lit, err := coerceLiteral(raw, lir.Type{Kind: col.Kind})
+			if err != nil {
+				return nil, reject.Inputf("planner: rows (%s) row %d column %q: %s",
+					n.Scope, i, col.Name, strings.TrimPrefix(err.Error(), "planner: "))
+			}
+			if lit.V.Null && !col.Nullable {
+				return nil, reject.Inputf("planner: rows (%s) row %d column %q is not nullable", n.Scope, i, col.Name)
+			}
+			cells[j] = lit.V
+		}
+		vals[i] = cells
+	}
+
+	fields := make([]lir.Field, len(n.Columns))
+	for i, c := range n.Columns {
+		fields[i] = lir.Field{
+			Name: c.Name,
+			Slot: b.nextSlot,
+			Type: lir.Type{Kind: c.Kind, Nullable: c.Nullable},
+		}
+		b.nextSlot++
+	}
+	r := bound.NewRows(n.Scope, fields, vals)
+	b.labels[n.Scope] = true
+	b.scopes = append(b.scopes, scopeEntry{label: n.Scope, rel: r})
+	return r, nil
 }
 
 // bindRef binds one occurrence of a binding: fresh slots over the

@@ -133,9 +133,12 @@ func TestBindingHiddenScope(t *testing.T) {
 	}
 
 	// The occurrence alias works where the interior scope does not.
-	q.Root = lir.Filter{
-		Input: lir.Ref{Binding: "all", Scope: "r"},
-		Pred:  qeq(qcol("r", "title"), qlit("ship")),
+	q.Root = lir.Order{
+		Input: lir.Filter{
+			Input: lir.Ref{Binding: "all", Scope: "r"},
+			Pred:  qeq(qcol("r", "title"), qlit("ship")),
+		},
+		Terms: []lir.OrderTerm{{Expr: qcol("r", "id")}},
 	}
 	d, err := eng.Execute(ctx, q)
 	if err != nil {
@@ -204,11 +207,14 @@ func TestBindingCommitOncePhysically(t *testing.T) {
 			"b1tasks": lir.Filter{Input: qscan("tasks", "t"),
 				Pred: qeq(qcol("t", "board_id"), qlit("b1"))},
 		},
-		Root: lir.Join{
-			Left:  lir.Ref{Binding: "b1tasks", Scope: "a"},
-			Right: lir.Ref{Binding: "b1tasks", Scope: "b"},
-			Kind:  lir.InnerJoin,
-			On:    qeq(qcol("a", "id"), qcol("b", "id")),
+		Root: lir.Order{
+			Input: lir.Join{
+				Left:  lir.Ref{Binding: "b1tasks", Scope: "a"},
+				Right: lir.Ref{Binding: "b1tasks", Scope: "b"},
+				Kind:  lir.InnerJoin,
+				On:    qeq(qcol("a", "id"), qcol("b", "id")),
+			},
+			Terms: []lir.OrderTerm{{Expr: qcol("a", "id")}},
 		},
 	}
 	*gets, *scans = 0, 0

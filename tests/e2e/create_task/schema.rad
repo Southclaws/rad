@@ -1,0 +1,35 @@
+# e2e/create_task — minimal schema for this test only: just enough of the
+# tracker domain (teams, users, boards, tasks) to seed a board with one task
+# and confirm a program that creates a second task lands correctly.
+
+tables:
+  - name: teams
+    columns:
+      - { name: id,         type: string, pk: true, format: uuid }
+      - { name: name,       type: string, unique: true }
+
+  - name: users
+    columns:
+      - { name: id,       type: string, pk: true, format: uuid }
+      - { name: username, type: string, unique: true }
+
+  - name: boards
+    columns:
+      - { name: id,       type: string, pk: true, format: uuid }
+      - { name: team_id,  type: string, ref: teams.id }
+      - { name: name,     type: string }
+      - { name: archived, type: bool, default: false }
+    indexes:
+      - { columns: [team_id, name], unique: true }
+
+  - name: tasks
+    columns:
+      - { name: id,         type: string, pk: true, format: uuid }
+      - { name: board_id,   type: string, ref: boards.id }
+      - { name: title,      type: string }
+      - { name: status,     type: string, default: todo }
+      - { name: priority,   type: int64, default: 2 }
+      - { name: creator_id, type: string, ref: users.id }
+      - { name: created_at, type: int64, format: unix_ms }
+    indexes:
+      - { columns: [board_id, status] }

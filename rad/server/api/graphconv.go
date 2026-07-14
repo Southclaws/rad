@@ -67,6 +67,28 @@ func validateWireShapes(q protocol.Query) error {
 			if n.Scope == "" {
 				return missing("scope")
 			}
+		case "rows":
+			if n.Scope == "" {
+				return missing("scope")
+			}
+			if len(n.Columns) == 0 {
+				return wireErrf("node %q (rows) needs at least one column", name)
+			}
+			for i, c := range n.Columns {
+				if c.Name == "" {
+					return wireErrf("node %q rows column %d needs a name", name, i)
+				}
+				switch c.Type {
+				case "text", "int64", "float64", "bool":
+				default:
+					return wireErrf("node %q rows column %q has unknown type %q", name, c.Name, c.Type)
+				}
+			}
+			for i, row := range n.Rows {
+				if len(row) != len(n.Columns) {
+					return wireErrf("node %q rows row %d has %d values, want %d", name, i, len(row), len(n.Columns))
+				}
+			}
 		case "filter":
 			if n.Input == "" {
 				return missing("input")
@@ -445,6 +467,13 @@ func (g *graphConv) rel(name string) (lir.Relation, error) {
 	switch n.Kind {
 	case "scan":
 		return lir.Scan{Table: n.Table, Scope: n.Scope}, nil
+
+	case "rows":
+		cols := make([]lir.RowsCol, len(n.Columns))
+		for i, c := range n.Columns {
+			cols[i] = lir.RowsCol{Name: c.Name, Kind: lir.Kind(c.Type), Nullable: c.Nullable}
+		}
+		return lir.Rows{Scope: n.Scope, Columns: cols, Values: n.Rows}, nil
 
 	case "filter":
 		in, err := g.rel(n.Input)

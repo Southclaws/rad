@@ -84,6 +84,39 @@ func NewScan(tbl catalog.Table, scope string, slots []lir.SlotID) *Scan {
 
 func (s *Scan) Inputs() []Relation { return nil }
 
+// Rows is a bound constant relation: coerced literal rows under fresh
+// slots. The second leaf beside Scan — deterministic by construction, never
+// plan-choice-sensitive, cardinality exactly len(Vals).
+type Rows struct {
+	laws
+	Scope string
+	// Vals holds the coerced cell values, row-major, parallel to
+	// Output().Fields.
+	Vals [][]lir.Value
+}
+
+// NewRows binds a constant relation: fields carry the declared column
+// types (nullability already derived by the binder) and fresh slots; vals
+// are fully coerced.
+func NewRows(scope string, fields []lir.Field, vals [][]lir.Value) *Rows {
+	slots := make([]lir.SlotID, len(fields))
+	for i, f := range fields {
+		slots[i] = f.Slot
+	}
+	n := len(vals)
+	return &Rows{
+		laws: laws{
+			out:      lir.RowType{Fields: fields},
+			produced: NewSlotSet(slots...),
+			card:     lir.Cardinality{Min: n, Max: n},
+		},
+		Scope: scope,
+		Vals:  vals,
+	}
+}
+
+func (r *Rows) Inputs() []Relation { return nil }
+
 // Filter keeps rows whose predicate evaluates to TRUE under three-valued
 // logic. The predicate must be Bool-typed; the binder guarantees it.
 type Filter struct {

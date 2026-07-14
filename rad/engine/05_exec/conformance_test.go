@@ -86,6 +86,41 @@ func conformanceQueries() map[string]lir.Query {
 				Terms: []lir.OrderTerm{{Expr: qcol("a", "id")}},
 			},
 		},
+		"rows joined against a table": many(lir.Order{
+			Input: lir.Join{
+				Left: qscan("tasks", "t"),
+				Right: lir.Rows{
+					Scope: "m",
+					Columns: []lir.RowsCol{
+						{Name: "status", Kind: lir.KindText},
+						{Name: "weight", Kind: lir.KindInt64},
+					},
+					Values: [][]any{{"open", 1}, {"done", 0}},
+				},
+				Kind: lir.InnerJoin,
+				On:   qeq(qcol("t", "status"), qcol("m", "status")),
+			},
+			Terms: []lir.OrderTerm{{Expr: qcol("t", "id")}},
+		}),
+		"rows aggregated with nulls": many(lir.Order{
+			Input: lir.Aggregate{
+				Input: lir.Rows{
+					Scope: "r",
+					Columns: []lir.RowsCol{
+						{Name: "grp", Kind: lir.KindText},
+						{Name: "v", Kind: lir.KindInt64, Nullable: true},
+					},
+					Values: [][]any{{"a", 1}, {"a", nil}, {"b", 2}},
+				},
+				Scope:  "g",
+				Groups: []lir.GroupTerm{{Expr: qcol("r", "grp")}},
+				Terms: []lir.AggTerm{
+					{Fn: lir.AggCount, Arg: qcol("r", "v"), As: "n"},
+					{Fn: lir.AggSum, Arg: qcol("r", "v"), As: "total"},
+				},
+			},
+			Terms: []lir.OrderTerm{{Expr: qcol("g", "grp")}},
+		}),
 	}
 }
 

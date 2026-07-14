@@ -146,22 +146,33 @@ type Root struct {
 type Node struct {
 	Kind string `json:"kind"`
 
-	Table     string      `json:"table,omitempty"`     // scan
-	Scope     string      `json:"scope,omitempty"`     // scan/ref (required), project, aggregate
-	Binding   string      `json:"binding,omitempty"`   // ref
-	Input     string      `json:"input,omitempty"`     // filter, project, aggregate, order, slice
-	Left      string      `json:"left,omitempty"`      // join
-	Right     string      `json:"right,omitempty"`     // join
-	Join      string      `json:"join,omitempty"`      // join: inner | left
-	On        *Expr       `json:"on,omitempty"`        // join
-	Predicate *Expr       `json:"predicate,omitempty"` // filter
-	Spread    []string    `json:"spread,omitempty"`    // project
-	Fields    []Field     `json:"fields,omitempty"`    // project
-	Groups    []GroupTerm `json:"groups,omitempty"`    // aggregate
-	Aggs      []AggTerm   `json:"aggs,omitempty"`      // aggregate
-	Terms     []OrderTerm `json:"terms,omitempty"`     // order
-	Offset    *int        `json:"offset,omitempty"`    // slice
-	Limit     *int        `json:"limit,omitempty"`     // slice; absent = unlimited, 0 = no rows
+	Table     string       `json:"table,omitempty"`     // scan
+	Scope     string       `json:"scope,omitempty"`     // scan/ref/rows (required), project, aggregate
+	Binding   string       `json:"binding,omitempty"`   // ref
+	Columns   []RowsColumn `json:"columns,omitempty"`   // rows
+	Rows      [][]any      `json:"rows,omitempty"`      // rows; cells are raw scalars
+	Input     string       `json:"input,omitempty"`     // filter, project, aggregate, order, slice
+	Left      string       `json:"left,omitempty"`      // join
+	Right     string       `json:"right,omitempty"`     // join
+	Join      string       `json:"join,omitempty"`      // join: inner | left
+	On        *Expr        `json:"on,omitempty"`        // join
+	Predicate *Expr        `json:"predicate,omitempty"` // filter
+	Spread    []string     `json:"spread,omitempty"`    // project
+	Fields    []Field      `json:"fields,omitempty"`    // project
+	Groups    []GroupTerm  `json:"groups,omitempty"`    // aggregate
+	Aggs      []AggTerm    `json:"aggs,omitempty"`      // aggregate
+	Terms     []OrderTerm  `json:"terms,omitempty"`     // order
+	Offset    *int         `json:"offset,omitempty"`    // slice
+	Limit     *int         `json:"limit,omitempty"`     // slice; absent = unlimited, 0 = no rows
+}
+
+// RowsColumn declares one column of a constant relation: type and
+// nullability are explicit, never inferred from the literal cells — a
+// relation's schema must not depend on its data.
+type RowsColumn struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"` // text | int64 | float64 | bool
+	Nullable bool   `json:"nullable,omitempty"`
 }
 
 // Expr computes exactly one typed datum. The generated transport is a closed

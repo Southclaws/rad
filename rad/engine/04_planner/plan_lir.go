@@ -123,6 +123,9 @@ func (pl *planner) plan(rel bound.Relation, req []bound.OrderTerm) PhysNode {
 	case *bound.Scan:
 		return pl.chooseAccessPath(&ScanConstraints{Scan: n, Cols: map[string]Domain{}}, req)
 
+	case *bound.Rows:
+		return &RowsExec{Rows: n}
+
 	case *bound.Filter:
 		// A filter chain over a scan plans as a unit: constraints choose the
 		// access path, and the merged conjunction rides above it. Crossings

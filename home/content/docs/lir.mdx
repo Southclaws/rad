@@ -73,7 +73,10 @@ canonical LIR JSON Schema.
 ```
 
 **Relation operators** (`kind`): `scan` introduces a table and binds its
-scope label; `filter` keeps rows whose predicate is TRUE under three-valued
+scope label; `rows` introduces a finite constant relation — the second leaf
+beside `scan` — with explicitly declared column types and nullability
+(never inferred from the cells; an empty constant relation stays fully
+typed); `filter` keeps rows whose predicate is TRUE under three-valued
 logic; `project` establishes a new row type from `spread` scopes plus
 computed `fields`, optionally binding an output scope; `join` (inner, left);
 `aggregate` folds per distinct `groups` — none means exactly one row;

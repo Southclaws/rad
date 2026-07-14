@@ -17,6 +17,28 @@ type Scan struct {
 	Scope string
 }
 
+// RowsCol declares one column of a constant relation. Type and nullability
+// are explicit, never inferred from the cells — a relation's schema must
+// not depend on its data, and a bare JSON number cannot choose between
+// int64 and float64.
+type RowsCol struct {
+	Name     string
+	Kind     Kind
+	Nullable bool
+}
+
+// Rows introduces a finite constant relation — the second leaf beside Scan.
+// Values holds raw cell scalars, validated and decoded against the declared
+// column types under the same rules as scalar literals; each row's arity
+// must equal Columns. The relation is a bag of exactly len(Values) rows;
+// its contents are deterministic, but document order is not a logical
+// order.
+type Rows struct {
+	Scope   string
+	Columns []RowsCol
+	Values  [][]any
+}
+
 // Filter keeps rows where Pred evaluates to TRUE — not UNKNOWN. This is the
 // load-bearing three-valued-logic rule.
 type Filter struct {
@@ -131,6 +153,7 @@ type Ref struct {
 }
 
 func (Scan) rel()      {}
+func (Rows) rel()      {}
 func (Filter) rel()    {}
 func (Project) rel()   {}
 func (Join) rel()      {}

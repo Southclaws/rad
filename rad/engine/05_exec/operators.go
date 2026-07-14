@@ -73,6 +73,8 @@ func (ex *executor) build(ctx context.Context, node planner.PhysNode, outer boun
 			return nil, err
 		}
 		return &rowIterOp{scan: n.Scan, it: it, outer: outer}, nil
+	case *planner.RowsExec:
+		return &rowsOp{n: n.Rows, outer: outer}, nil
 	case *planner.IndexRangeScanExec:
 		return ex.buildIndexScan(ctx, n, outer)
 	case *planner.FilterExec:
@@ -198,6 +200,29 @@ func resolveConst(cv planner.ConstVal, outer bound.Env) (lir.Value, error) {
 	}
 	return outer.ScalarAt(*cv.Outer, "outer", lir.Type{})
 }
+
+// rowsOp streams a constant relation's literal rows: bind-time-coerced
+// values under the node's slots, no storage touched.
+type rowsOp struct {
+	n     *bound.Rows
+	outer bound.Env
+	pos   int
+}
+
+func (o *rowsOp) Next(context.Context) (Frame, bool, error) {
+	if o.pos >= len(o.n.Vals) {
+		return Frame{}, false, nil
+	}
+	cells := o.n.Vals[o.pos]
+	o.pos++
+	f := newFrame(o.outer)
+	for i, fld := range o.n.Output().Fields {
+		f.SetScalar(fld.Slot, cells[i])
+	}
+	return f, true, nil
+}
+
+func (o *rowsOp) Close() error { return nil }
 
 // rowToFrame lifts a stored row into a frame under the scan's slots.
 func rowToFrame(scan *bound.Scan, row lir.Row, outer bound.Env) Frame {

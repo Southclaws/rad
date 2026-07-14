@@ -106,11 +106,14 @@ func TestMigrationWorkflow(t *testing.T) {
 	// The new index was backfilled: a query pinned to its leading column
 	// rides it, and access-path narrowing means a missing entry would lose
 	// the row.
-	d, err := db.Execute(ctx, lir.Query{Card: lir.CardMany, Root: lir.Filter{
-		Input: lir.Scan{Table: "tasks", Scope: "t"},
-		Pred: lir.Binary{Op: lir.OpEq,
-			L: lir.Column{Scope: "t", Name: "user_id"},
-			R: lir.Literal{Raw: "u1"}},
+	d, err := db.Execute(ctx, lir.Query{Card: lir.CardMany, Root: lir.Order{
+		Input: lir.Filter{
+			Input: lir.Scan{Table: "tasks", Scope: "t"},
+			Pred: lir.Binary{Op: lir.OpEq,
+				L: lir.Column{Scope: "t", Name: "user_id"},
+				R: lir.Literal{Raw: "u1"}},
+		},
+		Terms: []lir.OrderTerm{{Expr: lir.Column{Scope: "t", Name: "id"}}},
 	}})
 	if err != nil {
 		t.Fatal(err)

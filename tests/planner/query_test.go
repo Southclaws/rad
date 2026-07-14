@@ -127,21 +127,27 @@ func orderKey(nodes map[string]protocol.Node, root string, node protocol.Node) (
 		return node.Scope, node.Aggs[0].As
 	case "scan", "ref":
 		return node.Scope, "id"
+	case "rows":
+		return node.Scope, node.Columns[0].Name
 	case "filter", "join":
-		return sourceScope(nodes, root), "id"
+		return sourceKey(nodes, root)
 	}
-	return sourceScope(nodes, root), "id"
+	return sourceKey(nodes, root)
 }
 
-func sourceScope(nodes map[string]protocol.Node, root string) string {
+// sourceKey walks to the underlying source and picks its natural order key:
+// id for tables and refs, the first declared column for a constant relation.
+func sourceKey(nodes map[string]protocol.Node, root string) (string, string) {
 	node := nodes[root]
 	switch node.Kind {
 	case "scan", "ref", "project", "aggregate":
-		return node.Scope
+		return node.Scope, "id"
+	case "rows":
+		return node.Scope, node.Columns[0].Name
 	case "filter", "order", "slice":
-		return sourceScope(nodes, node.Input)
+		return sourceKey(nodes, node.Input)
 	case "join":
-		return sourceScope(nodes, node.Left)
+		return sourceKey(nodes, node.Left)
 	}
-	return ""
+	return "", "id"
 }

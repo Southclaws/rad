@@ -76,6 +76,12 @@ type TableScanExec struct {
 	Scan *bound.Scan
 }
 
+// RowsExec streams a constant relation's literal rows. No storage is
+// touched; the values were coerced at bind time.
+type RowsExec struct {
+	Rows *bound.Rows
+}
+
 // RangeSpec bounds one index column right after the equality prefix.
 type RangeSpec struct {
 	Column string
@@ -191,6 +197,7 @@ type AggregateExec struct {
 
 func (*PKGetExec) phys()          {}
 func (*TableScanExec) phys()      {}
+func (*RowsExec) phys()           {}
 func (*IndexRangeScanExec) phys() {}
 func (*FilterExec) phys()         {}
 func (*AttachExec) phys()         {}

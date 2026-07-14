@@ -279,33 +279,33 @@ shipping every relation punishes exactly the workloads programs exist for.
 - Old/new both for updates: deferred; if change capture is wanted, model
   pre/post images as explicit relations, not flags.
 
-## Prerequisite: LIR grows the constant relation
+## Prerequisite: LIR grows the constant relation — LANDED
 
-**PIR implementation depends on constant relation support in LIR.**
-
-▸ "A literal row is simply a one-row relation" is currently false: LIR has
-eight node kinds (`scan`, `filter`, `project`, `join`, `aggregate`,
-`order`, `slice`, `ref`) and `scan` is the only leaf — there is no way to
-write a constant relation. The abstraction is not "PIR has literal
-mutation values"; it is "LIR can represent finite constant relations":
+**PIR implementation depends on constant relation support in LIR.** The
+`rows` node shipped 2026-07-14 as stage 1 of the cutover: the second
+relational leaf beside `scan`, through the whole vertical (schema YAML →
+schemagen → lirwire → validate → graphconv → bind → plan → execute →
+oracle), with corpus and conformance coverage.
 
 ```jsonc
 { "kind": "rows", "scope": "r",
-  "columns": ["name", "age"],
-  "rows": [["ada", 36], ["grace", 41]] }
+  "columns": [
+    { "name": "name", "type": "text" },
+    { "name": "age",  "type": "int64", "nullable": true }
+  ],
+  "rows": [["ada", 36], ["grace", null]] }
 ```
 
-Pure, deterministic, never plan-choice-sensitive, cardinality = row count;
-literal coercion follows the binder's existing rules (raw JSON through the
-catalog-free wire converter, binder coerces — same as `lit`; exact shape
-must fit the type/expression model). It unlocks far more than creation:
-literal queries, joins against ad hoc data, fixtures, generated-client
-bulk input, small lookup tables, mutation inputs, and planner/oracle
-conformance cases. It lands **first and independently**, proven as a
-normal pure LIR node through the whole vertical (schema YAML → schemagen →
-lirwire → validate → graphconv → bind → plan → execute → oracle). The
-typeless-value footgun (tasks/1-todo/typeless-value-encoding.md) applies
-to row literals; encode with the explicit-null rule.
+Design as landed (after review): column **types and nullability are
+declared, never inferred** — a relation's schema must not depend on its
+data, an empty `rows` stays fully typed, and a NULL cell in a
+non-nullable column is invalid. Cells use the protocol `Value` encoding
+and are validated and decoded against the declared column type under the
+same rules as scalar literals. The relation is a bag of exactly
+`rows.length` rows; bag contents are deterministic and independent of
+plan choice, but document order is not a logical order — `order` above
+makes it observable. Cardinality is exactly the row count, so a one-row
+constant satisfies `first` with no order.
 
 ## What survives from revision one
 

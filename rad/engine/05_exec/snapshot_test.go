@@ -22,7 +22,10 @@ func TestConcurrentSchemaChangeConflictsWithOpenTxn(t *testing.T) {
 	defer tx.Rollback()
 
 	// The statement resolves "users" through the transaction's snapshot.
-	if _, err := tx.Execute(ctx, lir.Query{Card: lir.CardMany, Root: lir.Scan{Table: "users", Scope: "u"}}); err != nil {
+	if _, err := tx.Execute(ctx, lir.Query{Card: lir.CardMany, Root: lir.Order{
+		Input: lir.Scan{Table: "users", Scope: "u"},
+		Terms: []lir.OrderTerm{{Expr: lir.Column{Scope: "u", Name: "id"}}},
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Insert(ctx, "users", lir.Row{"id": lir.Text("eve"), "name": lir.Text("Eve")}); err != nil {

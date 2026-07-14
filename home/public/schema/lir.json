@@ -445,6 +445,9 @@
           "$ref": "#/$defs/ScanNode"
         },
         {
+          "$ref": "#/$defs/RowsNode"
+        },
+        {
           "$ref": "#/$defs/FilterNode"
         },
         {
@@ -661,9 +664,81 @@
       "title": "Root",
       "type": "object"
     },
+    "RowsColumn": {
+      "additionalProperties": false,
+      "description": "One declared output column of a constant relation.",
+      "properties": {
+        "name": {
+          "description": "The output attribute name.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "nullable": {
+          "default": false,
+          "description": "Whether cells in this column may be NULL.",
+          "type": "boolean"
+        },
+        "type": {
+          "description": "The column's scalar type.",
+          "enum": [
+            "text",
+            "int64",
+            "float64",
+            "bool"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "RowsColumn",
+      "type": "object"
+    },
+    "RowsNode": {
+      "additionalProperties": false,
+      "description": "Introduce a finite constant relation: literal rows with explicitly\ndeclared columns, bound to a `scope` label exactly as a scan is. It is\nthe second relational leaf beside `scan`, useful for literal queries,\njoins against ad hoc data, fixtures, and mutation input where a\nliteral row is simply a one-row relation.\n\nColumn types and nullability are declared, never inferred from the\nrow values: a bare JSON number cannot choose between int64 and\nfloat64, and the schema of a relation must not depend on its data.\nEach row is a positional array parallel to `columns`, and its arity\nmust equal the number of declared columns. Each cell uses the\nprotocol `Value` encoding — raw JSON scalars whose number precision\nis preserved end to end (see `Value`) — and is validated and decoded\nagainst its declared column type under the same rules as scalar\nliterals. A JSON null represents a typed NULL and is valid only for\na nullable column.\n\n`rows` may be empty. Because type and nullability are declared\nindependently of the values, an empty constant relation remains\nfully typed.\n\nThe relation is a bag containing exactly `rows.length` rows,\nincluding duplicates. Document order is not a logical relation\norder; observing an order requires an explicit `order` node above\nit. Its bag contents are deterministic and independent of storage\naccess paths or physical plan choice.\n",
+      "properties": {
+        "columns": {
+          "description": "The output columns in positional order. Column names must be\nunique.\n",
+          "items": {
+            "$ref": "#/$defs/RowsColumn"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "kind": {
+          "const": "rows",
+          "type": "string"
+        },
+        "rows": {
+          "description": "Literal rows represented as positional arrays parallel to\n`columns`. May be empty.\n",
+          "items": {
+            "items": {
+              "$ref": "#/$defs/Value"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "scope": {
+          "description": "The label this relation's output attributes are bound to. Must be\nunique across the query, under the same rules as a scan's scope.\n",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "scope",
+        "columns",
+        "rows"
+      ],
+      "type": "object"
+    },
     "ScanNode": {
       "additionalProperties": false,
-      "description": "Introduce a base table as a relation and bind a `scope` label to its\nrows. Scans are the only source of rows; every other operator derives\nfrom them.\n\nA scan's row order is physical (whatever the chosen access path yields)\nand never logical: to depend on order, place an explicit `order` above\nthe scan. `scope` must be unique across the whole query.\n",
+      "description": "Introduce a base table as a relation and bind a `scope` label to its\nrows. Scans introduce stored rows; `rows` introduces literal ones —\nevery other operator derives from these leaves.\n\nA scan's row order is physical (whatever the chosen access path yields)\nand never logical: to depend on order, place an explicit `order` above\nthe scan. `scope` must be unique across the whole query.\n",
       "properties": {
         "kind": {
           "const": "scan",

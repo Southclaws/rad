@@ -149,6 +149,24 @@ func nodeToWire(n Node) (lirwire.Node, error) {
 	switch n.Kind {
 	case "scan":
 		u = &lirwire.ScanNode{Kind: "scan", Table: n.Table, Scope: n.Scope}
+	case "rows":
+		cols := make([]lirwire.RowsColumn, len(n.Columns))
+		for i, c := range n.Columns {
+			cols[i] = lirwire.RowsColumn{Name: c.Name, Type: c.Type, Nullable: optionalBool(c.Nullable)}
+		}
+		rows := make([][]lirwire.Value, len(n.Rows))
+		for i, row := range n.Rows {
+			cells := make([]lirwire.Value, len(row))
+			for j, cell := range row {
+				raw, err := json.Marshal(cell)
+				if err != nil {
+					return lirwire.Node{}, fmt.Errorf("encode rows cell [%d][%d]: %w", i, j, err)
+				}
+				cells[j] = raw
+			}
+			rows[i] = cells
+		}
+		u = &lirwire.RowsNode{Kind: "rows", Scope: n.Scope, Columns: cols, Rows: rows}
 	case "filter":
 		pred, err := exprToWire(n.Predicate)
 		if err != nil {
@@ -217,6 +235,24 @@ func nodeFromWire(n lirwire.Node) (Node, error) {
 	switch x := n.NodeUnion.(type) {
 	case *lirwire.ScanNode:
 		return Node{Kind: "scan", Table: x.Table, Scope: x.Scope}, nil
+	case *lirwire.RowsNode:
+		cols := make([]RowsColumn, len(x.Columns))
+		for i, c := range x.Columns {
+			cols[i] = RowsColumn{Name: c.Name, Type: c.Type, Nullable: boolValue(c.Nullable)}
+		}
+		rows := make([][]any, len(x.Rows))
+		for i, row := range x.Rows {
+			cells := make([]any, len(row))
+			for j, cell := range row {
+				value, err := decodeRawValue(json.RawMessage(cell))
+				if err != nil {
+					return Node{}, fmt.Errorf("rows cell [%d][%d]: %w", i, j, err)
+				}
+				cells[j] = value
+			}
+			rows[i] = cells
+		}
+		return Node{Kind: "rows", Scope: x.Scope, Columns: cols, Rows: rows}, nil
 	case *lirwire.FilterNode:
 		pred, err := exprFromWire(x.Predicate)
 		return Node{Kind: "filter", Input: x.Input, Predicate: pred}, err
