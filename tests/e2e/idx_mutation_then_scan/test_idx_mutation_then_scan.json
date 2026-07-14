@@ -1,0 +1,60 @@
+{
+  "program": {
+    "result": "scan_after",
+    "statements": [
+      {
+        "name": "insert_mid",
+        "kind": "create",
+        "table": "t",
+        "relation": {
+          "nodes": {
+            "r": {
+              "kind": "rows",
+              "scope": "r",
+              "columns": [
+                { "name": "id", "type": "text" },
+                { "name": "n", "type": "int64" }
+              ],
+              "rows": [ ["new", 20] ]
+            }
+          },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      },
+      {
+        "name": "scan_after",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "t", "scope": "t" },
+            "kept": {
+              "kind": "filter", "input": "t",
+              "predicate": {
+                "kind": "binary", "op": "and",
+                "left": { "kind": "binary", "op": "gt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": 5 } },
+                "right": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": 40 } }
+              }
+            },
+            "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ] }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [ { "id": "a", "n": 10 }, { "id": "new", "n": 20 }, { "id": "b", "n": 30 } ],
+  "assertions": [
+    {
+      "name": "the inserted row is durable and found by an exact index-eq lookup",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": 20 } } },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [ { "id": "new", "n": 20 } ]
+    }
+  ]
+}

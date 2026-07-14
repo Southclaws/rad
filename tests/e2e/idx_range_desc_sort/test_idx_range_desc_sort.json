@@ -1,0 +1,45 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "t", "scope": "t" },
+            "sorted": { "kind": "order", "input": "t", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" }, "desc": true } ] },
+            "top": { "kind": "slice", "input": "sorted", "limit": 2 }
+          },
+          "root": { "node": "top", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [ { "id": "e", "n": 50 }, { "id": "d", "n": 40 } ],
+  "assertions": [
+    {
+      "name": "full desc order",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "sorted": { "kind": "order", "input": "t", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" }, "desc": true } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [ { "id": "e", "n": 50 }, { "id": "d", "n": 40 }, { "id": "c", "n": 30 }, { "id": "b", "n": 20 }, { "id": "a", "n": 10 } ]
+    },
+    {
+      "name": "filtered range then desc + limit (index range scan under a sort)",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": 40 } } },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" }, "desc": true } ] },
+          "top": { "kind": "slice", "input": "sorted", "limit": 2 }
+        },
+        "root": { "node": "top", "cardinality": "many" }
+      },
+      "expect": [ { "id": "c", "n": 30 }, { "id": "b", "n": 20 } ]
+    }
+  ]
+}

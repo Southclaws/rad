@@ -1,0 +1,60 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "ordered_with_nulls",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "p": { "kind": "project", "input": "t", "scope": "p", "fields": [
+              { "as": "id", "expr": { "kind": "col", "scope": "t", "column": "id" } },
+              { "as": "s",  "expr": { "kind": "binary", "op": "add",
+                "left":  { "kind": "col", "scope": "t", "column": "a" },
+                "right": { "kind": "col", "scope": "t", "column": "b" } } }
+            ] },
+            "o": { "kind": "order", "input": "p", "terms": [
+              { "expr": { "kind": "col", "scope": "p", "column": "s" } }
+            ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "r2", "s": null },
+    { "id": "r3", "s": null },
+    { "id": "r1", "s": 3 },
+    { "id": "r4", "s": 30 }
+  ],
+  "assertions": [
+    {
+      "name": "filter drops NULL-arith rows (UNKNOWN), keeps only TRUE",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "nums", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "binary", "op": "gt",
+            "left": { "kind": "binary", "op": "add",
+              "left":  { "kind": "col", "scope": "t", "column": "a" },
+              "right": { "kind": "col", "scope": "t", "column": "b" } },
+            "right": { "kind": "lit", "value": 5 } } },
+          "p": { "kind": "project", "input": "f", "scope": "p", "fields": [
+            { "as": "id", "expr": { "kind": "col", "scope": "t", "column": "id" } },
+            { "as": "s",  "expr": { "kind": "binary", "op": "add",
+              "left":  { "kind": "col", "scope": "t", "column": "a" },
+              "right": { "kind": "col", "scope": "t", "column": "b" } } }
+          ] },
+          "o": { "kind": "order", "input": "p", "terms": [
+            { "expr": { "kind": "col", "scope": "p", "column": "id" } }
+          ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "r4", "s": 30 }
+      ]
+    }
+  ]
+}

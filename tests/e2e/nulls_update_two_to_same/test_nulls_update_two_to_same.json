@@ -1,0 +1,46 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "collide",
+        "kind": "update",
+        "table": "items",
+        "relation": {
+          "nodes": {
+            "r": {
+              "kind": "rows",
+              "scope": "r",
+              "columns": [
+                { "name": "id", "type": "text" },
+                { "name": "code", "type": "text" }
+              ],
+              "rows": [ ["r1", "C"], ["r2", "C"] ]
+            }
+          },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "invalid", "contains": "unique index" },
+  "assertions": [
+    {
+      "name": "failed update left both rows at their seeded values",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "items", "scope": "t" },
+          "o": {
+            "kind": "order",
+            "input": "t",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ]
+          }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "r1", "code": "A" },
+        { "id": "r2", "code": "B" }
+      ]
+    }
+  ]
+}

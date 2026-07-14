@@ -1,0 +1,7 @@
+# probe: self-join a table to itself on same group, different tag.
+tables:
+  - name: items
+    columns:
+      - { name: id,  type: string, pk: true }
+      - { name: grp, type: int64 }
+      - { name: tag, type: int64 }

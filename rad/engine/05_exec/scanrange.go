@@ -11,6 +11,7 @@ package exec
 // where a chunked fallback goes.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -68,12 +69,28 @@ func scanIndexRange(ctx context.Context, view kv.KV, tbl catalog.Table, idx cata
 		}
 	}
 
+	// An unsatisfiable range — e.g. `x > k AND x < k`, or crossing bounds —
+	// can encode start at or past end. That is simply the empty result, but the
+	// KV requires a non-empty [start, end): a zero-width or inverted range is
+	// rejected (and would surface as a 500). Short-circuit to an empty iterator
+	// instead of scanning.
+	if bytes.Compare(start, end) >= 0 {
+		return emptyRowIter{}, nil
+	}
+
 	it, err := view.Scan(ctx, start, end)
 	if err != nil {
 		return nil, err
 	}
 	return &indexRangeIterator{ctx: ctx, view: view, tbl: tbl, idx: idx.Name, it: it}, nil
 }
+
+// emptyRowIter is an exhausted RowIterator, used when a range is provably
+// empty so no KV scan is issued.
+type emptyRowIter struct{}
+
+func (emptyRowIter) Next() (lir.Row, bool, error) { return nil, false, nil }
+func (emptyRowIter) Close() error                 { return nil }
 
 // indexRangeIterator walks index entries and fetches each base row
 // immediately — the entry's value is the primary-key tuple.

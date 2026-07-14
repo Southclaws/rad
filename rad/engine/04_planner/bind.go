@@ -57,6 +57,18 @@ func (b *binder) bindQuery(q lir.Query, program map[string]*bound.Binding) (*bou
 		return nil, err
 	}
 
+	// The root of a many/first/exactly_one query renders each row as an object
+	// keyed by output attribute name, so those names must be unique — otherwise
+	// a join that concatenated two colliding columns would silently collapse to
+	// one on the wire. (scalar renders a bare value and is checked for a single
+	// column just below.) Column *references* stay unambiguous via their scope;
+	// only the object rendering forces uniqueness, so it is enforced here at the
+	// observable boundary rather than on the join itself.
+	if q.Card != lir.CardScalar {
+		if err := requireUniqueOutput(root, "the query root"); err != nil {
+			return nil, err
+		}
+	}
 	if q.Card == lir.CardScalar && len(root.Output().Fields) != 1 {
 		return nil, reject.Inputf("planner: a scalar query needs a single-column root, got %d columns", len(root.Output().Fields))
 	}
@@ -144,6 +156,25 @@ func (b *binder) bindBody(q lir.Query, program map[string]*bound.Binding) (bound
 		return nil, nil, err
 	}
 	return root, bindings, nil
+}
+
+// requireUniqueOutput rejects a relation whose output row carries two
+// attributes with the same name. It guards the boundaries where a relation is
+// flattened into an object keyed by name — the query root and the First/Array
+// crossings — since duplicate keys would silently collapse (last wins) in the
+// rendered result. A join is the only operator that concatenates two row types
+// into colliding names; project and aggregate already enforce uniqueness when
+// they build their own output. This is the same rule ProjectNode states,
+// applied at the remaining observable boundaries.
+func requireUniqueOutput(rel bound.Relation, what string) error {
+	seen := map[string]bool{}
+	for _, f := range rel.Output().Fields {
+		if seen[f.Name] {
+			return reject.Fail(reject.ReasonProjectionCollision, "planner: %s has duplicate column %q — project it to a unique set of columns", what, f.Name)
+		}
+		seen[f.Name] = true
+	}
+	return nil
 }
 
 // binder carries the walk state: the dense slot allocator and the scope

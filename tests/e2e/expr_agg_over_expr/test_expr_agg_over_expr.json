@@ -1,0 +1,34 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "folds",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "agg": { "kind": "aggregate", "input": "t", "scope": "g",
+              "aggs": [
+                { "fn": "sum", "as": "sum_ab",
+                  "arg": { "kind": "binary", "op": "mul",
+                    "left":  { "kind": "col", "scope": "t", "column": "a" },
+                    "right": { "kind": "col", "scope": "t", "column": "b" } } },
+                { "fn": "avg", "as": "avg_n",
+                  "arg": { "kind": "cast", "to": "float64",
+                    "expr": { "kind": "col", "scope": "t", "column": "n" } } },
+                { "fn": "min", "as": "min_negx",
+                  "arg": { "kind": "unary", "op": "negate",
+                    "expr": { "kind": "col", "scope": "t", "column": "x" } } },
+                { "fn": "count", "as": "cnt",
+                  "arg": { "kind": "binary", "op": "sub",
+                    "left":  { "kind": "col", "scope": "t", "column": "a" },
+                    "right": { "kind": "col", "scope": "t", "column": "b" } } }
+              ] }
+          },
+          "root": { "node": "agg", "cardinality": "exactly_one" }
+        }
+      }
+    ]
+  },
+  "result": { "sum_ab": 26, "avg_n": 12.5, "min_negx": -5, "cnt": 2 }
+}

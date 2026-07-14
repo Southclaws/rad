@@ -1,0 +1,16 @@
+[
+  {
+    "table": "parents",
+    "rows": [
+      { "id": "p1", "threshold": 10 },
+      { "id": "p2", "threshold": null }
+    ]
+  },
+  {
+    "table": "children",
+    "rows": [
+      { "id": "c1", "value": 3 },
+      { "id": "c2", "value": 7 }
+    ]
+  }
+]

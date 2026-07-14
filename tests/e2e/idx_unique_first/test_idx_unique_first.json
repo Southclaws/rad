@@ -1,0 +1,18 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "u": { "kind": "scan", "table": "users", "scope": "u" },
+            "kept": { "kind": "filter", "input": "u", "predicate": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "u", "column": "email" }, "right": { "kind": "lit", "value": "bob@x.com" } } }
+          },
+          "root": { "node": "kept", "cardinality": "first" }
+        }
+      }
+    ]
+  },
+  "result": { "id": "u2", "email": "bob@x.com", "name": "Bob" }
+}

@@ -1,0 +1,17 @@
+# 3-level correlated nesting: parent -> array(children) -> array(grandchildren)
+# and each grandchild embeds scalar(count of its child's grandchildren). Tests
+# batching/attach across three levels with no cross-parent leakage.
+tables:
+  - name: parents
+    columns:
+      - { name: id, type: string, pk: true }
+
+  - name: children
+    columns:
+      - { name: id,        type: string, pk: true }
+      - { name: parent_id, type: string, nullable: true, ref: parents.id }
+
+  - name: grandchildren
+    columns:
+      - { name: id,       type: string, pk: true }
+      - { name: child_id, type: string, nullable: true, ref: children.id }

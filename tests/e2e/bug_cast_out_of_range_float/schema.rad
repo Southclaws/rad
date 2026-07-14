@@ -1,0 +1,9 @@
+# bug_cast_out_of_range_float — cast(float64 to int64) of a magnitude larger
+# than MaxInt64 produces a platform-dependent wrong int64 (arm64 saturates to
+# MaxInt64, amd64 wraps to MinInt64) with HTTP 200, instead of a clean
+# execution_failed. See BUG.md.
+tables:
+  - name: nums
+    columns:
+      - { name: id, type: string, pk: true }
+      - { name: f,  type: float64 }

@@ -1,0 +1,14 @@
+# a crossing correlated on TWO outer refs: an equality key (parent_id) AND an
+# inequality (value < cap). The extra outer ref forces general correlation
+# even though one conjunct looks key-shaped.
+tables:
+  - name: parents
+    columns:
+      - { name: id,  type: string, pk: true }
+      - { name: cap, type: int64 }
+
+  - name: children
+    columns:
+      - { name: id,        type: string, pk: true }
+      - { name: parent_id, type: string, nullable: true, ref: parents.id }
+      - { name: value,     type: int64 }

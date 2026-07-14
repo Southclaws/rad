@@ -1,0 +1,12 @@
+# order parents by a correlated scalar(count of children) descending — the
+# crossing sits in an order term, not a projection field.
+tables:
+  - name: parents
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+
+  - name: children
+    columns:
+      - { name: id,        type: string, pk: true }
+      - { name: parent_id, type: string, nullable: true, ref: parents.id }

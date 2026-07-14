@@ -1,0 +1,51 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "agg_over_join",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "owners": { "kind": "scan", "table": "owners", "scope": "o" },
+            "pets": { "kind": "scan", "table": "pets", "scope": "p" },
+            "joined": {
+              "kind": "join",
+              "left": "owners",
+              "right": "pets",
+              "join": "left",
+              "on": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "o", "column": "oid" },
+                "right": { "kind": "col", "scope": "p", "column": "owner_id" }
+              }
+            },
+            "agg": {
+              "kind": "aggregate",
+              "input": "joined",
+              "scope": "g",
+              "groups": [
+                { "as": "oid", "expr": { "kind": "col", "scope": "o", "column": "oid" } }
+              ],
+              "aggs": [
+                { "fn": "count", "as": "npets", "arg": { "kind": "col", "scope": "p", "column": "pid" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "agg",
+              "terms": [
+                { "expr": { "kind": "col", "scope": "g", "column": "oid" } }
+              ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "oid": "o1", "npets": 2 },
+    { "oid": "o2", "npets": 0 },
+    { "oid": "o3", "npets": 1 }
+  ]
+}

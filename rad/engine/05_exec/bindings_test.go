@@ -208,13 +208,20 @@ func TestBindingCommitOncePhysically(t *testing.T) {
 				Pred: qeq(qcol("t", "board_id"), qlit("b1"))},
 		},
 		Root: lir.Order{
-			Input: lir.Join{
-				Left:  lir.Ref{Binding: "b1tasks", Scope: "a"},
-				Right: lir.Ref{Binding: "b1tasks", Scope: "b"},
-				Kind:  lir.InnerJoin,
-				On:    qeq(qcol("a", "id"), qcol("b", "id")),
+			Input: lir.Project{
+				Input: lir.Join{
+					Left:  lir.Ref{Binding: "b1tasks", Scope: "a"},
+					Right: lir.Ref{Binding: "b1tasks", Scope: "b"},
+					Kind:  lir.InnerJoin,
+					On:    qeq(qcol("a", "id"), qcol("b", "id")),
+				},
+				Scope: "j",
+				Fields: []lir.ProjField{
+					{As: "aid", Expr: qcol("a", "id")},
+					{As: "bid", Expr: qcol("b", "id")},
+				},
 			},
-			Terms: []lir.OrderTerm{{Expr: qcol("a", "id")}},
+			Terms: []lir.OrderTerm{{Expr: qcol("j", "aid")}},
 		},
 	}
 	*gets, *scans = 0, 0

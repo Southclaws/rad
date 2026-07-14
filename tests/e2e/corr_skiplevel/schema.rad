@@ -1,0 +1,13 @@
+# skip-level correlation: parent -> array(children), and each child embeds
+# scalar(count of the PARENT's children) — correlated on the grandparent
+# (parent) slot, not on the child. Every sibling must see the same count with
+# no cross-parent leakage.
+tables:
+  - name: parents
+    columns:
+      - { name: id, type: string, pk: true }
+
+  - name: children
+    columns:
+      - { name: id,        type: string, pk: true }
+      - { name: parent_id, type: string, nullable: true, ref: parents.id }

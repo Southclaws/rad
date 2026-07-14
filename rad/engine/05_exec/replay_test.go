@@ -41,11 +41,17 @@ func replayOnlyQueries() map[string]lir.Query {
 			},
 			Limit: new(int(2)),
 		}),
-		"join encounter order": many(lir.Join{
-			Left:  qscan("tasks", "t"),
-			Right: qscan("users", "u"),
-			Kind:  lir.InnerJoin,
-			On:    qeq(qcol("t", "assignee_id"), qcol("u", "id")),
+		"join encounter order": many(lir.Project{
+			// Unordered on purpose (encounter-order sensitive); project past
+			// the tasks/users `id` collision without imposing an order.
+			Input: lir.Join{
+				Left:  qscan("tasks", "t"),
+				Right: qscan("users", "u"),
+				Kind:  lir.InnerJoin,
+				On:    qeq(qcol("t", "assignee_id"), qcol("u", "id")),
+			},
+			Scope:  "j",
+			Fields: []lir.ProjField{{As: "tid", Expr: qcol("t", "id")}, {As: "uid", Expr: qcol("u", "id")}},
 		}),
 	}
 }

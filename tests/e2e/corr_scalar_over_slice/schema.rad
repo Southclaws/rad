@@ -1,0 +1,13 @@
+# scalar() over a NON-aggregate at-most-one relation: the max child value per
+# parent via project->order desc->slice 1->scalar. Parents with no children
+# yield NULL.
+tables:
+  - name: parents
+    columns:
+      - { name: id, type: string, pk: true }
+
+  - name: children
+    columns:
+      - { name: id,        type: string, pk: true }
+      - { name: parent_id, type: string, nullable: true, ref: parents.id }
+      - { name: value,     type: int64 }

@@ -1,0 +1,46 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "leftjoin_antinull",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "owners": { "kind": "scan", "table": "owners", "scope": "o" },
+            "pets": { "kind": "scan", "table": "pets", "scope": "p" },
+            "joined": {
+              "kind": "join",
+              "left": "owners",
+              "right": "pets",
+              "join": "left",
+              "on": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "o", "column": "oid" },
+                "right": { "kind": "col", "scope": "p", "column": "owner_id" }
+              }
+            },
+            "unmatched": {
+              "kind": "filter",
+              "input": "joined",
+              "predicate": {
+                "kind": "unary", "op": "is_null",
+                "expr": { "kind": "col", "scope": "p", "column": "pname" }
+              }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "unmatched",
+              "terms": [
+                { "expr": { "kind": "col", "scope": "o", "column": "oid" } }
+              ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "oid": "o2", "oname": "Bo", "pid": null, "owner_id": null, "pname": null }
+  ]
+}

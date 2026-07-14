@@ -2,6 +2,7 @@ package bound
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/Southclaws/rad/rad/engine/reject"
 
@@ -185,6 +186,9 @@ func Eval(e Expr, env Env) (lir.Value, error) {
 			}
 			switch v.Type {
 			case catalog.TypeInt64:
+				if v.Int64 == math.MinInt64 {
+					return lir.Value{}, reject.Runtimef("exec: integer overflow: negate %d", v.Int64)
+				}
 				return lir.Int64(-v.Int64), nil
 			case catalog.TypeFloat64:
 				return lir.Float64(-v.Float64), nil
@@ -253,17 +257,41 @@ func evalArith(b Binary, env Env) (lir.Value, error) {
 	}
 
 	if resultType == catalog.TypeInt64 {
-		if b.Op == lir.OpDiv && r.Int64 == 0 {
-			return lir.Value{}, reject.Runtimef("exec: division by zero")
-		}
+		// int64 arithmetic is checked: an overflow is a data-dependent failure
+		// of a valid query, reported like division by zero rather than silently
+		// wrapping to a two's-complement value the caller never asked for.
 		switch b.Op {
 		case lir.OpAdd:
-			return lir.Int64(l.Int64 + r.Int64), nil
+			s := l.Int64 + r.Int64
+			if (r.Int64 > 0 && s < l.Int64) || (r.Int64 < 0 && s > l.Int64) {
+				return lir.Value{}, reject.Runtimef("exec: integer overflow: %d + %d", l.Int64, r.Int64)
+			}
+			return lir.Int64(s), nil
 		case lir.OpSub:
-			return lir.Int64(l.Int64 - r.Int64), nil
+			d := l.Int64 - r.Int64
+			if (r.Int64 < 0 && d < l.Int64) || (r.Int64 > 0 && d > l.Int64) {
+				return lir.Value{}, reject.Runtimef("exec: integer overflow: %d - %d", l.Int64, r.Int64)
+			}
+			return lir.Int64(d), nil
 		case lir.OpMul:
-			return lir.Int64(l.Int64 * r.Int64), nil
-		default:
+			if l.Int64 == 0 || r.Int64 == 0 {
+				return lir.Int64(0), nil
+			}
+			p := l.Int64 * r.Int64
+			if p/r.Int64 != l.Int64 ||
+				(l.Int64 == math.MinInt64 && r.Int64 == -1) ||
+				(r.Int64 == math.MinInt64 && l.Int64 == -1) {
+				return lir.Value{}, reject.Runtimef("exec: integer overflow: %d * %d", l.Int64, r.Int64)
+			}
+			return lir.Int64(p), nil
+		default: // div
+			if r.Int64 == 0 {
+				return lir.Value{}, reject.Runtimef("exec: division by zero")
+			}
+			// MinInt64 / -1 overflows int64 (the quotient is MinInt64, wrapping).
+			if l.Int64 == math.MinInt64 && r.Int64 == -1 {
+				return lir.Value{}, reject.Runtimef("exec: integer overflow: %d / %d", l.Int64, r.Int64)
+			}
 			return lir.Int64(l.Int64 / r.Int64), nil
 		}
 	}
@@ -307,7 +335,17 @@ func evalCast(c Cast, env Env) (lir.Value, error) {
 	case v.Type == catalog.TypeInt64 && to == catalog.TypeFloat64:
 		return lir.Float64(float64(v.Int64)), nil
 	case v.Type == catalog.TypeFloat64 && to == catalog.TypeInt64:
-		return lir.Int64(int64(v.Float64)), nil
+		// Go's float64→int64 conversion is implementation-defined when the
+		// value is out of range (it differs across architectures), so a naked
+		// conversion would make the same query non-deterministic. Reject it as
+		// a data-dependent failure instead. The bounds are the exclusive
+		// float64 representation of the int64 limits: MinInt64 is exactly
+		// representable, MaxInt64+1 (2^63) is, MaxInt64 itself is not.
+		f := v.Float64
+		if math.IsNaN(f) || f >= float64(math.MaxInt64) || f < float64(math.MinInt64) {
+			return lir.Value{}, reject.Runtimef("exec: cast %v to int64 is out of range", f)
+		}
+		return lir.Int64(int64(f)), nil
 	}
 	return lir.Value{}, fmt.Errorf("exec: cannot cast %s to %s", v.Type, to)
 }

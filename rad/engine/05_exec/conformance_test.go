@@ -76,31 +76,50 @@ func conformanceQueries() map[string]lir.Query {
 				"b1tasks": qfilter(qscan("tasks", "t"),
 					qeq(qcol("t", "board_id"), qlit("b1"))),
 			},
+			// The two occurrences share the tasks column names, so the joined
+			// row type collides; project to a unique output before the root
+			// renders it.
 			Root: lir.Order{
-				Input: lir.Join{
-					Left:  lir.Ref{Binding: "b1tasks", Scope: "a"},
-					Right: lir.Ref{Binding: "b1tasks", Scope: "b"},
-					Kind:  lir.InnerJoin,
-					On:    qeq(qcol("a", "id"), qcol("b", "id")),
+				Input: lir.Project{
+					Input: lir.Join{
+						Left:  lir.Ref{Binding: "b1tasks", Scope: "a"},
+						Right: lir.Ref{Binding: "b1tasks", Scope: "b"},
+						Kind:  lir.InnerJoin,
+						On:    qeq(qcol("a", "id"), qcol("b", "id")),
+					},
+					Scope: "j",
+					Fields: []lir.ProjField{
+						{As: "aid", Expr: qcol("a", "id")},
+						{As: "bid", Expr: qcol("b", "id")},
+					},
 				},
-				Terms: []lir.OrderTerm{{Expr: qcol("a", "id")}},
+				Terms: []lir.OrderTerm{{Expr: qcol("j", "aid")}},
 			},
 		},
 		"rows joined against a table": many(lir.Order{
-			Input: lir.Join{
-				Left: qscan("tasks", "t"),
-				Right: lir.Rows{
-					Scope: "m",
-					Columns: []lir.RowsCol{
-						{Name: "status", Kind: lir.KindText},
-						{Name: "weight", Kind: lir.KindInt64},
+			// tasks and the rows relation both expose `status`; project to a
+			// unique output before rendering.
+			Input: lir.Project{
+				Input: lir.Join{
+					Left: qscan("tasks", "t"),
+					Right: lir.Rows{
+						Scope: "m",
+						Columns: []lir.RowsCol{
+							{Name: "status", Kind: lir.KindText},
+							{Name: "weight", Kind: lir.KindInt64},
+						},
+						Values: [][]any{{"open", 1}, {"done", 0}},
 					},
-					Values: [][]any{{"open", 1}, {"done", 0}},
+					Kind: lir.InnerJoin,
+					On:   qeq(qcol("t", "status"), qcol("m", "status")),
 				},
-				Kind: lir.InnerJoin,
-				On:   qeq(qcol("t", "status"), qcol("m", "status")),
+				Scope: "j",
+				Fields: []lir.ProjField{
+					{As: "id", Expr: qcol("t", "id")},
+					{As: "weight", Expr: qcol("m", "weight")},
+				},
 			},
-			Terms: []lir.OrderTerm{{Expr: qcol("t", "id")}},
+			Terms: []lir.OrderTerm{{Expr: qcol("j", "id")}},
 		}),
 		"rows aggregated with nulls": many(lir.Order{
 			Input: lir.Aggregate{

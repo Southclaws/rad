@@ -33,13 +33,22 @@ func TestReferenceInterpreter(t *testing.T) {
 		},
 	})
 	queries["left join"] = many(lir.Order{
-		Input: lir.Join{
-			Left:  qscan("tasks", "t"),
-			Right: qscan("users", "u"),
-			Kind:  lir.LeftJoin,
-			On:    qeq(qcol("t", "assignee_id"), qcol("u", "id")),
+		// tasks and users both expose `id`; project to a unique output. An
+		// unmatched left row still leaves `who` NULL, exercising the left pad.
+		Input: lir.Project{
+			Input: lir.Join{
+				Left:  qscan("tasks", "t"),
+				Right: qscan("users", "u"),
+				Kind:  lir.LeftJoin,
+				On:    qeq(qcol("t", "assignee_id"), qcol("u", "id")),
+			},
+			Scope: "j",
+			Fields: []lir.ProjField{
+				{As: "id", Expr: qcol("t", "id")},
+				{As: "who", Expr: qcol("u", "name")},
+			},
 		},
-		Terms: []lir.OrderTerm{{Expr: qcol("t", "id")}},
+		Terms: []lir.OrderTerm{{Expr: qcol("j", "id")}},
 	})
 
 	for name, q := range queries {

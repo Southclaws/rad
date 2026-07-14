@@ -1,0 +1,12 @@
+# two correlated crossings inside one AND predicate:
+# filter(parents, exists(kids) AND scalar(count kids) > 1).
+tables:
+  - name: parents
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+
+  - name: children
+    columns:
+      - { name: id,        type: string, pk: true }
+      - { name: parent_id, type: string, nullable: true, ref: parents.id }

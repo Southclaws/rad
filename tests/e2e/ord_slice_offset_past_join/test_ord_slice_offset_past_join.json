@@ -1,0 +1,39 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "slice_past",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "lefts": { "kind": "scan", "table": "lefts", "scope": "l" },
+            "rights": { "kind": "scan", "table": "rights", "scope": "r" },
+            "joined": {
+              "kind": "join",
+              "left": "lefts",
+              "right": "rights",
+              "join": "inner",
+              "on": { "kind": "lit", "value": true }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "joined",
+              "terms": [
+                { "expr": { "kind": "col", "scope": "l", "column": "a" } },
+                { "expr": { "kind": "col", "scope": "r", "column": "b" } }
+              ]
+            },
+            "sliced": {
+              "kind": "slice",
+              "input": "sorted",
+              "offset": 10,
+              "limit": 5
+            }
+          },
+          "root": { "node": "sliced", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": []
+}

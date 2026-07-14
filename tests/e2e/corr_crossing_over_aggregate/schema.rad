@@ -1,0 +1,12 @@
+# a crossing whose relation is a correlated GROUP BY aggregate: each parent
+# embeds an array of {category, count} folded over ITS children only.
+tables:
+  - name: parents
+    columns:
+      - { name: id, type: string, pk: true }
+
+  - name: children
+    columns:
+      - { name: id,        type: string, pk: true }
+      - { name: parent_id, type: string, nullable: true, ref: parents.id }
+      - { name: category,  type: string }

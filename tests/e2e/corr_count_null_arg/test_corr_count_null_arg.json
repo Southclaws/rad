@@ -1,0 +1,41 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "count_parents_with_children",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "parents": { "kind": "scan", "table": "parents", "scope": "p" },
+            "children": { "kind": "scan", "table": "children", "scope": "c" },
+            "mine": {
+              "kind": "filter",
+              "input": "children",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "c", "column": "parent_id" },
+                "right": { "kind": "col", "scope": "p", "column": "id" }
+              }
+            },
+            "min_val": {
+              "kind": "aggregate",
+              "input": "mine",
+              "scope": "a",
+              "aggs": [ { "fn": "min", "as": "m", "arg": { "kind": "col", "scope": "c", "column": "value" } } ]
+            },
+            "rolled": {
+              "kind": "aggregate",
+              "input": "parents",
+              "scope": "g",
+              "aggs": [
+                { "fn": "count", "as": "with_children", "arg": { "kind": "scalar", "node": "min_val" } }
+              ]
+            }
+          },
+          "root": { "node": "rolled", "cardinality": "exactly_one" }
+        }
+      }
+    ]
+  },
+  "result": { "with_children": 2 }
+}

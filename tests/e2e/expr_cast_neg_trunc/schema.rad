@@ -1,0 +1,8 @@
+# expr_cast_neg_trunc — cast(float64 to int64) truncates toward zero,
+# including for negatives: -7.9 -> -7 (not -8). Complements errbind_cast
+# which only covers the positive direction (7.9 -> 7).
+tables:
+  - name: nums
+    columns:
+      - { name: id, type: string, pk: true }
+      - { name: f,  type: float64 }

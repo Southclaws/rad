@@ -1,0 +1,59 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "selfjoin",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "l": { "kind": "scan", "table": "items", "scope": "l" },
+            "r": { "kind": "scan", "table": "items", "scope": "r" },
+            "joined": {
+              "kind": "join",
+              "left": "l",
+              "right": "r",
+              "join": "inner",
+              "on": {
+                "kind": "binary", "op": "and",
+                "left": {
+                  "kind": "binary", "op": "eq",
+                  "left": { "kind": "col", "scope": "l", "column": "grp" },
+                  "right": { "kind": "col", "scope": "r", "column": "grp" }
+                },
+                "right": {
+                  "kind": "binary", "op": "ne",
+                  "left": { "kind": "col", "scope": "l", "column": "tag" },
+                  "right": { "kind": "col", "scope": "r", "column": "tag" }
+                }
+              }
+            },
+            "proj": {
+              "kind": "project",
+              "input": "joined",
+              "scope": "p",
+              "fields": [
+                { "as": "lid",  "expr": { "kind": "col", "scope": "l", "column": "id" } },
+                { "as": "ltag", "expr": { "kind": "col", "scope": "l", "column": "tag" } },
+                { "as": "rid",  "expr": { "kind": "col", "scope": "r", "column": "id" } },
+                { "as": "rtag", "expr": { "kind": "col", "scope": "r", "column": "tag" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "proj",
+              "terms": [
+                { "expr": { "kind": "col", "scope": "p", "column": "lid" } },
+                { "expr": { "kind": "col", "scope": "p", "column": "rid" } }
+              ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "lid": "i1", "ltag": 100, "rid": "i2", "rtag": 200 },
+    { "lid": "i2", "ltag": 200, "rid": "i1", "rtag": 100 }
+  ]
+}

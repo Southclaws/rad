@@ -193,11 +193,15 @@ func TestPlanBindings(t *testing.T) {
 		Bindings: map[string]lir.Relation{
 			"top": lir.Slice{Input: bscan("tasks", "t"), Limit: new(int(2))},
 		},
-		Root: lir.Join{
-			Left:  lir.Ref{Binding: "top", Scope: "a"},
-			Right: lir.Ref{Binding: "top", Scope: "b"},
-			Kind:  lir.InnerJoin,
-			On:    beq(bcol("a", "id"), bcol("b", "id")),
+		Root: lir.Project{
+			Input: lir.Join{
+				Left:  lir.Ref{Binding: "top", Scope: "a"},
+				Right: lir.Ref{Binding: "top", Scope: "b"},
+				Kind:  lir.InnerJoin,
+				On:    beq(bcol("a", "id"), bcol("b", "id")),
+			},
+			Scope:  "j",
+			Fields: []lir.ProjField{{As: "aid", Expr: bcol("a", "id")}, {As: "bid", Expr: bcol("b", "id")}},
 		},
 	})
 	got := planner.PrintPlan(planner.PlanQuery(q))
@@ -205,9 +209,12 @@ func TestPlanBindings(t *testing.T) {
   Binding top materialise plan-choice-sensitive
     Slice offset=0 limit=2
       TableScan tasks
-  NestedLoopJoin inner on eq(a.id#7, b.id#14)
-    Ref top
-    Ref top
+  Project
+    aid#7 = a.id#7
+    bid#14 = b.id#14
+    NestedLoopJoin inner on eq(a.id#7, b.id#14)
+      Ref top
+      Ref top
 `)
 }
 
@@ -221,16 +228,20 @@ func TestPlanBindingStrategy(t *testing.T) {
 			"once":  bfilter(bscan("tasks", "t"), beq(bcol("t", "status"), blit("open"))),
 			"twice": bfilter(bscan("tasks", "u"), beq(bcol("u", "status"), blit("done"))),
 		},
-		Root: lir.Join{
-			Left: lir.Ref{Binding: "once", Scope: "o"},
-			Right: lir.Join{
-				Left:  lir.Ref{Binding: "twice", Scope: "a"},
-				Right: lir.Ref{Binding: "twice", Scope: "b"},
-				Kind:  lir.InnerJoin,
-				On:    beq(bcol("a", "id"), bcol("b", "id")),
+		Root: lir.Project{
+			Input: lir.Join{
+				Left: lir.Ref{Binding: "once", Scope: "o"},
+				Right: lir.Join{
+					Left:  lir.Ref{Binding: "twice", Scope: "a"},
+					Right: lir.Ref{Binding: "twice", Scope: "b"},
+					Kind:  lir.InnerJoin,
+					On:    beq(bcol("a", "id"), bcol("b", "id")),
+				},
+				Kind: lir.InnerJoin,
+				On:   beq(bcol("o", "id"), bcol("a", "id")),
 			},
-			Kind: lir.InnerJoin,
-			On:   beq(bcol("o", "id"), bcol("a", "id")),
+			Scope:  "j",
+			Fields: []lir.ProjField{{As: "oid", Expr: bcol("o", "id")}, {As: "aid", Expr: bcol("a", "id")}, {As: "bid", Expr: bcol("b", "id")}},
 		},
 	})
 	pp := planner.PlanQuery(q)
@@ -256,16 +267,20 @@ func TestPlanBindingSensitivity(t *testing.T) {
 			"det":  bfilter(bscan("tasks", "u"), beq(bcol("u", "status"), blit("open"))),
 			"over": bfilter(lir.Ref{Binding: "arb", Scope: "r"}, beq(bcol("r", "status"), blit("open"))),
 		},
-		Root: lir.Join{
-			Left: lir.Ref{Binding: "det", Scope: "d"},
-			Right: lir.Join{
-				Left:  lir.Ref{Binding: "over", Scope: "o"},
-				Right: lir.Ref{Binding: "arb", Scope: "a"},
-				Kind:  lir.InnerJoin,
-				On:    beq(bcol("o", "id"), bcol("a", "id")),
+		Root: lir.Project{
+			Input: lir.Join{
+				Left: lir.Ref{Binding: "det", Scope: "d"},
+				Right: lir.Join{
+					Left:  lir.Ref{Binding: "over", Scope: "o"},
+					Right: lir.Ref{Binding: "arb", Scope: "a"},
+					Kind:  lir.InnerJoin,
+					On:    beq(bcol("o", "id"), bcol("a", "id")),
+				},
+				Kind: lir.InnerJoin,
+				On:   beq(bcol("d", "id"), bcol("o", "id")),
 			},
-			Kind: lir.InnerJoin,
-			On:   beq(bcol("d", "id"), bcol("o", "id")),
+			Scope:  "j",
+			Fields: []lir.ProjField{{As: "did", Expr: bcol("d", "id")}, {As: "oid", Expr: bcol("o", "id")}, {As: "aid", Expr: bcol("a", "id")}},
 		},
 	})
 	want := map[string]bool{"arb": true, "det": false, "over": false}

@@ -1,0 +1,24 @@
+[
+  {
+    "table": "parents",
+    "rows": [
+      { "id": "P1" },
+      { "id": "P2" }
+    ]
+  },
+  {
+    "table": "categories",
+    "rows": [
+      { "id": "cat-x", "label": "X" },
+      { "id": "cat-y", "label": "Y" }
+    ]
+  },
+  {
+    "table": "children",
+    "rows": [
+      { "id": "c1", "parent_id": "P1", "cat_id": "cat-x" },
+      { "id": "c2", "parent_id": "P1", "cat_id": "cat-y" },
+      { "id": "c3", "parent_id": "P2", "cat_id": "cat-x" }
+    ]
+  }
+]

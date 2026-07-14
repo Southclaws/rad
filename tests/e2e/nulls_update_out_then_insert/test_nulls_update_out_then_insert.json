@@ -1,0 +1,66 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "clear",
+        "kind": "update",
+        "table": "items",
+        "relation": {
+          "nodes": {
+            "r": {
+              "kind": "rows",
+              "scope": "r",
+              "columns": [
+                { "name": "id", "type": "text" },
+                { "name": "code", "type": "text", "nullable": true }
+              ],
+              "rows": [ ["r1", null] ]
+            }
+          },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      },
+      {
+        "name": "reuse",
+        "kind": "create",
+        "table": "items",
+        "relation": {
+          "nodes": {
+            "r2": {
+              "kind": "rows",
+              "scope": "r2",
+              "columns": [
+                { "name": "id", "type": "text" },
+                { "name": "code", "type": "text" }
+              ],
+              "rows": [ ["r2", "V"] ]
+            }
+          },
+          "root": { "node": "r2", "cardinality": "many" }
+        }
+      }
+    ],
+    "result": "reuse"
+  },
+  "result": [ { "id": "r2", "code": "V" } ],
+  "assertions": [
+    {
+      "name": "r1 freed the value V by going NULL, so r2 could take it",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "items", "scope": "t" },
+          "o": {
+            "kind": "order",
+            "input": "t",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ]
+          }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "r1", "code": null },
+        { "id": "r2", "code": "V" }
+      ]
+    }
+  ]
+}

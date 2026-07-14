@@ -1,0 +1,38 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "eo_one",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "lefts": { "kind": "scan", "table": "lefts", "scope": "l" },
+            "rights": { "kind": "scan", "table": "rights", "scope": "r" },
+            "joined": {
+              "kind": "join",
+              "left": "lefts",
+              "right": "rights",
+              "join": "inner",
+              "on": {
+                "kind": "binary", "op": "lt",
+                "left": { "kind": "col", "scope": "l", "column": "a" },
+                "right": { "kind": "col", "scope": "r", "column": "b" }
+              }
+            },
+            "filtered": {
+              "kind": "filter",
+              "input": "joined",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "l", "column": "a" },
+                "right": { "kind": "lit", "value": 5 }
+              }
+            }
+          },
+          "root": { "node": "filtered", "cardinality": "exactly_one" }
+        }
+      }
+    ]
+  },
+  "result": { "lid": "l2", "a": 5, "rid": "r2", "b": 10 }
+}

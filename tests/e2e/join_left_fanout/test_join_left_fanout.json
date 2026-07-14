@@ -1,0 +1,42 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "leftjoin_fanout",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "owners": { "kind": "scan", "table": "owners", "scope": "o" },
+            "pets": { "kind": "scan", "table": "pets", "scope": "p" },
+            "joined": {
+              "kind": "join",
+              "left": "owners",
+              "right": "pets",
+              "join": "left",
+              "on": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "o", "column": "oid" },
+                "right": { "kind": "col", "scope": "p", "column": "owner_id" }
+              }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "joined",
+              "terms": [
+                { "expr": { "kind": "col", "scope": "o", "column": "oid" } },
+                { "expr": { "kind": "col", "scope": "p", "column": "pid" } }
+              ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "oid": "o1", "oname": "Ann", "pid": "p1", "owner_id": "o1", "pname": "Rex" },
+    { "oid": "o1", "oname": "Ann", "pid": "p2", "owner_id": "o1", "pname": "Fido" },
+    { "oid": "o2", "oname": "Bo", "pid": null, "owner_id": null, "pname": null },
+    { "oid": "o3", "oname": "Cy", "pid": "p3", "owner_id": "o3", "pname": "Meow" }
+  ]
+}

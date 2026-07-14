@@ -1,8 +1,11 @@
 # ADR: a SQL frontend that compiles to LIR+PIR
 
 Status: proposed, not scheduled — a proof-of-concept design, no code yet.
-Parser landscape research is done; `rqlite/sql`, vendored, is the pick (see
-below).
+SQLite-dialect parser research is done (`rqlite/sql`, vendored). A second
+track has since opened — Postgres dialect + a real wire-protocol frontend
+— researched below (see "Alternative: Postgres dialect and wire
+protocol"); which track(s) to actually build is an open decision, not yet
+made.
 
 ## Context
 
@@ -385,6 +388,127 @@ test plan should not just be "the compiler's own unit tests pass." Plan:
    POC's scope actually covering enough of that project's query shapes to
    be worth trying.
 
+## Alternative: Postgres dialect and wire protocol
+
+Raised after the initial pick: instead of (or in addition to) a SQLite-text
+compiler, target Postgres — both a Postgres-grammar parser and, further,
+a real Postgres **wire-protocol** frontend, so unmodified Postgres clients
+(`psql`, `pgx`, any ORM's Postgres driver) connect straight to Rad. This
+would deliver Goal #2 (battle-testing with a real project's own traffic or
+test suite) far more directly than the SQLite path: nobody's existing test
+suite calls a bespoke `CompileQuery(sql string)` function, but plenty of
+them already run against a Postgres connection string.
+
+### Parser: `pgplex/pgparser`
+
+A real, very new (created 2026-01-30, v0.2.0) project: a direct `goyacc`
+port of **PostgreSQL's own grammar** (`gram.y`, targeting PG 17.7) with an
+AST mirroring PG's real `parsenodes.h` structs — not a reimplementation of
+"PG-like SQL," the actual grammar. It claims **99.6% pass validated
+against PostgreSQL's own regression suite** (~45,000 statements), a
+materially stronger fidelity signal than either Postgres-flavored parser
+already in the comparison table above:
+
+| | `pgplex/pgparser` | `cockroachdb-parser` | `auxten/postgresql-parser` |
+| --- | --- | --- | --- |
+| Basis | goyacc port of real PG `gram.y` | goyacc, CRDB's own dialect | goyacc, CRDB's own dialect |
+| Validated against | PG's own regression suite (99.6%) | CRDB's own tests | CRDB's own tests |
+| Stars / age | 26 / ~5.5 months | 44 / active | 313 / dead since 2022 |
+| License | Apache-2.0 + PostgreSQL License | Apache-2.0 | Apache-2.0 |
+| Production use | none external yet | low | Atlas, Bytebase (current) |
+
+It's a spinoff of Bytebase's internal tooling (contributors include
+Bytebase's founder), built as a higher-fidelity successor to the
+`auxten/postgresql-parser` Bytebase currently ships — a real signal, not a
+hobby project, despite the young repo. Weaknesses: thin docs (one entry
+point, `parser.Parse(sql)`, no documented visitor/walker API, unlike
+`cockroachdb-parser`'s years-old walk helpers), zero external
+issues/PRs/battle-testing yet, pre-1.0 API-churn risk.
+
+**If Rad's ambition here is real Postgres-dialect fidelity** (which the
+wire-protocol idea below implies), `pgplex/pgparser` is the architecturally
+correct bet — CRDB's dialect diverges from and is incomplete relative to
+real Postgres grammar, so parsing "CRDB SQL" is parsing an approximation
+of an approximation. `auxten/postgresql-parser` remains the
+safer-if-stability-matters-more choice (five years of real usage, if dead
+since 2022); for Rad's currently tiny target subset either parses fine —
+the difference only bites at the edges, later.
+
+### Wire protocol: feasible, on top of `psql-wire`
+
+`github.com/jeroenrinzema/psql-wire` is purpose-built for exactly this:
+"bring your own SQL parsing/execution, we handle the wire protocol."
+Actively maintained (44 releases, latest ~April 2026), permissive license,
+handles session lifecycle, simple **and** extended query protocol state
+machines, pluggable auth, SSL, and type-tagged columns. (`jackc/pgx/v5/
+pgproto3` is the lower-level alternative — pure message framing, no
+session/type/auth layer — psql-wire is built on the same idea one level
+higher, and is the right altitude to start from.) CockroachDB and
+RisingWave both wrote their own protocol layer from scratch, but both
+predate/exceed what a library like this targets; for a side-project-scale
+database, psql-wire is the intended shortcut.
+
+**The one scope trap to not underestimate: simple query protocol is not
+enough.** Confirmed across `node-postgres`, JDBC, `psycopg3`, and Npgsql —
+real ORM traffic is parameterized as `Parse → Bind → Execute → Sync`
+(extended protocol, typically an unnamed statement/portal), not simple-
+protocol text. Skipping extended protocol means only `psql` and legacy
+simple-only clients work, which quietly defeats the entire point ("point
+real ORMs at Rad").
+
+**What genuinely is skippable for a v1**, keeping the undertaking to a
+"few weeks, not months" scale: SSL/TLS (drivers fall back to plaintext
+when the server answers the SSLRequest with `N`), SCRAM/MD5 auth
+(trust/cleartext is fine for a local dev/test tool), named prepared-
+statement caching (the unnamed statement/portal path suffices), the COPY
+protocol, and binary wire format (text-format results are accepted by
+virtually every driver even when binary is preferred). Type-OID mapping
+for Rad's four scalars (`text`/`int8`/`float8`/`bool`) is trivial.
+
+### What stays the same either way
+
+The AST-to-IR mapping layer (`rad/sql/bind`, `rad/sql/compile`) is
+transport- and largely dialect-agnostic — it consumes *a* parsed AST and
+emits `protocol.Query`/`protocol.Program` via `rad/protocol/build.go`
+regardless of whether that AST came from `rqlite/sql` or `pgplex/pgparser`,
+and regardless of whether the SQL text arrived via a bare function call or
+a wire-protocol executor callback. Only `rad/sql/parse` (which parser) and
+the transport (a `CompileQuery` call vs. a `psql-wire` server loop) differ.
+The mapping table, the `UPDATE`/`DELETE` shaping rule, and the in/out-of-
+scope list above (no `CASE`, no subquery `IN`, no windows, no recursive
+CTEs) all carry over unchanged to a Postgres dialect — Postgres just has
+more syntax around the same missing-LIR-primitive edges (e.g. Postgres's
+richer `CASE`/window/array-operator surface hits the same "LIR doesn't
+have this yet" ceiling, just with more syntax pointing at it).
+
+### The actual fork
+
+This is a real scope decision, not a drop-in parser swap, for two reasons:
+
+1. **A wire-protocol frontend is a new server mode**, which cuts directly
+   against this ADR's stated non-goal ("not a new public interface"). That
+   non-goal was written for a SQL-text-compile library; it may not be the
+   right constraint anymore if the wire-protocol path is what's wanted.
+2. **It's a materially bigger and more valuable commitment** than the
+   SQLite POC — real Postgres-grammar fidelity plus weeks of protocol work,
+   versus days of mapping a narrow SQL subset a caller already has to
+   invoke through our own function.
+
+Three shapes this could take, not yet decided:
+
+- **Both, staged**: ship the SQLite/`rqlite/sql` text-compile POC first
+  (proves the AST→IR mapping layer at all, cheaply), then Postgres dialect
+  (`pgplex/pgparser`) + `psql-wire` as the real follow-on target, reusing
+  the same `bind`/`compile` layers essentially unchanged.
+- **Pivot straight to Postgres**: skip the SQLite POC; go directly for
+  `pgplex/pgparser` + a `psql-wire` frontend as the only target, since
+  that's the actually-valuable end state and the SQLite POC would be
+  throwaway effort relative to it.
+- **Keep SQLite-only, drop the wire-protocol idea**: stay inside the
+  original non-goals (no new public interface, narrow experimentation
+  scope); treat Postgres-wire as a separate future ADR if it's ever
+  pursued on its own merits.
+
 ## Risks / open questions
 
 - **LIR's own gaps set the frontend's ceiling.** The frontend can't emit
@@ -394,11 +518,16 @@ test plan should not just be "the compiler's own unit tests pass." Plan:
   frontend surfaces demand for them rather than us guessing.
   - `next-steps.md` "Windows and recursive queries" — reaffirmed here as
     still out of scope.
-- **Type affinity is the main limiter on the "redirect a real test suite"
-  stretch goal.** Anything relying on SQLite's loose column typing simply
-  won't compile against Rad's strict schema — expect this to cut hard into
-  which existing test suites are viable candidates at all, before SQL
-  syntax coverage is even the bottleneck.
+- **Type affinity/looseness is the main limiter on the "redirect a real
+  test suite" stretch goal, on either dialect.** Anything relying on
+  SQLite's loose column typing, or Postgres-specific types Rad has no
+  equivalent for (`jsonb`, arrays, enums, `timestamptz`, etc.), simply
+  won't compile against Rad's strict four-scalar schema — expect this to
+  cut hard into which existing test suites/ORMs are viable candidates at
+  all, before SQL syntax coverage is even the bottleneck. This risk is
+  larger, not smaller, on the Postgres path, since Postgres's richer type
+  system is a bigger part of why people reach for it over SQLite in the
+  first place.
 - **Three-valued-logic parity** needs checking construct-by-construct, not
   assumed: SQLite's `NULL` handling in aggregates/comparisons is mostly
   ANSI-standard, but each mapped construct (`SUM`/`AVG` over an all-NULL

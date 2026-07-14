@@ -619,17 +619,30 @@ func TestValidationMatrix(t *testing.T) {
 // A join keeps both sides' scopes visible above it, and slice-limit nil vs 0
 // are distinct: zero rows is expressible.
 func TestJoinScopesAndZeroLimit(t *testing.T) {
-	q := bind(t, lir.Query{Card: lir.CardMany, Root: lir.Filter{
-		Input: lir.Join{
-			Left:  bscan("tasks", "t"),
-			Right: bscan("users", "u"),
-			Kind:  lir.LeftJoin,
-			On:    beq(bcol("t", "assignee_id"), bcol("u", "id")),
+	// tasks and users both expose `id`, so the joined row type collides;
+	// project to a unique output before the root renders it.
+	q := bind(t, lir.Query{Card: lir.CardMany, Root: lir.Project{
+		Input: lir.Filter{
+			Input: lir.Join{
+				Left:  bscan("tasks", "t"),
+				Right: bscan("users", "u"),
+				Kind:  lir.LeftJoin,
+				On:    beq(bcol("t", "assignee_id"), bcol("u", "id")),
+			},
+			Pred: beq(bcol("u", "name"), blit("ada")),
 		},
-		Pred: beq(bcol("u", "name"), blit("ada")),
+		Scope: "j",
+		Fields: []lir.ProjField{
+			{As: "task", Expr: bcol("t", "title")},
+			{As: "who", Expr: bcol("u", "name")},
+		},
 	}})
-	if _, ok := q.Root.(*bound.Filter); !ok {
+	proj, ok := q.Root.(*bound.Project)
+	if !ok {
 		t.Fatalf("root = %T", q.Root)
+	}
+	if _, ok := proj.In.(*bound.Filter); !ok {
+		t.Fatalf("project input = %T, want *bound.Filter", proj.In)
 	}
 
 	zq := bind(t, lir.Query{Card: lir.CardMany, Root: lir.Slice{Input: bscan("tasks", "t"), Limit: new(int(0))}})

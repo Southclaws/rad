@@ -1,0 +1,48 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "cross_dup",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "outer": {
+              "kind": "rows",
+              "scope": "u",
+              "columns": [ { "name": "k", "type": "int64" } ],
+              "rows": [ [ 1 ] ]
+            },
+            "l": { "kind": "scan", "table": "items", "scope": "l" },
+            "r": { "kind": "scan", "table": "items", "scope": "r" },
+            "joined": {
+              "kind": "join",
+              "left": "l",
+              "right": "r",
+              "join": "inner",
+              "on": { "kind": "lit", "value": true }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "joined",
+              "terms": [
+                { "expr": { "kind": "col", "scope": "l", "column": "id" } },
+                { "expr": { "kind": "col", "scope": "r", "column": "id" } }
+              ]
+            },
+            "proj": {
+              "kind": "project",
+              "input": "outer",
+              "scope": "p",
+              "fields": [
+                { "as": "k", "expr": { "kind": "col", "scope": "u", "column": "k" } },
+                { "as": "pairs", "expr": { "kind": "array", "node": "sorted" } }
+              ]
+            }
+          },
+          "root": { "node": "proj", "cardinality": "exactly_one" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "invalid", "contains": "duplicate column" }
+}

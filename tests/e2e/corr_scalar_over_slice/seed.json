@@ -1,0 +1,16 @@
+[
+  {
+    "table": "parents",
+    "rows": [
+      { "id": "p1" },
+      { "id": "p2" }
+    ]
+  },
+  {
+    "table": "children",
+    "rows": [
+      { "id": "c1", "parent_id": "p1", "value": 3 },
+      { "id": "c2", "parent_id": "p1", "value": 8 }
+    ]
+  }
+]

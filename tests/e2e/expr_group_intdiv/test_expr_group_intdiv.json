@@ -1,0 +1,27 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "by_quotient",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "agg": { "kind": "aggregate", "input": "t", "scope": "g",
+              "groups": [ { "as": "k", "expr": { "kind": "binary", "op": "div",
+                "left":  { "kind": "col", "scope": "t", "column": "x" },
+                "right": { "kind": "col", "scope": "t", "column": "y" } } } ],
+              "aggs": [ { "fn": "count", "as": "n" } ] },
+            "ord": { "kind": "order", "input": "agg",
+              "terms": [ { "expr": { "kind": "col", "scope": "g", "column": "k" } } ] }
+          },
+          "root": { "node": "ord", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "k": 2, "n": 2 },
+    { "k": 3, "n": 3 }
+  ]
+}

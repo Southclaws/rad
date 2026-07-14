@@ -1,0 +1,77 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "more_a_than_b",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "parents": { "kind": "scan", "table": "parents", "scope": "p" },
+            "kids_a": { "kind": "scan", "table": "children", "scope": "ka" },
+            "kids_b": { "kind": "scan", "table": "children", "scope": "kb" },
+            "mine_a": {
+              "kind": "filter",
+              "input": "kids_a",
+              "predicate": {
+                "kind": "binary", "op": "and",
+                "left": {
+                  "kind": "binary", "op": "eq",
+                  "left": { "kind": "col", "scope": "ka", "column": "parent_id" },
+                  "right": { "kind": "col", "scope": "p", "column": "id" }
+                },
+                "right": {
+                  "kind": "binary", "op": "eq",
+                  "left": { "kind": "col", "scope": "ka", "column": "kind" },
+                  "right": { "kind": "lit", "value": "A" }
+                }
+              }
+            },
+            "mine_b": {
+              "kind": "filter",
+              "input": "kids_b",
+              "predicate": {
+                "kind": "binary", "op": "and",
+                "left": {
+                  "kind": "binary", "op": "eq",
+                  "left": { "kind": "col", "scope": "kb", "column": "parent_id" },
+                  "right": { "kind": "col", "scope": "p", "column": "id" }
+                },
+                "right": {
+                  "kind": "binary", "op": "eq",
+                  "left": { "kind": "col", "scope": "kb", "column": "kind" },
+                  "right": { "kind": "lit", "value": "B" }
+                }
+              }
+            },
+            "count_a": {
+              "kind": "aggregate", "input": "mine_a", "scope": "aa",
+              "aggs": [ { "fn": "count", "as": "n" } ]
+            },
+            "count_b": {
+              "kind": "aggregate", "input": "mine_b", "scope": "bb",
+              "aggs": [ { "fn": "count", "as": "n" } ]
+            },
+            "kept": {
+              "kind": "filter",
+              "input": "parents",
+              "predicate": {
+                "kind": "binary", "op": "gt",
+                "left": { "kind": "scalar", "node": "count_a" },
+                "right": { "kind": "scalar", "node": "count_b" }
+              }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "kept",
+              "terms": [ { "expr": { "kind": "col", "scope": "p", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "p1" }
+  ]
+}

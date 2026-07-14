@@ -1,0 +1,8 @@
+# expr_proj_mixed — a projection mixing a spread, a bare int64 literal
+# field, a bare text literal field, and a computed arithmetic field.
+tables:
+  - name: nums
+    columns:
+      - { name: id, type: string, pk: true }
+      - { name: a,  type: int64 }
+      - { name: b,  type: int64 }

@@ -1,0 +1,64 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "items_with_greater",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "me": { "kind": "scan", "table": "items", "scope": "me" },
+            "others": { "kind": "scan", "table": "items", "scope": "o" },
+            "greater": {
+              "kind": "filter",
+              "input": "others",
+              "predicate": {
+                "kind": "binary", "op": "gt",
+                "left": { "kind": "col", "scope": "o", "column": "value" },
+                "right": { "kind": "col", "scope": "me", "column": "value" }
+              }
+            },
+            "greater_sorted": {
+              "kind": "order",
+              "input": "greater",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ]
+            },
+            "out": {
+              "kind": "project",
+              "input": "me",
+              "scope": "x",
+              "spread": ["me"],
+              "fields": [
+                { "as": "greater", "expr": { "kind": "array", "node": "greater_sorted" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "x", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    {
+      "id": "i1", "value": 1,
+      "greater": [
+        { "id": "i2", "value": 2 },
+        { "id": "i3", "value": 3 }
+      ]
+    },
+    {
+      "id": "i2", "value": 2,
+      "greater": [
+        { "id": "i3", "value": 3 }
+      ]
+    },
+    {
+      "id": "i3", "value": 3,
+      "greater": []
+    }
+  ]
+}

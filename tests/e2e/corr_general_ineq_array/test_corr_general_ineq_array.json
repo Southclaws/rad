@@ -1,0 +1,64 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "parents_with_smaller_children",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "parents": { "kind": "scan", "table": "parents", "scope": "p" },
+            "children": { "kind": "scan", "table": "children", "scope": "c" },
+            "smaller": {
+              "kind": "filter",
+              "input": "children",
+              "predicate": {
+                "kind": "binary", "op": "lt",
+                "left": { "kind": "col", "scope": "c", "column": "value" },
+                "right": { "kind": "col", "scope": "p", "column": "threshold" }
+              }
+            },
+            "smaller_sorted": {
+              "kind": "order",
+              "input": "smaller",
+              "terms": [ { "expr": { "kind": "col", "scope": "c", "column": "id" } } ]
+            },
+            "out": {
+              "kind": "project",
+              "input": "parents",
+              "scope": "o",
+              "spread": ["p"],
+              "fields": [
+                { "as": "kids", "expr": { "kind": "array", "node": "smaller_sorted" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    {
+      "id": "p1", "threshold": 10,
+      "kids": [
+        { "id": "c1", "value": 3 },
+        { "id": "c2", "value": 7 }
+      ]
+    },
+    {
+      "id": "p2", "threshold": 5,
+      "kids": [
+        { "id": "c1", "value": 3 }
+      ]
+    },
+    {
+      "id": "p3", "threshold": 0,
+      "kids": []
+    }
+  ]
+}

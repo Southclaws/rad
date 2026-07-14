@@ -1,0 +1,81 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "parents_with_joined_children",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "parents": { "kind": "scan", "table": "parents", "scope": "p" },
+            "children": { "kind": "scan", "table": "children", "scope": "c" },
+            "categories": { "kind": "scan", "table": "categories", "scope": "cat" },
+            "joined": {
+              "kind": "join",
+              "left": "children",
+              "right": "categories",
+              "join": "inner",
+              "on": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "c", "column": "cat_id" },
+                "right": { "kind": "col", "scope": "cat", "column": "id" }
+              }
+            },
+            "mine": {
+              "kind": "filter",
+              "input": "joined",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "c", "column": "parent_id" },
+                "right": { "kind": "col", "scope": "p", "column": "id" }
+              }
+            },
+            "picked": {
+              "kind": "project",
+              "input": "mine",
+              "scope": "pk",
+              "fields": [
+                { "as": "child_id", "expr": { "kind": "col", "scope": "c", "column": "id" } },
+                { "as": "label", "expr": { "kind": "col", "scope": "cat", "column": "label" } }
+              ]
+            },
+            "picked_sorted": {
+              "kind": "order",
+              "input": "picked",
+              "terms": [ { "expr": { "kind": "col", "scope": "pk", "column": "child_id" } } ]
+            },
+            "out": {
+              "kind": "project",
+              "input": "parents",
+              "scope": "o",
+              "spread": ["p"],
+              "fields": [
+                { "as": "kids", "expr": { "kind": "array", "node": "picked_sorted" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    {
+      "id": "P1",
+      "kids": [
+        { "child_id": "c1", "label": "X" },
+        { "child_id": "c2", "label": "Y" }
+      ]
+    },
+    {
+      "id": "P2",
+      "kids": [
+        { "child_id": "c3", "label": "X" }
+      ]
+    }
+  ]
+}

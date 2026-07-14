@@ -1,0 +1,23 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "overflow",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "p": { "kind": "project", "input": "t", "scope": "p", "fields": [
+              { "as": "s", "expr": { "kind": "binary", "op": "add",
+                "left":  { "kind": "col", "scope": "t", "column": "a" },
+                "right": { "kind": "col", "scope": "t", "column": "b" } } }
+            ] },
+            "sl": { "kind": "slice", "input": "p", "limit": 1 }
+          },
+          "root": { "node": "sl", "cardinality": "scalar" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "execution_failed", "contains": "overflow" }
+}

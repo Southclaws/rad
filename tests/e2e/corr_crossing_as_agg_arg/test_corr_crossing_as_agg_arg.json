@@ -1,0 +1,41 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "total_children_via_scalar_arg",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "parents": { "kind": "scan", "table": "parents", "scope": "p" },
+            "children": { "kind": "scan", "table": "children", "scope": "c" },
+            "mine": {
+              "kind": "filter",
+              "input": "children",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "c", "column": "parent_id" },
+                "right": { "kind": "col", "scope": "p", "column": "id" }
+              }
+            },
+            "counted": {
+              "kind": "aggregate",
+              "input": "mine",
+              "scope": "a",
+              "aggs": [ { "fn": "count", "as": "n" } ]
+            },
+            "rolled": {
+              "kind": "aggregate",
+              "input": "parents",
+              "scope": "g",
+              "aggs": [
+                { "fn": "sum", "as": "total", "arg": { "kind": "scalar", "node": "counted" } }
+              ]
+            }
+          },
+          "root": { "node": "rolled", "cardinality": "exactly_one" }
+        }
+      }
+    ]
+  },
+  "result": { "total": 6 }
+}

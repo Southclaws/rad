@@ -1,0 +1,31 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "quotients",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "p": { "kind": "project", "input": "t", "scope": "p", "fields": [
+              { "as": "id", "expr": { "kind": "col", "scope": "t", "column": "id" } },
+              { "as": "q", "expr": { "kind": "binary", "op": "div",
+                "left":  { "kind": "col", "scope": "t", "column": "a" },
+                "right": { "kind": "col", "scope": "t", "column": "b" } } }
+            ] },
+            "o": { "kind": "order", "input": "p", "terms": [
+              { "expr": { "kind": "col", "scope": "p", "column": "id" } }
+            ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "r1", "q": 3 },
+    { "id": "r2", "q": -3 },
+    { "id": "r3", "q": -3 },
+    { "id": "r4", "q": 3 }
+  ]
+}

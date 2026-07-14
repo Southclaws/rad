@@ -1,0 +1,33 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "join_dup_output",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "l": { "kind": "scan", "table": "items", "scope": "l" },
+            "r": { "kind": "scan", "table": "items", "scope": "r" },
+            "joined": {
+              "kind": "join",
+              "left": "l",
+              "right": "r",
+              "join": "inner",
+              "on": { "kind": "lit", "value": true }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "joined",
+              "terms": [
+                { "expr": { "kind": "col", "scope": "l", "column": "id" } },
+                { "expr": { "kind": "col", "scope": "r", "column": "id" } }
+              ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "invalid", "contains": "duplicate column" }
+}

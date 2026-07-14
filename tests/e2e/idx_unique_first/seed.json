@@ -1,0 +1,7 @@
+[
+  { "table": "users", "rows": [
+    { "id": "u1", "email": "ada@x.com", "name": "Ada" },
+    { "id": "u2", "email": "bob@x.com", "name": "Bob" },
+    { "id": "u3", "email": "cy@x.com", "name": "Cy" }
+  ] }
+]

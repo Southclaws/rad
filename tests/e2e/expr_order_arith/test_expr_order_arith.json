@@ -1,0 +1,28 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "by_sum",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "o": { "kind": "order", "input": "t", "terms": [
+              { "expr": { "kind": "binary", "op": "add",
+                "left":  { "kind": "col", "scope": "t", "column": "a" },
+                "right": { "kind": "col", "scope": "t", "column": "b" } } }
+            ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "n2", "a": 1, "b": 1 },
+    { "id": "n5", "a": 0, "b": 2 },
+    { "id": "n3", "a": 5, "b": 0 },
+    { "id": "n1", "a": 3, "b": 4 },
+    { "id": "n4", "a": 2, "b": 5 }
+  ]
+}

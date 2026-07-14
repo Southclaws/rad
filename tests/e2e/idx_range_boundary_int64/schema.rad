@@ -1,0 +1,9 @@
+# probe_idx_boundary — boundary values on an int64 index, including negatives
+# (sign-flip encoding), exact endpoints, and one-past-the-end empty ranges.
+tables:
+  - name: t
+    columns:
+      - { name: id, type: string, pk: true }
+      - { name: n,  type: int64 }
+    indexes:
+      - { columns: [n] }

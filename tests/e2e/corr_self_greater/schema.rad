@@ -1,0 +1,8 @@
+# self-correlation: each item embeds the array of OTHER items with a strictly
+# greater value. Inner scan is the SAME table as the outer, correlated by an
+# inequality (general correlation, per-row fallback).
+tables:
+  - name: items
+    columns:
+      - { name: id,    type: string, pk: true }
+      - { name: value, type: int64 }

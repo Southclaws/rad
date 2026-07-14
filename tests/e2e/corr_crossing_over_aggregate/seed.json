@@ -1,0 +1,18 @@
+[
+  {
+    "table": "parents",
+    "rows": [
+      { "id": "P1" },
+      { "id": "P2" }
+    ]
+  },
+  {
+    "table": "children",
+    "rows": [
+      { "id": "c1", "parent_id": "P1", "category": "A" },
+      { "id": "c2", "parent_id": "P1", "category": "A" },
+      { "id": "c3", "parent_id": "P1", "category": "B" },
+      { "id": "c4", "parent_id": "P2", "category": "A" }
+    ]
+  }
+]

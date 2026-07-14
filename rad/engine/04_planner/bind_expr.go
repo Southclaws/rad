@@ -83,6 +83,9 @@ func (b *binder) bindExpr(e lir.Expr) (bound.Expr, error) {
 		if !rel.Card().AtMostOne() && !bound.Ordered(rel) {
 			return nil, reject.Inputf("planner: first over an unordered multi-row relation would make results depend on the access path — add an order or make the relation at-most-one")
 		}
+		if err := requireUniqueOutput(rel, "first crossing output"); err != nil {
+			return nil, err
+		}
 		return bound.NewFirst(rel), nil
 
 	case lir.Scalar:
@@ -102,6 +105,9 @@ func (b *binder) bindExpr(e lir.Expr) (bound.Expr, error) {
 		}
 		if !bound.Ordered(rel) {
 			return nil, reject.Inputf("planner: array over an unordered relation would make observable collection order depend on the access path — add an order")
+		}
+		if err := requireUniqueOutput(rel, "array crossing output"); err != nil {
+			return nil, err
 		}
 		return bound.NewArray(rel), nil
 

@@ -1,0 +1,5 @@
+tables:
+  - name: items
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: code, type: string, nullable: true, unique: true }
