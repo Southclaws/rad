@@ -35,6 +35,8 @@ import (
 	"strings"
 	"testing"
 
+	"sort"
+
 	radclient "github.com/Southclaws/rad/rad/client"
 	"github.com/Southclaws/rad/rad/engine/01_kv/kvslate"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
@@ -172,22 +174,90 @@ func (tb *TableBuilder) Create() {
 // Row is one row of seed data, keyed by column name.
 type Row = map[string]any
 
-// Insert seeds rows through the real client, so values coerce exactly as an
-// application's writes would. All rows commit in one transaction — one
-// storage flush per call, which is what keeps a thousand-test suite fast.
+// Insert seeds rows through the real client as one execution program: a
+// single create statement whose input is a literal `rows` relation. Values
+// coerce exactly as an application's writes would, and the whole batch
+// commits in one transaction — one storage flush per call, which keeps a
+// thousand-test suite fast, and it exercises the intended batch-create path.
 func (d *DB) Insert(table string, rows ...Row) {
 	d.T.Helper()
-	err := d.Client.Txn(d.ctx, func(tx *radclient.Tx) error {
-		for _, r := range rows {
-			if _, err := tx.Create(d.ctx, table, r); err != nil {
-				return fmt.Errorf("insert into %q: %w (row: %v)", table, err, r)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		d.T.Fatalf("harness: %v", err)
+	if len(rows) == 0 {
+		return
 	}
+	tbl, ok, err := d.Cat.GetTable(d.ctx, table)
+	if err != nil || !ok {
+		d.T.Fatalf("harness: insert into %q: table not found (%v)", table, err)
+	}
+
+	// Group rows by the exact set of columns they provide: a `rows` relation
+	// is positional, and a create applies defaults for whatever columns the
+	// relation omits, so rows that omit different columns need different
+	// statements. Within a group every row supplies the same columns.
+	sigs, groups := groupBySignature(rows)
+	stmts := make([]protocol.Statement, len(sigs))
+	for gi, sig := range sigs {
+		grp := groups[sig]
+		names := grp.names
+		cols := make([]protocol.RowsColumn, len(names))
+		for i, name := range names {
+			col, ok := tbl.Column(name)
+			if !ok {
+				d.T.Fatalf("harness: insert into %q: no column %q", table, name)
+			}
+			cols[i] = protocol.RowsColumn{Name: name, Type: string(col.Type), Nullable: col.Nullable}
+		}
+		cells := make([][]any, len(grp.rows))
+		for i, r := range grp.rows {
+			cell := make([]any, len(names))
+			for j, name := range names {
+				cell[j] = r[name]
+			}
+			cells[i] = cell
+		}
+		rel := protocol.Query{
+			Nodes: map[string]protocol.Node{
+				"r": {Kind: "rows", Scope: "r", Columns: cols, Rows: cells},
+			},
+			Root: protocol.Root{Node: "r", Cardinality: "many"},
+		}
+		stmts[gi] = protocol.Create(fmt.Sprintf("seed%d", gi), table, rel)
+	}
+
+	prog := protocol.Program{Statements: stmts}
+	if len(stmts) > 1 {
+		prog.Result = stmts[len(stmts)-1].Name
+	}
+	if _, err := d.Client.Execute(d.ctx, prog); err != nil {
+		d.T.Fatalf("harness: insert into %q: %v", table, err)
+	}
+}
+
+type seedGroup struct {
+	names []string
+	rows  []Row
+}
+
+// groupBySignature buckets rows by their sorted column set, preserving
+// first-seen order of the signatures for deterministic statement order.
+func groupBySignature(rows []Row) ([]string, map[string]*seedGroup) {
+	var order []string
+	groups := map[string]*seedGroup{}
+	for _, r := range rows {
+		names := make([]string, 0, len(r))
+		for name := range r {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		sig := strings.Join(names, ",")
+		g, ok := groups[sig]
+		if !ok {
+			g = &seedGroup{names: names}
+			groups[sig] = g
+			order = append(order, sig)
+		}
+		g.rows = append(g.rows, r)
+	}
+	return order, groups
 }
 
 // ── querying ────────────────────────────────────────────────────────────────
@@ -205,11 +275,15 @@ type Result struct {
 	Err     error
 }
 
-// Query runs a raw LIR query through the client and returns its Result for
-// assertion chaining.
+// Query runs a raw LIR query as a one-statement execution program and returns
+// its Result for assertion chaining.
 func (d *DB) Query(q protocol.Query) *Result {
 	d.T.Helper()
-	datum, err := d.Client.QueryDatum(d.ctx, q)
+	var datum any
+	res, err := d.Client.Execute(d.ctx, protocol.QueryProgram(q))
+	if err == nil {
+		datum = res.Result
+	}
 	r := &Result{T: d.T, Query: q, Datum: datum, Err: err}
 	if err == nil {
 		switch v := datum.(type) {
