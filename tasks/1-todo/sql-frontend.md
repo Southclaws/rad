@@ -1,13 +1,17 @@
 # ADR: a SQL frontend that compiles to LIR+PIR
 
-Status: proposed, not scheduled — a proof-of-concept design, no code yet.
-Two-phase plan settled (2026-07-14): **phase 1**, SQLite dialect via
-vendored `rqlite/sql`, a client-side text-compile POC proving the AST→IR
-mapping layer; **phase 2**, Postgres dialect via `pgplex/pgparser` plus a
-real `psql-wire`-based wire-protocol frontend, so unmodified Postgres
-clients/ORMs/test suites can hit Rad directly — the actually-valuable
-battle-testing end state. See "Alternative: Postgres dialect and wire
-protocol" for the phase-2 research and rationale.
+Status: proposed, not scheduled — a proof-of-concept/prototype, no code
+yet, and nothing here is set in stone. Rough sequencing (2026-07-14):
+**phase 1**, SQLite dialect via vendored `rqlite/sql`, a client-side
+text-compile POC proving the AST→IR mapping layer; **phase 2**, Postgres
+dialect via `pgplex/pgparser` plus a real `psql-wire`-based wire-protocol
+frontend, so unmodified Postgres clients/ORMs/test suites can hit Rad
+directly. See "Alternative: Postgres dialect and wire protocol" for the
+phase-2 research. How phase 2 is actually deployed — embedded in Rad's own
+server, or a standalone layer/service in front of it translating wire
+protocol to Rad's existing API — is deliberately undecided; this is
+experimental, and what matters right now is getting the SQL→IR
+compiler itself working, not settling the surrounding architecture.
 
 ## Context
 
@@ -76,9 +80,11 @@ front of the existing client, not a new capability of the engine.
   Anything relying on that looseness won't compile, by design.
 - **Not a new public interface — for phase 1.** No new HTTP endpoint, no
   OpenAPI surface, no generated-client integration; it's a Go package in
-  the repo for experimentation. This is deliberately superseded in phase 2
-  ("Alternative: Postgres dialect and wire protocol" below), where a real
-  wire-protocol server *is* the point.
+  the repo for experimentation. Phase 2 (a wire-protocol frontend, see
+  "Alternative: Postgres dialect and wire protocol" below) does put
+  something SQL-speaking in front of Rad, likely as its own separate
+  layer rather than Rad's server itself — but even that's not decided; it's
+  a prototype, not a product commitment.
 - **Not transaction/session SQL.** No `BEGIN`/`COMMIT`/`SAVEPOINT`, no
   `PRAGMA`, no `SET`. PIR's atomicity model (a whole `Program` is the
   transaction) has no SQL-session equivalent to map onto, and session
@@ -490,29 +496,26 @@ more syntax around the same missing-LIR-primitive edges (e.g. Postgres's
 richer `CASE`/window/array-operator surface hits the same "LIR doesn't
 have this yet" ceiling, just with more syntax pointing at it).
 
-### Decision: both, staged
+### Sequencing: both, staged — but not set in stone
 
-This was a real scope decision, not a drop-in parser swap — a
-wire-protocol frontend is a new server mode, which cuts directly against
-this ADR's original non-goal ("not a new public interface"), and is a
-materially bigger commitment than the SQLite POC (real Postgres-grammar
-fidelity plus weeks of protocol work, versus days of mapping a narrow
-subset behind our own function call).
-
-Settled: **both, staged.** Phase 1 ships the SQLite/`rqlite/sql`
-text-compile POC first — it's cheap, and it's what proves the AST→IR
-mapping layer (`rad/sql/bind`, `rad/sql/compile`) actually works before any
+This whole project is a POC/prototype: the point is proving the
+implementation works, not locking down an architecture around it.
+Sequencing, loosely: phase 1 ships the SQLite/`rqlite/sql` text-compile
+POC first — it's cheap, and it's what proves the AST→IR mapping layer
+(`rad/sql/bind`, `rad/sql/compile`) actually works before any
 protocol-level investment. Phase 2 is Postgres dialect (`pgplex/pgparser`)
 plus a `psql-wire` frontend, reusing phase 1's `bind`/`compile` layers
-essentially unchanged (see "What stays the same either way" above) — this
-is the actually-valuable end state, and it explicitly supersedes the "not
-a new public interface" non-goal for phase 2 specifically: a wire-protocol
-server *is* a new public interface, deliberately, because that's the point
-of building it. The non-goal still holds for phase 1 as written — the
-SQLite POC stays an internal package with no server exposure.
+essentially unchanged (see "What stays the same either way" above).
 
-Phase 2 is not scheduled by this ADR; it's the acknowledged next step once
-phase 1 proves the mapping layer out.
+What phase 2 actually *is* — embedded into Rad's own server process, or a
+separate standalone service/proxy sitting in front of Rad that speaks
+Postgres wire protocol on one side and Rad's existing client/HTTP API on
+the other — is explicitly undecided, and not worth deciding yet. A
+separate front-facing layer is the more likely shape (keeps Rad's own
+server untouched, the wire-protocol piece can be thrown away or rewritten
+freely), but that's a guess, not a commitment. Revisit once phase 1 exists
+and phase 2 is actually being built — the implementation is what matters
+right now.
 
 ## Risks / open questions
 
