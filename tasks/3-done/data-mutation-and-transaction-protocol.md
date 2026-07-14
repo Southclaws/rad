@@ -1,17 +1,29 @@
 # Execution programs (PIR): data mutation and the transaction protocol
 
-Status: BUILT (2026-07-14) — stages 1–6 shipped; stage 7 (deleting the
-legacy endpoints) is intentionally held, see "Cutover" below. PIR is the
-canonical execution model: `POST /execute` runs programs of query, create,
-update, and delete statements; the whole battle-test corpus runs through
-it. The prior revisions (incremental CRUD hardening → the execution-programs
-ADR → the design review that settled the open questions) are folded in
-below as the design record. The layer's name: **PIR — Program Intermediate
-Representation**. Grounding notes are marked ▸.
+Status: DONE (2026-07-14) — all seven stages shipped. **`POST /execute` is
+the only data-plane endpoint**: programs of query, create, update, and
+delete statements. The legacy row-CRUD, `/query`, and `/tx` families,
+server sessions, and interactive transactions are deleted; the generated
+Go and TS clients, the harness, the whole battle-test corpus, and both
+demos run through PIR with no compatibility aliases. The prior revisions
+(incremental CRUD hardening → the execution-programs ADR → the design
+review) are folded in below as the design record. The layer's name:
+**PIR — Program Intermediate Representation**. Grounding notes are marked ▸.
 
 Landed across commits: `1110033` (rows prerequisite), `1f7e1b7` (stage 2
 spec), stages 3–4 (planning + binding scope + /execute), stage 5 (mutation
-execution), stage 6 (harness + corpus on /execute).
+execution), stage 6 (harness + corpus on /execute), stage 6–7 cutover
+(clients on /execute, legacy surface deleted).
+
+▸ Capability note from the cutover: deleting `/tx` removed interactive
+transactions, and with them two things the demos showcased — atomic
+multi-write via a held session and optimistic conflict/retry across a
+read-decide-write. Create-chains keep atomicity by becoming one program
+(statement-result refs); genuinely interactive read-decide-write does not,
+and now spans multiple `/execute` calls (non-atomic). If a real workflow
+needs a held snapshot across application logic, the ADR reserves the right
+to reintroduce a narrow interactive transaction — that decision now lives
+with the generated-client ergonomics work (generated-clients-rethink.md).
 
 ## The kernel (normative)
 
@@ -367,42 +379,38 @@ constant satisfies `first` with no order.
 4. Query statements through /execute.                              DONE
 5. Create/update/delete statements through /execute.               DONE
 6. Route the harness (and the whole corpus) through /execute.      DONE
-7. Delete old endpoints, explicit transactions, sessions.          HELD
+7. Delete old endpoints, explicit transactions, sessions.          DONE
 ```
 
 Each stage was testable without maintaining public compatibility;
-`task test` green throughout, `task demo` / `task demo:ts` still run.
+`task test` green throughout, `task demo` / `task demo:ts` run end to end.
 
-▸ **Why stage 7 is held (a finding from building 6).** Deleting the CRUD
-and `/tx` endpoints turns out to be entangled with the deferred
-generated-client rethink, and one assumption behind "delete `/tx`" did not
-survive contact with the demo:
+▸ **How the client cutover landed (stage 6–7).** The generated Go and TS
+clients ride a small `View` surface (query/get/create/update/delete), so
+the ~7500-line generated files barely changed — the port lives in the
+radclient runtime and the two code generators:
 
-- **Typed single-row CRUD → PIR needs schema at the client.** A
-  create/update/delete becomes a program with a `rows`/PK relation whose
-  columns are *typed*. The generated client knows its schema (typed
-  structs) and can build that; the hand-written `radclient.Create(map)`
-  cannot without a schema round-trip. So migrating CRUD off `/create`,
-  `/update`, `/delete` is properly the generated-client rethink's job —
-  the client that has the types. The harness could move (it holds the
-  catalog), and did; the generic client cannot, cleanly.
-- **Read-branch-write is a genuine interactive transaction.** The demo
-  does `tx.Get(id)` then branches in Go on the value before writing, in
-  one atomic transaction. That is application work *between* statements on
-  a held snapshot — exactly the case the ADR reserves interactive
-  transactions for. It is not expressible as one submit-once program, so
-  `/tx` is not purely legacy to be deleted; part of it is the sanctioned
-  interactive surface. (Create-chains that only feed generated ids
-  forward — `tx.Teams.Create` → `tx.Boards.Create(team.ID)` — *are*
-  expressible as a program via statement-result refs; those migrate with
-  the client rethink. Read-branch-write does not.)
+- **Autocommit as one-statement programs.** `radclient` reimplements each
+  operation over `/execute`. Reads and deletes need no schema (scan /
+  filter / project). Create and update build typed `rows` relations from a
+  lazily-cached catalog — a cleared column is a typed NULL, which a bare
+  literal cannot express — and a missing update target maps back to
+  `found=false` to preserve the point-update contract.
+- **Interactive transactions removed.** `Tx`/`Begin`/`Txn` are gone from
+  the runtime and both generators. Create-chains keep atomicity by becoming
+  one program (statement-result refs: `Create teams` → `Create boards`
+  refs the team). The two things that genuinely needed a held session —
+  atomic read-decide-write and optimistic conflict/retry — are no longer
+  offered; the demos were rewritten to sequential autocommit and
+  read-decide-write across calls, and both run.
+- **A parity bug fixed in passing:** the TS query builder's `all()` now
+  defaults the primary-key order like Go's, which the enforced-ordering
+  rule had exposed.
 
-So the legacy endpoints remaining are not compatibility shims: they are
-the live surface the generated clients still speak, pending the rethink
-that gives typed clients a program-building API (and settles which
-interactive-transaction subset survives). The deletion moves there:
-tasks/1-todo/generated-clients-rethink.md. Nothing new depends on the old
-endpoints — new work targets `/execute`.
+The remaining ergonomics question — a first-class program-building client
+API, and whether to reintroduce a narrow interactive transaction for
+read-decide-write — lives in tasks/1-todo/generated-clients-rethink.md.
+`/execute` is the one data-plane entry; nothing speaks the old endpoints.
 
 - Devtool UI/keydecode are read-path, untouched; the catalog API
   (direct-catalog-mode) is control-plane, untouched.

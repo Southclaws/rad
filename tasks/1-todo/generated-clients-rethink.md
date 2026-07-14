@@ -1,48 +1,39 @@
-# Rethink the generated-client world (and finish the PIR cutover)
+# Rethink the generated-client world
 
-Status: ready — unblocked. PIR shipped (stages 1–6 of
-data-mutation-and-transaction-protocol.md): `/execute` is the canonical
-execution path and the whole battle corpus runs through it. The generated
-clients still speak the legacy CRUD + `/tx` endpoints, which is why those
-endpoints remain. This task migrates them and then deletes the legacy
-surface — PIR-cutover stage 7 lives here, because it turned out to be a
-client-model change, not an endpoint deletion.
+Status: ready. The PIR cutover is DONE
+(tasks/3-done/data-mutation-and-transaction-protocol.md): `/execute` is the
+only data endpoint, the legacy CRUD + `/tx` surface is deleted, and the
+generated Go and TS clients already run entirely over `/execute`
+(autocommit single-statement programs, no interactive transactions). So the
+*deletion* this task once owned is done. What remains is ergonomics —
+making the program model first-class rather than one-statement-at-a-time —
+and the interactive-transaction decision.
 
 The rethink owns:
 
-- **The program-construction model.** A typed client builds a PIR program
-  and submits it once; the callback is *construction*, not live
-  interaction. Create-chains work through statement-result refs
-  (`tx.Teams.Create` → `tx.Boards.Create(team.ID)` becomes a create
-  statement whose input refs the team statement). The name/shape
-  (`Program` / `Atomic` / `Execute`? is a callback even right?) is part of
-  this.
-- **Typed single-row CRUD → PIR.** The generated client knows its schema,
-  so it can build the typed `rows`/PK relations a create/update/delete
-  program needs — the thing the hand-written `radclient.Create(map)`
-  cannot do without a schema round-trip. This is what lets `/create`,
-  `/update`, `/delete` be deleted.
-- **Which interactive-transaction subset survives.** Read-branch-write
-  (read a value, branch in application code, then write, atomically) is a
-  genuine interactive case the ADR reserves `/tx` for — it is not a
-  submit-once program. Decide whether the client keeps a thin interactive
-  transaction for it or the pattern moves to multiple `/execute` calls.
-  Only once that is settled can the `/tx` tree + `sessions.go` be deleted
-  (or deliberately kept as the minimal interactive surface).
-- How typed table handles compose with programs, statement-result
-  bindings, and the `rows` constant relation (bulk input ergonomics).
+- **A first-class program-building API.** Today each generated call is a
+  separate one-statement `/execute` program (autocommit), so a multi-write
+  workflow is several round-trips and loses cross-write atomicity. The
+  rethink gives the client a way to *build one program* — several
+  statements, submitted once, atomic — with create-chains expressed through
+  statement-result refs (`teams.Create` → `boards.Create` referencing the
+  team statement's result relation, not a Go value). The shape and name
+  (`Program` / `Atomic` / builder vs callback — and note a callback is
+  construction, not live interaction, so it cannot branch on results) is
+  the core question.
+- **Whether to reintroduce a narrow interactive transaction.** The cutover
+  deleted `/tx`, which removed atomic read-decide-write and optimistic
+  conflict/retry across application logic (the demos' old showcase). Those
+  are genuine interactive cases the ADR reserves the right to bring back.
+  Decide: express them as a single program where possible (a conditional
+  update whose input filters relationally), accept multiple non-atomic
+  `/execute` calls, or reintroduce a minimal server-held transaction for
+  the read-decide-write case — and if so, on what contract.
+- **Bulk-input ergonomics**: how typed table handles compose with the
+  `rows` constant relation for batch create/update, and with
+  statement-result bindings.
 - Go/TS parity, and whatever `rad schema pull`-driven generation implies
   for direct-mode databases (tasks/3-done/direct-catalog-mode.md).
 
-## The deletion, once the clients migrate
-
-- `radclient` autocommit CRUD and the `oas` operations `RowCreate`,
-  `RowUpdate`, `RowDelete`, `Query`; the `/create`, `/update`, `/delete`,
-  `/query` paths.
-- The `/tx` tree + `rad/server/api/sessions.go` — unless a read-branch-
-  write interactive transaction is deliberately kept.
-- dbserver_test's transaction cases become program cases.
-- No compatibility aliases; `/execute` is the one data-plane entry.
-
-Related: tasks/1-todo/data-mutation-and-transaction-protocol.md (PIR, done),
+Related: tasks/3-done/data-mutation-and-transaction-protocol.md (PIR, done),
 tasks/3-done/direct-catalog-mode.md.
