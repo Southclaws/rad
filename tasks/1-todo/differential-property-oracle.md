@@ -298,19 +298,38 @@ Route each failure to the abstraction boundary it broke, rather than one giant
 ## Sequence
 
 1. Keep expanding explicit conformance fixtures (ongoing, orthogonal).
-2. Promote `interp` → `rad/engine/refexec.Interpret`; rewrite
-   `TestReferenceInterpreter` to use it. No behaviour change.
-3. Add the enumerated 3VL truth-table test (cheap, independent, high value).
-4. Typed schema-aware generator + catalog generator, starting tiny
-   (scan/filter/project/order/slice) then joins (auto-projected) → aggregates →
-   crossings/correlation → bindings.
-5. `TestGeneratedDifferential` (Case/Oracle/Features) wiring the generator to
-   the reference-interpreter differential + path-independence + batched≡nested;
-   seed-logged, reproducible.
+2. ✅ Promote `interp` → `rad/engine/05_exec/refexec.Interpret`; rewrite
+   `TestReferenceInterpreter` to use it. No behaviour change. (commit 2e5fa84)
+3. ✅ Enumerated 3VL + scalar-edge tests in `bound` — closes the shared-eval
+   hole (arithmetic overflow, cast range, comparison matrix). (commit 5d2ef05)
+4. ⏳ Typed schema-aware generator + catalog generator. **Done:** scan / filter /
+   project / order / join (auto-flattened to unique names) / aggregate, over
+   generated multi-table catalogs with nullable cols, nullable FKs, and
+   non-unique secondary indexes; typed literals; seed-logged. **Remaining:**
+   crossings / correlation, bindings/refs, slice (needs unique-key order for a
+   deterministic window).
+5. ⏳ `TestGeneratedDifferential` wiring the generator to the reference-
+   interpreter differential **and** path-independence (chosen vs full-scan),
+   comparing as multisets; all-succeed-or-all-fail contract; env-tunable
+   `RAD_GEN_SEEDS`, parallel subtests. (in `generate_test.go`) **Remaining:**
+   batched≡nested (arrives with crossings); the Case/Oracle/Features struct
+   (deferred until a third oracle exists — YAGNI for two paths).
 6. Shrinking + automatic `tests/e2e` fixture emission.
 7. Metamorphic rewrites (filter/project/join/aggregate/slice/binding identities).
 8. Later: reuse the machinery for optimiser-rule equivalence and
    [[recursive-queries]]; [[sql-frontend]] differential if ever wanted.
+
+### Current status (2026-07-14)
+
+Steps 2–3 done; step 4/5 landed as an MVP that already exercises the relational
+layer end to end across chosen-plan / full-scan / interpreter, and holds over
+hundreds of random seeds. The generator does not yet emit crossings or
+bindings, so **correlation is not yet under random test** (it has strong
+example coverage from the `corr_*` fixtures). Multiset comparison means the
+generator does not check ordering (covered by conformance fixtures +
+path-independence on ordered queries). Those two — crossings/correlation and a
+sequence-comparing ordered mode — are the highest-value next increments, then
+shrinking and metamorphic.
 
 ## Risks / honest critique (fold into sequencing)
 
