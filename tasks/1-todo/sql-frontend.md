@@ -1,11 +1,13 @@
 # ADR: a SQL frontend that compiles to LIR+PIR
 
 Status: proposed, not scheduled — a proof-of-concept design, no code yet.
-SQLite-dialect parser research is done (`rqlite/sql`, vendored). A second
-track has since opened — Postgres dialect + a real wire-protocol frontend
-— researched below (see "Alternative: Postgres dialect and wire
-protocol"); which track(s) to actually build is an open decision, not yet
-made.
+Two-phase plan settled (2026-07-14): **phase 1**, SQLite dialect via
+vendored `rqlite/sql`, a client-side text-compile POC proving the AST→IR
+mapping layer; **phase 2**, Postgres dialect via `pgplex/pgparser` plus a
+real `psql-wire`-based wire-protocol frontend, so unmodified Postgres
+clients/ORMs/test suites can hit Rad directly — the actually-valuable
+battle-testing end state. See "Alternative: Postgres dialect and wire
+protocol" for the phase-2 research and rationale.
 
 ## Context
 
@@ -72,9 +74,11 @@ front of the existing client, not a new capability of the engine.
   coercions, etc.) is a known wart, not a feature to replicate — Rad's
   columns are strictly typed and that stays true through this frontend.
   Anything relying on that looseness won't compile, by design.
-- **Not a new public interface.** No new HTTP endpoint, no OpenAPI surface,
-  no generated-client integration. It's a Go package in the repo for
-  experimentation; whether/how it's exposed is a later decision.
+- **Not a new public interface — for phase 1.** No new HTTP endpoint, no
+  OpenAPI surface, no generated-client integration; it's a Go package in
+  the repo for experimentation. This is deliberately superseded in phase 2
+  ("Alternative: Postgres dialect and wire protocol" below), where a real
+  wire-protocol server *is* the point.
 - **Not transaction/session SQL.** No `BEGIN`/`COMMIT`/`SAVEPOINT`, no
   `PRAGMA`, no `SET`. PIR's atomicity model (a whole `Program` is the
   transaction) has no SQL-session equivalent to map onto, and session
@@ -368,6 +372,11 @@ mapping-level ones.
    trip needed to validate correctness at this stage.
 6. **Differential-test against real SQLite** (see Verification) — the
    actual proof this is worth anything beyond "it parses."
+7. **(Phase 2, once 1-6 land)** Swap `rad/sql/parse` to vendor
+   `pgplex/pgparser` instead of `rqlite/sql`, re-verify `bind`/`compile`
+   against it (Postgres grammar differences will surface real gaps), then
+   build the `psql-wire`-based server frontend around the same compiler —
+   see "Alternative: Postgres dialect and wire protocol."
 
 ## Verification: a real oracle, not just planner tests
 
@@ -481,33 +490,29 @@ more syntax around the same missing-LIR-primitive edges (e.g. Postgres's
 richer `CASE`/window/array-operator surface hits the same "LIR doesn't
 have this yet" ceiling, just with more syntax pointing at it).
 
-### The actual fork
+### Decision: both, staged
 
-This is a real scope decision, not a drop-in parser swap, for two reasons:
+This was a real scope decision, not a drop-in parser swap — a
+wire-protocol frontend is a new server mode, which cuts directly against
+this ADR's original non-goal ("not a new public interface"), and is a
+materially bigger commitment than the SQLite POC (real Postgres-grammar
+fidelity plus weeks of protocol work, versus days of mapping a narrow
+subset behind our own function call).
 
-1. **A wire-protocol frontend is a new server mode**, which cuts directly
-   against this ADR's stated non-goal ("not a new public interface"). That
-   non-goal was written for a SQL-text-compile library; it may not be the
-   right constraint anymore if the wire-protocol path is what's wanted.
-2. **It's a materially bigger and more valuable commitment** than the
-   SQLite POC — real Postgres-grammar fidelity plus weeks of protocol work,
-   versus days of mapping a narrow SQL subset a caller already has to
-   invoke through our own function.
+Settled: **both, staged.** Phase 1 ships the SQLite/`rqlite/sql`
+text-compile POC first — it's cheap, and it's what proves the AST→IR
+mapping layer (`rad/sql/bind`, `rad/sql/compile`) actually works before any
+protocol-level investment. Phase 2 is Postgres dialect (`pgplex/pgparser`)
+plus a `psql-wire` frontend, reusing phase 1's `bind`/`compile` layers
+essentially unchanged (see "What stays the same either way" above) — this
+is the actually-valuable end state, and it explicitly supersedes the "not
+a new public interface" non-goal for phase 2 specifically: a wire-protocol
+server *is* a new public interface, deliberately, because that's the point
+of building it. The non-goal still holds for phase 1 as written — the
+SQLite POC stays an internal package with no server exposure.
 
-Three shapes this could take, not yet decided:
-
-- **Both, staged**: ship the SQLite/`rqlite/sql` text-compile POC first
-  (proves the AST→IR mapping layer at all, cheaply), then Postgres dialect
-  (`pgplex/pgparser`) + `psql-wire` as the real follow-on target, reusing
-  the same `bind`/`compile` layers essentially unchanged.
-- **Pivot straight to Postgres**: skip the SQLite POC; go directly for
-  `pgplex/pgparser` + a `psql-wire` frontend as the only target, since
-  that's the actually-valuable end state and the SQLite POC would be
-  throwaway effort relative to it.
-- **Keep SQLite-only, drop the wire-protocol idea**: stay inside the
-  original non-goals (no new public interface, narrow experimentation
-  scope); treat Postgres-wire as a separate future ADR if it's ever
-  pursued on its own merits.
+Phase 2 is not scheduled by this ADR; it's the acknowledged next step once
+phase 1 proves the mapping layer out.
 
 ## Risks / open questions
 
