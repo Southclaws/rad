@@ -1,0 +1,38 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "i": { "kind": "scan", "table": "items", "scope": "i" },
+            "si": { "kind": "scan", "table": "items", "scope": "si" },
+            "sub": {
+              "kind": "filter", "input": "si",
+              "predicate": { "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "si", "column": "id" },
+                "right": { "kind": "col", "scope": "i", "column": "ref" } }
+            },
+            "agg": { "kind": "aggregate", "input": "sub", "scope": "g",
+              "aggs": [ { "fn": "count", "as": "n" } ] },
+            "proj": {
+              "kind": "project", "input": "i", "scope": "p",
+              "fields": [
+                { "as": "id", "expr": { "kind": "col", "scope": "i", "column": "id" } },
+                { "as": "n", "expr": { "kind": "scalar", "node": "agg" } }
+              ]
+            },
+            "ord": { "kind": "order", "input": "proj",
+              "terms": [ { "expr": { "kind": "col", "scope": "p", "column": "id" } } ] }
+          },
+          "root": { "node": "ord", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "i1", "n": 0 },
+    { "id": "i2", "n": 1 }
+  ]
+}

@@ -253,8 +253,64 @@ func (g *gen) genQuery() lir.Query {
 			fields = append(fields, lir.ProjField{As: g.field(), Expr: qcol(s.name, c.name)})
 		}
 	}
+	// Optionally attach correlated crossings (includes / correlated folds) to
+	// the output. Their sub-relations reference the visible scopes, so this
+	// exercises correlation — and because the reference interpreter evaluates
+	// crossings per-row nested while the engine batches them, the differential
+	// is also the batched-≡-nested check.
+	for k := 0; k < g.rng.Intn(3); k++ {
+		fields = append(fields, g.genCrossingField(scopes))
+	}
 	flat := lir.Project{Input: rel, Scope: g.fresh(), Fields: fields}
 	return many(flat)
+}
+
+// genCrossingField builds one output field whose value is a crossing over a
+// sub-relation correlated with the visible outer scopes: exists (bool), a
+// correlated count (scalar), the first matching row (object|null), or all
+// matching rows (array, ordered by the child's unique id so engine and
+// interpreter agree on element order).
+func (g *gen) genCrossingField(outer []genScope) lir.ProjField {
+	sub, subScope := g.genCorrelatedSub(outer)
+	switch g.rng.Intn(4) {
+	case 0:
+		return lir.ProjField{As: g.field(), Expr: lir.Exists{Rel: sub}}
+	case 1:
+		agg := lir.Aggregate{Input: sub, Terms: []lir.AggTerm{{Fn: lir.AggCount, As: "n"}}}
+		return lir.ProjField{As: g.field(), Expr: lir.Scalar{Rel: agg}}
+	case 2:
+		ord := lir.Order{Input: sub, Terms: []lir.OrderTerm{{Expr: qcol(subScope, "id")}}}
+		return lir.ProjField{As: g.field(), Expr: lir.First{Rel: ord}}
+	default:
+		ord := lir.Order{Input: sub, Terms: []lir.OrderTerm{{Expr: qcol(subScope, "id")}}}
+		return lir.ProjField{As: g.field(), Expr: lir.Array{Rel: ord}}
+	}
+}
+
+// genCorrelatedSub builds a filtered scan correlated with an outer scope: a
+// fresh scan whose filter compares one of its columns to an outer column of
+// the same type. Every table has a text "id", and every outer scope has a text
+// column, so a correlation is always available. Equality biases toward the
+// key-correlated (batched) path; a range makes it general correlation.
+func (g *gen) genCorrelatedSub(outer []genScope) (lir.Relation, string) {
+	tbl := g.cat.tables[g.rng.Intn(len(g.cat.tables))]
+	scope := g.fresh()
+	sub := []genScope{{name: scope, cols: tbl.cols}}
+
+	var corr lir.Expr = qlit(true)
+	for _, typ := range shuffle(g.rng, scalarTypes) {
+		sc, ss, sok := g.pickCol(sub, []catalog.Type{typ})
+		oc, os, ook := g.pickCol(outer, []catalog.Type{typ})
+		if sok && ook {
+			op := lir.OpEq
+			if typ != catalog.TypeBool && g.rng.Intn(3) == 0 {
+				op = []lir.BinaryOp{lir.OpLt, lir.OpGt}[g.rng.Intn(2)]
+			}
+			corr = lir.Binary{Op: op, L: qcol(ss, sc.name), R: qcol(os, oc.name)}
+			break
+		}
+	}
+	return lir.Filter{Input: lir.Scan{Table: tbl.name, Scope: scope}, Pred: corr}, scope
 }
 
 func (g *gen) genRel(fuel int) (lir.Relation, []genScope) {
@@ -390,6 +446,16 @@ func (g *gen) genPred(scopes []genScope) lir.Expr {
 }
 
 func (g *gen) genAtom(scopes []genScope) lir.Expr {
+	// Occasionally a correlated EXISTS — a crossing inside a filter predicate,
+	// a distinct code path from a crossing in a projection field.
+	if g.chance(4) {
+		sub, _ := g.genCorrelatedSub(scopes)
+		e := lir.Expr(lir.Exists{Rel: sub})
+		if g.rng.Intn(2) == 0 {
+			e = lir.Unary{Op: lir.OpNot, X: e}
+		}
+		return e
+	}
 	c, s, ok := g.anyCol(scopes)
 	if !ok {
 		return qlit(true)

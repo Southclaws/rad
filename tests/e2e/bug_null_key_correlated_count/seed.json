@@ -1,0 +1,6 @@
+[
+  { "table": "items", "rows": [
+    { "id": "i1", "ref": null },
+    { "id": "i2", "ref": "i1" }
+  ] }
+]

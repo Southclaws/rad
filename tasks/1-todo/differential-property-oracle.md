@@ -321,15 +321,25 @@ Route each failure to the abstraction boundary it broke, rather than one giant
 
 ### Current status (2026-07-14)
 
-Steps 2–3 done; step 4/5 landed as an MVP that already exercises the relational
-layer end to end across chosen-plan / full-scan / interpreter, and holds over
-hundreds of random seeds. The generator does not yet emit crossings or
-bindings, so **correlation is not yet under random test** (it has strong
-example coverage from the `corr_*` fixtures). Multiset comparison means the
-generator does not check ordering (covered by conformance fixtures +
-path-independence on ordered queries). Those two — crossings/correlation and a
-sequence-comparing ordered mode — are the highest-value next increments, then
-shrinking and metamorphic.
+Steps 2–3 done; step 4/5 landed and now generates **crossings + correlation**
+too (first / array / scalar / exists in projection fields and correlated
+`exists` in predicates, key- and range-correlated). Because the reference
+interpreter evaluates crossings per-row nested while the engine batches, the
+differential is also the **batched-≡-nested** check.
+
+**First run with crossings found a real engine bug** (fixed, commit pending):
+the batched attach short-circuited a NULL correlation key to a kind-based empty
+(`null`/`[]`/`false`), which is wrong when the sub-plan is a global aggregate
+(empty input ⇒ one row, e.g. `count 0`). A correlated `scalar(count(...))` over
+a NULL key returned `null` instead of `0`. Fix: a NULL key is now an ordinary
+key group whose sub-plan runs (the residual filter drops its base matches under
+3VL, but the aggregate still folds the empty match). Captured as
+`tests/e2e/bug_null_key_correlated_count`. This is the oracle-finding →
+root-cause → fix → permanent-fixture loop working as designed.
+
+Still open: bindings/refs in the generator; a sequence-comparing ordered mode
+(multiset comparison means ordering isn't checked here — covered by conformance
+fixtures + path-independence); shrinking → auto fixture emission; metamorphic.
 
 ## Risks / honest critique (fold into sequencing)
 

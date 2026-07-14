@@ -91,24 +91,20 @@ func (o *attachOp) attach(ctx context.Context, a *planner.AttachSpec, batch []Fr
 
 		for i, in := range batch {
 			keyVals := make([]lir.Value, len(a.Corr.Keys))
-			null := false
 			for j, k := range a.Corr.Keys {
 				v, err := in.ScalarAt(k.OuterSlot, k.InnerCol, lir.Type{})
 				if err != nil {
 					return err
 				}
-				if v.Null {
-					null = true
-					break
-				}
 				keyVals[j] = v
 			}
-			if null {
-				// Equality with NULL matches nothing: the empty result,
-				// with no KV work at all.
-				batch[i][a.Slot] = emptyAttach(a)
-				continue
-			}
+			// A NULL key is just another distinct key group, not a shortcut to
+			// an empty result: the residual filter above the keyed access
+			// re-applies the correlation predicate, so a NULL key matches no
+			// base rows under 3VL — but the sub-plan still runs, so a global
+			// aggregate over that empty match yields its empty-input row (count
+			// 0, not a NULL scalar / missing first / false exists). Shortcutting
+			// to a kind-based empty here silently dropped that.
 			enc, err := EncodeTuple(keyVals)
 			if err != nil {
 				return err
@@ -206,18 +202,6 @@ func (o *attachOp) runAttach(ctx context.Context, a *planner.AttachSpec, env bou
 		return lir.ArrayDatum(elems), nil
 	}
 	return lir.Datum{}, fmt.Errorf("exec: unknown crossing %q", a.Kind)
-}
-
-// emptyAttach is the no-KV-work result for a NULL correlation key.
-func emptyAttach(a *planner.AttachSpec) lir.Datum {
-	switch a.Kind {
-	case planner.CrossExists:
-		return lir.ScalarDatum(lir.Bool(false))
-	case planner.CrossArray:
-		return lir.ArrayDatum(nil)
-	default: // scalar, first
-		return lir.NullDatum()
-	}
 }
 
 // projectOp assembles output rows from pure expressions, streaming — the
