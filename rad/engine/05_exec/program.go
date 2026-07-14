@@ -96,7 +96,12 @@ func resultStatement(prog Program) (string, error) {
 func (e *Engine) runProgram(ctx context.Context, view kv.KV, prog Program, resultName string) (ProgramResult, error) {
 	stmts := make([]planner.ProgramStmt, len(prog.Statements))
 	for i, s := range prog.Statements {
-		stmts[i] = planner.ProgramStmt{Name: s.Name, Rel: s.Rel}
+		stmts[i] = planner.ProgramStmt{
+			Name:     s.Name,
+			Rel:      s.Rel,
+			Mutation: s.Kind != StmtQuery,
+			Table:    s.Table,
+		}
 	}
 	planned, err := planner.BindProgram(ctx, catalog.NewReader(view), stmts)
 	if err != nil {
@@ -112,14 +117,14 @@ func (e *Engine) runProgram(ctx context.Context, view kv.KV, prog Program, resul
 
 	for i, bs := range planned {
 		stmt := prog.Statements[i]
-		frames, err := e.runStatement(ctx, view, stmt, bs.Plan, program)
+		frames, err := e.runStatement(ctx, view, stmt, bs, program)
 		if err != nil {
 			return ProgramResult{}, err
 		}
 		program[bs.Name] = frames
 		summary[i] = StatementResult{Name: bs.Name, Affected: len(frames)}
 		if bs.Name == resultName {
-			d, err := shapeFrames(bs.Plan.Card, bs.Plan.Out, frames)
+			d, err := shapeFrames(bs.ResultCard, bs.ResultOut, frames)
 			if err != nil {
 				return ProgramResult{}, err
 			}
@@ -134,21 +139,77 @@ func (e *Engine) runProgram(ctx context.Context, view kv.KV, prog Program, resul
 
 // runStatement evaluates one statement against the transaction view, with the
 // accumulated program results available as bindings, and returns its result
-// frames. A query returns the relation's rows; the mutation kinds apply their
-// input and return the affected rows.
-func (e *Engine) runStatement(ctx context.Context, view kv.KV, stmt ProgramStatement, plan *planner.PhysPlan, program map[string][]Frame) ([]Frame, error) {
+// frames keyed by the statement's result schema. A query returns the
+// relation's rows; a mutation evaluates its input relation, applies it as one
+// set, and returns the affected rows (created, post-image, or pre-image).
+func (e *Engine) runStatement(ctx context.Context, view kv.KV, stmt ProgramStatement, bs planner.BoundStatement, program map[string][]Frame) ([]Frame, error) {
 	ex := newExecutor(view)
 	for name, frames := range program {
 		ex.bindings[name] = frames
 	}
+	if stmt.Kind == StmtQuery {
+		return ex.runPlan(ctx, bs.Plan)
+	}
+
+	// Evaluate the input relation fully before touching storage — the
+	// statement snapshot: the mutation cannot observe its own writes.
+	inputFrames, err := ex.runPlan(ctx, bs.Plan)
+	if err != nil {
+		return nil, err
+	}
+	inputRows := framesToRows(bs.Plan.Out, inputFrames)
+
+	tbl, err := tableIn(ctx, view, stmt.Table)
+	if err != nil {
+		return nil, err
+	}
+	var affected []lir.Row
 	switch stmt.Kind {
-	case StmtQuery:
-		return ex.runPlan(ctx, plan)
-	case StmtCreate, StmtUpdate, StmtDelete:
-		return nil, reject.Inputf("exec: %s statements are not yet executable", stmt.Kind)
+	case StmtCreate:
+		affected, err = e.applyCreate(ctx, view, tbl, inputRows)
+	case StmtUpdate:
+		affected, err = e.applyUpdate(ctx, view, tbl, bs.Plan.Out, inputRows)
+	case StmtDelete:
+		affected, err = e.applyDelete(ctx, view, tbl, bs.Plan.Out, inputRows)
 	default:
 		return nil, reject.Inputf("exec: unknown statement kind %q", stmt.Kind)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return rowsToFrames(bs.ResultOut, affected), nil
+}
+
+// framesToRows lifts input frames into scalar rows keyed by column name, per
+// the input relation's schema.
+func framesToRows(out lir.RowType, frames []Frame) []lir.Row {
+	rows := make([]lir.Row, len(frames))
+	for i, f := range frames {
+		row := make(lir.Row, len(out.Fields))
+		for _, fld := range out.Fields {
+			v, err := f.ScalarAt(fld.Slot, fld.Name, fld.Type)
+			if err != nil {
+				v = lir.Null(fld.Type.Kind.CatalogType())
+			}
+			row[fld.Name] = v
+		}
+		rows[i] = row
+	}
+	return rows
+}
+
+// rowsToFrames renders result rows as frames keyed by the result schema's
+// slots, so later statements' refs remap them.
+func rowsToFrames(out lir.RowType, rows []lir.Row) []Frame {
+	frames := make([]Frame, len(rows))
+	for i, row := range rows {
+		f := newFrame(bound.Env{})
+		for _, fld := range out.Fields {
+			f.SetScalar(fld.Slot, row[fld.Name])
+		}
+		frames[i] = f
+	}
+	return frames
 }
 
 // runPlan commits the plan's local bindings and drains its root, returning

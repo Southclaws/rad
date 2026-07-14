@@ -52,49 +52,7 @@ func (b *binder) bindQuery(q lir.Query, program map[string]*bound.Binding) (*bou
 		return nil, reject.Inputf("planner: unknown root cardinality %q", q.Card)
 	}
 
-	b.labels = map[string]bool{}
-	b.scopes = b.scopes[:0]
-	b.bindings = make(map[string]*bound.Binding, len(program))
-	for name, bnd := range program {
-		b.bindings[name] = bnd
-	}
-
-	// Bindings bind first, in dependency order, each body against an empty
-	// scope stack — a binding is closed by construction: any reference to a
-	// scope outside its own tree fails to resolve. The body binds once into
-	// canonical slots; each occurrence re-exposes them under fresh slots.
-	order, err := bindingOrder(q.Bindings)
-	if err != nil {
-		return nil, err
-	}
-	bindings := make([]*bound.Binding, 0, len(order))
-	for _, name := range order {
-		// A local binding may not shadow a program (statement-result) name:
-		// resolution must never have to choose between the two.
-		if _, isProgram := program[name]; isProgram {
-			return nil, reject.Inputf("planner: binding %q shadows a statement name", name)
-		}
-		body, err := b.bindRel(q.Bindings[name])
-		b.scopes = b.scopes[:0] // interior scopes never escape the binding
-		if err != nil {
-			return nil, bindingErr(name, err)
-		}
-		// A binding's public contract is its output schema, so that schema
-		// must be well-formed: a raw join body with colliding column names
-		// has no addressable output through a single occurrence scope.
-		seen := map[string]bool{}
-		for _, f := range body.Output().Fields {
-			if seen[f.Name] {
-				return nil, reject.Inputf("planner: binding %q output has duplicate column %q — project the body to a unique set of columns", name, f.Name)
-			}
-			seen[f.Name] = true
-		}
-		bnd := &bound.Binding{Name: name, Root: body, PlanSensitive: bound.PlanSensitive(body)}
-		b.bindings[name] = bnd
-		bindings = append(bindings, bnd)
-	}
-
-	root, err := b.bindRel(q.Root)
+	root, bindings, err := b.bindBody(q, program)
 	if err != nil {
 		return nil, err
 	}
@@ -115,6 +73,74 @@ func (b *binder) bindQuery(q lir.Query, program map[string]*bound.Binding) (*bou
 	}
 
 	return &bound.Query{Root: root, Card: q.Card, Bindings: bindings, Slots: b.nextSlot}, nil
+}
+
+// bindBag binds a query's relation tree as a bag: the local bindings and the
+// root, with `program` bindings available, but none of the root-cardinality
+// shaping a query applies. A PIR mutation statement consumes its input as an
+// unordered set, so the observable-collection order rule does not apply — the
+// rows are applied, not observed in sequence. The returned Query carries
+// CardMany purely so the planner shapes it as a stream of every row.
+func (b *binder) bindBag(q lir.Query, program map[string]*bound.Binding) (*bound.Query, error) {
+	root, bindings, err := b.bindBody(q, program)
+	if err != nil {
+		return nil, err
+	}
+	return &bound.Query{Root: root, Card: lir.CardMany, Bindings: bindings, Slots: b.nextSlot}, nil
+}
+
+// bindBody is the shared core: reset the per-query scope/label/binding state
+// (keeping the slot counter), seed the program bindings for resolution, bind
+// the local bindings in dependency order, then bind the root. Cardinality
+// rules are the caller's — bindQuery applies them, bindBag does not.
+func (b *binder) bindBody(q lir.Query, program map[string]*bound.Binding) (bound.Relation, []*bound.Binding, error) {
+	b.labels = map[string]bool{}
+	b.scopes = b.scopes[:0]
+	b.bindings = make(map[string]*bound.Binding, len(program))
+	for name, bnd := range program {
+		b.bindings[name] = bnd
+	}
+
+	// Bindings bind first, in dependency order, each body against an empty
+	// scope stack — a binding is closed by construction: any reference to a
+	// scope outside its own tree fails to resolve. The body binds once into
+	// canonical slots; each occurrence re-exposes them under fresh slots.
+	order, err := bindingOrder(q.Bindings)
+	if err != nil {
+		return nil, nil, err
+	}
+	bindings := make([]*bound.Binding, 0, len(order))
+	for _, name := range order {
+		// A local binding may not shadow a program (statement-result) name:
+		// resolution must never have to choose between the two.
+		if _, isProgram := program[name]; isProgram {
+			return nil, nil, reject.Inputf("planner: binding %q shadows a statement name", name)
+		}
+		body, err := b.bindRel(q.Bindings[name])
+		b.scopes = b.scopes[:0] // interior scopes never escape the binding
+		if err != nil {
+			return nil, nil, bindingErr(name, err)
+		}
+		// A binding's public contract is its output schema, so that schema
+		// must be well-formed: a raw join body with colliding column names
+		// has no addressable output through a single occurrence scope.
+		seen := map[string]bool{}
+		for _, f := range body.Output().Fields {
+			if seen[f.Name] {
+				return nil, nil, reject.Inputf("planner: binding %q output has duplicate column %q — project the body to a unique set of columns", name, f.Name)
+			}
+			seen[f.Name] = true
+		}
+		bnd := &bound.Binding{Name: name, Root: body, PlanSensitive: bound.PlanSensitive(body)}
+		b.bindings[name] = bnd
+		bindings = append(bindings, bnd)
+	}
+
+	root, err := b.bindRel(q.Root)
+	if err != nil {
+		return nil, nil, err
+	}
+	return root, bindings, nil
 }
 
 // binder carries the walk state: the dense slot allocator and the scope
