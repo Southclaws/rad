@@ -1,0 +1,193 @@
+# Rad PIR — the wire schema for execution programs.
+#
+# THIS YAML IS THE SOURCE OF TRUTH. Edit it here, then run `go generate
+# ./rad/protocol` (or `task protocol:generate`), which converts it to
+# pir.schema.json and publishes a copy to the website. The JSON is a generated
+# artifact: it is what the server embeds for validation, what Schemancer reads
+# to emit the wire types, and what resolves at the $id URL. Do not hand-edit it.
+#
+# PIR is a sibling of LIR, not a section of it: LIR is the pure relational
+# language, PIR the effectful layer one level above. The two schemas are
+# independent — a statement's LIR payload is an opaque `raw` value here, and
+# the server validates it against the LIR schema separately (two-phase
+# validation). The `description` fields are the PIR specification; keep them
+# normative and self-contained, exactly as LIR's do.
+
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "https://www.radengine.dev/schema/pir.json"
+title: Rad PIR
+description: |
+  PIR is Rad's program intermediate representation: the effectful layer above
+  LIR. A client sends one program to `POST /execute`; the engine runs it as a
+  single atomic unit. This schema is its normative specification. The type
+  definitions and the prose in these descriptions are one artifact and move
+  together.
+
+  PIR is an internal contract with no external compatibility promise yet; it
+  may change while the design is hardened.
+
+  # Model
+
+  A program is an ordered array of named statements executed sequentially
+  within one implicit transaction. Each statement evaluates against the
+  transaction's initial snapshot plus the complete effects of all preceding
+  statements, but never observes its own effects while deriving its input. A
+  statement exposes its result as a relational value that later statements may
+  consume, by name, through an ordinary LIR `ref` — statement names share the
+  binding namespace. If any statement or the commit fails, the whole program
+  fails and no effects become externally visible. Exactly one statement result
+  is returned to the caller.
+
+  There are four statement kinds. `query` reads. `create`, `update`, and
+  `delete` mutate, and consume a *relation* rather than a literal row payload —
+  a literal row is simply a one-row relation (LIR's `rows` node). LIR stays a
+  pure relational language with no execution-order semantics; ordering and
+  effects live here, in PIR.
+
+  # The wire and its layers
+
+  A program is `{ statements: [...], result? }`. Statements are an ordered
+  array, never a map: statement order is the execution order, and a JSON
+  object would not preserve it. Each statement carries an LIR document in its
+  `relation` field, opaque to this schema. Validation is two-phase: this
+  schema checks the program envelope and statement grammar, and the LIR schema
+  validates each `relation` independently. Cross-statement references (a `ref`
+  to a statement name) and the backward-only reference rule are resolved by the
+  engine at bind time, not by either schema.
+$ref: "#/$defs/Program"
+
+$defs:
+  Program:
+    title: Program
+    description: |
+      A complete execution program: an ordered list of statements plus an
+      optional selector naming the statement whose result is returned.
+
+      `statements` executes in document order within one transaction. A
+      statement's result becomes available, under its name, to every later
+      statement — the program binding namespace, consumed through LIR `ref`
+      nodes. References may only point backwards; the engine enforces that at
+      bind time.
+
+      `result` names the statement whose relation is returned to the caller.
+      It may be omitted only when the program has exactly one statement, which
+      is then the result; a program with more than one statement must name its
+      result explicitly, so appending a statement never silently changes the
+      response. (This rule spans fields the schema cannot express alone; the
+      server enforces it.)
+    type: object
+    additionalProperties: false
+    required: [statements]
+    properties:
+      statements:
+        description: |
+          The program's statements, in execution order. Names must be unique;
+          each is a fresh program binding available to later statements.
+        type: array
+        minItems: 1
+        items: { $ref: "#/$defs/Statement" }
+      result:
+        description: |
+          The name of the statement whose result relation is returned.
+          Optional only for a single-statement program.
+        type: string
+        minLength: 1
+
+  Statement:
+    title: Statement
+    description: |
+      One statement of a program: a closed tagged union selected by `kind`.
+      Every statement has a unique `name` and an LIR `relation`. `query` reads
+      it; `create`, `update`, and `delete` apply it as a mutation against a
+      target `table`.
+    oneOf:
+      - { $ref: "#/$defs/QueryStatement" }
+      - { $ref: "#/$defs/CreateStatement" }
+      - { $ref: "#/$defs/UpdateStatement" }
+      - { $ref: "#/$defs/DeleteStatement" }
+
+  QueryStatement:
+    description: |
+      Read a relation and expose it. The `relation` is evaluated against the
+      statement's start state and its rows become the statement's result, shaped
+      by the LIR root's cardinality when this statement is the program result.
+    type: object
+    additionalProperties: false
+    required: [kind, name, relation]
+    properties:
+      kind: { type: string, const: query }
+      name: { $ref: "#/$defs/StatementName" }
+      relation: { $ref: "#/$defs/Relation" }
+
+  CreateStatement:
+    description: |
+      Insert the rows of `relation` into `table`. The relation's output columns
+      map to target columns by name; omitted columns take their schema default
+      (generators applied per row); unknown columns are rejected; cell types
+      must be assignable to the catalog columns. The statement's result is the
+      created rows, defaults included.
+    type: object
+    additionalProperties: false
+    required: [kind, name, table, relation]
+    properties:
+      kind: { type: string, const: create }
+      name: { $ref: "#/$defs/StatementName" }
+      table: { $ref: "#/$defs/TableName" }
+      relation: { $ref: "#/$defs/Relation" }
+
+  UpdateStatement:
+    description: |
+      Update rows of `table`, identified and assigned by the schema of
+      `relation`: its output must include the target's full primary key (which
+      identifies the rows) plus the columns to assign. Columns absent from the
+      relation are left unchanged; a NULL assigns NULL. Each input row must
+      identify exactly one existing row, and no target may be identified twice.
+      The statement's result is the post-image of the updated rows.
+    type: object
+    additionalProperties: false
+    required: [kind, name, table, relation]
+    properties:
+      kind: { type: string, const: update }
+      name: { $ref: "#/$defs/StatementName" }
+      table: { $ref: "#/$defs/TableName" }
+      relation: { $ref: "#/$defs/Relation" }
+
+  DeleteStatement:
+    description: |
+      Delete rows of `table` identified by `relation`, whose output must be
+      exactly the target's primary-key columns. Each input row must identify
+      exactly one existing row. The statement's result is the pre-image of the
+      deleted rows.
+    type: object
+    additionalProperties: false
+    required: [kind, name, table, relation]
+    properties:
+      kind: { type: string, const: delete }
+      name: { $ref: "#/$defs/StatementName" }
+      table: { $ref: "#/$defs/TableName" }
+      relation: { $ref: "#/$defs/Relation" }
+
+  StatementName:
+    title: StatementName
+    description: |
+      A statement's name: unique within the program, and the label under which
+      its result enters the program binding namespace for later statements.
+    type: string
+    minLength: 1
+
+  TableName:
+    title: TableName
+    description: The catalog table a mutation statement targets.
+    type: string
+    minLength: 1
+
+  Relation:
+    title: Relation
+    description: |
+      An LIR query document — the statement's relational body. This schema
+      treats it as an opaque value and does not describe the LIR grammar; the
+      server validates it against the independent LIR schema. See the LIR
+      specification at https://www.radengine.dev/schema/lir.json.
+    # `raw` maps (per language, via schemancer config) to a raw-JSON type so
+    # the opaque LIR document is carried as bytes and validated separately.
+    format: raw

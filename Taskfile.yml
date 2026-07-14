@@ -112,14 +112,16 @@ tasks:
       - go run ./cmd/rad generate -f examples/demo/schema.rad -o examples/demo/generated --pkg tracker --lang ts
 
   protocol:generate:
-    desc: Regenerate LIR wire types, OpenAPI transport, and the public LIR schema
+    desc: Regenerate LIR and PIR wire types, OpenAPI transport, and the public schemas
     cmds:
-      # lir.schema.yaml is the source of truth; schemagen writes lir.schema.json
-      # and publishes the website copy.
+      # lir.schema.yaml and pir.schema.yaml are the sources of truth; schemagen
+      # writes the .json artifacts and publishes the website copies.
       - go generate ./rad/protocol
-      # schemancer.yaml maps the LIR Value's `format: raw` to json.RawMessage,
-      # keeping literals as raw bytes for full int64 precision.
-      - schemancer rad/protocol/lir.schema.json golang rad/protocol/lirwire --package lirwire --optional-style pointer --config rad/protocol/schemancer.yaml"
+      # schemancer.yaml maps the `format: raw` scalars/payloads to
+      # json.RawMessage — LIR literals and PIR statement relations alike — so
+      # they stay raw bytes with full int64 precision.
+      - schemancer rad/protocol/lir.schema.json golang rad/protocol/lirwire --package lirwire --optional-style pointer --config rad/protocol/schemancer.yaml
+      - schemancer rad/protocol/pir.schema.json golang rad/protocol/pirwire --package pirwire --optional-style pointer --config rad/protocol/schemancer.yaml
       - go generate ./rad/api
 
   demo:ts:
