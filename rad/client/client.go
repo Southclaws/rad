@@ -28,8 +28,9 @@ import (
 
 // Client talks to one Rad server. It is safe for concurrent use.
 type Client struct {
-	http *http.Client
-	oas  *oas.Client
+	http   *http.Client
+	oas    *oas.Client
+	schema schemaCache
 }
 
 // Option configures a Client.
@@ -139,8 +140,10 @@ func (c *Client) Migrate(ctx context.Context, schemaSrc string) ([]string, error
 	}
 }
 
-// View is the read/write surface shared by the Client (autocommit) and Tx
-// (transactional). Generated table handles operate on a View.
+// View is the read/write surface generated table handles operate on. Every
+// operation is one PIR program over /execute; there is one implementation,
+// the Client (autocommit). Multi-write atomicity is expressed by submitting a
+// multi-statement program directly, not by a held session.
 type View interface {
 	Query(ctx context.Context, q protocol.Query) ([]protocol.Record, error)
 	QueryDatum(ctx context.Context, q protocol.Query) (any, error)
@@ -150,39 +153,36 @@ type View interface {
 	Delete(ctx context.Context, table string, key map[string]any) (bool, error)
 }
 
-var (
-	_ View = (*Client)(nil)
-	_ View = (*Tx)(nil)
-)
+var _ View = (*Client)(nil)
 
 // Query runs a query and returns its result as records: an array result
 // verbatim, an object result (first / exactly_one roots) as one record, a
 // null result as none. A scalar root has no record shape — use QueryDatum.
 func (c *Client) Query(ctx context.Context, q protocol.Query) ([]protocol.Record, error) {
-	return query(ctx, c, "", q)
+	return c.execQuery(ctx, q)
 }
 
 // QueryDatum runs a query and returns the result datum exactly as the root
 // materialised: []any for many, map[string]any or nil for first/exactly_one,
 // a naked value or nil for scalar. Numbers decode as json.Number.
 func (c *Client) QueryDatum(ctx context.Context, q protocol.Query) (any, error) {
-	return queryDatum(ctx, c, "", q)
+	return c.execQueryDatum(ctx, q)
 }
 
 func (c *Client) Get(ctx context.Context, table string, key map[string]any) (protocol.Record, bool, error) {
-	return get(ctx, c, "", table, key)
+	return c.execGet(ctx, table, key)
 }
 
 func (c *Client) Create(ctx context.Context, table string, values map[string]any) (protocol.Record, error) {
-	return create(ctx, c, "", table, values)
+	return c.execCreate(ctx, table, values)
 }
 
 func (c *Client) Update(ctx context.Context, table string, key, set map[string]any, clear []string) (protocol.Record, bool, error) {
-	return update(ctx, c, "", table, key, set, clear)
+	return c.execUpdate(ctx, table, key, set, clear)
 }
 
 func (c *Client) Delete(ctx context.Context, table string, key map[string]any) (bool, error) {
-	return del(ctx, c, "", table, key)
+	return c.execDelete(ctx, table, key)
 }
 
 // shared op implementations, parameterized by the transaction id ("" for
@@ -190,52 +190,6 @@ func (c *Client) Delete(ctx context.Context, table string, key map[string]any) (
 // transaction operations are behaviourally identical; the only differences
 // are the endpoint and the extra not_found the transaction form returns when
 // its id is unknown or expired.
-
-func query(ctx context.Context, c *Client, txID string, q protocol.Query) ([]protocol.Record, error) {
-	d, err := queryDatum(ctx, c, txID, q)
-	if err != nil {
-		return nil, err
-	}
-	return datumRecords(d)
-}
-
-func queryDatum(ctx context.Context, c *Client, txID string, q protocol.Query) (any, error) {
-	raw, err := protocol.MarshalQuery(q)
-	if err != nil {
-		return nil, err
-	}
-	req := oas.Query(raw)
-	if txID == "" {
-		res, err := c.oas.Query(ctx, req)
-		if err != nil {
-			return nil, transportError(err)
-		}
-		switch v := res.(type) {
-		case *oas.QueryResult:
-			return decodeResult(v.Result)
-		case *oas.QueryBadRequest:
-			return nil, apiError(oas.Problem(*v))
-		case *oas.QueryUnprocessableEntity:
-			return nil, apiError(oas.Problem(*v))
-		}
-		return nil, fmt.Errorf("rad: unexpected query response %T", res)
-	}
-	res, err := c.oas.TransactionQuery(ctx, req, oas.TransactionQueryParams{ID: txID})
-	if err != nil {
-		return nil, transportError(err)
-	}
-	switch v := res.(type) {
-	case *oas.QueryResult:
-		return decodeResult(v.Result)
-	case *oas.TransactionQueryBadRequest:
-		return nil, apiError(oas.Problem(*v))
-	case *oas.TransactionQueryNotFound:
-		return nil, apiError(oas.Problem(*v))
-	case *oas.TransactionQueryUnprocessableEntity:
-		return nil, apiError(oas.Problem(*v))
-	}
-	return nil, fmt.Errorf("rad: unexpected query response %T", res)
-}
 
 // decodeResult decodes the response's raw result datum with json.Number so
 // int64 values keep full precision.
@@ -273,232 +227,4 @@ func datumRecords(d any) ([]protocol.Record, error) {
 	default:
 		return nil, fmt.Errorf("rad: result is a scalar (%T) — use QueryDatum for scalar-rooted queries", v)
 	}
-}
-
-// get fetches one row by primary key. There is no dedicated wire endpoint: a
-// point read is a three-node graph — scan, filter on the key columns, slice
-// of one — materialised as root first through the same operation the fluent
-// query builder uses.
-func get(ctx context.Context, c *Client, txID, table string, key map[string]any) (protocol.Record, bool, error) {
-	preds := make([]*protocol.Expr, 0, len(key))
-	for col, val := range key {
-		preds = append(preds, protocol.Eq(protocol.Col("s", col), protocol.Lit(val)))
-	}
-	recs, err := query(ctx, c, txID, protocol.Query{
-		Nodes: map[string]protocol.Node{
-			"s":     {Kind: "scan", Table: table, Scope: "s"},
-			"keyed": {Kind: "filter", Input: "s", Predicate: protocol.AndAll(preds)},
-			"one":   {Kind: "slice", Input: "keyed", Limit: new(int(1))},
-		},
-		Root: protocol.Root{Node: "one", Cardinality: "first"},
-	})
-	if err != nil {
-		return nil, false, err
-	}
-	if len(recs) == 0 {
-		return nil, false, nil
-	}
-	return recs[0], true, nil
-}
-
-func create(ctx context.Context, c *Client, txID, table string, values map[string]any) (protocol.Record, error) {
-	req := oas.NewOptRowCreateProps(oas.RowCreateProps{Table: table, Values: api.MapToCells(values)})
-	if txID == "" {
-		res, err := c.oas.RowCreate(ctx, req)
-		if err != nil {
-			return nil, transportError(err)
-		}
-		switch v := res.(type) {
-		case *oas.RecordResult:
-			rec, _, e := record(v)
-			return rec, e
-		case *oas.RowCreateConflict:
-			return nil, apiError(oas.Problem(*v))
-		case *oas.RowCreateUnprocessableEntity:
-			return nil, apiError(oas.Problem(*v))
-		}
-		return nil, fmt.Errorf("rad: unexpected create response %T", res)
-	}
-	res, err := c.oas.TransactionRowCreate(ctx, req, oas.TransactionRowCreateParams{ID: txID})
-	if err != nil {
-		return nil, transportError(err)
-	}
-	switch v := res.(type) {
-	case *oas.RecordResult:
-		rec, _, e := record(v)
-		return rec, e
-	case *oas.TransactionRowCreateConflict:
-		return nil, apiError(oas.Problem(*v))
-	case *oas.TransactionRowCreateNotFound:
-		return nil, apiError(oas.Problem(*v))
-	case *oas.TransactionRowCreateUnprocessableEntity:
-		return nil, apiError(oas.Problem(*v))
-	}
-	return nil, fmt.Errorf("rad: unexpected create response %T", res)
-}
-
-func update(ctx context.Context, c *Client, txID, table string, key, set map[string]any, clear []string) (protocol.Record, bool, error) {
-	req := oas.NewOptRowUpdateProps(oas.RowUpdateProps{
-		Table: table, Key: api.MapToCells(key), Set: api.MapToCells(set), Clear: clear,
-	})
-	if txID == "" {
-		res, err := c.oas.RowUpdate(ctx, req)
-		if err != nil {
-			return nil, false, transportError(err)
-		}
-		switch v := res.(type) {
-		case *oas.RecordResult:
-			return record(v)
-		case *oas.RowUpdateConflict:
-			return nil, false, apiError(oas.Problem(*v))
-		case *oas.RowUpdateUnprocessableEntity:
-			return nil, false, apiError(oas.Problem(*v))
-		}
-		return nil, false, fmt.Errorf("rad: unexpected update response %T", res)
-	}
-	res, err := c.oas.TransactionRowUpdate(ctx, req, oas.TransactionRowUpdateParams{ID: txID})
-	if err != nil {
-		return nil, false, transportError(err)
-	}
-	switch v := res.(type) {
-	case *oas.RecordResult:
-		return record(v)
-	case *oas.TransactionRowUpdateConflict:
-		return nil, false, apiError(oas.Problem(*v))
-	case *oas.TransactionRowUpdateNotFound:
-		return nil, false, apiError(oas.Problem(*v))
-	case *oas.TransactionRowUpdateUnprocessableEntity:
-		return nil, false, apiError(oas.Problem(*v))
-	}
-	return nil, false, fmt.Errorf("rad: unexpected update response %T", res)
-}
-
-func del(ctx context.Context, c *Client, txID, table string, key map[string]any) (bool, error) {
-	req := oas.NewOptRowDeleteProps(oas.RowDeleteProps{Table: table, Key: api.MapToCells(key)})
-	if txID == "" {
-		res, err := c.oas.RowDelete(ctx, req)
-		if err != nil {
-			return false, transportError(err)
-		}
-		switch v := res.(type) {
-		case *oas.DeleteResult:
-			return v.Found, nil
-		case *oas.RowDeleteConflict:
-			return false, apiError(oas.Problem(*v))
-		case *oas.RowDeleteUnprocessableEntity:
-			return false, apiError(oas.Problem(*v))
-		}
-		return false, fmt.Errorf("rad: unexpected delete response %T", res)
-	}
-	res, err := c.oas.TransactionRowDelete(ctx, req, oas.TransactionRowDeleteParams{ID: txID})
-	if err != nil {
-		return false, transportError(err)
-	}
-	switch v := res.(type) {
-	case *oas.DeleteResult:
-		return v.Found, nil
-	case *oas.TransactionRowDeleteConflict:
-		return false, apiError(oas.Problem(*v))
-	case *oas.TransactionRowDeleteNotFound:
-		return false, apiError(oas.Problem(*v))
-	case *oas.TransactionRowDeleteUnprocessableEntity:
-		return false, apiError(oas.Problem(*v))
-	}
-	return false, fmt.Errorf("rad: unexpected delete response %T", res)
-}
-
-// record unpacks a RecordResult into the wire record and its found flag.
-func record(v *oas.RecordResult) (protocol.Record, bool, error) {
-	if !v.Found {
-		return nil, false, nil
-	}
-	return api.RecordToMap(v.Record.Or(nil)), true, nil
-}
-
-// Tx is a server-held transaction session.
-type Tx struct {
-	c  *Client
-	id string
-}
-
-func (t *Tx) Query(ctx context.Context, q protocol.Query) ([]protocol.Record, error) {
-	return query(ctx, t.c, t.id, q)
-}
-
-func (t *Tx) QueryDatum(ctx context.Context, q protocol.Query) (any, error) {
-	return queryDatum(ctx, t.c, t.id, q)
-}
-
-func (t *Tx) Get(ctx context.Context, table string, key map[string]any) (protocol.Record, bool, error) {
-	return get(ctx, t.c, t.id, table, key)
-}
-
-func (t *Tx) Create(ctx context.Context, table string, values map[string]any) (protocol.Record, error) {
-	return create(ctx, t.c, t.id, table, values)
-}
-
-func (t *Tx) Update(ctx context.Context, table string, key, set map[string]any, clear []string) (protocol.Record, bool, error) {
-	return update(ctx, t.c, t.id, table, key, set, clear)
-}
-
-func (t *Tx) Delete(ctx context.Context, table string, key map[string]any) (bool, error) {
-	return del(ctx, t.c, t.id, table, key)
-}
-
-// Begin starts a transaction session. Prefer Txn.
-func (c *Client) Begin(ctx context.Context) (*Tx, error) {
-	res, err := c.oas.TransactionBegin(ctx)
-	if err != nil {
-		return nil, transportError(err)
-	}
-	return &Tx{c: c, id: res.ID}, nil
-}
-
-// Commit atomically applies the transaction's writes. A conflict error
-// (IsConflict) means the transaction lost an optimistic race — retry it.
-func (t *Tx) Commit(ctx context.Context) error {
-	res, err := t.c.oas.TransactionCommit(ctx, oas.TransactionCommitParams{ID: t.id})
-	if err != nil {
-		return transportError(err)
-	}
-	switch v := res.(type) {
-	case *oas.NoContent:
-		return nil
-	case *oas.TransactionCommitConflict:
-		return apiError(oas.Problem(*v))
-	case *oas.TransactionCommitNotFound:
-		return apiError(oas.Problem(*v))
-	}
-	return fmt.Errorf("rad: unexpected commit response %T", res)
-}
-
-// Rollback discards the transaction. Safe to call after Commit (the server
-// treats a completed session as gone, so a not_found here is success).
-func (t *Tx) Rollback(ctx context.Context) error {
-	_, err := t.c.oas.TransactionRollback(ctx, oas.TransactionRollbackParams{ID: t.id})
-	if err != nil {
-		err = transportError(err)
-		var ae *APIError
-		if errors.As(err, &ae) && (ae.Problem.Code == protocol.CodeNotFound || ae.Problem.Code == protocol.CodeInvalid) {
-			return nil
-		}
-		return err
-	}
-	// The response is NoContent on success, or a Problem when the transaction
-	// is already gone, which is also success for a defensive rollback.
-	return nil
-}
-
-// Txn runs fn in a transaction and commits if fn returns nil, rolling back
-// otherwise. Retry the whole Txn when IsConflict(err).
-func (c *Client) Txn(ctx context.Context, fn func(tx *Tx) error) error {
-	tx, err := c.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if err := fn(tx); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
 }

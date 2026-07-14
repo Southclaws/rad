@@ -99,27 +99,9 @@ func emitHeader(p func(string, ...any), m *genModel, schemaSrc []byte) {
 	p("\treturn c.rc.Migrate(ctx, SchemaSource)")
 	p("}")
 	p("")
-	p("// Tx runs fn in a server-held serializable transaction; retry the whole")
-	p("// Tx when IsConflict(err).")
-	p("func (c *Client) Tx(ctx context.Context, fn func(tx *Tx) error) error {")
-	p("\treturn c.rc.Txn(ctx, func(rtx *radclient.Tx) error {")
-	p("\t\ttx := &Tx{}")
-	for _, t := range m.Tables {
-		p("\t\ttx.%s = %sTable{v: rtx}", goName(t.SQLName), t.Model)
-	}
-	p("\t\treturn fn(tx)")
-	p("\t})")
-	p("}")
-	p("")
-	p("// IsConflict reports whether err is a transaction conflict worth retrying.")
+	p("// IsConflict reports whether err is a serializable conflict worth")
+	p("// retrying — two programs raced at commit.")
 	p("func IsConflict(err error) bool { return radclient.IsConflict(err) }")
-	p("")
-	p("// Tx mirrors the Client's table handles inside a transaction.")
-	p("type Tx struct {")
-	for _, t := range m.Tables {
-		p("\t%s %sTable", goName(t.SQLName), t.Model)
-	}
-	p("}")
 	p("")
 
 	// The query-graph builder runtime + record decoding helpers.

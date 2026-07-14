@@ -52,56 +52,6 @@ func anyToRaw(v any) jx.Raw {
 	return jx.Raw(raw)
 }
 
-// ── cells and records ───────────────────────────────────────────────────────
-
-// CellsToMap converts a request's cells (primary key, new values, update
-// assignments) into a plain map with numbers preserved as json.Number.
-func CellsToMap(c oas.Cells) map[string]any {
-	if c == nil {
-		return nil
-	}
-	m := make(map[string]any, len(c))
-	for k, v := range c {
-		m[k] = rawToAny(jx.Raw(v))
-	}
-	return m
-}
-
-// MapToCells converts a plain map into request cells.
-func MapToCells(m map[string]any) oas.Cells {
-	if m == nil {
-		return nil
-	}
-	c := make(oas.Cells, len(m))
-	for k, v := range m {
-		c[k] = oas.Value(anyToRaw(v))
-	}
-	return c
-}
-
-// RecordToMap converts a result record into a plain map.
-func RecordToMap(r oas.Record) protocol.Record {
-	if r == nil {
-		return nil
-	}
-	m := make(protocol.Record, len(r))
-	for k, v := range r {
-		m[k] = rawToAny(v)
-	}
-	return m
-}
-
-// MapToRecord converts a plain map into a result record.
-func MapToRecord(m protocol.Record) oas.Record {
-	if m == nil {
-		return nil
-	}
-	r := make(oas.Record, len(m))
-	for k, v := range m {
-		r[k] = anyToRaw(v)
-	}
-	return r
-}
 
 // ── introspection and catalog definitions ──────────────────────────────────
 

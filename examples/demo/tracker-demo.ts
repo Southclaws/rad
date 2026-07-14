@@ -25,37 +25,35 @@ try {
 const found = await db.users.byUsername("ada-ts");
 console.log(`   byUsername: ${found?.username}`);
 
-// A team, board, and tasks — atomically.
-const { team, board } = await db.tx(async (tx) => {
-  const team = await tx.teams.create({ name: "Radlabs TS" });
-  await tx.teamMembers.create({
-    team_id: team.id,
-    user_id: ada.id,
-    role: "owner",
-  });
-  const board = await tx.boards.create({ team_id: team.id, name: "TS Launch" });
-  const ship = await tx.tasks.create({
-    board_id: board.id,
-    title: "Ship the TS client",
-    creator_id: ada.id,
-    assignee_id: ada.id,
-    priority: 1,
-  });
-  await tx.tasks.create({
-    board_id: board.id,
-    title: "Write docs",
-    creator_id: ada.id,
-    parent_id: ship.id,
-    assignee_id: grace.id,
-  });
-  await tx.comments.create({
-    task_id: ship.id,
-    author_id: grace.id,
-    body: "on it",
-  });
-  return { team, board };
+// A team, board, and tasks. Each write is its own execution program; a
+// following create consumes the previous row's id.
+const team = await db.teams.create({ name: "Radlabs TS" });
+await db.teamMembers.create({
+  team_id: team.id,
+  user_id: ada.id,
+  role: "owner",
 });
-console.log(`   seeded team ${team.name} atomically ✓`);
+const board = await db.boards.create({ team_id: team.id, name: "TS Launch" });
+const ship = await db.tasks.create({
+  board_id: board.id,
+  title: "Ship the TS client",
+  creator_id: ada.id,
+  assignee_id: ada.id,
+  priority: 1,
+});
+await db.tasks.create({
+  board_id: board.id,
+  title: "Write docs",
+  creator_id: ada.id,
+  parent_id: ship.id,
+  assignee_id: grace.id,
+});
+await db.comments.create({
+  task_id: ship.id,
+  author_id: grace.id,
+  body: "on it",
+});
+console.log(`   seeded team ${team.name} ✓`);
 
 // The nested board view: one query, typed all the way down.
 const view = await db.boards
@@ -65,7 +63,7 @@ const view = await db.boards
     t
       .orderByPriority()
       .includeAssignee()
-      .includeComments((c) => c.includeAuthor()),
+      .includeComments((c) => c.orderById().includeAuthor()),
   )
   .first();
 
@@ -104,13 +102,11 @@ console.log(
   `   completed "${done?.title}", assignee cleared: ${done?.assignee_id === null}`,
 );
 
-try {
-  await db.tx(async (tx) => {
-    await tx.tasks.update(mine[0].id, { status: "doing" });
-    await db.tasks.update(mine[0].id, { status: "todo" }); // rival commits first
-  });
-} catch (err) {
-  console.log(`   conflict detected and retryable: ${isConflict(err)}`);
+// Read, decide, write: reassign after checking the current value.
+const cur = await db.tasks.get(mine[0].id);
+if (cur && cur.status !== "done") {
+  await db.tasks.update(mine[0].id, { status: "doing" });
+  console.log(`   "${cur.title}" set to doing ✓`);
 }
 
 console.log("done — TypeScript app, same wire, zero SQL.");

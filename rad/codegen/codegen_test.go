@@ -114,11 +114,17 @@ func TestGenerateTypeScript(t *testing.T) {
 		"includeTasks(fn?: (b: TaskInclude) => void): this",
 		"async byUsername(username: string): Promise<User | null>",
 		"async get(teamId: string, userId: string): Promise<TeamMember | null>",
-		"async tx<T>(fn: (tx: Tx) => Promise<T>): Promise<T>",
 		"export function connect(url: string",
 	} {
 		if !strings.Contains(string(code), want) {
 			t.Errorf("generated TS lacks %q", want)
+		}
+	}
+	// Interactive transactions are gone: every operation is a PIR program
+	// over /execute, and the client no longer exposes a session-held tx.
+	for _, gone := range []string{"async tx<", "class Tx ", "/tx/"} {
+		if strings.Contains(string(code), gone) {
+			t.Errorf("generated TS still references removed transaction surface %q", gone)
 		}
 	}
 	// No TS parameter properties — Node strip-only mode rejects them.

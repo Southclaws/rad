@@ -92,61 +92,6 @@ type Handler interface {
 	//
 	// DELETE /tables/{table}/indexes/{index}
 	IndexDelete(ctx context.Context, params IndexDeleteParams) (IndexDeleteRes, error)
-	// Query implements Query operation.
-	//
-	// Execute a single-consumer relation tree encoded as named relation nodes — scans, filters,
-	// projections, joins, aggregates, ordering, slicing — plus a root selector. Relationships need no
-	// dedicated verb: a projection field whose expression is a cardinality crossing (`exists`, `first`,
-	// `scalar`, `array`) materialises a correlated sub-relation as a nested boolean, object, value, or
-	// array. Aggregation is the `aggregate` node, grouped or global, and rides this one operation.
-	//
-	// The result is one datum, shaped exactly as the root materialises: `many` yields an array of records,
-	// `first` a record or `null`, `exactly_one` a record (erroring unless exactly one row exists), and
-	// `scalar` a naked value or `null`.
-	//
-	// The tree is structurally validated before binding. Unknown fields, cyclic, dangling, shared, or
-	// unreachable node definitions are invalid. Binding then rejects unknown tables, columns, or scopes,
-	// type mismatches, and nondeterministic crossings (a `first` over an unordered multi-row relation).
-	// Root `scalar` additionally requires one column and a statically at-most-one relation.
-	//
-	// POST /query
-	Query(ctx context.Context, req Query) (QueryRes, error)
-	// RowCreate implements RowCreate operation.
-	//
-	// Insert a single row into a table. Columns left out of `values` fall back to their schema default, so
-	// generated defaults such as `uuid()` and `now_ms()` are filled in server side. The complete stored
-	// row, including any generated values, is returned.
-	//
-	// Inserting a row that would violate a unique constraint, or whose foreign key references a row that
-	// does not exist, fails with an `invalid` problem and nothing is written — retrying the same request
-	// cannot succeed until the data changes. A `conflict` here means the write lost a serializable race
-	// and an immediate retry may win.
-	//
-	// POST /create
-	RowCreate(ctx context.Context, req OptRowCreateProps) (RowCreateRes, error)
-	// RowDelete implements RowDelete operation.
-	//
-	// Delete the row named by `key`. The response reports whether a row was actually removed through
-	// `found`. Deleting a row that does not exist is not an error and reports `found` as `false`.
-	//
-	// A delete that would leave a dangling foreign key reference is refused with an `invalid` problem,
-	// since Rad restricts rather than cascades.
-	//
-	// POST /delete
-	RowDelete(ctx context.Context, req OptRowDeleteProps) (RowDeleteRes, error)
-	// RowUpdate implements RowUpdate operation.
-	//
-	// Update the row named by `key`. Columns in `set` are assigned new values; columns listed in `clear`
-	// are set to `null` (only nullable columns may be cleared). Columns mentioned in neither are left as
-	// they are.
-	//
-	// When the target row exists the updated record is returned with `found` set to `true`. When it does
-	// not exist, `found` is `false` and nothing is written. Violating a unique constraint fails with an
-	// `invalid` problem; a `conflict` means the write lost a serializable race and an immediate retry may
-	// win.
-	//
-	// POST /update
-	RowUpdate(ctx context.Context, req OptRowUpdateProps) (RowUpdateRes, error)
 	// SchemaMigrate implements SchemaMigrate operation.
 	//
 	// Take a `schema.rad` source document, compute the difference against the database's current catalog,
@@ -204,71 +149,6 @@ type Handler interface {
 	//
 	// PATCH /tables/{table}
 	TableUpdate(ctx context.Context, req OptTableUpdateProps, params TableUpdateParams) (TableUpdateRes, error)
-	// TransactionBegin implements TransactionBegin operation.
-	//
-	// Start a server held serializable transaction and return an opaque transaction id. Subsequent reads
-	// and writes made under `/tx/{id}` see a consistent snapshot plus their own uncommitted writes, and
-	// are isolated from other transactions until committed.
-	//
-	// A transaction holds server side state, so it must be finished with either commit or rollback. An
-	// idle transaction is reaped automatically after roughly sixty seconds, after which its id is no
-	// longer valid.
-	//
-	// POST /tx
-	TransactionBegin(ctx context.Context) (*TransactionCredentials, error)
-	// TransactionCommit implements TransactionCommit operation.
-	//
-	// Atomically apply every write staged in the transaction and release its server side state. On success
-	// the transaction id is spent and can no longer be used.
-	//
-	// If another transaction committed a conflicting change while this one was open, the commit fails with
-	// a `conflict` problem. The correct response is to open a fresh transaction and replay the work.
-	//
-	// POST /tx/{id}/commit
-	TransactionCommit(ctx context.Context, params TransactionCommitParams) (TransactionCommitRes, error)
-	// TransactionQuery implements TransactionQuery operation.
-	//
-	// Behaves exactly like `Query`, but reads through the transaction's snapshot and sees the
-	// transaction's own uncommitted writes. Referencing an unknown or already finished transaction fails
-	// with a `not_found` problem.
-	//
-	// POST /tx/{id}/query
-	TransactionQuery(ctx context.Context, req Query, params TransactionQueryParams) (TransactionQueryRes, error)
-	// TransactionRollback implements TransactionRollback operation.
-	//
-	// Discard every write staged in the transaction and release its server side state. On success the
-	// transaction id is spent.
-	//
-	// Rolling back is safe to call defensively. A transaction that has already been committed or rolled
-	// back, or that has been reaped for being idle, is simply gone, so clients may treat a `not_found`
-	// here as success.
-	//
-	// POST /tx/{id}/rollback
-	TransactionRollback(ctx context.Context, params TransactionRollbackParams) (TransactionRollbackRes, error)
-	// TransactionRowCreate implements TransactionRowCreate operation.
-	//
-	// Behaves exactly like `RowCreate`, but the write is staged in the transaction and only becomes
-	// visible to others on commit. Referencing an unknown or already finished transaction fails with a
-	// `not_found` problem.
-	//
-	// POST /tx/{id}/create
-	TransactionRowCreate(ctx context.Context, req OptRowCreateProps, params TransactionRowCreateParams) (TransactionRowCreateRes, error)
-	// TransactionRowDelete implements TransactionRowDelete operation.
-	//
-	// Behaves exactly like `RowDelete`, but the delete is staged in the transaction and only becomes
-	// visible to others on commit. Referencing an unknown or already finished transaction fails with a
-	// `not_found` problem.
-	//
-	// POST /tx/{id}/delete
-	TransactionRowDelete(ctx context.Context, req OptRowDeleteProps, params TransactionRowDeleteParams) (TransactionRowDeleteRes, error)
-	// TransactionRowUpdate implements TransactionRowUpdate operation.
-	//
-	// Behaves exactly like `RowUpdate`, but the write is staged in the transaction and only becomes
-	// visible to others on commit. Referencing an unknown or already finished transaction fails with a
-	// `not_found` problem.
-	//
-	// POST /tx/{id}/update
-	TransactionRowUpdate(ctx context.Context, req OptRowUpdateProps, params TransactionRowUpdateParams) (TransactionRowUpdateRes, error)
 	// NewError creates *InternalServerErrorStatusCode from error returned by handler.
 	//
 	// Used for common default response.

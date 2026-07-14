@@ -7,6 +7,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -66,22 +67,24 @@ func testHTTPServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
-func TestQueryHTTPRejectsMalformedLIRBeforePlanning(t *testing.T) {
+func TestExecuteHTTPRejectsMalformedBeforePlanning(t *testing.T) {
 	srv := testHTTPServer(t)
 	cases := []string{
-		`{`,
-		`{"root":{"node":"s","cardinality":"many"}}`,
-		`{"nodes":{"s":{"kind":"scan","table":"ghost","scope":"s","predicate":{"kind":"lit","value":true}}},"root":{"node":"s","cardinality":"many"}}`,
+		`{`,                    // not JSON
+		`{"statements":[]}`,    // a program needs at least one statement
+		// A statement whose relation is structurally invalid LIR (a scan may
+		// not carry a predicate) — rejected by the two-phase LIR validation.
+		`{"statements":[{"name":"s","kind":"query","relation":{"nodes":{"s":{"kind":"scan","table":"t","scope":"s","predicate":{"kind":"lit","value":true}}},"root":{"node":"s","cardinality":"many"}}}]}`,
 	}
 	for _, body := range cases {
-		resp, err := http.Post(srv.URL+"/query", "application/json", bytes.NewBufferString(body))
+		resp, err := http.Post(srv.URL+"/execute", "application/json", bytes.NewBufferString(body))
 		if err != nil {
 			t.Fatal(err)
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("malformed query status = %d, want 400; body=%s", resp.StatusCode, body)
+			t.Fatalf("malformed program status = %d, want 400; body=%s", resp.StatusCode, body)
 		}
 	}
 }
@@ -256,7 +259,7 @@ func TestClientProblemDetails(t *testing.T) {
 	}
 	_, err := c.Create(ctx, "users", map[string]any{"name": "dup"})
 	var ae *radclient.APIError
-	if !asAPIError(err, &ae) {
+	if !errors.As(err, &ae) {
 		t.Fatalf("want APIError, got %v", err)
 	}
 	pb := ae.Problem
@@ -460,76 +463,4 @@ func jsonFloat(t *testing.T, v any) float64 {
 		t.Fatal(err)
 	}
 	return got
-}
-
-// Transactions over the wire: rollback discards, commit persists, racing
-// writes conflict with a retryable code.
-func TestClientTransactions(t *testing.T) {
-	c := migrated(t)
-	ctx := context.Background()
-
-	err := c.Txn(ctx, func(tx *radclient.Tx) error {
-		if _, err := tx.Create(ctx, "users", map[string]any{"name": "ghost"}); err != nil {
-			return err
-		}
-		// Read-your-writes inside the session.
-		recs, err := tx.Query(ctx, tableQ("users"))
-		if err != nil {
-			return err
-		}
-		if len(recs) != 1 {
-			t.Errorf("tx sees %d users", len(recs))
-		}
-		return errAbort
-	})
-	if err != errAbort {
-		t.Fatalf("fn error not propagated: %v", err)
-	}
-	if recs, _ := c.Query(ctx, tableQ("users")); len(recs) != 0 {
-		t.Fatal("rolled-back write visible")
-	}
-
-	if err := c.Txn(ctx, func(tx *radclient.Tx) error {
-		_, err := tx.Create(ctx, "users", map[string]any{"name": "kept"})
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if recs, _ := c.Query(ctx, tableQ("users")); len(recs) != 1 {
-		t.Fatal("committed write missing")
-	}
-
-	// Conflict: racing duplicate-name inserts (disjoint writes, tracked
-	// unique-check ranges collide).
-	err = c.Txn(ctx, func(tx *radclient.Tx) error {
-		if _, err := tx.Create(ctx, "users", map[string]any{"name": "race"}); err != nil {
-			return err
-		}
-		_, err := c.Create(ctx, "users", map[string]any{"name": "race"})
-		return err
-	})
-	if !radclient.IsConflict(err) {
-		t.Fatalf("expected conflict, got %v", err)
-	}
-}
-
-var errAbort = &abortErr{}
-
-type abortErr struct{}
-
-func (*abortErr) Error() string { return "abort" }
-
-func asAPIError(err error, target **radclient.APIError) bool {
-	for err != nil {
-		if ae, ok := err.(*radclient.APIError); ok {
-			*target = ae
-			return true
-		}
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-	return false
 }

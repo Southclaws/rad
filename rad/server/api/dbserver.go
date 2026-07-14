@@ -12,17 +12,11 @@ package api
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
-	"sync"
-	"time"
 
 	"github.com/Southclaws/rad/rad/api"
 	"github.com/Southclaws/rad/rad/api/oas"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
-	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
 	"github.com/Southclaws/rad/rad/protocol"
 )
@@ -36,17 +30,12 @@ type dbAPI struct {
 	// when the database is initialised and never changes, so caching it
 	// keeps the gate on the imperative catalog operations free.
 	mode catalog.Mode
-
-	mu       sync.Mutex
-	sessions map[string]*txSession
 }
 
 var _ oas.Handler = (*dbAPI)(nil)
 
 func newDBAPI(db *frontend.DB, cat *catalog.Catalog, mode catalog.Mode, location string) *dbAPI {
-	a := &dbAPI{db: db, cat: cat, mode: mode, location: location, sessions: map[string]*txSession{}}
-	go a.reapSessions()
-	return a
+	return &dbAPI{db: db, cat: cat, mode: mode, location: location}
 }
 
 // httpHandler builds the generated HTTP server. Unmatched paths fall through
@@ -59,94 +48,8 @@ func (a *dbAPI) httpHandler(notFound http.Handler) (http.Handler, error) {
 	)
 }
 
-// view is the shared read/write surface of *frontend.DB and *frontend.Tx.
-type view interface {
-	Create(ctx context.Context, table string, row lir.Row) (lir.Row, error)
-	Update(ctx context.Context, table string, key, set lir.Row) (lir.Row, bool, error)
-	Delete(ctx context.Context, table string, key lir.Row) (bool, error)
-	Get(ctx context.Context, table string, key lir.Row) (lir.Row, bool, error)
-	Execute(ctx context.Context, q lir.Query) (lir.Datum, error)
-}
-
-// doQuery executes a query and returns its result datum as raw JSON — the
-// response carries one datum shaped exactly as the root materialised, so a
-// scalar root is a naked value, not a smuggled empty record.
-func (a *dbAPI) doQuery(ctx context.Context, v view, wq protocol.Query) (oas.Value, error) {
-	q, err := graphQuery(wq)
-	if err != nil {
-		return nil, err
-	}
-	d, err := v.Execute(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	raw, err := json.Marshal(frontend.DatumJSON(d))
-	if err != nil {
-		return nil, fmt.Errorf("encode result datum: %w", err)
-	}
-	return oas.Value(raw), nil
-}
-
-func (a *dbAPI) doCreate(ctx context.Context, v view, table string, values map[string]any) (protocol.Record, error) {
-	conv := &wireConv{cat: a.cat}
-	tbl, err := conv.table(ctx, table)
-	if err != nil {
-		return nil, err
-	}
-	row, err := coerceRow(tbl, values)
-	if err != nil {
-		return nil, err
-	}
-	stored, err := v.Create(ctx, table, row)
-	if err != nil {
-		return nil, err
-	}
-	return rowJSON(stored), nil
-}
-
-func (a *dbAPI) doUpdate(ctx context.Context, v view, table string, key, set map[string]any, clear []string) (protocol.Record, bool, error) {
-	conv := &wireConv{cat: a.cat}
-	tbl, err := conv.table(ctx, table)
-	if err != nil {
-		return nil, false, err
-	}
-	krow, err := coerceRow(tbl, key)
-	if err != nil {
-		return nil, false, err
-	}
-	srow, err := coerceRow(tbl, set)
-	if err != nil {
-		return nil, false, err
-	}
-	for _, name := range clear {
-		col, ok := tbl.Column(name)
-		if !ok {
-			return nil, false, wireErrf("table %q has no column %q", tbl.Name, name)
-		}
-		srow[name] = lir.Null(col.Type)
-	}
-	stored, found, err := v.Update(ctx, table, krow, srow)
-	if err != nil {
-		return nil, false, err
-	}
-	return rowJSON(stored), found, nil
-}
-
-func (a *dbAPI) doDelete(ctx context.Context, v view, table string, key map[string]any) (bool, error) {
-	conv := &wireConv{cat: a.cat}
-	tbl, err := conv.table(ctx, table)
-	if err != nil {
-		return false, err
-	}
-	krow, err := coerceRow(tbl, key)
-	if err != nil {
-		return false, err
-	}
-	return v.Delete(ctx, table, krow)
-}
-
 func (a *dbAPI) GetHealth(ctx context.Context) (*oas.Health, error) {
-	return &oas.Health{Status: "ok", Mode: string(a.mode)}, nil
+	return &oas.Health{Status: "ok"}, nil
 }
 
 func (a *dbAPI) GetInfo(ctx context.Context) (*oas.DatabaseInfo, error) {
@@ -189,213 +92,6 @@ func (a *dbAPI) SchemaMigrate(ctx context.Context, req oas.OptMigrateProps) (oas
 	return &oas.MigrateResult{Steps: out}, nil
 }
 
-func (a *dbAPI) Query(ctx context.Context, req oas.Query) (oas.QueryRes, error) {
-	q, err := protocol.UnmarshalQuery(req)
-	if err != nil {
-		op := api.ProblemToOAS(protocol.NewProblem(protocol.CodeInvalid, http.StatusBadRequest, err.Error()))
-		return (*oas.QueryBadRequest)(&op), nil
-	}
-	result, err := a.doQuery(ctx, a.db, q)
-	if err != nil {
-		if p := clientProblem(err); p != nil {
-			op := api.ProblemToOAS(*p)
-			return (*oas.QueryUnprocessableEntity)(&op), nil
-		}
-		return nil, err
-	}
-	return &oas.QueryResult{Result: result}, nil
-}
-
-func (a *dbAPI) RowCreate(ctx context.Context, req oas.OptRowCreateProps) (oas.RowCreateRes, error) {
-	p := req.Or(oas.RowCreateProps{})
-	rec, err := a.doCreate(ctx, a.db, p.Table, api.CellsToMap(p.Values))
-	if err != nil {
-		if cp := clientProblem(err); cp != nil {
-			op := api.ProblemToOAS(*cp)
-			if cp.Code == protocol.CodeConflict {
-				return (*oas.RowCreateConflict)(&op), nil
-			}
-			return (*oas.RowCreateUnprocessableEntity)(&op), nil
-		}
-		return nil, err
-	}
-	return recordResult(rec, true), nil
-}
-
-func (a *dbAPI) RowUpdate(ctx context.Context, req oas.OptRowUpdateProps) (oas.RowUpdateRes, error) {
-	p := req.Or(oas.RowUpdateProps{})
-	rec, found, err := a.doUpdate(ctx, a.db, p.Table, api.CellsToMap(p.Key), api.CellsToMap(p.Set), p.Clear)
-	if err != nil {
-		if cp := clientProblem(err); cp != nil {
-			op := api.ProblemToOAS(*cp)
-			if cp.Code == protocol.CodeConflict {
-				return (*oas.RowUpdateConflict)(&op), nil
-			}
-			return (*oas.RowUpdateUnprocessableEntity)(&op), nil
-		}
-		return nil, err
-	}
-	return recordResult(rec, found), nil
-}
-
-func (a *dbAPI) RowDelete(ctx context.Context, req oas.OptRowDeleteProps) (oas.RowDeleteRes, error) {
-	p := req.Or(oas.RowDeleteProps{})
-	found, err := a.doDelete(ctx, a.db, p.Table, api.CellsToMap(p.Key))
-	if err != nil {
-		if cp := clientProblem(err); cp != nil {
-			op := api.ProblemToOAS(*cp)
-			if cp.Code == protocol.CodeConflict {
-				return (*oas.RowDeleteConflict)(&op), nil
-			}
-			return (*oas.RowDeleteUnprocessableEntity)(&op), nil
-		}
-		return nil, err
-	}
-	return &oas.DeleteResult{Found: found}, nil
-}
-
-func (a *dbAPI) TransactionBegin(ctx context.Context) (*oas.TransactionCredentials, error) {
-	// Sessions outlive the request; use a background context.
-	tx, err := a.db.Begin(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	id := newSessionID()
-	a.mu.Lock()
-	a.sessions[id] = &txSession{tx: tx, lastUsed: time.Now()}
-	a.mu.Unlock()
-	return &oas.TransactionCredentials{ID: id}, nil
-}
-
-func (a *dbAPI) TransactionQuery(ctx context.Context, req oas.Query, params oas.TransactionQueryParams) (oas.TransactionQueryRes, error) {
-	q, err := protocol.UnmarshalQuery(req)
-	if err != nil {
-		op := api.ProblemToOAS(protocol.NewProblem(protocol.CodeInvalid, http.StatusBadRequest, err.Error()))
-		return (*oas.TransactionQueryBadRequest)(&op), nil
-	}
-	var result oas.Value
-	err = a.withSession(params.ID, func(v view) error {
-		var e error
-		result, e = a.doQuery(ctx, v, q)
-		return e
-	})
-	if err != nil {
-		if errors.Is(err, errTxNotFound) {
-			op := txNotFound()
-			return (*oas.TransactionQueryNotFound)(&op), nil
-		}
-		if cp := clientProblem(err); cp != nil {
-			op := api.ProblemToOAS(*cp)
-			return (*oas.TransactionQueryUnprocessableEntity)(&op), nil
-		}
-		return nil, err
-	}
-	return &oas.QueryResult{Result: result}, nil
-}
-
-func (a *dbAPI) TransactionRowCreate(ctx context.Context, req oas.OptRowCreateProps, params oas.TransactionRowCreateParams) (oas.TransactionRowCreateRes, error) {
-	p := req.Or(oas.RowCreateProps{})
-	var rec protocol.Record
-	err := a.withSession(params.ID, func(v view) error {
-		var e error
-		rec, e = a.doCreate(ctx, v, p.Table, api.CellsToMap(p.Values))
-		return e
-	})
-	if err != nil {
-		if errors.Is(err, errTxNotFound) {
-			op := txNotFound()
-			return (*oas.TransactionRowCreateNotFound)(&op), nil
-		}
-		if cp := clientProblem(err); cp != nil {
-			op := api.ProblemToOAS(*cp)
-			if cp.Code == protocol.CodeConflict {
-				return (*oas.TransactionRowCreateConflict)(&op), nil
-			}
-			return (*oas.TransactionRowCreateUnprocessableEntity)(&op), nil
-		}
-		return nil, err
-	}
-	return recordResult(rec, true), nil
-}
-
-func (a *dbAPI) TransactionRowUpdate(ctx context.Context, req oas.OptRowUpdateProps, params oas.TransactionRowUpdateParams) (oas.TransactionRowUpdateRes, error) {
-	p := req.Or(oas.RowUpdateProps{})
-	var rec protocol.Record
-	var found bool
-	err := a.withSession(params.ID, func(v view) error {
-		var e error
-		rec, found, e = a.doUpdate(ctx, v, p.Table, api.CellsToMap(p.Key), api.CellsToMap(p.Set), p.Clear)
-		return e
-	})
-	if err != nil {
-		if errors.Is(err, errTxNotFound) {
-			op := txNotFound()
-			return (*oas.TransactionRowUpdateNotFound)(&op), nil
-		}
-		if cp := clientProblem(err); cp != nil {
-			op := api.ProblemToOAS(*cp)
-			if cp.Code == protocol.CodeConflict {
-				return (*oas.TransactionRowUpdateConflict)(&op), nil
-			}
-			return (*oas.TransactionRowUpdateUnprocessableEntity)(&op), nil
-		}
-		return nil, err
-	}
-	return recordResult(rec, found), nil
-}
-
-func (a *dbAPI) TransactionRowDelete(ctx context.Context, req oas.OptRowDeleteProps, params oas.TransactionRowDeleteParams) (oas.TransactionRowDeleteRes, error) {
-	p := req.Or(oas.RowDeleteProps{})
-	var found bool
-	err := a.withSession(params.ID, func(v view) error {
-		var e error
-		found, e = a.doDelete(ctx, v, p.Table, api.CellsToMap(p.Key))
-		return e
-	})
-	if err != nil {
-		if errors.Is(err, errTxNotFound) {
-			op := txNotFound()
-			return (*oas.TransactionRowDeleteNotFound)(&op), nil
-		}
-		if cp := clientProblem(err); cp != nil {
-			op := api.ProblemToOAS(*cp)
-			if cp.Code == protocol.CodeConflict {
-				return (*oas.TransactionRowDeleteConflict)(&op), nil
-			}
-			return (*oas.TransactionRowDeleteUnprocessableEntity)(&op), nil
-		}
-		return nil, err
-	}
-	return &oas.DeleteResult{Found: found}, nil
-}
-
-func (a *dbAPI) TransactionCommit(ctx context.Context, params oas.TransactionCommitParams) (oas.TransactionCommitRes, error) {
-	err := a.finish(params.ID, func(s *txSession) error { return s.tx.Commit(ctx) })
-	if err != nil {
-		if errors.Is(err, errTxNotFound) {
-			op := txNotFound()
-			return (*oas.TransactionCommitNotFound)(&op), nil
-		}
-		if frontend.IsConflict(err) {
-			op := api.ProblemToOAS(protocol.NewProblem(protocol.CodeConflict, http.StatusConflict, err.Error()))
-			return (*oas.TransactionCommitConflict)(&op), nil
-		}
-		return nil, err
-	}
-	return &oas.NoContent{}, nil
-}
-
-func (a *dbAPI) TransactionRollback(ctx context.Context, params oas.TransactionRollbackParams) (oas.TransactionRollbackRes, error) {
-	err := a.finish(params.ID, func(s *txSession) error { return s.tx.Rollback() })
-	if err != nil {
-		if errors.Is(err, errTxNotFound) {
-			op := txNotFound()
-			return &op, nil // a bare Problem on this operation encodes 404
-		}
-		return nil, err
-	}
-	return &oas.NoContent{}, nil
-}
 
 // New builds the wire-protocol HTTP handler: the generated OpenAPI database
 // API. Unmatched routes return 404; the parent server wraps it with shared

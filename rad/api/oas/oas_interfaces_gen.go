@@ -25,22 +25,6 @@ type IndexDeleteRes interface {
 	indexDeleteRes()
 }
 
-type QueryRes interface {
-	queryRes()
-}
-
-type RowCreateRes interface {
-	rowCreateRes()
-}
-
-type RowDeleteRes interface {
-	rowDeleteRes()
-}
-
-type RowUpdateRes interface {
-	rowUpdateRes()
-}
-
 type SchemaMigrateRes interface {
 	schemaMigrateRes()
 }
@@ -55,28 +39,4 @@ type TableDeleteRes interface {
 
 type TableUpdateRes interface {
 	tableUpdateRes()
-}
-
-type TransactionCommitRes interface {
-	transactionCommitRes()
-}
-
-type TransactionQueryRes interface {
-	transactionQueryRes()
-}
-
-type TransactionRollbackRes interface {
-	transactionRollbackRes()
-}
-
-type TransactionRowCreateRes interface {
-	transactionRowCreateRes()
-}
-
-type TransactionRowDeleteRes interface {
-	transactionRowDeleteRes()
-}
-
-type TransactionRowUpdateRes interface {
-	transactionRowUpdateRes()
 }

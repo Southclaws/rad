@@ -67,39 +67,9 @@ func (c *Client) Migrate(ctx context.Context) ([]string, error) {
 	return c.rc.Migrate(ctx, SchemaSource)
 }
 
-// Tx runs fn in a server-held serializable transaction; retry the whole
-// Tx when IsConflict(err).
-func (c *Client) Tx(ctx context.Context, fn func(tx *Tx) error) error {
-	return c.rc.Txn(ctx, func(rtx *radclient.Tx) error {
-		tx := &Tx{}
-		tx.Users = UserTable{v: rtx}
-		tx.Sessions = SessionTable{v: rtx}
-		tx.Teams = TeamTable{v: rtx}
-		tx.TeamMembers = TeamMemberTable{v: rtx}
-		tx.Boards = BoardTable{v: rtx}
-		tx.Tasks = TaskTable{v: rtx}
-		tx.Comments = CommentTable{v: rtx}
-		tx.Labels = LabelTable{v: rtx}
-		tx.TaskLabels = TaskLabelTable{v: rtx}
-		return fn(tx)
-	})
-}
-
-// IsConflict reports whether err is a transaction conflict worth retrying.
+// IsConflict reports whether err is a serializable conflict worth
+// retrying — two programs raced at commit.
 func IsConflict(err error) bool { return radclient.IsConflict(err) }
-
-// Tx mirrors the Client's table handles inside a transaction.
-type Tx struct {
-	Users       UserTable
-	Sessions    SessionTable
-	Teams       TeamTable
-	TeamMembers TeamMemberTable
-	Boards      BoardTable
-	Tasks       TaskTable
-	Comments    CommentTable
-	Labels      LabelTable
-	TaskLabels  TaskLabelTable
-}
 
 // querySpec accumulates a fluent builder's state; assemble compiles it into
 // the wire's relation tree.

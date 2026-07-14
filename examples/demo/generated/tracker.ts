@@ -239,50 +239,138 @@ interface View {
   del(table: string, key: Rec): Promise<boolean>;
 }
 
+// A column of a table, as reported by introspection — the types a create
+// needs to build a typed rows relation.
+interface ColumnInfo { name: string; type: string; nullable?: boolean }
+
+// WireView is the data surface: every operation is one PIR program over
+// /execute. A read is a query statement; a single-row write is a mutation
+// statement whose input is a literal rows relation (create) or a scan
+// projected to the target key/values (update, delete).
 class WireView implements View {
   private rpc: Rpc;
-  private prefix: string;
-  constructor(rpc: Rpc, prefix = "") {
+  private schema?: Promise<Map<string, ColumnInfo[]>>;
+  constructor(rpc: Rpc) {
     this.rpc = rpc;
-    this.prefix = prefix;
+  }
+
+  private async columns(table: string): Promise<ColumnInfo[]> {
+    if (!this.schema) {
+      this.schema = this.rpc.req<{ tables: { name: string; columns: ColumnInfo[] }[] }>("/tables").then((res) => {
+        const m = new Map<string, ColumnInfo[]>();
+        for (const t of res.tables) m.set(t.name, t.columns);
+        return m;
+      });
+    }
+    const cols = (await this.schema).get(table);
+    if (!cols) throw new Error("unknown table " + table);
+    return cols;
+  }
+
+  private async run(stmt: Statement): Promise<unknown> {
+    const res = await this.rpc.req<{ result: unknown }>("/execute", { statements: [stmt] });
+    return res.result;
+  }
+
+  private records(result: unknown): Rec[] {
+    if (result === null || result === undefined) return [];
+    if (Array.isArray(result)) return result as Rec[];
+    return [result as Rec];
   }
 
   async query(q: GraphQuery): Promise<Rec[]> {
-    // The response carries one datum shaped as the root materialised: an
-    // array for many, an object for first/exactly_one, null for an absent
-    // first. View it as records.
-    const res = await this.rpc.req<{ result: unknown }>(this.prefix + "/query", q);
-    if (res.result === null || res.result === undefined) return [];
-    if (Array.isArray(res.result)) return res.result as Rec[];
-    return [res.result as Rec];
+    return this.records(await this.run({ name: "q", kind: "query", relation: q }));
   }
   async get(table: string, key: Rec): Promise<Rec | null> {
-    // A point read is a three-node graph — scan, filter on the key columns,
-    // slice of one; there is no dedicated get endpoint.
     const preds = Object.entries(key).map(([column, value]): Expr => eq(col("s", column), lit(value as Scalar)));
-    const recs = await this.query({
+    const recs = this.records(await this.run({ name: "get", kind: "query", relation: {
       nodes: {
         s: { kind: "scan", table, scope: "s" },
         keyed: { kind: "filter", input: "s", predicate: andAll(preds) },
         one: { kind: "slice", input: "keyed", limit: 1 },
       },
       root: { node: "one", cardinality: "first" },
-    });
+    } }));
     return recs.length ? recs[0] : null;
   }
   async create(table: string, values: Rec): Promise<Rec> {
-    const res = await this.rpc.req<{ record: Rec }>(this.prefix + "/create", { table, values });
-    return res.record;
+    const cols = await this.columns(table);
+    const types = new Map(cols.map((c) => [c.name, c]));
+    const names = Object.keys(values).sort();
+    const relation: GraphQuery = {
+      nodes: {
+        r: {
+          kind: "rows", scope: "r",
+          columns: names.map((n) => {
+            const c = types.get(n);
+            if (!c) throw new Error("table " + table + " has no column " + n);
+            return { name: n, type: c.type, nullable: c.nullable ?? false };
+          }),
+          rows: [names.map((n) => values[n] as Scalar)],
+        },
+      },
+      root: { node: "r", cardinality: "many" },
+    };
+    const recs = this.records(await this.run({ name: "create", kind: "create", table, relation }));
+    return recs[0];
   }
   async update(table: string, key: Rec, set: Rec, clear: string[]): Promise<Rec | null> {
-    const res = await this.rpc.req<{ found: boolean; record?: Rec }>(this.prefix + "/update", { table, key, set, clear });
-    return res.found ? res.record! : null;
+    // Identify by primary key and assign via a one-row relation typed from
+    // the catalog — a cleared column is a typed NULL, which a bare literal
+    // cannot express. A missing key is a not-found error, mapped to null to
+    // keep the point-update contract.
+    const cols = await this.columns(table);
+    const types = new Map(cols.map((c) => [c.name, c]));
+    const relCols: { name: string; type: string; nullable: boolean }[] = [];
+    const row: Scalar[] = [];
+    const add = (name: string, val: Scalar) => {
+      const c = types.get(name);
+      if (!c) throw new Error("table " + table + " has no column " + name);
+      relCols.push({ name, type: c.type, nullable: c.nullable ?? false });
+      row.push(val);
+    };
+    for (const [k, v] of Object.entries(key)) add(k, v as Scalar);
+    for (const [k, v] of Object.entries(set)) add(k, v as Scalar);
+    for (const k of clear) add(k, null);
+    const relation: GraphQuery = {
+      nodes: { r: { kind: "rows", scope: "r", columns: relCols, rows: [row] } },
+      root: { node: "r", cardinality: "many" },
+    };
+    try {
+      const recs = this.records(await this.run({ name: "update", kind: "update", table, relation }));
+      return recs.length ? recs[0] : null;
+    } catch (err) {
+      if (err instanceof RadError && err.problem.detail?.includes("target not found")) return null;
+      throw err;
+    }
   }
   async del(table: string, key: Rec): Promise<boolean> {
-    const res = await this.rpc.req<{ found: boolean }>(this.prefix + "/delete", { table, key });
-    return res.found;
+    const fields = Object.keys(key).map((k) => ({ as: k, expr: col("s", k) }));
+    const relation = this.keyedProjection(table, key, fields);
+    const res = await this.rpc.req<{ statements: { affected: number }[] }>("/execute", {
+      statements: [{ name: "delete", kind: "delete", table, relation }],
+    });
+    return res.statements.length === 1 && res.statements[0].affected > 0;
+  }
+
+  // keyedProjection scans a table, filters to the key row, and projects the
+  // given fields — the identify-by-key input for update and delete.
+  private keyedProjection(table: string, key: Rec, fields: { as: string; expr: Expr }[]): GraphQuery {
+    const preds = Object.entries(key).map(([column, value]): Expr => eq(col("s", column), lit(value as Scalar)));
+    return {
+      nodes: {
+        s: { kind: "scan", table, scope: "s" },
+        keyed: { kind: "filter", input: "s", predicate: andAll(preds) },
+        p: { kind: "project", input: "keyed", fields },
+      },
+      root: { node: "p", cardinality: "many" },
+    };
   }
 }
+
+// Statement is one PIR statement: a kind, a name, an LIR relation, and — for
+// mutations — a target table.
+interface Statement { name: string; kind: string; relation: GraphQuery; table?: string }
 
 /** Splits a patch into wire set/clear: null values clear the column. */
 function splitPatch(patch: Rec): { set: Rec; clear: string[] } {
@@ -621,6 +709,7 @@ export class UserQuery {
   }
 
   async all(): Promise<User[]> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "id") }];
     return (await this.v.query(assemble(this.spec))) as unknown as User[];
   }
 
@@ -966,6 +1055,7 @@ export class SessionQuery {
   }
 
   async all(): Promise<Session[]> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "token") }];
     return (await this.v.query(assemble(this.spec))) as unknown as Session[];
   }
 
@@ -1256,6 +1346,7 @@ export class TeamQuery {
   }
 
   async all(): Promise<Team[]> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "id") }];
     return (await this.v.query(assemble(this.spec))) as unknown as Team[];
   }
 
@@ -1522,6 +1613,7 @@ export class TeamMemberQuery {
   }
 
   async all(): Promise<TeamMember[]> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "team_id") }, { expr: col("", "user_id") }];
     return (await this.v.query(assemble(this.spec))) as unknown as TeamMember[];
   }
 
@@ -1819,6 +1911,7 @@ export class BoardQuery {
   }
 
   async all(): Promise<Board[]> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "id") }];
     return (await this.v.query(assemble(this.spec))) as unknown as Board[];
   }
 
@@ -2255,6 +2348,7 @@ export class TaskQuery {
   }
 
   async all(): Promise<Task[]> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "id") }];
     return (await this.v.query(assemble(this.spec))) as unknown as Task[];
   }
 
@@ -2804,6 +2898,7 @@ export class CommentQuery {
   }
 
   async all(): Promise<Comment[]> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "id") }];
     return (await this.v.query(assemble(this.spec))) as unknown as Comment[];
   }
 
@@ -3117,6 +3212,7 @@ export class LabelQuery {
   }
 
   async all(): Promise<Label[]> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "id") }];
     return (await this.v.query(assemble(this.spec))) as unknown as Label[];
   }
 
@@ -3368,6 +3464,7 @@ export class TaskLabelQuery {
   }
 
   async all(): Promise<TaskLabel[]> {
+    if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "task_id") }, { expr: col("", "label_id") }];
     return (await this.v.query(assemble(this.spec))) as unknown as TaskLabel[];
   }
 
@@ -3481,29 +3578,6 @@ export class TaskLabelInclude {
 
 // ── client ──────────────────────────────────────────────────────────────
 
-export class Tx {
-  readonly users: UserTable;
-  readonly sessions: SessionTable;
-  readonly teams: TeamTable;
-  readonly teamMembers: TeamMemberTable;
-  readonly boards: BoardTable;
-  readonly tasks: TaskTable;
-  readonly comments: CommentTable;
-  readonly labels: LabelTable;
-  readonly taskLabels: TaskLabelTable;
-  constructor(view: View) {
-    this.users = new UserTable(view);
-    this.sessions = new SessionTable(view);
-    this.teams = new TeamTable(view);
-    this.teamMembers = new TeamMemberTable(view);
-    this.boards = new BoardTable(view);
-    this.tasks = new TaskTable(view);
-    this.comments = new CommentTable(view);
-    this.labels = new LabelTable(view);
-    this.taskLabels = new TaskLabelTable(view);
-  }
-}
-
 export class Client {
   private rpc: Rpc;
   readonly users: UserTable;
@@ -3540,25 +3614,6 @@ export class Client {
   async migrate(): Promise<string[]> {
     const res = await this.rpc.req<{ steps: string[] }>("/migrate", { schema: schemaSource });
     return res.steps;
-  }
-
-  /** Runs fn in a server-held transaction; commits unless fn throws.
-   * Retry the whole tx when isConflict(err). */
-  async tx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
-    const { id } = await this.rpc.req<{ id: string }>("/tx", {});
-    const tx = new Tx(new WireView(this.rpc, "/tx/" + id));
-    try {
-      const out = await fn(tx);
-      await this.rpc.req("/tx/" + id + "/commit", {});
-      return out;
-    } catch (err) {
-      try {
-        await this.rpc.req("/tx/" + id + "/rollback", {});
-      } catch {
-        // already completed or expired — the original error wins
-      }
-      throw err;
-    }
   }
 }
 

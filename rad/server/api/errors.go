@@ -44,20 +44,6 @@ func clientProblem(err error) *protocol.Problem {
 	}
 }
 
-// txNotFound builds the not_found problem for a spent or unknown transaction.
-func txNotFound() oas.Problem {
-	return api.ProblemToOAS(protocol.NewProblem(protocol.CodeNotFound, http.StatusNotFound, errTxNotFound.Error()))
-}
-
-// recordResult wraps a single-row result, omitting the record when absent.
-func recordResult(rec protocol.Record, found bool) *oas.RecordResult {
-	res := &oas.RecordResult{Found: found}
-	if found {
-		res.Record = oas.NewOptRecord(api.MapToRecord(rec))
-	}
-	return res
-}
-
 // NewError renders an unexpected internal error as the contract's default
 // response. The detail is deliberately generic; the real error is logged.
 func (a *dbAPI) NewError(ctx context.Context, err error) *oas.InternalServerErrorStatusCode {

@@ -17,11 +17,15 @@ import (
 	"github.com/Southclaws/rad/tests/harness"
 )
 
-// postQuery sends a raw JSON body to POST /query and returns status + body.
+// postQuery sends a raw LIR body as a one-statement execution program to
+// POST /execute and returns status + body. The body is embedded verbatim as
+// the statement's relation, so the server's two-phase validation reports the
+// same LIR-level rejection it always did — now surfaced through /execute.
 func postQuery(t *testing.T, d *harness.DB, body string) (int, string) {
 	t.Helper()
 	base := strings.Replace(d.URL, "rad://", "http://", 1)
-	res, err := http.Post(base+"/query", "application/json", bytes.NewReader([]byte(body)))
+	prog := `{"statements":[{"name":"q","kind":"query","relation":` + body + `}]}`
+	res, err := http.Post(base+"/execute", "application/json", bytes.NewReader([]byte(prog)))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}

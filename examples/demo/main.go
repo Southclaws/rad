@@ -91,12 +91,13 @@ func run() error {
 	}
 	fmt.Printf("   session resolves to %s\n\n", who.Username)
 
-	// Create a team, board, and labels atomically.
-	fmt.Println("── seed team, board, labels, tasks (one transaction)")
+	// Seed a team, board, and labels. Each write is its own execution
+	// program; a following create consumes the previous row's id.
+	fmt.Println("── seed team, board, labels, tasks")
 	var board tracker.Board
 	var bugLabel, shipLabel tracker.Label
-	err = db.Tx(ctx, func(tx *tracker.Tx) error {
-		team, err := tx.Teams.Create(ctx, tracker.TeamCreate{Name: "Radlabs"})
+	err = func() error {
+		team, err := db.Teams.Create(ctx, tracker.TeamCreate{Name: "Radlabs"})
 		if err != nil {
 			return err
 		}
@@ -105,27 +106,27 @@ func run() error {
 			if u.ID == ada.ID {
 				role = "owner"
 			}
-			if _, err := tx.TeamMembers.Create(ctx, tracker.TeamMemberCreate{
+			if _, err := db.TeamMembers.Create(ctx, tracker.TeamMemberCreate{
 				TeamID: team.ID, UserID: u.ID, Role: ptr(role),
 			}); err != nil {
 				return err
 			}
 		}
-		board, err = tx.Boards.Create(ctx, tracker.BoardCreate{TeamID: team.ID, Name: "Launch v0"})
+		board, err = db.Boards.Create(ctx, tracker.BoardCreate{TeamID: team.ID, Name: "Launch v0"})
 		if err != nil {
 			return err
 		}
-		bugLabel, err = tx.Labels.Create(ctx, tracker.LabelCreate{TeamID: team.ID, Name: "bug", HexColor: ptr("#e74c3c")})
+		bugLabel, err = db.Labels.Create(ctx, tracker.LabelCreate{TeamID: team.ID, Name: "bug", HexColor: ptr("#e74c3c")})
 		if err != nil {
 			return err
 		}
-		shipLabel, err = tx.Labels.Create(ctx, tracker.LabelCreate{TeamID: team.ID, Name: "ship-blocker"})
+		shipLabel, err = db.Labels.Create(ctx, tracker.LabelCreate{TeamID: team.ID, Name: "ship-blocker"})
 		if err != nil {
 			return err
 		}
 
 		// A task tree: parent with two subtasks (self-referential FK).
-		parent, err := tx.Tasks.Create(ctx, tracker.TaskCreate{
+		parent, err := db.Tasks.Create(ctx, tracker.TaskCreate{
 			BoardID: board.ID, Title: "Ship the demo", CreatorID: ada.ID,
 			Priority: ptr(int64(1)), AssigneeID: &ada.ID,
 			DueAt: ptr(time.Now().Add(48 * time.Hour).UnixMilli()),
@@ -133,7 +134,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		sub1, err := tx.Tasks.Create(ctx, tracker.TaskCreate{
+		sub1, err := db.Tasks.Create(ctx, tracker.TaskCreate{
 			BoardID: board.ID, Title: "Write the walkthrough", CreatorID: ada.ID,
 			ParentID: &parent.ID, AssigneeID: &grace.ID, Priority: ptr(int64(2)),
 			Estimate: ptr(3.5),
@@ -141,7 +142,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Tasks.Create(ctx, tracker.TaskCreate{
+		if _, err := db.Tasks.Create(ctx, tracker.TaskCreate{
 			BoardID: board.ID, Title: "Fix nested include bug", CreatorID: grace.ID,
 			ParentID: &parent.ID, Priority: ptr(int64(1)),
 			Description: ptr("children arrays lose their order"),
@@ -149,20 +150,20 @@ func run() error {
 			return err
 		}
 		// Labels via the join table, comments on a subtask.
-		if _, err := tx.TaskLabels.Create(ctx, tracker.TaskLabelCreate{TaskID: parent.ID, LabelID: shipLabel.ID}); err != nil {
+		if _, err := db.TaskLabels.Create(ctx, tracker.TaskLabelCreate{TaskID: parent.ID, LabelID: shipLabel.ID}); err != nil {
 			return err
 		}
-		if _, err := tx.Comments.Create(ctx, tracker.CommentCreate{
+		if _, err := db.Comments.Create(ctx, tracker.CommentCreate{
 			TaskID: sub1.ID, AuthorID: linus.ID, Body: "drafting tonight",
 		}); err != nil {
 			return err
 		}
 		return nil
-	})
+	}()
 	if err != nil {
 		return err
 	}
-	fmt.Println("   committed atomically ✓")
+	fmt.Println("   seeded ✓")
 
 	// Foreign keys hold even inside the typed API.
 	if _, err := db.Tasks.Create(ctx, tracker.TaskCreate{
@@ -296,36 +297,20 @@ func run() error {
 		fmt.Printf("   deleting grace blocked: %v\n", err)
 	}
 
-	// Optimistic concurrency: claim races retry cleanly.
-	fmt.Println("\n── conflict & retry")
+	// Read, decide, write: reassign a task after checking its owner. Each
+	// step is its own execution program.
+	fmt.Println("\n── reassign (read, decide, write)")
 	target := graceTasks[0]
-	attempt := 0
-	claim := func() error {
-		return db.Tx(ctx, func(tx *tracker.Tx) error {
-			attempt++
-			t, ok, err := tx.Tasks.Get(ctx, target.ID)
-			if err != nil || !ok {
-				return errors.Join(err, errors.New("task vanished"))
-			}
-			if t.AssigneeID != nil && *t.AssigneeID != grace.ID {
-				return fmt.Errorf("already claimed by someone else")
-			}
-			if attempt == 1 {
-				// A rival commits first, invalidating our snapshot.
-				if _, _, err := db.Tasks.Update(ctx, target.ID, tracker.TaskPatch{AssigneeID: &linus.ID}); err != nil {
-					return err
-				}
-			}
-			_, _, err = tx.Tasks.Update(ctx, target.ID, tracker.TaskPatch{AssigneeID: &ada.ID})
+	t, ok, err := db.Tasks.Get(ctx, target.ID)
+	if err != nil || !ok {
+		return errors.Join(err, errors.New("task vanished"))
+	}
+	if t.AssigneeID == nil || *t.AssigneeID == grace.ID {
+		if _, _, err := db.Tasks.Update(ctx, target.ID, tracker.TaskPatch{AssigneeID: &ada.ID}); err != nil {
 			return err
-		})
+		}
+		fmt.Println("   reassigned to ada ✓")
 	}
-	err = claim()
-	fmt.Printf("   first attempt: conflict=%v\n", tracker.IsConflict(err))
-	if tracker.IsConflict(err) {
-		err = claim()
-	}
-	fmt.Printf("   retry: %v (linus won the race, ada saw fresh state)\n", err)
 
 	// Cleanup path: children first, then the parent row.
 	fmt.Println("\n── delete (restrict ordering)")

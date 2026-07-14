@@ -11,22 +11,13 @@ import (
 )
 
 var (
-	rn15AllowedHeaders = map[string]string{
-		"POST": "Content-Type",
-	}
-	rn16AllowedHeaders = map[string]string{
-		"POST": "Content-Type",
-	}
 	rn7AllowedHeaders = map[string]string{
-		"POST": "Content-Type",
-	}
-	rn18AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 	rn14AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn19AllowedHeaders = map[string]string{
+	rn15AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 	rn2AllowedHeaders = map[string]string{
@@ -39,21 +30,6 @@ var (
 		"PATCH": "Content-Type",
 	}
 	rn11AllowedHeaders = map[string]string{
-		"POST": "Content-Type",
-	}
-	rn29AllowedHeaders = map[string]string{
-		"POST": "Content-Type",
-	}
-	rn30AllowedHeaders = map[string]string{
-		"POST": "Content-Type",
-	}
-	rn26AllowedHeaders = map[string]string{
-		"POST": "Content-Type",
-	}
-	rn31AllowedHeaders = map[string]string{
-		"POST": "Content-Type",
-	}
-	rn17AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 )
@@ -109,56 +85,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			switch elem[0] {
-			case 'c': // Prefix: "create"
-
-				if l := len("create"); len(elem) >= l && elem[0:l] == "create" {
-					elem = elem[l:]
-				} else {
-					break
-				}
-
-				if len(elem) == 0 {
-					// Leaf node.
-					switch r.Method {
-					case "POST":
-						s.handleRowCreateRequest([0]string{}, elemIsEscaped, w, r)
-					default:
-						s.notAllowed(w, r, notAllowedParams{
-							allowedMethods: "POST",
-							allowedHeaders: rn15AllowedHeaders,
-							acceptPost:     "application/json",
-							acceptPatch:    "",
-						})
-					}
-
-					return
-				}
-
-			case 'd': // Prefix: "delete"
-
-				if l := len("delete"); len(elem) >= l && elem[0:l] == "delete" {
-					elem = elem[l:]
-				} else {
-					break
-				}
-
-				if len(elem) == 0 {
-					// Leaf node.
-					switch r.Method {
-					case "POST":
-						s.handleRowDeleteRequest([0]string{}, elemIsEscaped, w, r)
-					default:
-						s.notAllowed(w, r, notAllowedParams{
-							allowedMethods: "POST",
-							allowedHeaders: rn16AllowedHeaders,
-							acceptPost:     "application/json",
-							acceptPatch:    "",
-						})
-					}
-
-					return
-				}
-
 			case 'e': // Prefix: "execute"
 
 				if l := len("execute"); len(elem) >= l && elem[0:l] == "execute" {
@@ -250,31 +176,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					default:
 						s.notAllowed(w, r, notAllowedParams{
 							allowedMethods: "POST",
-							allowedHeaders: rn18AllowedHeaders,
-							acceptPost:     "application/json",
-							acceptPatch:    "",
-						})
-					}
-
-					return
-				}
-
-			case 'q': // Prefix: "query"
-
-				if l := len("query"); len(elem) >= l && elem[0:l] == "query" {
-					elem = elem[l:]
-				} else {
-					break
-				}
-
-				if len(elem) == 0 {
-					// Leaf node.
-					switch r.Method {
-					case "POST":
-						s.handleQueryRequest([0]string{}, elemIsEscaped, w, r)
-					default:
-						s.notAllowed(w, r, notAllowedParams{
-							allowedMethods: "POST",
 							allowedHeaders: rn14AllowedHeaders,
 							acceptPost:     "application/json",
 							acceptPatch:    "",
@@ -284,254 +185,65 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-			case 't': // Prefix: "t"
+			case 't': // Prefix: "tables"
 
-				if l := len("t"); len(elem) >= l && elem[0:l] == "t" {
+				if l := len("tables"); len(elem) >= l && elem[0:l] == "tables" {
 					elem = elem[l:]
 				} else {
 					break
 				}
 
 				if len(elem) == 0 {
-					break
+					switch r.Method {
+					case "GET":
+						s.handleTableListRequest([0]string{}, elemIsEscaped, w, r)
+					case "POST":
+						s.handleTableCreateRequest([0]string{}, elemIsEscaped, w, r)
+					default:
+						s.notAllowed(w, r, notAllowedParams{
+							allowedMethods: "GET,POST",
+							allowedHeaders: rn15AllowedHeaders,
+							acceptPost:     "application/json",
+							acceptPatch:    "",
+						})
+					}
+
+					return
 				}
 				switch elem[0] {
-				case 'a': // Prefix: "ables"
+				case '/': // Prefix: "/"
 
-					if l := len("ables"); len(elem) >= l && elem[0:l] == "ables" {
+					if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
 						elem = elem[l:]
 					} else {
 						break
 					}
 
-					if len(elem) == 0 {
-						switch r.Method {
-						case "GET":
-							s.handleTableListRequest([0]string{}, elemIsEscaped, w, r)
-						case "POST":
-							s.handleTableCreateRequest([0]string{}, elemIsEscaped, w, r)
-						default:
-							s.notAllowed(w, r, notAllowedParams{
-								allowedMethods: "GET,POST",
-								allowedHeaders: rn19AllowedHeaders,
-								acceptPost:     "application/json",
-								acceptPatch:    "",
-							})
-						}
-
-						return
+					// Param: "table"
+					// Match until "/"
+					idx := strings.IndexByte(elem, '/')
+					if idx < 0 {
+						idx = len(elem)
 					}
-					switch elem[0] {
-					case '/': // Prefix: "/"
-
-						if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
-							elem = elem[l:]
-						} else {
-							break
-						}
-
-						// Param: "table"
-						// Match until "/"
-						idx := strings.IndexByte(elem, '/')
-						if idx < 0 {
-							idx = len(elem)
-						}
-						args[0] = elem[:idx]
-						elem = elem[idx:]
-
-						if len(elem) == 0 {
-							switch r.Method {
-							case "DELETE":
-								s.handleTableDeleteRequest([1]string{
-									args[0],
-								}, elemIsEscaped, w, r)
-							case "PATCH":
-								s.handleTableUpdateRequest([1]string{
-									args[0],
-								}, elemIsEscaped, w, r)
-							default:
-								s.notAllowed(w, r, notAllowedParams{
-									allowedMethods: "DELETE,PATCH",
-									allowedHeaders: rn2AllowedHeaders,
-									acceptPost:     "",
-									acceptPatch:    "application/json",
-								})
-							}
-
-							return
-						}
-						switch elem[0] {
-						case '/': // Prefix: "/"
-
-							if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
-								elem = elem[l:]
-							} else {
-								break
-							}
-
-							if len(elem) == 0 {
-								break
-							}
-							switch elem[0] {
-							case 'c': // Prefix: "columns"
-
-								if l := len("columns"); len(elem) >= l && elem[0:l] == "columns" {
-									elem = elem[l:]
-								} else {
-									break
-								}
-
-								if len(elem) == 0 {
-									switch r.Method {
-									case "POST":
-										s.handleColumnCreateRequest([1]string{
-											args[0],
-										}, elemIsEscaped, w, r)
-									default:
-										s.notAllowed(w, r, notAllowedParams{
-											allowedMethods: "POST",
-											allowedHeaders: rn3AllowedHeaders,
-											acceptPost:     "application/json",
-											acceptPatch:    "",
-										})
-									}
-
-									return
-								}
-								switch elem[0] {
-								case '/': // Prefix: "/"
-
-									if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
-										elem = elem[l:]
-									} else {
-										break
-									}
-
-									// Param: "column"
-									// Leaf parameter, slashes are prohibited
-									idx := strings.IndexByte(elem, '/')
-									if idx >= 0 {
-										break
-									}
-									args[1] = elem
-									elem = ""
-
-									if len(elem) == 0 {
-										// Leaf node.
-										switch r.Method {
-										case "DELETE":
-											s.handleColumnDeleteRequest([2]string{
-												args[0],
-												args[1],
-											}, elemIsEscaped, w, r)
-										case "PATCH":
-											s.handleColumnUpdateRequest([2]string{
-												args[0],
-												args[1],
-											}, elemIsEscaped, w, r)
-										default:
-											s.notAllowed(w, r, notAllowedParams{
-												allowedMethods: "DELETE,PATCH",
-												allowedHeaders: rn5AllowedHeaders,
-												acceptPost:     "",
-												acceptPatch:    "application/json",
-											})
-										}
-
-										return
-									}
-
-								}
-
-							case 'i': // Prefix: "indexes"
-
-								if l := len("indexes"); len(elem) >= l && elem[0:l] == "indexes" {
-									elem = elem[l:]
-								} else {
-									break
-								}
-
-								if len(elem) == 0 {
-									switch r.Method {
-									case "POST":
-										s.handleIndexCreateRequest([1]string{
-											args[0],
-										}, elemIsEscaped, w, r)
-									default:
-										s.notAllowed(w, r, notAllowedParams{
-											allowedMethods: "POST",
-											allowedHeaders: rn11AllowedHeaders,
-											acceptPost:     "application/json",
-											acceptPatch:    "",
-										})
-									}
-
-									return
-								}
-								switch elem[0] {
-								case '/': // Prefix: "/"
-
-									if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
-										elem = elem[l:]
-									} else {
-										break
-									}
-
-									// Param: "index"
-									// Leaf parameter, slashes are prohibited
-									idx := strings.IndexByte(elem, '/')
-									if idx >= 0 {
-										break
-									}
-									args[1] = elem
-									elem = ""
-
-									if len(elem) == 0 {
-										// Leaf node.
-										switch r.Method {
-										case "DELETE":
-											s.handleIndexDeleteRequest([2]string{
-												args[0],
-												args[1],
-											}, elemIsEscaped, w, r)
-										default:
-											s.notAllowed(w, r, notAllowedParams{
-												allowedMethods: "DELETE",
-												allowedHeaders: nil,
-												acceptPost:     "",
-												acceptPatch:    "",
-											})
-										}
-
-										return
-									}
-
-								}
-
-							}
-
-						}
-
-					}
-
-				case 'x': // Prefix: "x"
-
-					if l := len("x"); len(elem) >= l && elem[0:l] == "x" {
-						elem = elem[l:]
-					} else {
-						break
-					}
+					args[0] = elem[:idx]
+					elem = elem[idx:]
 
 					if len(elem) == 0 {
 						switch r.Method {
-						case "POST":
-							s.handleTransactionBeginRequest([0]string{}, elemIsEscaped, w, r)
+						case "DELETE":
+							s.handleTableDeleteRequest([1]string{
+								args[0],
+							}, elemIsEscaped, w, r)
+						case "PATCH":
+							s.handleTableUpdateRequest([1]string{
+								args[0],
+							}, elemIsEscaped, w, r)
 						default:
 							s.notAllowed(w, r, notAllowedParams{
-								allowedMethods: "POST",
-								allowedHeaders: nil,
+								allowedMethods: "DELETE,PATCH",
+								allowedHeaders: rn2AllowedHeaders,
 								acceptPost:     "",
-								acceptPatch:    "",
+								acceptPatch:    "application/json",
 							})
 						}
 
@@ -546,171 +258,134 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							break
 						}
 
-						// Param: "id"
-						// Match until "/"
-						idx := strings.IndexByte(elem, '/')
-						if idx < 0 {
-							idx = len(elem)
-						}
-						args[0] = elem[:idx]
-						elem = elem[idx:]
-
 						if len(elem) == 0 {
 							break
 						}
 						switch elem[0] {
-						case '/': // Prefix: "/"
+						case 'c': // Prefix: "columns"
 
-							if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
+							if l := len("columns"); len(elem) >= l && elem[0:l] == "columns" {
 								elem = elem[l:]
 							} else {
 								break
 							}
 
 							if len(elem) == 0 {
-								break
+								switch r.Method {
+								case "POST":
+									s.handleColumnCreateRequest([1]string{
+										args[0],
+									}, elemIsEscaped, w, r)
+								default:
+									s.notAllowed(w, r, notAllowedParams{
+										allowedMethods: "POST",
+										allowedHeaders: rn3AllowedHeaders,
+										acceptPost:     "application/json",
+										acceptPatch:    "",
+									})
+								}
+
+								return
 							}
 							switch elem[0] {
-							case 'c': // Prefix: "c"
+							case '/': // Prefix: "/"
 
-								if l := len("c"); len(elem) >= l && elem[0:l] == "c" {
+								if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
 									elem = elem[l:]
 								} else {
 									break
 								}
 
-								if len(elem) == 0 {
+								// Param: "column"
+								// Leaf parameter, slashes are prohibited
+								idx := strings.IndexByte(elem, '/')
+								if idx >= 0 {
 									break
 								}
-								switch elem[0] {
-								case 'o': // Prefix: "ommit"
-
-									if l := len("ommit"); len(elem) >= l && elem[0:l] == "ommit" {
-										elem = elem[l:]
-									} else {
-										break
-									}
-
-									if len(elem) == 0 {
-										// Leaf node.
-										switch r.Method {
-										case "POST":
-											s.handleTransactionCommitRequest([1]string{
-												args[0],
-											}, elemIsEscaped, w, r)
-										default:
-											s.notAllowed(w, r, notAllowedParams{
-												allowedMethods: "POST",
-												allowedHeaders: nil,
-												acceptPost:     "",
-												acceptPatch:    "",
-											})
-										}
-
-										return
-									}
-
-								case 'r': // Prefix: "reate"
-
-									if l := len("reate"); len(elem) >= l && elem[0:l] == "reate" {
-										elem = elem[l:]
-									} else {
-										break
-									}
-
-									if len(elem) == 0 {
-										// Leaf node.
-										switch r.Method {
-										case "POST":
-											s.handleTransactionRowCreateRequest([1]string{
-												args[0],
-											}, elemIsEscaped, w, r)
-										default:
-											s.notAllowed(w, r, notAllowedParams{
-												allowedMethods: "POST",
-												allowedHeaders: rn29AllowedHeaders,
-												acceptPost:     "application/json",
-												acceptPatch:    "",
-											})
-										}
-
-										return
-									}
-
-								}
-
-							case 'd': // Prefix: "delete"
-
-								if l := len("delete"); len(elem) >= l && elem[0:l] == "delete" {
-									elem = elem[l:]
-								} else {
-									break
-								}
+								args[1] = elem
+								elem = ""
 
 								if len(elem) == 0 {
 									// Leaf node.
 									switch r.Method {
-									case "POST":
-										s.handleTransactionRowDeleteRequest([1]string{
+									case "DELETE":
+										s.handleColumnDeleteRequest([2]string{
 											args[0],
+											args[1],
+										}, elemIsEscaped, w, r)
+									case "PATCH":
+										s.handleColumnUpdateRequest([2]string{
+											args[0],
+											args[1],
 										}, elemIsEscaped, w, r)
 									default:
 										s.notAllowed(w, r, notAllowedParams{
-											allowedMethods: "POST",
-											allowedHeaders: rn30AllowedHeaders,
-											acceptPost:     "application/json",
-											acceptPatch:    "",
+											allowedMethods: "DELETE,PATCH",
+											allowedHeaders: rn5AllowedHeaders,
+											acceptPost:     "",
+											acceptPatch:    "application/json",
 										})
 									}
 
 									return
 								}
 
-							case 'q': // Prefix: "query"
+							}
 
-								if l := len("query"); len(elem) >= l && elem[0:l] == "query" {
+						case 'i': // Prefix: "indexes"
+
+							if l := len("indexes"); len(elem) >= l && elem[0:l] == "indexes" {
+								elem = elem[l:]
+							} else {
+								break
+							}
+
+							if len(elem) == 0 {
+								switch r.Method {
+								case "POST":
+									s.handleIndexCreateRequest([1]string{
+										args[0],
+									}, elemIsEscaped, w, r)
+								default:
+									s.notAllowed(w, r, notAllowedParams{
+										allowedMethods: "POST",
+										allowedHeaders: rn11AllowedHeaders,
+										acceptPost:     "application/json",
+										acceptPatch:    "",
+									})
+								}
+
+								return
+							}
+							switch elem[0] {
+							case '/': // Prefix: "/"
+
+								if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
 									elem = elem[l:]
 								} else {
 									break
 								}
 
-								if len(elem) == 0 {
-									// Leaf node.
-									switch r.Method {
-									case "POST":
-										s.handleTransactionQueryRequest([1]string{
-											args[0],
-										}, elemIsEscaped, w, r)
-									default:
-										s.notAllowed(w, r, notAllowedParams{
-											allowedMethods: "POST",
-											allowedHeaders: rn26AllowedHeaders,
-											acceptPost:     "application/json",
-											acceptPatch:    "",
-										})
-									}
-
-									return
-								}
-
-							case 'r': // Prefix: "rollback"
-
-								if l := len("rollback"); len(elem) >= l && elem[0:l] == "rollback" {
-									elem = elem[l:]
-								} else {
+								// Param: "index"
+								// Leaf parameter, slashes are prohibited
+								idx := strings.IndexByte(elem, '/')
+								if idx >= 0 {
 									break
 								}
+								args[1] = elem
+								elem = ""
 
 								if len(elem) == 0 {
 									// Leaf node.
 									switch r.Method {
-									case "POST":
-										s.handleTransactionRollbackRequest([1]string{
+									case "DELETE":
+										s.handleIndexDeleteRequest([2]string{
 											args[0],
+											args[1],
 										}, elemIsEscaped, w, r)
 									default:
 										s.notAllowed(w, r, notAllowedParams{
-											allowedMethods: "POST",
+											allowedMethods: "DELETE",
 											allowedHeaders: nil,
 											acceptPost:     "",
 											acceptPatch:    "",
@@ -720,64 +395,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 									return
 								}
 
-							case 'u': // Prefix: "update"
-
-								if l := len("update"); len(elem) >= l && elem[0:l] == "update" {
-									elem = elem[l:]
-								} else {
-									break
-								}
-
-								if len(elem) == 0 {
-									// Leaf node.
-									switch r.Method {
-									case "POST":
-										s.handleTransactionRowUpdateRequest([1]string{
-											args[0],
-										}, elemIsEscaped, w, r)
-									default:
-										s.notAllowed(w, r, notAllowedParams{
-											allowedMethods: "POST",
-											allowedHeaders: rn31AllowedHeaders,
-											acceptPost:     "application/json",
-											acceptPatch:    "",
-										})
-									}
-
-									return
-								}
-
 							}
 
 						}
 
 					}
 
-				}
-
-			case 'u': // Prefix: "update"
-
-				if l := len("update"); len(elem) >= l && elem[0:l] == "update" {
-					elem = elem[l:]
-				} else {
-					break
-				}
-
-				if len(elem) == 0 {
-					// Leaf node.
-					switch r.Method {
-					case "POST":
-						s.handleRowUpdateRequest([0]string{}, elemIsEscaped, w, r)
-					default:
-						s.notAllowed(w, r, notAllowedParams{
-							allowedMethods: "POST",
-							allowedHeaders: rn17AllowedHeaders,
-							acceptPost:     "application/json",
-							acceptPatch:    "",
-						})
-					}
-
-					return
 				}
 
 			}
@@ -880,56 +503,6 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 				break
 			}
 			switch elem[0] {
-			case 'c': // Prefix: "create"
-
-				if l := len("create"); len(elem) >= l && elem[0:l] == "create" {
-					elem = elem[l:]
-				} else {
-					break
-				}
-
-				if len(elem) == 0 {
-					// Leaf node.
-					switch method {
-					case "POST":
-						r.name = RowCreateOperation
-						r.summary = "Insert one row."
-						r.operationID = "RowCreate"
-						r.operationGroup = ""
-						r.pathPattern = "/create"
-						r.args = args
-						r.count = 0
-						return r, true
-					default:
-						return
-					}
-				}
-
-			case 'd': // Prefix: "delete"
-
-				if l := len("delete"); len(elem) >= l && elem[0:l] == "delete" {
-					elem = elem[l:]
-				} else {
-					break
-				}
-
-				if len(elem) == 0 {
-					// Leaf node.
-					switch method {
-					case "POST":
-						r.name = RowDeleteOperation
-						r.summary = "Delete one row by primary key."
-						r.operationID = "RowDelete"
-						r.operationGroup = ""
-						r.pathPattern = "/delete"
-						r.args = args
-						r.count = 0
-						return r, true
-					default:
-						return
-					}
-				}
-
 			case 'e': // Prefix: "execute"
 
 				if l := len("execute"); len(elem) >= l && elem[0:l] == "execute" {
@@ -1030,70 +603,75 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 					}
 				}
 
-			case 'q': // Prefix: "query"
+			case 't': // Prefix: "tables"
 
-				if l := len("query"); len(elem) >= l && elem[0:l] == "query" {
+				if l := len("tables"); len(elem) >= l && elem[0:l] == "tables" {
 					elem = elem[l:]
 				} else {
 					break
 				}
 
 				if len(elem) == 0 {
-					// Leaf node.
 					switch method {
-					case "POST":
-						r.name = QueryOperation
-						r.summary = "Run a relation-graph query."
-						r.operationID = "Query"
+					case "GET":
+						r.name = TableListOperation
+						r.summary = "List the tables in the database."
+						r.operationID = "TableList"
 						r.operationGroup = ""
-						r.pathPattern = "/query"
+						r.pathPattern = "/tables"
+						r.args = args
+						r.count = 0
+						return r, true
+					case "POST":
+						r.name = TableCreateOperation
+						r.summary = "Create a table."
+						r.operationID = "TableCreate"
+						r.operationGroup = ""
+						r.pathPattern = "/tables"
 						r.args = args
 						r.count = 0
 						return r, true
 					default:
 						return
 					}
-				}
-
-			case 't': // Prefix: "t"
-
-				if l := len("t"); len(elem) >= l && elem[0:l] == "t" {
-					elem = elem[l:]
-				} else {
-					break
-				}
-
-				if len(elem) == 0 {
-					break
 				}
 				switch elem[0] {
-				case 'a': // Prefix: "ables"
+				case '/': // Prefix: "/"
 
-					if l := len("ables"); len(elem) >= l && elem[0:l] == "ables" {
+					if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
 						elem = elem[l:]
 					} else {
 						break
 					}
 
+					// Param: "table"
+					// Match until "/"
+					idx := strings.IndexByte(elem, '/')
+					if idx < 0 {
+						idx = len(elem)
+					}
+					args[0] = elem[:idx]
+					elem = elem[idx:]
+
 					if len(elem) == 0 {
 						switch method {
-						case "GET":
-							r.name = TableListOperation
-							r.summary = "List the tables in the database."
-							r.operationID = "TableList"
+						case "DELETE":
+							r.name = TableDeleteOperation
+							r.summary = "Delete a table."
+							r.operationID = "TableDelete"
 							r.operationGroup = ""
-							r.pathPattern = "/tables"
+							r.pathPattern = "/tables/{table}"
 							r.args = args
-							r.count = 0
+							r.count = 1
 							return r, true
-						case "POST":
-							r.name = TableCreateOperation
-							r.summary = "Create a table."
-							r.operationID = "TableCreate"
+						case "PATCH":
+							r.name = TableUpdateOperation
+							r.summary = "Update a table."
+							r.operationID = "TableUpdate"
 							r.operationGroup = ""
-							r.pathPattern = "/tables"
+							r.pathPattern = "/tables/{table}"
 							r.args = args
-							r.count = 0
+							r.count = 1
 							return r, true
 						default:
 							return
@@ -1108,402 +686,131 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 							break
 						}
 
-						// Param: "table"
-						// Match until "/"
-						idx := strings.IndexByte(elem, '/')
-						if idx < 0 {
-							idx = len(elem)
-						}
-						args[0] = elem[:idx]
-						elem = elem[idx:]
-
 						if len(elem) == 0 {
-							switch method {
-							case "DELETE":
-								r.name = TableDeleteOperation
-								r.summary = "Delete a table."
-								r.operationID = "TableDelete"
-								r.operationGroup = ""
-								r.pathPattern = "/tables/{table}"
-								r.args = args
-								r.count = 1
-								return r, true
-							case "PATCH":
-								r.name = TableUpdateOperation
-								r.summary = "Update a table."
-								r.operationID = "TableUpdate"
-								r.operationGroup = ""
-								r.pathPattern = "/tables/{table}"
-								r.args = args
-								r.count = 1
-								return r, true
-							default:
-								return
-							}
+							break
 						}
 						switch elem[0] {
-						case '/': // Prefix: "/"
+						case 'c': // Prefix: "columns"
 
-							if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
+							if l := len("columns"); len(elem) >= l && elem[0:l] == "columns" {
 								elem = elem[l:]
 							} else {
 								break
 							}
 
 							if len(elem) == 0 {
-								break
+								switch method {
+								case "POST":
+									r.name = ColumnCreateOperation
+									r.summary = "Create a column on a table."
+									r.operationID = "ColumnCreate"
+									r.operationGroup = ""
+									r.pathPattern = "/tables/{table}/columns"
+									r.args = args
+									r.count = 1
+									return r, true
+								default:
+									return
+								}
 							}
 							switch elem[0] {
-							case 'c': // Prefix: "columns"
+							case '/': // Prefix: "/"
 
-								if l := len("columns"); len(elem) >= l && elem[0:l] == "columns" {
+								if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
 									elem = elem[l:]
 								} else {
 									break
 								}
 
-								if len(elem) == 0 {
-									switch method {
-									case "POST":
-										r.name = ColumnCreateOperation
-										r.summary = "Create a column on a table."
-										r.operationID = "ColumnCreate"
-										r.operationGroup = ""
-										r.pathPattern = "/tables/{table}/columns"
-										r.args = args
-										r.count = 1
-										return r, true
-									default:
-										return
-									}
-								}
-								switch elem[0] {
-								case '/': // Prefix: "/"
-
-									if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
-										elem = elem[l:]
-									} else {
-										break
-									}
-
-									// Param: "column"
-									// Leaf parameter, slashes are prohibited
-									idx := strings.IndexByte(elem, '/')
-									if idx >= 0 {
-										break
-									}
-									args[1] = elem
-									elem = ""
-
-									if len(elem) == 0 {
-										// Leaf node.
-										switch method {
-										case "DELETE":
-											r.name = ColumnDeleteOperation
-											r.summary = "Delete a column."
-											r.operationID = "ColumnDelete"
-											r.operationGroup = ""
-											r.pathPattern = "/tables/{table}/columns/{column}"
-											r.args = args
-											r.count = 2
-											return r, true
-										case "PATCH":
-											r.name = ColumnUpdateOperation
-											r.summary = "Update a column."
-											r.operationID = "ColumnUpdate"
-											r.operationGroup = ""
-											r.pathPattern = "/tables/{table}/columns/{column}"
-											r.args = args
-											r.count = 2
-											return r, true
-										default:
-											return
-										}
-									}
-
-								}
-
-							case 'i': // Prefix: "indexes"
-
-								if l := len("indexes"); len(elem) >= l && elem[0:l] == "indexes" {
-									elem = elem[l:]
-								} else {
+								// Param: "column"
+								// Leaf parameter, slashes are prohibited
+								idx := strings.IndexByte(elem, '/')
+								if idx >= 0 {
 									break
 								}
+								args[1] = elem
+								elem = ""
 
 								if len(elem) == 0 {
+									// Leaf node.
 									switch method {
-									case "POST":
-										r.name = IndexCreateOperation
-										r.summary = "Create an index on a table."
-										r.operationID = "IndexCreate"
+									case "DELETE":
+										r.name = ColumnDeleteOperation
+										r.summary = "Delete a column."
+										r.operationID = "ColumnDelete"
 										r.operationGroup = ""
-										r.pathPattern = "/tables/{table}/indexes"
+										r.pathPattern = "/tables/{table}/columns/{column}"
 										r.args = args
-										r.count = 1
+										r.count = 2
+										return r, true
+									case "PATCH":
+										r.name = ColumnUpdateOperation
+										r.summary = "Update a column."
+										r.operationID = "ColumnUpdate"
+										r.operationGroup = ""
+										r.pathPattern = "/tables/{table}/columns/{column}"
+										r.args = args
+										r.count = 2
 										return r, true
 									default:
 										return
 									}
-								}
-								switch elem[0] {
-								case '/': // Prefix: "/"
-
-									if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
-										elem = elem[l:]
-									} else {
-										break
-									}
-
-									// Param: "index"
-									// Leaf parameter, slashes are prohibited
-									idx := strings.IndexByte(elem, '/')
-									if idx >= 0 {
-										break
-									}
-									args[1] = elem
-									elem = ""
-
-									if len(elem) == 0 {
-										// Leaf node.
-										switch method {
-										case "DELETE":
-											r.name = IndexDeleteOperation
-											r.summary = "Delete an index."
-											r.operationID = "IndexDelete"
-											r.operationGroup = ""
-											r.pathPattern = "/tables/{table}/indexes/{index}"
-											r.args = args
-											r.count = 2
-											return r, true
-										default:
-											return
-										}
-									}
-
 								}
 
 							}
 
-						}
+						case 'i': // Prefix: "indexes"
 
-					}
-
-				case 'x': // Prefix: "x"
-
-					if l := len("x"); len(elem) >= l && elem[0:l] == "x" {
-						elem = elem[l:]
-					} else {
-						break
-					}
-
-					if len(elem) == 0 {
-						switch method {
-						case "POST":
-							r.name = TransactionBeginOperation
-							r.summary = "Open a transaction."
-							r.operationID = "TransactionBegin"
-							r.operationGroup = ""
-							r.pathPattern = "/tx"
-							r.args = args
-							r.count = 0
-							return r, true
-						default:
-							return
-						}
-					}
-					switch elem[0] {
-					case '/': // Prefix: "/"
-
-						if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
-							elem = elem[l:]
-						} else {
-							break
-						}
-
-						// Param: "id"
-						// Match until "/"
-						idx := strings.IndexByte(elem, '/')
-						if idx < 0 {
-							idx = len(elem)
-						}
-						args[0] = elem[:idx]
-						elem = elem[idx:]
-
-						if len(elem) == 0 {
-							break
-						}
-						switch elem[0] {
-						case '/': // Prefix: "/"
-
-							if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
+							if l := len("indexes"); len(elem) >= l && elem[0:l] == "indexes" {
 								elem = elem[l:]
 							} else {
 								break
 							}
 
 							if len(elem) == 0 {
-								break
+								switch method {
+								case "POST":
+									r.name = IndexCreateOperation
+									r.summary = "Create an index on a table."
+									r.operationID = "IndexCreate"
+									r.operationGroup = ""
+									r.pathPattern = "/tables/{table}/indexes"
+									r.args = args
+									r.count = 1
+									return r, true
+								default:
+									return
+								}
 							}
 							switch elem[0] {
-							case 'c': // Prefix: "c"
+							case '/': // Prefix: "/"
 
-								if l := len("c"); len(elem) >= l && elem[0:l] == "c" {
+								if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
 									elem = elem[l:]
 								} else {
 									break
 								}
 
-								if len(elem) == 0 {
+								// Param: "index"
+								// Leaf parameter, slashes are prohibited
+								idx := strings.IndexByte(elem, '/')
+								if idx >= 0 {
 									break
 								}
-								switch elem[0] {
-								case 'o': // Prefix: "ommit"
-
-									if l := len("ommit"); len(elem) >= l && elem[0:l] == "ommit" {
-										elem = elem[l:]
-									} else {
-										break
-									}
-
-									if len(elem) == 0 {
-										// Leaf node.
-										switch method {
-										case "POST":
-											r.name = TransactionCommitOperation
-											r.summary = "Commit a transaction."
-											r.operationID = "TransactionCommit"
-											r.operationGroup = ""
-											r.pathPattern = "/tx/{id}/commit"
-											r.args = args
-											r.count = 1
-											return r, true
-										default:
-											return
-										}
-									}
-
-								case 'r': // Prefix: "reate"
-
-									if l := len("reate"); len(elem) >= l && elem[0:l] == "reate" {
-										elem = elem[l:]
-									} else {
-										break
-									}
-
-									if len(elem) == 0 {
-										// Leaf node.
-										switch method {
-										case "POST":
-											r.name = TransactionRowCreateOperation
-											r.summary = "Insert one row inside a transaction."
-											r.operationID = "TransactionRowCreate"
-											r.operationGroup = ""
-											r.pathPattern = "/tx/{id}/create"
-											r.args = args
-											r.count = 1
-											return r, true
-										default:
-											return
-										}
-									}
-
-								}
-
-							case 'd': // Prefix: "delete"
-
-								if l := len("delete"); len(elem) >= l && elem[0:l] == "delete" {
-									elem = elem[l:]
-								} else {
-									break
-								}
+								args[1] = elem
+								elem = ""
 
 								if len(elem) == 0 {
 									// Leaf node.
 									switch method {
-									case "POST":
-										r.name = TransactionRowDeleteOperation
-										r.summary = "Delete one row inside a transaction."
-										r.operationID = "TransactionRowDelete"
+									case "DELETE":
+										r.name = IndexDeleteOperation
+										r.summary = "Delete an index."
+										r.operationID = "IndexDelete"
 										r.operationGroup = ""
-										r.pathPattern = "/tx/{id}/delete"
+										r.pathPattern = "/tables/{table}/indexes/{index}"
 										r.args = args
-										r.count = 1
-										return r, true
-									default:
-										return
-									}
-								}
-
-							case 'q': // Prefix: "query"
-
-								if l := len("query"); len(elem) >= l && elem[0:l] == "query" {
-									elem = elem[l:]
-								} else {
-									break
-								}
-
-								if len(elem) == 0 {
-									// Leaf node.
-									switch method {
-									case "POST":
-										r.name = TransactionQueryOperation
-										r.summary = "Run a shaped read inside a transaction."
-										r.operationID = "TransactionQuery"
-										r.operationGroup = ""
-										r.pathPattern = "/tx/{id}/query"
-										r.args = args
-										r.count = 1
-										return r, true
-									default:
-										return
-									}
-								}
-
-							case 'r': // Prefix: "rollback"
-
-								if l := len("rollback"); len(elem) >= l && elem[0:l] == "rollback" {
-									elem = elem[l:]
-								} else {
-									break
-								}
-
-								if len(elem) == 0 {
-									// Leaf node.
-									switch method {
-									case "POST":
-										r.name = TransactionRollbackOperation
-										r.summary = "Roll back a transaction."
-										r.operationID = "TransactionRollback"
-										r.operationGroup = ""
-										r.pathPattern = "/tx/{id}/rollback"
-										r.args = args
-										r.count = 1
-										return r, true
-									default:
-										return
-									}
-								}
-
-							case 'u': // Prefix: "update"
-
-								if l := len("update"); len(elem) >= l && elem[0:l] == "update" {
-									elem = elem[l:]
-								} else {
-									break
-								}
-
-								if len(elem) == 0 {
-									// Leaf node.
-									switch method {
-									case "POST":
-										r.name = TransactionRowUpdateOperation
-										r.summary = "Update one row inside a transaction."
-										r.operationID = "TransactionRowUpdate"
-										r.operationGroup = ""
-										r.pathPattern = "/tx/{id}/update"
-										r.args = args
-										r.count = 1
+										r.count = 2
 										return r, true
 									default:
 										return
@@ -1516,31 +823,6 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 
 					}
 
-				}
-
-			case 'u': // Prefix: "update"
-
-				if l := len("update"); len(elem) >= l && elem[0:l] == "update" {
-					elem = elem[l:]
-				} else {
-					break
-				}
-
-				if len(elem) == 0 {
-					// Leaf node.
-					switch method {
-					case "POST":
-						r.name = RowUpdateOperation
-						r.summary = "Update one row by primary key."
-						r.operationID = "RowUpdate"
-						r.operationGroup = ""
-						r.pathPattern = "/update"
-						r.args = args
-						r.count = 0
-						return r, true
-					default:
-						return
-					}
 				}
 
 			}
