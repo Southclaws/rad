@@ -105,6 +105,36 @@ stays linear.
 payload; PIR is the new outer document. The LIR format, schema, validation,
 and graphconv do not change beyond the `rows` node below.
 
+### PIR is a separate spec on the same pipeline (normative)
+
+PIR gets its **own JSON Schema YAML document**, not a section of the LIR
+schema — the correct expression of the layering: LIR is the pure relational
+language, PIR the effectful layer above it, two independent specs that ride
+the same codegen pipeline. Mirror the LIR wiring exactly:
+
+```text
+pir.schema.yaml   (authored source of truth)
+  → schemagen  →  pir.schema.json  +  home/public/schema/pir.json (web copy)
+  → schemancer →  rad/protocol/pirwire  (generated wire types)
+pirjson.go        ergonomic Program/Statement types + Marshal/Unmarshal
+pirvalidate.go    best-match validation, mirroring lirvalidate.go
+```
+
+`task protocol:generate` grows the PIR steps beside the LIR ones; a
+`pir.schema.yaml`-shaped `schemancer` mapping reuses the same `format: raw`
+→ `json.RawMessage` trick.
+
+**The two schemas stay independent — no cross-document `$ref`.** Each
+statement's LIR payload is an opaque `format: raw` field in the PIR schema
+(`json.RawMessage` in `pirwire`). Validation is two-phase, exactly as
+OpenAPI already treats `/query` bodies: the PIR schema validates the
+envelope and statement grammar (names, kinds, `result` selection, array
+shape), then the **existing** `ValidateLIRJSON` validates each statement's
+raw LIR document. One validator per document; PIR never learns the LIR
+grammar and LIR never learns it has a parent. Statement-result bindings —
+the one place PIR reaches into LIR semantics — are resolved at bind time in
+the engine (a `ref` to a program-scope name), not in the schema.
+
 ## Ordering (normative)
 
 > A program is an ordered array of statements. Statements execute
@@ -325,8 +355,11 @@ constant satisfies `first` with no order.
 ## Cutover (zero-legacy, staged)
 
 ```text
-1. LIR rows node, end to end (independent, pure, corpus-tested).
-2. PIR schemas and validation (program envelope, statement grammar).
+1. LIR rows node, end to end (independent, pure, corpus-tested). LANDED.
+2. PIR spec + validation: `pir.schema.yaml` on the LIR pipeline (schemagen
+   → `pirwire`, `pirjson.go`, `pirvalidate.go`), envelope + statement
+   grammar; opaque raw LIR payloads validated by the existing LIR
+   validator (see "PIR is a separate spec" above).
 3. Ordered program planning and the statement binding scope.
 4. Query statements through /execute.
 5. Create/update/delete statements through /execute.
