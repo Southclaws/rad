@@ -43,6 +43,17 @@ plan* (the devtool tool is "View query plan").
   exec (`dry-run` skip + collect per-statement plans) → server (params + attach
   plan to response / Problem).
 
+**Status: first slice LANDED.** `?show-plan` / `?dry-run` on `POST /execute`
+work end to end (client → server → engine), verified in
+`tests/planner/planview_test.go` across all four flag combinations. `ExecOptions`
+threads through `ExecuteProgram`; the per-statement `PlanView` rides the response
+as free-form JSON (`plan.statements[].{view,text}`); the `plan` field is always
+valid JSON (null when unset). `runProgram` returns plans even on execution error
+(ready), but surfacing them on the error `Problem` is deferred to
+`[[error-propagation]]` (per-class attachment) rather than polluting the shared
+`Problem`. Next slices: actual-row metrics, spans/KV events, the devtool "View
+query plan" UI, and unifying `PrintPlan` onto `PlanView`.
+
 ---
 
 ## (original proposal, for the full subsystem)

@@ -56,7 +56,7 @@ type Handler interface {
 	// (which must point at earlier statements).
 	//
 	// POST /execute
-	Execute(ctx context.Context, req Program) (ExecuteRes, error)
+	Execute(ctx context.Context, req Program, params ExecuteParams) (ExecuteRes, error)
 	// GetHealth implements GetHealth operation.
 	//
 	// A cheap liveness probe that touches no storage. It always returns `200` with a small status body

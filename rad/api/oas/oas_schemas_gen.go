@@ -1011,6 +1011,11 @@ type Program jx.Raw
 type ProgramResult struct {
 	Result     Value             `json:"result"`
 	Statements []StatementResult `json:"statements"`
+	// Present only when the request set `show-plan`. Free-form JSON: the query plan for each statement —
+	// the physical plan and the planner's access-path decisions, plus a rendered text form. Transport
+	// observability metadata, not part of the LIR/PIR IR; its structure is deliberately unspecified here
+	// and evolves with the planner.
+	Plan Value `json:"plan"`
 }
 
 // GetResult returns the value of Result.
@@ -1023,6 +1028,11 @@ func (s *ProgramResult) GetStatements() []StatementResult {
 	return s.Statements
 }
 
+// GetPlan returns the value of Plan.
+func (s *ProgramResult) GetPlan() Value {
+	return s.Plan
+}
+
 // SetResult sets the value of Result.
 func (s *ProgramResult) SetResult(val Value) {
 	s.Result = val
@@ -1031,6 +1041,11 @@ func (s *ProgramResult) SetResult(val Value) {
 // SetStatements sets the value of Statements.
 func (s *ProgramResult) SetStatements(val []StatementResult) {
 	s.Statements = val
+}
+
+// SetPlan sets the value of Plan.
+func (s *ProgramResult) SetPlan(val Value) {
+	s.Plan = val
 }
 
 func (*ProgramResult) executeRes() {}

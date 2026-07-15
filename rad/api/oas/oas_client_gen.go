@@ -76,7 +76,7 @@ type Invoker interface {
 	// (which must point at earlier statements).
 	//
 	// POST /execute
-	Execute(ctx context.Context, request Program) (ExecuteRes, error)
+	Execute(ctx context.Context, request Program, params ExecuteParams) (ExecuteRes, error)
 	// GetHealth invokes GetHealth operation.
 	//
 	// A cheap liveness probe that touches no storage. It always returns `200` with a small status body
@@ -579,12 +579,12 @@ func (c *Client) sendColumnUpdate(ctx context.Context, request OptColumnUpdatePr
 // (which must point at earlier statements).
 //
 // POST /execute
-func (c *Client) Execute(ctx context.Context, request Program) (ExecuteRes, error) {
-	res, err := c.sendExecute(ctx, request)
+func (c *Client) Execute(ctx context.Context, request Program, params ExecuteParams) (ExecuteRes, error) {
+	res, err := c.sendExecute(ctx, request, params)
 	return res, err
 }
 
-func (c *Client) sendExecute(ctx context.Context, request Program) (res ExecuteRes, err error) {
+func (c *Client) sendExecute(ctx context.Context, request Program, params ExecuteParams) (res ExecuteRes, err error) {
 	otelAttrs := []attribute.KeyValue{
 		otelogen.OperationID("Execute"),
 		semconv.HTTPRequestMethodKey.String("POST"),
@@ -624,6 +624,44 @@ func (c *Client) sendExecute(ctx context.Context, request Program) (res ExecuteR
 	var pathParts [1]string
 	pathParts[0] = "/execute"
 	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "show-plan" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "show-plan",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.ShowPlan.Get(); ok {
+				return e.EncodeValue(conv.BoolToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "dry-run" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "dry-run",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.DryRun.Get(); ok {
+				return e.EncodeValue(conv.BoolToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
 
 	stage = "EncodeRequest"
 	r, err := ht.NewRequest(ctx, "POST", u)

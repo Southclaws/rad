@@ -70,7 +70,7 @@ func (UnimplementedHandler) ColumnUpdate(ctx context.Context, req OptColumnUpdat
 // (which must point at earlier statements).
 //
 // POST /execute
-func (UnimplementedHandler) Execute(ctx context.Context, req Program) (r ExecuteRes, _ error) {
+func (UnimplementedHandler) Execute(ctx context.Context, req Program, params ExecuteParams) (r ExecuteRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 

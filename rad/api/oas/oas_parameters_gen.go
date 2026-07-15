@@ -320,6 +320,127 @@ func decodeColumnUpdateParams(args [2]string, argsEscaped bool, r *http.Request)
 	return params, nil
 }
 
+// ExecuteParams is parameters of Execute operation.
+type ExecuteParams struct {
+	// When true, the response carries the query plan for each statement — the physical plan and the
+	// planner's access-path decisions — as free-form JSON under `plan`, alongside the result (and on the
+	// problem when a statement fails after planning).
+	ShowPlan OptBool `json:",omitempty,omitzero"`
+	// When true, bind and plan every statement but execute none: no writes, no result. With `show-plan`
+	// this returns the plan only; alone it is a "will this bind and plan?" validation that returns an
+	// empty success.
+	DryRun OptBool `json:",omitempty,omitzero"`
+}
+
+func unpackExecuteParams(packed middleware.Parameters) (params ExecuteParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "show-plan",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.ShowPlan = v.(OptBool)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "dry-run",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.DryRun = v.(OptBool)
+		}
+	}
+	return params
+}
+
+func decodeExecuteParams(args [0]string, argsEscaped bool, r *http.Request) (params ExecuteParams, _ error) {
+	q := uri.NewQueryDecoder(r.URL.Query())
+	// Decode query: show-plan.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "show-plan",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotShowPlanVal bool
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToBool(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotShowPlanVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.ShowPlan.SetTo(paramsDotShowPlanVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "show-plan",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Decode query: dry-run.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "dry-run",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotDryRunVal bool
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToBool(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotDryRunVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.DryRun.SetTo(paramsDotDryRunVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "dry-run",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // IndexCreateParams is parameters of IndexCreate operation.
 type IndexCreateParams struct {
 	// The table's current name.

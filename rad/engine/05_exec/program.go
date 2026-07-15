@@ -58,23 +58,43 @@ type StatementResult struct {
 	Affected int
 }
 
-// ProgramResult is a program's outcome: the declared result statement's datum
-// plus a per-statement summary.
+// ExecOptions tune a program run's observability and side effects. The zero
+// value is the normal path: execute, return only the result.
+type ExecOptions struct {
+	// DryRun binds and plans every statement but executes none — no writes, no
+	// result. Planning is data-independent today, so this is total.
+	DryRun bool
+	// CollectPlan captures a query-plan view per statement into ProgramResult
+	// (available even when a later stage errors, so a failure still yields the
+	// plan it got to).
+	CollectPlan bool
+}
+
+// StatementPlan is one statement's query-plan view — the observability artifact
+// that rides the transport response, never the IR.
+type StatementPlan struct {
+	Name string
+	View *planner.PlanView
+}
+
+// ProgramResult is a program's outcome: the declared result statement's datum,
+// a per-statement summary, and (when requested) the per-statement plan views.
 type ProgramResult struct {
 	Result     lir.Datum
 	Statements []StatementResult
+	Plans      []StatementPlan
 }
 
 // ExecuteProgram runs a program as one atomic transaction: all effects commit
 // together or none do. A commit-time conflict is retryable via IsConflict.
-func (e *Engine) ExecuteProgram(ctx context.Context, prog Program) (ProgramResult, error) {
+func (e *Engine) ExecuteProgram(ctx context.Context, prog Program, opts ExecOptions) (ProgramResult, error) {
 	resultName, err := resultStatement(prog)
 	if err != nil {
 		return ProgramResult{}, err
 	}
 	var out ProgramResult
 	err = e.Txn(ctx, func(tx *Tx) error {
-		r, err := e.runProgram(ctx, tx.txn, prog, resultName)
+		r, err := e.runProgram(ctx, tx.txn, prog, resultName, opts)
 		out = r
 		return err
 	})
@@ -93,7 +113,7 @@ func resultStatement(prog Program) (string, error) {
 	return "", reject.Inputf("exec: a program with %d statements must name its result", len(prog.Statements))
 }
 
-func (e *Engine) runProgram(ctx context.Context, view kv.KV, prog Program, resultName string) (ProgramResult, error) {
+func (e *Engine) runProgram(ctx context.Context, view kv.KV, prog Program, resultName string, opts ExecOptions) (ProgramResult, error) {
 	stmts := make([]planner.ProgramStmt, len(prog.Statements))
 	for i, s := range prog.Statements {
 		stmts[i] = planner.ProgramStmt{
@@ -108,6 +128,19 @@ func (e *Engine) runProgram(ctx context.Context, view kv.KV, prog Program, resul
 		return ProgramResult{}, err
 	}
 
+	// The query-plan views are ready once binding+planning is done, before any
+	// execution — so a statement that later fails still surfaces its plan.
+	var plans []StatementPlan
+	if opts.CollectPlan {
+		plans = make([]StatementPlan, len(planned))
+		for i, bs := range planned {
+			plans[i] = StatementPlan{Name: bs.Name, View: planner.NewPlanView(bs.Plan)}
+		}
+	}
+	if opts.DryRun {
+		return ProgramResult{Plans: plans}, nil
+	}
+
 	// Accumulated statement results, injected into each statement's executor
 	// so its refs resolve to earlier results.
 	program := map[string][]Frame{}
@@ -119,22 +152,22 @@ func (e *Engine) runProgram(ctx context.Context, view kv.KV, prog Program, resul
 		stmt := prog.Statements[i]
 		frames, err := e.runStatement(ctx, view, stmt, bs, program)
 		if err != nil {
-			return ProgramResult{}, err
+			return ProgramResult{Plans: plans}, err
 		}
 		program[bs.Name] = frames
 		summary[i] = StatementResult{Name: bs.Name, Affected: len(frames)}
 		if bs.Name == resultName {
 			d, err := shapeFrames(bs.ResultCard, bs.ResultOut, frames)
 			if err != nil {
-				return ProgramResult{}, err
+				return ProgramResult{Plans: plans}, err
 			}
 			result, haveResult = d, true
 		}
 	}
 	if !haveResult {
-		return ProgramResult{}, reject.Inputf("exec: result names unknown statement %q", resultName)
+		return ProgramResult{Plans: plans}, reject.Inputf("exec: result names unknown statement %q", resultName)
 	}
-	return ProgramResult{Result: result, Statements: summary}, nil
+	return ProgramResult{Result: result, Statements: summary, Plans: plans}, nil
 }
 
 // runStatement evaluates one statement against the transaction view, with the

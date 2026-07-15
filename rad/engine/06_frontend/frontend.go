@@ -39,9 +39,10 @@ func (db *DB) CreateTable(ctx context.Context, def catalog.TableDef) (catalog.Ta
 }
 
 // ExecuteProgram runs a PIR program as one atomic transaction and returns the
-// declared result statement's datum plus a per-statement summary.
-func (db *DB) ExecuteProgram(ctx context.Context, prog exec.Program) (exec.ProgramResult, error) {
-	return db.eng.ExecuteProgram(ctx, prog)
+// declared result statement's datum, a per-statement summary, and — per opts —
+// the per-statement query-plan views and/or a dry-run (plan-only) outcome.
+func (db *DB) ExecuteProgram(ctx context.Context, prog exec.Program, opts exec.ExecOptions) (exec.ProgramResult, error) {
+	return db.eng.ExecuteProgram(ctx, prog, opts)
 }
 
 // Insert adds one row atomically (the row and its index entries commit

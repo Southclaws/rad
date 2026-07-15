@@ -2212,11 +2212,16 @@ func (s *ProgramResult) encodeFields(e *jx.Encoder) {
 		}
 		e.ArrEnd()
 	}
+	{
+		e.FieldStart("plan")
+		s.Plan.Encode(e)
+	}
 }
 
-var jsonFieldsNameOfProgramResult = [2]string{
+var jsonFieldsNameOfProgramResult = [3]string{
 	0: "result",
 	1: "statements",
+	2: "plan",
 }
 
 // Decode decodes ProgramResult from json.
@@ -2255,6 +2260,15 @@ func (s *ProgramResult) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"statements\"")
+			}
+		case "plan":
+			if err := func() error {
+				if err := s.Plan.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"plan\"")
 			}
 		default:
 			return d.Skip()

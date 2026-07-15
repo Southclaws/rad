@@ -634,6 +634,16 @@ func (s *Server) handleExecuteRequest(args [0]string, argsEscaped bool, w http.R
 			ID:   "Execute",
 		}
 	)
+	params, err := decodeExecuteParams(args, argsEscaped, r)
+	if err != nil {
+		err = &ogenerrors.DecodeParamsError{
+			OperationContext: opErrContext,
+			Err:              err,
+		}
+		defer recordError("DecodeParams", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
 
 	var rawBody []byte
 	request, rawBody, close, err := s.decodeExecuteRequest(r)
@@ -661,13 +671,22 @@ func (s *Server) handleExecuteRequest(args [0]string, argsEscaped bool, w http.R
 			OperationID:      "Execute",
 			Body:             request,
 			RawBody:          rawBody,
-			Params:           middleware.Parameters{},
-			Raw:              r,
+			Params: middleware.Parameters{
+				{
+					Name: "show-plan",
+					In:   "query",
+				}: params.ShowPlan,
+				{
+					Name: "dry-run",
+					In:   "query",
+				}: params.DryRun,
+			},
+			Raw: r,
 		}
 
 		type (
 			Request  = Program
-			Params   = struct{}
+			Params   = ExecuteParams
 			Response = ExecuteRes
 		)
 		response, err = middleware.HookMiddleware[
@@ -677,14 +696,14 @@ func (s *Server) handleExecuteRequest(args [0]string, argsEscaped bool, w http.R
 		](
 			m,
 			mreq,
-			nil,
+			unpackExecuteParams,
 			func(ctx context.Context, request Request, params Params) (response Response, err error) {
-				response, err = s.h.Execute(ctx, request)
+				response, err = s.h.Execute(ctx, request, params)
 				return response, err
 			},
 		)
 	} else {
-		response, err = s.h.Execute(ctx, request)
+		response, err = s.h.Execute(ctx, request, params)
 	}
 	if err != nil {
 		if errRes, ok := errors.Into[*InternalServerErrorStatusCode](err); ok {

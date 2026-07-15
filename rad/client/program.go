@@ -19,20 +19,40 @@ type StatementResult struct {
 }
 
 // ProgramResult is a program's outcome: the result statement's datum (decoded
-// with json.Number, so int64 keeps full precision) and the per-statement
-// summary in execution order.
+// with json.Number, so int64 keeps full precision), the per-statement summary
+// in execution order, and — when the query plan was requested — the plan as
+// decoded free-form JSON.
 type ProgramResult struct {
 	Result     any
 	Statements []StatementResult
+	Plan       any // present only when Execute was called WithPlan; free-form
 }
 
-// Execute runs a program and returns its result.
-func (c *Client) Execute(ctx context.Context, prog protocol.Program) (ProgramResult, error) {
+// ExecuteOption sets a transport knob on Execute (query params, not IR).
+type ExecuteOption func(*oas.ExecuteParams)
+
+// WithPlan asks the server to return the query plan for each statement.
+func WithPlan() ExecuteOption {
+	return func(p *oas.ExecuteParams) { p.ShowPlan = oas.NewOptBool(true) }
+}
+
+// DryRun asks the server to bind and plan but execute nothing (no result).
+func DryRun() ExecuteOption {
+	return func(p *oas.ExecuteParams) { p.DryRun = oas.NewOptBool(true) }
+}
+
+// Execute runs a program and returns its result. Options attach the query plan
+// (WithPlan) and/or skip execution (DryRun).
+func (c *Client) Execute(ctx context.Context, prog protocol.Program, opts ...ExecuteOption) (ProgramResult, error) {
 	raw, err := protocol.MarshalProgram(prog)
 	if err != nil {
 		return ProgramResult{}, err
 	}
-	res, err := c.oas.Execute(ctx, oas.Program(raw))
+	var params oas.ExecuteParams
+	for _, o := range opts {
+		o(&params)
+	}
+	res, err := c.oas.Execute(ctx, oas.Program(raw), params)
 	if err != nil {
 		return ProgramResult{}, transportError(err)
 	}
@@ -45,6 +65,9 @@ func (c *Client) Execute(ctx context.Context, prog protocol.Program) (ProgramRes
 		out := ProgramResult{Result: datum, Statements: make([]StatementResult, len(v.Statements))}
 		for i, s := range v.Statements {
 			out.Statements[i] = StatementResult{Name: s.Name, Affected: s.Affected}
+		}
+		if plan, err := decodeResult(v.Plan); err == nil {
+			out.Plan = plan // nil when the server sent JSON null (no plan requested)
 		}
 		return out, nil
 	case *oas.ExecuteBadRequest:
