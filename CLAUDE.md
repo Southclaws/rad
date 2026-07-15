@@ -14,6 +14,16 @@ Never use Unicode box-drawing bars in comments (`// ── label ─────
 // -
 ```
 
+**Comments describe the code as it is now — never how, when, or in what order it was built.** Write every comment for a stranger reading the code cold in two years with no memory of the project's history, plan, or any development session. Comment the _why_ — rationale, invariants, non-obvious consequences; the code already states the _what_, and simplifying the code beats explaining it. A comment must NEVER reference:
+
+- **the work that produced it** — no "this arc", "this pass", "a later arc", "slice", "step 4/5", "session". These name work episodes that mean nothing once they end.
+- **versions that don't exist** — it is v0, full stop. Never "v1", "PIR v1", "carried over from v1". There is no version history to narrate.
+- **planning artifacts** — there are no ADRs and no durable design docs; never cite "the oracle ADR", "the query-trace ADR", or name a `tasks/` item (they are loose and deleted at release).
+- **deferred work** — no "unify this later", "streaming is a later arc", "…for now". A future-work note buried in a comment is a TODO that gets lost and never done; it belongs in a `tasks/` item, not the source.
+- **history** — no "previously", "renamed from", "used to", "kept for". Git holds history and squashes it away before release, so change-over-time in a comment is pure rot.
+
+The test: if a line stops being true or meaningful the moment it is written, delete it. If stripping the construction-narrative empties the comment, it was never about the code.
+
 ## The cgo gotcha (read first)
 
 The SlateDB Go binding is cgo and links against a native library built into `lib/` from the pinned checkout in `third_party/slatedb`. Bare `go test` / `go build` fail to link without:
