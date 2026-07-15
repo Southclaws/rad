@@ -12,7 +12,9 @@ import (
 	"github.com/Southclaws/rad/rad/protocol/lirwire"
 )
 
-// ── three-valued logic ──────────────────────────────────────────────────────
+// -
+// three-valued logic
+// -
 
 func TestPredEqNullLiteralMatchesNothing(t *testing.T) {
 	t.Parallel()
@@ -114,7 +116,9 @@ func TestPredDeMorganAgreesOverNulls(t *testing.T) {
 	}, "neither", "many")).Empty()
 }
 
-// ── type boundaries: coercion and casts ─────────────────────────────────────
+// -
+// type boundaries: coercion and casts
+// -
 
 func TestPredFloatLiteralAgainstIntColumnRejected(t *testing.T) {
 	t.Parallel()
@@ -161,7 +165,9 @@ func TestPredCastFloatToIntTruncates(t *testing.T) {
 	}, "out", "many")).Equals(`[{"id":"p7","price_int":5}]`)
 }
 
-// ── arithmetic ──────────────────────────────────────────────────────────────
+// -
+// arithmetic
+// -
 
 func TestPredArithmeticPropagatesNull(t *testing.T) {
 	t.Parallel()
@@ -229,7 +235,9 @@ func TestPredNegate(t *testing.T) {
 	}, "out", "many")).Equals(`[{"id":"p7","neg_price":-5}]`)
 }
 
-// ── comparisons over other scalar types ─────────────────────────────────────
+// -
+// comparisons over other scalar types
+// -
 
 func TestPredBoolColumnEqualsLiteral(t *testing.T) {
 	t.Parallel()
@@ -282,7 +290,9 @@ func TestPredOrOverNullableColumn(t *testing.T) {
 	}, "out", "many")).Equals(`[{"id":"o2"},{"id":"o5"}]`)
 }
 
-// ── predicate type errors ───────────────────────────────────────────────────
+// -
+// predicate type errors
+// -
 
 func TestPredNotOverNonBoolRejected(t *testing.T) {
 	t.Parallel()

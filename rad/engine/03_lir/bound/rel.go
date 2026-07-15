@@ -51,7 +51,9 @@ func (l *laws) RefineCard(c lir.Cardinality) {
 	}
 }
 
-// ── nodes ───────────────────────────────────────────────────────────────────
+// -
+// nodes
+// -
 
 // Scan reads a table. The binder assigns one slot per column, in column
 // order; Scope is the unbound label, kept for diagnostics.

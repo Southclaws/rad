@@ -38,7 +38,9 @@ func catalogProblem(err error) *oas.Problem {
 	return nil
 }
 
-// ── wire definitions → engine definitions ──────────────────────────────────
+// -
+// wire definitions → engine definitions
+// -
 
 func catTableDef(d protocol.TableDef) (catalog.TableDef, error) {
 	def := catalog.TableDef{Name: d.Name, PrimaryKey: d.PrimaryKey}
@@ -126,7 +128,9 @@ func catDefault(colName string, typ catalog.Type, in *protocol.ColumnDefault) (*
 	return nil, wireErrf("column %q has unsupported type %q", colName, typ)
 }
 
-// ── engine tables → wire introspection ──────────────────────────────────────
+// -
+// engine tables → wire introspection
+// -
 
 // defaultInfo renders a column default for introspection; the column's type
 // selects which literal field carries the value.
@@ -197,7 +201,9 @@ func (a *dbAPI) tableOAS(ctx context.Context, t catalog.Table) (*oas.TableInfo, 
 	return &o, nil
 }
 
-// ── handlers ────────────────────────────────────────────────────────────────
+// -
+// handlers
+// -
 
 func (a *dbAPI) TableCreate(ctx context.Context, req oas.OptTableDef) (oas.TableCreateRes, error) {
 	if a.mode == catalog.ModeSchema {

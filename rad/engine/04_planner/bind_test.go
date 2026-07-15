@@ -92,7 +92,9 @@ func trackerCat(t *testing.T) (*catalog.Catalog, context.Context) {
 	return cat, ctx
 }
 
-// ── unbound construction helpers ────────────────────────────────────────────
+// -
+// unbound construction helpers
+// -
 
 func bcol(scope, name string) lir.Column { return lir.Column{Scope: scope, Name: name} }
 func blit(v any) lir.Literal             { return lir.Literal{Raw: v} }
@@ -233,7 +235,9 @@ const forcingGolden = `Query card=many
     Scan boards (b) {id#0:text name#1:text owner_id#2:text}
 `
 
-// ── determinism rules ───────────────────────────────────────────────────────
+// -
+// determinism rules
+// -
 
 func TestFirstRequiresDeterminism(t *testing.T) {
 	// Unordered multi-row: rejected.
@@ -329,7 +333,9 @@ func TestRootCardinalityRules(t *testing.T) {
 	}})
 }
 
-// ── the order tie-breaker ───────────────────────────────────────────────────
+// -
+// the order tie-breaker
+// -
 
 func TestOrderTieBreaker(t *testing.T) {
 	rootOrder := func(q *bound.Query) *bound.Order {
@@ -382,7 +388,9 @@ func TestOrderTieBreaker(t *testing.T) {
 	}
 }
 
-// ── relational closure ──────────────────────────────────────────────────────
+// -
+// relational closure
+// -
 
 // Aggregate outputs are ordinary attributes: filter and order above the fold
 // address them through the aggregate's scope, and nothing else is visible
@@ -436,7 +444,9 @@ func TestClosureAboveProject(t *testing.T) {
 	}}, `scope "t" exists but is not visible here`)
 }
 
-// ── literal coercion ────────────────────────────────────────────────────────
+// -
+// literal coercion
+// -
 
 func TestLiteralCoercion(t *testing.T) {
 	// A NULL literal adopts the column's type.
@@ -457,7 +467,9 @@ func TestLiteralCoercion(t *testing.T) {
 		beq(blit(nil), blit(nil)))}, "bare NULL")
 }
 
-// ── the validation matrix ───────────────────────────────────────────────────
+// -
+// the validation matrix
+// -
 
 func TestValidationMatrix(t *testing.T) {
 	cases := []struct {

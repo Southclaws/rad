@@ -340,7 +340,9 @@ func relContains(r lir.Relation, pred func(lir.Relation) bool) bool {
 	return false
 }
 
-// ── the catalog spec ────────────────────────────────────────────────────────
+// -
+// the catalog spec
+// -
 
 type genColumn struct {
 	name     string
@@ -400,7 +402,9 @@ func genCatalogSpec(rng *rand.Rand) *genCatalog {
 	return cat
 }
 
-// ── building a real engine from the spec ────────────────────────────────────
+// -
+// building a real engine from the spec
+// -
 
 func buildGenEngine(t *testing.T, rng *rand.Rand, spec *genCatalog) (*Engine, context.Context) {
 	t.Helper()
@@ -476,7 +480,9 @@ func genValue(rng *rand.Rand, c genColumn) lir.Value {
 	}
 }
 
-// ── query generation (correct-by-construction) ──────────────────────────────
+// -
+// query generation (correct-by-construction)
+// -
 
 // genScope is one visible output scope: a label plus its typed columns.
 type genScope struct {
@@ -829,7 +835,9 @@ func (g *gen) genAggregate(fuel int) (lir.Relation, []genScope) {
 	return lir.Aggregate{Input: child, Scope: scope, Groups: groups, Terms: terms}, []genScope{{name: scope, cols: cols}}
 }
 
-// ── expression / column helpers ─────────────────────────────────────────────
+// -
+// expression / column helpers
+// -
 
 var orderable = []catalog.Type{catalog.TypeText, catalog.TypeInt64, catalog.TypeFloat64}
 
@@ -940,7 +948,9 @@ func shuffle[T any](rng *rand.Rand, in []T) []T {
 	return out
 }
 
-// ── comparison ──────────────────────────────────────────────────────────────
+// -
+// comparison
+// -
 
 // multiset renders an array-datum result as a count per canonical-JSON row, so
 // results compare order-insensitively (tie order is covered elsewhere).

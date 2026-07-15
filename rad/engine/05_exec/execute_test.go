@@ -160,7 +160,9 @@ func lirSetup(t *testing.T) (*Engine, context.Context, *int, *int) {
 	return eng, ctx, gets, scans
 }
 
-// ── unbound construction helpers ────────────────────────────────────────────
+// -
+// unbound construction helpers
+// -
 
 func qcol(scope, name string) lir.Column { return lir.Column{Scope: scope, Name: name} }
 func qlit(v any) lir.Literal             { return lir.Literal{Raw: v} }

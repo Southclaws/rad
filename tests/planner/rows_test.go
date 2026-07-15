@@ -215,7 +215,9 @@ func TestRowsCorrelatedCrossing(t *testing.T) {
 	}, "out", "many")).EqualsUnordered(`[{"name":"Ada"},{"name":"Cyn"}]`)
 }
 
-// ── rejections ──────────────────────────────────────────────────────────────
+// -
+// rejections
+// -
 
 func TestRowsRejectsDuplicateColumns(t *testing.T) {
 	t.Parallel()

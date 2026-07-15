@@ -53,7 +53,9 @@ func tracker(t *testing.T) *harness.DB {
 	return d
 }
 
-// ── access paths ────────────────────────────────────────────────────────────
+// -
+// access paths
+// -
 
 func TestPointGetByPrimaryKey(t *testing.T) {
 	t.Parallel()
@@ -101,7 +103,9 @@ func TestOrderedIndexWithLimit(t *testing.T) {
 	}, "out", "many")).Equals(`[{"id":"t3","priority":9},{"id":"t2","priority":5}]`)
 }
 
-// ── three-valued logic ──────────────────────────────────────────────────────
+// -
+// three-valued logic
+// -
 
 func TestNotEqSkipsNulls(t *testing.T) {
 	t.Parallel()
@@ -130,7 +134,9 @@ func TestIsNullIsTheOnlyNullMatch(t *testing.T) {
 	}, "out", "many")).Equals(`[{"id":"t2"}]`)
 }
 
-// ── crossings ───────────────────────────────────────────────────────────────
+// -
+// crossings
+// -
 
 func TestNestedShape(t *testing.T) {
 	t.Parallel()
@@ -182,7 +188,9 @@ func TestExistsInFilter(t *testing.T) {
 	}, "out", "many")).Equals(`[{"id":"b1"}]`)
 }
 
-// ── aggregation ─────────────────────────────────────────────────────────────
+// -
+// aggregation
+// -
 
 func TestGroupedFold(t *testing.T) {
 	t.Parallel()
@@ -218,7 +226,9 @@ func TestGlobalFoldOverNothing(t *testing.T) {
 	}, "fold", "exactly_one")).Equals(`[{"n":0,"worst":null}]`)
 }
 
-// ── joins ───────────────────────────────────────────────────────────────────
+// -
+// joins
+// -
 
 func TestInnerJoinProjection(t *testing.T) {
 	t.Parallel()
@@ -239,7 +249,9 @@ func TestInnerJoinProjection(t *testing.T) {
 	]`)
 }
 
-// ── the error contract ──────────────────────────────────────────────────────
+// -
+// the error contract
+// -
 
 func TestBinderRejections(t *testing.T) {
 	t.Parallel()

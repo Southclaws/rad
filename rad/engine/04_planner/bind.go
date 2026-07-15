@@ -767,7 +767,9 @@ func (b *binder) slotFor(e bound.Expr) lir.SlotID {
 	return s
 }
 
-// ── uniqueness-aware cardinality ────────────────────────────────────────────
+// -
+// uniqueness-aware cardinality
+// -
 
 // refineUnique tightens a filter to at-most-one row when its equality
 // conjuncts pin a unique key of the underlying scan: every conjunct
@@ -878,7 +880,9 @@ func readsAny(e bound.Expr, set bound.SlotSet) bool {
 	return slices.ContainsFunc(e.FreeSlots().Slots(), set.Contains)
 }
 
-// ── order tie-breaker ───────────────────────────────────────────────────────
+// -
+// order tie-breaker
+// -
 
 // appendTieBreaker appends a known unique key of the relation's output as
 // final ascending terms, so tied rows order identically under every access

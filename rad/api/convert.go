@@ -24,7 +24,9 @@ import (
 // ProblemContentType is the HTTP media type for RFC 7807 responses.
 const ProblemContentType = "application/problem+json"
 
-// ── values ────────────────────────────────────────────────────────────────
+// -
+// values
+// -
 
 // rawToAny decodes a raw JSON value into a Go value, preserving numbers as
 // json.Number so int64 columns keep full precision. An empty raw is null.
@@ -52,7 +54,9 @@ func anyToRaw(v any) jx.Raw {
 	return jx.Raw(raw)
 }
 
-// ── introspection and catalog definitions ──────────────────────────────────
+// -
+// introspection and catalog definitions
+// -
 
 // DefaultToOAS converts a column default.
 func DefaultToOAS(d *protocol.ColumnDefault) oas.OptColumnDefault {
@@ -200,7 +204,9 @@ func TableDefFromOAS(o oas.TableDef) protocol.TableDef {
 	return d
 }
 
-// ── problems ────────────────────────────────────────────────────────────────
+// -
+// problems
+// -
 
 // ProblemToOAS converts a Problem into the generated type.
 func ProblemToOAS(p protocol.Problem) oas.Problem {

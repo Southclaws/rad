@@ -235,7 +235,9 @@ func rowToFrame(scan *bound.Scan, row lir.Row, outer bound.Env) Frame {
 	return f
 }
 
-// ── point get ───────────────────────────────────────────────────────────────
+// -
+// point get
+// -
 
 type pkGetOp struct {
 	scan  *bound.Scan
@@ -274,7 +276,9 @@ func (o *pkGetOp) Next(context.Context) (Frame, bool, error) {
 
 func (o *pkGetOp) Close() error { return nil }
 
-// ── scans ───────────────────────────────────────────────────────────────────
+// -
+// scans
+// -
 
 // rowIterOp adapts a storage RowIterator (table or index range) to frames.
 type rowIterOp struct {
@@ -329,7 +333,9 @@ type emptyOp struct{}
 func (emptyOp) Next(context.Context) (Frame, bool, error) { return Frame{}, false, nil }
 func (emptyOp) Close() error                              { return nil }
 
-// ── filter ──────────────────────────────────────────────────────────────────
+// -
+// filter
+// -
 
 type filterOp struct {
 	in   Operator
@@ -354,7 +360,9 @@ func (o *filterOp) Next(ctx context.Context) (Frame, bool, error) {
 
 func (o *filterOp) Close() error { return o.in.Close() }
 
-// ── sort ────────────────────────────────────────────────────────────────────
+// -
+// sort
+// -
 
 type sortOp struct {
 	in     Operator
@@ -420,7 +428,9 @@ func (o *sortOp) Next(ctx context.Context) (Frame, bool, error) {
 
 func (o *sortOp) Close() error { return o.in.Close() }
 
-// ── slice ───────────────────────────────────────────────────────────────────
+// -
+// slice
+// -
 
 type sliceOp struct {
 	in      Operator
@@ -451,7 +461,9 @@ func (o *sliceOp) Next(ctx context.Context) (Frame, bool, error) {
 
 func (o *sliceOp) Close() error { return o.in.Close() }
 
-// ── aggregate ───────────────────────────────────────────────────────────────
+// -
+// aggregate
+// -
 
 type aggOp struct {
 	in     Operator
@@ -626,7 +638,9 @@ func foldResult(t bound.AggTerm, a *aggAccum) (lir.Value, error) {
 
 func (o *aggOp) Close() error { return o.in.Close() }
 
-// ── nested-loop join ────────────────────────────────────────────────────────
+// -
+// nested-loop join
+// -
 
 type nljOp struct {
 	l, r Operator

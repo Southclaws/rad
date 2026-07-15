@@ -88,7 +88,9 @@ func New(t *testing.T) *DB {
 	return &DB{T: t, Client: client, Cat: cat, URL: url, ctx: ctx}
 }
 
-// ── schema: direct catalog mutation ─────────────────────────────────────────
+// -
+// schema: direct catalog mutation
+// -
 
 // Column definition sugar. Columns are non-nullable unless wrapped in Null.
 
@@ -172,7 +174,9 @@ func (tb *TableBuilder) Create() {
 	tb.d.CreateTable(tb.def)
 }
 
-// ── seeding ─────────────────────────────────────────────────────────────────
+// -
+// seeding
+// -
 
 // Row is one row of seed data, keyed by column name.
 type Row = map[string]any
@@ -277,7 +281,9 @@ func groupBySignature(rows []Row) ([]string, map[string]*seedGroup) {
 	return order, groups
 }
 
-// ── querying ────────────────────────────────────────────────────────────────
+// -
+// querying
+// -
 
 // Result is one executed query: what was sent, what came back. Datum is the
 // result exactly as the root materialised (array / object / naked value /
@@ -466,7 +472,9 @@ func (r *Result) queryJSON() string {
 	return string(raw)
 }
 
-// ── JSON comparison ─────────────────────────────────────────────────────────
+// -
+// JSON comparison
+// -
 
 // parseJSON decodes a want-literal with number fidelity matching the
 // client's decoding.

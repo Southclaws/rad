@@ -101,7 +101,9 @@ func TestBindingChainOverWire(t *testing.T) {
 	}, "root", "exactly_one")).Equals(`[{"n":2}]`)
 }
 
-// ── the forest preflight ────────────────────────────────────────────────────
+// -
+// the forest preflight
+// -
 
 // A binding no ref observes denotes nothing — rejected by the binder, which
 // tracks which bindings a ref resolves.
@@ -221,7 +223,9 @@ func TestBindingDuplicateOutputRejected(t *testing.T) {
 	}, "r", "many")).ExpectError(`binding "wide" output has duplicate column "id"`)
 }
 
-// ── validation hardening ────────────────────────────────────────────────────
+// -
+// validation hardening
+// -
 
 func TestBindingEmptyBindingsRejected(t *testing.T) {
 	t.Parallel()

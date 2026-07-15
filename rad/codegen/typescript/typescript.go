@@ -89,7 +89,7 @@ func emitTSHeader(p func(string, ...any), schemaSrc []byte) {
 	p("export const schemaSource = %s;", tsBacktickString(string(schemaSrc)))
 	p("")
 	// Runtime.
-	p(`// ── runtime ─────────────────────────────────────────────────────────────
+	p(`// runtime
 
 export interface Problem {
   type: string;
@@ -368,7 +368,9 @@ function splitPatch(patch: Rec): { set: Rec; clear: string[] } {
   return { set, clear };
 }
 
-// ── graph assembly ──────────────────────────────────────────────────────
+// -
+// graph assembly
+// -
 
 function col(scope: string, column: string): Expr {
   return { kind: "col", scope, column };
@@ -526,7 +528,7 @@ function assemble(s: QuerySpec): GraphQuery {
 }
 
 func emitTSModel(p func(string, ...any), t *codegen.Table) {
-	p("// ── %s ──────────────────────────────────────────────────────────────", t.Name)
+	p("// %s", t.Name)
 	p("")
 	p("/** One row of %q. Relation fields are present only when included. */", t.Name)
 	p("export interface %s {", t.Model)
@@ -841,7 +843,7 @@ func emitTSInclude(p func(string, ...any), t *codegen.Table) {
 }
 
 func emitTSClient(p func(string, ...any), m *codegen.Model) {
-	p("// ── client ──────────────────────────────────────────────────────────────")
+	p("// client")
 	p("")
 	p("export class Client {")
 	p("  private rpc: Rpc;")

@@ -231,7 +231,9 @@ func (*NestedLoopJoinExec) phys() {}
 func (*RefExec) phys()            {}
 func (*AggregateExec) phys()      {}
 
-// ── physical ordering properties ────────────────────────────────────────────
+// -
+// physical ordering properties
+// -
 
 // providedOrder reports the ascending slot order a node's output arrives in,
 // and whether the node is a singleton (at most one row satisfies any

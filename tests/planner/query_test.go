@@ -7,7 +7,9 @@ import (
 	"github.com/Southclaws/rad/rad/protocol/lirwire"
 )
 
-// ── shared test helpers ──────────────────────────────────────────────────────
+// -
+// shared test helpers
+// -
 
 // relBytes marshals a wire query into a statement's opaque relation payload.
 func relBytes(q lirwire.Query) []byte { b, _ := json.Marshal(q); return b }

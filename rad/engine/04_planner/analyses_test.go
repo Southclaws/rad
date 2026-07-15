@@ -133,7 +133,9 @@ func TestExtractOuterEquality(t *testing.T) {
 	}
 }
 
-// ── correlation classification ──────────────────────────────────────────────
+// -
+// correlation classification
+// -
 
 func TestClassifyForcingQuery(t *testing.T) {
 	q := bind(t, forcingQuery())
