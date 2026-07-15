@@ -46,16 +46,21 @@ that errors carry a typed `{code, reason}` (`reject`/wire Problem), assert the
 paths agree on the code/reason, not just on erroring, catches a case where
 two paths fail for different reasons.
 
-## 4. Enrich crossing sub-relations (deep compositions)
+## 4. Enrich crossing sub-relations — DONE (crossing_over_join)
 
-The coverage audit's finding: a correlated crossing's body is always a filtered
-scan (or a global aggregate over one), so `crossing_over_join` and
-`nested_crossing` are generated zero times, the deep compositions
-("correlated array over a join over a filtered ref") that property testing is
-uniquely good at are unreached. Let a crossing body itself be a small generated
-sub-tree (join / aggregate-over-join / another crossing). Watch the array/first
-determinism rule: a join output has no single `id` to order by, so ordered
-crossings over joins need a generated unique-key order or a `first` provably ≤1.
+A correlated crossing's body can now be a filtered join, so `crossing_over_join`
+went from 0 to ~600/2000 in the coverage audit (promoted into `mustHit`).
+`exists`/`scalar` take the join body as-is (they render a bool / a count, never
+the join's columns); `first`/`array` shape the body into objects, so those
+flatten it to a unique-named output and order by the projected id columns (a
+total unique key, so the selection is deterministic with no tie-break
+divergence). That flatten is also what confirmed the binder correctly rejects a
+"join body has duplicate id" crossing before the fix. Holds over 1000 seeds; no
+engine disagreement (the flatten was a generator fix, not an engine bug).
+
+Still a gap: `nested_crossing` (a crossing whose body contains another crossing)
+— left for a later pass; a body sub-tree is a plain filtered scan/join, not yet
+a projection carrying its own crossing fields.
 
 ## 5. Shrinking → automatic fixture emission
 
