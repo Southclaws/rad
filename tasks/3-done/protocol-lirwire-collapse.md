@@ -1,9 +1,13 @@
 # protocol → lirwire/pirwire collapse
 
-Status: **CORE COMPLETE, GREEN** — collapse landed; full non-codegen suite
-passes (engine, protocol, server, client, planner, e2e). Only codegen output +
-demo regen remain, deferred by user directive. Uncommitted (editorial review).
-Goal: one generated wire representation, no handwritten mirror, no bridge.
+Status: **DONE** — committed as `7505bad`. The collapse to one generated wire
+representation (no handwritten mirror, no bridge) is complete and the full suite
+passes (engine incl. the reference-interpreter differential tests, protocol,
+server, client, planner, e2e). The codegen output was deliberately carved off
+into its own task — see [[codegen-generator-rewrite]] — since the generator
+needs a structural rewrite, not just a type swap; until it lands, freshly
+generated clients won't compile (its emit strings still name `protocol.*`, and
+`examples/demo/generated/tracker.go` is removed).
 
 ## Test verification (all green except deferred codegen)
 
