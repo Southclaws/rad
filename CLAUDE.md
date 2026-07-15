@@ -6,6 +6,14 @@ Rad is a relational database and generated-client toolchain in Go, built on Slat
 
 Also read `AGENTS.md`. Its key rule: never delimit a Go file into sections with banner comments — a section wanting a banner is a concern wanting its own file in the same package. Split the file instead, and remove banners you encounter in code you touch.
 
+Never use Unicode box-drawing bars in comments (`// ── label ──────`). Splitting the file (above) is preferred; where a minimal in-file divider genuinely belongs — e.g. a large cohesive file that's best kept together rather than split up, use the plain-ASCII three-line form only:
+
+```go
+// -
+// label
+// -
+```
+
 ## The cgo gotcha (read first)
 
 The SlateDB Go binding is cgo and links against a native library built into `lib/` from the pinned checkout in `third_party/slatedb`. Bare `go test` / `go build` fail to link without:
