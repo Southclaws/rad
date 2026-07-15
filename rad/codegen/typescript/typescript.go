@@ -1,9 +1,7 @@
-package codegen
-
-// TypeScript client generation. The emitted file is self-contained — a
-// small fetch-based runtime plus typed models, table handles, query
-// builders, and transactions — with zero dependencies, usable from Node,
-// Bun, Deno, and browsers.
+// Package typescript is the TypeScript client generator. The emitted file is
+// self-contained — a small fetch-based runtime plus typed models, table
+// handles, query builders, and transactions — with zero dependencies, usable
+// from Node, Bun, Deno, and browsers.
 //
 // Design choices:
 //   - Property names mirror the wire exactly (snake_case column names, the
@@ -14,26 +12,27 @@ package codegen
 //     generated header.
 //   - A Patch field set to null clears the column (maps onto the wire's
 //     clear list); undefined leaves it untouched.
+package typescript
 
 import (
 	"bytes"
 	"fmt"
 	"strings"
 
-	"github.com/Southclaws/rad/rad/engine/02_catalog/schema"
+	"github.com/Southclaws/rad/rad/codegen"
 )
 
-// GenerateTS emits the TypeScript client for a schema.
-func GenerateTS(sch *schema.Schema, schemaSrc []byte) ([]byte, error) {
-	m, err := build("ts", sch)
-	if err != nil {
-		return nil, err
-	}
+func init() { codegen.Register("ts", generator{}) }
 
+// generator is the registered TypeScript Generator.
+type generator struct{}
+
+// Generate emits the TypeScript client for the model.
+func (generator) Generate(m *codegen.Model, opts codegen.Options) ([]codegen.GeneratedFile, error) {
 	var b bytes.Buffer
 	p := func(format string, args ...any) { fmt.Fprintf(&b, format+"\n", args...) }
 
-	emitTSHeader(p, schemaSrc)
+	emitTSHeader(p, opts.SchemaSource)
 	for _, t := range m.Tables {
 		emitTSModel(p, t)
 		emitTSTable(p, t)
@@ -41,7 +40,7 @@ func GenerateTS(sch *schema.Schema, schemaSrc []byte) ([]byte, error) {
 		emitTSInclude(p, t)
 	}
 	emitTSClient(p, m)
-	return b.Bytes(), nil
+	return []codegen.GeneratedFile{{Path: opts.Package + ".ts", Content: b.Bytes()}}, nil
 }
 
 func tsType(goType string) string {
@@ -526,16 +525,16 @@ function assemble(s: QuerySpec): GraphQuery {
 	p("")
 }
 
-func emitTSModel(p func(string, ...any), t *genTable) {
-	p("// ── %s ──────────────────────────────────────────────────────────────", t.SQLName)
+func emitTSModel(p func(string, ...any), t *codegen.Table) {
+	p("// ── %s ──────────────────────────────────────────────────────────────", t.Name)
 	p("")
-	p("/** One row of %q. Relation fields are present only when included. */", t.SQLName)
+	p("/** One row of %q. Relation fields are present only when included. */", t.Name)
 	p("export interface %s {", t.Model)
 	for _, c := range t.Cols {
 		if c.Nullable {
-			p("  %s: %s | null;", c.SQLName, tsType(c.GoType))
+			p("  %s: %s | null;", c.Name, tsType(c.GoType))
 		} else {
-			p("  %s: %s;", c.SQLName, tsType(c.GoType))
+			p("  %s: %s;", c.Name, tsType(c.GoType))
 		}
 	}
 	for _, r := range t.Forward {
@@ -551,11 +550,11 @@ func emitTSModel(p func(string, ...any), t *genTable) {
 	for _, c := range t.Cols {
 		switch {
 		case c.Nullable:
-			p("  %s?: %s | null;", c.SQLName, tsType(c.GoType))
+			p("  %s?: %s | null;", c.Name, tsType(c.GoType))
 		case c.HasDef:
-			p("  %s?: %s;", c.SQLName, tsType(c.GoType))
+			p("  %s?: %s;", c.Name, tsType(c.GoType))
 		default:
-			p("  %s: %s;", c.SQLName, tsType(c.GoType))
+			p("  %s: %s;", c.Name, tsType(c.GoType))
 		}
 	}
 	p("}")
@@ -568,9 +567,9 @@ func emitTSModel(p func(string, ...any), t *genTable) {
 			continue
 		}
 		if c.Nullable {
-			p("  %s?: %s | null;", c.SQLName, tsType(c.GoType))
+			p("  %s?: %s | null;", c.Name, tsType(c.GoType))
 		} else {
-			p("  %s?: %s;", c.SQLName, tsType(c.GoType))
+			p("  %s?: %s;", c.Name, tsType(c.GoType))
 		}
 	}
 	p("}")
@@ -578,29 +577,29 @@ func emitTSModel(p func(string, ...any), t *genTable) {
 }
 
 // tsPKParams renders "id: string" or "teamId: string, userId: string".
-func tsPKParams(t *genTable) string {
+func tsPKParams(t *codegen.Table) string {
 	out := ""
 	for i, c := range t.PK {
 		if i > 0 {
 			out += ", "
 		}
-		out += camel(c.SQLName) + ": " + tsType(c.GoType)
+		out += camel(c.Name) + ": " + tsType(c.GoType)
 	}
 	return out
 }
 
-func tsPKKey(t *genTable) string {
+func tsPKKey(t *codegen.Table) string {
 	out := "{ "
 	for i, c := range t.PK {
 		if i > 0 {
 			out += ", "
 		}
-		out += fmt.Sprintf("%s: %s", c.SQLName, camel(c.SQLName))
+		out += fmt.Sprintf("%s: %s", c.Name, camel(c.Name))
 	}
 	return out + " }"
 }
 
-func emitTSTable(p func(string, ...any), t *genTable) {
+func emitTSTable(p func(string, ...any), t *codegen.Table) {
 	p("export class %sTable {", t.Model)
 	p("  private v: View;")
 	p("  constructor(v: View) {")
@@ -608,37 +607,37 @@ func emitTSTable(p func(string, ...any), t *genTable) {
 	p("  }")
 	p("")
 	p("  async create(input: %sCreate): Promise<%s> {", t.Model, t.Model)
-	p("    return (await this.v.create(%q, input as unknown as Rec)) as unknown as %s;", t.SQLName, t.Model)
+	p("    return (await this.v.create(%q, input as unknown as Rec)) as unknown as %s;", t.Name, t.Model)
 	p("  }")
 	p("")
 	p("  async get(%s): Promise<%s | null> {", tsPKParams(t), t.Model)
-	p("    return (await this.v.get(%q, %s)) as %s | null;", t.SQLName, tsPKKey(t), t.Model)
+	p("    return (await this.v.get(%q, %s)) as %s | null;", t.Name, tsPKKey(t), t.Model)
 	p("  }")
 	p("")
 	p("  async update(%s, patch: %sPatch): Promise<%s | null> {", tsPKParams(t), t.Model, t.Model)
 	p("    const { set, clear } = splitPatch(patch as unknown as Rec);")
-	p("    return (await this.v.update(%q, %s, set, clear)) as %s | null;", t.SQLName, tsPKKey(t), t.Model)
+	p("    return (await this.v.update(%q, %s, set, clear)) as %s | null;", t.Name, tsPKKey(t), t.Model)
 	p("  }")
 	p("")
 	p("  async delete(%s): Promise<boolean> {", tsPKParams(t))
-	p("    return this.v.del(%q, %s);", t.SQLName, tsPKKey(t))
+	p("    return this.v.del(%q, %s);", t.Name, tsPKKey(t))
 	p("  }")
 	for _, uq := range t.Uniques {
 		name := "by"
 		params := ""
 		var filters []string
 		for i, c := range uq {
-			name += upperCamel(c.SQLName)
+			name += upperCamel(c.Name)
 			if i > 0 {
 				params += ", "
 			}
-			params += camel(c.SQLName) + ": " + tsType(c.GoType)
-			filters = append(filters, fmt.Sprintf("eq(col(\"\", %q), lit(%s))", c.SQLName, camel(c.SQLName)))
+			params += camel(c.Name) + ": " + tsType(c.GoType)
+			filters = append(filters, fmt.Sprintf("eq(col(\"\", %q), lit(%s))", c.Name, camel(c.Name)))
 		}
 		p("")
-		p("  /** Finds the row by the unique index on (%s). */", uqCols(uq))
+		p("  /** Finds the row by the unique index on (%s). */", codegen.UqCols(uq))
 		p("  async %s(%s): Promise<%s | null> {", name, params, t.Model)
-		p("    const recs = await this.v.query(assemble({ table: %q, filters: [%s], orders: %s, includes: [], limit: 1 }));", t.SQLName, strings.Join(filters, ", "), tsDefaultOrderTerms(t))
+		p("    const recs = await this.v.query(assemble({ table: %q, filters: [%s], orders: %s, includes: [], limit: 1 }));", t.Name, strings.Join(filters, ", "), tsDefaultOrderTerms(t))
 		p("    return recs.length ? (recs[0] as unknown as %s) : null;", t.Model)
 		p("  }")
 	}
@@ -652,38 +651,38 @@ func emitTSTable(p func(string, ...any), t *genTable) {
 
 // emitTSFilterMethods writes the shared typed-predicate methods for query
 // and include builders.
-func emitTSFilterMethods(p func(string, ...any), t *genTable) {
+func emitTSFilterMethods(p func(string, ...any), t *codegen.Table) {
 	for _, c := range t.Cols {
-		m := camel(c.SQLName)
+		m := camel(c.Name)
 		ty := tsType(c.GoType)
-		p("  %sEq(v: %s): this { this.filters.push(bin(\"eq\", col(\"\", %q), lit(v))); return this; }", m, ty, c.SQLName)
-		p("  %sNe(v: %s): this { this.filters.push(bin(\"ne\", col(\"\", %q), lit(v))); return this; }", m, ty, c.SQLName)
+		p("  %sEq(v: %s): this { this.filters.push(bin(\"eq\", col(\"\", %q), lit(v))); return this; }", m, ty, c.Name)
+		p("  %sNe(v: %s): this { this.filters.push(bin(\"ne\", col(\"\", %q), lit(v))); return this; }", m, ty, c.Name)
 		if c.GoType != "bool" {
 			for _, op := range []struct{ suffix, op string }{
 				{"Lt", "lt"}, {"Lte", "lte"}, {"Gt", "gt"}, {"Gte", "gte"},
 			} {
-				p("  %s%s(v: %s): this { this.filters.push(bin(%q, col(\"\", %q), lit(v))); return this; }", m, op.suffix, ty, op.op, c.SQLName)
+				p("  %s%s(v: %s): this { this.filters.push(bin(%q, col(\"\", %q), lit(v))); return this; }", m, op.suffix, ty, op.op, c.Name)
 			}
 		}
 		if c.Nullable {
-			p("  %sNull(): this { this.filters.push(un(\"is_null\", col(\"\", %q))); return this; }", m, c.SQLName)
-			p("  %sNotNull(): this { this.filters.push(un(\"is_not_null\", col(\"\", %q))); return this; }", m, c.SQLName)
+			p("  %sNull(): this { this.filters.push(un(\"is_null\", col(\"\", %q))); return this; }", m, c.Name)
+			p("  %sNotNull(): this { this.filters.push(un(\"is_not_null\", col(\"\", %q))); return this; }", m, c.Name)
 		}
 	}
 }
 
-func emitTSOrderMethods(p func(string, ...any), t *genTable, orderTarget string) {
+func emitTSOrderMethods(p func(string, ...any), t *codegen.Table, orderTarget string) {
 	for _, c := range t.Cols {
-		m := upperCamel(c.SQLName)
-		p("  orderBy%s(): this { %s.push({ expr: col(\"\", %q) }); return this; }", m, orderTarget, c.SQLName)
-		p("  orderBy%sDesc(): this { %s.push({ expr: col(\"\", %q), desc: true }); return this; }", m, orderTarget, c.SQLName)
+		m := upperCamel(c.Name)
+		p("  orderBy%s(): this { %s.push({ expr: col(\"\", %q) }); return this; }", m, orderTarget, c.Name)
+		p("  orderBy%sDesc(): this { %s.push({ expr: col(\"\", %q), desc: true }); return this; }", m, orderTarget, c.Name)
 	}
 }
 
-func emitTSIncludeMethods(p func(string, ...any), t *genTable, pushStmt string) {
-	emit := func(r genRel, kind string) {
+func emitTSIncludeMethods(p func(string, ...any), t *codegen.Table, pushStmt string) {
+	emit := func(r codegen.Rel, kind string) {
 		p("  include%s(fn?: (b: %sInclude) => void): this {", upperCamel(r.As), r.Target.Model)
-		p("    const b = new %sInclude(%q, %s, %q, %q);", r.Target.Model, r.Target.SQLName, tsPairs(r.Pairs), r.As, kind)
+		p("    const b = new %sInclude(%q, %s, %q, %q);", r.Target.Model, r.Target.Name, tsPairs(r.Pairs), r.As, kind)
 		p("    fn?.(b);")
 		p("    %s(b.build());", pushStmt)
 		p("    return this;")
@@ -709,11 +708,11 @@ func tsPairs(pairs [][2]string) string {
 	return out + "]"
 }
 
-func emitTSQuery(p func(string, ...any), t *genTable) {
-	p("/** Fluent query builder for %q; conditions AND together. */", t.SQLName)
+func emitTSQuery(p func(string, ...any), t *codegen.Table) {
+	p("/** Fluent query builder for %q; conditions AND together. */", t.Name)
 	p("export class %sQuery {", t.Model)
 	p("  private filters: Expr[] = [];")
-	p("  private spec: QuerySpec = { table: %q, filters: [], orders: [], includes: [] };", t.SQLName)
+	p("  private spec: QuerySpec = { table: %q, filters: [], orders: [], includes: [] };", t.Name)
 	p("  private v: View;")
 	p("  constructor(v: View) {")
 	p("    this.v = v;")
@@ -749,10 +748,10 @@ func emitTSQuery(p func(string, ...any), t *genTable) {
 	p("")
 }
 
-func tsDefaultOrderTerms(t *genTable) string {
+func tsDefaultOrderTerms(t *codegen.Table) string {
 	terms := make([]string, len(t.PK))
 	for i, c := range t.PK {
-		terms[i] = fmt.Sprintf("{ expr: col(\"\", %q) }", c.SQLName)
+		terms[i] = fmt.Sprintf("{ expr: col(\"\", %q) }", c.Name)
 	}
 	return "[" + strings.Join(terms, ", ") + "]"
 }
@@ -760,7 +759,7 @@ func tsDefaultOrderTerms(t *genTable) string {
 // emitTSAggregates writes the terminal fold methods. They reuse the builder's
 // filter but not its ordering/pagination/includes (meaningless for a fold).
 // count() is always a number; the rest return null when no rows matched.
-func emitTSAggregates(p func(string, ...any), t *genTable) {
+func emitTSAggregates(p func(string, ...any), t *codegen.Table) {
 	p("  private async fold(aggs: AggTerm[]): Promise<Rec> {")
 	p("    const recs = await this.v.query(assemble({ table: this.spec.table, filters: this.filters, orders: [], includes: [], aggs }));")
 	p("    return recs[0] ?? {};")
@@ -780,32 +779,32 @@ func emitTSAggregates(p func(string, ...any), t *genTable) {
 		p("  }")
 	}
 	for _, c := range t.Cols {
-		m := upperCamel(c.SQLName)
+		m := upperCamel(c.Name)
 		ty := tsType(c.GoType)
 		if c.GoType == "int64" || c.GoType == "float64" {
-			fold("sum"+m, "sum", c.SQLName, "number", fmt.Sprintf("Total of %q (null when no rows).", c.SQLName))
-			fold("avg"+m, "avg", c.SQLName, "number", fmt.Sprintf("Average of %q (null when no rows).", c.SQLName))
+			fold("sum"+m, "sum", c.Name, "number", fmt.Sprintf("Total of %q (null when no rows).", c.Name))
+			fold("avg"+m, "avg", c.Name, "number", fmt.Sprintf("Average of %q (null when no rows).", c.Name))
 		}
-		fold("min"+m, "min", c.SQLName, ty, fmt.Sprintf("Smallest %q (null when no rows).", c.SQLName))
-		fold("max"+m, "max", c.SQLName, ty, fmt.Sprintf("Largest %q (null when no rows).", c.SQLName))
+		fold("min"+m, "min", c.Name, ty, fmt.Sprintf("Smallest %q (null when no rows).", c.Name))
+		fold("max"+m, "max", c.Name, ty, fmt.Sprintf("Largest %q (null when no rows).", c.Name))
 	}
 
 	for _, c := range t.Cols {
-		m := upperCamel(c.SQLName)
+		m := upperCamel(c.Name)
 		keyTy := tsType(c.GoType)
 		if c.Nullable {
 			keyTy += " | null"
 		}
-		p("  /** Counts matching rows per distinct %q, ordered by the group key. */", c.SQLName)
-		p("  async countBy%s(): Promise<{ %s: %s; count: number }[]> {", m, camel(c.SQLName), keyTy)
-		p("    const recs = await this.v.query(assembleGrouped({ table: this.spec.table, filters: this.filters, orders: [], includes: [] }, %q));", c.SQLName)
-		p("    return recs as unknown as { %s: %s; count: number }[];", camel(c.SQLName), keyTy)
+		p("  /** Counts matching rows per distinct %q, ordered by the group key. */", c.Name)
+		p("  async countBy%s(): Promise<{ %s: %s; count: number }[]> {", m, camel(c.Name), keyTy)
+		p("    const recs = await this.v.query(assembleGrouped({ table: this.spec.table, filters: this.filters, orders: [], includes: [] }, %q));", c.Name)
+		p("    return recs as unknown as { %s: %s; count: number }[];", camel(c.Name), keyTy)
 		p("  }")
 	}
 }
 
-func emitTSInclude(p func(string, ...any), t *genTable) {
-	p("/** Refines an included %q fetch. */", t.SQLName)
+func emitTSInclude(p func(string, ...any), t *codegen.Table) {
+	p("/** Refines an included %q fetch. */", t.Name)
 	p("export class %sInclude {", t.Model)
 	p("  private filters: Expr[] = [];")
 	p("  private orders: OrderTerm[] = [];")
@@ -841,13 +840,13 @@ func emitTSInclude(p func(string, ...any), t *genTable) {
 	p("")
 }
 
-func emitTSClient(p func(string, ...any), m *genModel) {
+func emitTSClient(p func(string, ...any), m *codegen.Model) {
 	p("// ── client ──────────────────────────────────────────────────────────────")
 	p("")
 	p("export class Client {")
 	p("  private rpc: Rpc;")
 	for _, t := range m.Tables {
-		p("  readonly %s: %sTable;", camel(t.SQLName), t.Model)
+		p("  readonly %s: %sTable;", camel(t.Name), t.Model)
 	}
 	p("")
 	p("  /** Connects to a Rad server, e.g. new Client(\"rad://localhost\"). */")
@@ -855,7 +854,7 @@ func emitTSClient(p func(string, ...any), m *genModel) {
 	p("    this.rpc = new Rpc(parseRadUrl(url), fetchImpl);")
 	p("    const view = new WireView(this.rpc);")
 	for _, t := range m.Tables {
-		p("    this.%s = new %sTable(view);", camel(t.SQLName), t.Model)
+		p("    this.%s = new %sTable(view);", camel(t.Name), t.Model)
 	}
 	p("  }")
 	p("")

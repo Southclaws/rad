@@ -8,6 +8,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Southclaws/rad/rad/codegen"
+	// Register the built-in generators. Each package registers itself under a
+	// language name in its init; blank-importing them here is what makes them
+	// discoverable via codegen.Lookup without the codegen package importing them.
+	_ "github.com/Southclaws/rad/rad/codegen/golang"
+	_ "github.com/Southclaws/rad/rad/codegen/typescript"
 	"github.com/Southclaws/rad/rad/engine/02_catalog/schema"
 )
 
@@ -15,7 +20,7 @@ func generateCmd() *cobra.Command {
 	var file, out, pkg, lang string
 	cmd := &cobra.Command{
 		Use:   "generate",
-		Short: "Generate a typed client (Go or TypeScript) for a schema.rad",
+		Short: "Generate a typed client for a schema.rad",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			src, err := os.ReadFile(file)
@@ -27,28 +32,33 @@ func generateCmd() *cobra.Command {
 				return err
 			}
 
-			var code []byte
-			var dest string
-			switch lang {
-			case "go":
-				code, err = codegen.Generate(pkg, sch, src)
-				dest = filepath.Join(out, pkg+".go")
-			case "ts", "typescript":
-				code, err = codegen.GenerateTS(sch, src)
-				dest = filepath.Join(out, pkg+".ts")
-			default:
-				return fmt.Errorf("unknown --lang %q (go, ts)", lang)
+			name := lang
+			if name == "typescript" {
+				name = "ts"
 			}
+			gen, ok := codegen.Lookup(name)
+			if !ok {
+				return fmt.Errorf("unknown --lang %q (have: %v)", lang, codegen.Languages())
+			}
+
+			model, err := codegen.Build(pkg, sch)
 			if err != nil {
 				return err
 			}
-			if err := os.MkdirAll(out, 0o755); err != nil {
+			files, err := gen.Generate(model, codegen.Options{Package: pkg, SchemaSource: src})
+			if err != nil {
 				return err
 			}
-			if err := os.WriteFile(dest, code, 0o644); err != nil {
-				return err
+			for _, f := range files {
+				dest := filepath.Join(out, f.Path)
+				if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+					return err
+				}
+				if err := os.WriteFile(dest, f.Content, 0o644); err != nil {
+					return err
+				}
+				fmt.Printf("%s: generated %s (%d tables)\n", file, dest, len(sch.Tables))
 			}
-			fmt.Printf("%s: generated %s (%d tables)\n", file, dest, len(sch.Tables))
 			return nil
 		},
 	}
