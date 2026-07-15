@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/kvbrowser.tsx","./src/planview.tsx","./src/tableview.tsx","./src/api.ts","./src/main.tsx"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/kvbrowser.tsx","./src/querytool.tsx","./src/tableview.tsx","./src/api.ts","./src/main.tsx"],"version":"5.9.3"}

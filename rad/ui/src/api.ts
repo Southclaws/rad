@@ -101,6 +101,21 @@ function json(method: string, body?: unknown): RequestInit {
   }
 }
 
+// The query plan for one statement: the structured view and its rendered text.
+export interface StatementPlan {
+  name: string
+  view: unknown // the structured PlanView (op/detail/access/children); free-form
+  text: string // the pretty rendered tree, with access decisions
+}
+
+export interface ExecuteResponse {
+  result: unknown
+  statements: { name: string; affected: number }[]
+  // Free-form: present as { statements: StatementPlan[] } when show-plan was
+  // set, otherwise null.
+  plan: { statements: StatementPlan[] } | null
+}
+
 export const adminAPI = {
   kvScan: (prefix: string, after?: string, limit = 100) => {
     const p = new URLSearchParams({ prefix, limit: String(limit) })
@@ -108,14 +123,6 @@ export const adminAPI = {
     return request<KVScanResult>(`/api/kv/scan?${p}`)
   },
   kvGet: (key64: string) => request<KVDetail>(`/api/kv/get?key=${encodeURIComponent(key64)}`),
-  // The body is the raw LIR document as typed; the server validates it and
-  // returns the rendered physical plan (or an error to surface).
-  plan: (query: string) =>
-    request<{ plan: string }>('/api/plan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: query,
-    }),
 }
 
 export const publicAPI = {
@@ -137,4 +144,13 @@ export const publicAPI = {
   deleteIndex: (table: string, index: string) =>
     publicRequest<TableInfo>(`/tables/${encodeURIComponent(table)}/indexes/${encodeURIComponent(index)}`, json('DELETE')),
   query: (query: unknown) => publicRequest<{ result: unknown }>('/query', json('POST', query)),
+  // Run a PIR program. show-plan attaches the query plan for each statement;
+  // dry-run binds and plans but executes nothing (no result).
+  execute: (program: unknown, opts?: { showPlan?: boolean; dryRun?: boolean }) => {
+    const p = new URLSearchParams()
+    if (opts?.showPlan) p.set('show-plan', 'true')
+    if (opts?.dryRun) p.set('dry-run', 'true')
+    const qs = p.toString()
+    return publicRequest<ExecuteResponse>(`/execute${qs ? `?${qs}` : ''}`, json('POST', program))
+  },
 }
