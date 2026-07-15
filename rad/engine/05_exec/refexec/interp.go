@@ -29,11 +29,13 @@ package refexec
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"slices"
 
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	"github.com/Southclaws/rad/rad/engine/03_lir/bound"
+	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
 // ScanFunc yields all stored rows of a table, materialised, from the caller's
@@ -446,11 +448,11 @@ func fold1(t bound.AggTerm, vals []lir.Value, rows int64) (lir.Value, error) {
 	}
 	switch t.Fn {
 	case lir.AggSum, lir.AggAvg:
-		var sumI int64
+		sumI := new(big.Int) // exact total; int64 overflow is a data error, not a wrap
 		var sumF float64
 		for _, v := range vals {
 			if v.Type == catalog.TypeInt64 {
-				sumI += v.Int64
+				sumI.Add(sumI, big.NewInt(v.Int64))
 				sumF += float64(v.Int64)
 			} else {
 				sumF += v.Float64
@@ -460,7 +462,10 @@ func fold1(t bound.AggTerm, vals []lir.Value, rows int64) (lir.Value, error) {
 			return lir.Float64(sumF / float64(len(vals))), nil
 		}
 		if t.T.Kind == lir.KindInt64 {
-			return lir.Int64(sumI), nil
+			if !sumI.IsInt64() {
+				return lir.Value{}, reject.Runtimef("refexec: integer overflow in sum")
+			}
+			return lir.Int64(sumI.Int64()), nil
 		}
 		return lir.Float64(sumF), nil
 	case lir.AggMin, lir.AggMax:

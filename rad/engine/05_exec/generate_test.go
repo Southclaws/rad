@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"sort"
@@ -31,6 +32,7 @@ import (
 	"github.com/Southclaws/rad/rad/engine/01_kv/kvslate"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
+	planner "github.com/Southclaws/rad/rad/engine/04_planner"
 )
 
 // generatedSeeds is how many random cases the differential explores. Opening a
@@ -63,17 +65,22 @@ func TestGeneratedDifferential(t *testing.T) {
 			oracle, errO := interpQuery(ctx, eng, q)
 			forced, errF := executeFullScan(ctx, eng, q)
 
-			// The differential contract: all three either succeed or fail
-			// together. A bind failure (all three fail identically at bind) is a
-			// generator bug; a split — one path errors, another doesn't — is a
-			// real engine divergence.
+			// The differential contract: all three succeed or all fail together.
+			// A split — one path errors, another doesn't — is a real divergence.
 			if (errC != nil) != (errO != nil) || (errC != nil) != (errF != nil) {
 				t.Fatalf("error split: chosen=%v oracle=%v forced=%v\nseed %d query:\n%s",
 					errC, errO, errF, seed, litQuery(q))
 			}
 			if errC != nil {
-				t.Fatalf("all paths errored (generator likely emitted invalid LIR): %v\nseed %d query:\n%s",
-					errC, seed, litQuery(q))
+				// All three agree the query has no result — the all-fail half of
+				// the contract. Distinguish a legitimate, order-independent
+				// runtime error (e.g. checked int64 overflow) from the generator
+				// emitting un-bindable LIR: only the latter is a bug here.
+				if _, berr := planner.Bind(ctx, eng.cat, q); berr != nil {
+					t.Fatalf("generator emitted un-bindable LIR: %v\nseed %d query:\n%s",
+						berr, seed, litQuery(q))
+				}
+				return
 			}
 
 			ms := multiset(chosen)
@@ -413,7 +420,7 @@ func genValue(rng *rand.Rand, c genColumn) lir.Value {
 	case catalog.TypeText:
 		return lir.Text([]string{"a", "b", "c", ""}[rng.Intn(4)])
 	case catalog.TypeInt64:
-		return lir.Int64([]int64{-2, -1, 0, 1, 2, 100}[rng.Intn(6)])
+		return lir.Int64([]int64{math.MinInt64, -2, -1, 0, 1, 2, 100, math.MaxInt64}[rng.Intn(8)])
 	case catalog.TypeFloat64:
 		return lir.Float64([]float64{-1.5, 0, 1.5, 2.5}[rng.Intn(4)])
 	default:
@@ -721,7 +728,7 @@ func (g *gen) literal(typ catalog.Type) any {
 	case catalog.TypeText:
 		return []string{"a", "b", "c", ""}[g.rng.Intn(4)]
 	case catalog.TypeInt64:
-		return []int{-1, 0, 1, 2, 100}[g.rng.Intn(5)]
+		return []int{math.MinInt64, -1, 0, 1, 2, 100, math.MaxInt64}[g.rng.Intn(7)]
 	case catalog.TypeFloat64:
 		return []float64{-1.5, 0, 1.5, 2.5}[g.rng.Intn(4)]
 	default:

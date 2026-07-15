@@ -1,0 +1,8 @@
+# e2e/agg_sum_in_range — a sum whose intermediates would overflow but whose
+# true total is in range must succeed with that total, proving the overflow
+# check is order-independent (decided by the exact sum, not by intermediate
+# accumulation) — so the result never depends on aggregation order.
+tables:
+  - name: dummy
+    columns:
+      - { name: id, type: string, pk: true }

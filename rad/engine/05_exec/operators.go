@@ -8,12 +8,14 @@ package exec
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"slices"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	"github.com/Southclaws/rad/rad/engine/03_lir/bound"
 	planner "github.com/Southclaws/rad/rad/engine/04_planner"
+	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
 // executor builds operator trees. forceNested disables keyed batching —
@@ -463,7 +465,7 @@ type aggOp struct {
 
 type aggAccum struct {
 	count int64
-	sumI  int64
+	sumI  big.Int // exact int64-sum total; overflow of int64 is a data error, not a wrap
 	sumF  float64
 	n     int64 // non-NULL inputs seen by sum/avg/min/max
 	min   lir.Value
@@ -537,7 +539,7 @@ func (o *aggOp) fold(ctx context.Context) error {
 			case lir.AggSum, lir.AggAvg:
 				a.n++
 				if v.Type == "int64" {
-					a.sumI += v.Int64
+					a.sumI.Add(&a.sumI, big.NewInt(v.Int64))
 					a.sumF += float64(v.Int64)
 				} else {
 					a.sumF += v.Float64
@@ -572,7 +574,11 @@ func (o *aggOp) fold(ctx context.Context) error {
 			f.SetScalar(g.Slot, grp.vals[i])
 		}
 		for i, t := range o.terms {
-			f.SetScalar(t.Slot, foldResult(t, grp.accum[i]))
+			v, err := foldResult(t, &grp.accum[i])
+			if err != nil {
+				return err
+			}
+			f.SetScalar(t.Slot, v)
 		}
 		o.out = append(o.out, f)
 	}
@@ -582,33 +588,39 @@ func (o *aggOp) fold(ctx context.Context) error {
 // foldResult applies the empty-set and typing rules: count is 0, never
 // NULL; sum keeps the argument's type; avg is always float64; min/max keep
 // the argument's type; every fold but count is NULL over no non-NULL input.
-func foldResult(t bound.AggTerm, a aggAccum) lir.Value {
+// An int64 sum whose true total exceeds int64 is a data error, not a silent
+// wrap — computed order-independently (the exact total, not intermediate
+// steps) so the result never depends on aggregation order / access path.
+func foldResult(t bound.AggTerm, a *aggAccum) (lir.Value, error) {
 	switch t.Fn {
 	case lir.AggCount:
-		return lir.Int64(a.count)
+		return lir.Int64(a.count), nil
 	case lir.AggSum:
 		if a.n == 0 {
-			return lir.Null(t.T.Kind.CatalogType())
+			return lir.Null(t.T.Kind.CatalogType()), nil
 		}
 		if t.T.Kind == lir.KindInt64 {
-			return lir.Int64(a.sumI)
+			if !a.sumI.IsInt64() {
+				return lir.Value{}, reject.Runtimef("exec: integer overflow in sum")
+			}
+			return lir.Int64(a.sumI.Int64()), nil
 		}
-		return lir.Float64(a.sumF)
+		return lir.Float64(a.sumF), nil
 	case lir.AggAvg:
 		if a.n == 0 {
-			return lir.Null(t.T.Kind.CatalogType())
+			return lir.Null(t.T.Kind.CatalogType()), nil
 		}
-		return lir.Float64(a.sumF / float64(a.n))
+		return lir.Float64(a.sumF / float64(a.n)), nil
 	case lir.AggMin:
 		if a.n == 0 {
-			return lir.Null(t.T.Kind.CatalogType())
+			return lir.Null(t.T.Kind.CatalogType()), nil
 		}
-		return a.min
+		return a.min, nil
 	default: // max
 		if a.n == 0 {
-			return lir.Null(t.T.Kind.CatalogType())
+			return lir.Null(t.T.Kind.CatalogType()), nil
 		}
-		return a.max
+		return a.max, nil
 	}
 }
 

@@ -1,0 +1,21 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "r": { "kind": "rows", "scope": "r",
+              "columns": [ { "name": "v", "type": "int64" } ],
+              "rows": [ [9223372036854775807], [1], [-1] ] },
+            "agg": { "kind": "aggregate", "input": "r", "scope": "g",
+              "aggs": [ { "fn": "sum", "arg": { "kind": "col", "scope": "r", "column": "v" }, "as": "s" } ] }
+          },
+          "root": { "node": "agg", "cardinality": "scalar" }
+        }
+      }
+    ]
+  },
+  "result": 9223372036854775807
+}
