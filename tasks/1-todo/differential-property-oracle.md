@@ -366,6 +366,22 @@ Still open: bindings/refs in the generator; a sequence-comparing ordered mode
 (multiset comparison means ordering isn't checked here — covered by conformance
 fixtures + path-independence); shrinking → auto fixture emission; metamorphic.
 
+**Coverage audit (`TestGeneratorCoverage`).** A structure-aware feature walker
+tallies which constructs and compositions the generator actually emits over
+2000 seeds, prints the distribution, and fails if a construct it is meant to
+emit drops below a floor (a regression guard on the generator itself) — the
+antidote to a suite that technically supports a construct but never reaches it.
+The distribution is healthy for single constructs (every node kind, both join
+modes, group-by vs global aggregate, all four crossings, K3/arithmetic), but the
+audit immediately caught a **composition** gap: a correlated crossing's body is
+always a filtered scan (or a global aggregate over one), so `crossing_over_join`
+— e.g. a correlated array over a join — is generated **zero** times. Documented
+gaps, each an explicit zero-assertion so they fail loudly when closed or when
+one starts appearing: `ref_binding`, `rows`, `cast`, `slice`, `nested_crossing`,
+`crossing_over_join`. Enriching crossing sub-relations (so a crossing body can
+itself be a join / aggregate-over-join / another crossing) is the increment that
+closes the deep-composition gap.
+
 ## Risks / honest critique (fold into sequencing)
 
 - **Shared scalar eval blinds the differential to scalar bugs.** If both the
