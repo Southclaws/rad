@@ -1,0 +1,9 @@
+[
+  { "table": "nodes", "rows": [
+    { "id": "n1", "parent_id": null, "label": "root-A" },
+    { "id": "n2", "parent_id": "n1", "label": "B" },
+    { "id": "n3", "parent_id": "n1", "label": "C" },
+    { "id": "n4", "parent_id": "n2", "label": "D" },
+    { "id": "n5", "parent_id": null, "label": "root-B" }
+  ] }
+]

@@ -1,0 +1,52 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "leaf_nodes",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "n": { "kind": "scan", "table": "nodes", "scope": "n" },
+            "c": { "kind": "scan", "table": "nodes", "scope": "c" },
+            "children_of": {
+              "kind": "filter",
+              "input": "c",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "c", "column": "parent_id" },
+                "right": { "kind": "col", "scope": "n", "column": "id" }
+              }
+            },
+            "leaves": {
+              "kind": "filter",
+              "input": "n",
+              "predicate": {
+                "kind": "unary", "op": "not",
+                "expr": { "kind": "exists", "node": "children_of" }
+              }
+            },
+            "out": {
+              "kind": "project",
+              "input": "leaves",
+              "scope": "o",
+              "fields": [
+                { "as": "id", "expr": { "kind": "col", "scope": "n", "column": "id" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "n3" },
+    { "id": "n4" },
+    { "id": "n5" }
+  ]
+}

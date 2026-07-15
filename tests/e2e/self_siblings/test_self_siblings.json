@@ -1,0 +1,57 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "sibling_pairs",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "l": { "kind": "scan", "table": "nodes", "scope": "l" },
+            "r": { "kind": "scan", "table": "nodes", "scope": "r" },
+            "joined": {
+              "kind": "join",
+              "left": "l",
+              "right": "r",
+              "join": "inner",
+              "on": {
+                "kind": "binary", "op": "and",
+                "left": {
+                  "kind": "binary", "op": "eq",
+                  "left": { "kind": "col", "scope": "l", "column": "parent_id" },
+                  "right": { "kind": "col", "scope": "r", "column": "parent_id" }
+                },
+                "right": {
+                  "kind": "binary", "op": "ne",
+                  "left": { "kind": "col", "scope": "l", "column": "id" },
+                  "right": { "kind": "col", "scope": "r", "column": "id" }
+                }
+              }
+            },
+            "proj": {
+              "kind": "project",
+              "input": "joined",
+              "scope": "pr",
+              "fields": [
+                { "as": "a", "expr": { "kind": "col", "scope": "l", "column": "id" } },
+                { "as": "b", "expr": { "kind": "col", "scope": "r", "column": "id" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "proj",
+              "terms": [
+                { "expr": { "kind": "col", "scope": "pr", "column": "a" } },
+                { "expr": { "kind": "col", "scope": "pr", "column": "b" } }
+              ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "a": "n2", "b": "n3" },
+    { "a": "n3", "b": "n2" }
+  ]
+}

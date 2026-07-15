@@ -1,0 +1,54 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "parts_with_child_qty",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "pt": { "kind": "scan", "table": "parts", "scope": "pt" },
+            "ch": { "kind": "scan", "table": "parts", "scope": "ch" },
+            "children_of": {
+              "kind": "filter",
+              "input": "ch",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "ch", "column": "parent_id" },
+                "right": { "kind": "col", "scope": "pt", "column": "id" }
+              }
+            },
+            "summed": {
+              "kind": "aggregate",
+              "input": "children_of",
+              "scope": "g",
+              "aggs": [
+                { "fn": "sum", "as": "total", "arg": { "kind": "col", "scope": "ch", "column": "qty" } }
+              ]
+            },
+            "out": {
+              "kind": "project",
+              "input": "pt",
+              "scope": "o",
+              "fields": [
+                { "as": "id",    "expr": { "kind": "col", "scope": "pt", "column": "id" } },
+                { "as": "total", "expr": { "kind": "scalar", "node": "summed" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "p1", "total": 5 },
+    { "id": "p2", "total": 5 },
+    { "id": "p3", "total": null },
+    { "id": "p4", "total": null }
+  ]
+}

@@ -1,0 +1,8 @@
+[
+  { "table": "parts", "rows": [
+    { "id": "p1", "parent_id": null, "qty": 0 },
+    { "id": "p2", "parent_id": "p1", "qty": 2 },
+    { "id": "p3", "parent_id": "p1", "qty": 3 },
+    { "id": "p4", "parent_id": "p2", "qty": 5 }
+  ] }
+]

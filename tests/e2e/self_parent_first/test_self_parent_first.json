@@ -1,0 +1,56 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "nodes_with_parent",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "n": { "kind": "scan", "table": "nodes", "scope": "n" },
+            "p": { "kind": "scan", "table": "nodes", "scope": "p" },
+            "parent_of": {
+              "kind": "filter",
+              "input": "p",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "p", "column": "id" },
+                "right": { "kind": "col", "scope": "n", "column": "parent_id" }
+              }
+            },
+            "parent_proj": {
+              "kind": "project",
+              "input": "parent_of",
+              "scope": "pp",
+              "fields": [
+                { "as": "pid",    "expr": { "kind": "col", "scope": "p", "column": "id" } },
+                { "as": "plabel", "expr": { "kind": "col", "scope": "p", "column": "label" } }
+              ]
+            },
+            "out": {
+              "kind": "project",
+              "input": "n",
+              "scope": "o",
+              "fields": [
+                { "as": "id",     "expr": { "kind": "col", "scope": "n", "column": "id" } },
+                { "as": "parent", "expr": { "kind": "first", "node": "parent_proj" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "n1", "parent": null },
+    { "id": "n2", "parent": { "pid": "n1", "plabel": "root-A" } },
+    { "id": "n3", "parent": { "pid": "n1", "plabel": "root-A" } },
+    { "id": "n4", "parent": { "pid": "n2", "plabel": "B" } },
+    { "id": "n5", "parent": null }
+  ]
+}
