@@ -82,6 +82,21 @@ func (o *attachOp) attach(ctx context.Context, a *planner.AttachSpec, batch []Fr
 
 	case a.Corr.Kind == planner.KeyCorrelated && !o.ex.forceNested:
 		// Dedupe the outer key tuples over the batch; fetch per DISTINCT key.
+		//
+		// INVARIANT: never derive crossing emptiness from access emptiness
+		// across an aggregate boundary. Key-grouping may skip *redundant*
+		// executions (same key ⇒ same result), but it must not replace
+		// executing a group with a crossing-kind default — because "the keyed
+		// access matched no base rows" is an INPUT condition, not the sub-plan's
+		// final result. Operators above the access decide what empty input
+		// means: filter/project/order/slice/join preserve emptiness, but a
+		// global aggregate produces one row from empty input (count 0, sum/min/
+		// max NULL), and `rows` originates rows with no input at all. So a NULL
+		// key — which matches nothing, since the residual filter re-applies the
+		// correlation predicate and NULL = x is UNKNOWN under 3VL — is still an
+		// ordinary key group whose sub-plan runs; the aggregate then folds the
+		// empty match, and the crossing consumes that. Short-circuiting a NULL
+		// key to null/[]/false silently dropped the aggregate's empty-input row.
 		type keyGroup struct {
 			env    bound.Env
 			frames []int
@@ -98,13 +113,6 @@ func (o *attachOp) attach(ctx context.Context, a *planner.AttachSpec, batch []Fr
 				}
 				keyVals[j] = v
 			}
-			// A NULL key is just another distinct key group, not a shortcut to
-			// an empty result: the residual filter above the keyed access
-			// re-applies the correlation predicate, so a NULL key matches no
-			// base rows under 3VL — but the sub-plan still runs, so a global
-			// aggregate over that empty match yields its empty-input row (count
-			// 0, not a NULL scalar / missing first / false exists). Shortcutting
-			// to a kind-based empty here silently dropped that.
 			enc, err := EncodeTuple(keyVals)
 			if err != nil {
 				return err

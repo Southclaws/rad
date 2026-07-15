@@ -319,6 +319,31 @@ Route each failure to the abstraction boundary it broke, rather than one giant
 8. Later: reuse the machinery for optimiser-rule equivalence and
    [[recursive-queries]]; [[sql-frontend]] differential if ever wanted.
 
+### Planner vocabulary: empty-input behaviour (for future optimiser work)
+
+The NULL-key bug (found by the generated differential; fix in `attach.go`)
+exposed a distinction the planner will want as reasoning vocabulary — not a
+formal interface yet, but a named property before any empty-relation or
+short-circuit optimisation lands:
+
+```
+EmptyInputBehaviour:
+  PreservesEmpty   — empty input ⇒ empty output:
+                     filter, project, order, slice, join (in the usual positions)
+  MayProduceRows   — output even from empty input:
+                     global aggregate (count 0, others NULL);
+                     rows (originates rows with no input at all)
+```
+
+The load-bearing invariant, documented at the crossing implementation
+(`05_exec/attach.go`): **never derive crossing emptiness from access emptiness
+across a `MayProduceRows` boundary.** Any optimisation that shortcuts execution
+on "no KV match" must first prove the *complete* correlated sub-plan is
+`PreservesEmpty`. This becomes more visible once `rows` is common: LIR now has
+both operators that originate rows without storage and operators that
+manufacture a row from empty input, so a purely access-based shortcut is unsafe
+without inspecting the rest of the logical plan.
+
 ### Current status (2026-07-14)
 
 Steps 2–3 done; step 4/5 landed and now generates **crossings + correlation**
