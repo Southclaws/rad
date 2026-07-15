@@ -36,4 +36,6 @@ The rethink owns:
   for direct-mode databases (tasks/3-done/direct-catalog-mode.md).
 
 Related: tasks/3-done/data-mutation-and-transaction-protocol.md (PIR, done),
-tasks/3-done/direct-catalog-mode.md.
+tasks/3-done/direct-catalog-mode.md, [[codegen-generator-rewrite]] (owns the
+generator machinery + emitted builder surface; this task owns the runtime
+program model — reconcile the ergonomic layer between them).
