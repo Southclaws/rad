@@ -57,32 +57,13 @@ func TestGeneratedDifferential(t *testing.T) {
 			rng := rand.New(rand.NewSource(seed))
 			spec := genCatalogSpec(rng)
 			eng, ctx := buildGenEngine(t, rng, spec)
+			q := (&gen{rng: rng, cat: spec}).genQuery()
 
-			g := &gen{rng: rng, cat: spec}
-			q := g.genQuery()
-
-			chosen, errC := eng.Execute(ctx, q)
-			oracle, errO := interpQuery(ctx, eng, q)
-			forced, errF := executeFullScan(ctx, eng, q)
-
-			// The differential contract: all three succeed or all fail together.
-			// A split — one path errors, another doesn't — is a real divergence.
-			if (errC != nil) != (errO != nil) || (errC != nil) != (errF != nil) {
-				t.Fatalf("error split: chosen=%v oracle=%v forced=%v\nseed %d query:\n%s",
-					errC, errO, errF, seed, litQuery(q))
-			}
-			if errC != nil {
-				// All three agree the query has no result — the all-fail half of
-				// the contract. Distinguish a legitimate, order-independent
-				// runtime error (e.g. checked int64 overflow) from the generator
-				// emitting un-bindable LIR: only the latter is a bug here.
-				if _, berr := planner.Bind(ctx, eng.cat, q); berr != nil {
-					t.Fatalf("generator emitted un-bindable LIR: %v\nseed %d query:\n%s",
-						berr, seed, litQuery(q))
-				}
+			chosen, oracle, forced, ok := runThreeWays(t, ctx, eng, q, seed)
+			if !ok {
 				return
 			}
-
+			// Unordered (bag) result: compare as a multiset — order is arbitrary.
 			ms := multiset(chosen)
 			if o := multiset(oracle); !sameMultiset(ms, o) {
 				t.Fatalf("engine ≠ oracle\n engine: %v\n oracle: %v\nseed %d query:\n%s",
@@ -94,6 +75,70 @@ func TestGeneratedDifferential(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGeneratedDifferentialOrdered is the sequence-comparing sibling: it
+// generates queries with a total output order (see genOrderedQuery) and
+// compares the row *sequence* exactly, so an ordering bug (Sort, ordered-index
+// pushdown) that a multiset comparison would miss shows up as a divergence.
+func TestGeneratedDifferentialOrdered(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < generatedSeeds(); i++ {
+		seed := int64(i)
+		t.Run(fmt.Sprint(seed), func(t *testing.T) {
+			t.Parallel()
+			rng := rand.New(rand.NewSource(seed))
+			spec := genCatalogSpec(rng)
+			eng, ctx := buildGenEngine(t, rng, spec)
+			q := (&gen{rng: rng, cat: spec}).genOrderedQuery()
+
+			chosen, oracle, forced, ok := runThreeWays(t, ctx, eng, q, seed)
+			if !ok {
+				return
+			}
+			cj := seqJSON(chosen)
+			if oj := seqJSON(oracle); cj != oj {
+				t.Fatalf("engine ≠ oracle (row sequence)\n engine: %s\n oracle: %s\nseed %d query:\n%s",
+					cj, oj, seed, litQuery(q))
+			}
+			if fj := seqJSON(forced); cj != fj {
+				t.Fatalf("chosen plan ≠ full-scan plan (ordering depends on access path)\n chosen: %s\n forced: %s\nseed %d query:\n%s",
+					cj, fj, seed, litQuery(q))
+			}
+		})
+	}
+}
+
+// runThreeWays executes q via the engine's chosen plan, the reference
+// interpreter, and a forced full-scan plan, enforcing the all-fail contract:
+// all three succeed or all fail together (a split is a real divergence). It
+// returns compare=false when all three consistently errored — a legitimate
+// runtime error (e.g. checked overflow), distinguished from the generator
+// emitting un-bindable LIR by an explicit bind check.
+func runThreeWays(t *testing.T, ctx context.Context, eng *Engine, q lir.Query, seed int64) (chosen, oracle, forced lir.Datum, compare bool) {
+	t.Helper()
+	chosen, errC := eng.Execute(ctx, q)
+	oracle, errO := interpQuery(ctx, eng, q)
+	forced, errF := executeFullScan(ctx, eng, q)
+	if (errC != nil) != (errO != nil) || (errC != nil) != (errF != nil) {
+		t.Fatalf("error split: chosen=%v oracle=%v forced=%v\nseed %d query:\n%s",
+			errC, errO, errF, seed, litQuery(q))
+	}
+	if errC != nil {
+		if _, berr := planner.Bind(ctx, eng.cat, q); berr != nil {
+			t.Fatalf("generator emitted un-bindable LIR: %v\nseed %d query:\n%s",
+				berr, seed, litQuery(q))
+		}
+		return lir.Datum{}, lir.Datum{}, lir.Datum{}, false
+	}
+	return chosen, oracle, forced, true
+}
+
+// seqJSON renders a datum as canonical JSON, order-sensitively (array order
+// preserved), for exact row-sequence comparison.
+func seqJSON(d lir.Datum) string {
+	b, _ := json.Marshal(jsonish(d))
+	return string(b)
 }
 
 // TestGeneratorCoverage audits the generator's reach: it generates many
@@ -457,10 +502,12 @@ type genBinding struct {
 	cols []genColumn // the binding's output columns, re-exposed under each ref's scope
 }
 
-func (g *gen) genQuery() lir.Query {
-	// A few closed bindings up front. A binding's body is self-contained (its
-	// own scans, no outer refs) and flattened to a unique-named output, since a
-	// ref exposes it under one scope and the binding output must not collide.
+// genBody generates the shared core: a few closed bindings, a relation tree,
+// and a ref-join for each binding so every declared binding is referenced.
+func (g *gen) genBody() (lir.Relation, []genScope, map[string]lir.Relation) {
+	// A binding's body is self-contained (its own scans, no outer refs) and
+	// flattened to a unique-named output, since a ref exposes it under one scope
+	// and the binding output must not collide.
 	bindings := map[string]lir.Relation{}
 	var binds []genBinding
 	for k := 0; k < g.rng.Intn(3); k++ { // 0..2 bindings
@@ -498,6 +545,13 @@ func (g *gen) genQuery() lir.Query {
 			scopes = append(scopes, refScope)
 		}
 	}
+	return rel, scopes, bindings
+}
+
+// genQuery builds an unordered (bag) query for the multiset differential: it may
+// carry correlated crossings in the output, and its result order is arbitrary.
+func (g *gen) genQuery() lir.Query {
+	rel, scopes, bindings := g.genBody()
 
 	// Flatten every visible scope into one uniquely-named output so the root
 	// object never has colliding attribute names.
@@ -518,6 +572,37 @@ func (g *gen) genQuery() lir.Query {
 	flat := lir.Project{Input: rel, Scope: g.fresh(), Fields: fields}
 
 	q := many(flat)
+	if len(bindings) > 0 {
+		q.Bindings = bindings
+	}
+	return q
+}
+
+// genOrderedQuery builds a query whose result is a deterministic sequence: it
+// projects every (scalar) output column and orders by all of them (bool
+// included — Value.Compare totally orders every scalar type). No crossing
+// outputs, so every output column is a comparable scalar. Ordering by all
+// output columns means the only ties are between genuinely identical rows,
+// which render the same in any order — so the sequence is well-defined
+// regardless of the tie-break the engine appends (and the interpreter doesn't).
+// That is what lets the differential compare row *sequences*, catching ordering
+// bugs the multiset mode can't see.
+func (g *gen) genOrderedQuery() lir.Query {
+	rel, scopes, bindings := g.genBody()
+
+	ps := g.fresh()
+	var fields []lir.ProjField
+	var order []lir.OrderTerm
+	for _, s := range scopes {
+		for _, c := range s.cols {
+			name := g.field()
+			fields = append(fields, lir.ProjField{As: name, Expr: qcol(s.name, c.name)})
+			order = append(order, lir.OrderTerm{Expr: qcol(ps, name), Desc: g.rng.Intn(2) == 0})
+		}
+	}
+	// Every scope has at least one column, so fields and order are non-empty.
+	flat := lir.Project{Input: rel, Scope: ps, Fields: fields}
+	q := lir.Query{Card: lir.CardMany, Root: lir.Order{Input: flat, Terms: order}}
 	if len(bindings) > 0 {
 		q.Bindings = bindings
 	}

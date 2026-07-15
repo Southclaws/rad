@@ -36,14 +36,19 @@ the prerequisite for the binding-inlining metamorphic rule later.
 Not yet: inter-binding references (a binding body referencing an earlier
 binding) — bodies use plain `genRel`, no refs; a small follow-up.
 
-## 2. Ordered-result comparison mode
+## 2. Ordered-result comparison mode — DONE
 
-Today everything compares as a multiset, so ordering is invisible to the
-fuzzer (Sort, ordered-index pushdown), covered only by fixed conformance
-fixtures + path-independence. Add a mode that, when the query's observable
-order is by a unique key, compares row sequences exactly. The unique-key
-condition matters: with a non-unique order the engine appends a PK tie-breaker
-the interpreter does not, so a naive sequence compare would false-positive.
+`TestGeneratedDifferentialOrdered` generates queries with a *total* output
+order (via `genOrderedQuery`) and sequence-compares the three paths exactly, so
+ordering bugs (Sort, ordered-index pushdown) that the multiset mode can't see
+now show up. The tie-order trap is handled by construction: the query projects
+every scalar output column and orders by *all* of them, so the only ties are
+between genuinely identical rows — which render the same in any order — making
+the sequence well-defined regardless of the PK tie-breaker the engine appends
+and the interpreter doesn't. (bool is included: `Value.Compare` totally orders
+every scalar type; skipping it was what caused an empty-projection dead-end when
+a mid-tree project dropped the id.) Holds over 1000 seeds; no engine
+disagreement. The runner is shared with the multiset test via `runThreeWays`.
 
 ## 3. Compare errors by stable code/reason
 
