@@ -4,6 +4,12 @@
 // those live in package api. It has no engine imports, and LIR JSON validation
 // is its only contract dependency outside the standard library.
 //
+// The LIR and PIR wire grammars are the Schemancer-generated union types in
+// the lirwire and pirwire subpackages; this package owns their schema
+// validation (ValidateLIRJSON, ValidatePIRJSON) and marshalling
+// (MarshalQuery/UnmarshalQuery, MarshalProgram/UnmarshalProgram). There is no
+// separate handwritten IR — the generated types are the one representation.
+//
 // # Connection URIs
 //
 //	rad://localhost            → http://localhost:7237
@@ -125,164 +131,10 @@ func (p Problem) WithReason(reason string) Problem {
 	return p
 }
 
-// Query is LIR's flat encoding of a single-consumer relation tree: named
-// inline relation definitions plus a root selector. Node names carry no
-// sharing or materialisation identity. The schema is lir.schema.json; the
-// semantics are documented in home/content/docs/lir.mdx. The contract is
-// intentionally unversioned while LIR remains an internal, freely breakable
-// API surface.
-type Query struct {
-	Nodes map[string]Node `json:"nodes"`
-	// Bindings are named relational values: each identifies the root of its
-	// defining tree in Nodes. A binding denotes one statement-local
-	// committed bag; every ref node observes the same bag under a fresh
-	// scope. Binding names, node ids, and scope labels are separate
-	// namespaces.
-	Bindings map[string]Binding `json:"bindings,omitempty"`
-	Root     Root               `json:"root"`
-}
-
-// Binding names one relational value by its defining root node.
-type Binding struct {
-	Node string `json:"node"`
-}
-
-// Root selects the result node and how it materialises: many | first |
-// exactly_one | scalar.
-type Root struct {
-	Node        string `json:"node"`
-	Cardinality string `json:"cardinality"`
-}
-
-// Node is the convenient handwritten form of one closed relation-operator
-// variant. The Schemancer-generated transport represents these as a strict
-// tagged union.
-type Node struct {
-	Kind string `json:"kind"`
-
-	Table     string       `json:"table,omitempty"`     // scan
-	Scope     string       `json:"scope,omitempty"`     // scan/ref/rows (required), project, aggregate
-	Binding   string       `json:"binding,omitempty"`   // ref
-	Columns   []RowsColumn `json:"columns,omitempty"`   // rows
-	Rows      [][]any      `json:"rows,omitempty"`      // rows; cells are raw scalars
-	Input     string       `json:"input,omitempty"`     // filter, project, aggregate, order, slice
-	Left      string       `json:"left,omitempty"`      // join
-	Right     string       `json:"right,omitempty"`     // join
-	Join      string       `json:"join,omitempty"`      // join: inner | left
-	On        *Expr        `json:"on,omitempty"`        // join
-	Predicate *Expr        `json:"predicate,omitempty"` // filter
-	Spread    []string     `json:"spread,omitempty"`    // project
-	Fields    []Field      `json:"fields,omitempty"`    // project
-	Groups    []GroupTerm  `json:"groups,omitempty"`    // aggregate
-	Aggs      []AggTerm    `json:"aggs,omitempty"`      // aggregate
-	Terms     []OrderTerm  `json:"terms,omitempty"`     // order
-	Offset    *int         `json:"offset,omitempty"`    // slice
-	Limit     *int         `json:"limit,omitempty"`     // slice; absent = unlimited, 0 = no rows
-}
-
-// RowsColumn declares one column of a constant relation: type and
-// nullability are explicit, never inferred from the literal cells — a
-// relation's schema must not depend on its data.
-type RowsColumn struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"` // text | int64 | float64 | bool
-	Nullable bool   `json:"nullable,omitempty"`
-}
-
-// Expr computes exactly one typed datum. The generated transport is a closed
-// tagged union; this handwritten form keeps graph builders compact. Crossings may
-// produce row or array datums as well as scalars.
-type Expr struct {
-	Kind string `json:"kind"`
-
-	Value  any    `json:"value,omitempty"`  // lit
-	Scope  string `json:"scope,omitempty"`  // col
-	Column string `json:"column,omitempty"` // col
-	Op     string `json:"op,omitempty"`     // unary, binary
-	Expr   *Expr  `json:"expr,omitempty"`   // unary, cast
-	Left   *Expr  `json:"left,omitempty"`   // binary
-	Right  *Expr  `json:"right,omitempty"`  // binary
-	To     string `json:"to,omitempty"`     // cast
-	Node   string `json:"node,omitempty"`   // crossings
-}
-
-// Field is one projected attribute.
-type Field struct {
-	As   string `json:"as"`
-	Expr Expr   `json:"expr"`
-}
-
-// GroupTerm is one grouping attribute; As defaults to a bare column
-// reference's name.
-type GroupTerm struct {
-	As   string `json:"as,omitempty"`
-	Expr Expr   `json:"expr"`
-}
-
-// AggTerm is one fold, named As in the output. Arg is nil for count over
-// rows.
-type AggTerm struct {
-	Fn  string `json:"fn"`
-	Arg *Expr  `json:"arg,omitempty"`
-	As  string `json:"as"`
-}
-
-// OrderTerm is one ordering term.
-type OrderTerm struct {
-	Expr Expr `json:"expr"`
-	Desc bool `json:"desc,omitempty"`
-}
-
 // Record is one result row: scalar attributes plus nested relations
 // (objects for first fields — null when absent — and arrays for array
 // fields).
 type Record = map[string]any
-
-type MigrateRequest struct {
-	// Schema is the schema.rad source (YAML).
-	Schema string `json:"schema"`
-}
-
-type MigrateResponse struct {
-	Steps []string `json:"steps"`
-}
-
-type QueryResponse struct {
-	Records []Record `json:"records"`
-}
-
-type CreateRequest struct {
-	Table  string         `json:"table"`
-	Values map[string]any `json:"values"`
-}
-
-type UpdateRequest struct {
-	Table string         `json:"table"`
-	Key   map[string]any `json:"key"`
-	Set   map[string]any `json:"set"`
-	// Clear lists nullable columns to set to NULL.
-	Clear []string `json:"clear,omitempty"`
-}
-
-type DeleteRequest struct {
-	Table string         `json:"table"`
-	Key   map[string]any `json:"key"`
-}
-
-// RecordResponse carries a single record; Found is false (and Record nil)
-// when the target row does not exist.
-type RecordResponse struct {
-	Found  bool   `json:"found"`
-	Record Record `json:"record,omitempty"`
-}
-
-type DeleteResponse struct {
-	Found bool `json:"found"`
-}
-
-type TxResponse struct {
-	ID string `json:"id"`
-}
 
 // TableInfo describes one table for introspection (GET /tables and the
 // catalog mutation responses). It is the definition vocabulary read back:

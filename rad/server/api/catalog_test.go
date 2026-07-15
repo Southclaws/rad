@@ -18,6 +18,7 @@ import (
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
 	"github.com/Southclaws/rad/rad/protocol"
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
 )
 
 // testServerInMode is testServer with the catalog mode stamped before the
@@ -265,11 +266,8 @@ func TestCatalogLifecycleOverTheWire(t *testing.T) {
 	if err != nil || len(info.Indexes) != 1 {
 		t.Fatalf("info=%+v err=%v", info, err)
 	}
-	rows, err := c.Query(ctx, filteredQ("memos", &protocol.Expr{
-		Kind: "binary", Op: "eq",
-		Left:  &protocol.Expr{Kind: "col", Scope: "t", Column: "content"},
-		Right: &protocol.Expr{Kind: "lit", Value: "first"},
-	}))
+	rows, err := c.Query(ctx, filteredQ("memos",
+		lirwire.Binary("eq", lirwire.Col("t", "content"), lirwire.LitOf("first"))))
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("indexed read rows=%v err=%v", rows, err)
 	}

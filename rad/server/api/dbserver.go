@@ -92,7 +92,6 @@ func (a *dbAPI) SchemaMigrate(ctx context.Context, req oas.OptMigrateProps) (oas
 	return &oas.MigrateResult{Steps: out}, nil
 }
 
-
 // New builds the wire-protocol HTTP handler: the generated OpenAPI database
 // API. Unmatched routes return 404; the parent server wraps it with shared
 // middleware and pairs it with the admin UI on a separate port. The catalog

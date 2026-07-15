@@ -19,6 +19,8 @@ import (
 	exec "github.com/Southclaws/rad/rad/engine/05_exec"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
 	"github.com/Southclaws/rad/rad/protocol"
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
+	"github.com/Southclaws/rad/rad/protocol/pirwire"
 )
 
 func (a *dbAPI) Execute(ctx context.Context, req oas.Program, params oas.ExecuteParams) (oas.ExecuteRes, error) {
@@ -56,27 +58,41 @@ func (a *dbAPI) Execute(ctx context.Context, req oas.Program, params oas.Execute
 }
 
 // programToEngine materialises each statement's wire relation into the
-// engine's unbound IR, mirroring how /query lowers a single relation. Each
-// statement's refs may resolve to any earlier statement's result, so the set
-// of prior names accumulates as external bindings — which also enforces the
-// backward-only rule, since a forward reference is not yet in the set.
-func programToEngine(p protocol.Program) (exec.Program, error) {
+// engine's unbound IR. A statement's relation is opaque bytes at the PIR layer
+// (already validated against the LIR schema by UnmarshalProgram); here it is
+// decoded into the generated LIR union and lowered. Backward-only references,
+// namespace collisions, and result selection are enforced by the binder.
+func programToEngine(p pirwire.Program) (exec.Program, error) {
 	stmts := make([]exec.ProgramStatement, len(p.Statements))
-	external := map[string]bool{}
 	for i, s := range p.Statements {
-		rel, err := graphQueryExternal(s.Relation, external)
+		name, kind, table, rawRel := statementParts(s)
+		var wire lirwire.Query
+		if err := json.Unmarshal(rawRel, &wire); err != nil {
+			return exec.Program{}, fmt.Errorf("statement %q: decode relation: %w", name, err)
+		}
+		rel, err := lowerQuery(wire)
 		if err != nil {
-			return exec.Program{}, fmt.Errorf("statement %q: %w", s.Name, err)
+			return exec.Program{}, fmt.Errorf("statement %q: %w", name, err)
 		}
-		stmts[i] = exec.ProgramStatement{
-			Name:  s.Name,
-			Kind:  exec.StatementKind(s.Kind),
-			Table: s.Table,
-			Rel:   rel,
-		}
-		external[s.Name] = true
+		stmts[i] = exec.ProgramStatement{Name: name, Kind: kind, Table: table, Rel: rel}
 	}
-	return exec.Program{Statements: stmts, Result: p.Result}, nil
+	return exec.Program{Statements: stmts, Result: optString(p.Result)}, nil
+}
+
+// statementParts pulls the fields the engine needs out of a wire statement,
+// dispatching on the union variant. Only mutation kinds carry a table.
+func statementParts(s pirwire.Statement) (name string, kind exec.StatementKind, table string, rel []byte) {
+	switch x := s.StatementUnion.(type) {
+	case *pirwire.QueryStatement:
+		return x.Name, exec.StatementKind(x.Kind), "", x.Relation
+	case *pirwire.CreateStatement:
+		return x.Name, exec.StatementKind(x.Kind), x.Table, x.Relation
+	case *pirwire.UpdateStatement:
+		return x.Name, exec.StatementKind(x.Kind), x.Table, x.Relation
+	case *pirwire.DeleteStatement:
+		return x.Name, exec.StatementKind(x.Kind), x.Table, x.Relation
+	}
+	return "", "", "", nil
 }
 
 // programResult shapes a program outcome into the wire response: the result

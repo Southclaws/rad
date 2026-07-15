@@ -10,42 +10,44 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
+	"github.com/Southclaws/rad/rad/protocol/pirwire"
 )
 
 // oneRow is a one-row constant relation, the simplest valid LIR document.
-func oneRow(col string, v any) Query {
-	return Query{
-		Nodes: map[string]Node{
-			"r": {Kind: "rows", Scope: "r",
-				Columns: []RowsColumn{{Name: col, Type: "int64"}},
-				Rows:    [][]any{{v}}},
+func oneRow(col string, v any) lirwire.Query {
+	return lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"r": lirwire.Rows("r",
+				[]lirwire.RowsColumn{{Name: col, Type: "int64"}},
+				[][]lirwire.Value{{mustValue(v)}}),
 		},
-		Root: Root{Node: "r", Cardinality: "many"},
+		Root: lirwire.Root{Node: "r", Cardinality: "many"},
 	}
 }
 
 func TestProgramRoundTrip(t *testing.T) {
 	big := json.Number("9007199254740993") // > 2^53
-	p := Program{
-		Statements: []Statement{
-			Create("author", "users", Query{
-				Nodes: map[string]Node{
-					"r": {Kind: "rows", Scope: "r",
-						Columns: []RowsColumn{{Name: "id", Type: "int64"}, {Name: "name", Type: "text"}},
-						Rows:    [][]any{{big, "ada"}}},
-				},
-				Root: Root{Node: "r", Cardinality: "many"},
-			}),
-			Read("mine", Query{
-				Nodes: map[string]Node{
-					"u": {Kind: "scan", Table: "users", Scope: "u"},
-					"o": {Kind: "order", Input: "u", Terms: []OrderTerm{{Expr: *Col("u", "id")}}},
-				},
-				Root: Root{Node: "o", Cardinality: "many"},
-			}),
+	authorRel := lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"r": lirwire.Rows("r",
+				[]lirwire.RowsColumn{{Name: "id", Type: "int64"}, {Name: "name", Type: "text"}},
+				[][]lirwire.Value{{mustValue(big), mustValue("ada")}}),
 		},
-		Result: "mine",
+		Root: lirwire.Root{Node: "r", Cardinality: "many"},
 	}
+	mineRel := lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"u": lirwire.Scan("users", "u"),
+			"o": lirwire.Order("u", []lirwire.OrderTerm{{Expr: lirwire.Col("u", "id")}}),
+		},
+		Root: lirwire.Root{Node: "o", Cardinality: "many"},
+	}
+	p := pirwire.Prog("mine",
+		pirwire.Create("author", "users", relBytes(authorRel)),
+		pirwire.Query("mine", relBytes(mineRel)),
+	)
 
 	raw, err := MarshalProgram(p)
 	if err != nil {
@@ -59,18 +61,31 @@ func TestProgramRoundTrip(t *testing.T) {
 		t.Fatalf("program drifted over the wire.\n got: %#v\nwant: %#v", got, p)
 	}
 
-	// The int64 beyond float53 survived inside the nested LIR relation.
-	cell := got.Statements[0].Relation.Nodes["r"].Rows[0][0]
-	n, ok := cell.(json.Number)
-	if !ok || n.String() != "9007199254740993" {
-		t.Fatalf("int64 precision lost through the statement relation: %T %v", cell, cell)
+	// The int64 beyond float53 survived inside the nested LIR relation. The
+	// statement relation is opaque bytes; decode it back into an LIR query and
+	// assert the cell's raw JSON bytes are exactly the big integer.
+	create, ok := got.Statements[0].StatementUnion.(*pirwire.CreateStatement)
+	if !ok {
+		t.Fatalf("first statement is not a create: %T", got.Statements[0].StatementUnion)
+	}
+	var rel lirwire.Query
+	if err := json.Unmarshal(create.Relation, &rel); err != nil {
+		t.Fatalf("decode statement relation: %v", err)
+	}
+	rows, ok := rel.Nodes["r"].NodeUnion.(*lirwire.RowsNode)
+	if !ok {
+		t.Fatalf("relation node r is not rows: %T", rel.Nodes["r"].NodeUnion)
+	}
+	if cell := rows.Rows[0][0]; string(cell) != "9007199254740993" {
+		t.Fatalf("int64 precision lost through the statement relation: %s", cell)
 	}
 }
 
 // A single-statement program needs no result selector, and QueryProgram builds
 // exactly that.
 func TestQueryProgramSingleStatement(t *testing.T) {
-	raw, err := MarshalProgram(QueryProgram(oneRow("n", 1)))
+	prog := pirwire.Prog("", pirwire.Query("result", relBytes(oneRow("n", 1))))
+	raw, err := MarshalProgram(prog)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -82,35 +97,35 @@ func TestQueryProgramSingleStatement(t *testing.T) {
 func TestProgramValidationRejections(t *testing.T) {
 	cases := []struct {
 		name    string
-		program Program
+		program pirwire.Program
 		detail  string
 	}{
 		{
 			name:    "empty program",
-			program: Program{},
+			program: pirwire.Program{Statements: []pirwire.Statement{}},
 			detail:  "minItems",
 		},
 		{
 			name: "duplicate statement names",
-			program: Program{Statements: []Statement{
-				Read("dup", oneRow("n", 1)),
-				Read("dup", oneRow("n", 2)),
-			}, Result: "dup"},
+			program: pirwire.Prog("dup",
+				pirwire.Query("dup", relBytes(oneRow("n", 1))),
+				pirwire.Query("dup", relBytes(oneRow("n", 2))),
+			),
 			detail: "duplicate statement name",
 		},
 		{
 			name: "multi-statement without result",
-			program: Program{Statements: []Statement{
-				Read("a", oneRow("n", 1)),
-				Read("b", oneRow("n", 2)),
-			}},
+			program: pirwire.Prog("",
+				pirwire.Query("a", relBytes(oneRow("n", 1))),
+				pirwire.Query("b", relBytes(oneRow("n", 2))),
+			),
 			detail: "must name its result",
 		},
 		{
 			name: "result names unknown statement",
-			program: Program{Statements: []Statement{
-				Read("a", oneRow("n", 1)),
-			}, Result: "ghost"},
+			program: pirwire.Prog("ghost",
+				pirwire.Query("a", relBytes(oneRow("n", 1))),
+			),
 			detail: "unknown statement",
 		},
 	}
@@ -131,12 +146,10 @@ func TestProgramValidationRejections(t *testing.T) {
 // pass, and the error names the offending statement.
 func TestProgramRejectsMalformedRelation(t *testing.T) {
 	// A scan with no table is a valid PIR envelope but invalid LIR.
-	bad := Program{Statements: []Statement{
-		Read("broken", Query{
-			Nodes: map[string]Node{"s": {Kind: "scan", Scope: "s"}},
-			Root:  Root{Node: "s", Cardinality: "many"},
-		}),
-	}}
+	bad := pirwire.Prog("", pirwire.Query("broken", relBytes(lirwire.Query{
+		Nodes: map[string]lirwire.Node{"s": lirwire.Scan("", "s")},
+		Root:  lirwire.Root{Node: "s", Cardinality: "many"},
+	})))
 	raw, err := MarshalProgram(bad)
 	if err == nil {
 		t.Fatalf("malformed relation should be rejected, got %s", raw)

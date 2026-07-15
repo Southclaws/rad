@@ -10,6 +10,7 @@ import (
 
 	"github.com/Southclaws/rad/rad/api/oas"
 	"github.com/Southclaws/rad/rad/protocol"
+	"github.com/Southclaws/rad/rad/protocol/pirwire"
 )
 
 // StatementResult is one statement's lightweight outcome.
@@ -43,7 +44,7 @@ func DryRun() ExecuteOption {
 
 // Execute runs a program and returns its result. Options attach the query plan
 // (WithPlan) and/or skip execution (DryRun).
-func (c *Client) Execute(ctx context.Context, prog protocol.Program, opts ...ExecuteOption) (ProgramResult, error) {
+func (c *Client) Execute(ctx context.Context, prog pirwire.Program, opts ...ExecuteOption) (ProgramResult, error) {
 	raw, err := protocol.MarshalProgram(prog)
 	if err != nil {
 		return ProgramResult{}, err

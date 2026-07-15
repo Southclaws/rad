@@ -7,6 +7,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -19,7 +20,30 @@ import (
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
 	"github.com/Southclaws/rad/rad/protocol"
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
+	"github.com/Southclaws/rad/rad/protocol/pirwire"
 )
+
+// -
+// shared LIR/PIR test builders
+// -
+//
+// The handwritten protocol IR is gone; tests build relations with the lirwire
+// builders and carry them in PIR statements as opaque marshalled bytes. These
+// helpers are shared across every _test.go in this package.
+
+func relBytes(q lirwire.Query) pirwire.Relation {
+	b, _ := json.Marshal(q)
+	return b
+}
+
+func mustValue(v any) lirwire.Value {
+	val, _ := lirwire.SetAny(v)
+	return val
+}
+
+func ptrBool(b bool) *bool                 { return &b }
+func ptrExpr(e lirwire.Expr) *lirwire.Expr { return &e }
 
 const testSchema = `
 tables:
@@ -70,8 +94,8 @@ func testHTTPServer(t *testing.T) *httptest.Server {
 func TestExecuteHTTPRejectsMalformedBeforePlanning(t *testing.T) {
 	srv := testHTTPServer(t)
 	cases := []string{
-		`{`,                    // not JSON
-		`{"statements":[]}`,    // a program needs at least one statement
+		`{`,                 // not JSON
+		`{"statements":[]}`, // a program needs at least one statement
 		// A statement whose relation is structurally invalid LIR (a scan may
 		// not carry a predicate) — rejected by the two-phase LIR validation.
 		`{"statements":[{"name":"s","kind":"query","relation":{"nodes":{"s":{"kind":"scan","table":"t","scope":"s","predicate":{"kind":"lit","value":true}}},"root":{"node":"s","cardinality":"many"}}}]}`,
@@ -91,25 +115,25 @@ func TestExecuteHTTPRejectsMalformedBeforePlanning(t *testing.T) {
 
 // tableQ is the simplest observable collection: scan every row in primary-key
 // order.
-func tableQ(table string) protocol.Query {
-	return protocol.Query{
-		Nodes: map[string]protocol.Node{
-			"t": {Kind: "scan", Table: table, Scope: "t"},
-			"o": {Kind: "order", Input: "t", Terms: []protocol.OrderTerm{{Expr: *protocol.Col("t", "id")}}},
+func tableQ(table string) lirwire.Query {
+	return lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"t": lirwire.Scan(table, "t"),
+			"o": lirwire.Order("t", []lirwire.OrderTerm{{Expr: lirwire.Col("t", "id")}}),
 		},
-		Root: protocol.Root{Node: "o", Cardinality: "many"},
+		Root: lirwire.Root{Node: "o", Cardinality: "many"},
 	}
 }
 
 // filteredQ scans a table and filters it.
-func filteredQ(table string, pred *protocol.Expr) protocol.Query {
-	return protocol.Query{
-		Nodes: map[string]protocol.Node{
-			"t": {Kind: "scan", Table: table, Scope: "t"},
-			"f": {Kind: "filter", Input: "t", Predicate: pred},
-			"o": {Kind: "order", Input: "f", Terms: []protocol.OrderTerm{{Expr: *protocol.Col("t", "id")}}},
+func filteredQ(table string, pred lirwire.Expr) lirwire.Query {
+	return lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"t": lirwire.Scan(table, "t"),
+			"f": lirwire.Filter("t", pred),
+			"o": lirwire.Order("f", []lirwire.OrderTerm{{Expr: lirwire.Col("t", "id")}}),
 		},
-		Root: protocol.Root{Node: "o", Cardinality: "many"},
+		Root: lirwire.Root{Node: "o", Cardinality: "many"},
 	}
 }
 
@@ -217,9 +241,9 @@ func TestClientExprOpsOverTheWire(t *testing.T) {
 	}
 
 	// A binary `and` — an expr with no value of its own.
-	recs, err := c.Query(ctx, filteredQ("users", protocol.AndAll([]*protocol.Expr{
-		protocol.Eq(protocol.Col("t", "name"), protocol.Lit("ada")),
-		protocol.Gte(protocol.Col("t", "age"), protocol.Lit(18)),
+	recs, err := c.Query(ctx, filteredQ("users", lirwire.AndAll([]lirwire.Expr{
+		lirwire.Binary("eq", lirwire.Col("t", "name"), lirwire.LitOf("ada")),
+		lirwire.Binary("gte", lirwire.Col("t", "age"), lirwire.LitOf(18)),
 	})))
 	if err != nil {
 		t.Fatalf("and filter: %v", err)
@@ -230,7 +254,7 @@ func TestClientExprOpsOverTheWire(t *testing.T) {
 
 	// is_null carries only its operand.
 	recs, err = c.Query(ctx, filteredQ("users",
-		protocol.IsNull(protocol.Col("t", "age"))))
+		lirwire.Unary("is_null", lirwire.Col("t", "age"))))
 	if err != nil {
 		t.Fatalf("is_null filter: %v", err)
 	}
@@ -240,7 +264,7 @@ func TestClientExprOpsOverTheWire(t *testing.T) {
 
 	// not wraps a sub-expression and has no value either.
 	recs, err = c.Query(ctx, filteredQ("users",
-		protocol.Not(protocol.IsNull(protocol.Col("t", "age")))))
+		lirwire.Unary("not", lirwire.Unary("is_null", lirwire.Col("t", "age")))))
 	if err != nil {
 		t.Fatalf("not filter: %v", err)
 	}
@@ -289,20 +313,16 @@ func TestClientNestedQuery(t *testing.T) {
 		}
 	}
 
-	recs, err := c.Query(ctx, protocol.Query{
-		Nodes: map[string]protocol.Node{
-			"users": {Kind: "scan", Table: "users", Scope: "u"},
-			"ada": {Kind: "filter", Input: "users",
-				Predicate: protocol.Eq(protocol.Col("u", "name"), protocol.Lit("ada"))},
-			"posts": {Kind: "scan", Table: "posts", Scope: "p"},
-			"theirs": {Kind: "filter", Input: "posts",
-				Predicate: protocol.Eq(protocol.Col("p", "user_id"), protocol.Col("u", "id"))},
-			"sorted": {Kind: "order", Input: "theirs",
-				Terms: []protocol.OrderTerm{{Expr: *protocol.Col("p", "title")}}},
-			"out": {Kind: "project", Input: "ada", Spread: []string{"u"},
-				Fields: []protocol.Field{{As: "posts", Expr: *protocol.ArrayOf("sorted")}}},
+	recs, err := c.Query(ctx, lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"users":  lirwire.Scan("users", "u"),
+			"ada":    lirwire.Filter("users", lirwire.Binary("eq", lirwire.Col("u", "name"), lirwire.LitOf("ada"))),
+			"posts":  lirwire.Scan("posts", "p"),
+			"theirs": lirwire.Filter("posts", lirwire.Binary("eq", lirwire.Col("p", "user_id"), lirwire.Col("u", "id"))),
+			"sorted": lirwire.Order("theirs", []lirwire.OrderTerm{{Expr: lirwire.Col("p", "title")}}),
+			"out":    lirwire.Project("ada", "", []string{"u"}, []lirwire.Field{{As: "posts", Expr: lirwire.Array("sorted")}}),
 		},
-		Root: protocol.Root{Node: "out", Cardinality: "first"},
+		Root: lirwire.Root{Node: "out", Cardinality: "first"},
 	})
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("recs=%d err=%v", len(recs), err)
@@ -334,17 +354,17 @@ func TestClientAggregateOverTheWire(t *testing.T) {
 	}
 
 	// A global fold: one record of scalars, no rows shipped.
-	recs, err := c.Query(ctx, protocol.Query{
-		Nodes: map[string]protocol.Node{
-			"posts": {Kind: "scan", Table: "posts", Scope: "p"},
-			"stats": {Kind: "aggregate", Input: "posts", Aggs: []protocol.AggTerm{
+	recs, err := c.Query(ctx, lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"posts": lirwire.Scan("posts", "p"),
+			"stats": lirwire.Aggregate("posts", "", nil, []lirwire.AggTerm{
 				{Fn: "count", As: "n"},
-				{Fn: "sum", Arg: protocol.Col("p", "score"), As: "total"},
-				{Fn: "avg", Arg: protocol.Col("p", "score"), As: "mean"},
-				{Fn: "max", Arg: protocol.Col("p", "score"), As: "top"},
-			}},
+				{Fn: "sum", Arg: ptrExpr(lirwire.Col("p", "score")), As: "total"},
+				{Fn: "avg", Arg: ptrExpr(lirwire.Col("p", "score")), As: "mean"},
+				{Fn: "max", Arg: ptrExpr(lirwire.Col("p", "score")), As: "top"},
+			}),
 		},
-		Root: protocol.Root{Node: "stats", Cardinality: "exactly_one"},
+		Root: lirwire.Root{Node: "stats", Cardinality: "exactly_one"},
 	})
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("recs=%d err=%v", len(recs), err)
@@ -364,20 +384,16 @@ func TestClientAggregateOverTheWire(t *testing.T) {
 
 	// A folded relation as a field: the board-card shape — a user with a
 	// nested object of post statistics.
-	recs, err = c.Query(ctx, protocol.Query{
-		Nodes: map[string]protocol.Node{
-			"users": {Kind: "scan", Table: "users", Scope: "u"},
-			"ada": {Kind: "filter", Input: "users",
-				Predicate: protocol.Eq(protocol.Col("u", "name"), protocol.Lit("ada"))},
-			"posts": {Kind: "scan", Table: "posts", Scope: "p"},
-			"theirs": {Kind: "filter", Input: "posts",
-				Predicate: protocol.Eq(protocol.Col("p", "user_id"), protocol.Col("u", "id"))},
-			"folded": {Kind: "aggregate", Input: "theirs",
-				Aggs: []protocol.AggTerm{{Fn: "count", As: "n"}}},
-			"out": {Kind: "project", Input: "ada", Spread: []string{"u"},
-				Fields: []protocol.Field{{As: "post_stats", Expr: *protocol.FirstOf("folded")}}},
+	recs, err = c.Query(ctx, lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"users":  lirwire.Scan("users", "u"),
+			"ada":    lirwire.Filter("users", lirwire.Binary("eq", lirwire.Col("u", "name"), lirwire.LitOf("ada"))),
+			"posts":  lirwire.Scan("posts", "p"),
+			"theirs": lirwire.Filter("posts", lirwire.Binary("eq", lirwire.Col("p", "user_id"), lirwire.Col("u", "id"))),
+			"folded": lirwire.Aggregate("theirs", "", nil, []lirwire.AggTerm{{Fn: "count", As: "n"}}),
+			"out":    lirwire.Project("ada", "", []string{"u"}, []lirwire.Field{{As: "post_stats", Expr: lirwire.First("folded")}}),
 		},
-		Root: protocol.Root{Node: "out", Cardinality: "first"},
+		Root: lirwire.Root{Node: "out", Cardinality: "first"},
 	})
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("recs=%d err=%v", len(recs), err)
@@ -396,16 +412,15 @@ func TestClientAggregateOverTheWire(t *testing.T) {
 	if _, err := c.Create(ctx, "posts", map[string]any{"user_id": id, "title": "z", "score": int64(30)}); err != nil {
 		t.Fatal(err)
 	}
-	recs, err = c.Query(ctx, protocol.Query{
-		Nodes: map[string]protocol.Node{
-			"posts": {Kind: "scan", Table: "posts", Scope: "p"},
-			"stats": {Kind: "aggregate", Input: "posts", Scope: "stats",
-				Groups: []protocol.GroupTerm{{Expr: *protocol.Col("p", "score")}},
-				Aggs:   []protocol.AggTerm{{Fn: "count", As: "n"}}},
-			"sorted": {Kind: "order", Input: "stats",
-				Terms: []protocol.OrderTerm{{Expr: *protocol.Col("stats", "score"), Desc: true}}},
+	recs, err = c.Query(ctx, lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"posts": lirwire.Scan("posts", "p"),
+			"stats": lirwire.Aggregate("posts", "stats",
+				[]lirwire.GroupTerm{{Expr: lirwire.Col("p", "score")}},
+				[]lirwire.AggTerm{{Fn: "count", As: "n"}}),
+			"sorted": lirwire.Order("stats", []lirwire.OrderTerm{{Expr: lirwire.Col("stats", "score"), Desc: ptrBool(true)}}),
 		},
-		Root: protocol.Root{Node: "sorted", Cardinality: "many"},
+		Root: lirwire.Root{Node: "sorted", Cardinality: "many"},
 	})
 	if err != nil || len(recs) != 3 {
 		t.Fatalf("grouped fold: recs=%d err=%v", len(recs), err)
@@ -419,20 +434,19 @@ func TestClientAggregateOverTheWire(t *testing.T) {
 
 	// Bind-time rejections surface as 422 invalid problems: a dangling node
 	// reference, and a fold over a non-numeric argument.
-	_, err = c.Query(ctx, protocol.Query{
-		Nodes: map[string]protocol.Node{"posts": {Kind: "scan", Table: "posts", Scope: "p"}},
-		Root:  protocol.Root{Node: "ghost", Cardinality: "many"},
+	_, err = c.Query(ctx, lirwire.Query{
+		Nodes: map[string]lirwire.Node{"posts": lirwire.Scan("posts", "p")},
+		Root:  lirwire.Root{Node: "ghost", Cardinality: "many"},
 	})
 	if err == nil || !strings.Contains(err.Error(), `unknown node "ghost"`) {
 		t.Fatalf("dangling node reference accepted: %v", err)
 	}
-	_, err = c.Query(ctx, protocol.Query{
-		Nodes: map[string]protocol.Node{
-			"posts": {Kind: "scan", Table: "posts", Scope: "p"},
-			"bad": {Kind: "aggregate", Input: "posts",
-				Aggs: []protocol.AggTerm{{Fn: "sum", Arg: protocol.Col("p", "title"), As: "s"}}},
+	_, err = c.Query(ctx, lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"posts": lirwire.Scan("posts", "p"),
+			"bad":   lirwire.Aggregate("posts", "", nil, []lirwire.AggTerm{{Fn: "sum", Arg: ptrExpr(lirwire.Col("p", "title")), As: "s"}}),
 		},
-		Root: protocol.Root{Node: "bad", Cardinality: "exactly_one"},
+		Root: lirwire.Root{Node: "bad", Cardinality: "exactly_one"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "numeric") {
 		t.Fatalf("sum over text accepted: %v", err)

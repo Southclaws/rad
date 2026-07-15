@@ -11,37 +11,43 @@ import (
 	"testing"
 
 	"github.com/Southclaws/rad/rad/protocol"
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
+	"github.com/Southclaws/rad/rad/protocol/pirwire"
 )
 
 // tcol builds rows columns tersely; a trailing "?" on the type marks the
 // column nullable ("text?").
-func tcol(pairs ...string) []protocol.RowsColumn {
-	out := make([]protocol.RowsColumn, 0, len(pairs)/2)
+func tcol(pairs ...string) []lirwire.RowsColumn {
+	out := make([]lirwire.RowsColumn, 0, len(pairs)/2)
 	for i := 0; i < len(pairs); i += 2 {
 		typ, nullable := strings.CutSuffix(pairs[i+1], "?")
-		out = append(out, protocol.RowsColumn{Name: pairs[i], Type: typ, Nullable: nullable})
+		col := lirwire.RowsColumn{Name: pairs[i], Type: typ}
+		if nullable {
+			col.Nullable = ptrBool(true)
+		}
+		out = append(out, col)
 	}
 	return out
 }
 
 // rowsRel is a constant relation of literal rows — the common mutation input.
-func rowsRel(scope string, cols []protocol.RowsColumn, rows [][]any) protocol.Query {
-	return protocol.Query{
-		Nodes: map[string]protocol.Node{
-			scope: {Kind: "rows", Scope: scope, Columns: cols, Rows: rows},
+func rowsRel(scope string, cols []lirwire.RowsColumn, rows [][]lirwire.Value) lirwire.Query {
+	return lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			scope: lirwire.Rows(scope, cols, rows),
 		},
-		Root: protocol.Root{Node: scope, Cardinality: "many"},
+		Root: lirwire.Root{Node: scope, Cardinality: "many"},
 	}
 }
 
 // scanOrdered scans a table ordered by a column — a self-contained query body.
-func scanOrdered(table, scope, orderCol string) protocol.Query {
-	return protocol.Query{
-		Nodes: map[string]protocol.Node{
-			scope: {Kind: "scan", Table: table, Scope: scope},
-			"o":   {Kind: "order", Input: scope, Terms: []protocol.OrderTerm{{Expr: *protocol.Col(scope, orderCol)}}},
+func scanOrdered(table, scope, orderCol string) lirwire.Query {
+	return lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			scope: lirwire.Scan(table, scope),
+			"o":   lirwire.Order(scope, []lirwire.OrderTerm{{Expr: lirwire.Col(scope, orderCol)}}),
 		},
-		Root: protocol.Root{Node: "o", Cardinality: "many"},
+		Root: lirwire.Root{Node: "o", Cardinality: "many"},
 	}
 }
 
@@ -51,15 +57,12 @@ func TestExecuteCreateReadYourWrites(t *testing.T) {
 	c := migrated(t)
 	ctx := context.Background()
 
-	prog := protocol.Program{
-		Statements: []protocol.Statement{
-			protocol.Create("added", "users", rowsRel("r",
-				tcol("id", "text", "name", "text", "age", "int64"),
-				[][]any{{"u1", "Ada", 36}, {"u2", "Bob", 41}})),
-			protocol.Read("all", scanOrdered("users", "u", "id")),
-		},
-		Result: "all",
-	}
+	prog := pirwire.Prog("all",
+		pirwire.Create("added", "users", relBytes(rowsRel("r",
+			tcol("id", "text", "name", "text", "age", "int64"),
+			[][]lirwire.Value{{mustValue("u1"), mustValue("Ada"), mustValue(36)}, {mustValue("u2"), mustValue("Bob"), mustValue(41)}}))),
+		pirwire.Query("all", relBytes(scanOrdered("users", "u", "id"))),
+	)
 	res, err := c.Execute(ctx, prog)
 	if err != nil {
 		t.Fatal(err)
@@ -97,11 +100,11 @@ func TestExecuteCreateSelfReferentialBatch(t *testing.T) {
 
 	// Alice manages Bob; both created in one statement. Per-row checking on
 	// Bob-first would fail; the batch check sees both.
-	prog := protocol.Program{Statements: []protocol.Statement{
-		protocol.Create("hires", "employees", rowsRel("r",
+	prog := pirwire.Prog("",
+		pirwire.Create("hires", "employees", relBytes(rowsRel("r",
 			tcol("id", "text", "manager_id", "text?"),
-			[][]any{{"bob", "alice"}, {"alice", nil}})),
-	}}
+			[][]lirwire.Value{{mustValue("bob"), mustValue("alice")}, {mustValue("alice"), mustValue(nil)}}))),
+	)
 	res, err := c.Execute(ctx, prog)
 	if err != nil {
 		t.Fatalf("self-referential batch should succeed: %v", err)
@@ -118,21 +121,21 @@ func TestExecuteUpdateUniqueSwap(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed two users with unique names.
-	if _, err := c.Execute(ctx, protocol.Program{Statements: []protocol.Statement{
-		protocol.Create("seed", "users", rowsRel("r",
+	if _, err := c.Execute(ctx, pirwire.Prog("",
+		pirwire.Create("seed", "users", relBytes(rowsRel("r",
 			tcol("id", "text", "name", "text"),
-			[][]any{{"u1", "ada"}, {"u2", "bob"}})),
-	}}); err != nil {
+			[][]lirwire.Value{{mustValue("u1"), mustValue("ada")}, {mustValue("u2"), mustValue("bob")}}))),
+	)); err != nil {
 		t.Fatal(err)
 	}
 
 	// users.name is unique in the test schema. Swap the two names in one
 	// statement — the rows relation supplies (id, name) post-images.
-	prog := protocol.Program{Statements: []protocol.Statement{
-		protocol.Update("swap", "users", rowsRel("r",
+	prog := pirwire.Prog("",
+		pirwire.Update("swap", "users", relBytes(rowsRel("r",
 			tcol("id", "text", "name", "text"),
-			[][]any{{"u1", "bob"}, {"u2", "ada"}})),
-	}}
+			[][]lirwire.Value{{mustValue("u1"), mustValue("bob")}, {mustValue("u2"), mustValue("ada")}}))),
+	)
 	res, err := c.Execute(ctx, prog)
 	if err != nil {
 		t.Fatalf("unique swap should succeed: %v", err)
@@ -158,26 +161,25 @@ func TestExecuteDeleteFromQuery(t *testing.T) {
 	c := migrated(t)
 	ctx := context.Background()
 
-	if _, err := c.Execute(ctx, protocol.Program{Statements: []protocol.Statement{
-		protocol.Create("seed", "users", rowsRel("r",
+	if _, err := c.Execute(ctx, pirwire.Prog("",
+		pirwire.Create("seed", "users", relBytes(rowsRel("r",
 			tcol("id", "text", "name", "text"),
-			[][]any{{"u1", "ada"}, {"u2", "bob"}, {"u3", "cy"}})),
-	}}); err != nil {
+			[][]lirwire.Value{{mustValue("u1"), mustValue("ada")}, {mustValue("u2"), mustValue("bob")}, {mustValue("u3"), mustValue("cy")}}))),
+	)); err != nil {
 		t.Fatal(err)
 	}
 
 	// Project each user down to just its id, then delete by that relation.
-	idsOf := protocol.Query{
-		Nodes: map[string]protocol.Node{
-			"u": {Kind: "scan", Table: "users", Scope: "u"},
-			"p": {Kind: "project", Input: "u",
-				Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("u", "id")}}},
+	idsOf := lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"u": lirwire.Scan("users", "u"),
+			"p": lirwire.Project("u", "", nil, []lirwire.Field{{As: "id", Expr: lirwire.Col("u", "id")}}),
 		},
-		Root: protocol.Root{Node: "p", Cardinality: "many"},
+		Root: lirwire.Root{Node: "p", Cardinality: "many"},
 	}
-	prog := protocol.Program{Statements: []protocol.Statement{
-		protocol.Delete("gone", "users", idsOf),
-	}}
+	prog := pirwire.Prog("",
+		pirwire.Delete("gone", "users", relBytes(idsOf)),
+	)
 	res, err := c.Execute(ctx, prog)
 	if err != nil {
 		t.Fatal(err)
@@ -199,26 +201,23 @@ func TestExecuteCreateThenReferenceResult(t *testing.T) {
 
 	// A post referencing the just-created user's id, taken from the create
 	// statement's result relation.
-	prog := protocol.Program{
-		Statements: []protocol.Statement{
-			protocol.Create("author", "users", rowsRel("r",
-				tcol("id", "text", "name", "text"),
-				[][]any{{"u1", "Ada"}})),
-			// project the created user's id into a post row
-			protocol.Create("post", "posts", protocol.Query{
-				Nodes: map[string]protocol.Node{
-					"a": {Kind: "ref", Binding: "author", Scope: "a"},
-					"p": {Kind: "project", Input: "a", Fields: []protocol.Field{
-						{As: "id", Expr: *protocol.Lit("p1")},
-						{As: "user_id", Expr: *protocol.Col("a", "id")},
-						{As: "title", Expr: *protocol.Lit("hello")},
-					}},
-				},
-				Root: protocol.Root{Node: "p", Cardinality: "many"},
-			}),
-		},
-		Result: "post",
-	}
+	prog := pirwire.Prog("post",
+		pirwire.Create("author", "users", relBytes(rowsRel("r",
+			tcol("id", "text", "name", "text"),
+			[][]lirwire.Value{{mustValue("u1"), mustValue("Ada")}}))),
+		// project the created user's id into a post row
+		pirwire.Create("post", "posts", relBytes(lirwire.Query{
+			Nodes: map[string]lirwire.Node{
+				"a": lirwire.Ref("author", "a"),
+				"p": lirwire.Project("a", "", nil, []lirwire.Field{
+					{As: "id", Expr: lirwire.LitOf("p1")},
+					{As: "user_id", Expr: lirwire.Col("a", "id")},
+					{As: "title", Expr: lirwire.LitOf("hello")},
+				}),
+			},
+			Root: lirwire.Root{Node: "p", Cardinality: "many"},
+		})),
+	)
 	res, err := c.Execute(ctx, prog)
 	if err != nil {
 		t.Fatalf("compose create->create: %v", err)
@@ -233,11 +232,11 @@ func TestExecuteUpdateMissFails(t *testing.T) {
 	c := migrated(t)
 	ctx := context.Background()
 
-	prog := protocol.Program{Statements: []protocol.Statement{
-		protocol.Update("miss", "users", rowsRel("r",
+	prog := pirwire.Prog("",
+		pirwire.Update("miss", "users", relBytes(rowsRel("r",
 			tcol("id", "text", "name", "text"),
-			[][]any{{"ghost", "nobody"}})),
-	}}
+			[][]lirwire.Value{{mustValue("ghost"), mustValue("nobody")}}))),
+	)
 	_, err := c.Execute(ctx, prog)
 	if err == nil {
 		t.Fatal("update of a nonexistent row should fail")
@@ -250,16 +249,16 @@ func TestExecuteDeleteAmbiguousFails(t *testing.T) {
 	c := migrated(t)
 	ctx := context.Background()
 
-	if _, err := c.Execute(ctx, protocol.Program{Statements: []protocol.Statement{
-		protocol.Create("seed", "users", rowsRel("r",
-			tcol("id", "text", "name", "text"), [][]any{{"u1", "ada"}})),
-	}}); err != nil {
+	if _, err := c.Execute(ctx, pirwire.Prog("",
+		pirwire.Create("seed", "users", relBytes(rowsRel("r",
+			tcol("id", "text", "name", "text"), [][]lirwire.Value{{mustValue("u1"), mustValue("ada")}}))),
+	)); err != nil {
 		t.Fatal(err)
 	}
-	prog := protocol.Program{Statements: []protocol.Statement{
-		protocol.Delete("dup", "users", rowsRel("r",
-			tcol("id", "text"), [][]any{{"u1"}, {"u1"}})),
-	}}
+	prog := pirwire.Prog("",
+		pirwire.Delete("dup", "users", relBytes(rowsRel("r",
+			tcol("id", "text"), [][]lirwire.Value{{mustValue("u1")}, {mustValue("u1")}}))),
+	)
 	_, err := c.Execute(ctx, prog)
 	assertProblem(t, err, protocol.CodeInvalid, "same row twice")
 }
@@ -269,17 +268,17 @@ func TestExecuteUpdateAmbiguousFails(t *testing.T) {
 	c := migrated(t)
 	ctx := context.Background()
 
-	if _, err := c.Execute(ctx, protocol.Program{Statements: []protocol.Statement{
-		protocol.Create("seed", "users", rowsRel("r",
-			tcol("id", "text", "name", "text"), [][]any{{"u1", "ada"}})),
-	}}); err != nil {
+	if _, err := c.Execute(ctx, pirwire.Prog("",
+		pirwire.Create("seed", "users", relBytes(rowsRel("r",
+			tcol("id", "text", "name", "text"), [][]lirwire.Value{{mustValue("u1"), mustValue("ada")}}))),
+	)); err != nil {
 		t.Fatal(err)
 	}
-	prog := protocol.Program{Statements: []protocol.Statement{
-		protocol.Update("dup", "users", rowsRel("r",
+	prog := pirwire.Prog("",
+		pirwire.Update("dup", "users", relBytes(rowsRel("r",
 			tcol("id", "text", "name", "text"),
-			[][]any{{"u1", "x"}, {"u1", "y"}})),
-	}}
+			[][]lirwire.Value{{mustValue("u1"), mustValue("x")}, {mustValue("u1"), mustValue("y")}}))),
+	)
 	_, err := c.Execute(ctx, prog)
 	assertProblem(t, err, protocol.CodeInvalid, "same row twice")
 }
@@ -290,15 +289,12 @@ func TestExecuteProgramAtomicRollback(t *testing.T) {
 	c := migrated(t)
 	ctx := context.Background()
 
-	prog := protocol.Program{
-		Statements: []protocol.Statement{
-			protocol.Create("ok", "users", rowsRel("r",
-				tcol("id", "text", "name", "text"), [][]any{{"u1", "ada"}})),
-			protocol.Update("boom", "users", rowsRel("r",
-				tcol("id", "text", "name", "text"), [][]any{{"ghost", "x"}})),
-		},
-		Result: "ok",
-	}
+	prog := pirwire.Prog("ok",
+		pirwire.Create("ok", "users", relBytes(rowsRel("r",
+			tcol("id", "text", "name", "text"), [][]lirwire.Value{{mustValue("u1"), mustValue("ada")}}))),
+		pirwire.Update("boom", "users", relBytes(rowsRel("r",
+			tcol("id", "text", "name", "text"), [][]lirwire.Value{{mustValue("ghost"), mustValue("x")}}))),
+	)
 	if _, err := c.Execute(ctx, prog); err == nil {
 		t.Fatal("program with a failing statement should fail")
 	}

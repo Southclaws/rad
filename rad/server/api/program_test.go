@@ -13,20 +13,19 @@ import (
 
 	radclient "github.com/Southclaws/rad/rad/client"
 	"github.com/Southclaws/rad/rad/protocol"
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
+	"github.com/Southclaws/rad/rad/protocol/pirwire"
 )
 
 // oneRow builds a one-row int64 constant relation — a self-contained query
 // body needing no fixture.
-func oneRow(col string, v int) protocol.Query {
-	return protocol.Query{
-		Nodes: map[string]protocol.Node{
-			"r": {Kind: "rows", Scope: "r",
-				Columns: []protocol.RowsColumn{{Name: col, Type: "int64"}},
-				Rows:    [][]any{{v}}},
-			"o": {Kind: "order", Input: "r",
-				Terms: []protocol.OrderTerm{{Expr: *protocol.Col("r", col)}}},
+func oneRow(col string, v int) lirwire.Query {
+	return lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"r": lirwire.Rows("r", []lirwire.RowsColumn{{Name: col, Type: "int64"}}, [][]lirwire.Value{{mustValue(v)}}),
+			"o": lirwire.Order("r", []lirwire.OrderTerm{{Expr: lirwire.Col("r", col)}}),
 		},
-		Root: protocol.Root{Node: "o", Cardinality: "many"},
+		Root: lirwire.Root{Node: "o", Cardinality: "many"},
 	}
 }
 
@@ -36,7 +35,7 @@ func TestExecuteSingleQuery(t *testing.T) {
 	c := migrated(t)
 	ctx := context.Background()
 
-	res, err := c.Execute(ctx, protocol.QueryProgram(oneRow("n", 7)))
+	res, err := c.Execute(ctx, pirwire.Prog("", pirwire.Query("result", relBytes(oneRow("n", 7)))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,32 +54,24 @@ func TestExecuteStatementResultBinding(t *testing.T) {
 	c := migrated(t)
 	ctx := context.Background()
 
-	prog := protocol.Program{
-		Statements: []protocol.Statement{
-			protocol.Read("base", protocol.Query{
-				Nodes: map[string]protocol.Node{
-					"r": {Kind: "rows", Scope: "r",
-						Columns: []protocol.RowsColumn{{Name: "n", Type: "int64"}},
-						Rows:    [][]any{{1}, {2}, {3}}},
-					"o": {Kind: "order", Input: "r",
-						Terms: []protocol.OrderTerm{{Expr: *protocol.Col("r", "n")}}},
-				},
-				Root: protocol.Root{Node: "o", Cardinality: "many"},
-			}),
-			// Reference "base" and keep only n > 1, ordered.
-			protocol.Read("filtered", protocol.Query{
-				Nodes: map[string]protocol.Node{
-					"b": {Kind: "ref", Binding: "base", Scope: "b"},
-					"f": {Kind: "filter", Input: "b",
-						Predicate: protocol.Gt(protocol.Col("b", "n"), protocol.Lit(1))},
-					"o": {Kind: "order", Input: "f",
-						Terms: []protocol.OrderTerm{{Expr: *protocol.Col("b", "n")}}},
-				},
-				Root: protocol.Root{Node: "o", Cardinality: "many"},
-			}),
-		},
-		Result: "filtered",
-	}
+	prog := pirwire.Prog("filtered",
+		pirwire.Query("base", relBytes(lirwire.Query{
+			Nodes: map[string]lirwire.Node{
+				"r": lirwire.Rows("r", []lirwire.RowsColumn{{Name: "n", Type: "int64"}}, [][]lirwire.Value{{mustValue(1)}, {mustValue(2)}, {mustValue(3)}}),
+				"o": lirwire.Order("r", []lirwire.OrderTerm{{Expr: lirwire.Col("r", "n")}}),
+			},
+			Root: lirwire.Root{Node: "o", Cardinality: "many"},
+		})),
+		// Reference "base" and keep only n > 1, ordered.
+		pirwire.Query("filtered", relBytes(lirwire.Query{
+			Nodes: map[string]lirwire.Node{
+				"b": lirwire.Ref("base", "b"),
+				"f": lirwire.Filter("b", lirwire.Binary("gt", lirwire.Col("b", "n"), lirwire.LitOf(1))),
+				"o": lirwire.Order("f", []lirwire.OrderTerm{{Expr: lirwire.Col("b", "n")}}),
+			},
+			Root: lirwire.Root{Node: "o", Cardinality: "many"},
+		})),
+	)
 
 	res, err := c.Execute(ctx, prog)
 	if err != nil {
@@ -104,20 +95,16 @@ func TestExecuteForwardReferenceRejected(t *testing.T) {
 	c := migrated(t)
 	ctx := context.Background()
 
-	prog := protocol.Program{
-		Statements: []protocol.Statement{
-			protocol.Read("uses", protocol.Query{
-				Nodes: map[string]protocol.Node{
-					"r": {Kind: "ref", Binding: "later", Scope: "r"},
-					"o": {Kind: "order", Input: "r",
-						Terms: []protocol.OrderTerm{{Expr: *protocol.Col("r", "n")}}},
-				},
-				Root: protocol.Root{Node: "o", Cardinality: "many"},
-			}),
-			protocol.Read("later", oneRow("n", 1)),
-		},
-		Result: "uses",
-	}
+	prog := pirwire.Prog("uses",
+		pirwire.Query("uses", relBytes(lirwire.Query{
+			Nodes: map[string]lirwire.Node{
+				"r": lirwire.Ref("later", "r"),
+				"o": lirwire.Order("r", []lirwire.OrderTerm{{Expr: lirwire.Col("r", "n")}}),
+			},
+			Root: lirwire.Root{Node: "o", Cardinality: "many"},
+		})),
+		pirwire.Query("later", relBytes(oneRow("n", 1))),
+	)
 	_, err := c.Execute(ctx, prog)
 	assertProblem(t, err, protocol.CodeInvalid, "unknown binding")
 }
@@ -131,24 +118,19 @@ func TestExecuteLocalBindingCannotShadowStatement(t *testing.T) {
 
 	// Statement "first" has a local binding named "second"; a later
 	// statement is also named "second".
-	first := protocol.Query{
-		Nodes: map[string]protocol.Node{
-			"base": {Kind: "rows", Scope: "b",
-				Columns: []protocol.RowsColumn{{Name: "n", Type: "int64"}},
-				Rows:    [][]any{{1}}},
-			"u": {Kind: "ref", Binding: "second", Scope: "u"},
-			"o": {Kind: "order", Input: "u", Terms: []protocol.OrderTerm{{Expr: *protocol.Col("u", "n")}}},
+	first := lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"base": lirwire.Rows("b", []lirwire.RowsColumn{{Name: "n", Type: "int64"}}, [][]lirwire.Value{{mustValue(1)}}),
+			"u":    lirwire.Ref("second", "u"),
+			"o":    lirwire.Order("u", []lirwire.OrderTerm{{Expr: lirwire.Col("u", "n")}}),
 		},
-		Bindings: map[string]protocol.Binding{"second": {Node: "base"}},
-		Root:     protocol.Root{Node: "o", Cardinality: "many"},
+		Bindings: map[string]lirwire.Binding{"second": {Node: "base"}},
+		Root:     lirwire.Root{Node: "o", Cardinality: "many"},
 	}
-	prog := protocol.Program{
-		Statements: []protocol.Statement{
-			protocol.Read("first", first),
-			protocol.Read("second", oneRow("n", 2)),
-		},
-		Result: "second",
-	}
+	prog := pirwire.Prog("second",
+		pirwire.Query("first", relBytes(first)),
+		pirwire.Query("second", relBytes(oneRow("n", 2))),
+	)
 	_, err := c.Execute(ctx, prog)
 	assertProblem(t, err, protocol.CodeInvalid, "shadows a statement name")
 }
@@ -157,10 +139,10 @@ func TestExecuteMultiStatementNeedsResult(t *testing.T) {
 	c := migrated(t)
 	ctx := context.Background()
 
-	prog := protocol.Program{Statements: []protocol.Statement{
-		protocol.Read("a", oneRow("n", 1)),
-		protocol.Read("b", oneRow("n", 2)),
-	}}
+	prog := pirwire.Prog("",
+		pirwire.Query("a", relBytes(oneRow("n", 1))),
+		pirwire.Query("b", relBytes(oneRow("n", 2))),
+	)
 	// MarshalProgram validates the envelope client-side before sending.
 	_, err := c.Execute(ctx, prog)
 	if err == nil {

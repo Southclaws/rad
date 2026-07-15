@@ -108,6 +108,7 @@ func (b *binder) bindBag(q lir.Query, program map[string]*bound.Binding) (*bound
 func (b *binder) bindBody(q lir.Query, program map[string]*bound.Binding) (bound.Relation, []*bound.Binding, error) {
 	b.labels = map[string]bool{}
 	b.scopes = b.scopes[:0]
+	b.used = map[string]bool{}
 	b.bindings = make(map[string]*bound.Binding, len(program))
 	for name, bnd := range program {
 		b.bindings[name] = bnd
@@ -155,6 +156,16 @@ func (b *binder) bindBody(q lir.Query, program map[string]*bound.Binding) (bound
 	if err != nil {
 		return nil, nil, err
 	}
+
+	// Every local binding must be observed by at least one ref. An unreferenced
+	// binding is a declared relational value that denotes nothing — the binding
+	// analogue of an unreachable node, and always a mistake. Program-statement
+	// bindings are exempt: an unconsumed statement result is legitimate.
+	for _, name := range order {
+		if !b.used[name] {
+			return nil, nil, reject.Inputf("planner: binding %q is never referenced", name)
+		}
+	}
 	return root, bindings, nil
 }
 
@@ -186,6 +197,7 @@ type binder struct {
 	scopes   []scopeEntry    // innermost last
 	labels   map[string]bool // every label bound anywhere (query-wide uniqueness)
 	bindings map[string]*bound.Binding
+	used     map[string]bool // binding names observed by at least one ref
 	// reserved holds every PIR program statement name, so a statement-local
 	// binding cannot shadow any statement — even one defined later. Empty
 	// for a standalone query.
@@ -497,6 +509,7 @@ func (b *binder) bindRef(n lir.Ref) (*bound.Ref, error) {
 	if !ok {
 		return nil, reject.Inputf("planner: unknown binding %q", n.Binding)
 	}
+	b.used[n.Binding] = true
 	out := bnd.Root.Output()
 	fields := make([]lir.Field, len(out.Fields))
 	canon := make([]lir.SlotID, len(out.Fields))

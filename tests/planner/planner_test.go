@@ -7,7 +7,7 @@ package planner
 import (
 	"testing"
 
-	"github.com/Southclaws/rad/rad/protocol"
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
 	"github.com/Southclaws/rad/tests/harness"
 )
 
@@ -58,10 +58,10 @@ func tracker(t *testing.T) *harness.DB {
 func TestPointGetByPrimaryKey(t *testing.T) {
 	t.Parallel()
 	d := tracker(t)
-	d.Query(q(map[string]protocol.Node{
-		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
-		"by_id": {Kind: "filter", Input: "t",
-			Predicate: protocol.Eq(protocol.Col("t", "id"), protocol.Lit("t2"))},
+	d.Query(q(map[string]lirwire.Node{
+		"t": lirwire.Scan("tasks", "t"),
+		"by_id": lirwire.Filter("t",
+			lirwire.Binary("eq", lirwire.Col("t", "id"), lirwire.LitOf("t2"))),
 	}, "by_id", "many")).Equals(`[
 		{"id":"t2","board_id":"b1","title":"write","status":"open","priority":5,"estimate":null,"assignee_id":null}
 	]`)
@@ -71,33 +71,33 @@ func TestIndexPrefixWithResidual(t *testing.T) {
 	t.Parallel()
 	d := tracker(t)
 	// board_id+status ride the index; the whole predicate still filters.
-	d.Query(q(map[string]protocol.Node{
-		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
-		"open_b1": {Kind: "filter", Input: "t",
-			Predicate: protocol.AndAll([]*protocol.Expr{
-				protocol.Eq(protocol.Col("t", "board_id"), protocol.Lit("b1")),
-				protocol.Eq(protocol.Col("t", "status"), protocol.Lit("open")),
-				protocol.Gt(protocol.Col("t", "priority"), protocol.Lit(4)),
-			})},
-		"ids": {Kind: "project", Input: "open_b1",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("t", "id")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"t": lirwire.Scan("tasks", "t"),
+		"open_b1": lirwire.Filter("t",
+			lirwire.AndAll([]lirwire.Expr{
+				lirwire.Binary("eq", lirwire.Col("t", "board_id"), lirwire.LitOf("b1")),
+				lirwire.Binary("eq", lirwire.Col("t", "status"), lirwire.LitOf("open")),
+				lirwire.Binary("gt", lirwire.Col("t", "priority"), lirwire.LitOf(4)),
+			})),
+		"ids": lirwire.Project("open_b1", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("t", "id")}}),
 	}, "ids", "many")).Equals(`[{"id":"t2"}]`)
 }
 
 func TestOrderedIndexWithLimit(t *testing.T) {
 	t.Parallel()
 	d := tracker(t)
-	d.Query(q(map[string]protocol.Node{
-		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
-		"b1": {Kind: "filter", Input: "t",
-			Predicate: protocol.Eq(protocol.Col("t", "board_id"), protocol.Lit("b1"))},
-		"by_priority": {Kind: "order", Input: "b1",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("t", "priority"), Desc: true}}},
-		"top2": {Kind: "slice", Input: "by_priority", Limit: new(int(2))},
-		"out": {Kind: "project", Input: "top2", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("t", "id")},
-			{As: "priority", Expr: *protocol.Col("t", "priority")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"t": lirwire.Scan("tasks", "t"),
+		"b1": lirwire.Filter("t",
+			lirwire.Binary("eq", lirwire.Col("t", "board_id"), lirwire.LitOf("b1"))),
+		"by_priority": lirwire.Order("b1",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("t", "priority"), Desc: ptrBool(true)}}),
+		"top2": lirwire.Slice("by_priority", 0, ptrInt(2)),
+		"out": lirwire.Project("top2", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("t", "id")},
+			{As: "priority", Expr: lirwire.Col("t", "priority")},
+		}),
 	}, "out", "many")).Equals(`[{"id":"t3","priority":9},{"id":"t2","priority":5}]`)
 }
 
@@ -107,26 +107,26 @@ func TestNotEqSkipsNulls(t *testing.T) {
 	t.Parallel()
 	d := tracker(t)
 	// NOT (assignee = 'ada') must not match tasks with a NULL assignee.
-	d.Query(q(map[string]protocol.Node{
-		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
-		"not_ada": {Kind: "filter", Input: "t",
-			Predicate: protocol.Not(protocol.Eq(protocol.Col("t", "assignee_id"), protocol.Lit("ada")))},
-		"by_id": {Kind: "order", Input: "not_ada",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("t", "id")}}},
-		"out": {Kind: "project", Input: "by_id",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("t", "id")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"t": lirwire.Scan("tasks", "t"),
+		"not_ada": lirwire.Filter("t",
+			lirwire.Unary("not", lirwire.Binary("eq", lirwire.Col("t", "assignee_id"), lirwire.LitOf("ada")))),
+		"by_id": lirwire.Order("not_ada",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("t", "id")}}),
+		"out": lirwire.Project("by_id", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("t", "id")}}),
 	}, "out", "many")).Equals(`[{"id":"t1"}]`)
 }
 
 func TestIsNullIsTheOnlyNullMatch(t *testing.T) {
 	t.Parallel()
 	d := tracker(t)
-	d.Query(q(map[string]protocol.Node{
-		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
-		"unassigned": {Kind: "filter", Input: "t",
-			Predicate: protocol.IsNull(protocol.Col("t", "assignee_id"))},
-		"out": {Kind: "project", Input: "unassigned",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("t", "id")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"t": lirwire.Scan("tasks", "t"),
+		"unassigned": lirwire.Filter("t",
+			lirwire.Unary("is_null", lirwire.Col("t", "assignee_id"))),
+		"out": lirwire.Project("unassigned", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("t", "id")}}),
 	}, "out", "many")).Equals(`[{"id":"t2"}]`)
 }
 
@@ -137,28 +137,28 @@ func TestNestedShape(t *testing.T) {
 	d := tracker(t)
 	// Each board with its owner (to-parent first) and its open tasks by
 	// priority (correlated array) — the forcing shape, hand-written.
-	d.Query(q(map[string]protocol.Node{
-		"b": {Kind: "scan", Table: "boards", Scope: "b"},
-		"boards_by_id": {Kind: "order", Input: "b",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("b", "id")}}},
-		"o": {Kind: "scan", Table: "users", Scope: "o"},
-		"owner": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "id"), protocol.Col("b", "owner_id"))},
-		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
-		"open": {Kind: "filter", Input: "t",
-			Predicate: protocol.AndAll([]*protocol.Expr{
-				protocol.Eq(protocol.Col("t", "board_id"), protocol.Col("b", "id")),
-				protocol.Eq(protocol.Col("t", "status"), protocol.Lit("open")),
-			})},
-		"open_by_priority": {Kind: "order", Input: "open",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("t", "priority"), Desc: true}}},
-		"titles": {Kind: "project", Input: "open_by_priority",
-			Fields: []protocol.Field{{As: "title", Expr: *protocol.Col("t", "title")}}},
-		"out": {Kind: "project", Input: "boards_by_id", Fields: []protocol.Field{
-			{As: "board", Expr: *protocol.Col("b", "name")},
-			{As: "owner", Expr: *protocol.FirstOf("owner")},
-			{As: "open", Expr: *protocol.ArrayOf("titles")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"b": lirwire.Scan("boards", "b"),
+		"boards_by_id": lirwire.Order("b",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("b", "id")}}),
+		"o": lirwire.Scan("users", "o"),
+		"owner": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "id"), lirwire.Col("b", "owner_id"))),
+		"t": lirwire.Scan("tasks", "t"),
+		"open": lirwire.Filter("t",
+			lirwire.AndAll([]lirwire.Expr{
+				lirwire.Binary("eq", lirwire.Col("t", "board_id"), lirwire.Col("b", "id")),
+				lirwire.Binary("eq", lirwire.Col("t", "status"), lirwire.LitOf("open")),
+			})),
+		"open_by_priority": lirwire.Order("open",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("t", "priority"), Desc: ptrBool(true)}}),
+		"titles": lirwire.Project("open_by_priority", "", nil,
+			[]lirwire.Field{{As: "title", Expr: lirwire.Col("t", "title")}}),
+		"out": lirwire.Project("boards_by_id", "", nil, []lirwire.Field{
+			{As: "board", Expr: lirwire.Col("b", "name")},
+			{As: "owner", Expr: lirwire.First("owner")},
+			{As: "open", Expr: lirwire.Array("titles")},
+		}),
 	}, "out", "many")).Equals(`[
 		{"board":"Launch","owner":{"id":"ada","name":"Ada"},"open":[{"title":"write"},{"title":"ship"}]},
 		{"board":"Infra","owner":{"id":"bob","name":"Bob"},"open":[{"title":"rack"}]}
@@ -168,17 +168,17 @@ func TestNestedShape(t *testing.T) {
 func TestExistsInFilter(t *testing.T) {
 	t.Parallel()
 	d := tracker(t)
-	d.Query(q(map[string]protocol.Node{
-		"b": {Kind: "scan", Table: "boards", Scope: "b"},
-		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
-		"done_here": {Kind: "filter", Input: "t",
-			Predicate: protocol.AndAll([]*protocol.Expr{
-				protocol.Eq(protocol.Col("t", "board_id"), protocol.Col("b", "id")),
-				protocol.Eq(protocol.Col("t", "status"), protocol.Lit("done")),
-			})},
-		"with_done": {Kind: "filter", Input: "b", Predicate: protocol.Exists("done_here")},
-		"out": {Kind: "project", Input: "with_done",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("b", "id")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"b": lirwire.Scan("boards", "b"),
+		"t": lirwire.Scan("tasks", "t"),
+		"done_here": lirwire.Filter("t",
+			lirwire.AndAll([]lirwire.Expr{
+				lirwire.Binary("eq", lirwire.Col("t", "board_id"), lirwire.Col("b", "id")),
+				lirwire.Binary("eq", lirwire.Col("t", "status"), lirwire.LitOf("done")),
+			})),
+		"with_done": lirwire.Filter("b", lirwire.Exists("done_here")),
+		"out": lirwire.Project("with_done", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("b", "id")}}),
 	}, "out", "many")).Equals(`[{"id":"b1"}]`)
 }
 
@@ -187,16 +187,16 @@ func TestExistsInFilter(t *testing.T) {
 func TestGroupedFold(t *testing.T) {
 	t.Parallel()
 	d := tracker(t)
-	d.Query(q(map[string]protocol.Node{
-		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
-		"stats": {Kind: "aggregate", Input: "t", Scope: "stats",
-			Groups: []protocol.GroupTerm{{Expr: *protocol.Col("t", "status")}},
-			Aggs: []protocol.AggTerm{
+	d.Query(q(map[string]lirwire.Node{
+		"t": lirwire.Scan("tasks", "t"),
+		"stats": lirwire.Aggregate("t", "stats",
+			[]lirwire.GroupTerm{{Expr: lirwire.Col("t", "status")}},
+			[]lirwire.AggTerm{
 				{Fn: "count", As: "n"},
-				{Fn: "avg", Arg: protocol.Col("t", "priority"), As: "avg_priority"},
-			}},
-		"by_status": {Kind: "order", Input: "stats",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("stats", "status")}}},
+				{Fn: "avg", Arg: ptrExpr(lirwire.Col("t", "priority")), As: "avg_priority"},
+			}),
+		"by_status": lirwire.Order("stats",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("stats", "status")}}),
 	}, "by_status", "many")).Equals(`[
 		{"status":"done","n":1,"avg_priority":9},
 		{"status":"open","n":3,"avg_priority":3}
@@ -207,14 +207,14 @@ func TestGlobalFoldOverNothing(t *testing.T) {
 	t.Parallel()
 	d := tracker(t)
 	// count of an empty set is 0; every other fold is NULL.
-	d.Query(q(map[string]protocol.Node{
-		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
-		"none": {Kind: "filter", Input: "t",
-			Predicate: protocol.Eq(protocol.Col("t", "status"), protocol.Lit("ghost"))},
-		"fold": {Kind: "aggregate", Input: "none", Aggs: []protocol.AggTerm{
+	d.Query(q(map[string]lirwire.Node{
+		"t": lirwire.Scan("tasks", "t"),
+		"none": lirwire.Filter("t",
+			lirwire.Binary("eq", lirwire.Col("t", "status"), lirwire.LitOf("ghost"))),
+		"fold": lirwire.Aggregate("none", "", nil, []lirwire.AggTerm{
 			{Fn: "count", As: "n"},
-			{Fn: "max", Arg: protocol.Col("t", "priority"), As: "worst"},
-		}},
+			{Fn: "max", Arg: ptrExpr(lirwire.Col("t", "priority")), As: "worst"},
+		}),
 	}, "fold", "exactly_one")).Equals(`[{"n":0,"worst":null}]`)
 }
 
@@ -223,15 +223,15 @@ func TestGlobalFoldOverNothing(t *testing.T) {
 func TestInnerJoinProjection(t *testing.T) {
 	t.Parallel()
 	d := tracker(t)
-	d.Query(q(map[string]protocol.Node{
-		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
-		"u": {Kind: "scan", Table: "users", Scope: "u"},
-		"assigned": {Kind: "join", Left: "t", Right: "u", Join: "inner",
-			On: protocol.Eq(protocol.Col("t", "assignee_id"), protocol.Col("u", "id"))},
-		"out": {Kind: "project", Input: "assigned", Fields: []protocol.Field{
-			{As: "task", Expr: *protocol.Col("t", "title")},
-			{As: "who", Expr: *protocol.Col("u", "name")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"t": lirwire.Scan("tasks", "t"),
+		"u": lirwire.Scan("users", "u"),
+		"assigned": lirwire.Join("t", "u", "inner",
+			lirwire.Binary("eq", lirwire.Col("t", "assignee_id"), lirwire.Col("u", "id"))),
+		"out": lirwire.Project("assigned", "", nil, []lirwire.Field{
+			{As: "task", Expr: lirwire.Col("t", "title")},
+			{As: "who", Expr: lirwire.Col("u", "name")},
+		}),
 	}, "out", "many")).EqualsUnordered(`[
 		{"task":"ship","who":"Bob"},
 		{"task":"done","who":"Ada"},
@@ -245,18 +245,18 @@ func TestBinderRejections(t *testing.T) {
 	t.Parallel()
 	d := tracker(t)
 
-	d.Query(q(map[string]protocol.Node{
-		"g": {Kind: "scan", Table: "ghosts", Scope: "g"},
+	d.Query(q(map[string]lirwire.Node{
+		"g": lirwire.Scan("ghosts", "g"),
 	}, "g", "many")).ExpectStatus(422).ExpectError(`unknown table "ghosts"`)
 
-	d.Query(q(map[string]protocol.Node{
-		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
-		"bad": {Kind: "filter", Input: "t",
-			Predicate: protocol.Eq(protocol.Col("t", "nope"), protocol.Lit(1))},
+	d.Query(q(map[string]lirwire.Node{
+		"t": lirwire.Scan("tasks", "t"),
+		"bad": lirwire.Filter("t",
+			lirwire.Binary("eq", lirwire.Col("t", "nope"), lirwire.LitOf(1))),
 	}, "bad", "many")).ExpectError(`no column "nope"`)
 
 	// first over an unordered many-row relation is nondeterministic — rejected.
-	d.Query(q(map[string]protocol.Node{
-		"t": {Kind: "scan", Table: "tasks", Scope: "t"},
+	d.Query(q(map[string]lirwire.Node{
+		"t": lirwire.Scan("tasks", "t"),
 	}, "t", "first")).ExpectError("add an order or make the relation at-most-one")
 }

@@ -8,41 +8,43 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
 )
 
 func TestGraphRoundTrip(t *testing.T) {
 	big := json.Number("9007199254740993") // > 2^53
-	q := Query{
-		Nodes: map[string]Node{
-			"boards": {Kind: "scan", Table: "boards", Scope: "b"},
-			"tasks":  {Kind: "scan", Table: "tasks", Scope: "t"},
-			"open": {Kind: "filter", Input: "tasks", Predicate: AndAll([]*Expr{
-				Eq(Col("t", "board_id"), Col("b", "id")),
-				Eq(Col("t", "status"), Lit("open")),
-				Gte(Col("t", "priority"), Lit(big)),
-				Not(IsNull(Col("t", "assignee_id"))),
-			})},
-			"sorted": {Kind: "order", Input: "open", Terms: []OrderTerm{
-				{Expr: *Col("t", "priority"), Desc: true},
-			}},
-			"page": {Kind: "slice", Input: "sorted", Limit: new(int(20))},
-			"stats": {Kind: "aggregate", Input: "open",
-				Groups: []GroupTerm{{Expr: *Col("t", "status")}},
-				Aggs: []AggTerm{
+	q := lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"boards": lirwire.Scan("boards", "b"),
+			"tasks":  lirwire.Scan("tasks", "t"),
+			"open": lirwire.Filter("tasks", lirwire.AndAll([]lirwire.Expr{
+				lirwire.Binary("eq", lirwire.Col("t", "board_id"), lirwire.Col("b", "id")),
+				lirwire.Binary("eq", lirwire.Col("t", "status"), lirwire.LitOf("open")),
+				lirwire.Binary("gte", lirwire.Col("t", "priority"), lirwire.LitOf(big)),
+				lirwire.Unary("not", lirwire.Unary("is_null", lirwire.Col("t", "assignee_id"))),
+			})),
+			"sorted": lirwire.Order("open", []lirwire.OrderTerm{
+				{Expr: lirwire.Col("t", "priority"), Desc: ptrBool(true)},
+			}),
+			"page": lirwire.Slice("sorted", 0, ptrInt(20)),
+			"stats": lirwire.Aggregate("open", "",
+				[]lirwire.GroupTerm{{Expr: lirwire.Col("t", "status")}},
+				[]lirwire.AggTerm{
 					{Fn: "count", As: "n"},
-					{Fn: "avg", Arg: Col("t", "estimate"), As: "mean"},
-				}},
-			"joined": {Kind: "join", Left: "boards", Right: "tasks", Join: "left",
-				On: Eq(Col("b", "id"), Col("t", "board_id"))},
-			"out": {Kind: "project", Input: "boards", Spread: []string{"b"}, Fields: []Field{
-				{As: "tasks", Expr: *ArrayOf("page")},
-				{As: "stats", Expr: *FirstOf("stats")},
-				{As: "busy", Expr: *Exists("open")},
-				{As: "count", Expr: *ScalarOf("stats")},
-				{As: "cast", Expr: Expr{Kind: "cast", Expr: Lit(json.Number("1")), To: "float64"}},
-			}},
+					{Fn: "avg", Arg: ptrExpr(lirwire.Col("t", "estimate")), As: "mean"},
+				}),
+			"joined": lirwire.Join("boards", "tasks", "left",
+				lirwire.Binary("eq", lirwire.Col("b", "id"), lirwire.Col("t", "board_id"))),
+			"out": lirwire.Project("boards", "", []string{"b"}, []lirwire.Field{
+				{As: "tasks", Expr: lirwire.Array("page")},
+				{As: "stats", Expr: lirwire.First("stats")},
+				{As: "busy", Expr: lirwire.Exists("open")},
+				{As: "count", Expr: lirwire.Scalar("stats")},
+				{As: "cast", Expr: lirwire.Cast(lirwire.LitOf(json.Number("1")), "float64")},
+			}),
 		},
-		Root: Root{Node: "out", Cardinality: "many"},
+		Root: lirwire.Root{Node: "out", Cardinality: "many"},
 	}
 
 	raw, err := MarshalQuery(q)
@@ -58,15 +60,30 @@ func TestGraphRoundTrip(t *testing.T) {
 		t.Fatalf("graph drifted over the wire.\n got: %#v\nwant: %#v", got, q)
 	}
 
-	// The integer beyond float53 survives as a json.Number.
-	pred := got.Nodes["open"].Predicate
-	gte := pred.Left.Right // and(and(and(eq,eq),gte),not) → left.right = gte
-	if gte.Op != "gte" {
-		t.Fatalf("fold shape changed: %+v", pred)
+	// The integer beyond float53 survives as its exact raw JSON bytes. Navigate
+	// the AndAll fold: and(and(and(eq,eq),gte),not), so the gte is top.Left.Right.
+	fn, ok := got.Nodes["open"].NodeUnion.(*lirwire.FilterNode)
+	if !ok {
+		t.Fatalf("open node is not a filter: %T", got.Nodes["open"].NodeUnion)
 	}
-	n, ok := gte.Right.Value.(json.Number)
-	if !ok || n.String() != "9007199254740993" {
-		t.Fatalf("int64 precision lost: %T %v", gte.Right.Value, gte.Right.Value)
+	top, ok := fn.Predicate.ExprUnion.(*lirwire.BinaryExpr)
+	if !ok {
+		t.Fatalf("predicate is not binary: %T", fn.Predicate.ExprUnion)
+	}
+	mid, ok := top.Left.ExprUnion.(*lirwire.BinaryExpr)
+	if !ok {
+		t.Fatalf("fold shape changed: %#v", top)
+	}
+	gte, ok := mid.Right.ExprUnion.(*lirwire.BinaryExpr)
+	if !ok || gte.Op != "gte" {
+		t.Fatalf("fold shape changed: %#v", mid)
+	}
+	lit, ok := gte.Right.ExprUnion.(*lirwire.LiteralExpr)
+	if !ok {
+		t.Fatalf("gte right is not a literal: %T", gte.Right.ExprUnion)
+	}
+	if string(lit.Value) != "9007199254740993" {
+		t.Fatalf("int64 precision lost: %s", lit.Value)
 	}
 }
 

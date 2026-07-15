@@ -6,16 +6,17 @@
 //	d := harness.New(t)
 //	d.Table("tasks", harness.Text("id"), harness.Text("status")).Create()
 //	d.Insert("tasks", harness.Row{"id": "t1", "status": "open"})
-//	d.Query(protocol.Query{
-//		Nodes: map[string]protocol.Node{
-//			"t": {Kind: "scan", Table: "tasks", Scope: "t"},
+//	d.Query(lirwire.Query{
+//		Nodes: map[string]lirwire.Node{
+//			"t": lirwire.Scan("tasks", "t"),
 //		},
-//		Root: protocol.Root{Node: "t", Cardinality: "many"},
+//		Root: lirwire.Root{Node: "t", Cardinality: "many"},
 //	}).Equals(`[{"id":"t1","status":"open"}]`)
 //
-// Queries are written as literal protocol structs — the node map IS the
-// test. This layer deliberately has no query-building abstraction: what a
-// test sends must be visible in the test, byte for byte.
+// Queries are written as literal lirwire structs built through the lirwire
+// constructors — the node map IS the test. This layer deliberately has no
+// query-building abstraction beyond those constructors: what a test sends must
+// be visible in the test.
 //
 // Every query travels client → HTTP → schema validation → binder → planner →
 // executor and back, so an assertion here holds the whole read path, not a
@@ -42,6 +43,8 @@ import (
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
 	"github.com/Southclaws/rad/rad/protocol"
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
+	"github.com/Southclaws/rad/rad/protocol/pirwire"
 	"github.com/Southclaws/rad/rad/server"
 )
 
@@ -194,42 +197,56 @@ func (d *DB) Insert(table string, rows ...Row) {
 	// relation omits, so rows that omit different columns need different
 	// statements. Within a group every row supplies the same columns.
 	sigs, groups := groupBySignature(rows)
-	stmts := make([]protocol.Statement, len(sigs))
+	stmts := make([]pirwire.Statement, len(sigs))
+	var lastName string
 	for gi, sig := range sigs {
 		grp := groups[sig]
 		names := grp.names
-		cols := make([]protocol.RowsColumn, len(names))
+		cols := make([]lirwire.RowsColumn, len(names))
 		for i, name := range names {
 			col, ok := tbl.Column(name)
 			if !ok {
 				d.T.Fatalf("harness: insert into %q: no column %q", table, name)
 			}
-			cols[i] = protocol.RowsColumn{Name: name, Type: string(col.Type), Nullable: col.Nullable}
+			cols[i] = lirwire.RowsColumn{Name: name, Type: string(col.Type), Nullable: nullableFlag(col.Nullable)}
 		}
-		cells := make([][]any, len(grp.rows))
+		cells := make([][]lirwire.Value, len(grp.rows))
 		for i, r := range grp.rows {
-			cell := make([]any, len(names))
+			cell := make([]lirwire.Value, len(names))
 			for j, name := range names {
-				cell[j] = r[name]
+				v, err := lirwire.SetAny(r[name])
+				if err != nil {
+					d.T.Fatalf("harness: insert into %q: column %q: %v", table, name, err)
+				}
+				cell[j] = v
 			}
 			cells[i] = cell
 		}
-		rel := protocol.Query{
-			Nodes: map[string]protocol.Node{
-				"r": {Kind: "rows", Scope: "r", Columns: cols, Rows: cells},
-			},
-			Root: protocol.Root{Node: "r", Cardinality: "many"},
+		rel := lirwire.Query{
+			Nodes: map[string]lirwire.Node{"r": lirwire.Rows("r", cols, cells)},
+			Root:  lirwire.Root{Node: "r", Cardinality: "many"},
 		}
-		stmts[gi] = protocol.Create(fmt.Sprintf("seed%d", gi), table, rel)
+		name := fmt.Sprintf("seed%d", gi)
+		stmts[gi] = pirwire.Create(name, table, d.relation(rel))
+		lastName = name
 	}
 
-	prog := protocol.Program{Statements: stmts}
+	result := ""
 	if len(stmts) > 1 {
-		prog.Result = stmts[len(stmts)-1].Name
+		result = lastName
 	}
-	if _, err := d.Client.Execute(d.ctx, prog); err != nil {
+	if _, err := d.Client.Execute(d.ctx, pirwire.Prog(result, stmts...)); err != nil {
 		d.T.Fatalf("harness: insert into %q: %v", table, err)
 	}
+}
+
+// nullableFlag renders a column's nullability as the wire's optional flag:
+// present only when true.
+func nullableFlag(b bool) *bool {
+	if b {
+		return &b
+	}
+	return nil
 }
 
 type seedGroup struct {
@@ -269,18 +286,29 @@ func groupBySignature(rows []Row) ([]string, map[string]*seedGroup) {
 // assertions then extend without churning existing tests.
 type Result struct {
 	T       *testing.T
-	Query   protocol.Query
+	Query   lirwire.Query
 	Datum   any
 	Records []protocol.Record
 	Err     error
 }
 
+// relation marshals a wire query into a statement's opaque relation payload,
+// failing the test if it cannot be encoded.
+func (d *DB) relation(q lirwire.Query) pirwire.Relation {
+	d.T.Helper()
+	raw, err := json.Marshal(q)
+	if err != nil {
+		d.T.Fatalf("harness: encode relation: %v", err)
+	}
+	return raw
+}
+
 // Query runs a raw LIR query as a one-statement execution program and returns
 // its Result for assertion chaining.
-func (d *DB) Query(q protocol.Query) *Result {
+func (d *DB) Query(q lirwire.Query) *Result {
 	d.T.Helper()
 	var datum any
-	res, err := d.Client.Execute(d.ctx, protocol.QueryProgram(q))
+	res, err := d.Client.Execute(d.ctx, pirwire.Prog("", pirwire.Query("result", d.relation(q))))
 	if err == nil {
 		datum = res.Result
 	}

@@ -8,7 +8,7 @@ package planner
 import (
 	"testing"
 
-	"github.com/Southclaws/rad/rad/protocol"
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
 )
 
 // 1. To-parent: each order with its customer as a nested object. The inner
@@ -16,22 +16,22 @@ import (
 func TestNestToParentFirst(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"few": {Kind: "filter", Input: "o",
-			Predicate: protocol.AndAll([]*protocol.Expr{
-				protocol.Eq(protocol.Col("o", "customer_id"), protocol.Lit("c1")),
-				protocol.Lte(protocol.Col("o", "placed_at"), protocol.Lit(2000)),
-			})},
-		"by_id": {Kind: "order", Input: "few",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "id")}}},
-		"cu": {Kind: "scan", Table: "customers", Scope: "cu"},
-		"owner": {Kind: "filter", Input: "cu",
-			Predicate: protocol.Eq(protocol.Col("cu", "id"), protocol.Col("o", "customer_id"))},
-		"out": {Kind: "project", Input: "by_id", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("o", "id")},
-			{As: "customer", Expr: *protocol.FirstOf("owner")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"few": lirwire.Filter("o",
+			lirwire.AndAll([]lirwire.Expr{
+				lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.LitOf("c1")),
+				lirwire.Binary("lte", lirwire.Col("o", "placed_at"), lirwire.LitOf(2000)),
+			})),
+		"by_id": lirwire.Order("few",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "id")}}),
+		"cu": lirwire.Scan("customers", "cu"),
+		"owner": lirwire.Filter("cu",
+			lirwire.Binary("eq", lirwire.Col("cu", "id"), lirwire.Col("o", "customer_id"))),
+		"out": lirwire.Project("by_id", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("o", "id")},
+			{As: "customer", Expr: lirwire.First("owner")},
+		}),
 	}, "out", "many")).Equals(`[
 		{"id":"o1","customer":{"id":"c1","name":"Ada","email":"ada@shop.io","tier":"gold","created_at":100,"referrer_id":null}},
 		{"id":"o2","customer":{"id":"c1","name":"Ada","email":"ada@shop.io","tier":"gold","created_at":100,"referrer_id":null}}
@@ -42,21 +42,21 @@ func TestNestToParentFirst(t *testing.T) {
 func TestNestChildrenArray(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"c_by_id": {Kind: "order", Input: "c",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("c", "id")}}},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"mine_by_id": {Kind: "order", Input: "mine",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "id")}}},
-		"mine_ids": {Kind: "project", Input: "mine_by_id",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("o", "id")}}},
-		"out": {Kind: "project", Input: "c_by_id", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "orders", Expr: *protocol.ArrayOf("mine_ids")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"c_by_id": lirwire.Order("c",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("c", "id")}}),
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"mine_by_id": lirwire.Order("mine",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "id")}}),
+		"mine_ids": lirwire.Project("mine_by_id", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("o", "id")}}),
+		"out": lirwire.Project("c_by_id", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "orders", Expr: lirwire.Array("mine_ids")},
+		}),
 	}, "out", "many")).Equals(`[
 		{"id":"c1","orders":[{"id":"o1"},{"id":"o2"},{"id":"o7"}]},
 		{"id":"c2","orders":[{"id":"o3"},{"id":"o4"}]},
@@ -71,22 +71,22 @@ func TestNestChildrenArray(t *testing.T) {
 func TestNestTopNPerParent(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"c_by_id": {Kind: "order", Input: "c",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("c", "id")}}},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"newest": {Kind: "order", Input: "mine",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "placed_at"), Desc: true}}},
-		"top2": {Kind: "slice", Input: "newest", Limit: new(int(2))},
-		"top2_ids": {Kind: "project", Input: "top2",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("o", "id")}}},
-		"out": {Kind: "project", Input: "c_by_id", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "recent", Expr: *protocol.ArrayOf("top2_ids")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"c_by_id": lirwire.Order("c",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("c", "id")}}),
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"newest": lirwire.Order("mine",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "placed_at"), Desc: ptrBool(true)}}),
+		"top2": lirwire.Slice("newest", 0, ptrInt(2)),
+		"top2_ids": lirwire.Project("top2", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("o", "id")}}),
+		"out": lirwire.Project("c_by_id", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "recent", Expr: lirwire.Array("top2_ids")},
+		}),
 	}, "out", "many")).Equals(`[
 		{"id":"c1","recent":[{"id":"o7"},{"id":"o2"}]},
 		{"id":"c2","recent":[{"id":"o4"},{"id":"o3"}]},
@@ -101,19 +101,19 @@ func TestNestTopNPerParent(t *testing.T) {
 func TestNestScalarCountPerParent(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"c_by_id": {Kind: "order", Input: "c",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("c", "id")}}},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"cnt": {Kind: "aggregate", Input: "mine",
-			Aggs: []protocol.AggTerm{{Fn: "count", As: "n"}}},
-		"out": {Kind: "project", Input: "c_by_id", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "n", Expr: *protocol.ScalarOf("cnt")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"c_by_id": lirwire.Order("c",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("c", "id")}}),
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"cnt": lirwire.Aggregate("mine", "", nil,
+			[]lirwire.AggTerm{{Fn: "count", As: "n"}}),
+		"out": lirwire.Project("c_by_id", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "n", Expr: lirwire.Scalar("cnt")},
+		}),
 	}, "out", "many")).Equals(`[
 		{"id":"c1","n":3},
 		{"id":"c2","n":2},
@@ -127,16 +127,16 @@ func TestNestScalarCountPerParent(t *testing.T) {
 func TestNestExistsFilter(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"buyers": {Kind: "filter", Input: "c", Predicate: protocol.Exists("mine")},
-		"by_id": {Kind: "order", Input: "buyers",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("c", "id")}}},
-		"out": {Kind: "project", Input: "by_id",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("c", "id")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"buyers": lirwire.Filter("c", lirwire.Exists("mine")),
+		"by_id": lirwire.Order("buyers",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("c", "id")}}),
+		"out": lirwire.Project("by_id", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("c", "id")}}),
 	}, "out", "many")).Equals(`[{"id":"c1"},{"id":"c2"},{"id":"c3"},{"id":"c4"}]`)
 }
 
@@ -144,14 +144,14 @@ func TestNestExistsFilter(t *testing.T) {
 func TestNestNotExistsFilter(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"idle": {Kind: "filter", Input: "c", Predicate: protocol.Not(protocol.Exists("mine"))},
-		"out": {Kind: "project", Input: "idle",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("c", "id")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"idle": lirwire.Filter("c", lirwire.Unary("not", lirwire.Exists("mine"))),
+		"out": lirwire.Project("idle", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("c", "id")}}),
 	}, "out", "many")).Equals(`[{"id":"c5"}]`)
 }
 
@@ -160,23 +160,23 @@ func TestNestNotExistsFilter(t *testing.T) {
 func TestNestFirstOverOrderedMultiRow(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"two": {Kind: "filter", Input: "c",
-			Predicate: protocol.Or(
-				protocol.Eq(protocol.Col("c", "id"), protocol.Lit("c1")),
-				protocol.Eq(protocol.Col("c", "id"), protocol.Lit("c2")))},
-		"two_by_id": {Kind: "order", Input: "two",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("c", "id")}}},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"newest": {Kind: "order", Input: "mine",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "placed_at"), Desc: true}}},
-		"out": {Kind: "project", Input: "two_by_id", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "latest", Expr: *protocol.FirstOf("newest")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"two": lirwire.Filter("c",
+			lirwire.Binary("or",
+				lirwire.Binary("eq", lirwire.Col("c", "id"), lirwire.LitOf("c1")),
+				lirwire.Binary("eq", lirwire.Col("c", "id"), lirwire.LitOf("c2")))),
+		"two_by_id": lirwire.Order("two",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("c", "id")}}),
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"newest": lirwire.Order("mine",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "placed_at"), Desc: ptrBool(true)}}),
+		"out": lirwire.Project("two_by_id", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "latest", Expr: lirwire.First("newest")},
+		}),
 	}, "out", "many")).Equals(`[
 		{"id":"c1","latest":{"id":"o7","customer_id":"c1","status":"pending","placed_at":3500,"discount":null}},
 		{"id":"c2","latest":{"id":"o4","customer_id":"c2","status":"cancelled","placed_at":1600,"discount":null}}
@@ -188,17 +188,17 @@ func TestNestFirstOverOrderedMultiRow(t *testing.T) {
 func TestNestFirstViaUniqueIndex(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"just_c1": {Kind: "filter", Input: "c",
-			Predicate: protocol.Eq(protocol.Col("c", "id"), protocol.Lit("c1"))},
-		"u": {Kind: "scan", Table: "customers", Scope: "u"},
-		"by_email": {Kind: "filter", Input: "u",
-			Predicate: protocol.Eq(protocol.Col("u", "email"), protocol.Lit("bob@shop.io"))},
-		"out": {Kind: "project", Input: "just_c1", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "bob", Expr: *protocol.FirstOf("by_email")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"just_c1": lirwire.Filter("c",
+			lirwire.Binary("eq", lirwire.Col("c", "id"), lirwire.LitOf("c1"))),
+		"u": lirwire.Scan("customers", "u"),
+		"by_email": lirwire.Filter("u",
+			lirwire.Binary("eq", lirwire.Col("u", "email"), lirwire.LitOf("bob@shop.io"))),
+		"out": lirwire.Project("just_c1", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "bob", Expr: lirwire.First("by_email")},
+		}),
 	}, "out", "many")).Equals(`[
 		{"id":"c1","bob":{"id":"c2","name":"Bob","email":"bob@shop.io","tier":"silver","created_at":200,"referrer_id":"c1"}}
 	]`)
@@ -208,32 +208,32 @@ func TestNestFirstViaUniqueIndex(t *testing.T) {
 func TestNestTwoLevels(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"just_c1": {Kind: "filter", Input: "c",
-			Predicate: protocol.Eq(protocol.Col("c", "id"), protocol.Lit("c1"))},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"mine_by_id": {Kind: "order", Input: "mine",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "id")}}},
-		"i": {Kind: "scan", Table: "order_items", Scope: "i"},
-		"lines": {Kind: "filter", Input: "i",
-			Predicate: protocol.Eq(protocol.Col("i", "order_id"), protocol.Col("o", "id"))},
-		"lines_by_id": {Kind: "order", Input: "lines",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("i", "id")}}},
-		"line_out": {Kind: "project", Input: "lines_by_id", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("i", "id")},
-			{As: "quantity", Expr: *protocol.Col("i", "quantity")},
-		}},
-		"o_shaped": {Kind: "project", Input: "mine_by_id", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("o", "id")},
-			{As: "items", Expr: *protocol.ArrayOf("line_out")},
-		}},
-		"out": {Kind: "project", Input: "just_c1", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "orders", Expr: *protocol.ArrayOf("o_shaped")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"just_c1": lirwire.Filter("c",
+			lirwire.Binary("eq", lirwire.Col("c", "id"), lirwire.LitOf("c1"))),
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"mine_by_id": lirwire.Order("mine",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "id")}}),
+		"i": lirwire.Scan("order_items", "i"),
+		"lines": lirwire.Filter("i",
+			lirwire.Binary("eq", lirwire.Col("i", "order_id"), lirwire.Col("o", "id"))),
+		"lines_by_id": lirwire.Order("lines",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("i", "id")}}),
+		"line_out": lirwire.Project("lines_by_id", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("i", "id")},
+			{As: "quantity", Expr: lirwire.Col("i", "quantity")},
+		}),
+		"o_shaped": lirwire.Project("mine_by_id", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("o", "id")},
+			{As: "items", Expr: lirwire.Array("line_out")},
+		}),
+		"out": lirwire.Project("just_c1", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "orders", Expr: lirwire.Array("o_shaped")},
+		}),
 	}, "out", "many")).Equals(`[
 		{"id":"c1","orders":[
 			{"id":"o1","items":[{"id":"i1","quantity":1},{"id":"i2","quantity":10}]},
@@ -248,38 +248,38 @@ func TestNestTwoLevels(t *testing.T) {
 func TestNestThreeLevelsWithParent(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"just_c1": {Kind: "filter", Input: "c",
-			Predicate: protocol.Eq(protocol.Col("c", "id"), protocol.Lit("c1"))},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.AndAll([]*protocol.Expr{
-				protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id")),
-				protocol.Eq(protocol.Col("o", "id"), protocol.Lit("o1")),
-			})},
-		"i": {Kind: "scan", Table: "order_items", Scope: "i"},
-		"lines": {Kind: "filter", Input: "i",
-			Predicate: protocol.Eq(protocol.Col("i", "order_id"), protocol.Col("o", "id"))},
-		"lines_by_id": {Kind: "order", Input: "lines",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("i", "id")}}},
-		"p": {Kind: "scan", Table: "products", Scope: "p"},
-		"prod": {Kind: "filter", Input: "p",
-			Predicate: protocol.Eq(protocol.Col("p", "id"), protocol.Col("i", "product_id"))},
-		"prod_name": {Kind: "project", Input: "prod",
-			Fields: []protocol.Field{{As: "name", Expr: *protocol.Col("p", "name")}}},
-		"line_shaped": {Kind: "project", Input: "lines_by_id", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("i", "id")},
-			{As: "product", Expr: *protocol.FirstOf("prod_name")},
-		}},
-		"o_shaped": {Kind: "project", Input: "mine", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("o", "id")},
-			{As: "items", Expr: *protocol.ArrayOf("line_shaped")},
-		}},
-		"out": {Kind: "project", Input: "just_c1", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "orders", Expr: *protocol.ArrayOf("o_shaped")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"just_c1": lirwire.Filter("c",
+			lirwire.Binary("eq", lirwire.Col("c", "id"), lirwire.LitOf("c1"))),
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.AndAll([]lirwire.Expr{
+				lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id")),
+				lirwire.Binary("eq", lirwire.Col("o", "id"), lirwire.LitOf("o1")),
+			})),
+		"i": lirwire.Scan("order_items", "i"),
+		"lines": lirwire.Filter("i",
+			lirwire.Binary("eq", lirwire.Col("i", "order_id"), lirwire.Col("o", "id"))),
+		"lines_by_id": lirwire.Order("lines",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("i", "id")}}),
+		"p": lirwire.Scan("products", "p"),
+		"prod": lirwire.Filter("p",
+			lirwire.Binary("eq", lirwire.Col("p", "id"), lirwire.Col("i", "product_id"))),
+		"prod_name": lirwire.Project("prod", "", nil,
+			[]lirwire.Field{{As: "name", Expr: lirwire.Col("p", "name")}}),
+		"line_shaped": lirwire.Project("lines_by_id", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("i", "id")},
+			{As: "product", Expr: lirwire.First("prod_name")},
+		}),
+		"o_shaped": lirwire.Project("mine", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("o", "id")},
+			{As: "items", Expr: lirwire.Array("line_shaped")},
+		}),
+		"out": lirwire.Project("just_c1", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "orders", Expr: lirwire.Array("o_shaped")},
+		}),
 	}, "out", "many")).Equals(`[
 		{"id":"c1","orders":[
 			{"id":"o1","items":[
@@ -295,31 +295,31 @@ func TestNestThreeLevelsWithParent(t *testing.T) {
 func TestNestSiblingCrossings(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"just_c2": {Kind: "filter", Input: "c",
-			Predicate: protocol.Eq(protocol.Col("c", "id"), protocol.Lit("c2"))},
-		"r": {Kind: "scan", Table: "customers", Scope: "r"},
-		"ref": {Kind: "filter", Input: "r",
-			Predicate: protocol.Eq(protocol.Col("r", "id"), protocol.Col("c", "referrer_id"))},
-		"oa": {Kind: "scan", Table: "orders", Scope: "oa"},
-		"mine": {Kind: "filter", Input: "oa",
-			Predicate: protocol.Eq(protocol.Col("oa", "customer_id"), protocol.Col("c", "id"))},
-		"mine_by_id": {Kind: "order", Input: "mine",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("oa", "id")}}},
-		"mine_ids": {Kind: "project", Input: "mine_by_id",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("oa", "id")}}},
-		"oc": {Kind: "scan", Table: "orders", Scope: "oc"},
-		"mine_again": {Kind: "filter", Input: "oc",
-			Predicate: protocol.Eq(protocol.Col("oc", "customer_id"), protocol.Col("c", "id"))},
-		"cnt": {Kind: "aggregate", Input: "mine_again",
-			Aggs: []protocol.AggTerm{{Fn: "count", As: "n"}}},
-		"out": {Kind: "project", Input: "just_c2", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "referrer", Expr: *protocol.FirstOf("ref")},
-			{As: "orders", Expr: *protocol.ArrayOf("mine_ids")},
-			{As: "n", Expr: *protocol.ScalarOf("cnt")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"just_c2": lirwire.Filter("c",
+			lirwire.Binary("eq", lirwire.Col("c", "id"), lirwire.LitOf("c2"))),
+		"r": lirwire.Scan("customers", "r"),
+		"ref": lirwire.Filter("r",
+			lirwire.Binary("eq", lirwire.Col("r", "id"), lirwire.Col("c", "referrer_id"))),
+		"oa": lirwire.Scan("orders", "oa"),
+		"mine": lirwire.Filter("oa",
+			lirwire.Binary("eq", lirwire.Col("oa", "customer_id"), lirwire.Col("c", "id"))),
+		"mine_by_id": lirwire.Order("mine",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("oa", "id")}}),
+		"mine_ids": lirwire.Project("mine_by_id", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("oa", "id")}}),
+		"oc": lirwire.Scan("orders", "oc"),
+		"mine_again": lirwire.Filter("oc",
+			lirwire.Binary("eq", lirwire.Col("oc", "customer_id"), lirwire.Col("c", "id"))),
+		"cnt": lirwire.Aggregate("mine_again", "", nil,
+			[]lirwire.AggTerm{{Fn: "count", As: "n"}}),
+		"out": lirwire.Project("just_c2", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "referrer", Expr: lirwire.First("ref")},
+			{As: "orders", Expr: lirwire.Array("mine_ids")},
+			{As: "n", Expr: lirwire.Scalar("cnt")},
+		}),
 	}, "out", "many")).Equals(`[
 		{"id":"c2",
 		 "referrer":{"id":"c1","name":"Ada","email":"ada@shop.io","tier":"gold","created_at":100,"referrer_id":null},
@@ -333,19 +333,19 @@ func TestNestSiblingCrossings(t *testing.T) {
 func TestNestCrossingInFilter(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"i": {Kind: "scan", Table: "order_items", Scope: "i"},
-		"bulk_lines": {Kind: "filter", Input: "i",
-			Predicate: protocol.AndAll([]*protocol.Expr{
-				protocol.Eq(protocol.Col("i", "order_id"), protocol.Col("o", "id")),
-				protocol.Gte(protocol.Col("i", "quantity"), protocol.Lit(10)),
-			})},
-		"bulk": {Kind: "filter", Input: "o", Predicate: protocol.Exists("bulk_lines")},
-		"by_id": {Kind: "order", Input: "bulk",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "id")}}},
-		"out": {Kind: "project", Input: "by_id",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("o", "id")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"i": lirwire.Scan("order_items", "i"),
+		"bulk_lines": lirwire.Filter("i",
+			lirwire.AndAll([]lirwire.Expr{
+				lirwire.Binary("eq", lirwire.Col("i", "order_id"), lirwire.Col("o", "id")),
+				lirwire.Binary("gte", lirwire.Col("i", "quantity"), lirwire.LitOf(10)),
+			})),
+		"bulk": lirwire.Filter("o", lirwire.Exists("bulk_lines")),
+		"by_id": lirwire.Order("bulk",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "id")}}),
+		"out": lirwire.Project("by_id", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("o", "id")}}),
 	}, "out", "many")).Equals(`[{"id":"o1"},{"id":"o6"}]`)
 }
 
@@ -353,17 +353,17 @@ func TestNestCrossingInFilter(t *testing.T) {
 func TestNestAntiJoin(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"p": {Kind: "scan", Table: "products", Scope: "p"},
-		"r": {Kind: "scan", Table: "reviews", Scope: "r"},
-		"revs": {Kind: "filter", Input: "r",
-			Predicate: protocol.Eq(protocol.Col("r", "product_id"), protocol.Col("p", "id"))},
-		"unreviewed": {Kind: "filter", Input: "p",
-			Predicate: protocol.Not(protocol.Exists("revs"))},
-		"by_id": {Kind: "order", Input: "unreviewed",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("p", "id")}}},
-		"out": {Kind: "project", Input: "by_id",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("p", "id")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"p": lirwire.Scan("products", "p"),
+		"r": lirwire.Scan("reviews", "r"),
+		"revs": lirwire.Filter("r",
+			lirwire.Binary("eq", lirwire.Col("r", "product_id"), lirwire.Col("p", "id"))),
+		"unreviewed": lirwire.Filter("p",
+			lirwire.Unary("not", lirwire.Exists("revs"))),
+		"by_id": lirwire.Order("unreviewed",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("p", "id")}}),
+		"out": lirwire.Project("by_id", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("p", "id")}}),
 	}, "out", "many")).Equals(`[{"id":"p4"},{"id":"p6"},{"id":"p7"}]`)
 }
 
@@ -372,19 +372,19 @@ func TestNestAntiJoin(t *testing.T) {
 func TestNestScalarAvgIncludingEmpty(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"p": {Kind: "scan", Table: "products", Scope: "p"},
-		"p_by_id": {Kind: "order", Input: "p",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("p", "id")}}},
-		"r": {Kind: "scan", Table: "reviews", Scope: "r"},
-		"revs": {Kind: "filter", Input: "r",
-			Predicate: protocol.Eq(protocol.Col("r", "product_id"), protocol.Col("p", "id"))},
-		"rating": {Kind: "aggregate", Input: "revs",
-			Aggs: []protocol.AggTerm{{Fn: "avg", Arg: protocol.Col("r", "rating"), As: "avg_rating"}}},
-		"out": {Kind: "project", Input: "p_by_id", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("p", "id")},
-			{As: "avg_rating", Expr: *protocol.ScalarOf("rating")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"p": lirwire.Scan("products", "p"),
+		"p_by_id": lirwire.Order("p",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("p", "id")}}),
+		"r": lirwire.Scan("reviews", "r"),
+		"revs": lirwire.Filter("r",
+			lirwire.Binary("eq", lirwire.Col("r", "product_id"), lirwire.Col("p", "id"))),
+		"rating": lirwire.Aggregate("revs", "", nil,
+			[]lirwire.AggTerm{{Fn: "avg", Arg: ptrExpr(lirwire.Col("r", "rating")), As: "avg_rating"}}),
+		"out": lirwire.Project("p_by_id", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("p", "id")},
+			{As: "avg_rating", Expr: lirwire.Scalar("rating")},
+		}),
 	}, "out", "many")).Equals(`[
 		{"id":"p1","avg_rating":4.5},
 		{"id":"p2","avg_rating":2},
@@ -401,20 +401,20 @@ func TestNestScalarAvgIncludingEmpty(t *testing.T) {
 func TestNestScalarInArithmetic(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"c_by_id": {Kind: "order", Input: "c",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("c", "id")}}},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"cnt": {Kind: "aggregate", Input: "mine",
-			Aggs: []protocol.AggTerm{{Fn: "count", As: "n"}}},
-		"out": {Kind: "project", Input: "c_by_id", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "n", Expr: protocol.Expr{Kind: "binary", Op: "add",
-				Left: protocol.ScalarOf("cnt"), Right: protocol.Lit(100)}},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"c_by_id": lirwire.Order("c",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("c", "id")}}),
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"cnt": lirwire.Aggregate("mine", "", nil,
+			[]lirwire.AggTerm{{Fn: "count", As: "n"}}),
+		"out": lirwire.Project("c_by_id", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "n", Expr: lirwire.Binary("add",
+				lirwire.Scalar("cnt"), lirwire.LitOf(100))},
+		}),
 	}, "out", "many")).Equals(`[
 		{"id":"c1","n":103},
 		{"id":"c2","n":102},
@@ -429,19 +429,19 @@ func TestNestScalarInArithmetic(t *testing.T) {
 func TestNestIsNullFirstInFilter(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"r": {Kind: "scan", Table: "customers", Scope: "r"},
-		"ref": {Kind: "filter", Input: "r",
-			Predicate: protocol.Eq(protocol.Col("r", "id"), protocol.Col("c", "referrer_id"))},
-		"shaped": {Kind: "project", Input: "c", Scope: "s", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "referrer", Expr: *protocol.FirstOf("ref")},
-		}},
-		"rootless": {Kind: "filter", Input: "shaped",
-			Predicate: protocol.IsNull(protocol.Col("s", "referrer"))},
-		"by_id": {Kind: "order", Input: "rootless",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("s", "id")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"r": lirwire.Scan("customers", "r"),
+		"ref": lirwire.Filter("r",
+			lirwire.Binary("eq", lirwire.Col("r", "id"), lirwire.Col("c", "referrer_id"))),
+		"shaped": lirwire.Project("c", "s", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "referrer", Expr: lirwire.First("ref")},
+		}),
+		"rootless": lirwire.Filter("shaped",
+			lirwire.Unary("is_null", lirwire.Col("s", "referrer"))),
+		"by_id": lirwire.Order("rootless",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("s", "id")}}),
 	}, "by_id", "many")).Equals(`[
 		{"id":"c1","referrer":null},
 		{"id":"c5","referrer":null}
@@ -453,19 +453,19 @@ func TestNestIsNullFirstInFilter(t *testing.T) {
 func TestNestCrossingAsOrderTerm(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"cnt": {Kind: "aggregate", Input: "mine",
-			Aggs: []protocol.AggTerm{{Fn: "count", As: "n"}}},
-		"busiest": {Kind: "order", Input: "c", Terms: []protocol.OrderTerm{
-			{Expr: *protocol.ScalarOf("cnt"), Desc: true},
-			{Expr: *protocol.Col("c", "id")},
-		}},
-		"out": {Kind: "project", Input: "busiest",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("c", "id")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"cnt": lirwire.Aggregate("mine", "", nil,
+			[]lirwire.AggTerm{{Fn: "count", As: "n"}}),
+		"busiest": lirwire.Order("c", []lirwire.OrderTerm{
+			{Expr: lirwire.Scalar("cnt"), Desc: ptrBool(true)},
+			{Expr: lirwire.Col("c", "id")},
+		}),
+		"out": lirwire.Project("busiest", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("c", "id")}}),
 	}, "out", "many")).Equals(`[{"id":"c1"},{"id":"c2"},{"id":"c3"},{"id":"c4"},{"id":"c5"}]`)
 }
 
@@ -475,28 +475,28 @@ func TestNestCrossingAsOrderTerm(t *testing.T) {
 func TestNestGrandparentCorrelation(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"just_c1": {Kind: "filter", Input: "c",
-			Predicate: protocol.Eq(protocol.Col("c", "id"), protocol.Lit("c1"))},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"mine_by_id": {Kind: "order", Input: "mine",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "id")}}},
-		"rv": {Kind: "scan", Table: "reviews", Scope: "rv"},
-		"my_reviews": {Kind: "filter", Input: "rv",
-			Predicate: protocol.Eq(protocol.Col("rv", "customer_id"), protocol.Col("c", "id"))},
-		"rv_cnt": {Kind: "aggregate", Input: "my_reviews",
-			Aggs: []protocol.AggTerm{{Fn: "count", As: "n"}}},
-		"o_shaped": {Kind: "project", Input: "mine_by_id", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("o", "id")},
-			{As: "my_reviews", Expr: *protocol.ScalarOf("rv_cnt")},
-		}},
-		"out": {Kind: "project", Input: "just_c1", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "orders", Expr: *protocol.ArrayOf("o_shaped")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"just_c1": lirwire.Filter("c",
+			lirwire.Binary("eq", lirwire.Col("c", "id"), lirwire.LitOf("c1"))),
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"mine_by_id": lirwire.Order("mine",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "id")}}),
+		"rv": lirwire.Scan("reviews", "rv"),
+		"my_reviews": lirwire.Filter("rv",
+			lirwire.Binary("eq", lirwire.Col("rv", "customer_id"), lirwire.Col("c", "id"))),
+		"rv_cnt": lirwire.Aggregate("my_reviews", "", nil,
+			[]lirwire.AggTerm{{Fn: "count", As: "n"}}),
+		"o_shaped": lirwire.Project("mine_by_id", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("o", "id")},
+			{As: "my_reviews", Expr: lirwire.Scalar("rv_cnt")},
+		}),
+		"out": lirwire.Project("just_c1", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "orders", Expr: lirwire.Array("o_shaped")},
+		}),
 	}, "out", "many")).Equals(`[
 		{"id":"c1","orders":[
 			{"id":"o1","my_reviews":2},
@@ -512,29 +512,29 @@ func TestNestGrandparentCorrelation(t *testing.T) {
 func TestNestDoubleNestedExists(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"p": {Kind: "scan", Table: "products", Scope: "p"},
-		"dead_prod": {Kind: "filter", Input: "p",
-			Predicate: protocol.AndAll([]*protocol.Expr{
-				protocol.Eq(protocol.Col("p", "id"), protocol.Col("i", "product_id")),
-				protocol.Col("p", "discontinued"),
-			})},
-		"i": {Kind: "scan", Table: "order_items", Scope: "i"},
-		"dead_lines": {Kind: "filter", Input: "i",
-			Predicate: protocol.AndAll([]*protocol.Expr{
-				protocol.Eq(protocol.Col("i", "order_id"), protocol.Col("o", "id")),
-				protocol.Exists("dead_prod"),
-			})},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"dead_orders": {Kind: "filter", Input: "o",
-			Predicate: protocol.AndAll([]*protocol.Expr{
-				protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id")),
-				protocol.Exists("dead_lines"),
-			})},
-		"hit": {Kind: "filter", Input: "c", Predicate: protocol.Exists("dead_orders")},
-		"out": {Kind: "project", Input: "hit",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("c", "id")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"p": lirwire.Scan("products", "p"),
+		"dead_prod": lirwire.Filter("p",
+			lirwire.AndAll([]lirwire.Expr{
+				lirwire.Binary("eq", lirwire.Col("p", "id"), lirwire.Col("i", "product_id")),
+				lirwire.Col("p", "discontinued"),
+			})),
+		"i": lirwire.Scan("order_items", "i"),
+		"dead_lines": lirwire.Filter("i",
+			lirwire.AndAll([]lirwire.Expr{
+				lirwire.Binary("eq", lirwire.Col("i", "order_id"), lirwire.Col("o", "id")),
+				lirwire.Exists("dead_prod"),
+			})),
+		"o": lirwire.Scan("orders", "o"),
+		"dead_orders": lirwire.Filter("o",
+			lirwire.AndAll([]lirwire.Expr{
+				lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id")),
+				lirwire.Exists("dead_lines"),
+			})),
+		"hit": lirwire.Filter("c", lirwire.Exists("dead_orders")),
+		"out": lirwire.Project("hit", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("c", "id")}}),
 	}, "out", "many")).Equals(`[{"id":"c3"}]`)
 }
 
@@ -544,26 +544,26 @@ func TestNestDoubleNestedExists(t *testing.T) {
 func TestNestGroupedAggArray(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"two": {Kind: "filter", Input: "c",
-			Predicate: protocol.Or(
-				protocol.Eq(protocol.Col("c", "id"), protocol.Lit("c1")),
-				protocol.Eq(protocol.Col("c", "id"), protocol.Lit("c2")))},
-		"two_by_id": {Kind: "order", Input: "two",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("c", "id")}}},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"stats": {Kind: "aggregate", Input: "mine", Scope: "st",
-			Groups: []protocol.GroupTerm{{Expr: *protocol.Col("o", "status")}},
-			Aggs:   []protocol.AggTerm{{Fn: "count", As: "n"}}},
-		"stats_ord": {Kind: "order", Input: "stats",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("st", "status")}}},
-		"out": {Kind: "project", Input: "two_by_id", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "by_status", Expr: *protocol.ArrayOf("stats_ord")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"two": lirwire.Filter("c",
+			lirwire.Binary("or",
+				lirwire.Binary("eq", lirwire.Col("c", "id"), lirwire.LitOf("c1")),
+				lirwire.Binary("eq", lirwire.Col("c", "id"), lirwire.LitOf("c2")))),
+		"two_by_id": lirwire.Order("two",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("c", "id")}}),
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"stats": lirwire.Aggregate("mine", "st",
+			[]lirwire.GroupTerm{{Expr: lirwire.Col("o", "status")}},
+			[]lirwire.AggTerm{{Fn: "count", As: "n"}}),
+		"stats_ord": lirwire.Order("stats",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("st", "status")}}),
+		"out": lirwire.Project("two_by_id", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "by_status", Expr: lirwire.Array("stats_ord")},
+		}),
 	}, "out", "many")).Equals(`[
 		{"id":"c1","by_status":[
 			{"status":"delivered","n":1},
@@ -581,19 +581,19 @@ func TestNestGroupedAggArray(t *testing.T) {
 func TestNestEmptyArrayRendersEmpty(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"just_c5": {Kind: "filter", Input: "c",
-			Predicate: protocol.Eq(protocol.Col("c", "id"), protocol.Lit("c5"))},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"mine_ids": {Kind: "project", Input: "mine",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("o", "id")}}},
-		"out": {Kind: "project", Input: "just_c5", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "orders", Expr: *protocol.ArrayOf("mine_ids")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"just_c5": lirwire.Filter("c",
+			lirwire.Binary("eq", lirwire.Col("c", "id"), lirwire.LitOf("c5"))),
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"mine_ids": lirwire.Project("mine", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("o", "id")}}),
+		"out": lirwire.Project("just_c5", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "orders", Expr: lirwire.Array("mine_ids")},
+		}),
 	}, "out", "many")).Equals(`[{"id":"c5","orders":[]}]`)
 }
 
@@ -601,18 +601,18 @@ func TestNestEmptyArrayRendersEmpty(t *testing.T) {
 func TestNestAbsentFirstRendersNull(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"just_c5": {Kind: "filter", Input: "c",
-			Predicate: protocol.Eq(protocol.Col("c", "id"), protocol.Lit("c5"))},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"newest": {Kind: "order", Input: "mine",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "placed_at"), Desc: true}}},
-		"out": {Kind: "project", Input: "just_c5", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "latest", Expr: *protocol.FirstOf("newest")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"just_c5": lirwire.Filter("c",
+			lirwire.Binary("eq", lirwire.Col("c", "id"), lirwire.LitOf("c5"))),
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"newest": lirwire.Order("mine",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "placed_at"), Desc: ptrBool(true)}}),
+		"out": lirwire.Project("just_c5", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "latest", Expr: lirwire.First("newest")},
+		}),
 	}, "out", "many")).Equals(`[{"id":"c5","latest":null}]`)
 }

@@ -9,20 +9,20 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Southclaws/rad/rad/protocol"
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
 )
 
 // qb is q plus a bindings section.
-func qb(nodes map[string]protocol.Node, bindings map[string]protocol.Binding, root, cardinality string) protocol.Query {
+func qb(nodes map[string]lirwire.Node, bindings map[string]lirwire.Binding, root, cardinality string) lirwire.Query {
 	for name, node := range nodes {
 		walkNode(nodes, name, &node)
 		nodes[name] = node
 	}
 	root = observableRoot(nodes, root, cardinality)
-	return protocol.Query{
+	return lirwire.Query{
 		Nodes:    nodes,
 		Bindings: bindings,
-		Root:     protocol.Root{Node: root, Cardinality: cardinality},
+		Root:     lirwire.Root{Node: root, Cardinality: cardinality},
 	}
 }
 
@@ -31,23 +31,23 @@ func qb(nodes map[string]protocol.Node, bindings map[string]protocol.Binding, ro
 func TestBindingCTESelfJoin(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(qb(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"per_customer": {Kind: "aggregate", Input: "o", Scope: "e",
-			Groups: []protocol.GroupTerm{{Expr: *protocol.Col("o", "customer_id")}},
-			Aggs:   []protocol.AggTerm{{Fn: "count", As: "n"}}},
-		"a": {Kind: "ref", Binding: "expensive", Scope: "a"},
-		"b": {Kind: "ref", Binding: "expensive", Scope: "b"},
-		"j": {Kind: "join", Left: "a", Right: "b", Join: "inner",
-			On: protocol.Eq(protocol.Col("a", "customer_id"), protocol.Col("b", "customer_id"))},
-		"sorted": {Kind: "order", Input: "j",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("a", "customer_id")}}},
-		"out": {Kind: "project", Input: "sorted", Fields: []protocol.Field{
-			{As: "customer", Expr: *protocol.Col("a", "customer_id")},
-			{As: "n1", Expr: *protocol.Col("a", "n")},
-			{As: "n2", Expr: *protocol.Col("b", "n")},
-		}},
-	}, map[string]protocol.Binding{
+	d.Query(qb(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"per_customer": lirwire.Aggregate("o", "e",
+			[]lirwire.GroupTerm{{Expr: lirwire.Col("o", "customer_id")}},
+			[]lirwire.AggTerm{{Fn: "count", As: "n"}}),
+		"a": lirwire.Ref("expensive", "a"),
+		"b": lirwire.Ref("expensive", "b"),
+		"j": lirwire.Join("a", "b", "inner",
+			lirwire.Binary("eq", lirwire.Col("a", "customer_id"), lirwire.Col("b", "customer_id"))),
+		"sorted": lirwire.Order("j",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("a", "customer_id")}}),
+		"out": lirwire.Project("sorted", "", nil, []lirwire.Field{
+			{As: "customer", Expr: lirwire.Col("a", "customer_id")},
+			{As: "n1", Expr: lirwire.Col("a", "n")},
+			{As: "n2", Expr: lirwire.Col("b", "n")},
+		}),
+	}, map[string]lirwire.Binding{
 		"expensive": {Node: "per_customer"},
 	}, "out", "many")).Equals(`[
 		{"customer":"c1","n1":3,"n2":3},
@@ -62,18 +62,18 @@ func TestBindingCTESelfJoin(t *testing.T) {
 func TestBindingDiagonalOverWire(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	r := d.Query(qb(map[string]protocol.Node{
-		"p":    {Kind: "scan", Table: "products", Scope: "p"},
-		"some": {Kind: "slice", Input: "p", Limit: new(int(2))},
-		"a":    {Kind: "ref", Binding: "pair", Scope: "a"},
-		"b":    {Kind: "ref", Binding: "pair", Scope: "b"},
-		"j": {Kind: "join", Left: "a", Right: "b", Join: "inner",
-			On: protocol.Eq(protocol.Col("a", "id"), protocol.Col("b", "id"))},
-		"out": {Kind: "project", Input: "j", Fields: []protocol.Field{
-			{As: "l", Expr: *protocol.Col("a", "id")},
-			{As: "r", Expr: *protocol.Col("b", "id")},
-		}},
-	}, map[string]protocol.Binding{
+	r := d.Query(qb(map[string]lirwire.Node{
+		"p":    lirwire.Scan("products", "p"),
+		"some": lirwire.Slice("p", 0, ptrInt(2)),
+		"a":    lirwire.Ref("pair", "a"),
+		"b":    lirwire.Ref("pair", "b"),
+		"j": lirwire.Join("a", "b", "inner",
+			lirwire.Binary("eq", lirwire.Col("a", "id"), lirwire.Col("b", "id"))),
+		"out": lirwire.Project("j", "", nil, []lirwire.Field{
+			{As: "l", Expr: lirwire.Col("a", "id")},
+			{As: "r", Expr: lirwire.Col("b", "id")},
+		}),
+	}, map[string]lirwire.Binding{
 		"pair": {Node: "some"},
 	}, "out", "many")).Len(2)
 	for _, rec := range r.Records {
@@ -87,15 +87,15 @@ func TestBindingDiagonalOverWire(t *testing.T) {
 func TestBindingChainOverWire(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(qb(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"open": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "status"), protocol.Lit("pending"))},
-		"r": {Kind: "ref", Binding: "pending", Scope: "r"},
-		"fold": {Kind: "aggregate", Input: "r",
-			Aggs: []protocol.AggTerm{{Fn: "count", As: "n"}}},
-		"root": {Kind: "ref", Binding: "stats", Scope: "s"},
-	}, map[string]protocol.Binding{
+	d.Query(qb(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"open": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "status"), lirwire.LitOf("pending"))),
+		"r": lirwire.Ref("pending", "r"),
+		"fold": lirwire.Aggregate("r", "",
+			nil, []lirwire.AggTerm{{Fn: "count", As: "n"}}),
+		"root": lirwire.Ref("stats", "s"),
+	}, map[string]lirwire.Binding{
 		"pending": {Node: "open"},
 		"stats":   {Node: "fold"},
 	}, "root", "exactly_one")).Equals(`[{"n":2}]`)
@@ -103,13 +103,15 @@ func TestBindingChainOverWire(t *testing.T) {
 
 // ── the forest preflight ────────────────────────────────────────────────────
 
+// A binding no ref observes denotes nothing — rejected by the binder, which
+// tracks which bindings a ref resolves.
 func TestBindingUnusedRejected(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(qb(map[string]protocol.Node{
-		"o":    {Kind: "scan", Table: "orders", Scope: "o"},
-		"dead": {Kind: "scan", Table: "products", Scope: "p"},
-	}, map[string]protocol.Binding{
+	d.Query(qb(map[string]lirwire.Node{
+		"o":    lirwire.Scan("orders", "o"),
+		"dead": lirwire.Scan("products", "p"),
+	}, map[string]lirwire.Binding{
 		"unused": {Node: "dead"},
 	}, "o", "many")).ExpectError(`binding "unused" is never referenced`)
 }
@@ -117,21 +119,21 @@ func TestBindingUnusedRejected(t *testing.T) {
 func TestBindingUnknownRejected(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"r": {Kind: "ref", Binding: "ghost", Scope: "r"},
-	}, "r", "many")).ExpectError(`references unknown binding "ghost"`)
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Ref("ghost", "r"),
+	}, "r", "many")).ExpectError(`unknown binding "ghost"`)
 }
 
 func TestBindingCycleRejected(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
 	// The binding's own tree references itself.
-	d.Query(qb(map[string]protocol.Node{
-		"self": {Kind: "ref", Binding: "loop", Scope: "s"},
-		"more": {Kind: "filter", Input: "self",
-			Predicate: protocol.Eq(protocol.Col("s", "id"), protocol.Lit("x"))},
-		"r": {Kind: "ref", Binding: "loop", Scope: "r"},
-	}, map[string]protocol.Binding{
+	d.Query(qb(map[string]lirwire.Node{
+		"self": lirwire.Ref("loop", "s"),
+		"more": lirwire.Filter("self",
+			lirwire.Binary("eq", lirwire.Col("s", "id"), lirwire.LitOf("x"))),
+		"r": lirwire.Ref("loop", "r"),
+	}, map[string]lirwire.Binding{
 		"loop": {Node: "more"},
 	}, "r", "many")).ExpectError(`binding "loop" is part of a binding cycle`)
 }
@@ -139,26 +141,31 @@ func TestBindingCycleRejected(t *testing.T) {
 func TestBindingRootAlsoConsumedRejected(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	// The binding's root node is also consumed by an ordinary edge.
-	d.Query(qb(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"f": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "status"), protocol.Lit("pending"))},
-		"r": {Kind: "ref", Binding: "b", Scope: "r"},
-	}, map[string]protocol.Binding{
+	// The binding's root node "o" is also consumed directly by an ordinary edge
+	// ("f"), not through a ref — so it is lowered twice under one scope. Sharing
+	// a relation is exactly what a binding+ref is for; consuming its root
+	// directly as well collides. ("r" keeps the binding referenced and every
+	// node reachable, isolating the collision from the unused/orphan rules.)
+	d.Query(qb(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"f": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "status"), lirwire.LitOf("pending"))),
+		"r": lirwire.Ref("b", "r"),
+		"j": lirwire.Join("f", "r", "inner", lirwire.LitOf(true)),
+	}, map[string]lirwire.Binding{
 		"b": {Node: "o"},
-	}, "f", "many")).ExpectError(`is also consumed by another node`)
+	}, "j", "many")).ExpectError(`duplicate scope`)
 }
 
 func TestBindingHiddenScopeOverWire(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(qb(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"r": {Kind: "ref", Binding: "all", Scope: "r"},
-		"leak": {Kind: "filter", Input: "r",
-			Predicate: protocol.Eq(protocol.Col("o", "status"), protocol.Lit("pending"))},
-	}, map[string]protocol.Binding{
+	d.Query(qb(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"r": lirwire.Ref("all", "r"),
+		"leak": lirwire.Filter("r",
+			lirwire.Binary("eq", lirwire.Col("o", "status"), lirwire.LitOf("pending"))),
+	}, map[string]lirwire.Binding{
 		"all": {Node: "o"},
 	}, "leak", "many")).ExpectError(`scope "o" exists but is not visible`)
 }
@@ -170,29 +177,29 @@ func TestBindingNestedDepthStaysLinear(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
 
-	nodes := map[string]protocol.Node{
-		"base": {Kind: "scan", Table: "orders", Scope: "s0"},
-		"ids": {Kind: "project", Input: "base",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("s0", "id")}}},
+	nodes := map[string]lirwire.Node{
+		"base": lirwire.Scan("orders", "s0"),
+		"ids": lirwire.Project("base", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("s0", "id")}}),
 	}
-	bindings := map[string]protocol.Binding{"b0": {Node: "ids"}}
+	bindings := map[string]lirwire.Binding{"b0": {Node: "ids"}}
 	prev := "b0"
 	for i := 1; i <= 6; i++ {
 		l, r := fmt.Sprintf("l%d", i), fmt.Sprintf("r%d", i)
 		j, p := fmt.Sprintf("j%d", i), fmt.Sprintf("p%d", i)
-		nodes[l] = protocol.Node{Kind: "ref", Binding: prev, Scope: l}
-		nodes[r] = protocol.Node{Kind: "ref", Binding: prev, Scope: r}
-		nodes[j] = protocol.Node{Kind: "join", Left: l, Right: r, Join: "inner",
-			On: protocol.Eq(protocol.Col(l, "id"), protocol.Col(r, "id"))}
-		nodes[p] = protocol.Node{Kind: "project", Input: j,
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col(l, "id")}}}
+		nodes[l] = lirwire.Ref(prev, l)
+		nodes[r] = lirwire.Ref(prev, r)
+		nodes[j] = lirwire.Join(l, r, "inner",
+			lirwire.Binary("eq", lirwire.Col(l, "id"), lirwire.Col(r, "id")))
+		nodes[p] = lirwire.Project(j, "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col(l, "id")}})
 		name := fmt.Sprintf("b%d", i)
-		bindings[name] = protocol.Binding{Node: p}
+		bindings[name] = lirwire.Binding{Node: p}
 		prev = name
 	}
-	nodes["top"] = protocol.Node{Kind: "ref", Binding: prev, Scope: "top"}
-	nodes["fold"] = protocol.Node{Kind: "aggregate", Input: "top",
-		Aggs: []protocol.AggTerm{{Fn: "count", As: "n"}}}
+	nodes["top"] = lirwire.Ref(prev, "top")
+	nodes["fold"] = lirwire.Aggregate("top", "",
+		nil, []lirwire.AggTerm{{Fn: "count", As: "n"}})
 
 	// Each self-join on the full PK keeps exactly the 7 orders.
 	d.Query(qb(nodes, bindings, "fold", "exactly_one")).Equals(`[{"n":7}]`)
@@ -203,13 +210,13 @@ func TestBindingNestedDepthStaysLinear(t *testing.T) {
 func TestBindingDuplicateOutputRejected(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(qb(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"j": {Kind: "join", Left: "o", Right: "c", Join: "inner",
-			On: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"r": {Kind: "ref", Binding: "wide", Scope: "r"},
-	}, map[string]protocol.Binding{
+	d.Query(qb(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"c": lirwire.Scan("customers", "c"),
+		"j": lirwire.Join("o", "c", "inner",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"r": lirwire.Ref("wide", "r"),
+	}, map[string]lirwire.Binding{
 		"wide": {Node: "j"},
 	}, "r", "many")).ExpectError(`binding "wide" output has duplicate column "id"`)
 }
@@ -258,15 +265,15 @@ func TestBindingMalformedValueNamed(t *testing.T) {
 func TestBindingAlias(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(qb(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"open": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "status"), protocol.Lit("pending"))},
-		"alias_root": {Kind: "ref", Binding: "base", Scope: "ar"},
-		"use":        {Kind: "ref", Binding: "alias", Scope: "u"},
-		"fold": {Kind: "aggregate", Input: "use",
-			Aggs: []protocol.AggTerm{{Fn: "count", As: "n"}}},
-	}, map[string]protocol.Binding{
+	d.Query(qb(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"open": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "status"), lirwire.LitOf("pending"))),
+		"alias_root": lirwire.Ref("base", "ar"),
+		"use":        lirwire.Ref("alias", "u"),
+		"fold": lirwire.Aggregate("use", "",
+			nil, []lirwire.AggTerm{{Fn: "count", As: "n"}}),
+	}, map[string]lirwire.Binding{
 		"base":  {Node: "open"},
 		"alias": {Node: "alias_root"},
 	}, "fold", "exactly_one")).Equals(`[{"n":2}]`)
@@ -276,13 +283,13 @@ func TestBindingAlias(t *testing.T) {
 func TestBindingDuplicateRefScopeRejected(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(qb(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"x": {Kind: "ref", Binding: "b", Scope: "same"},
-		"y": {Kind: "ref", Binding: "b", Scope: "same"},
-		"j": {Kind: "join", Left: "x", Right: "y", Join: "inner",
-			On: protocol.Eq(protocol.Col("same", "id"), protocol.Col("same", "id"))},
-	}, map[string]protocol.Binding{
+	d.Query(qb(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"x": lirwire.Ref("b", "same"),
+		"y": lirwire.Ref("b", "same"),
+		"j": lirwire.Join("x", "y", "inner",
+			lirwire.Binary("eq", lirwire.Col("same", "id"), lirwire.Col("same", "id"))),
+	}, map[string]lirwire.Binding{
 		"b": {Node: "o"},
 	}, "j", "many")).ExpectError(`duplicate scope "same"`)
 }

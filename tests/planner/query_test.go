@@ -1,67 +1,96 @@
 package planner
 
 import (
+	"encoding/json"
 	"strconv"
 
-	"github.com/Southclaws/rad/rad/protocol"
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
 )
+
+// ── shared test helpers ──────────────────────────────────────────────────────
+
+// relBytes marshals a wire query into a statement's opaque relation payload.
+func relBytes(q lirwire.Query) []byte { b, _ := json.Marshal(q); return b }
+
+// mustValue formats a Go scalar as a raw wire Value, ignoring the (impossible
+// for JSON-encodable scalars) error.
+func mustValue(v any) lirwire.Value { val, _ := lirwire.SetAny(v); return val }
+
+func ptrBool(b bool) *bool                 { return &b }
+func ptrStr(s string) *string              { return &s }
+func ptrInt(n int) *int                    { return &n }
+func ptrExpr(e lirwire.Expr) *lirwire.Expr { return &e }
 
 // q builds an observable test query. Collection fixtures choose their
 // semantic order here, by the first scalar output of a projection or
 // aggregate, and by id for a base relation. Tests that exercise an invalid
-// ordering shape construct protocol.Query directly instead.
-func q(nodes map[string]protocol.Node, root, cardinality string) protocol.Query {
+// ordering shape construct lirwire.Query directly instead.
+func q(nodes map[string]lirwire.Node, root, cardinality string) lirwire.Query {
 	for name, node := range nodes {
 		walkNode(nodes, name, &node)
 		nodes[name] = node
 	}
 	root = observableRoot(nodes, root, cardinality)
-	return protocol.Query{Nodes: nodes, Root: protocol.Root{Node: root, Cardinality: cardinality}}
+	return lirwire.Query{Nodes: nodes, Root: lirwire.Root{Node: root, Cardinality: cardinality}}
 }
 
-func observableRoot(nodes map[string]protocol.Node, root, cardinality string) string {
+func observableRoot(nodes map[string]lirwire.Node, root, cardinality string) string {
 	if cardinality == "many" {
 		return ordered(nodes, root)
 	}
 	return root
 }
 
-func walkNode(nodes map[string]protocol.Node, name string, node *protocol.Node) {
-	for i := range node.Fields {
-		walkExpr(nodes, &node.Fields[i].Expr)
+func walkNode(nodes map[string]lirwire.Node, name string, node *lirwire.Node) {
+	switch n := node.NodeUnion.(type) {
+	case *lirwire.ProjectNode:
+		for i := range n.Fields {
+			walkExpr(nodes, &n.Fields[i].Expr)
+		}
+	case *lirwire.AggregateNode:
+		for i := range n.Groups {
+			walkExpr(nodes, &n.Groups[i].Expr)
+		}
+		for i := range n.Aggs {
+			walkExpr(nodes, n.Aggs[i].Arg)
+		}
+	case *lirwire.OrderNode:
+		for i := range n.Terms {
+			walkExpr(nodes, &n.Terms[i].Expr)
+		}
+	case *lirwire.JoinNode:
+		walkExpr(nodes, &n.On)
+	case *lirwire.FilterNode:
+		walkExpr(nodes, &n.Predicate)
 	}
-	for i := range node.Groups {
-		walkExpr(nodes, &node.Groups[i].Expr)
-	}
-	for i := range node.Aggs {
-		walkExpr(nodes, node.Aggs[i].Arg)
-	}
-	for i := range node.Terms {
-		walkExpr(nodes, &node.Terms[i].Expr)
-	}
-	walkExpr(nodes, node.On)
-	walkExpr(nodes, node.Predicate)
 }
 
-func walkExpr(nodes map[string]protocol.Node, expr *protocol.Expr) {
-	if expr == nil {
+func walkExpr(nodes map[string]lirwire.Node, expr *lirwire.Expr) {
+	if expr == nil || expr.ExprUnion == nil {
 		return
 	}
-	if expr.Kind == "array" || expr.Kind == "first" {
-		expr.Node = ordered(nodes, expr.Node)
+	switch e := expr.ExprUnion.(type) {
+	case *lirwire.CrossingExprArray:
+		e.Node = ordered(nodes, e.Node)
+	case *lirwire.CrossingExprFirst:
+		e.Node = ordered(nodes, e.Node)
+	case *lirwire.UnaryExpr:
+		walkExpr(nodes, &e.Expr)
+	case *lirwire.BinaryExpr:
+		walkExpr(nodes, &e.Left)
+		walkExpr(nodes, &e.Right)
+	case *lirwire.CastExpr:
+		walkExpr(nodes, &e.Expr)
 	}
-	walkExpr(nodes, expr.Expr)
-	walkExpr(nodes, expr.Left)
-	walkExpr(nodes, expr.Right)
 }
 
-func ordered(nodes map[string]protocol.Node, root string) string {
+func ordered(nodes map[string]lirwire.Node, root string) string {
 	node, exists := nodes[root]
 	if !exists || orderedPath(nodes, root) {
 		return root
 	}
-	if node.Kind == "slice" {
-		node.Input = ordered(nodes, node.Input)
+	if s, ok := node.NodeUnion.(*lirwire.SliceNode); ok {
+		s.Input = ordered(nodes, s.Input)
 		nodes[root] = node
 		return root
 	}
@@ -74,62 +103,73 @@ func ordered(nodes map[string]protocol.Node, root string) string {
 		}
 		name = root + "_ordered_" + strconv.Itoa(i)
 	}
-	nodes[name] = protocol.Node{
-		Kind:  "order",
-		Input: root,
-		Terms: []protocol.OrderTerm{{Expr: *protocol.Col(scope, column)}},
-	}
+	nodes[name] = lirwire.Order(root, []lirwire.OrderTerm{{Expr: lirwire.Col(scope, column)}})
 	return name
 }
 
-func orderedPath(nodes map[string]protocol.Node, root string) bool {
+func orderedPath(nodes map[string]lirwire.Node, root string) bool {
 	node, exists := nodes[root]
 	if !exists {
 		return false
 	}
-	switch node.Kind {
-	case "order":
+	switch n := node.NodeUnion.(type) {
+	case *lirwire.OrderNode:
 		return true
-	case "filter", "project", "slice":
-		return orderedPath(nodes, node.Input)
+	case *lirwire.FilterNode:
+		return orderedPath(nodes, n.Input)
+	case *lirwire.ProjectNode:
+		return orderedPath(nodes, n.Input)
+	case *lirwire.SliceNode:
+		return orderedPath(nodes, n.Input)
 	}
 	return false
 }
 
-func orderKey(nodes map[string]protocol.Node, root string, node protocol.Node) (string, string) {
-	switch node.Kind {
-	case "project":
-		if node.Scope == "" {
-			node.Scope = root + "_result"
-			nodes[root] = node
+func orderKey(nodes map[string]lirwire.Node, root string, node lirwire.Node) (string, string) {
+	switch n := node.NodeUnion.(type) {
+	case *lirwire.ProjectNode:
+		scope := derefStr(n.Scope)
+		if scope == "" {
+			scope = root + "_result"
+			n.Scope = &scope
 		}
-		if len(node.Spread) > 0 {
-			return node.Scope, "id"
+		if len(n.Spread) > 0 {
+			return scope, "id"
 		}
-		for _, field := range node.Fields {
-			if field.Expr.Kind != "array" && field.Expr.Kind != "first" {
-				return node.Scope, field.As
+		for _, field := range n.Fields {
+			switch field.Expr.ExprUnion.(type) {
+			case *lirwire.CrossingExprArray, *lirwire.CrossingExprFirst:
+				// a nested value is not a natural scalar order key
+			default:
+				return scope, field.As
 			}
 		}
-		return node.Scope, "id"
-	case "aggregate":
-		if node.Scope == "" {
-			node.Scope = root + "_result"
-			nodes[root] = node
+		return scope, "id"
+	case *lirwire.AggregateNode:
+		scope := derefStr(n.Scope)
+		if scope == "" {
+			scope = root + "_result"
+			n.Scope = &scope
 		}
-		if len(node.Groups) > 0 {
-			name := node.Groups[0].As
+		if len(n.Groups) > 0 {
+			name := derefStr(n.Groups[0].As)
 			if name == "" {
-				name = node.Groups[0].Expr.Column
+				if col, ok := n.Groups[0].Expr.ExprUnion.(*lirwire.ColumnExpr); ok {
+					name = col.Column
+				}
 			}
-			return node.Scope, name
+			return scope, name
 		}
-		return node.Scope, node.Aggs[0].As
-	case "scan", "ref":
-		return node.Scope, "id"
-	case "rows":
-		return node.Scope, node.Columns[0].Name
-	case "filter", "join":
+		return scope, n.Aggs[0].As
+	case *lirwire.ScanNode:
+		return n.Scope, "id"
+	case *lirwire.RefNode:
+		return n.Scope, "id"
+	case *lirwire.RowsNode:
+		return n.Scope, n.Columns[0].Name
+	case *lirwire.FilterNode:
+		return sourceKey(nodes, root)
+	case *lirwire.JoinNode:
 		return sourceKey(nodes, root)
 	}
 	return sourceKey(nodes, root)
@@ -137,17 +177,33 @@ func orderKey(nodes map[string]protocol.Node, root string, node protocol.Node) (
 
 // sourceKey walks to the underlying source and picks its natural order key:
 // id for tables and refs, the first declared column for a constant relation.
-func sourceKey(nodes map[string]protocol.Node, root string) (string, string) {
-	node := nodes[root]
-	switch node.Kind {
-	case "scan", "ref", "project", "aggregate":
-		return node.Scope, "id"
-	case "rows":
-		return node.Scope, node.Columns[0].Name
-	case "filter", "order", "slice":
-		return sourceKey(nodes, node.Input)
-	case "join":
-		return sourceKey(nodes, node.Left)
+func sourceKey(nodes map[string]lirwire.Node, root string) (string, string) {
+	switch n := nodes[root].NodeUnion.(type) {
+	case *lirwire.ScanNode:
+		return n.Scope, "id"
+	case *lirwire.RefNode:
+		return n.Scope, "id"
+	case *lirwire.ProjectNode:
+		return derefStr(n.Scope), "id"
+	case *lirwire.AggregateNode:
+		return derefStr(n.Scope), "id"
+	case *lirwire.RowsNode:
+		return n.Scope, n.Columns[0].Name
+	case *lirwire.FilterNode:
+		return sourceKey(nodes, n.Input)
+	case *lirwire.OrderNode:
+		return sourceKey(nodes, n.Input)
+	case *lirwire.SliceNode:
+		return sourceKey(nodes, n.Input)
+	case *lirwire.JoinNode:
+		return sourceKey(nodes, n.Left)
 	}
 	return "", "id"
+}
+
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

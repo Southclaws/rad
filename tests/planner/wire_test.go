@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Southclaws/rad/rad/protocol"
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
 	"github.com/Southclaws/rad/tests/harness"
 )
 
@@ -150,10 +150,10 @@ func TestWireRootMustReferenceANode(t *testing.T) {
 func TestWireScalarRootIsNakedValue(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"fold": {Kind: "aggregate", Input: "o",
-			Aggs: []protocol.AggTerm{{Fn: "count", As: "n"}}},
+	d.Query(q(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"fold": lirwire.Aggregate("o", "", nil,
+			[]lirwire.AggTerm{{Fn: "count", As: "n"}}),
 	}, "fold", "scalar")).EqualsDatum(`7`)
 }
 
@@ -161,35 +161,35 @@ func TestWireScalarRootNull(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
 	// max over the empty set is NULL — the scalar root carries it as null.
-	d.Query(q(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"none": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "status"), protocol.Lit("ghost"))},
-		"fold": {Kind: "aggregate", Input: "none",
-			Aggs: []protocol.AggTerm{{Fn: "max", Arg: protocol.Col("o", "placed_at"), As: "m"}}},
+	d.Query(q(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"none": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "status"), lirwire.LitOf("ghost"))),
+		"fold": lirwire.Aggregate("none", "", nil,
+			[]lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("o", "placed_at")), As: "m"}}),
 	}, "fold", "scalar")).EqualsDatum(`null`)
 }
 
 func TestWireFirstRootIsObjectOrNull(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	newest := map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Lit("c4"))},
-		"latest": {Kind: "order", Input: "mine",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "placed_at"), Desc: true}}},
-		"out": {Kind: "project", Input: "latest",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("o", "id")}}},
+	newest := map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.LitOf("c4"))),
+		"latest": lirwire.Order("mine",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "placed_at"), Desc: ptrBool(true)}}),
+		"out": lirwire.Project("latest", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("o", "id")}}),
 	}
 	d.Query(q(newest, "out", "first")).EqualsDatum(`{"id":"o6"}`)
 
-	none := map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Lit("c5"))},
-		"latest": {Kind: "order", Input: "mine",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "placed_at"), Desc: true}}},
+	none := map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.LitOf("c5"))),
+		"latest": lirwire.Order("mine",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "placed_at"), Desc: ptrBool(true)}}),
 	}
 	d.Query(q(none, "latest", "first")).EqualsDatum(`null`)
 }
@@ -203,14 +203,14 @@ func TestWireInt64PrecisionRoundTrip(t *testing.T) {
 	d.Insert("customers", harness.Row{
 		"id": "c9", "name": "Max", "email": "max@shop.io", "tier": "gold", "created_at": big,
 	})
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"exact": {Kind: "filter", Input: "c",
-			Predicate: protocol.Eq(protocol.Col("c", "created_at"), protocol.Lit(big))},
-		"out": {Kind: "project", Input: "exact", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "at", Expr: *protocol.Col("c", "created_at")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"exact": lirwire.Filter("c",
+			lirwire.Binary("eq", lirwire.Col("c", "created_at"), lirwire.LitOf(big))),
+		"out": lirwire.Project("exact", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "at", Expr: lirwire.Col("c", "created_at")},
+		}),
 	}, "out", "many")).Equals(`[{"id":"c9","at":9007199254740993}]`)
 }
 
@@ -218,19 +218,19 @@ func TestWireLongConjunction(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
 	// A 60-term and-chain: the shape a dynamic filter UI produces.
-	preds := make([]*protocol.Expr, 0, 60)
+	preds := make([]lirwire.Expr, 0, 60)
 	for range 30 {
 		preds = append(preds,
-			protocol.Gte(protocol.Col("o", "placed_at"), protocol.Lit(1000)),
-			protocol.Lte(protocol.Col("o", "placed_at"), protocol.Lit(3500)),
+			lirwire.Binary("gte", lirwire.Col("o", "placed_at"), lirwire.LitOf(1000)),
+			lirwire.Binary("lte", lirwire.Col("o", "placed_at"), lirwire.LitOf(3500)),
 		)
 	}
-	preds = append(preds, protocol.Eq(protocol.Col("o", "status"), protocol.Lit("shipped")))
-	d.Query(q(map[string]protocol.Node{
-		"o":    {Kind: "scan", Table: "orders", Scope: "o"},
-		"long": {Kind: "filter", Input: "o", Predicate: protocol.AndAll(preds)},
-		"out": {Kind: "project", Input: "long",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("o", "id")}}},
+	preds = append(preds, lirwire.Binary("eq", lirwire.Col("o", "status"), lirwire.LitOf("shipped")))
+	d.Query(q(map[string]lirwire.Node{
+		"o":    lirwire.Scan("orders", "o"),
+		"long": lirwire.Filter("o", lirwire.AndAll(preds)),
+		"out": lirwire.Project("long", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("o", "id")}}),
 	}, "out", "many")).Equals(`[{"id":"o2"}]`)
 }
 
@@ -239,17 +239,17 @@ func TestWireDeepNodeChain(t *testing.T) {
 	d := shop(t)
 	// A 60-node filter tower — depth alone must not break decode, preflight,
 	// binding, or planning.
-	nodes := map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
+	nodes := map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
 	}
 	prev := "o"
 	for i := range 60 {
 		id := "f" + strconv.Itoa(i)
-		nodes[id] = protocol.Node{Kind: "filter", Input: prev,
-			Predicate: protocol.Gte(protocol.Col("o", "placed_at"), protocol.Lit(0))}
+		nodes[id] = lirwire.Filter(prev,
+			lirwire.Binary("gte", lirwire.Col("o", "placed_at"), lirwire.LitOf(0)))
 		prev = id
 	}
-	nodes["out"] = protocol.Node{Kind: "project", Input: prev,
-		Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("o", "id")}}}
+	nodes["out"] = lirwire.Project(prev, "", nil,
+		[]lirwire.Field{{As: "id", Expr: lirwire.Col("o", "id")}})
 	d.Query(q(nodes, "out", "many")).Len(7)
 }

@@ -4,16 +4,20 @@ package radclient
 // A read is a one-statement query program; a single-row write is a
 // one-statement mutation whose input is a one-row `rows` relation. Building
 // those typed relations needs the target table's column types, which the
-// client fetches once from the catalog and caches.
+// client fetches once from the catalog and caches. Relations are built with
+// the lirwire builders and carried in a statement as opaque marshalled bytes.
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
 
 	"github.com/Southclaws/rad/rad/protocol"
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
+	"github.com/Southclaws/rad/rad/protocol/pirwire"
 )
 
 // schemaCache lazily holds the database's table definitions, so mutations can
@@ -47,12 +51,12 @@ func (c *Client) tableInfo(ctx context.Context, table string) (protocol.TableInf
 }
 
 // oneRowRelation builds a one-row `rows` relation over the given columns,
-// typed from the catalog. Columns absent from cols are simply not in the
+// typed from the catalog. Columns absent from cells are simply not in the
 // relation — a create then applies their defaults.
-func (c *Client) oneRowRelation(ctx context.Context, table string, cells map[string]any) (protocol.Query, error) {
+func (c *Client) oneRowRelation(ctx context.Context, table string, cells map[string]any) (lirwire.Query, error) {
 	info, err := c.tableInfo(ctx, table)
 	if err != nil {
-		return protocol.Query{}, err
+		return lirwire.Query{}, err
 	}
 	types := make(map[string]protocol.ColumnInfo, len(info.Columns))
 	for _, col := range info.Columns {
@@ -64,31 +68,44 @@ func (c *Client) oneRowRelation(ctx context.Context, table string, cells map[str
 	}
 	sortStrings(names)
 
-	cols := make([]protocol.RowsColumn, len(names))
-	row := make([]any, len(names))
+	cols := make([]lirwire.RowsColumn, len(names))
+	row := make([]lirwire.Value, len(names))
 	for i, name := range names {
 		col, ok := types[name]
 		if !ok {
-			return protocol.Query{}, fmt.Errorf("rad: table %q has no column %q", table, name)
+			return lirwire.Query{}, fmt.Errorf("rad: table %q has no column %q", table, name)
 		}
-		cols[i] = protocol.RowsColumn{Name: name, Type: col.Type, Nullable: col.Nullable}
-		row[i] = cells[name]
+		cols[i] = lirwire.RowsColumn{Name: name, Type: col.Type, Nullable: nullableFlag(col.Nullable)}
+		v, err := lirwire.SetAny(cells[name])
+		if err != nil {
+			return lirwire.Query{}, fmt.Errorf("rad: column %q: %w", name, err)
+		}
+		row[i] = v
 	}
-	return protocol.Query{
-		Nodes: map[string]protocol.Node{
-			"r": {Kind: "rows", Scope: "r", Columns: cols, Rows: [][]any{row}},
-		},
-		Root: protocol.Root{Node: "r", Cardinality: "many"},
+	return lirwire.Query{
+		Nodes: map[string]lirwire.Node{"r": lirwire.Rows("r", cols, [][]lirwire.Value{row})},
+		Root:  lirwire.Root{Node: "r", Cardinality: "many"},
 	}, nil
 }
 
 // programDatum runs a one-statement program and returns its result datum.
-func (c *Client) programDatum(ctx context.Context, stmt protocol.Statement) (any, error) {
-	res, err := c.Execute(ctx, protocol.Program{Statements: []protocol.Statement{stmt}})
+func (c *Client) programDatum(ctx context.Context, stmt pirwire.Statement) (any, error) {
+	res, err := c.Execute(ctx, pirwire.Prog("", stmt))
 	if err != nil {
 		return nil, err
 	}
 	return res.Result, nil
+}
+
+// relationBytes marshals a wire query into a statement's opaque relation
+// payload. It fails only if a literal carries invalid JSON, which the lirwire
+// builders never produce.
+func relationBytes(q lirwire.Query) (pirwire.Relation, error) {
+	raw, err := json.Marshal(q)
+	if err != nil {
+		return nil, fmt.Errorf("rad: encode relation: %w", err)
+	}
+	return raw, nil
 }
 
 // firstRecord views a mutation result datum (an array of affected rows) as at
@@ -110,29 +127,42 @@ func firstRecord(d any) (protocol.Record, bool) {
 
 // pointRead builds the point-read query used by Get: scan, filter on the key
 // columns, take the first row.
-func pointRead(table string, key map[string]any) protocol.Query {
-	preds := make([]*protocol.Expr, 0, len(key))
-	for col, val := range key {
-		preds = append(preds, protocol.Eq(protocol.Col("s", col), protocol.Lit(val)))
+func pointRead(table string, key map[string]any) (lirwire.Query, error) {
+	pred, err := keyPredicate("s", key)
+	if err != nil {
+		return lirwire.Query{}, err
 	}
-	return protocol.Query{
-		Nodes: map[string]protocol.Node{
-			"s":     {Kind: "scan", Table: table, Scope: "s"},
-			"keyed": {Kind: "filter", Input: "s", Predicate: protocol.AndAll(preds)},
-			"one":   {Kind: "slice", Input: "keyed", Limit: intPtr(1)},
+	return lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"s":     lirwire.Scan(table, "s"),
+			"keyed": lirwire.Filter("s", pred),
+			"one":   lirwire.Slice("keyed", 0, intPtr(1)),
 		},
-		Root: protocol.Root{Node: "one", Cardinality: "first"},
-	}
+		Root: lirwire.Root{Node: "one", Cardinality: "first"},
+	}, nil
 }
 
 func intPtr(n int) *int { return &n }
 
-// execQueryDatum runs a query as a one-statement program.
-func (c *Client) execQueryDatum(ctx context.Context, q protocol.Query) (any, error) {
-	return c.programDatum(ctx, protocol.Read("q", q))
+// nullableFlag renders a column's nullability as the wire's optional flag:
+// present only when true (the schema omits a false flag).
+func nullableFlag(b bool) *bool {
+	if b {
+		return &b
+	}
+	return nil
 }
 
-func (c *Client) execQuery(ctx context.Context, q protocol.Query) ([]protocol.Record, error) {
+// execQueryDatum runs a query as a one-statement program.
+func (c *Client) execQueryDatum(ctx context.Context, q lirwire.Query) (any, error) {
+	rel, err := relationBytes(q)
+	if err != nil {
+		return nil, err
+	}
+	return c.programDatum(ctx, pirwire.Query("q", rel))
+}
+
+func (c *Client) execQuery(ctx context.Context, q lirwire.Query) ([]protocol.Record, error) {
 	d, err := c.execQueryDatum(ctx, q)
 	if err != nil {
 		return nil, err
@@ -142,7 +172,15 @@ func (c *Client) execQuery(ctx context.Context, q protocol.Query) ([]protocol.Re
 
 // execGet is a point read as a first-cardinality query program.
 func (c *Client) execGet(ctx context.Context, table string, key map[string]any) (protocol.Record, bool, error) {
-	d, err := c.programDatum(ctx, protocol.Read("get", pointRead(table, key)))
+	q, err := pointRead(table, key)
+	if err != nil {
+		return nil, false, err
+	}
+	rel, err := relationBytes(q)
+	if err != nil {
+		return nil, false, err
+	}
+	d, err := c.programDatum(ctx, pirwire.Query("get", rel))
 	if err != nil {
 		return nil, false, err
 	}
@@ -162,7 +200,11 @@ func (c *Client) execCreate(ctx context.Context, table string, values map[string
 	if err != nil {
 		return nil, err
 	}
-	d, err := c.programDatum(ctx, protocol.Create("create", table, rel))
+	raw, err := relationBytes(rel)
+	if err != nil {
+		return nil, err
+	}
+	d, err := c.programDatum(ctx, pirwire.Create("create", table, raw))
 	if err != nil {
 		return nil, err
 	}
@@ -185,15 +227,19 @@ func (c *Client) execUpdate(ctx context.Context, table string, key, set map[stri
 		types[col.Name] = col
 	}
 
-	var cols []protocol.RowsColumn
-	var row []any
+	var cols []lirwire.RowsColumn
+	var row []lirwire.Value
 	add := func(name string, val any) error {
 		col, ok := types[name]
 		if !ok {
 			return fmt.Errorf("rad: table %q has no column %q", table, name)
 		}
-		cols = append(cols, protocol.RowsColumn{Name: name, Type: col.Type, Nullable: col.Nullable})
-		row = append(row, val)
+		v, err := lirwire.SetAny(val)
+		if err != nil {
+			return fmt.Errorf("rad: column %q: %w", name, err)
+		}
+		cols = append(cols, lirwire.RowsColumn{Name: name, Type: col.Type, Nullable: nullableFlag(col.Nullable)})
+		row = append(row, v)
 		return nil
 	}
 	for k, v := range key {
@@ -212,13 +258,15 @@ func (c *Client) execUpdate(ctx context.Context, table string, key, set map[stri
 		}
 	}
 
-	rel := protocol.Query{
-		Nodes: map[string]protocol.Node{
-			"r": {Kind: "rows", Scope: "r", Columns: cols, Rows: [][]any{row}},
-		},
-		Root: protocol.Root{Node: "r", Cardinality: "many"},
+	rel := lirwire.Query{
+		Nodes: map[string]lirwire.Node{"r": lirwire.Rows("r", cols, [][]lirwire.Value{row})},
+		Root:  lirwire.Root{Node: "r", Cardinality: "many"},
 	}
-	d, err := c.programDatum(ctx, protocol.Update("update", table, rel))
+	raw, err := relationBytes(rel)
+	if err != nil {
+		return nil, false, err
+	}
+	d, err := c.programDatum(ctx, pirwire.Update("update", table, raw))
 	if err != nil {
 		if isTargetNotFound(err) {
 			return nil, false, nil
@@ -238,31 +286,44 @@ func isTargetNotFound(err error) bool {
 
 // execDelete identifies rows the same way, projecting the primary key.
 func (c *Client) execDelete(ctx context.Context, table string, key map[string]any) (bool, error) {
-	fields := make([]protocol.Field, 0, len(key))
+	pred, err := keyPredicate("s", key)
+	if err != nil {
+		return false, err
+	}
+	fields := make([]lirwire.Field, 0, len(key))
 	for col := range key {
-		fields = append(fields, protocol.Field{As: col, Expr: *protocol.Col("s", col)})
+		fields = append(fields, lirwire.Field{As: col, Expr: lirwire.Col("s", col)})
 	}
-	rel := protocol.Query{
-		Nodes: map[string]protocol.Node{
-			"s":     {Kind: "scan", Table: table, Scope: "s"},
-			"keyed": {Kind: "filter", Input: "s", Predicate: keyPredicate(key)},
-			"p":     {Kind: "project", Input: "keyed", Fields: fields},
+	rel := lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"s":     lirwire.Scan(table, "s"),
+			"keyed": lirwire.Filter("s", pred),
+			"p":     lirwire.Project("keyed", "", nil, fields),
 		},
-		Root: protocol.Root{Node: "p", Cardinality: "many"},
+		Root: lirwire.Root{Node: "p", Cardinality: "many"},
 	}
-	res, err := c.Execute(ctx, protocol.Program{Statements: []protocol.Statement{protocol.Delete("delete", table, rel)}})
+	raw, err := relationBytes(rel)
+	if err != nil {
+		return false, err
+	}
+	res, err := c.Execute(ctx, pirwire.Prog("", pirwire.Delete("delete", table, raw)))
 	if err != nil {
 		return false, err
 	}
 	return len(res.Statements) == 1 && res.Statements[0].Affected > 0, nil
 }
 
-func keyPredicate(key map[string]any) *protocol.Expr {
-	preds := make([]*protocol.Expr, 0, len(key))
+// keyPredicate ANDs an equality per key column against the given scope.
+func keyPredicate(scope string, key map[string]any) (lirwire.Expr, error) {
+	preds := make([]lirwire.Expr, 0, len(key))
 	for col, val := range key {
-		preds = append(preds, protocol.Eq(protocol.Col("s", col), protocol.Lit(val)))
+		v, err := lirwire.SetAny(val)
+		if err != nil {
+			return lirwire.Expr{}, fmt.Errorf("rad: key column %q: %w", col, err)
+		}
+		preds = append(preds, lirwire.Binary("eq", lirwire.Col(scope, col), lirwire.Lit(v)))
 	}
-	return protocol.AndAll(preds)
+	return lirwire.AndAll(preds), nil
 }
 
 func sortStrings(s []string) {

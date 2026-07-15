@@ -4,12 +4,12 @@
 // dynamic access.
 //
 //	c, err := radclient.Dial("rad://localhost")
-//	recs, err := c.Query(ctx, usersQuery) // a protocol.Query graph
+//	recs, err := c.Query(ctx, usersQuery) // a lirwire.Query graph
 //
 // The generated layer speaks the OpenAPI contract on the wire; this runtime
-// keeps the ergonomic protocol.* vocabulary and converts at the boundary, so
-// callers never touch the generated Opt* wrappers or response unions. Values
-// decode with json.Number so int64 columns keep full precision.
+// builds LIR/PIR through the lirwire and pirwire builders and converts at the
+// boundary, so callers never touch the generated Opt* wrappers or response
+// unions. Values decode with json.Number so int64 columns keep full precision.
 package radclient
 
 import (
@@ -24,6 +24,7 @@ import (
 	"github.com/Southclaws/rad/rad/api"
 	"github.com/Southclaws/rad/rad/api/oas"
 	"github.com/Southclaws/rad/rad/protocol"
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
 )
 
 // Client talks to one Rad server. It is safe for concurrent use.
@@ -145,8 +146,8 @@ func (c *Client) Migrate(ctx context.Context, schemaSrc string) ([]string, error
 // the Client (autocommit). Multi-write atomicity is expressed by submitting a
 // multi-statement program directly, not by a held session.
 type View interface {
-	Query(ctx context.Context, q protocol.Query) ([]protocol.Record, error)
-	QueryDatum(ctx context.Context, q protocol.Query) (any, error)
+	Query(ctx context.Context, q lirwire.Query) ([]protocol.Record, error)
+	QueryDatum(ctx context.Context, q lirwire.Query) (any, error)
 	Get(ctx context.Context, table string, key map[string]any) (protocol.Record, bool, error)
 	Create(ctx context.Context, table string, values map[string]any) (protocol.Record, error)
 	Update(ctx context.Context, table string, key, set map[string]any, clear []string) (protocol.Record, bool, error)
@@ -158,14 +159,14 @@ var _ View = (*Client)(nil)
 // Query runs a query and returns its result as records: an array result
 // verbatim, an object result (first / exactly_one roots) as one record, a
 // null result as none. A scalar root has no record shape — use QueryDatum.
-func (c *Client) Query(ctx context.Context, q protocol.Query) ([]protocol.Record, error) {
+func (c *Client) Query(ctx context.Context, q lirwire.Query) ([]protocol.Record, error) {
 	return c.execQuery(ctx, q)
 }
 
 // QueryDatum runs a query and returns the result datum exactly as the root
 // materialised: []any for many, map[string]any or nil for first/exactly_one,
 // a naked value or nil for scalar. Numbers decode as json.Number.
-func (c *Client) QueryDatum(ctx context.Context, q protocol.Query) (any, error) {
+func (c *Client) QueryDatum(ctx context.Context, q lirwire.Query) (any, error) {
 	return c.execQueryDatum(ctx, q)
 }
 

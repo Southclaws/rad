@@ -8,7 +8,7 @@ package planner
 import (
 	"testing"
 
-	"github.com/Southclaws/rad/rad/protocol"
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
 )
 
 // 1. Three projections stacked, each renaming the previous one's output via
@@ -16,16 +16,16 @@ import (
 func TestStressTripleProjectionChain(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"gold": {Kind: "filter", Input: "c",
-			Predicate: protocol.Eq(protocol.Col("c", "tier"), protocol.Lit("gold"))},
-		"a": {Kind: "project", Input: "gold", Scope: "a",
-			Fields: []protocol.Field{{As: "n", Expr: *protocol.Col("c", "name")}}},
-		"b": {Kind: "project", Input: "a", Scope: "b",
-			Fields: []protocol.Field{{As: "m", Expr: *protocol.Col("a", "n")}}},
-		"out": {Kind: "project", Input: "b",
-			Fields: []protocol.Field{{As: "name", Expr: *protocol.Col("b", "m")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"gold": lirwire.Filter("c",
+			lirwire.Binary("eq", lirwire.Col("c", "tier"), lirwire.LitOf("gold"))),
+		"a": lirwire.Project("gold", "a", nil,
+			[]lirwire.Field{{As: "n", Expr: lirwire.Col("c", "name")}}),
+		"b": lirwire.Project("a", "b", nil,
+			[]lirwire.Field{{As: "m", Expr: lirwire.Col("a", "n")}}),
+		"out": lirwire.Project("b", "", nil,
+			[]lirwire.Field{{As: "name", Expr: lirwire.Col("b", "m")}}),
 	}, "out", "many")).Equals(`[{"name":"Ada"},{"name":"Cyn"}]`)
 }
 
@@ -34,18 +34,18 @@ func TestStressTripleProjectionChain(t *testing.T) {
 func TestStressOrderProjectOrderSandwich(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"newest": {Kind: "order", Input: "o",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "placed_at"), Desc: true}}},
-		"v": {Kind: "project", Input: "newest", Scope: "v", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("o", "id")},
-			{As: "at", Expr: *protocol.Col("o", "placed_at")},
-		}},
-		"asc": {Kind: "order", Input: "v",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("v", "id")}}},
-		"out": {Kind: "project", Input: "asc",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("v", "id")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"newest": lirwire.Order("o",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "placed_at"), Desc: ptrBool(true)}}),
+		"v": lirwire.Project("newest", "v", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("o", "id")},
+			{As: "at", Expr: lirwire.Col("o", "placed_at")},
+		}),
+		"asc": lirwire.Order("v",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("v", "id")}}),
+		"out": lirwire.Project("asc", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("v", "id")}}),
 	}, "out", "many")).Equals(`[
 		{"id":"o1"},{"id":"o2"},{"id":"o3"},{"id":"o4"},{"id":"o5"},{"id":"o6"},{"id":"o7"}
 	]`)
@@ -56,15 +56,15 @@ func TestStressOrderProjectOrderSandwich(t *testing.T) {
 func TestStressFilterAboveSlice(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"newest": {Kind: "order", Input: "o",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "placed_at"), Desc: true}}},
-		"top3": {Kind: "slice", Input: "newest", Limit: new(int(3))},
-		"delivered": {Kind: "filter", Input: "top3",
-			Predicate: protocol.Eq(protocol.Col("o", "status"), protocol.Lit("delivered"))},
-		"out": {Kind: "project", Input: "delivered",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("o", "id")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"newest": lirwire.Order("o",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "placed_at"), Desc: ptrBool(true)}}),
+		"top3": lirwire.Slice("newest", 0, ptrInt(3)),
+		"delivered": lirwire.Filter("top3",
+			lirwire.Binary("eq", lirwire.Col("o", "status"), lirwire.LitOf("delivered"))),
+		"out": lirwire.Project("delivered", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("o", "id")}}),
 	}, "out", "many")).Equals(`[{"id":"o6"}]`)
 }
 
@@ -73,15 +73,15 @@ func TestStressFilterAboveSlice(t *testing.T) {
 func TestStressAggregateAboveSlice(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"newest": {Kind: "order", Input: "o",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "placed_at"), Desc: true}}},
-		"top3": {Kind: "slice", Input: "newest", Limit: new(int(3))},
-		"fold": {Kind: "aggregate", Input: "top3", Aggs: []protocol.AggTerm{
+	d.Query(q(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"newest": lirwire.Order("o",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "placed_at"), Desc: ptrBool(true)}}),
+		"top3": lirwire.Slice("newest", 0, ptrInt(3)),
+		"fold": lirwire.Aggregate("top3", "", nil, []lirwire.AggTerm{
 			{Fn: "count", As: "n"},
-			{Fn: "max", Arg: protocol.Col("o", "placed_at"), As: "max"},
-		}},
+			{Fn: "max", Arg: ptrExpr(lirwire.Col("o", "placed_at")), As: "max"},
+		}),
 	}, "fold", "exactly_one")).Equals(`[{"n":3,"max":3500}]`)
 }
 
@@ -91,24 +91,24 @@ func TestStressAggregateAboveSlice(t *testing.T) {
 func TestStressCrossingContainingJoin(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"gold": {Kind: "filter", Input: "c",
-			Predicate: protocol.Eq(protocol.Col("c", "tier"), protocol.Lit("gold"))},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"i": {Kind: "scan", Table: "order_items", Scope: "i"},
-		"lines": {Kind: "join", Left: "o", Right: "i", Join: "inner",
-			On: protocol.Eq(protocol.Col("i", "order_id"), protocol.Col("o", "id"))},
-		"mine": {Kind: "filter", Input: "lines",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"spend": {Kind: "aggregate", Input: "mine", Aggs: []protocol.AggTerm{
-			{Fn: "sum", Arg: &protocol.Expr{Kind: "binary", Op: "mul",
-				Left: protocol.Col("i", "quantity"), Right: protocol.Col("i", "unit_price")}, As: "spent"},
-		}},
-		"out": {Kind: "project", Input: "gold", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "spent", Expr: *protocol.ScalarOf("spend")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"gold": lirwire.Filter("c",
+			lirwire.Binary("eq", lirwire.Col("c", "tier"), lirwire.LitOf("gold"))),
+		"o": lirwire.Scan("orders", "o"),
+		"i": lirwire.Scan("order_items", "i"),
+		"lines": lirwire.Join("o", "i", "inner",
+			lirwire.Binary("eq", lirwire.Col("i", "order_id"), lirwire.Col("o", "id"))),
+		"mine": lirwire.Filter("lines",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"spend": lirwire.Aggregate("mine", "", nil, []lirwire.AggTerm{
+			{Fn: "sum", Arg: ptrExpr(lirwire.Binary("mul",
+				lirwire.Col("i", "quantity"), lirwire.Col("i", "unit_price"))), As: "spent"},
+		}),
+		"out": lirwire.Project("gold", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "spent", Expr: lirwire.Scalar("spend")},
+		}),
 	}, "out", "many")).Equals(`[{"id":"c1","spent":550},{"id":"c3","spent":500}]`)
 }
 
@@ -118,29 +118,29 @@ func TestStressCrossingContainingJoin(t *testing.T) {
 func TestStressJoinOfProjectionsWithCrossing(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c":  {Kind: "scan", Table: "customers", Scope: "c"},
-		"co": {Kind: "scan", Table: "orders", Scope: "co"},
-		"mine": {Kind: "filter", Input: "co",
-			Predicate: protocol.Eq(protocol.Col("co", "customer_id"), protocol.Col("c", "id"))},
-		"n": {Kind: "aggregate", Input: "mine",
-			Aggs: []protocol.AggTerm{{Fn: "count", As: "n"}}},
-		"cc": {Kind: "project", Input: "c", Scope: "cc", Fields: []protocol.Field{
-			{As: "cid", Expr: *protocol.Col("c", "id")},
-			{As: "n_orders", Expr: *protocol.ScalarOf("n")},
-		}},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"j": {Kind: "join", Left: "cc", Right: "o", Join: "inner",
-			On: protocol.Eq(protocol.Col("cc", "cid"), protocol.Col("o", "customer_id"))},
-		"pending": {Kind: "filter", Input: "j",
-			Predicate: protocol.Eq(protocol.Col("o", "status"), protocol.Lit("pending"))},
-		"by_order": {Kind: "order", Input: "pending",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "id")}}},
-		"out": {Kind: "project", Input: "by_order", Fields: []protocol.Field{
-			{As: "cid", Expr: *protocol.Col("cc", "cid")},
-			{As: "n", Expr: *protocol.Col("cc", "n_orders")},
-			{As: "order", Expr: *protocol.Col("o", "id")},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"c":  lirwire.Scan("customers", "c"),
+		"co": lirwire.Scan("orders", "co"),
+		"mine": lirwire.Filter("co",
+			lirwire.Binary("eq", lirwire.Col("co", "customer_id"), lirwire.Col("c", "id"))),
+		"n": lirwire.Aggregate("mine", "", nil,
+			[]lirwire.AggTerm{{Fn: "count", As: "n"}}),
+		"cc": lirwire.Project("c", "cc", nil, []lirwire.Field{
+			{As: "cid", Expr: lirwire.Col("c", "id")},
+			{As: "n_orders", Expr: lirwire.Scalar("n")},
+		}),
+		"o": lirwire.Scan("orders", "o"),
+		"j": lirwire.Join("cc", "o", "inner",
+			lirwire.Binary("eq", lirwire.Col("cc", "cid"), lirwire.Col("o", "customer_id"))),
+		"pending": lirwire.Filter("j",
+			lirwire.Binary("eq", lirwire.Col("o", "status"), lirwire.LitOf("pending"))),
+		"by_order": lirwire.Order("pending",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "id")}}),
+		"out": lirwire.Project("by_order", "", nil, []lirwire.Field{
+			{As: "cid", Expr: lirwire.Col("cc", "cid")},
+			{As: "n", Expr: lirwire.Col("cc", "n_orders")},
+			{As: "order", Expr: lirwire.Col("o", "id")},
+		}),
 	}, "out", "many")).Equals(`[
 		{"cid":"c3","n":1,"order":"o5"},
 		{"cid":"c1","n":3,"order":"o7"}
@@ -153,21 +153,21 @@ func TestStressJoinOfProjectionsWithCrossing(t *testing.T) {
 func TestStressSixDeepChain(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"recent": {Kind: "filter", Input: "o",
-			Predicate: protocol.Gte(protocol.Col("o", "placed_at"), protocol.Lit(1500))},
-		"chrono": {Kind: "order", Input: "recent",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "placed_at")}}},
-		"page": {Kind: "slice", Input: "chrono", Offset: new(int(1)), Limit: new(int(4))},
-		"w": {Kind: "project", Input: "page", Scope: "w", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("o", "id")},
-			{As: "status", Expr: *protocol.Col("o", "status")},
-		}},
-		"live": {Kind: "filter", Input: "w",
-			Predicate: protocol.Ne(protocol.Col("w", "status"), protocol.Lit("cancelled"))},
-		"out": {Kind: "project", Input: "live",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("w", "id")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"recent": lirwire.Filter("o",
+			lirwire.Binary("gte", lirwire.Col("o", "placed_at"), lirwire.LitOf(1500))),
+		"chrono": lirwire.Order("recent",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "placed_at")}}),
+		"page": lirwire.Slice("chrono", 1, ptrInt(4)),
+		"w": lirwire.Project("page", "w", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("o", "id")},
+			{As: "status", Expr: lirwire.Col("o", "status")},
+		}),
+		"live": lirwire.Filter("w",
+			lirwire.Binary("ne", lirwire.Col("w", "status"), lirwire.LitOf("cancelled"))),
+		"out": lirwire.Project("live", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("w", "id")}}),
 	}, "out", "many")).Equals(`[{"id":"o2"},{"id":"o6"},{"id":"o5"}]`)
 }
 
@@ -177,44 +177,44 @@ func TestStressSixDeepChain(t *testing.T) {
 func TestStressFourLevelNesting(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"c1": {Kind: "filter", Input: "c",
-			Predicate: protocol.Eq(protocol.Col("c", "id"), protocol.Lit("c1"))},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"c1": lirwire.Filter("c",
+			lirwire.Binary("eq", lirwire.Col("c", "id"), lirwire.LitOf("c1"))),
 
-		"p": {Kind: "scan", Table: "products", Scope: "p"},
-		"prod": {Kind: "filter", Input: "p",
-			Predicate: protocol.Eq(protocol.Col("p", "id"), protocol.Col("i", "product_id"))},
-		"pname": {Kind: "project", Input: "prod",
-			Fields: []protocol.Field{{As: "name", Expr: *protocol.Col("p", "name")}}},
+		"p": lirwire.Scan("products", "p"),
+		"prod": lirwire.Filter("p",
+			lirwire.Binary("eq", lirwire.Col("p", "id"), lirwire.Col("i", "product_id"))),
+		"pname": lirwire.Project("prod", "", nil,
+			[]lirwire.Field{{As: "name", Expr: lirwire.Col("p", "name")}}),
 
-		"i": {Kind: "scan", Table: "order_items", Scope: "i"},
-		"oi": {Kind: "filter", Input: "i",
-			Predicate: protocol.Eq(protocol.Col("i", "order_id"), protocol.Col("o", "id"))},
-		"oi_by_id": {Kind: "order", Input: "oi",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("i", "id")}}},
-		"item_out": {Kind: "project", Input: "oi_by_id", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("i", "id")},
-			{As: "product", Expr: *protocol.FirstOf("pname")},
-		}},
+		"i": lirwire.Scan("order_items", "i"),
+		"oi": lirwire.Filter("i",
+			lirwire.Binary("eq", lirwire.Col("i", "order_id"), lirwire.Col("o", "id"))),
+		"oi_by_id": lirwire.Order("oi",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("i", "id")}}),
+		"item_out": lirwire.Project("oi_by_id", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("i", "id")},
+			{As: "product", Expr: lirwire.First("pname")},
+		}),
 
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"my_orders": {Kind: "filter", Input: "o",
-			Predicate: protocol.AndAll([]*protocol.Expr{
-				protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id")),
-				protocol.Ne(protocol.Col("o", "status"), protocol.Lit("cancelled")),
-			})},
-		"chrono": {Kind: "order", Input: "my_orders",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "placed_at")}}},
-		"order_out": {Kind: "project", Input: "chrono", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("o", "id")},
-			{As: "items", Expr: *protocol.ArrayOf("item_out")},
-		}},
+		"o": lirwire.Scan("orders", "o"),
+		"my_orders": lirwire.Filter("o",
+			lirwire.AndAll([]lirwire.Expr{
+				lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id")),
+				lirwire.Binary("ne", lirwire.Col("o", "status"), lirwire.LitOf("cancelled")),
+			})),
+		"chrono": lirwire.Order("my_orders",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "placed_at")}}),
+		"order_out": lirwire.Project("chrono", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("o", "id")},
+			{As: "items", Expr: lirwire.Array("item_out")},
+		}),
 
-		"out": {Kind: "project", Input: "c1", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "orders", Expr: *protocol.ArrayOf("order_out")},
-		}},
+		"out": lirwire.Project("c1", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "orders", Expr: lirwire.Array("order_out")},
+		}),
 	}, "out", "many")).Equals(`[
 		{"id":"c1","orders":[
 			{"id":"o1","items":[
@@ -239,25 +239,25 @@ func TestStressFourLevelNesting(t *testing.T) {
 func TestStressTopNBySpendCrossing(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"i": {Kind: "scan", Table: "order_items", Scope: "i"},
-		"lines": {Kind: "join", Left: "o", Right: "i", Join: "inner",
-			On: protocol.Eq(protocol.Col("i", "order_id"), protocol.Col("o", "id"))},
-		"mine": {Kind: "filter", Input: "lines",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"spend": {Kind: "aggregate", Input: "mine", Aggs: []protocol.AggTerm{
-			{Fn: "sum", Arg: &protocol.Expr{Kind: "binary", Op: "mul",
-				Left: protocol.Col("i", "quantity"), Right: protocol.Col("i", "unit_price")}, As: "spend"},
-		}},
-		"s": {Kind: "project", Input: "c", Scope: "s", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("c", "id")},
-			{As: "spend", Expr: *protocol.ScalarOf("spend")},
-		}},
-		"ranked": {Kind: "order", Input: "s",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("s", "spend"), Desc: true}}},
-		"top2": {Kind: "slice", Input: "ranked", Limit: new(int(2))},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"o": lirwire.Scan("orders", "o"),
+		"i": lirwire.Scan("order_items", "i"),
+		"lines": lirwire.Join("o", "i", "inner",
+			lirwire.Binary("eq", lirwire.Col("i", "order_id"), lirwire.Col("o", "id"))),
+		"mine": lirwire.Filter("lines",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"spend": lirwire.Aggregate("mine", "", nil, []lirwire.AggTerm{
+			{Fn: "sum", Arg: ptrExpr(lirwire.Binary("mul",
+				lirwire.Col("i", "quantity"), lirwire.Col("i", "unit_price"))), As: "spend"},
+		}),
+		"s": lirwire.Project("c", "s", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("c", "id")},
+			{As: "spend", Expr: lirwire.Scalar("spend")},
+		}),
+		"ranked": lirwire.Order("s",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("s", "spend"), Desc: ptrBool(true)}}),
+		"top2": lirwire.Slice("ranked", 0, ptrInt(2)),
 	}, "top2", "many")).Equals(`[
 		{"id":"c2","spend":565},
 		{"id":"c1","spend":550}
@@ -270,14 +270,14 @@ func TestStressTopNBySpendCrossing(t *testing.T) {
 func TestStressAggregateOfAggregate(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"per": {Kind: "aggregate", Input: "o", Scope: "per",
-			Groups: []protocol.GroupTerm{{Expr: *protocol.Col("o", "customer_id")}},
-			Aggs:   []protocol.AggTerm{{Fn: "count", As: "n"}}},
-		"overall": {Kind: "aggregate", Input: "per", Aggs: []protocol.AggTerm{
-			{Fn: "avg", Arg: protocol.Col("per", "n"), As: "avg_n"},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"per": lirwire.Aggregate("o", "per",
+			[]lirwire.GroupTerm{{Expr: lirwire.Col("o", "customer_id")}},
+			[]lirwire.AggTerm{{Fn: "count", As: "n"}}),
+		"overall": lirwire.Aggregate("per", "", nil, []lirwire.AggTerm{
+			{Fn: "avg", Arg: ptrExpr(lirwire.Col("per", "n")), As: "avg_n"},
+		}),
 	}, "overall", "exactly_one")).Equals(`[{"avg_n":1.75}]`)
 }
 
@@ -287,20 +287,20 @@ func TestStressAggregateOfAggregate(t *testing.T) {
 func TestStressWrappedCrossingHaving(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"delivered": {Kind: "filter", Input: "o",
-			Predicate: protocol.AndAll([]*protocol.Expr{
-				protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id")),
-				protocol.Eq(protocol.Col("o", "status"), protocol.Lit("delivered")),
-			})},
-		"n": {Kind: "aggregate", Input: "delivered",
-			Aggs: []protocol.AggTerm{{Fn: "count", As: "n"}}},
-		"keep": {Kind: "filter", Input: "c",
-			Predicate: protocol.Gte(protocol.ScalarOf("n"), protocol.Lit(1))},
-		"out": {Kind: "project", Input: "keep",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("c", "id")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"o": lirwire.Scan("orders", "o"),
+		"delivered": lirwire.Filter("o",
+			lirwire.AndAll([]lirwire.Expr{
+				lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id")),
+				lirwire.Binary("eq", lirwire.Col("o", "status"), lirwire.LitOf("delivered")),
+			})),
+		"n": lirwire.Aggregate("delivered", "", nil,
+			[]lirwire.AggTerm{{Fn: "count", As: "n"}}),
+		"keep": lirwire.Filter("c",
+			lirwire.Binary("gte", lirwire.Scalar("n"), lirwire.LitOf(1))),
+		"out": lirwire.Project("keep", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("c", "id")}}),
 	}, "out", "many")).Equals(`[{"id":"c1"},{"id":"c2"},{"id":"c4"}]`)
 }
 
@@ -310,20 +310,20 @@ func TestStressWrappedCrossingHaving(t *testing.T) {
 func TestStressArithmeticOverComputedColumn(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"i": {Kind: "scan", Table: "order_items", Scope: "i"},
-		"o1_items": {Kind: "filter", Input: "i",
-			Predicate: protocol.Eq(protocol.Col("i", "order_id"), protocol.Lit("o1"))},
-		"l": {Kind: "project", Input: "o1_items", Scope: "l", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("i", "id")},
-			{As: "total", Expr: *protocol.Mul(protocol.Col("i", "quantity"), protocol.Col("i", "unit_price"))},
-		}},
-		"by_id": {Kind: "order", Input: "l",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("l", "id")}}},
-		"out": {Kind: "project", Input: "by_id", Fields: []protocol.Field{
-			{As: "id", Expr: *protocol.Col("l", "id")},
-			{As: "taxed", Expr: *protocol.Mul(protocol.Col("l", "total"), protocol.Lit(2))},
-		}},
+	d.Query(q(map[string]lirwire.Node{
+		"i": lirwire.Scan("order_items", "i"),
+		"o1_items": lirwire.Filter("i",
+			lirwire.Binary("eq", lirwire.Col("i", "order_id"), lirwire.LitOf("o1"))),
+		"l": lirwire.Project("o1_items", "l", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("i", "id")},
+			{As: "total", Expr: lirwire.Binary("mul", lirwire.Col("i", "quantity"), lirwire.Col("i", "unit_price"))},
+		}),
+		"by_id": lirwire.Order("l",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("l", "id")}}),
+		"out": lirwire.Project("by_id", "", nil, []lirwire.Field{
+			{As: "id", Expr: lirwire.Col("l", "id")},
+			{As: "taxed", Expr: lirwire.Binary("mul", lirwire.Col("l", "total"), lirwire.LitOf(2))},
+		}),
 	}, "out", "many")).Equals(`[{"id":"i1","taxed":160},{"id":"i2","taxed":100}]`)
 }
 
@@ -333,28 +333,30 @@ func TestStressArithmeticOverComputedColumn(t *testing.T) {
 func TestStressFilterAboveRenamedProjection(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"v": {Kind: "project", Input: "c", Scope: "v", Fields: []protocol.Field{
-			{As: "handle", Expr: *protocol.Col("c", "email")},
-			{As: "t", Expr: *protocol.Col("c", "tier")},
-		}},
-		"gold": {Kind: "filter", Input: "v",
-			Predicate: protocol.Eq(protocol.Col("v", "t"), protocol.Lit("gold"))},
-		"out": {Kind: "project", Input: "gold",
-			Fields: []protocol.Field{{As: "handle", Expr: *protocol.Col("v", "handle")}}},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"v": lirwire.Project("c", "v", nil, []lirwire.Field{
+			{As: "handle", Expr: lirwire.Col("c", "email")},
+			{As: "t", Expr: lirwire.Col("c", "tier")},
+		}),
+		"gold": lirwire.Filter("v",
+			lirwire.Binary("eq", lirwire.Col("v", "t"), lirwire.LitOf("gold"))),
+		"out": lirwire.Project("gold", "", nil,
+			[]lirwire.Field{{As: "handle", Expr: lirwire.Col("v", "handle")}}),
 	}, "out", "many")).Equals(`[{"handle":"ada@shop.io"},{"handle":"cyn@shop.io"}]`)
 }
 
-// 14. An orphan node nothing references is rejected by the preflight.
+// 14. An orphan node nothing references is a dead definition, rejected during
+// lowering (the one wire-graph property the binder can't see, since lowering
+// discards unreachable nodes before it runs).
 func TestStressUnreachableNodeRejected(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"out": {Kind: "project", Input: "c",
-			Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("c", "id")}}},
-		"orphan": {Kind: "scan", Table: "orders", Scope: "z"},
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"out": lirwire.Project("c", "", nil,
+			[]lirwire.Field{{As: "id", Expr: lirwire.Col("c", "id")}}),
+		"orphan": lirwire.Scan("orders", "z"),
 	}, "out", "many")).ExpectStatus(422).ExpectError("unreachable node definitions")
 }
 
@@ -362,10 +364,10 @@ func TestStressUnreachableNodeRejected(t *testing.T) {
 func TestStressDanglingReferenceRejected(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(protocol.Query{Nodes: map[string]protocol.Node{
-		"bad": {Kind: "filter", Input: "nope",
-			Predicate: protocol.Eq(protocol.Lit(1), protocol.Lit(1))},
-	}, Root: protocol.Root{Node: "bad", Cardinality: "many"}}).ExpectError(`unknown node "nope"`)
+	d.Query(lirwire.Query{Nodes: map[string]lirwire.Node{
+		"bad": lirwire.Filter("nope",
+			lirwire.Binary("eq", lirwire.LitOf(1), lirwire.LitOf(1))),
+	}, Root: lirwire.Root{Node: "bad", Cardinality: "many"}}).ExpectError(`unknown node "nope"`)
 }
 
 // 16. Single-consumer law: one sub-node consumed by TWO crossings in the same
@@ -373,16 +375,16 @@ func TestStressDanglingReferenceRejected(t *testing.T) {
 func TestStressSharedNodeRejected(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"c": {Kind: "scan", Table: "customers", Scope: "c"},
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"mine": {Kind: "filter", Input: "o",
-			Predicate: protocol.Eq(protocol.Col("o", "customer_id"), protocol.Col("c", "id"))},
-		"out": {Kind: "project", Input: "c", Fields: []protocol.Field{
-			{As: "has_any", Expr: *protocol.Exists("mine")},
-			{As: "has_any_again", Expr: *protocol.Exists("mine")},
-		}},
-	}, "out", "many")).ExpectError("multiple consumers")
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"o": lirwire.Scan("orders", "o"),
+		"mine": lirwire.Filter("o",
+			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
+		"out": lirwire.Project("c", "", nil, []lirwire.Field{
+			{As: "has_any", Expr: lirwire.Exists("mine")},
+			{As: "has_any_again", Expr: lirwire.Exists("mine")},
+		}),
+	}, "out", "many")).ExpectError("duplicate scope")
 }
 
 // 17. Two filters consuming each other form a wire cycle; value nodes cannot
@@ -390,12 +392,12 @@ func TestStressSharedNodeRejected(t *testing.T) {
 func TestStressCycleRejected(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(protocol.Query{Nodes: map[string]protocol.Node{
-		"a": {Kind: "filter", Input: "b",
-			Predicate: protocol.Eq(protocol.Lit(1), protocol.Lit(1))},
-		"b": {Kind: "filter", Input: "a",
-			Predicate: protocol.Eq(protocol.Lit(1), protocol.Lit(1))},
-	}, Root: protocol.Root{Node: "a", Cardinality: "many"}}).ExpectError("part of a cycle")
+	d.Query(lirwire.Query{Nodes: map[string]lirwire.Node{
+		"a": lirwire.Filter("b",
+			lirwire.Binary("eq", lirwire.LitOf(1), lirwire.LitOf(1))),
+		"b": lirwire.Filter("a",
+			lirwire.Binary("eq", lirwire.LitOf(1), lirwire.LitOf(1))),
+	}, Root: lirwire.Root{Node: "a", Cardinality: "many"}}).ExpectError("part of a cycle")
 }
 
 // 18. Root cardinality "first" over an ordered relation: exactly one record,
@@ -403,10 +405,10 @@ func TestStressCycleRejected(t *testing.T) {
 func TestStressRootFirst(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
-		"newest": {Kind: "order", Input: "o",
-			Terms: []protocol.OrderTerm{{Expr: *protocol.Col("o", "placed_at"), Desc: true}}},
+	d.Query(q(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
+		"newest": lirwire.Order("o",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("o", "placed_at"), Desc: ptrBool(true)}}),
 	}, "newest", "first")).Equals(`[
 		{"id":"o7","customer_id":"c1","status":"pending","placed_at":3500,"discount":null}
 	]`)
@@ -418,8 +420,8 @@ func TestStressRootFirst(t *testing.T) {
 func TestStressExactlyOneViolation(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	d.Query(q(map[string]protocol.Node{
-		"o": {Kind: "scan", Table: "orders", Scope: "o"},
+	d.Query(q(map[string]lirwire.Node{
+		"o": lirwire.Scan("orders", "o"),
 	}, "o", "exactly_one")).ExpectStatus(422).ExpectCode("execution_failed").ExpectError("exactly one")
 }
 
@@ -429,16 +431,16 @@ func TestStressExactlyOneViolation(t *testing.T) {
 func TestStressPaginationDisjoint(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	page := func(offset int) protocol.Query {
-		return q(map[string]protocol.Node{
-			"o": {Kind: "scan", Table: "orders", Scope: "o"},
-			"chrono": {Kind: "order", Input: "o", Terms: []protocol.OrderTerm{
-				{Expr: *protocol.Col("o", "placed_at")},
-				{Expr: *protocol.Col("o", "id")},
-			}},
-			"page": {Kind: "slice", Input: "chrono", Offset: new(int(offset)), Limit: new(int(3))},
-			"out": {Kind: "project", Input: "page",
-				Fields: []protocol.Field{{As: "id", Expr: *protocol.Col("o", "id")}}},
+	page := func(offset int) lirwire.Query {
+		return q(map[string]lirwire.Node{
+			"o": lirwire.Scan("orders", "o"),
+			"chrono": lirwire.Order("o", []lirwire.OrderTerm{
+				{Expr: lirwire.Col("o", "placed_at")},
+				{Expr: lirwire.Col("o", "id")},
+			}),
+			"page": lirwire.Slice("chrono", offset, ptrInt(3)),
+			"out": lirwire.Project("page", "", nil,
+				[]lirwire.Field{{As: "id", Expr: lirwire.Col("o", "id")}}),
 		}, "out", "many")
 	}
 	d.Query(page(0)).Equals(`[{"id":"o1"},{"id":"o3"},{"id":"o4"}]`)
