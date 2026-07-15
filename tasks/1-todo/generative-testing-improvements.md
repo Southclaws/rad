@@ -22,13 +22,19 @@ caveat is N/A.
 
 What remains, roughly in value order:
 
-## 1. Generate bindings / refs
+## 1. Generate bindings / refs — DONE
 
-The generator emits no `ref`/binding yet (the coverage audit floors it at 0).
-Binding commit-once semantics ("evaluate once, every `ref` observes the same
-committed value") are subtle and only fixture-covered. Generating
-`binding x = Q; root = join(ref x a, ref x b)` etc. would put them under random
-differential test. Prerequisite for the binding-inlining metamorphic rule later.
+The generator now emits 0–2 closed bindings (self-contained bodies, flattened to
+a unique-named output so the single ref scope can't collide) and references each
+at least once by joining a fresh `ref` into the tree — sometimes twice, which
+drives the engine's materialise-vs-replay strategy split while the interpreter
+commits once either way. `ref_binding` 0 → ~1375/2000 (in `mustHit`); the
+coverage walker now descends binding bodies too. Differential holds over 1000
+seeds — commit-once semantics agree with the interpreter, no engine bug. This is
+the prerequisite for the binding-inlining metamorphic rule later.
+
+Not yet: inter-binding references (a binding body referencing an earlier
+binding) — bodies use plain `genRel`, no refs; a small follow-up.
 
 ## 2. Ordered-result comparison mode
 

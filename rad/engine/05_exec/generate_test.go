@@ -132,7 +132,7 @@ func TestGeneratorCoverage(t *testing.T) {
 		"join_inner", "join_left", "aggregate", "group_by", "global_aggregate",
 		"exists", "first", "scalar", "array",
 		"arithmetic", "is_null", "and_or", "not",
-		"crossing", "correlated_aggregate", "crossing_over_join",
+		"crossing", "correlated_aggregate", "crossing_over_join", "ref_binding",
 	}
 	const floor = 15
 	for _, f := range mustHit {
@@ -148,7 +148,7 @@ func TestGeneratorCoverage(t *testing.T) {
 	// one), never a join, so deep compositions like a correlated array over a
 	// join are unreached until the crossing sub-relation generator is enriched.
 	for _, f := range []string{
-		"ref_binding", "rows", "cast", "slice", "nested_crossing",
+		"rows", "cast", "slice", "nested_crossing",
 	} {
 		if counts[f] != 0 {
 			t.Errorf("gap %q now appears (%d) — promote it into mustHit", f, counts[f])
@@ -161,6 +161,9 @@ func TestGeneratorCoverage(t *testing.T) {
 func queryFeatures(q lir.Query) map[string]bool {
 	f := map[string]bool{}
 	walkRelFeat(q.Root, f, false)
+	for _, b := range q.Bindings {
+		walkRelFeat(b, f, false)
+	}
 	return f
 }
 
@@ -437,18 +440,65 @@ type genScope struct {
 }
 
 type gen struct {
-	rng    *rand.Rand
-	cat    *genCatalog
-	scopeN int
-	fieldN int
+	rng      *rand.Rand
+	cat      *genCatalog
+	scopeN   int
+	fieldN   int
+	bindingN int
 }
 
 func (g *gen) fresh() string     { g.scopeN++; return fmt.Sprintf("s%d", g.scopeN) }
 func (g *gen) field() string     { g.fieldN++; return fmt.Sprintf("f%d", g.fieldN) }
+func (g *gen) binding() string   { g.bindingN++; return fmt.Sprintf("b%d", g.bindingN) }
 func (g *gen) chance(n int) bool { return g.rng.Intn(n) == 0 }
 
+type genBinding struct {
+	name string
+	cols []genColumn // the binding's output columns, re-exposed under each ref's scope
+}
+
 func (g *gen) genQuery() lir.Query {
+	// A few closed bindings up front. A binding's body is self-contained (its
+	// own scans, no outer refs) and flattened to a unique-named output, since a
+	// ref exposes it under one scope and the binding output must not collide.
+	bindings := map[string]lir.Relation{}
+	var binds []genBinding
+	for k := 0; k < g.rng.Intn(3); k++ { // 0..2 bindings
+		body, bscopes := g.genRel(2)
+		flat, out := g.flattenScopes(body, bscopes)
+		name := g.binding()
+		bindings[name] = flat
+		binds = append(binds, genBinding{name: name, cols: out.cols})
+	}
+
 	rel, scopes := g.genRel(3)
+
+	// Every declared binding must be referenced at least once (bind-validity),
+	// so join a fresh ref for each into the tree — sometimes twice, to exercise
+	// commit-once with multiple occurrences (which drives the engine's
+	// materialise-vs-replay choice; the interpreter commits once either way).
+	for _, b := range binds {
+		occ := 1
+		if g.rng.Intn(2) == 0 {
+			occ = 2
+		}
+		for i := 0; i < occ; i++ {
+			rs := g.fresh()
+			refScope := genScope{name: rs, cols: b.cols}
+			kind := lir.InnerJoin
+			if g.rng.Intn(2) == 0 {
+				kind = lir.LeftJoin
+			}
+			rel = lir.Join{
+				Left:  rel,
+				Right: lir.Ref{Binding: b.name, Scope: rs},
+				Kind:  kind,
+				On:    g.genJoinOn(scopes, []genScope{refScope}),
+			}
+			scopes = append(scopes, refScope)
+		}
+	}
+
 	// Flatten every visible scope into one uniquely-named output so the root
 	// object never has colliding attribute names.
 	var fields []lir.ProjField
@@ -466,7 +516,30 @@ func (g *gen) genQuery() lir.Query {
 		fields = append(fields, g.genCrossingField(scopes))
 	}
 	flat := lir.Project{Input: rel, Scope: g.fresh(), Fields: fields}
-	return many(flat)
+
+	q := many(flat)
+	if len(bindings) > 0 {
+		q.Bindings = bindings
+	}
+	return q
+}
+
+// flattenScopes projects every column of every scope to a fresh unique name,
+// returning the new single-scope relation and its output schema — the shape a
+// binding body (and any observable boundary) needs so its columns don't
+// collide when exposed under one scope.
+func (g *gen) flattenScopes(rel lir.Relation, scopes []genScope) (lir.Relation, genScope) {
+	ps := g.fresh()
+	var fields []lir.ProjField
+	var cols []genColumn
+	for _, s := range scopes {
+		for _, c := range s.cols {
+			name := g.field()
+			fields = append(fields, lir.ProjField{As: name, Expr: qcol(s.name, c.name)})
+			cols = append(cols, genColumn{name: name, typ: c.typ, nullable: c.nullable})
+		}
+	}
+	return lir.Project{Input: rel, Scope: ps, Fields: fields}, genScope{name: ps, cols: cols}
 }
 
 // genCrossingField builds one output field whose value is a crossing over a
