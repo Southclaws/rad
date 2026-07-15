@@ -28,10 +28,9 @@ external `rad-gen-*` resolution. Split out of [[protocol-lirwire-collapse]]
 
 ## Remaining (the flesh-out)
 
-- Go = Ent ergonomics (per-table predicate packages → `lirwire.Expr`, fluent
-  query builder, relation predicates), with the neutral `predicate` package as
-  the cycle-breaker (verified against storyden/ent). Multi-package emission
-  (`[]GeneratedFile` already supports it). Decide package layout then.
+- Go = Ent ergonomics — the full design is its own task: [[ent-style-go-client]]
+  (predicate packages → `lirwire.Expr`, fluent query builder, relation
+  predicates, the neutral-`predicate` cycle-breaker, multi-package layout).
 - TS = Prisma: templatize + Schemancer the TS types from the wire spec; build a
   real TS demo (defer per the plan).
 - IR purification: drop the Go-isms (`Col.Field`, `Col.GoType`, `Table.Model`)
