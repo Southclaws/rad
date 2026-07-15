@@ -1,5 +1,52 @@
 # Query traces: a first-class observability artifact
 
+Status: **BUILDING** (2026-07-15) — first slice underway: the **query plan
+view** (the rest of the subsystem — spans, KV events, ring buffer, redaction,
+UI — stays deferred). No SQLy "EXPLAIN" naming: it is a *render of the query
+plan* (the devtool tool is "View query plan").
+
+## First slice — query plan view (locked decisions)
+
+- **Transport metadata, not IR.** The plan is an artifact *about executing* a
+  query, not part of it — it never enters the LIR/PIR schemas. It rides the
+  transport response only, so the IR schemas don't version for planner growth.
+- **Request knobs = query params on `POST /execute`**, orthogonal:
+  `?show-plan=true` includes the plan; `?dry-run=true` skips execution.
+  - neither → today (execute, results only)
+  - show-plan → execute **and** return plan + results
+  - show-plan + dry-run → plan only, no execution
+  - dry-run alone → validate/bind/plan only, no results, no plan (a "will this
+    run?" check; documented as an empty success)
+- **One artifact, both renderings.** A single JSON-serialisable `PlanView` is
+  the source of truth; the pretty string is derived from it (no parallel
+  printer). The response ships both (`view` JSON canonical, `text` a
+  convenience). Free-JSON on the wire — an opaque `plan` field on the ogen
+  response, its internals **not** OpenAPI-spec'd yet (they will churn).
+- **Per-statement.** A PIR program is N statements, each its own LIR → its own
+  plan; the artifact is keyed by statement name. Planning is fully static today
+  (access-path choice depends on the query's literals + catalog, not stored
+  data), so `dry-run` binds+plans every statement and executes none, even across
+  `ref` dependencies (a schema dependency, resolved at bind).
+- **Failure shape (prep for error-propagation, not built).** Planning is total
+  now: bind failure → no plan (existing `Problem`, unchanged); execution failure
+  → the plan is complete, so return it **plus** the error. The plan rides as a
+  field on success responses and as an **extension member on the error
+  `Problem`** — existing error mechanism reused, plan and error in separate keys.
+  When `[[error-propagation]]` lands, that Problem's `Location`/`Stage`/`Reason`
+  point into this plan ("an error is a trace that stopped early").
+- **What this slice captures beyond today's plan tree:** the **access-path
+  decision** (candidates + scores; `chooseAccessPath` computes and currently
+  discards them). Spans, KV events, actual-row metrics, rewrite history, UI, and
+  the ring buffer stay for later slices — the `RewriteTrace`/metrics fields are
+  designed here but populated later.
+- **Build order:** planner (capture decision + `PlanView` + renderer, tested) →
+  exec (`dry-run` skip + collect per-statement plans) → server (params + attach
+  plan to response / Problem).
+
+---
+
+## (original proposal, for the full subsystem)
+
 Status: proposal — refine pre-build. One query produces one structured
 trace covering its entire lifecycle: input, validation, binding, planning
 decisions, every physical KV operation, timings, and result. Not log

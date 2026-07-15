@@ -318,11 +318,14 @@ func (pl *planner) chooseAccessPath(cs *ScanConstraints, req []bound.OrderTerm) 
 
 	// A fully pinned primary key is a point get.
 	if key, ok := pinnedKey(cs, scan.Table.PrimaryKey); ok {
-		return &PKGetExec{Scan: scan, Key: key}
+		return &PKGetExec{Scan: scan, Key: key,
+			Access: &AccessDecision{Candidates: []AccessCandidate{{Method: "PKGet", Chosen: true}}}}
 	}
 
 	best := PhysNode(&TableScanExec{Scan: scan})
 	bestScore := score(best, 0, false, req)
+	cands := []AccessCandidate{{Method: "TableScan", Score: bestScore}}
+	chosen := 0
 
 	for _, idx := range scan.Table.Indexes {
 		eq := make([]ConstVal, 0, len(idx.Columns))
@@ -341,9 +344,20 @@ func (pl *planner) chooseAccessPath(cs *ScanConstraints, req []bound.OrderTerm) 
 			}
 		}
 		cand := &IndexRangeScanExec{Scan: scan, Index: idx, EqPrefix: eq, Range: rng}
-		if s := score(cand, len(eq), rng != nil, req); s > bestScore {
-			best, bestScore = cand, s
+		s := score(cand, len(eq), rng != nil, req)
+		cands = append(cands, AccessCandidate{Method: "IndexRangeScan " + idx.Name, Score: s})
+		if s > bestScore {
+			best, bestScore, chosen = cand, s, len(cands)-1
 		}
+	}
+
+	cands[chosen].Chosen = true
+	dec := &AccessDecision{Candidates: cands}
+	switch n := best.(type) {
+	case *TableScanExec:
+		n.Access = dec
+	case *IndexRangeScanExec:
+		n.Access = dec
 	}
 	return best
 }

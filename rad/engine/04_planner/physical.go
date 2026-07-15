@@ -67,18 +67,35 @@ type BindingPlan struct {
 	Sensitive bool
 }
 
+// AccessDecision records why the planner picked an access path for a scan:
+// the candidates it considered and their scores, with the winner marked. It is
+// observability metadata hung on the chosen node — the query-plan view renders
+// it; execution ignores it.
+type AccessDecision struct {
+	Candidates []AccessCandidate
+}
+
+// AccessCandidate is one access path the planner scored.
+type AccessCandidate struct {
+	Method string `json:"method"` // "TableScan" | "PKGet" | "IndexRangeScan <index>"
+	Score  int    `json:"score"`
+	Chosen bool   `json:"chosen,omitempty"`
+}
+
 // PKGetExec fetches at most one row by primary key. Key values may be
 // literals or outer-slot parameters resolved from the environment when the
 // operator is built — the deduplicated to-parent pattern is a PKGetExec per
 // distinct key.
 type PKGetExec struct {
-	Scan *bound.Scan
-	Key  []ConstVal // one per primary-key column, in key order
+	Scan   *bound.Scan
+	Key    []ConstVal // one per primary-key column, in key order
+	Access *AccessDecision
 }
 
 // TableScanExec reads every row of a table, in primary-key order.
 type TableScanExec struct {
-	Scan *bound.Scan
+	Scan   *bound.Scan
+	Access *AccessDecision
 }
 
 // RowsExec streams a constant relation's literal rows. No storage is
@@ -101,6 +118,7 @@ type IndexRangeScanExec struct {
 	Index    catalog.Index
 	EqPrefix []ConstVal // one per leading index column
 	Range    *RangeSpec
+	Access   *AccessDecision
 }
 
 // FilterExec keeps rows where the predicate is TRUE. The predicate is
