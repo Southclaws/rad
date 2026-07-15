@@ -108,6 +108,24 @@ emitter states both values so that review is one glance.
 Naming: `bug_gen_<short-hash-or-slug>` so generated fixtures are distinguishable
 from hand-authored ones but live in the same suite.
 
+**No Go is generated** — the e2e runner is data-driven (it discovers fixture
+directories; "a fixture is data, not code"), so emission is pure serialisation
+and never triggers a compile. Formats: `schema.rad` is YAML, `seed.json` and
+`test_*.json` are JSON.
+
+**Serialisation wrinkle to plan for.** The generator builds the engine's
+*nested* IR (`lir.Query` — `Filter{Input: …}`), while `test_*.json` stores the
+*flat wire* form (`protocol` nodes-map JSON that `protocol.MarshalProgram` /
+`MarshalQuery` emit and the client sends). Those are different representations,
+and the existing conversion runs the *other* way (server: wire → engine IR). So
+emission needs a `lir.Query → protocol` (nested → nodes-map) step, which likely
+has to be written. Two clean options: (a) add that small converter and reuse
+`MarshalProgram`; or (b) have the generator build the `protocol` wire model
+directly and convert wire → `lir` (the existing server path) for the differential
+run — which also removes the marshaller need at emit time. Decide when building;
+neither is hard, but it is not free. `schema.rad` (from the catalog spec) and
+`seed.json` (from the rows) are straightforward to serialise.
+
 ## Sequencing
 
 1. `P` (interestingness predicate) with a mode-level divergence signature, built
