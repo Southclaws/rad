@@ -1,5 +1,14 @@
 # Generative testing: remaining improvements
 
+> **STATUS: DONE** (2026-07-15). The generative-testing hardening pass. Shipped
+> #1 bindings/refs, #2 ordered-result mode, #4 crossing-over-join compositions,
+> #7 richer value domains (which found & fixed a silent int64 `sum` overflow);
+> #3 (error-by-code) and #6 (distribution tuning) deprioritized as not worth it
+> yet. #5 shrinking is split out to its own spec, `[[shrinking-fixture-emission]]`,
+> to do just before the optimiser effort. Minor open gaps (`nested_crossing`,
+> inter-binding refs, `rows`/`cast`/`slice` generation) are tracked in the oracle
+> ADR `[[differential-property-oracle]]`. Kept for the record.
+
 The core of the original plan is shipped (see `[[differential-property-oracle]]`
 and `rad/engine/05_exec/generate_test.go` + `.../refexec`):
 
