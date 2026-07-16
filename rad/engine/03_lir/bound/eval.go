@@ -335,7 +335,7 @@ func evalCast(c Cast, env Env) (lir.Value, error) {
 	case v.Type == catalog.TypeInt64 && to == catalog.TypeFloat64:
 		return lir.Float64(float64(v.Int64)), nil
 	case v.Type == catalog.TypeFloat64 && to == catalog.TypeInt64:
-		// Go's float64→int64 conversion is implementation-defined when the
+		// Go's float64->int64 conversion is implementation-defined when the
 		// value is out of range (it differs across architectures), so a naked
 		// conversion would make the same query non-deterministic. Reject it as
 		// a data-dependent failure instead. The bounds are the exclusive

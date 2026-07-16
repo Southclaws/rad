@@ -295,7 +295,7 @@ func TestClientProblemDetails(t *testing.T) {
 		t.Fatalf("detail = %q", pb.Detail)
 	}
 
-	// Unknown table → invalid; unknown tx → not_found.
+	// Unknown table -> invalid; unknown tx -> not_found.
 	if _, err := c.Query(ctx, tableQ("ghost")); err == nil {
 		t.Fatal("unknown table accepted")
 	}

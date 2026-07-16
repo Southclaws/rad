@@ -10,7 +10,7 @@ package bound
 // evaluator itself. They are what makes sharing the evaluator safe.
 //
 // The two bugs the recent adversarial sweep found (int64 overflow silently
-// wrapping, float→int cast out of range being platform-dependent) lived in
+// wrapping, float->int cast out of range being platform-dependent) lived in
 // exactly this evaluator; the overflow and cast-range cases below are their
 // regression pins at the unit level.
 
@@ -44,9 +44,15 @@ func TestK3TruthTablesExplicit(t *testing.T) {
 	T, F, U := lir.TriTrue, lir.TriFalse, lir.TriUnknown
 
 	and := []struct{ a, b, want lir.TriBool }{
-		{T, T, T}, {T, F, F}, {T, U, U},
-		{F, T, F}, {F, F, F}, {F, U, F},
-		{U, T, U}, {U, F, F}, {U, U, U},
+		{T, T, T},
+		{T, F, F},
+		{T, U, U},
+		{F, T, F},
+		{F, F, F},
+		{F, U, F},
+		{U, T, U},
+		{U, F, F},
+		{U, U, U},
 	}
 	for _, c := range and {
 		if got := pred(t, NewBinary(lir.OpAnd, triExpr(c.a), triExpr(c.b)), nil); got != c.want {
@@ -55,9 +61,15 @@ func TestK3TruthTablesExplicit(t *testing.T) {
 	}
 
 	or := []struct{ a, b, want lir.TriBool }{
-		{T, T, T}, {T, F, T}, {T, U, T},
-		{F, T, T}, {F, F, F}, {F, U, U},
-		{U, T, T}, {U, F, U}, {U, U, U},
+		{T, T, T},
+		{T, F, T},
+		{T, U, T},
+		{F, T, T},
+		{F, F, F},
+		{F, U, U},
+		{U, T, T},
+		{U, F, U},
+		{U, U, U},
 	}
 	for _, c := range or {
 		if got := pred(t, NewBinary(lir.OpOr, triExpr(c.a), triExpr(c.b)), nil); got != c.want {
@@ -279,7 +291,7 @@ func TestNullPropagationArithmetic(t *testing.T) {
 	}
 }
 
-// TestCastFloatToIntExhaustive pins float→int truncation toward zero and the
+// TestCastFloatToIntExhaustive pins float->int truncation toward zero and the
 // out-of-range rule: NaN, ±Inf, and any magnitude ≥ 2^63 must be a clean
 // execution_failed, never a platform-dependent conversion.
 func TestCastFloatToIntExhaustive(t *testing.T) {
@@ -287,8 +299,15 @@ func TestCastFloatToIntExhaustive(t *testing.T) {
 		f    float64
 		want int64
 	}{
-		{0.0, 0}, {0.9, 0}, {-0.9, 0}, {3.9, 3}, {-3.9, -3},
-		{3.0, 3}, {-3.0, -3}, {1.0, 1}, {-1.0, -1},
+		{0.0, 0},
+		{0.9, 0},
+		{-0.9, 0},
+		{3.9, 3},
+		{-3.9, -3},
+		{3.0, 3},
+		{-3.0, -3},
+		{1.0, 1},
+		{-1.0, -1},
 		{9.0e18, 9000000000000000000}, // in range (< 2^63 ≈ 9.223e18)
 	}
 	for _, c := range trunc {

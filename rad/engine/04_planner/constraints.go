@@ -27,7 +27,7 @@ type ConstVal struct {
 }
 
 // RangeBound is one end of a column range. Only literal bounds drive access
-// paths this arc.
+// paths.
 type RangeBound struct {
 	V         lir.Value
 	Inclusive bool

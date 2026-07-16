@@ -4,7 +4,7 @@ package planner
 // resolved and validated by the binder, so planning cannot fail on client
 // input; it only chooses implementations.
 //
-// Access selection generalises the initial equality-only chooseAccessPath: a fully
+// Access selection picks the cheapest path the constraints support: a fully
 // pinned primary key wins outright; otherwise indexes rank by leading
 // equality-prefix length, then a trailing range bound, then whether the
 // index's provided ordering satisfies the required ordering (the whole of

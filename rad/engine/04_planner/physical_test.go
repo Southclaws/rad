@@ -1,7 +1,7 @@
 package planner_test
 
-// Physical planning tests: access selection (v1 chooseAccess parity plus
-// ranges), the limited ordered-index pushdown, and the forcing-query plan —
+// Physical planning tests: access selection (chooseAccessPath plus ranges),
+// the limited ordered-index pushdown, and the forcing-query plan —
 // three key-correlated attaches, a point get per distinct parent key, and
 // the residual filter above every access node.
 
@@ -38,7 +38,7 @@ func TestPlanPKLookup(t *testing.T) {
 }
 
 // The longest leading equality prefix picks the index; a non-leading
-// equality cannot use it (v1 parity).
+// equality cannot use it.
 func TestPlanIndexPrefixSelection(t *testing.T) {
 	got := planOf(t, bfilter(bscan("tasks", "t"),
 		band(beq(bcol("t", "board_id"), blit("b1")), beq(bcol("t", "status"), blit("open")))))

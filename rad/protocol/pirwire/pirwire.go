@@ -184,7 +184,7 @@ func (CreateStatement) StatementType() string { return "create" }
 // Update rows of `table`, identified and assigned by the schema of
 // `relation`: its output must include the target's full primary key, which
 // identifies each target row but is not assigned, plus at least one
-// non-primary-key column to assign. PIR v1 does not change row identity, so
+// non-primary-key column to assign. Updating never changes row identity, so
 // a primary-key-only input is rejected. Columns absent from the relation
 // are left unchanged; a NULL assigns NULL. Each input row must identify
 // exactly one existing row, and no target may be identified twice. The

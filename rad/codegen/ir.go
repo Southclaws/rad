@@ -3,10 +3,10 @@
 // client. The generated clients speak the wire protocol internally;
 // applications built on them never see the IR, keys, or SQL of any kind.
 //
-// The pipeline is schema → Model → Generator → files, mirroring the Schemancer
+// The pipeline is schema -> Model -> Generator -> files, mirroring the Schemancer
 // tool that generates rad's wire types. The Model is the stable contract
-// between rad and any generator, in-process or (later) an external
-// `rad-gen-*` executable.
+// between rad and any generator — built in and in-process today, or an
+// external `rad-gen-*` executable satisfying the same JSON contract.
 package codegen
 
 import (

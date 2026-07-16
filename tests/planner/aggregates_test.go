@@ -39,7 +39,7 @@ func TestAggCountRowsVsCountNonNull(t *testing.T) {
 func TestAggIntFolds(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	// ratings: 5, 4, 2, 5, 1 → sum 17, min 1, max 5, avg 3.4 (avg is float).
+	// ratings: 5, 4, 2, 5, 1 -> sum 17, min 1, max 5, avg 3.4 (avg is float).
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Scan("reviews", "r"),
 		"fold": lirwire.Aggregate("r", "", nil, []lirwire.AggTerm{
@@ -171,7 +171,7 @@ func TestAggGroupByComputedExpression(t *testing.T) {
 func TestAggOverFilteredInput(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	// gear prices: 80, 40, 300 → avg (80+40+300)/3 = 140.
+	// gear prices: 80, 40, 300 -> avg (80+40+300)/3 = 140.
 	d.Query(q(map[string]lirwire.Node{
 		"p": lirwire.Scan("products", "p"),
 		"gear": lirwire.Filter("p",
@@ -212,7 +212,7 @@ func TestAggOverProjection(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
 	// Line totals: i1 80, i2 50, i3 300, i4 80, i5 35, i6 450, i7 500,
-	// i8 100, i9 80, i10 40 → sum 1715.
+	// i8 100, i9 80, i10 40 -> sum 1715.
 	d.Query(q(map[string]lirwire.Node{
 		"i": lirwire.Scan("order_items", "i"),
 		"lines": lirwire.Project("i", "lines", nil, []lirwire.Field{
@@ -263,7 +263,7 @@ func TestAggTopGroupsBySlice(t *testing.T) {
 func TestAggMinMaxOverText(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	// names: Ada, Bob, Cyn, Dee, Eli → min "Ada", max "Eli".
+	// names: Ada, Bob, Cyn, Dee, Eli -> min "Ada", max "Eli".
 	d.Query(q(map[string]lirwire.Node{
 		"c": lirwire.Scan("customers", "c"),
 		"fold": lirwire.Aggregate("c", "", nil, []lirwire.AggTerm{

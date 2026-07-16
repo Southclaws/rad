@@ -171,7 +171,7 @@ func TestStressSixDeepChain(t *testing.T) {
 	}, "out", "many")).Equals(`[{"id":"o2"},{"id":"o6"},{"id":"o5"}]`)
 }
 
-// 8. Four levels of nesting: customer → orders array → items array → product
+// 8. Four levels of nesting: customer -> orders array -> items array -> product
 // object, projecting only the product's name at the deepest level. Item ids
 // are TEXT, so "by id" is lexicographic: o7's items order i10 before i9.
 func TestStressFourLevelNesting(t *testing.T) {
@@ -306,7 +306,7 @@ func TestStressWrappedCrossingHaving(t *testing.T) {
 
 // 12. Arithmetic over a column that is itself computed by a labelled
 // projection below: total = qty*unit_price, then taxed = total*2.
-// o1's items: i1 total 80 → 160, i2 total 50 → 100.
+// o1's items: i1 total 80 -> 160, i2 total 50 -> 100.
 func TestStressArithmeticOverComputedColumn(t *testing.T) {
 	t.Parallel()
 	d := shop(t)

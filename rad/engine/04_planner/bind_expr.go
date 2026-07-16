@@ -186,8 +186,8 @@ func (b *binder) bindBinary(x lir.Binary) (bound.Expr, error) {
 			return nil, reject.Inputf("planner: cannot compare %s with %s", lk, rk)
 		}
 		if lk != rk {
-			// No numeric widening in comparisons this arc: an int64 column
-			// never silently compares against a float literal.
+			// No numeric widening in comparisons: an int64 column never
+			// silently compares against a float literal.
 			return nil, reject.Inputf("planner: cannot compare %s with %s", lk, rk)
 		}
 		return bound.NewBinary(x.Op, l, r), nil

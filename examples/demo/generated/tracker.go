@@ -137,7 +137,7 @@ func (g *graphBuilder) next() string {
 	return id
 }
 
-// chain emits scan → filter → order → slice as needed and returns the last
+// chain emits scan -> filter -> order -> slice as needed and returns the last
 // node id plus the scan's scope. pairs prepend correlation equalities
 // against outerScope.
 func (g *graphBuilder) chain(table string, pairs [][2]string, outerScope string, filters []lirwire.Expr, orders []lirwire.OrderTerm, offset, limit int, limitSet bool) (string, string) {
@@ -415,7 +415,7 @@ func (t UserTable) Delete(ctx context.Context, id string) (bool, error) {
 
 // ByUsername finds the row by the unique index on (username).
 func (t UserTable) ByUsername(ctx context.Context, username string) (User, bool, error) {
-	recs, err := t.v.Query(ctx, assemble(querySpec{table: "users", orders: []lirwire.OrderTerm{lirwire.OrderTerm{Expr: lirwire.Col("", "id")}}, limit: 1, limitSet: true, filters: []lirwire.Expr{
+	recs, err := t.v.Query(ctx, assemble(querySpec{table: "users", orders: []lirwire.OrderTerm{{Expr: lirwire.Col("", "id")}}, limit: 1, limitSet: true, filters: []lirwire.Expr{
 		lirwire.Binary("eq", lirwire.Col("", "username"), lirwire.LitOf(username)),
 	}}))
 	if err != nil || len(recs) == 0 {
@@ -643,6 +643,7 @@ func (q *UserQuery) OrderByIDDesc() *UserQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *UserQuery) OrderByUsername() *UserQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "username")})
 	return q
@@ -652,6 +653,7 @@ func (q *UserQuery) OrderByUsernameDesc() *UserQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "username"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *UserQuery) OrderByDisplayName() *UserQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "display_name")})
 	return q
@@ -661,6 +663,7 @@ func (q *UserQuery) OrderByDisplayNameDesc() *UserQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "display_name"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *UserQuery) OrderByPasswordHash() *UserQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "password_hash")})
 	return q
@@ -670,6 +673,7 @@ func (q *UserQuery) OrderByPasswordHashDesc() *UserQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "password_hash"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *UserQuery) OrderByEmail() *UserQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "email")})
 	return q
@@ -679,6 +683,7 @@ func (q *UserQuery) OrderByEmailDesc() *UserQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "email"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *UserQuery) OrderByCreatedAt() *UserQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at")})
 	return q
@@ -763,7 +768,7 @@ func (q *UserQuery) All(ctx context.Context) ([]User, error) {
 // First executes the query with limit 1.
 func (q *UserQuery) First(ctx context.Context) (User, bool, error) {
 	if len(q.spec.orders) == 0 {
-		q.spec.orders = []lirwire.OrderTerm{lirwire.OrderTerm{Expr: lirwire.Col("", "id")}}
+		q.spec.orders = []lirwire.OrderTerm{{Expr: lirwire.Col("", "id")}}
 	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
@@ -1267,6 +1272,7 @@ func (b *UserInclude) OrderByIDDesc() *UserInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *UserInclude) OrderByUsername() *UserInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "username")})
 	return b
@@ -1276,6 +1282,7 @@ func (b *UserInclude) OrderByUsernameDesc() *UserInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "username"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *UserInclude) OrderByDisplayName() *UserInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "display_name")})
 	return b
@@ -1285,6 +1292,7 @@ func (b *UserInclude) OrderByDisplayNameDesc() *UserInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "display_name"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *UserInclude) OrderByPasswordHash() *UserInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "password_hash")})
 	return b
@@ -1294,6 +1302,7 @@ func (b *UserInclude) OrderByPasswordHashDesc() *UserInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "password_hash"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *UserInclude) OrderByEmail() *UserInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "email")})
 	return b
@@ -1303,6 +1312,7 @@ func (b *UserInclude) OrderByEmailDesc() *UserInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "email"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *UserInclude) OrderByCreatedAt() *UserInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at")})
 	return b
@@ -1623,6 +1633,7 @@ func (q *SessionQuery) OrderByTokenDesc() *SessionQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "token"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *SessionQuery) OrderByUserID() *SessionQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "user_id")})
 	return q
@@ -1632,6 +1643,7 @@ func (q *SessionQuery) OrderByUserIDDesc() *SessionQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "user_id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *SessionQuery) OrderByCreatedAt() *SessionQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at")})
 	return q
@@ -1641,6 +1653,7 @@ func (q *SessionQuery) OrderByCreatedAtDesc() *SessionQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *SessionQuery) OrderByExpiresAt() *SessionQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "expires_at")})
 	return q
@@ -1681,7 +1694,7 @@ func (q *SessionQuery) All(ctx context.Context) ([]Session, error) {
 // First executes the query with limit 1.
 func (q *SessionQuery) First(ctx context.Context) (Session, bool, error) {
 	if len(q.spec.orders) == 0 {
-		q.spec.orders = []lirwire.OrderTerm{lirwire.OrderTerm{Expr: lirwire.Col("", "token")}}
+		q.spec.orders = []lirwire.OrderTerm{{Expr: lirwire.Col("", "token")}}
 	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
@@ -2043,6 +2056,7 @@ func (b *SessionInclude) OrderByTokenDesc() *SessionInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "token"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *SessionInclude) OrderByUserID() *SessionInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "user_id")})
 	return b
@@ -2052,6 +2066,7 @@ func (b *SessionInclude) OrderByUserIDDesc() *SessionInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "user_id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *SessionInclude) OrderByCreatedAt() *SessionInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at")})
 	return b
@@ -2061,6 +2076,7 @@ func (b *SessionInclude) OrderByCreatedAtDesc() *SessionInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *SessionInclude) OrderByExpiresAt() *SessionInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "expires_at")})
 	return b
@@ -2173,7 +2189,7 @@ func (t TeamTable) Delete(ctx context.Context, id string) (bool, error) {
 
 // ByName finds the row by the unique index on (name).
 func (t TeamTable) ByName(ctx context.Context, name string) (Team, bool, error) {
-	recs, err := t.v.Query(ctx, assemble(querySpec{table: "teams", orders: []lirwire.OrderTerm{lirwire.OrderTerm{Expr: lirwire.Col("", "id")}}, limit: 1, limitSet: true, filters: []lirwire.Expr{
+	recs, err := t.v.Query(ctx, assemble(querySpec{table: "teams", orders: []lirwire.OrderTerm{{Expr: lirwire.Col("", "id")}}, limit: 1, limitSet: true, filters: []lirwire.Expr{
 		lirwire.Binary("eq", lirwire.Col("", "name"), lirwire.LitOf(name)),
 	}}))
 	if err != nil || len(recs) == 0 {
@@ -2291,6 +2307,7 @@ func (q *TeamQuery) OrderByIDDesc() *TeamQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TeamQuery) OrderByName() *TeamQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "name")})
 	return q
@@ -2300,6 +2317,7 @@ func (q *TeamQuery) OrderByNameDesc() *TeamQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "name"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TeamQuery) OrderByCreatedAt() *TeamQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at")})
 	return q
@@ -2362,7 +2380,7 @@ func (q *TeamQuery) All(ctx context.Context) ([]Team, error) {
 // First executes the query with limit 1.
 func (q *TeamQuery) First(ctx context.Context) (Team, bool, error) {
 	if len(q.spec.orders) == 0 {
-		q.spec.orders = []lirwire.OrderTerm{lirwire.OrderTerm{Expr: lirwire.Col("", "id")}}
+		q.spec.orders = []lirwire.OrderTerm{{Expr: lirwire.Col("", "id")}}
 	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
@@ -2636,6 +2654,7 @@ func (b *TeamInclude) OrderByIDDesc() *TeamInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TeamInclude) OrderByName() *TeamInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "name")})
 	return b
@@ -2645,6 +2664,7 @@ func (b *TeamInclude) OrderByNameDesc() *TeamInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "name"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TeamInclude) OrderByCreatedAt() *TeamInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at")})
 	return b
@@ -2927,6 +2947,7 @@ func (q *TeamMemberQuery) OrderByTeamIDDesc() *TeamMemberQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "team_id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TeamMemberQuery) OrderByUserID() *TeamMemberQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "user_id")})
 	return q
@@ -2936,6 +2957,7 @@ func (q *TeamMemberQuery) OrderByUserIDDesc() *TeamMemberQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "user_id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TeamMemberQuery) OrderByRole() *TeamMemberQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "role")})
 	return q
@@ -2945,6 +2967,7 @@ func (q *TeamMemberQuery) OrderByRoleDesc() *TeamMemberQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "role"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TeamMemberQuery) OrderByJoinedAt() *TeamMemberQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "joined_at")})
 	return q
@@ -2999,7 +3022,7 @@ func (q *TeamMemberQuery) All(ctx context.Context) ([]TeamMember, error) {
 // First executes the query with limit 1.
 func (q *TeamMemberQuery) First(ctx context.Context) (TeamMember, bool, error) {
 	if len(q.spec.orders) == 0 {
-		q.spec.orders = []lirwire.OrderTerm{lirwire.OrderTerm{Expr: lirwire.Col("", "team_id")}, lirwire.OrderTerm{Expr: lirwire.Col("", "user_id")}}
+		q.spec.orders = []lirwire.OrderTerm{{Expr: lirwire.Col("", "team_id")}, {Expr: lirwire.Col("", "user_id")}}
 	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
@@ -3343,6 +3366,7 @@ func (b *TeamMemberInclude) OrderByTeamIDDesc() *TeamMemberInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "team_id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TeamMemberInclude) OrderByUserID() *TeamMemberInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "user_id")})
 	return b
@@ -3352,6 +3376,7 @@ func (b *TeamMemberInclude) OrderByUserIDDesc() *TeamMemberInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "user_id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TeamMemberInclude) OrderByRole() *TeamMemberInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "role")})
 	return b
@@ -3361,6 +3386,7 @@ func (b *TeamMemberInclude) OrderByRoleDesc() *TeamMemberInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "role"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TeamMemberInclude) OrderByJoinedAt() *TeamMemberInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "joined_at")})
 	return b
@@ -3501,7 +3527,7 @@ func (t BoardTable) Delete(ctx context.Context, id string) (bool, error) {
 
 // ByTeamIDName finds the row by the unique index on (team_id, name).
 func (t BoardTable) ByTeamIDName(ctx context.Context, teamID string, name string) (Board, bool, error) {
-	recs, err := t.v.Query(ctx, assemble(querySpec{table: "boards", orders: []lirwire.OrderTerm{lirwire.OrderTerm{Expr: lirwire.Col("", "id")}}, limit: 1, limitSet: true, filters: []lirwire.Expr{
+	recs, err := t.v.Query(ctx, assemble(querySpec{table: "boards", orders: []lirwire.OrderTerm{{Expr: lirwire.Col("", "id")}}, limit: 1, limitSet: true, filters: []lirwire.Expr{
 		lirwire.Binary("eq", lirwire.Col("", "team_id"), lirwire.LitOf(teamID)),
 		lirwire.Binary("eq", lirwire.Col("", "name"), lirwire.LitOf(name)),
 	}}))
@@ -3660,6 +3686,7 @@ func (q *BoardQuery) OrderByIDDesc() *BoardQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *BoardQuery) OrderByTeamID() *BoardQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "team_id")})
 	return q
@@ -3669,6 +3696,7 @@ func (q *BoardQuery) OrderByTeamIDDesc() *BoardQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "team_id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *BoardQuery) OrderByName() *BoardQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "name")})
 	return q
@@ -3678,6 +3706,7 @@ func (q *BoardQuery) OrderByNameDesc() *BoardQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "name"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *BoardQuery) OrderByArchived() *BoardQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "archived")})
 	return q
@@ -3687,6 +3716,7 @@ func (q *BoardQuery) OrderByArchivedDesc() *BoardQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "archived"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *BoardQuery) OrderByCreatedAt() *BoardQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at")})
 	return q
@@ -3738,7 +3768,7 @@ func (q *BoardQuery) All(ctx context.Context) ([]Board, error) {
 // First executes the query with limit 1.
 func (q *BoardQuery) First(ctx context.Context) (Board, bool, error) {
 	if len(q.spec.orders) == 0 {
-		q.spec.orders = []lirwire.OrderTerm{lirwire.OrderTerm{Expr: lirwire.Col("", "id")}}
+		q.spec.orders = []lirwire.OrderTerm{{Expr: lirwire.Col("", "id")}}
 	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
@@ -4132,6 +4162,7 @@ func (b *BoardInclude) OrderByIDDesc() *BoardInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *BoardInclude) OrderByTeamID() *BoardInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "team_id")})
 	return b
@@ -4141,6 +4172,7 @@ func (b *BoardInclude) OrderByTeamIDDesc() *BoardInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "team_id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *BoardInclude) OrderByName() *BoardInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "name")})
 	return b
@@ -4150,6 +4182,7 @@ func (b *BoardInclude) OrderByNameDesc() *BoardInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "name"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *BoardInclude) OrderByArchived() *BoardInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "archived")})
 	return b
@@ -4159,6 +4192,7 @@ func (b *BoardInclude) OrderByArchivedDesc() *BoardInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "archived"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *BoardInclude) OrderByCreatedAt() *BoardInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at")})
 	return b
@@ -4813,6 +4847,7 @@ func (q *TaskQuery) OrderByIDDesc() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TaskQuery) OrderByBoardID() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "board_id")})
 	return q
@@ -4822,6 +4857,7 @@ func (q *TaskQuery) OrderByBoardIDDesc() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "board_id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TaskQuery) OrderByTitle() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "title")})
 	return q
@@ -4831,6 +4867,7 @@ func (q *TaskQuery) OrderByTitleDesc() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "title"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TaskQuery) OrderByDescription() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "description")})
 	return q
@@ -4840,6 +4877,7 @@ func (q *TaskQuery) OrderByDescriptionDesc() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "description"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TaskQuery) OrderByStatus() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "status")})
 	return q
@@ -4849,6 +4887,7 @@ func (q *TaskQuery) OrderByStatusDesc() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "status"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TaskQuery) OrderByPriority() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "priority")})
 	return q
@@ -4858,6 +4897,7 @@ func (q *TaskQuery) OrderByPriorityDesc() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "priority"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TaskQuery) OrderByEstimate() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "estimate")})
 	return q
@@ -4867,6 +4907,7 @@ func (q *TaskQuery) OrderByEstimateDesc() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "estimate"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TaskQuery) OrderByAssigneeID() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "assignee_id")})
 	return q
@@ -4876,6 +4917,7 @@ func (q *TaskQuery) OrderByAssigneeIDDesc() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "assignee_id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TaskQuery) OrderByCreatorID() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "creator_id")})
 	return q
@@ -4885,6 +4927,7 @@ func (q *TaskQuery) OrderByCreatorIDDesc() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "creator_id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TaskQuery) OrderByParentID() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "parent_id")})
 	return q
@@ -4894,6 +4937,7 @@ func (q *TaskQuery) OrderByParentIDDesc() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "parent_id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TaskQuery) OrderByDueAt() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "due_at")})
 	return q
@@ -4903,6 +4947,7 @@ func (q *TaskQuery) OrderByDueAtDesc() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "due_at"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TaskQuery) OrderByCreatedAt() *TaskQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at")})
 	return q
@@ -5009,7 +5054,7 @@ func (q *TaskQuery) All(ctx context.Context) ([]Task, error) {
 // First executes the query with limit 1.
 func (q *TaskQuery) First(ctx context.Context) (Task, bool, error) {
 	if len(q.spec.orders) == 0 {
-		q.spec.orders = []lirwire.OrderTerm{lirwire.OrderTerm{Expr: lirwire.Col("", "id")}}
+		q.spec.orders = []lirwire.OrderTerm{{Expr: lirwire.Col("", "id")}}
 	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
@@ -6017,6 +6062,7 @@ func (b *TaskInclude) OrderByIDDesc() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TaskInclude) OrderByBoardID() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "board_id")})
 	return b
@@ -6026,6 +6072,7 @@ func (b *TaskInclude) OrderByBoardIDDesc() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "board_id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TaskInclude) OrderByTitle() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "title")})
 	return b
@@ -6035,6 +6082,7 @@ func (b *TaskInclude) OrderByTitleDesc() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "title"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TaskInclude) OrderByDescription() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "description")})
 	return b
@@ -6044,6 +6092,7 @@ func (b *TaskInclude) OrderByDescriptionDesc() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "description"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TaskInclude) OrderByStatus() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "status")})
 	return b
@@ -6053,6 +6102,7 @@ func (b *TaskInclude) OrderByStatusDesc() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "status"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TaskInclude) OrderByPriority() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "priority")})
 	return b
@@ -6062,6 +6112,7 @@ func (b *TaskInclude) OrderByPriorityDesc() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "priority"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TaskInclude) OrderByEstimate() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "estimate")})
 	return b
@@ -6071,6 +6122,7 @@ func (b *TaskInclude) OrderByEstimateDesc() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "estimate"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TaskInclude) OrderByAssigneeID() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "assignee_id")})
 	return b
@@ -6080,6 +6132,7 @@ func (b *TaskInclude) OrderByAssigneeIDDesc() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "assignee_id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TaskInclude) OrderByCreatorID() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "creator_id")})
 	return b
@@ -6089,6 +6142,7 @@ func (b *TaskInclude) OrderByCreatorIDDesc() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "creator_id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TaskInclude) OrderByParentID() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "parent_id")})
 	return b
@@ -6098,6 +6152,7 @@ func (b *TaskInclude) OrderByParentIDDesc() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "parent_id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TaskInclude) OrderByDueAt() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "due_at")})
 	return b
@@ -6107,6 +6162,7 @@ func (b *TaskInclude) OrderByDueAtDesc() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "due_at"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TaskInclude) OrderByCreatedAt() *TaskInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at")})
 	return b
@@ -6491,6 +6547,7 @@ func (q *CommentQuery) OrderByIDDesc() *CommentQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *CommentQuery) OrderByTaskID() *CommentQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "task_id")})
 	return q
@@ -6500,6 +6557,7 @@ func (q *CommentQuery) OrderByTaskIDDesc() *CommentQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "task_id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *CommentQuery) OrderByAuthorID() *CommentQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "author_id")})
 	return q
@@ -6509,6 +6567,7 @@ func (q *CommentQuery) OrderByAuthorIDDesc() *CommentQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "author_id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *CommentQuery) OrderByBody() *CommentQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "body")})
 	return q
@@ -6518,6 +6577,7 @@ func (q *CommentQuery) OrderByBodyDesc() *CommentQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "body"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *CommentQuery) OrderByCreatedAt() *CommentQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at")})
 	return q
@@ -6569,7 +6629,7 @@ func (q *CommentQuery) All(ctx context.Context) ([]Comment, error) {
 // First executes the query with limit 1.
 func (q *CommentQuery) First(ctx context.Context) (Comment, bool, error) {
 	if len(q.spec.orders) == 0 {
-		q.spec.orders = []lirwire.OrderTerm{lirwire.OrderTerm{Expr: lirwire.Col("", "id")}}
+		q.spec.orders = []lirwire.OrderTerm{{Expr: lirwire.Col("", "id")}}
 	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
@@ -6983,6 +7043,7 @@ func (b *CommentInclude) OrderByIDDesc() *CommentInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *CommentInclude) OrderByTaskID() *CommentInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "task_id")})
 	return b
@@ -6992,6 +7053,7 @@ func (b *CommentInclude) OrderByTaskIDDesc() *CommentInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "task_id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *CommentInclude) OrderByAuthorID() *CommentInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "author_id")})
 	return b
@@ -7001,6 +7063,7 @@ func (b *CommentInclude) OrderByAuthorIDDesc() *CommentInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "author_id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *CommentInclude) OrderByBody() *CommentInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "body")})
 	return b
@@ -7010,6 +7073,7 @@ func (b *CommentInclude) OrderByBodyDesc() *CommentInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "body"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *CommentInclude) OrderByCreatedAt() *CommentInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at")})
 	return b
@@ -7142,7 +7206,7 @@ func (t LabelTable) Delete(ctx context.Context, id string) (bool, error) {
 
 // ByTeamIDName finds the row by the unique index on (team_id, name).
 func (t LabelTable) ByTeamIDName(ctx context.Context, teamID string, name string) (Label, bool, error) {
-	recs, err := t.v.Query(ctx, assemble(querySpec{table: "labels", orders: []lirwire.OrderTerm{lirwire.OrderTerm{Expr: lirwire.Col("", "id")}}, limit: 1, limitSet: true, filters: []lirwire.Expr{
+	recs, err := t.v.Query(ctx, assemble(querySpec{table: "labels", orders: []lirwire.OrderTerm{{Expr: lirwire.Col("", "id")}}, limit: 1, limitSet: true, filters: []lirwire.Expr{
 		lirwire.Binary("eq", lirwire.Col("", "team_id"), lirwire.LitOf(teamID)),
 		lirwire.Binary("eq", lirwire.Col("", "name"), lirwire.LitOf(name)),
 	}}))
@@ -7291,6 +7355,7 @@ func (q *LabelQuery) OrderByIDDesc() *LabelQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *LabelQuery) OrderByTeamID() *LabelQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "team_id")})
 	return q
@@ -7300,6 +7365,7 @@ func (q *LabelQuery) OrderByTeamIDDesc() *LabelQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "team_id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *LabelQuery) OrderByName() *LabelQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "name")})
 	return q
@@ -7309,6 +7375,7 @@ func (q *LabelQuery) OrderByNameDesc() *LabelQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "name"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *LabelQuery) OrderByHexColor() *LabelQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "hex_color")})
 	return q
@@ -7360,7 +7427,7 @@ func (q *LabelQuery) All(ctx context.Context) ([]Label, error) {
 // First executes the query with limit 1.
 func (q *LabelQuery) First(ctx context.Context) (Label, bool, error) {
 	if len(q.spec.orders) == 0 {
-		q.spec.orders = []lirwire.OrderTerm{lirwire.OrderTerm{Expr: lirwire.Col("", "id")}}
+		q.spec.orders = []lirwire.OrderTerm{{Expr: lirwire.Col("", "id")}}
 	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
@@ -7686,6 +7753,7 @@ func (b *LabelInclude) OrderByIDDesc() *LabelInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *LabelInclude) OrderByTeamID() *LabelInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "team_id")})
 	return b
@@ -7695,6 +7763,7 @@ func (b *LabelInclude) OrderByTeamIDDesc() *LabelInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "team_id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *LabelInclude) OrderByName() *LabelInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "name")})
 	return b
@@ -7704,6 +7773,7 @@ func (b *LabelInclude) OrderByNameDesc() *LabelInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "name"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *LabelInclude) OrderByHexColor() *LabelInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "hex_color")})
 	return b
@@ -7772,8 +7842,7 @@ type TaskLabelCreate struct {
 
 // TaskLabelPatch is the input to Update. Nil fields are left untouched;
 // Clear* sets a nullable column to NULL.
-type TaskLabelPatch struct {
-}
+type TaskLabelPatch struct{}
 
 // TaskLabelTable provides typed access to "task_labels".
 type TaskLabelTable struct{ v radclient.View }
@@ -7890,6 +7959,7 @@ func (q *TaskLabelQuery) OrderByTaskIDDesc() *TaskLabelQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "task_id"), Desc: ptrBool(true)})
 	return q
 }
+
 func (q *TaskLabelQuery) OrderByLabelID() *TaskLabelQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "label_id")})
 	return q
@@ -7944,7 +8014,7 @@ func (q *TaskLabelQuery) All(ctx context.Context) ([]TaskLabel, error) {
 // First executes the query with limit 1.
 func (q *TaskLabelQuery) First(ctx context.Context) (TaskLabel, bool, error) {
 	if len(q.spec.orders) == 0 {
-		q.spec.orders = []lirwire.OrderTerm{lirwire.OrderTerm{Expr: lirwire.Col("", "task_id")}, lirwire.OrderTerm{Expr: lirwire.Col("", "label_id")}}
+		q.spec.orders = []lirwire.OrderTerm{{Expr: lirwire.Col("", "task_id")}, {Expr: lirwire.Col("", "label_id")}}
 	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
@@ -8130,6 +8200,7 @@ func (b *TaskLabelInclude) OrderByTaskIDDesc() *TaskLabelInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "task_id"), Desc: ptrBool(true)})
 	return b
 }
+
 func (b *TaskLabelInclude) OrderByLabelID() *TaskLabelInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "label_id")})
 	return b

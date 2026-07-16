@@ -17,7 +17,7 @@ import (
 	planner "github.com/Southclaws/rad/rad/engine/04_planner"
 )
 
-// trackerCat is the forcing-query schema: boards → owner, tasks → assignee,
+// trackerCat is the forcing-query schema: boards -> owner, tasks -> assignee,
 // comments. users.name is unique to exercise unique-index refinement.
 func trackerCat(t *testing.T) (*catalog.Catalog, context.Context) {
 	t.Helper()
@@ -149,9 +149,8 @@ func bindErr(t *testing.T, q lir.Query, want string) {
 	}
 }
 
-// forcingQuery is the arc's acceptance shape: boards → owner → first 20 open
-// tasks by priority → assignee + comment count. Zero include/parent/children
-// special cases.
+// forcingQuery exercises boards -> owner -> first 20 open tasks by priority ->
+// assignee + comment count. Zero include/parent/children special cases.
 func forcingQuery() lir.Query {
 	owner := bfilter(bscan("users", "o"), beq(bcol("o", "id"), bcol("b", "owner_id")))
 	assignee := bfilter(bscan("users", "a"), beq(bcol("a", "id"), bcol("t", "assignee_id")))
@@ -477,97 +476,162 @@ func TestValidationMatrix(t *testing.T) {
 		q    lir.Query
 		want string
 	}{
-		{"unknown table",
+		{
+			"unknown table",
 			lir.Query{Card: lir.CardMany, Root: bscan("ghosts", "g")},
-			`unknown table "ghosts"`},
-		{"scan needs scope",
+			`unknown table "ghosts"`,
+		},
+		{
+			"scan needs scope",
 			lir.Query{Card: lir.CardMany, Root: bscan("tasks", "")},
-			"needs a scope label"},
-		{"duplicate scope",
+			"needs a scope label",
+		},
+		{
+			"duplicate scope",
 			lir.Query{Card: lir.CardMany, Root: lir.Join{
 				Left: bscan("tasks", "t"), Right: bscan("comments", "t"),
-				Kind: lir.InnerJoin, On: blit(true)}},
-			`duplicate scope "t"`},
-		{"unknown column",
+				Kind: lir.InnerJoin, On: blit(true),
+			}},
+			`duplicate scope "t"`,
+		},
+		{
+			"unknown column",
 			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"), beq(bcol("t", "ghost"), blit("x")))},
-			`scope "t" has no column "ghost"`},
-		{"unqualified column",
+			`scope "t" has no column "ghost"`,
+		},
+		{
+			"unqualified column",
 			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"), beq(bcol("", "status"), blit("x")))},
-			"needs a scope qualifier"},
-		{"filter needs bool",
+			"needs a scope qualifier",
+		},
+		{
+			"filter needs bool",
 			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"), bcol("t", "title"))},
-			"filter predicate must be boolean"},
-		{"and needs bools",
+			"filter predicate must be boolean",
+		},
+		{
+			"and needs bools",
 			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
 				band(bcol("t", "title"), blit(true)))},
-			"and needs boolean operands"},
-		{"not needs bool",
+			"and needs boolean operands",
+		},
+		{
+			"not needs bool",
 			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
 				lir.Unary{Op: lir.OpNot, X: bcol("t", "title")})},
-			"not needs a boolean"},
-		{"negate needs numeric",
+			"not needs a boolean",
+		},
+		{
+			"negate needs numeric",
 			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
 				beq(lir.Unary{Op: lir.OpNegate, X: bcol("t", "title")}, blit("x")))},
-			"cannot negate"},
-		{"comparing mixed kinds",
+			"cannot negate",
+		},
+		{
+			"comparing mixed kinds",
 			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
 				beq(bcol("t", "priority"), bcol("t", "title")))},
-			"cannot compare int64 with text"},
-		{"arithmetic needs numbers",
+			"cannot compare int64 with text",
+		},
+		{
+			"arithmetic needs numbers",
 			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
 				beq(lir.Binary{Op: lir.OpAdd, L: bcol("t", "title"), R: blit("x")}, blit("y")))},
-			"add needs numeric operands"},
-		{"bad cast",
+			"add needs numeric operands",
+		},
+		{
+			"bad cast",
 			lir.Query{Card: lir.CardMany, Root: bfilter(bscan("tasks", "t"),
 				beq(lir.Cast{X: bcol("t", "title"), To: lir.KindBool}, blit(true)))},
-			"cannot cast text to bool"},
-		{"sum needs numeric",
-			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{Input: bscan("tasks", "t"),
-				Terms: []lir.AggTerm{{Fn: lir.AggSum, Arg: bcol("t", "title"), As: "s"}}}},
-			"sum requires a numeric argument"},
-		{"aggregate needs as",
-			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{Input: bscan("tasks", "t"),
-				Terms: []lir.AggTerm{{Fn: lir.AggCount}}}},
-			"needs an output name"},
-		{"duplicate aggregate name",
-			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{Input: bscan("tasks", "t"),
-				Terms: []lir.AggTerm{{Fn: lir.AggCount, As: "n"}, {Fn: lir.AggCount, As: "n"}}}},
-			`duplicate aggregate output name "n"`},
-		{"unknown aggregate fn",
-			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{Input: bscan("tasks", "t"),
-				Terms: []lir.AggTerm{{Fn: "median", Arg: bcol("t", "priority"), As: "m"}}}},
-			`unknown aggregate function "median"`},
-		{"empty aggregate",
+			"cannot cast text to bool",
+		},
+		{
+			"sum needs numeric",
+			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{
+				Input: bscan("tasks", "t"),
+				Terms: []lir.AggTerm{{Fn: lir.AggSum, Arg: bcol("t", "title"), As: "s"}},
+			}},
+			"sum requires a numeric argument",
+		},
+		{
+			"aggregate needs as",
+			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{
+				Input: bscan("tasks", "t"),
+				Terms: []lir.AggTerm{{Fn: lir.AggCount}},
+			}},
+			"needs an output name",
+		},
+		{
+			"duplicate aggregate name",
+			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{
+				Input: bscan("tasks", "t"),
+				Terms: []lir.AggTerm{{Fn: lir.AggCount, As: "n"}, {Fn: lir.AggCount, As: "n"}},
+			}},
+			`duplicate aggregate output name "n"`,
+		},
+		{
+			"unknown aggregate fn",
+			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{
+				Input: bscan("tasks", "t"),
+				Terms: []lir.AggTerm{{Fn: "median", Arg: bcol("t", "priority"), As: "m"}},
+			}},
+			`unknown aggregate function "median"`,
+		},
+		{
+			"empty aggregate",
 			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{Input: bscan("tasks", "t")}},
-			"at least one group or term"},
-		{"group needs name",
-			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{Input: bscan("tasks", "t"),
+			"at least one group or term",
+		},
+		{
+			"group needs name",
+			lir.Query{Card: lir.CardMany, Root: lir.Aggregate{
+				Input:  bscan("tasks", "t"),
 				Groups: []lir.GroupTerm{{Expr: lir.Binary{Op: lir.OpAdd, L: bcol("t", "priority"), R: blit(1)}}},
-				Terms:  []lir.AggTerm{{Fn: lir.AggCount, As: "n"}}}},
-			"group expression needs an output name"},
-		{"projection needs fields",
+				Terms:  []lir.AggTerm{{Fn: lir.AggCount, As: "n"}},
+			}},
+			"group expression needs an output name",
+		},
+		{
+			"projection needs fields",
 			lir.Query{Card: lir.CardMany, Root: lir.Project{Input: bscan("tasks", "t")}},
-			"projection has no fields"},
-		{"duplicate projection field",
-			lir.Query{Card: lir.CardMany, Root: lir.Project{Input: bscan("tasks", "t"),
+			"projection has no fields",
+		},
+		{
+			"duplicate projection field",
+			lir.Query{Card: lir.CardMany, Root: lir.Project{
+				Input: bscan("tasks", "t"),
 				Fields: []lir.ProjField{
 					{As: "x", Expr: bcol("t", "id")},
-					{As: "x", Expr: bcol("t", "title")}}}},
-			`duplicate projection field "x"`},
-		{"spread collides with field",
-			lir.Query{Card: lir.CardMany, Root: lir.Project{Input: bscan("tasks", "t"),
+					{As: "x", Expr: bcol("t", "title")},
+				},
+			}},
+			`duplicate projection field "x"`,
+		},
+		{
+			"spread collides with field",
+			lir.Query{Card: lir.CardMany, Root: lir.Project{
+				Input:  bscan("tasks", "t"),
 				Spread: []string{"t"},
-				Fields: []lir.ProjField{{As: "title", Expr: bcol("t", "id")}}}},
-			`duplicate projection field "title"`},
-		{"spread of unknown scope",
-			lir.Query{Card: lir.CardMany, Root: lir.Project{Input: bscan("tasks", "t"),
+				Fields: []lir.ProjField{{As: "title", Expr: bcol("t", "id")}},
+			}},
+			`duplicate projection field "title"`,
+		},
+		{
+			"spread of unknown scope",
+			lir.Query{Card: lir.CardMany, Root: lir.Project{
+				Input:  bscan("tasks", "t"),
 				Spread: []string{"z"},
-				Fields: []lir.ProjField{{As: "id", Expr: bcol("t", "id")}}}},
-			`spread scope "z"`},
-		{"order needs terms",
+				Fields: []lir.ProjField{{As: "id", Expr: bcol("t", "id")}},
+			}},
+			`spread scope "z"`,
+		},
+		{
+			"order needs terms",
 			lir.Query{Card: lir.CardMany, Root: lir.Order{Input: bscan("tasks", "t")}},
-			"order needs at least one term"},
-		{"order by array",
+			"order needs at least one term",
+		},
+		{
+			"order by array",
 			lir.Query{
 				Card: lir.CardMany,
 				Root: lir.Order{
@@ -580,38 +644,58 @@ func TestValidationMatrix(t *testing.T) {
 					},
 				},
 			},
-			"cannot order by a array value"},
-		{"negative offset",
+			"cannot order by a array value",
+		},
+		{
+			"negative offset",
 			lir.Query{Card: lir.CardMany, Root: lir.Slice{Input: bscan("tasks", "t"), Offset: -1}},
-			"offset must be >= 0"},
-		{"negative limit",
+			"offset must be >= 0",
+		},
+		{
+			"negative limit",
 			lir.Query{Card: lir.CardMany, Root: lir.Slice{Input: bscan("tasks", "t"), Limit: new(int(-2))}},
-			"limit must be >= 0"},
-		{"join kind",
+			"limit must be >= 0",
+		},
+		{
+			"join kind",
 			lir.Query{Card: lir.CardMany, Root: lir.Join{
 				Left: bscan("tasks", "t"), Right: bscan("users", "u"),
-				Kind: "cross", On: blit(true)}},
-			`unsupported join kind "cross"`},
-		{"join on bool",
+				Kind: "cross", On: blit(true),
+			}},
+			`unsupported join kind "cross"`,
+		},
+		{
+			"join on bool",
 			lir.Query{Card: lir.CardMany, Root: lir.Join{
 				Left: bscan("tasks", "t"), Right: bscan("users", "u"),
-				Kind: lir.InnerJoin, On: bcol("t", "title")}},
-			"join condition must be boolean"},
-		{"dependent join right side",
+				Kind: lir.InnerJoin, On: bcol("t", "title"),
+			}},
+			"join condition must be boolean",
+		},
+		{
+			"dependent join right side",
 			lir.Query{Card: lir.CardMany, Root: lir.Join{
 				Left: bscan("boards", "b"),
 				Right: bfilter(bscan("tasks", "t"),
 					beq(bcol("t", "board_id"), bcol("b", "id"))),
-				Kind: lir.InnerJoin, On: blit(true)}},
-			"join right side references"},
-		{"dependent join through a projection",
+				Kind: lir.InnerJoin, On: blit(true),
+			}},
+			"join right side references",
+		},
+		{
+			"dependent join through a projection",
 			lir.Query{Card: lir.CardMany, Root: lir.Join{
 				Left: bscan("boards", "b"),
-				Right: lir.Project{Input: bscan("tasks", "t"),
-					Fields: []lir.ProjField{{As: "owner", Expr: bcol("b", "owner_id")}}},
-				Kind: lir.LeftJoin, On: blit(true)}},
-			"join right side references"},
-		{"spread across a crossing boundary",
+				Right: lir.Project{
+					Input:  bscan("tasks", "t"),
+					Fields: []lir.ProjField{{As: "owner", Expr: bcol("b", "owner_id")}},
+				},
+				Kind: lir.LeftJoin, On: blit(true),
+			}},
+			"join right side references",
+		},
+		{
+			"spread across a crossing boundary",
 			lir.Query{Card: lir.CardMany, Root: lir.Project{
 				Input:  bscan("boards", "b"),
 				Spread: []string{"b"},
@@ -621,7 +705,8 @@ func TestValidationMatrix(t *testing.T) {
 					Fields: []lir.ProjField{{As: "id", Expr: bcol("t", "id")}},
 				}}}},
 			}},
-			`spread scope "b" is not produced beneath`},
+			`spread scope "b" is not produced beneath`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { bindErr(t, tc.q, tc.want) })

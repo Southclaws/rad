@@ -153,7 +153,7 @@ func TestPredCastIntColumnToFloatComparesAgainstFraction(t *testing.T) {
 func TestPredCastFloatToIntTruncates(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	// cast(price to int64) over category 'paper': p7 price 5.0 → 5.
+	// cast(price to int64) over category 'paper': p7 price 5.0 -> 5.
 	d.Query(q(map[string]lirwire.Node{
 		"p": lirwire.Scan("products", "p"),
 		"paper": lirwire.Filter("p",
@@ -206,7 +206,7 @@ func TestPredDivisionByZeroErrors(t *testing.T) {
 func TestPredNestedArithmetic(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	// (price - 10) * 2 for p2 (price 40.0) → 60.
+	// (price - 10) * 2 for p2 (price 40.0) -> 60.
 	d.Query(q(map[string]lirwire.Node{
 		"p": lirwire.Scan("products", "p"),
 		"mouse": lirwire.Filter("p",
@@ -223,7 +223,7 @@ func TestPredNestedArithmetic(t *testing.T) {
 func TestPredNegate(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	// -price for p7 (price 5.0) → -5.
+	// -price for p7 (price 5.0) -> -5.
 	d.Query(q(map[string]lirwire.Node{
 		"p": lirwire.Scan("products", "p"),
 		"notebook": lirwire.Filter("p",
@@ -242,7 +242,7 @@ func TestPredNegate(t *testing.T) {
 func TestPredBoolColumnEqualsLiteral(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	// discontinued = false → everything except p5.
+	// discontinued = false -> everything except p5.
 	d.Query(q(map[string]lirwire.Node{
 		"p": lirwire.Scan("products", "p"),
 		"alive": lirwire.Filter("p",

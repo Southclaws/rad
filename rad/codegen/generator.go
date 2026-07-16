@@ -4,10 +4,10 @@ import "sort"
 
 // A Generator turns the language-agnostic Model into one or more source files
 // for a target language. It is the single seam every client generator sits
-// behind — built-in (Go, TypeScript) today, and the same contract an external
-// `rad-gen-<name>` tool will satisfy over a subprocess once that lands: the
-// Model serialises to JSON in, []GeneratedFile serialises to JSON out, so an
-// in-process generator and an external executable are interchangeable.
+// behind — built-in (Go, TypeScript) today, or an external `rad-gen-<name>`
+// tool satisfying the same contract over a subprocess: the Model serialises
+// to JSON in, []GeneratedFile serialises to JSON out, so an in-process
+// generator and an external executable are interchangeable.
 //
 // The Model is the real public contract, not this Go interface — keep it clean
 // and versioned as generators multiply.

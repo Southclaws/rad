@@ -93,21 +93,29 @@ func lirSetup(t *testing.T) (*Engine, context.Context, *int, *int) {
 			t.Fatal(err)
 		}
 	}
-	mk(catalog.TableDef{Name: "users",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeText},
-			{Name: "name", Type: catalog.TypeText}},
-		PrimaryKey: []string{"id"},
-		Indexes:    []catalog.IndexDef{{Name: "users_name_uq", Columns: []string{"name"}, Unique: true}}})
-	mk(catalog.TableDef{Name: "boards",
+	mk(catalog.TableDef{
+		Name: "users",
 		Columns: []catalog.ColumnDef{
 			{Name: "id", Type: catalog.TypeText},
 			{Name: "name", Type: catalog.TypeText},
-			{Name: "owner_id", Type: catalog.TypeText}},
+		},
+		PrimaryKey: []string{"id"},
+		Indexes:    []catalog.IndexDef{{Name: "users_name_uq", Columns: []string{"name"}, Unique: true}},
+	})
+	mk(catalog.TableDef{
+		Name: "boards",
+		Columns: []catalog.ColumnDef{
+			{Name: "id", Type: catalog.TypeText},
+			{Name: "name", Type: catalog.TypeText},
+			{Name: "owner_id", Type: catalog.TypeText},
+		},
 		PrimaryKey: []string{"id"},
 		ForeignKeys: []catalog.ForeignKeyDef{
-			{Name: "boards_owner_fk", Columns: []string{"owner_id"}, RefTable: "users", RefColumns: []string{"id"}}}})
-	mk(catalog.TableDef{Name: "tasks",
+			{Name: "boards_owner_fk", Columns: []string{"owner_id"}, RefTable: "users", RefColumns: []string{"id"}},
+		},
+	})
+	mk(catalog.TableDef{
+		Name: "tasks",
 		Columns: []catalog.ColumnDef{
 			{Name: "id", Type: catalog.TypeText},
 			{Name: "board_id", Type: catalog.TypeText},
@@ -115,22 +123,30 @@ func lirSetup(t *testing.T) (*Engine, context.Context, *int, *int) {
 			{Name: "status", Type: catalog.TypeText},
 			{Name: "priority", Type: catalog.TypeInt64},
 			{Name: "estimate", Type: catalog.TypeFloat64, Nullable: true},
-			{Name: "assignee_id", Type: catalog.TypeText, Nullable: true}},
+			{Name: "assignee_id", Type: catalog.TypeText, Nullable: true},
+		},
 		PrimaryKey: []string{"id"},
 		Indexes: []catalog.IndexDef{
-			{Name: "tasks_board_status_idx", Columns: []string{"board_id", "status"}}},
+			{Name: "tasks_board_status_idx", Columns: []string{"board_id", "status"}},
+		},
 		ForeignKeys: []catalog.ForeignKeyDef{
 			{Name: "tasks_board_fk", Columns: []string{"board_id"}, RefTable: "boards", RefColumns: []string{"id"}},
-			{Name: "tasks_assignee_fk", Columns: []string{"assignee_id"}, RefTable: "users", RefColumns: []string{"id"}}}})
-	mk(catalog.TableDef{Name: "comments",
+			{Name: "tasks_assignee_fk", Columns: []string{"assignee_id"}, RefTable: "users", RefColumns: []string{"id"}},
+		},
+	})
+	mk(catalog.TableDef{
+		Name: "comments",
 		Columns: []catalog.ColumnDef{
 			{Name: "id", Type: catalog.TypeText},
 			{Name: "task_id", Type: catalog.TypeText},
-			{Name: "body", Type: catalog.TypeText}},
+			{Name: "body", Type: catalog.TypeText},
+		},
 		PrimaryKey: []string{"id"},
 		Indexes:    []catalog.IndexDef{{Name: "comments_task_idx", Columns: []string{"task_id"}}},
 		ForeignKeys: []catalog.ForeignKeyDef{
-			{Name: "comments_task_fk", Columns: []string{"task_id"}, RefTable: "tasks", RefColumns: []string{"id"}}}})
+			{Name: "comments_task_fk", Columns: []string{"task_id"}, RefTable: "tasks", RefColumns: []string{"id"}},
+		},
+	})
 
 	eng := New(counted, cat)
 	ins := func(table string, row lir.Row) {
@@ -144,14 +160,22 @@ func lirSetup(t *testing.T) (*Engine, context.Context, *int, *int) {
 	ins("boards", lir.Row{"id": lir.Text("b1"), "name": lir.Text("Launch"), "owner_id": lir.Text("ada")})
 	ins("boards", lir.Row{"id": lir.Text("b2"), "name": lir.Text("Infra"), "owner_id": lir.Text("ada")})
 	ins("boards", lir.Row{"id": lir.Text("b3"), "name": lir.Text("Empty"), "owner_id": lir.Text("bob")})
-	ins("tasks", lir.Row{"id": lir.Text("t1"), "board_id": lir.Text("b1"), "title": lir.Text("ship"),
-		"status": lir.Text("open"), "priority": lir.Int64(3), "assignee_id": lir.Text("bob"), "estimate": lir.Float64(2)})
-	ins("tasks", lir.Row{"id": lir.Text("t2"), "board_id": lir.Text("b1"), "title": lir.Text("write"),
-		"status": lir.Text("open"), "priority": lir.Int64(5)}) // no assignee, no estimate
-	ins("tasks", lir.Row{"id": lir.Text("t3"), "board_id": lir.Text("b1"), "title": lir.Text("done"),
-		"status": lir.Text("done"), "priority": lir.Int64(9), "assignee_id": lir.Text("ada")})
-	ins("tasks", lir.Row{"id": lir.Text("t4"), "board_id": lir.Text("b2"), "title": lir.Text("rack"),
-		"status": lir.Text("open"), "priority": lir.Int64(1), "assignee_id": lir.Text("ada"), "estimate": lir.Float64(8)})
+	ins("tasks", lir.Row{
+		"id": lir.Text("t1"), "board_id": lir.Text("b1"), "title": lir.Text("ship"),
+		"status": lir.Text("open"), "priority": lir.Int64(3), "assignee_id": lir.Text("bob"), "estimate": lir.Float64(2),
+	})
+	ins("tasks", lir.Row{
+		"id": lir.Text("t2"), "board_id": lir.Text("b1"), "title": lir.Text("write"),
+		"status": lir.Text("open"), "priority": lir.Int64(5),
+	}) // no assignee, no estimate
+	ins("tasks", lir.Row{
+		"id": lir.Text("t3"), "board_id": lir.Text("b1"), "title": lir.Text("done"),
+		"status": lir.Text("done"), "priority": lir.Int64(9), "assignee_id": lir.Text("ada"),
+	})
+	ins("tasks", lir.Row{
+		"id": lir.Text("t4"), "board_id": lir.Text("b2"), "title": lir.Text("rack"),
+		"status": lir.Text("open"), "priority": lir.Int64(1), "assignee_id": lir.Text("ada"), "estimate": lir.Float64(8),
+	})
 	ins("comments", lir.Row{"id": lir.Text("c1"), "task_id": lir.Text("t1"), "body": lir.Text("nice")})
 	ins("comments", lir.Row{"id": lir.Text("c2"), "task_id": lir.Text("t1"), "body": lir.Text("ship it")})
 	ins("comments", lir.Row{"id": lir.Text("c3"), "task_id": lir.Text("t4"), "body": lir.Text("racked")})
@@ -172,6 +196,7 @@ func qscan(tbl, scope string) lir.Scan   { return lir.Scan{Table: tbl, Scope: sc
 func qfilter(in lir.Relation, p lir.Expr) lir.Filter {
 	return lir.Filter{Input: in, Pred: p}
 }
+
 func many(root lir.Relation) lir.Query {
 	return lir.Query{Card: lir.CardMany, Root: lir.Order{
 		Input: root,
@@ -212,8 +237,8 @@ func jsonish(d lir.Datum) any {
 	}
 }
 
-// forcingQ is the acceptance query: boards → owner → open tasks by priority
-// desc → assignee + comment count.
+// forcingQ is the acceptance query: boards -> owner -> open tasks by priority
+// desc -> assignee + comment count.
 func forcingQ() lir.Query {
 	owner := qfilter(qscan("users", "o"), qeq(qcol("o", "id"), qcol("b", "owner_id")))
 	assignee := qfilter(qscan("users", "a"), qeq(qcol("a", "id"), qcol("t", "assignee_id")))
@@ -239,8 +264,10 @@ func forcingQ() lir.Query {
 		},
 	}
 	return many(lir.Project{
-		Input: lir.Order{Input: qscan("boards", "b"),
-			Terms: []lir.OrderTerm{{Expr: qcol("b", "id")}}},
+		Input: lir.Order{
+			Input: qscan("boards", "b"),
+			Terms: []lir.OrderTerm{{Expr: qcol("b", "id")}},
+		},
 		Fields: []lir.ProjField{
 			{As: "id", Expr: qcol("b", "id")},
 			{As: "owner", Expr: lir.First{Rel: owner}},
@@ -250,22 +277,32 @@ func forcingQ() lir.Query {
 }
 
 var forcingWant = []any{
-	map[string]any{"id": "b1",
+	map[string]any{
+		"id":    "b1",
 		"owner": map[string]any{"id": "ada", "name": "Ada"},
 		"tasks": []any{
 			map[string]any{"id": "t2", "title": "write", "assignee": nil, "comment_count": int64(0)},
-			map[string]any{"id": "t1", "title": "ship",
-				"assignee": map[string]any{"id": "bob", "name": "Bob"}, "comment_count": int64(2)},
-		}},
-	map[string]any{"id": "b2",
+			map[string]any{
+				"id": "t1", "title": "ship",
+				"assignee": map[string]any{"id": "bob", "name": "Bob"}, "comment_count": int64(2),
+			},
+		},
+	},
+	map[string]any{
+		"id":    "b2",
 		"owner": map[string]any{"id": "ada", "name": "Ada"},
 		"tasks": []any{
-			map[string]any{"id": "t4", "title": "rack",
-				"assignee": map[string]any{"id": "ada", "name": "Ada"}, "comment_count": int64(1)},
-		}},
-	map[string]any{"id": "b3",
+			map[string]any{
+				"id": "t4", "title": "rack",
+				"assignee": map[string]any{"id": "ada", "name": "Ada"}, "comment_count": int64(1),
+			},
+		},
+	},
+	map[string]any{
+		"id":    "b3",
 		"owner": map[string]any{"id": "bob", "name": "Bob"},
-		"tasks": []any{}},
+		"tasks": []any{},
+	},
 }
 
 func TestExecuteForcingQuery(t *testing.T) {
@@ -326,7 +363,8 @@ func TestExecuteInsideTransaction(t *testing.T) {
 
 	err := eng.Txn(ctx, func(tx *Tx) error {
 		if err := tx.Insert(ctx, "comments", lir.Row{
-			"id": lir.Text("c4"), "task_id": lir.Text("t2"), "body": lir.Text("mid-txn")}); err != nil {
+			"id": lir.Text("c4"), "task_id": lir.Text("t2"), "body": lir.Text("mid-txn"),
+		}); err != nil {
 			return err
 		}
 		d, err := tx.Execute(ctx, forcingQ())
@@ -493,7 +531,8 @@ func TestExecuteAggregatesAndRanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := jsonish(d); !reflect.DeepEqual(got, []any{
-		map[string]any{"id": "t1"}, map[string]any{"id": "t2"}}) {
+		map[string]any{"id": "t1"}, map[string]any{"id": "t2"},
+	}) {
 		t.Fatalf("range scan = %#v", got)
 	}
 }

@@ -204,7 +204,7 @@ func TestNestFirstViaUniqueIndex(t *testing.T) {
 	]`)
 }
 
-// 9. Two levels of nesting: customer → orders → items.
+// 9. Two levels of nesting: customer -> orders -> items.
 func TestNestTwoLevels(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
@@ -243,7 +243,7 @@ func TestNestTwoLevels(t *testing.T) {
 	]`)
 }
 
-// 10. Three levels: customer → order → items → each item's product (a
+// 10. Three levels: customer -> order -> items -> each item's product (a
 // to-parent first at the deepest level, projected down to the name).
 func TestNestThreeLevelsWithParent(t *testing.T) {
 	t.Parallel()
@@ -508,7 +508,7 @@ func TestNestGrandparentCorrelation(t *testing.T) {
 
 // 19. Exists nested inside exists inside exists: customers who ever ordered
 // a discontinued product. Only the Chair (p5) is discontinued; it appears on
-// i7 → o5 → c3.
+// i7 -> o5 -> c3.
 func TestNestDoubleNestedExists(t *testing.T) {
 	t.Parallel()
 	d := shop(t)

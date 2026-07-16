@@ -1,10 +1,10 @@
 package planner
 
 // The physical plan: what the executor runs. Logical bound IR names no
-// indexes and no keys; these nodes do. The structural invariant carried
-// over from v1, now visible in the tree: an access node only narrows which
-// keys are scanned, and the FULL original predicate rides above it in a
-// FilterExec — access-path choice can never change results.
+// indexes and no keys; these nodes do. The structural invariant: an access
+// node only narrows which keys are scanned, and the FULL original predicate
+// rides above it in a FilterExec — access-path choice can never change
+// results.
 //
 // Ordering is a physical property here: scans declare what order they
 // provide (ascending only — the KV has no reverse scan), and a SortExec

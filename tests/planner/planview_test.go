@@ -1,7 +1,7 @@
 package planner
 
 // The query plan view over the wire: ?show-plan / ?dry-run on POST /execute,
-// exercised through the real client → server → engine path. Confirms the plan
+// exercised through the real client -> server -> engine path. Confirms the plan
 // rides the response as free-form JSON, dry-run skips execution, and the two
 // knobs are orthogonal.
 
@@ -38,7 +38,7 @@ func TestQueryPlanView(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// show-plan → results AND the plan, which shows the index beat a scan.
+	// show-plan -> results AND the plan, which shows the index beat a scan.
 	res, err := d.Client.Execute(ctx, prog, radclient.WithPlan())
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +53,7 @@ func TestQueryPlanView(t *testing.T) {
 		}
 	}
 
-	// dry-run + show-plan → the plan, no execution.
+	// dry-run + show-plan -> the plan, no execution.
 	res, err = d.Client.Execute(ctx, prog, radclient.WithPlan(), radclient.DryRun())
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +65,7 @@ func TestQueryPlanView(t *testing.T) {
 		t.Fatal("dry-run + show-plan should return the plan")
 	}
 
-	// dry-run alone → empty success: no result, no plan.
+	// dry-run alone -> empty success: no result, no plan.
 	res, err = d.Client.Execute(ctx, prog, radclient.DryRun())
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func TestQueryPlanView(t *testing.T) {
 		t.Fatalf("dry-run alone should be an empty success; result=%v plan=%v", res.Result, res.Plan)
 	}
 
-	// no flags → normal, no plan.
+	// no flags -> normal, no plan.
 	res, err = d.Client.Execute(ctx, prog)
 	if err != nil {
 		t.Fatal(err)

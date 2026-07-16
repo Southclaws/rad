@@ -4,8 +4,8 @@ package e2e
 // one self-contained scenario — a schema, seed data, a PIR program, and
 // assertions — described entirely in data (see README.md). This file is the
 // only Go here: it discovers each fixture, gives it a fresh in-memory
-// database, and runs it in parallel through the real client → server →
-// bind → plan → execute path.
+// database, and runs it in parallel through the real client -> server ->
+// bind -> plan -> execute path.
 //
 // A fixture is data, not code, so the conformance suite grows by adding
 // directories, never by touching this runner.

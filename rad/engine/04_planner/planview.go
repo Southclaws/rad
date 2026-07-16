@@ -6,12 +6,9 @@ package planner
 // below derives from it, so JSON clients render their own view and the CLI /
 // devtool get the text from the same artifact.
 //
-// This first slice captures the plan tree plus the access-path decision
-// (candidates + scores). Actual-row metrics, spans, and rewrite history are
-// designed in the query-trace ADR and populate later slices.
-//
-// (PrintPlan remains the planner's internal golden-test renderer for now;
-// unifying it onto PlanView is a later cleanup.)
+// It captures the plan tree plus the access-path decision (candidates and
+// scores). Actual-row metrics, spans, and rewrite history are not yet
+// represented.
 
 import (
 	"fmt"

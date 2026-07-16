@@ -4,8 +4,8 @@ package exec
 // Frames. Nothing in this contract requires materialisation — scans stream,
 // filters stream, projections stream, slices stop pulling early — though
 // blocking operators (sort, aggregate, attach) buffer internally. Full
-// streaming end-to-end is a later arc; this seam is what makes it a change
-// instead of a rewrite.
+// streaming end-to-end is not implemented; this seam is what would let it
+// land as a change instead of a rewrite.
 
 import (
 	"context"

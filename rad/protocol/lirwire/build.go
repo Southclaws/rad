@@ -8,7 +8,7 @@ package lirwire
 //
 // Union members are stored as pointers, matching the generated UnmarshalJSON:
 // a built node and a decoded node are the same concrete type, so a type switch
-// over the union is uniform and build → marshal → decode round-trips.
+// over the union is uniform and build -> marshal -> decode round-trips.
 //
 // Regeneration rewrites only lirwire.go (the generated file), never this one.
 
@@ -79,6 +79,7 @@ func Ref(binding, scope string) Node {
 // -
 
 func Lit(value Value) Expr { return Expr{&LiteralExpr{Kind: "lit", Value: value}} }
+
 func Col(scope, column string) Expr {
 	return Expr{&ColumnExpr{Kind: "col", Scope: scope, Column: column}}
 }
@@ -95,8 +96,7 @@ func Array(node string) Expr      { return Expr{&CrossingExprArray{Kind: "array"
 // LitOf builds a literal expression from an arbitrary Go value, marshalling it
 // to the raw Value form. It is the general path where the concrete type is not
 // known at the call site; it cannot fail for a JSON-encodable scalar. Prefer
-// Lit with a typed SetX helper where the type is known. Part of the same Value
-// stopgap as SetString/SetInt/… (see the typeless-value-encoding todo).
+// Lit with a typed SetX helper where the type is known.
 func LitOf(v any) Expr {
 	val, _ := SetAny(v)
 	return Lit(val)
@@ -125,11 +125,8 @@ func (e Expr) IsZero() bool { return e.ExprUnion == nil }
 // Value (raw JSON scalar) helpers
 // -
 //
-// Value is currently a raw-JSON []byte, which is awkward to hand-build. These
-// format the four scalar kinds by hand. This is a deliberate stopgap: the Value
-// representation is due to be reworked (a tagged union, or forced-to-string to
-// protect Decimal / Float128 / BigInt) — see the typeless-value-encoding todo —
-// after which these go away.
+// Value is a raw-JSON []byte, which is awkward to hand-build. These format
+// the four scalar kinds by hand.
 
 func SetString(s string) Value {
 	b, _ := json.Marshal(s)

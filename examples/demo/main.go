@@ -2,7 +2,7 @@
 // client, connected to a Rad server over the wire. This is the proof of the
 // developer experience:
 //
-//	schema.rad  →  rad migrate  →  rad generate  →  this file
+//	schema.rad  ->  rad migrate  ->  rad generate  ->  this file
 //
 // Everything below uses examples/demo/generated (typed models, query builders,
 // transactions) speaking rad:// to a server — no SQL, no IR, no keys, and

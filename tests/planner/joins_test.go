@@ -15,7 +15,7 @@ import (
 func TestJoin_InnerBasic(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	// Every order with its customer's name. o1..o7 → Ada Ada Bob Bob Cyn Dee Ada.
+	// Every order with its customer's name. o1..o7 -> Ada Ada Bob Bob Cyn Dee Ada.
 	d.Query(q(map[string]lirwire.Node{
 		"o": lirwire.Scan("orders", "o"),
 		"u": lirwire.Scan("customers", "u"),
@@ -172,7 +172,7 @@ func TestJoin_OrderByComputedThenSlice(t *testing.T) {
 func TestJoin_ThreeWayChain(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
-	// items → orders → customers, two join nodes. c4's only order is o6,
+	// items -> orders -> customers, two join nodes. c4's only order is o6,
 	// whose only item is i8.
 	d.Query(q(map[string]lirwire.Node{
 		"i": lirwire.Scan("order_items", "i"),
@@ -239,7 +239,7 @@ func TestJoin_LabelledProjectionsAsInputs(t *testing.T) {
 	t.Parallel()
 	d := shop(t)
 	// Labelled projections are joinable relations; their scopes ("lc", "ro")
-	// address the join output. Pending orders: o5 → c3, o7 → c1.
+	// address the join output. Pending orders: o5 -> c3, o7 -> c1.
 	d.Query(q(map[string]lirwire.Node{
 		"c": lirwire.Scan("customers", "c"),
 		"lp": lirwire.Project("c", "lc", nil, []lirwire.Field{
@@ -272,8 +272,8 @@ func TestJoin_NonEqualityCondition(t *testing.T) {
 	d := shop(t)
 	// ON o.placed_at < c.created_at * 10 — a pure theta join. Orders placed
 	// strictly before each customer's created_at*10:
-	//   c1 (1000): none. c2 (2000): 1000,1500,1600 → 3.
-	//   c3 (3000): +2000,2500 → 5. c4 (4000): +3000,3500 → 7. c5 (5000): 7.
+	//   c1 (1000): none. c2 (2000): 1000,1500,1600 -> 3.
+	//   c3 (3000): +2000,2500 -> 5. c4 (4000): +3000,3500 -> 7. c5 (5000): 7.
 	// c1 is absent — an inner join with no matches produces no group.
 	d.Query(q(map[string]lirwire.Node{
 		"c": lirwire.Scan("customers", "c"),

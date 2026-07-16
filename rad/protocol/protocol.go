@@ -12,9 +12,9 @@
 //
 // # Connection URIs
 //
-//	rad://localhost            → http://localhost:7237
-//	rad://db.internal:9000     → http://db.internal:9000
-//	rads://db.example.com      → https://db.example.com:7237
+//	rad://localhost            -> http://localhost:7237
+//	rad://db.internal:9000     -> http://db.internal:9000
+//	rads://db.example.com      -> https://db.example.com:7237
 //
 // Rad speaks plain HTTP, so rad:// resolves to http. Front it with your own
 // proxy for encryption or authentication in production and use rads:// — the

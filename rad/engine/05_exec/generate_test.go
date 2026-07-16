@@ -1,7 +1,7 @@
 package exec
 
-// Typed, schema-aware LIR generation feeding the differential oracle
-// (step 4/5 of the oracle ADR). For each seed we generate a random catalog,
+// Typed, schema-aware LIR generation feeding the differential oracle.
+// For each seed we generate a random catalog,
 // random data, and a bind-valid query correct-by-construction, then run the
 // same query three ways — the engine's chosen plan, the same query forced to
 // full scans, and the naive reference interpreter — and require they agree.

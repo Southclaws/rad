@@ -39,7 +39,7 @@ func catalogProblem(err error) *oas.Problem {
 }
 
 // -
-// wire definitions → engine definitions
+// wire definitions -> engine definitions
 // -
 
 func catTableDef(d protocol.TableDef) (catalog.TableDef, error) {
@@ -129,7 +129,7 @@ func catDefault(colName string, typ catalog.Type, in *protocol.ColumnDefault) (*
 }
 
 // -
-// engine tables → wire introspection
+// engine tables -> wire introspection
 // -
 
 // defaultInfo renders a column default for introspection; the column's type

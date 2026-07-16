@@ -18,7 +18,7 @@
 // query-building abstraction beyond those constructors: what a test sends must
 // be visible in the test.
 //
-// Every query travels client → HTTP → schema validation → binder → planner →
+// Every query travels client -> HTTP -> schema validation -> binder -> planner ->
 // executor and back, so an assertion here holds the whole read path, not a
 // package. Result is the seam where explain output (plan, metrics, planner
 // internals) will land — assertions gain plan-shape variants without
@@ -33,10 +33,9 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
-
-	"sort"
 
 	radclient "github.com/Southclaws/rad/rad/client"
 	"github.com/Southclaws/rad/rad/engine/01_kv/kvslate"
@@ -97,12 +96,15 @@ func New(t *testing.T) *DB {
 func Text(name string) catalog.ColumnDef {
 	return catalog.ColumnDef{Name: name, Type: catalog.TypeText}
 }
+
 func Int64(name string) catalog.ColumnDef {
 	return catalog.ColumnDef{Name: name, Type: catalog.TypeInt64}
 }
+
 func Float64(name string) catalog.ColumnDef {
 	return catalog.ColumnDef{Name: name, Type: catalog.TypeFloat64}
 }
+
 func Bool(name string) catalog.ColumnDef {
 	return catalog.ColumnDef{Name: name, Type: catalog.TypeBool}
 }

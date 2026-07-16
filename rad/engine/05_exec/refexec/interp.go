@@ -19,8 +19,7 @@
 //   - The one deliberate sharing is scalar expression evaluation
 //     (bound.EvalPred / bound.EvalDatum): 3VL, arithmetic, and casts. That is
 //     acceptable only because those scalar semantics are pinned independently
-//     by enumerated truth-table/edge-value tests; a fully independent evaluator
-//     is the eventual close-out (see the oracle ADR).
+//     by enumerated truth-table/edge-value tests.
 //
 // Design law: if a line in here is clever, it is wrong. Slow is fine; obvious
 // is the point. It must be so simple it needs no tests of its own.
