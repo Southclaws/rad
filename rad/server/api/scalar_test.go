@@ -94,13 +94,13 @@ func TestDecodeValue(t *testing.T) {
 		v    lirwire.Value
 		want any
 	}{
-		{"text", lirwire.Value{&lirwire.TextValue{Type: "text", Value: ptrStr("x")}}, "x"},
-		{"int64", lirwire.Value{&lirwire.Int64Value{Type: "int64", Value: ptrStr("56")}}, int64(56)},
-		{"float64", lirwire.Value{&lirwire.Float64Value{Type: "float64", Value: ptrStr("1.5")}}, 1.5},
-		{"bool", lirwire.Value{&lirwire.BoolValue{Type: "bool", Value: ptrBool(true)}}, true},
-		{"int64 null", lirwire.Value{&lirwire.Int64Value{Type: "int64"}}, nil},
-		{"text null", lirwire.Value{&lirwire.TextValue{Type: "text"}}, nil},
-		{"bool null", lirwire.Value{&lirwire.BoolValue{Type: "bool"}}, nil},
+		{"text", lirwire.Value{ValueUnion: &lirwire.TextValue{Type: "text", Value: ptrStr("x")}}, "x"},
+		{"int64", lirwire.Value{ValueUnion: &lirwire.Int64Value{Type: "int64", Value: ptrStr("56")}}, int64(56)},
+		{"float64", lirwire.Value{ValueUnion: &lirwire.Float64Value{Type: "float64", Value: ptrStr("1.5")}}, 1.5},
+		{"bool", lirwire.Value{ValueUnion: &lirwire.BoolValue{Type: "bool", Value: ptrBool(true)}}, true},
+		{"int64 null", lirwire.Value{ValueUnion: &lirwire.Int64Value{Type: "int64"}}, nil},
+		{"text null", lirwire.Value{ValueUnion: &lirwire.TextValue{Type: "text"}}, nil},
+		{"bool null", lirwire.Value{ValueUnion: &lirwire.BoolValue{Type: "bool"}}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -115,7 +115,7 @@ func TestDecodeValue(t *testing.T) {
 	}
 
 	// int64 range and float finiteness are enforced through the variant too.
-	if _, err := decodeValue(lirwire.Value{&lirwire.Int64Value{Type: "int64", Value: ptrStr("9223372036854775808")}}); err == nil {
+	if _, err := decodeValue(lirwire.Value{ValueUnion: &lirwire.Int64Value{Type: "int64", Value: ptrStr("9223372036854775808")}}); err == nil {
 		t.Fatal("over-range int64 literal should be rejected")
 	}
 	// An empty union (no variant) is not a value.

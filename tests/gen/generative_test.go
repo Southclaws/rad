@@ -30,11 +30,13 @@ import (
 	differential "github.com/Southclaws/rad/rad/engine/05_exec/differential"
 	generative "github.com/Southclaws/rad/rad/engine/05_exec/generative"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
+	emit "github.com/Southclaws/rad/tests/gen/emit"
 	"pgregory.net/rapid"
 )
 
 func TestGenerativeSynthetic(t *testing.T) {
 	ctx := context.Background()
+	capt := newCapture(t, "synthetic", nil)
 	rapid.Check(t, func(rt *rapid.T) {
 		spec := generative.SynthCatalog(rt)
 		db, done := freshDB(t)
@@ -44,7 +46,7 @@ func TestGenerativeSynthetic(t *testing.T) {
 				rt.Fatalf("create table %q: %v", def.Name, err)
 			}
 		}
-		runOne(rt, ctx, db, spec)
+		runOne(rt, ctx, db, spec, capt)
 	})
 }
 
@@ -69,21 +71,24 @@ func TestGenerativeSchemas(t *testing.T) {
 		t.Run(e.Name(), func(t *testing.T) {
 			// Introspect once into a generator spec; it then serves every case.
 			spec := introspectSchema(t, ctx, path, src)
+			capt := newCapture(t, e.Name(), src)
 			rapid.Check(t, func(rt *rapid.T) {
 				db, done := freshDB(t)
 				defer done()
 				if _, err := db.MigrateFile(ctx, path, src); err != nil {
 					rt.Fatalf("migrate: %v", err)
 				}
-				runOne(rt, ctx, db, spec)
+				runOne(rt, ctx, db, spec, capt)
 			})
 		})
 	}
 }
 
 // runOne loads a generated dataset, generates one query (bag or ordered), and
-// checks the engine against the reference interpreter fed that dataset.
-func runOne(rt *rapid.T, ctx context.Context, db *frontend.DB, spec *generative.Catalog) {
+// checks the engine against the reference interpreter fed that dataset. On a
+// divergence it records the case so a fixture can be emitted, then fails —
+// letting rapid shrink and re-run, so the last recorded case is the minimal one.
+func runOne(rt *rapid.T, ctx context.Context, db *frontend.DB, spec *generative.Catalog, capt *capture) {
 	data := generative.GenerateData(rt, spec)
 	for _, tbl := range spec.Tables {
 		for _, row := range data[tbl.Name] {
@@ -99,8 +104,48 @@ func runOne(rt *rapid.T, ctx context.Context, db *frontend.DB, spec *generative.
 		q = g.OrderedQuery()
 	}
 	if err := differential.ThreeWay(ctx, db, scanOf(data), q, ordered); err != nil {
+		capt.record(emit.Case{Spec: spec, Data: data, Query: q, Ordered: ordered, Detail: err.Error()})
 		rt.Fatal(err)
 	}
+}
+
+// capture holds the latest failing case and, when RAD_GEN_EMIT is set, writes
+// it to the e2e suite as a permanent regression fixture once the test finishes
+// red. Because rapid re-runs the property while shrinking, the last recorded
+// case is the minimal one. Without the env var the differential just fails
+// (fast) — capture is opt-in so a failing run doesn't silently litter fixtures.
+type capture struct {
+	mode      string
+	schemaSrc []byte
+	last      *emit.Case
+}
+
+// record keeps the case, stamping it with this capture's mode and (for a
+// schema-directed run) the original schema source to copy verbatim.
+func (c *capture) record(cs emit.Case) {
+	cs.Mode = c.mode
+	cs.SchemaSrc = c.schemaSrc
+	c.last = &cs
+}
+
+func newCapture(t *testing.T, mode string, schemaSrc []byte) *capture {
+	c := &capture{mode: mode, schemaSrc: schemaSrc}
+	t.Cleanup(func() {
+		out := os.Getenv("RAD_GEN_EMIT")
+		if out == "" || !t.Failed() || c.last == nil {
+			return
+		}
+		if out == "1" { // the default target: the e2e suite next door
+			out = filepath.Join("..", "e2e")
+		}
+		dir, err := emit.Fixture(context.Background(), out, *c.last)
+		if err != nil {
+			t.Logf("emit fixture: %v", err)
+			return
+		}
+		t.Logf("emitted regression fixture: %s", dir)
+	})
+	return c
 }
 
 // introspectSchema migrates a schema into a throwaway database and introspects

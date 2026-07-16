@@ -1,7 +1,33 @@
 # ADR: shrinking + automatic fixture emission
 
-Status: **todo** — spec for later; best done just before the optimiser effort,
-where it pays off most (that's when rewrites start *producing* failures).
+Status: **DONE (emission)** — the shrinking half is now free (the generator
+draws from rapid, which minimises on failure), so this collapsed to emission.
+What shipped, and how it differs from the design below:
+
+- **Shrinking is rapid's, not ours.** The whole "delta-debugging around an
+  interestingness predicate `P`" design (§Design, §What gets reduced) is
+  obsolete: `rapid.Check` shrinks the schema+data+query triple automatically.
+  No hand-rolled reducer, no `P`.
+- **`lir.Query -> wire` converter** — the ADR's "serialisation wrinkle". Built
+  as `api.WireQuery` in `rad/server/api`, the exported inverse of the existing
+  `lowerQuery` (wire -> engine); a round-trip test executes original vs
+  wire-lowered and requires equal results.
+- **`tests/gen/emit`** — `emit.Fixture(ctx, dir, Case)` writes `schema.rad`
+  (copied verbatim for schema-directed cases, serialised from the spec for
+  synthetic), `seed.json`, `test_<name>.json` (the query as a one-statement wire
+  program, expected = the reference interpreter's result), and `BUG.md`
+  (engine vs interpreter values + the review caveat). It rebuilds from the case
+  to recompute both results; execution is deterministic so the divergence
+  reproduces.
+- **Wired into the differential** — on a `ThreeWay` failure the runner records
+  the case; a `t.Cleanup` emits the last (minimal) one **only when
+  `RAD_GEN_EMIT` is set** (`=1` targets the e2e suite, or a path). Default is
+  fail-fast, so a red run never silently litters fixtures.
+- Proven end-to-end: a forced divergence shrinks, emits `bug_gen_<hash>/`, and
+  the emitted fixture runs green through the real `tests/e2e` runner.
+
+The original spec follows for context; the delta-debugging sections are
+superseded.
 
 ## What it is (the mental model)
 
