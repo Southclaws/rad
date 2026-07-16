@@ -86,20 +86,42 @@ func (t Table) allNullable(cols []string) bool {
 	return true
 }
 
-// SynthCatalog draws a random schema: 2..4 tables, each with a text "id" PK and
-// 1..3 typed value columns. A table may carry a nullable foreign key to an
-// earlier table (so joins and grouping can find matches) and a non-unique
-// secondary index on one value column (so the planner has a range-scan access
-// path to exercise path-independence). Awkward shapes — composite or non-text
-// keys, unique secondaries, multi-column foreign keys — are covered by the
-// schema-directed fixtures rather than synthesised here.
+// SynthConfig bounds the shape of a synthesised catalog: how many tables, and
+// how many typed value columns each carries beyond its "id" key. Widen it to
+// stress the engine with larger schemas; DefaultSynthConfig is the modest shape
+// used by the standard runs.
+type SynthConfig struct {
+	MinTables    int
+	MaxTables    int
+	MinValueCols int
+	MaxValueCols int
+}
+
+// DefaultSynthConfig is the standard synthetic shape: 2..4 tables, each with
+// 1..3 value columns.
+func DefaultSynthConfig() SynthConfig {
+	return SynthConfig{MinTables: 2, MaxTables: 4, MinValueCols: 1, MaxValueCols: 3}
+}
+
+// SynthCatalog draws a random schema with the default bounds. Each table has a
+// text "id" PK and some typed value columns; a table may carry a nullable
+// foreign key to an earlier table (so joins and grouping can find matches) and
+// a non-unique secondary index on one value column (so the planner has a
+// range-scan access path to exercise path-independence). Awkward shapes —
+// composite or non-text keys, unique secondaries, multi-column foreign keys —
+// are covered by the schema-directed fixtures rather than synthesised here.
 func SynthCatalog(t *rapid.T) *Catalog {
-	n := rapid.IntRange(2, 4).Draw(t, "tables")
+	return SynthCatalogWith(t, DefaultSynthConfig())
+}
+
+// SynthCatalogWith draws a random schema within cfg's bounds.
+func SynthCatalogWith(t *rapid.T, cfg SynthConfig) *Catalog {
+	n := rapid.IntRange(cfg.MinTables, cfg.MaxTables).Draw(t, "tables")
 	cat := &Catalog{}
 	for i := 0; i < n; i++ {
 		tbl := Table{Name: fmt.Sprintf("t%d", i), PrimaryKey: []string{"id"}}
 		tbl.Columns = append(tbl.Columns, Column{Name: "id", Type: catalog.TypeText})
-		extra := rapid.IntRange(1, 3).Draw(t, "value_cols")
+		extra := rapid.IntRange(cfg.MinValueCols, cfg.MaxValueCols).Draw(t, "value_cols")
 		for j := 0; j < extra; j++ {
 			tbl.Columns = append(tbl.Columns, Column{
 				Name:     fmt.Sprintf("c%d", j),
@@ -112,7 +134,7 @@ func SynthCatalog(t *rapid.T) *Catalog {
 			tbl.Columns = append(tbl.Columns, Column{Name: "fk", Type: catalog.TypeText, Nullable: true})
 			tbl.FKs = append(tbl.FKs, FK{Cols: []string{"fk"}, Parent: parent.Name, ParentCols: []string{"id"}})
 		}
-		if rapid.Bool().Draw(t, "has_index") {
+		if extra > 0 && rapid.Bool().Draw(t, "has_index") {
 			col := tbl.Columns[1+rapid.IntRange(0, extra-1).Draw(t, "index_col")].Name
 			tbl.Indexes = append(tbl.Indexes, []string{col})
 		}
