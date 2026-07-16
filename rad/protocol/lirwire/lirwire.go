@@ -6,11 +6,190 @@ import (
 	"fmt"
 )
 
-// One raw JSON scalar: a string, a number, a boolean, or null. It carries
-// no type of its own on the wire; the binder types it from the context it
-// meets (see `LiteralExpr`), preserving JSON number precision so a 64-bit
-// integer is never rounded through a float.
-type Value = json.RawMessage
+// The logical type of a scalar value: `text`, `int64`, `float64`, or
+// `bool`.
+type ScalarType string
+
+const (
+	ScalarTypeText    ScalarType = "text"
+	ScalarTypeInt64   ScalarType = "int64"
+	ScalarTypeFloat64 ScalarType = "float64"
+	ScalarTypeBool    ScalarType = "bool"
+)
+
+var ScalarTypeValues = []ScalarType{
+	ScalarTypeText,
+	ScalarTypeInt64,
+	ScalarTypeFloat64,
+	ScalarTypeBool,
+}
+
+// LIR is Rad's low-level intermediate representation: the relation tree a
+// client sends to `POST /query`, and the tree the engine binds, plans, and
+// executes. This schema is its normative specification. The type definitions
+// and the prose in these descriptions are one artifact and move together.
+//
+// LIR is an internal contract with no external compatibility promise yet; it
+// may change while the design is hardened. It is deliberately unstable, but at
+// any moment it is exactly what this document says.
+//
+// # Model
+//
+// LIR has exactly two categories, and no third "shape" category: shaping is
+// projection, and nesting lives in the value model.
+//
+//   - A **relation** is a possibly empty, possibly many stream of structurally
+//     typed rows. Relation operators consume relations and produce relations.
+//   - An **expression** computes exactly one typed *datum* (null, a scalar, a
+//     row, or an array) in some scope. An expression may consume a relation only
+//     through an explicit *crossing* that declares how a stream of rows becomes
+//     one datum.
+//
+// **Relational closure** is a law, not an aspiration: the output of every
+// relation operator is itself an ordinary relation whose every attribute is
+// addressable by later operators. A `filter` above an `aggregate` references a
+// fold's output exactly as it would reference a scanned column.
+//
+// **Correlation** is a derived property, not an operator. A sub-relation that
+// references a scope bound by an enclosing relation is correlated, and is
+// evaluated with that enclosing row in scope. Correlation is a semantic
+// relationship only: the planner may satisfy it per row, by batching, or by a
+// join, as long as the result is identical. A relation becomes a datum only at
+// a crossing or the root, never merely by being correlated.
+//
+// # Determinism
+//
+// A key-value scan's encounter order is physical, never logical, and the
+// engine's access-path choice must never change results. Wherever a stream of
+// rows becomes observable, its order must be explicit. Root `many` results and
+// `array` crossings require an `order`; root and crossing `first` permit either
+// an `order` or a proof of at most one row. A positive `slice.offset` also
+// requires an ordered input. An unordered `limit` is permitted only until a
+// later observable boundary imposes its own ordering requirement.
+//
+// # NULL and three-valued logic
+//
+// Predicates evaluate in Kleene three-valued logic (K3): `TRUE`, `FALSE`, or
+// `UNKNOWN`. Any comparison with a NULL operand is `UNKNOWN`. `filter` and a
+// join's `on` keep only rows that evaluate to `TRUE`, never `UNKNOWN`, so
+// `not (x = 1)` does not match rows where `x` is NULL; `is_null` is the only
+// test that matches a NULL. NULLs are distinct under unique indexes.
+//
+// # The wire
+//
+// A query is a flat map of caller-chosen node ids plus a root selector. Every
+// definition is inline; a node id is a plain reference carrying no sharing,
+// memoisation, or materialisation identity. The graph must be acyclic, every
+// node must be reachable from the root and have exactly one consumer, and
+// dangling or shared references are rejected before binding. Nodes and
+// expressions are closed `oneOf` unions selected by `kind`; unknown fields,
+// fields belonging to another variant, and missing required fields are
+// rejected. Literal values travel as raw JSON scalars (see `Value`) and are
+// typed by the binder from the context each literal meets.
+type ValueUnion interface {
+	ValueType() string
+	isValue()
+}
+
+type Value struct {
+	ValueUnion
+}
+
+func (w Value) MarshalJSON() ([]byte, error) {
+	if w.ValueUnion == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(w.ValueUnion)
+}
+
+func (w *Value) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if bytes.Equal(data, []byte("null")) {
+		w.ValueUnion = nil
+		return nil
+	}
+
+	var peek struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &peek); err != nil {
+		return fmt.Errorf("Value: invalid JSON: %w", err)
+	}
+	if peek.Type == "" {
+		return fmt.Errorf("Value: missing discriminator field %q", "type")
+	}
+
+	var v ValueUnion
+	switch peek.Type {
+	case "text":
+		v = &TextValue{}
+	case "int64":
+		v = &Int64Value{}
+	case "float64":
+		v = &Float64Value{}
+	case "bool":
+		v = &BoolValue{}
+	default:
+		return fmt.Errorf("Value: unknown type %q", peek.Type)
+	}
+
+	if err := json.Unmarshal(data, v); err != nil {
+		return fmt.Errorf("Value: invalid %q payload: %w", peek.Type, err)
+	}
+
+	w.ValueUnion = v
+	return nil
+}
+
+// A text value, or a text NULL when `value` is absent.
+type TextValue struct {
+	Type string `json:"type"`
+	// The text value; absent for a NULL.
+	Value *string `json:"value,omitempty"`
+}
+
+func (TextValue) isValue() {}
+
+func (TextValue) ValueType() string { return "text" }
+
+// A signed 64-bit integer, or an int64 NULL when `value` is absent. `value`
+// is the integer's canonical base-10 string, with no leading plus sign or
+// redundant leading zeroes; values outside the signed 64-bit range are
+// invalid — a bound the pattern cannot express, so the binder enforces it.
+type Int64Value struct {
+	Type string `json:"type"`
+	// The integer as a canonical decimal string, e.g. "9007199254740993"; absent for a NULL.
+	Value *string `json:"value,omitempty"`
+}
+
+func (Int64Value) isValue() {}
+
+func (Int64Value) ValueType() string { return "int64" }
+
+// A finite IEEE-754 binary64 value, or a float64 NULL when `value` is
+// absent. `value` is a decimal string that round-trips exactly to that
+// binary64 value; non-finite values (NaN, Infinity) are rejected by the
+// binder.
+type Float64Value struct {
+	Type string `json:"type"`
+	// The finite binary64 value in canonical round-trip string form; absent for a NULL.
+	Value *string `json:"value,omitempty"`
+}
+
+func (Float64Value) isValue() {}
+
+func (Float64Value) ValueType() string { return "float64" }
+
+// A boolean value, or a bool NULL when `value` is absent.
+type BoolValue struct {
+	Type string `json:"type"`
+	// The boolean value; absent for a NULL.
+	Value *bool `json:"value,omitempty"`
+}
+
+func (BoolValue) isValue() {}
+
+func (BoolValue) ValueType() string { return "bool" }
 
 // LIR is Rad's low-level intermediate representation: the relation tree a
 // client sends to `POST /query`, and the tree the engine binds, plans, and
@@ -139,14 +318,12 @@ func (w *Expr) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// A constant value. `value` is a raw JSON scalar (see `Value`); the binder
-// gives it a type from the context it meets rather than from its JSON
-// form. A JSON number becomes int64 or float64 according to the column it
-// is compared or assigned to, never by guessing; a JSON null adopts that
-// column's type. There is no implicit numeric widening.
+// A constant value. `value` is a scalar wire value (see `Value`); numeric
+// values travel as lossless strings, so a 64-bit integer keeps full
+// precision on the wire.
 type LiteralExpr struct {
 	Kind string `json:"kind"`
-	// The raw scalar value, typed by the binder in context.
+	// The constant's typed scalar value.
 	Value Value `json:"value"`
 }
 
@@ -222,7 +399,7 @@ type CastExpr struct {
 	Expr Expr   `json:"expr"`
 	Kind string `json:"kind"`
 	// The target scalar type.
-	To string `json:"to"`
+	To ScalarType `json:"to"`
 }
 
 func (CastExpr) isExpr() {}
@@ -324,6 +501,15 @@ type Binding struct {
 	Node string `json:"node"`
 }
 
+// One schema-directed scalar payload, used inside a `rows` relation where
+// each column already declares its type. A string is decoded against the
+// corresponding `RowsColumn.type` — numbers as lossless strings, `bool` as
+// "true"/"false", so precision survives and the type is never repeated per
+// cell; JSON null is a typed NULL, valid only when that column is nullable.
+// Unlike `Value`, a cell carries no type of its own — the column supplies
+// it once for the whole column.
+type Cell = *string
+
 // One computed output attribute of a projection: the expression `expr`
 // under the output name `as`. When `expr` is a crossing the field
 // materialises a nested value: `first` renders an object (or null), `array`
@@ -365,7 +551,7 @@ type RowsColumn struct {
 	// Whether cells in this column may be NULL.
 	Nullable *bool `json:"nullable,omitempty"`
 	// The column's scalar type.
-	Type string `json:"type"`
+	Type ScalarType `json:"type"`
 }
 
 // LIR is Rad's low-level intermediate representation: the relation tree a
@@ -526,12 +712,11 @@ func (ScanNode) NodeType() string { return "scan" }
 // row values: a bare JSON number cannot choose between int64 and
 // float64, and the schema of a relation must not depend on its data.
 // Each row is a positional array parallel to `columns`, and its arity
-// must equal the number of declared columns. Each cell uses the
-// protocol `Value` encoding — raw JSON scalars whose number precision
-// is preserved end to end (see `Value`) — and is validated and decoded
-// against its declared column type under the same rules as scalar
-// literals. A JSON null represents a typed NULL and is valid only for
-// a nullable column.
+// must equal the number of declared columns. Each cell is a `Cell`: a bare
+// string payload decoded against its column's declared scalar type (numbers
+// as lossless strings, so precision survives end to end), or JSON null for a
+// typed NULL, valid only for a nullable column. The column supplies the
+// type, so — unlike a `Value` literal — a cell never repeats it.
 //
 // `rows` may be empty. Because type and nullability are declared
 // independently of the values, an empty constant relation remains
@@ -551,7 +736,7 @@ type RowsNode struct {
 	// Literal rows represented as positional arrays parallel to
 	// `columns`. May be empty.
 	//
-	Rows [][]Value `json:"rows"`
+	Rows [][]Cell `json:"rows"`
 	// The label this relation's output attributes are bound to. Must be
 	// unique across the query, under the same rules as a scan's scope.
 	//

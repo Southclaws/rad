@@ -144,6 +144,25 @@
       "title": "Binding",
       "type": "object"
     },
+    "BoolValue": {
+      "additionalProperties": false,
+      "description": "A boolean value, or a bool NULL when `value` is absent.",
+      "properties": {
+        "type": {
+          "const": "bool",
+          "type": "string"
+        },
+        "value": {
+          "description": "The boolean value; absent for a NULL.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "BoolValue",
+      "type": "object"
+    },
     "CastExpr": {
       "additionalProperties": false,
       "description": "Convert `expr` to the scalar type `to`. The conversion is explicit; the\nresult is nullable exactly when the operand is.\n",
@@ -157,14 +176,8 @@
           "type": "string"
         },
         "to": {
-          "description": "The target scalar type.",
-          "enum": [
-            "text",
-            "int64",
-            "float64",
-            "bool"
-          ],
-          "type": "string"
+          "$ref": "#/$defs/ScalarType",
+          "description": "The target scalar type."
         }
       },
       "required": [
@@ -173,6 +186,14 @@
         "to"
       ],
       "type": "object"
+    },
+    "Cell": {
+      "description": "One schema-directed scalar payload, used inside a `rows` relation where\neach column already declares its type. A string is decoded against the\ncorresponding `RowsColumn.type` — numbers as lossless strings, `bool` as\n\"true\"/\"false\", so precision survives and the type is never repeated per\ncell; JSON null is a typed NULL, valid only when that column is nullable.\nUnlike `Value`, a cell carries no type of its own — the column supplies\nit once for the whole column.\n",
+      "title": "Cell",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "ColumnExpr": {
       "additionalProperties": false,
@@ -359,6 +380,25 @@
       ],
       "type": "object"
     },
+    "Float64Value": {
+      "additionalProperties": false,
+      "description": "A finite IEEE-754 binary64 value, or a float64 NULL when `value` is\nabsent. `value` is a decimal string that round-trips exactly to that\nbinary64 value; non-finite values (NaN, Infinity) are rejected by the\nbinder.\n",
+      "properties": {
+        "type": {
+          "const": "float64",
+          "type": "string"
+        },
+        "value": {
+          "description": "The finite binary64 value in canonical round-trip string form; absent for a NULL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "Float64Value",
+      "type": "object"
+    },
     "GroupTerm": {
       "additionalProperties": false,
       "description": "One grouping key of an aggregate: rows are grouped by the value of\n`expr`, and the key is exposed in the output under `as`. When `as` is\nomitted and `expr` is a bare column reference, the column's name is used.\n",
@@ -377,6 +417,26 @@
         "expr"
       ],
       "title": "GroupTerm",
+      "type": "object"
+    },
+    "Int64Value": {
+      "additionalProperties": false,
+      "description": "A signed 64-bit integer, or an int64 NULL when `value` is absent. `value`\nis the integer's canonical base-10 string, with no leading plus sign or\nredundant leading zeroes; values outside the signed 64-bit range are\ninvalid — a bound the pattern cannot express, so the binder enforces it.\n",
+      "properties": {
+        "type": {
+          "const": "int64",
+          "type": "string"
+        },
+        "value": {
+          "description": "The integer as a canonical decimal string, e.g. \"9007199254740993\"; absent for a NULL.",
+          "pattern": "^-?(0|[1-9][0-9]*)$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "Int64Value",
       "type": "object"
     },
     "JoinNode": {
@@ -421,7 +481,7 @@
     },
     "LiteralExpr": {
       "additionalProperties": false,
-      "description": "A constant value. `value` is a raw JSON scalar (see `Value`); the binder\ngives it a type from the context it meets rather than from its JSON\nform. A JSON number becomes int64 or float64 according to the column it\nis compared or assigned to, never by guessing; a JSON null adopts that\ncolumn's type. There is no implicit numeric widening.\n",
+      "description": "A constant value. `value` is a scalar wire value (see `Value`); numeric\nvalues travel as lossless strings, so a 64-bit integer keeps full\nprecision on the wire.\n",
       "properties": {
         "kind": {
           "const": "lit",
@@ -429,7 +489,7 @@
         },
         "value": {
           "$ref": "#/$defs/Value",
-          "description": "The raw scalar value, typed by the binder in context."
+          "description": "The constant's typed scalar value."
         }
       },
       "required": [
@@ -679,14 +739,8 @@
           "type": "boolean"
         },
         "type": {
-          "description": "The column's scalar type.",
-          "enum": [
-            "text",
-            "int64",
-            "float64",
-            "bool"
-          ],
-          "type": "string"
+          "$ref": "#/$defs/ScalarType",
+          "description": "The column's scalar type."
         }
       },
       "required": [
@@ -698,7 +752,7 @@
     },
     "RowsNode": {
       "additionalProperties": false,
-      "description": "Introduce a finite constant relation: literal rows with explicitly\ndeclared columns, bound to a `scope` label exactly as a scan is. It is\nthe second relational leaf beside `scan`, useful for literal queries,\njoins against ad hoc data, fixtures, and mutation input where a\nliteral row is simply a one-row relation.\n\nColumn types and nullability are declared, never inferred from the\nrow values: a bare JSON number cannot choose between int64 and\nfloat64, and the schema of a relation must not depend on its data.\nEach row is a positional array parallel to `columns`, and its arity\nmust equal the number of declared columns. Each cell uses the\nprotocol `Value` encoding — raw JSON scalars whose number precision\nis preserved end to end (see `Value`) — and is validated and decoded\nagainst its declared column type under the same rules as scalar\nliterals. A JSON null represents a typed NULL and is valid only for\na nullable column.\n\n`rows` may be empty. Because type and nullability are declared\nindependently of the values, an empty constant relation remains\nfully typed.\n\nThe relation is a bag containing exactly `rows.length` rows,\nincluding duplicates. Document order is not a logical relation\norder; observing an order requires an explicit `order` node above\nit. Its bag contents are deterministic and independent of storage\naccess paths or physical plan choice.\n",
+      "description": "Introduce a finite constant relation: literal rows with explicitly\ndeclared columns, bound to a `scope` label exactly as a scan is. It is\nthe second relational leaf beside `scan`, useful for literal queries,\njoins against ad hoc data, fixtures, and mutation input where a\nliteral row is simply a one-row relation.\n\nColumn types and nullability are declared, never inferred from the\nrow values: a bare JSON number cannot choose between int64 and\nfloat64, and the schema of a relation must not depend on its data.\nEach row is a positional array parallel to `columns`, and its arity\nmust equal the number of declared columns. Each cell is a `Cell`: a bare\nstring payload decoded against its column's declared scalar type (numbers\nas lossless strings, so precision survives end to end), or JSON null for a\ntyped NULL, valid only for a nullable column. The column supplies the\ntype, so — unlike a `Value` literal — a cell never repeats it.\n\n`rows` may be empty. Because type and nullability are declared\nindependently of the values, an empty constant relation remains\nfully typed.\n\nThe relation is a bag containing exactly `rows.length` rows,\nincluding duplicates. Document order is not a logical relation\norder; observing an order requires an explicit `order` node above\nit. Its bag contents are deterministic and independent of storage\naccess paths or physical plan choice.\n",
       "properties": {
         "columns": {
           "description": "The output columns in positional order. Column names must be\nunique.\n",
@@ -716,7 +770,7 @@
           "description": "Literal rows represented as positional arrays parallel to\n`columns`. May be empty.\n",
           "items": {
             "items": {
-              "$ref": "#/$defs/Value"
+              "$ref": "#/$defs/Cell"
             },
             "type": "array"
           },
@@ -735,6 +789,17 @@
         "rows"
       ],
       "type": "object"
+    },
+    "ScalarType": {
+      "description": "The logical type of a scalar value: `text`, `int64`, `float64`, or\n`bool`.\n",
+      "enum": [
+        "text",
+        "int64",
+        "float64",
+        "bool"
+      ],
+      "title": "ScalarType",
+      "type": "string"
     },
     "ScanNode": {
       "additionalProperties": false,
@@ -792,6 +857,25 @@
       ],
       "type": "object"
     },
+    "TextValue": {
+      "additionalProperties": false,
+      "description": "A text value, or a text NULL when `value` is absent.",
+      "properties": {
+        "type": {
+          "const": "text",
+          "type": "string"
+        },
+        "value": {
+          "description": "The text value; absent for a NULL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "TextValue",
+      "type": "object"
+    },
     "UnaryExpr": {
       "additionalProperties": false,
       "description": "Apply a unary operator to `expr`:\n\n- `not` — three-valued negation: `not TRUE` is FALSE, `not FALSE` is\n  TRUE, `not UNKNOWN` is UNKNOWN.\n- `negate` — arithmetic negation of a numeric value; NULL propagates.\n- `is_null` / `is_not_null` — total tests that are always TRUE or FALSE,\n  never UNKNOWN. `is_null` is the only way to match a NULL.\n",
@@ -823,15 +907,22 @@
       "type": "object"
     },
     "Value": {
-      "description": "One raw JSON scalar: a string, a number, a boolean, or null. It carries\nno type of its own on the wire; the binder types it from the context it\nmeets (see `LiteralExpr`), preserving JSON number precision so a 64-bit\ninteger is never rounded through a float.\n",
-      "format": "raw",
-      "title": "Value",
-      "type": [
-        "string",
-        "number",
-        "boolean",
-        "null"
-      ]
+      "description": "A scalar wire value: a discriminated union selected by `type`, which is\nalways a `ScalarType`. Each variant is a value of that scalar type, either\npresent or NULL. When `value` is present it is the datum — numeric types as\na lossless canonical string so JSON never loses precision, `text` and\n`bool` in their natural JSON form; when `value` is absent the value is a\ntyped NULL of that scalar type. Presence, not contents, marks NULL: an\nempty string is a present `text` value, not a NULL. A naked NULL of no\nparticular type is not representable — cast it to give it one. A value's\n`type` must match the scalar type its context expects.\n",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/TextValue"
+        },
+        {
+          "$ref": "#/$defs/Int64Value"
+        },
+        {
+          "$ref": "#/$defs/Float64Value"
+        },
+        {
+          "$ref": "#/$defs/BoolValue"
+        }
+      ],
+      "title": "Value"
     }
   },
   "$id": "https://www.radengine.dev/schema/lir.json",

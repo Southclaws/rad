@@ -135,7 +135,7 @@
     },
     "UpdateStatement": {
       "additionalProperties": false,
-      "description": "Update rows of `table`, identified and assigned by the schema of\n`relation`: its output must include the target's full primary key, which\nidentifies each target row but is not assigned, plus at least one\nnon-primary-key column to assign. PIR v1 does not change row identity, so\na primary-key-only input is rejected. Columns absent from the relation\nare left unchanged; a NULL assigns NULL. Each input row must identify\nexactly one existing row, and no target may be identified twice. The\nstatement's result is the post-image of the updated rows.\n",
+      "description": "Update rows of `table`, identified and assigned by the schema of\n`relation`: its output must include the target's full primary key, which\nidentifies each target row but is not assigned, plus at least one\nnon-primary-key column to assign. Updating never changes row identity, so\na primary-key-only input is rejected. Columns absent from the relation\nare left unchanged; a NULL assigns NULL. Each input row must identify\nexactly one existing row, and no target may be identified twice. The\nstatement's result is the post-image of the updated rows.\n",
       "properties": {
         "kind": {
           "const": "update",

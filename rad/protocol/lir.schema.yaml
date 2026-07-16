@@ -265,12 +265,11 @@ $defs:
       row values: a bare JSON number cannot choose between int64 and
       float64, and the schema of a relation must not depend on its data.
       Each row is a positional array parallel to `columns`, and its arity
-      must equal the number of declared columns. Each cell uses the
-      protocol `Value` encoding — raw JSON scalars whose number precision
-      is preserved end to end (see `Value`) — and is validated and decoded
-      against its declared column type under the same rules as scalar
-      literals. A JSON null represents a typed NULL and is valid only for
-      a nullable column.
+      must equal the number of declared columns. Each cell is a `Cell`: a bare
+      string payload decoded against its column's declared scalar type (numbers
+      as lossless strings, so precision survives end to end), or JSON null for a
+      typed NULL, valid only for a nullable column. The column supplies the
+      type, so — unlike a `Value` literal — a cell never repeats it.
 
       `rows` may be empty. Because type and nullability are declared
       independently of the values, an empty constant relation remains
@@ -306,7 +305,7 @@ $defs:
         type: array
         items:
           type: array
-          items: { $ref: "#/$defs/Value" }
+          items: { $ref: "#/$defs/Cell" }
 
   RowsColumn:
     title: RowsColumn
@@ -321,8 +320,7 @@ $defs:
         minLength: 1
       type:
         description: The column's scalar type.
-        type: string
-        enum: [text, int64, float64, bool]
+        $ref: "#/$defs/ScalarType"
       nullable:
         description: Whether cells in this column may be NULL.
         type: boolean
@@ -568,18 +566,16 @@ $defs:
 
   LiteralExpr:
     description: |
-      A constant value. `value` is a raw JSON scalar (see `Value`); the binder
-      gives it a type from the context it meets rather than from its JSON
-      form. A JSON number becomes int64 or float64 according to the column it
-      is compared or assigned to, never by guessing; a JSON null adopts that
-      column's type. There is no implicit numeric widening.
+      A constant value. `value` is a scalar wire value (see `Value`); numeric
+      values travel as lossless strings, so a 64-bit integer keeps full
+      precision on the wire.
     type: object
     additionalProperties: false
     required: [kind, value]
     properties:
       kind: { type: string, const: lit }
       value:
-        description: The raw scalar value, typed by the binder in context.
+        description: The constant's typed scalar value.
         $ref: "#/$defs/Value"
 
   ColumnExpr:
@@ -668,8 +664,7 @@ $defs:
         $ref: "#/$defs/Expr"
       to:
         description: The target scalar type.
-        type: string
-        enum: [text, int64, float64, bool]
+        $ref: "#/$defs/ScalarType"
 
   # Crossings are the only boundary from a relation into an expression. Each
   # declares how a stream of rows becomes exactly one datum.
@@ -836,17 +831,100 @@ $defs:
         type: boolean
 
   # -
-  # Scalar values (the leaf)
+  # Scalar types, values, and cells (the leaves)
   # -
+
+  ScalarType:
+    title: ScalarType
+    description: |
+      The logical type of a scalar value: `text`, `int64`, `float64`, or
+      `bool`.
+    type: string
+    enum: [text, int64, float64, bool]
 
   Value:
     title: Value
     description: |
-      One raw JSON scalar: a string, a number, a boolean, or null. It carries
-      no type of its own on the wire; the binder types it from the context it
-      meets (see `LiteralExpr`), preserving JSON number precision so a 64-bit
-      integer is never rounded through a float.
-    type: [string, number, boolean, "null"]
-    # `raw` maps (per language, via schemancer config) to a raw-JSON type so
-    # literal numbers keep full int64 precision instead of decoding to float64.
-    format: raw
+      A scalar wire value: a discriminated union selected by `type`, which is
+      always a `ScalarType`. Each variant is a value of that scalar type, either
+      present or NULL. When `value` is present it is the datum — numeric types as
+      a lossless canonical string so JSON never loses precision, `text` and
+      `bool` in their natural JSON form; when `value` is absent the value is a
+      typed NULL of that scalar type. Presence, not contents, marks NULL: an
+      empty string is a present `text` value, not a NULL. A naked NULL of no
+      particular type is not representable — cast it to give it one. A value's
+      `type` must match the scalar type its context expects.
+    oneOf:
+      - { $ref: "#/$defs/TextValue" }
+      - { $ref: "#/$defs/Int64Value" }
+      - { $ref: "#/$defs/Float64Value" }
+      - { $ref: "#/$defs/BoolValue" }
+
+  TextValue:
+    title: TextValue
+    description: A text value, or a text NULL when `value` is absent.
+    type: object
+    additionalProperties: false
+    required: [type]
+    properties:
+      type: { type: string, const: text }
+      value:
+        description: The text value; absent for a NULL.
+        type: string
+
+  Int64Value:
+    title: Int64Value
+    description: |
+      A signed 64-bit integer, or an int64 NULL when `value` is absent. `value`
+      is the integer's canonical base-10 string, with no leading plus sign or
+      redundant leading zeroes; values outside the signed 64-bit range are
+      invalid — a bound the pattern cannot express, so the binder enforces it.
+    type: object
+    additionalProperties: false
+    required: [type]
+    properties:
+      type: { type: string, const: int64 }
+      value:
+        description: The integer as a canonical decimal string, e.g. "9007199254740993"; absent for a NULL.
+        type: string
+        pattern: '^-?(0|[1-9][0-9]*)$'
+
+  Float64Value:
+    title: Float64Value
+    description: |
+      A finite IEEE-754 binary64 value, or a float64 NULL when `value` is
+      absent. `value` is a decimal string that round-trips exactly to that
+      binary64 value; non-finite values (NaN, Infinity) are rejected by the
+      binder.
+    type: object
+    additionalProperties: false
+    required: [type]
+    properties:
+      type: { type: string, const: float64 }
+      value:
+        description: The finite binary64 value in canonical round-trip string form; absent for a NULL.
+        type: string
+
+  BoolValue:
+    title: BoolValue
+    description: A boolean value, or a bool NULL when `value` is absent.
+    type: object
+    additionalProperties: false
+    required: [type]
+    properties:
+      type: { type: string, const: bool }
+      value:
+        description: The boolean value; absent for a NULL.
+        type: boolean
+
+  Cell:
+    title: Cell
+    description: |
+      One schema-directed scalar payload, used inside a `rows` relation where
+      each column already declares its type. A string is decoded against the
+      corresponding `RowsColumn.type` — numbers as lossless strings, `bool` as
+      "true"/"false", so precision survives and the type is never repeated per
+      cell; JSON null is a typed NULL, valid only when that column is nullable.
+      Unlike `Value`, a cell carries no type of its own — the column supplies
+      it once for the whole column.
+    type: [string, "null"]
