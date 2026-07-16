@@ -100,7 +100,7 @@ type SynthConfig struct {
 // DefaultSynthConfig is the standard synthetic shape: 2..4 tables, each with
 // 1..3 value columns.
 func DefaultSynthConfig() SynthConfig {
-	return SynthConfig{MinTables: 2, MaxTables: 4, MinValueCols: 1, MaxValueCols: 3}
+	return SynthConfig{MinTables: 2, MaxTables: 8, MinValueCols: 1, MaxValueCols: 10}
 }
 
 // SynthCatalog draws a random schema with the default bounds. Each table has a

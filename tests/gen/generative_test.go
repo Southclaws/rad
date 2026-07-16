@@ -37,6 +37,7 @@ import (
 func TestGenerativeSynthetic(t *testing.T) {
 	ctx := context.Background()
 	capt := newCapture(t, "synthetic", nil)
+	before := casesChecked.Load()
 	rapid.Check(t, func(rt *rapid.T) {
 		spec := generative.SynthCatalog(rt)
 		db, done := freshDB(t)
@@ -48,6 +49,7 @@ func TestGenerativeSynthetic(t *testing.T) {
 		}
 		runOne(rt, ctx, db, spec, capt)
 	})
+	t.Logf("[generative] synthetic: %d cases checked", casesChecked.Load()-before)
 }
 
 func TestGenerativeSchemas(t *testing.T) {
@@ -72,6 +74,7 @@ func TestGenerativeSchemas(t *testing.T) {
 			// Introspect once into a generator spec; it then serves every case.
 			spec := introspectSchema(t, ctx, path, src)
 			capt := newCapture(t, e.Name(), src)
+			before := casesChecked.Load()
 			rapid.Check(t, func(rt *rapid.T) {
 				db, done := freshDB(t)
 				defer done()
@@ -80,6 +83,7 @@ func TestGenerativeSchemas(t *testing.T) {
 				}
 				runOne(rt, ctx, db, spec, capt)
 			})
+			t.Logf("[generative] %s: %d cases checked", e.Name(), casesChecked.Load()-before)
 		})
 	}
 }
@@ -103,10 +107,33 @@ func runOne(rt *rapid.T, ctx context.Context, db *frontend.DB, spec *generative.
 	if ordered {
 		q = g.OrderedQuery()
 	}
+	casesChecked.Add(1)
+	if dumpEnabled() {
+		dumpCase(capt.mode, dumpSchema(capt, spec), q, dumpResult(ctx, db, q))
+	}
 	if err := differential.ThreeWay(ctx, db, scanOf(data), q, ordered); err != nil {
 		capt.record(emit.Case{Spec: spec, Data: data, Query: q, Ordered: ordered, Detail: err.Error()})
 		rt.Fatal(err)
 	}
+}
+
+// dumpSchema renders the case's schema for the run dump — the original source
+// for a schema-directed case, or the serialised synthetic spec.
+func dumpSchema(capt *capture, spec *generative.Catalog) string {
+	if len(capt.schemaSrc) > 0 {
+		return string(capt.schemaSrc)
+	}
+	return emit.SchemaRAD(spec)
+}
+
+// dumpResult executes q for the run dump, recording the error instead when the
+// query legitimately fails at runtime (e.g. checked overflow).
+func dumpResult(ctx context.Context, db *frontend.DB, q lir.Query) any {
+	res, err := db.Execute(ctx, q)
+	if err != nil {
+		return map[string]string{"error": err.Error()}
+	}
+	return frontend.DatumJSON(res)
 }
 
 // capture holds the latest failing case and, when RAD_GEN_EMIT is set, writes

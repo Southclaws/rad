@@ -71,7 +71,7 @@ func Fixture(ctx context.Context, dir string, c Case) (string, error) {
 
 	schema := c.SchemaSrc
 	if schema == nil {
-		schema = []byte(schemaRAD(c.Spec))
+		schema = []byte(SchemaRAD(c.Spec))
 	}
 	if err := os.WriteFile(filepath.Join(fixDir, "schema.rad"), schema, 0o644); err != nil {
 		return "", err
@@ -168,10 +168,10 @@ func seedGroups(spec *generative.Catalog, data map[string][]lir.Row) []map[strin
 	return groups
 }
 
-// schemaRAD serialises a synthetic spec as schema.rad. It handles the shapes the
+// SchemaRAD serialises a synthetic spec as schema.rad. It handles the shapes the
 // synthesiser produces (single or composite keys, single-column foreign keys
 // and indexes); a schema-directed case carries its original source instead.
-func schemaRAD(spec *generative.Catalog) string {
+func SchemaRAD(spec *generative.Catalog) string {
 	var b strings.Builder
 	b.WriteString("tables:\n")
 	for _, t := range spec.Tables {

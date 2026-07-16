@@ -5,3 +5,6 @@ third_party/
 ui/node_modules/
 *.output
 .DS_Store
+
+# Generative run dumps (RAD_GEN_DUMP)
+tests/gen/runs/

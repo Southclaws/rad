@@ -89,8 +89,12 @@ tasks:
     desc: "Run the generative differential (synthetic + schema-directed); depth via -rapid.checks=N or RAPID_CHECKS=N"
     env:
       CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
+      # Dump every generated case to tests/gen/runs/generated.jsonl (gitignored)
+      # for inspection; the test's working dir is the package dir.
+      RAD_GEN_DUMP: "runs"
     cmds:
-      - go test ./tests/gen/ -count=1 {{.CLI_ARGS}}
+      # -v so the per-scenario counts and the grand total surface.
+      - go test ./tests/gen/ -count=1 -v {{.CLI_ARGS}}
 
   vet:
     desc: Go vet all packages
