@@ -19,6 +19,13 @@ func (db *DB) Execute(ctx context.Context, q lir.Query) (lir.Datum, error) {
 	return db.eng.Execute(ctx, q)
 }
 
+// ExecuteForced runs a query with every access forced to a full table scan.
+// The result must match Execute — that equality is the planner's path-
+// independence invariant, which a differential checks by running both.
+func (db *DB) ExecuteForced(ctx context.Context, q lir.Query) (lir.Datum, error) {
+	return db.eng.ExecuteForced(ctx, q)
+}
+
 // Execute inside a transaction sees its snapshot plus its own writes.
 func (tx *Tx) Execute(ctx context.Context, q lir.Query) (lir.Datum, error) {
 	return tx.tx.Execute(ctx, q)

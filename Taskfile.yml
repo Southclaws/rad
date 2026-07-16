@@ -81,6 +81,13 @@ tasks:
     cmds:
       - go test ./tests/planner/ -count=1 {{.CLI_ARGS}}
 
+  test:generative:
+    desc: "Run the generative differential (synthetic + schema-directed); RAD_GEN_SEEDS tunes depth"
+    env:
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
+    cmds:
+      - go test ./tests/gen/ -count=1 {{.CLI_ARGS}}
+
   vet:
     desc: Go vet all packages
     env:

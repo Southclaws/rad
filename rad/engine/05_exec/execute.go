@@ -9,6 +9,7 @@ package exec
 
 import (
 	"context"
+
 	"github.com/Southclaws/rad/rad/engine/reject"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
@@ -24,10 +25,18 @@ func (e *Engine) Execute(ctx context.Context, q lir.Query) (lir.Datum, error) {
 }
 
 // Execute inside a transaction sees its snapshot plus its own writes. The
-// schema lookups join the transaction's read set, so a concurrent schema change on a
-// table the statement touched conflicts at commit.
+// schema lookups join the transaction's read set, so a concurrent schema change
+// on a table the statement touched conflicts at commit.
 func (tx *Tx) Execute(ctx context.Context, q lir.Query) (lir.Datum, error) {
 	return tx.e.execute(ctx, tx.txn, q, false)
+}
+
+// ExecuteForced runs a query with every access forced to a full table scan, so
+// the residual filter — never an index's selection — decides which rows a query
+// returns. By the planner's central invariant it must produce the same result
+// as Execute; a differential that runs both is how that invariant is checked.
+func (e *Engine) ExecuteForced(ctx context.Context, q lir.Query) (lir.Datum, error) {
+	return e.executeSnapshot(ctx, q, false, planner.FullScanOnly())
 }
 
 // ExecuteNested runs with keyed batching disabled — every correlated
@@ -39,21 +48,21 @@ func (e *Engine) ExecuteNested(ctx context.Context, q lir.Query) (lir.Datum, err
 
 // executeSnapshot gives an autocommit read one statement-scoped snapshot;
 // read-only, so it is discarded rather than committed.
-func (e *Engine) executeSnapshot(ctx context.Context, q lir.Query, forceNested bool) (lir.Datum, error) {
+func (e *Engine) executeSnapshot(ctx context.Context, q lir.Query, forceNested bool, planOpts ...planner.PlanOpt) (lir.Datum, error) {
 	txn, err := e.store.Begin(ctx, kv.Snapshot)
 	if err != nil {
 		return lir.Datum{}, err
 	}
 	defer txn.Rollback()
-	return e.execute(ctx, txn, q, forceNested)
+	return e.execute(ctx, txn, q, forceNested, planOpts...)
 }
 
-func (e *Engine) execute(ctx context.Context, view kv.KV, q lir.Query, forceNested bool) (lir.Datum, error) {
+func (e *Engine) execute(ctx context.Context, view kv.KV, q lir.Query, forceNested bool, planOpts ...planner.PlanOpt) (lir.Datum, error) {
 	bq, err := planner.Bind(ctx, catalog.NewReader(view), q)
 	if err != nil {
 		return lir.Datum{}, err
 	}
-	pp := planner.PlanQuery(bq)
+	pp := planner.PlanQuery(bq, planOpts...)
 
 	ex := newExecutor(view)
 	ex.forceNested = forceNested

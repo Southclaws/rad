@@ -7,13 +7,10 @@ package exec
 // batched ≡ nested (execute_test.go), this is the conformance core.
 
 import (
-	"context"
 	"reflect"
 	"testing"
 
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
-	"github.com/Southclaws/rad/rad/engine/03_lir/bound"
-	planner "github.com/Southclaws/rad/rad/engine/04_planner"
 )
 
 // conformanceQueries is the shared corpus: every query shape the invariants
@@ -152,7 +149,7 @@ func TestPathIndependence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			forced, err := executeFullScan(ctx, eng, q)
+			forced, err := eng.ExecuteForced(ctx, q)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -162,34 +159,4 @@ func TestPathIndependence(t *testing.T) {
 			}
 		})
 	}
-}
-
-// executeFullScan runs a query with every access forced to a filtered table
-// scan.
-func executeFullScan(ctx context.Context, e *Engine, q lir.Query) (lir.Datum, error) {
-	bq, err := planner.Bind(ctx, e.cat, q)
-	if err != nil {
-		return lir.Datum{}, err
-	}
-	pp := planner.PlanQuery(bq, planner.FullScanOnly())
-
-	ex := newExecutor(e.store)
-	if err := ex.commit(ctx, pp.Bindings); err != nil {
-		return lir.Datum{}, err
-	}
-	op, err := ex.build(ctx, pp.Root, bound.Env{})
-	if err != nil {
-		return lir.Datum{}, err
-	}
-	defer op.Close()
-
-	frames, err := drainOp(ctx, op)
-	if err != nil {
-		return lir.Datum{}, err
-	}
-	elems := make([]lir.Datum, len(frames))
-	for i, f := range frames {
-		elems[i] = frameToObject(pp.Out, f)
-	}
-	return lir.ArrayDatum(elems), nil
 }
