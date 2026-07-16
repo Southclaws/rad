@@ -1,8 +1,6 @@
 package generative
 
 import (
-	"math/rand"
-
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 )
 
@@ -24,11 +22,4 @@ func many(root lir.Relation) lir.Query {
 		Input: root,
 		Terms: []lir.OrderTerm{{Expr: qlit(true)}},
 	}}
-}
-
-// shuffle returns a randomly permuted copy of in.
-func shuffle[T any](rng *rand.Rand, in []T) []T {
-	out := append([]T{}, in...)
-	rng.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
-	return out
 }

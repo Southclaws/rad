@@ -5,7 +5,8 @@ package gen
 // catalog, data, and a correct-by-construction query, and the differential
 // (rad/engine/05_exec/differential) runs that query the engine's chosen way,
 // forced to full scans, and through the reference interpreter, requiring all
-// three to agree. This file is only the glue: build a database, load the data,
+// three to agree. Generation draws from a rapid.T, so a failing case minimises
+// automatically. This file is only the glue: build a database, load the data,
 // and hand each query to the differential.
 //
 // The interpreter is fed the exact rows loaded here, so the comparison also
@@ -17,10 +18,10 @@ package gen
 
 import (
 	"context"
-	"math/rand"
+	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
+	"sync/atomic"
 	"testing"
 
 	kvslate "github.com/Southclaws/rad/rad/engine/01_kv/kvslate"
@@ -29,63 +30,25 @@ import (
 	differential "github.com/Southclaws/rad/rad/engine/05_exec/differential"
 	generative "github.com/Southclaws/rad/rad/engine/05_exec/generative"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
+	"pgregory.net/rapid"
 )
 
-// seeds is how many cases each source explores per mode. Modest by default so
-// `go test ./...` stays quick; env-tunable for a deeper soak (RAD_GEN_SEEDS).
-func seeds() int {
-	if s := os.Getenv("RAD_GEN_SEEDS"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil && n > 0 {
-			return n
-		}
-	}
-	return 50
-}
-
-// mode is a query flavour: a bag compared as a multiset, or a totally ordered
-// sequence compared element by element (catching ordering bugs a bag misses).
-type mode struct {
-	name    string
-	ordered bool
-	gen     func(*generative.Generator) lir.Query
-}
-
-var modes = []mode{
-	{"bag", false, (*generative.Generator).Query},
-	{"ordered", true, (*generative.Generator).OrderedQuery},
-}
-
 func TestGenerativeSynthetic(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
-	for _, m := range modes {
-		t.Run(m.name, func(t *testing.T) {
-			t.Parallel()
-			for i := 0; i < seeds(); i++ {
-				seed := int64(i)
-				t.Run(strconv.Itoa(i), func(t *testing.T) {
-					t.Parallel()
-					rng := rand.New(rand.NewSource(seed))
-					spec := generative.SynthCatalog(rng)
-					db := freshDB(t)
-					for _, def := range generative.TableDefs(spec) {
-						if _, err := db.CreateTable(ctx, def); err != nil {
-							t.Fatalf("create table %q: %v", def.Name, err)
-						}
-					}
-					data := insertData(t, ctx, db, rng, spec)
-					q := m.gen(generative.NewGenerator(rng, spec))
-					if err := differential.ThreeWay(ctx, db, scanOf(data), q, m.ordered); err != nil {
-						t.Fatalf("seed %d: %v", seed, err)
-					}
-				})
+	rapid.Check(t, func(rt *rapid.T) {
+		spec := generative.SynthCatalog(rt)
+		db, done := freshDB(t)
+		defer done()
+		for _, def := range generative.TableDefs(spec) {
+			if _, err := db.CreateTable(ctx, def); err != nil {
+				rt.Fatalf("create table %q: %v", def.Name, err)
 			}
-		})
-	}
+		}
+		runOne(rt, ctx, db, spec)
+	})
 }
 
 func TestGenerativeSchemas(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -104,46 +67,56 @@ func TestGenerativeSchemas(t *testing.T) {
 			t.Fatalf("read %s: %v", path, err)
 		}
 		t.Run(e.Name(), func(t *testing.T) {
-			t.Parallel()
-
-			// Introspect once to decide whether the generator can drive this
-			// schema; the resulting spec then serves every seed.
-			probe := freshDB(t)
-			if _, err := probe.MigrateFile(ctx, path, src); err != nil {
-				t.Fatalf("migrate: %v", err)
-			}
-			tables, err := probe.Tables(ctx)
-			if err != nil {
-				t.Fatalf("introspect: %v", err)
-			}
-			spec, reason := generative.Introspect(tables)
-			if reason != "" {
-				t.Skipf("outside the generator's reach: %s", reason)
-			}
-
-			for _, m := range modes {
-				t.Run(m.name, func(t *testing.T) {
-					t.Parallel()
-					for i := 0; i < seeds(); i++ {
-						seed := int64(i)
-						t.Run(strconv.Itoa(i), func(t *testing.T) {
-							t.Parallel()
-							db := freshDB(t)
-							if _, err := db.MigrateFile(ctx, path, src); err != nil {
-								t.Fatalf("migrate: %v", err)
-							}
-							rng := rand.New(rand.NewSource(seed))
-							data := insertData(t, ctx, db, rng, spec)
-							q := m.gen(generative.NewGenerator(rng, spec))
-							if err := differential.ThreeWay(ctx, db, scanOf(data), q, m.ordered); err != nil {
-								t.Fatalf("seed %d: %v", seed, err)
-							}
-						})
-					}
-				})
-			}
+			// Introspect once into a generator spec; it then serves every case.
+			spec := introspectSchema(t, ctx, path, src)
+			rapid.Check(t, func(rt *rapid.T) {
+				db, done := freshDB(t)
+				defer done()
+				if _, err := db.MigrateFile(ctx, path, src); err != nil {
+					rt.Fatalf("migrate: %v", err)
+				}
+				runOne(rt, ctx, db, spec)
+			})
 		})
 	}
+}
+
+// runOne loads a generated dataset, generates one query (bag or ordered), and
+// checks the engine against the reference interpreter fed that dataset.
+func runOne(rt *rapid.T, ctx context.Context, db *frontend.DB, spec *generative.Catalog) {
+	data := generative.GenerateData(rt, spec)
+	for _, tbl := range spec.Tables {
+		for _, row := range data[tbl.Name] {
+			if err := db.Insert(ctx, tbl.Name, row); err != nil {
+				rt.Fatalf("insert into %q: %v", tbl.Name, err)
+			}
+		}
+	}
+	g := generative.NewGenerator(rt, spec)
+	ordered := rapid.Bool().Draw(rt, "ordered")
+	q := g.Query()
+	if ordered {
+		q = g.OrderedQuery()
+	}
+	if err := differential.ThreeWay(ctx, db, scanOf(data), q, ordered); err != nil {
+		rt.Fatal(err)
+	}
+}
+
+// introspectSchema migrates a schema into a throwaway database and introspects
+// it into a generator spec.
+func introspectSchema(t *testing.T, ctx context.Context, path string, src []byte) *generative.Catalog {
+	t.Helper()
+	db, done := freshDB(t)
+	defer done()
+	if _, err := db.MigrateFile(ctx, path, src); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	tables, err := db.Tables(ctx)
+	if err != nil {
+		t.Fatalf("introspect: %v", err)
+	}
+	return generative.Introspect(tables)
 }
 
 // scanOf feeds the reference interpreter the rows the runner inserted, keyed by
@@ -154,27 +127,15 @@ func scanOf(data map[string][]lir.Row) differential.ScanFunc {
 	}
 }
 
-// insertData generates the dataset for spec and inserts it in dependency order,
-// returning the rows so the oracle reads exactly what was stored.
-func insertData(t *testing.T, ctx context.Context, db *frontend.DB, rng *rand.Rand, spec *generative.Catalog) map[string][]lir.Row {
-	t.Helper()
-	data := generative.GenerateData(rng, spec)
-	for _, tbl := range spec.Tables {
-		for _, row := range data[tbl.Name] {
-			if err := db.Insert(ctx, tbl.Name, row); err != nil {
-				t.Fatalf("insert into %q: %v", tbl.Name, err)
-			}
-		}
-	}
-	return data
-}
+var dbSeq atomic.Int64
 
-func freshDB(t *testing.T) *frontend.DB {
+// freshDB opens a fresh in-memory database. Each call gets a distinct name so
+// repeated opens under one test (rapid runs many iterations) never share state.
+func freshDB(t *testing.T) (*frontend.DB, func()) {
 	t.Helper()
-	store, err := kvslate.Open("gen-"+t.Name(), "memory:///")
+	store, err := kvslate.Open(fmt.Sprintf("gen-%d", dbSeq.Add(1)), "memory:///")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
-	return frontend.Open(store)
+	return frontend.Open(store), func() { _ = store.Close() }
 }

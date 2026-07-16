@@ -3,10 +3,10 @@ package generative
 import (
 	"fmt"
 	"math"
-	"math/rand"
 
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
+	"pgregory.net/rapid"
 )
 
 // orderable are the scalar types that carry a usable ordering for ORDER BY and
@@ -14,10 +14,15 @@ import (
 // does totally order it).
 var orderable = []catalog.Type{catalog.TypeText, catalog.TypeInt64, catalog.TypeFloat64}
 
-// genScope is one visible output scope: a label plus its typed columns.
+// genScope is one visible output scope: a label, its typed columns, and the
+// column names forming a unique key within it (empty when none is known). The
+// key lets a crossing body be ordered deterministically — by a total,
+// per-output-row-unique key — so `first`/`array` selections match between the
+// engine and the interpreter.
 type genScope struct {
 	name string
 	cols []Column
+	key  []string
 }
 
 // genBinding is a declared query binding: a name and the output columns its
@@ -27,26 +32,43 @@ type genBinding struct {
 	cols []Column
 }
 
-// Generator synthesises correct-by-construction queries over a fixed catalog.
-// It carries counters that hand out globally unique scope, field, and binding
-// names so no synthesised relation collides with another.
+// Generator synthesises correct-by-construction queries over a fixed catalog,
+// drawing every choice from a rapid.T so a failing query minimises. It carries
+// counters that hand out globally unique scope, field, and binding names so no
+// synthesised relation collides with another.
 type Generator struct {
-	rng      *rand.Rand
+	t        *rapid.T
 	cat      *Catalog
 	scopeN   int
 	fieldN   int
 	bindingN int
 }
 
-// NewGenerator builds a query generator over spec, drawing randomness from rng.
-func NewGenerator(rng *rand.Rand, spec *Catalog) *Generator {
-	return &Generator{rng: rng, cat: spec}
+// NewGenerator builds a query generator over spec, drawing choices from t.
+func NewGenerator(t *rapid.T, spec *Catalog) *Generator {
+	return &Generator{t: t, cat: spec}
 }
 
-func (g *Generator) fresh() string     { g.scopeN++; return fmt.Sprintf("s%d", g.scopeN) }
-func (g *Generator) field() string     { g.fieldN++; return fmt.Sprintf("f%d", g.fieldN) }
-func (g *Generator) binding() string   { g.bindingN++; return fmt.Sprintf("b%d", g.bindingN) }
-func (g *Generator) chance(n int) bool { return g.rng.Intn(n) == 0 }
+func (g *Generator) fresh() string   { g.scopeN++; return fmt.Sprintf("s%d", g.scopeN) }
+func (g *Generator) field() string   { g.fieldN++; return fmt.Sprintf("f%d", g.fieldN) }
+func (g *Generator) binding() string { g.bindingN++; return fmt.Sprintf("b%d", g.bindingN) }
+
+// intn draws an int in [0, n), shrinking toward 0. chance(n) is a 1-in-n coin,
+// shrinking toward true; coin is an even coin, shrinking toward false — the
+// choices are arranged so those shrink directions lead to simpler queries.
+func (g *Generator) intn(n int) int {
+	if n <= 1 {
+		return 0
+	}
+	return rapid.IntRange(0, n-1).Draw(g.t, "n")
+}
+func (g *Generator) chance(n int) bool { return g.intn(n) == 0 }
+func (g *Generator) coin() bool        { return rapid.Bool().Draw(g.t, "coin") }
+
+// pick draws one element of s (which must be non-empty), shrinking toward the
+// first. shuffled draws a permutation of s.
+func pick[E any](g *Generator, s []E) E     { return rapid.SampledFrom(s).Draw(g.t, "pick") }
+func shuffled[E any](g *Generator, s []E) []E { return rapid.Permutation(s).Draw(g.t, "perm") }
 
 // genBody generates the shared core: a few closed bindings, a relation tree,
 // and a ref-join for each binding so every declared binding is referenced.
@@ -56,7 +78,7 @@ func (g *Generator) genBody() (lir.Relation, []genScope, map[string]lir.Relation
 	// and the binding output must not collide.
 	bindings := map[string]lir.Relation{}
 	var binds []genBinding
-	for k := 0; k < g.rng.Intn(3); k++ { // 0..2 bindings
+	for k := 0; k < g.intn(3); k++ { // 0..2 bindings
 		body, bscopes := g.genRel(2)
 		flat, out := g.flattenScopes(body, bscopes)
 		name := g.binding()
@@ -72,14 +94,14 @@ func (g *Generator) genBody() (lir.Relation, []genScope, map[string]lir.Relation
 	// materialise-vs-replay choice; the interpreter commits once either way).
 	for _, b := range binds {
 		occ := 1
-		if g.rng.Intn(2) == 0 {
+		if g.coin() {
 			occ = 2
 		}
 		for i := 0; i < occ; i++ {
 			rs := g.fresh()
 			refScope := genScope{name: rs, cols: b.cols}
 			kind := lir.InnerJoin
-			if g.rng.Intn(2) == 0 {
+			if g.coin() {
 				kind = lir.LeftJoin
 			}
 			rel = lir.Join{
@@ -112,7 +134,7 @@ func (g *Generator) Query() lir.Query {
 	// exercises correlation — and because a reference interpreter evaluates
 	// crossings per-row nested while the engine batches them, the differential
 	// is also the batched-≡-nested check.
-	for k := 0; k < g.rng.Intn(3); k++ {
+	for k := 0; k < g.intn(3); k++ {
 		fields = append(fields, g.genCrossingField(scopes))
 	}
 	flat := lir.Project{Input: rel, Scope: g.fresh(), Fields: fields}
@@ -143,7 +165,7 @@ func (g *Generator) OrderedQuery() lir.Query {
 		for _, c := range s.cols {
 			name := g.field()
 			fields = append(fields, lir.ProjField{As: name, Expr: qcol(s.name, c.Name)})
-			order = append(order, lir.OrderTerm{Expr: qcol(ps, name), Desc: g.rng.Intn(2) == 0})
+			order = append(order, lir.OrderTerm{Expr: qcol(ps, name), Desc: g.coin()})
 		}
 	}
 	// Every scope has at least one column, so fields and order are non-empty.
@@ -180,7 +202,7 @@ func (g *Generator) flattenScopes(rel lir.Relation, scopes []genScope) (lir.Rela
 // interpreter agree on element order).
 func (g *Generator) genCrossingField(outer []genScope) lir.ProjField {
 	sub, subScopes := g.genCorrelatedSub(outer)
-	switch g.rng.Intn(4) {
+	switch g.intn(4) {
 	case 0:
 		// exists renders a bool — the join body's columns are never shaped,
 		// so a multi-scope (join) body is fine as-is.
@@ -196,20 +218,23 @@ func (g *Generator) genCrossingField(outer []genScope) lir.ProjField {
 	}
 }
 
-// orderedSub prepares a crossing body for `first`/`array`, which shape its
-// rows into objects: it flattens every scope to a unique-named output (a join
-// body would otherwise collide on shared names like "id") and orders by the
-// projected id columns — a total unique key, so the selection is deterministic
-// and engine/interpreter agree with no tie-break divergence.
+// orderedSub prepares a crossing body for `first`/`array`, which shape its rows
+// into objects: it flattens every scope to a unique-named output (a join body
+// would otherwise collide on shared names) and orders by each scope's key
+// columns. Every scope here is a scan (or a join of scans), so its key is a
+// table primary key; the combined keys are unique per output row, making the
+// selection deterministic so engine and interpreter agree with no tie-break
+// divergence.
 func (g *Generator) orderedSub(sub lir.Relation, scopes []genScope) lir.Relation {
 	ps := g.fresh()
 	var fields []lir.ProjField
 	var order []lir.OrderTerm
 	for _, s := range scopes {
+		key := nameSet(s.key)
 		for _, c := range s.cols {
 			name := g.field()
 			fields = append(fields, lir.ProjField{As: name, Expr: qcol(s.name, c.Name)})
-			if c.Name == "id" {
+			if key[c.Name] {
 				order = append(order, lir.OrderTerm{Expr: qcol(ps, name)})
 			}
 		}
@@ -224,11 +249,14 @@ func (g *Generator) orderedSub(sub lir.Relation, scopes []genScope) lir.Relation
 // text column, so a correlation is always available. Equality biases toward the
 // key-correlated (batched) path; a range makes it general correlation.
 func (g *Generator) genCorrelatedSub(outer []genScope) (lir.Relation, []genScope) {
-	if g.rng.Intn(3) == 0 { // ~1/3: a correlated crossing over a join
-		ta := g.cat.Tables[g.rng.Intn(len(g.cat.Tables))]
-		tb := g.cat.Tables[g.rng.Intn(len(g.cat.Tables))]
+	if g.chance(3) { // ~1/3: a correlated crossing over a join
+		ta := pick(g, g.cat.Tables)
+		tb := pick(g, g.cat.Tables)
 		sa, sb := g.fresh(), g.fresh()
-		scopes := []genScope{{name: sa, cols: ta.Columns}, {name: sb, cols: tb.Columns}}
+		scopes := []genScope{
+			{name: sa, cols: ta.Columns, key: ta.PrimaryKey},
+			{name: sb, cols: tb.Columns, key: tb.PrimaryKey},
+		}
 		join := lir.Join{
 			Left:  lir.Scan{Table: ta.Name, Scope: sa},
 			Right: lir.Scan{Table: tb.Name, Scope: sb},
@@ -237,22 +265,22 @@ func (g *Generator) genCorrelatedSub(outer []genScope) (lir.Relation, []genScope
 		}
 		return lir.Filter{Input: join, Pred: g.correlate(scopes, outer)}, scopes
 	}
-	tbl := g.cat.Tables[g.rng.Intn(len(g.cat.Tables))]
+	tbl := pick(g, g.cat.Tables)
 	scope := g.fresh()
-	sub := []genScope{{name: scope, cols: tbl.Columns}}
+	sub := []genScope{{name: scope, cols: tbl.Columns, key: tbl.PrimaryKey}}
 	return lir.Filter{Input: lir.Scan{Table: tbl.Name, Scope: scope}, Pred: g.correlate(sub, outer)}, sub
 }
 
 // correlate builds a predicate tying one of the sub's columns to an outer
 // column of the same type — what makes the crossing correlated.
 func (g *Generator) correlate(sub, outer []genScope) lir.Expr {
-	for _, typ := range shuffle(g.rng, scalarTypes) {
+	for _, typ := range shuffled(g, scalarTypes) {
 		sc, ss, sok := g.pickCol(sub, []catalog.Type{typ})
 		oc, os, ook := g.pickCol(outer, []catalog.Type{typ})
 		if sok && ook {
 			op := lir.OpEq
-			if typ != catalog.TypeBool && g.rng.Intn(3) == 0 {
-				op = []lir.BinaryOp{lir.OpLt, lir.OpGt}[g.rng.Intn(2)]
+			if typ != catalog.TypeBool && g.chance(3) {
+				op = pick(g, []lir.BinaryOp{lir.OpLt, lir.OpGt})
 			}
 			return lir.Binary{Op: op, L: qcol(ss, sc.Name), R: qcol(os, oc.Name)}
 		}
@@ -264,7 +292,7 @@ func (g *Generator) genRel(fuel int) (lir.Relation, []genScope) {
 	if fuel <= 0 || g.chance(3) {
 		return g.genScan()
 	}
-	switch g.rng.Intn(5) {
+	switch g.intn(5) {
 	case 0:
 		return g.genFilter(fuel)
 	case 1:
@@ -279,9 +307,9 @@ func (g *Generator) genRel(fuel int) (lir.Relation, []genScope) {
 }
 
 func (g *Generator) genScan() (lir.Relation, []genScope) {
-	tbl := g.cat.Tables[g.rng.Intn(len(g.cat.Tables))]
+	tbl := pick(g, g.cat.Tables)
 	scope := g.fresh()
-	return lir.Scan{Table: tbl.Name, Scope: scope}, []genScope{{name: scope, cols: tbl.Columns}}
+	return lir.Scan{Table: tbl.Name, Scope: scope}, []genScope{{name: scope, cols: tbl.Columns, key: tbl.PrimaryKey}}
 }
 
 func (g *Generator) genFilter(fuel int) (lir.Relation, []genScope) {
@@ -293,7 +321,7 @@ func (g *Generator) genOrder(fuel int) (lir.Relation, []genScope) {
 	child, scopes := g.genRel(fuel - 1)
 	var terms []lir.OrderTerm
 	if c, s, ok := g.pickCol(scopes, orderable); ok {
-		terms = append(terms, lir.OrderTerm{Expr: qcol(s, c.Name), Desc: g.rng.Intn(2) == 0})
+		terms = append(terms, lir.OrderTerm{Expr: qcol(s, c.Name), Desc: g.coin()})
 	} else {
 		terms = append(terms, lir.OrderTerm{Expr: qlit(true)})
 	}
@@ -308,7 +336,7 @@ func (g *Generator) genProject(fuel int) (lir.Relation, []genScope) {
 	// Re-expose a random non-empty subset of visible columns under new names.
 	for _, s := range scopes {
 		for _, c := range s.cols {
-			if g.rng.Intn(2) == 0 {
+			if g.coin() {
 				name := g.field()
 				fields = append(fields, lir.ProjField{As: name, Expr: qcol(s.name, c.Name)})
 				cols = append(cols, Column{Name: name, Type: c.Type, Nullable: c.Nullable})
@@ -337,7 +365,7 @@ func (g *Generator) genJoin(fuel int) (lir.Relation, []genScope) {
 	right, rs := g.genRel(fuel - 1)
 	on := g.genJoinOn(ls, rs)
 	kind := lir.InnerJoin
-	if g.rng.Intn(2) == 0 {
+	if g.coin() {
 		kind = lir.LeftJoin
 	}
 	return lir.Join{Left: left, Right: right, Kind: kind, On: on}, append(append([]genScope{}, ls...), rs...)
@@ -349,7 +377,7 @@ func (g *Generator) genAggregate(fuel int) (lir.Relation, []genScope) {
 	var groups []lir.GroupTerm
 	var cols []Column
 	// 0..2 group keys over comparable columns.
-	for k := 0; k < g.rng.Intn(3); k++ {
+	for k := 0; k < g.intn(3); k++ {
 		if c, s, ok := g.pickCol(scopes, orderable); ok {
 			name := g.field()
 			groups = append(groups, lir.GroupTerm{Expr: qcol(s, c.Name), As: name})
@@ -362,7 +390,7 @@ func (g *Generator) genAggregate(fuel int) (lir.Relation, []genScope) {
 	cols = append(cols, Column{Name: countName, Type: catalog.TypeInt64})
 	// An optional numeric fold.
 	if c, s, ok := g.pickCol(scopes, []catalog.Type{catalog.TypeInt64, catalog.TypeFloat64}); ok && g.chance(2) {
-		fn := []lir.AggFn{lir.AggSum, lir.AggMin, lir.AggMax, lir.AggAvg}[g.rng.Intn(4)]
+		fn := pick(g, []lir.AggFn{lir.AggSum, lir.AggMin, lir.AggMax, lir.AggAvg})
 		name := g.field()
 		terms = append(terms, lir.AggTerm{Fn: fn, Arg: qcol(s, c.Name), As: name})
 		typ := c.Type
@@ -380,7 +408,7 @@ func (g *Generator) genPred(scopes []genScope) lir.Expr {
 	p := g.genAtom(scopes)
 	if g.chance(3) {
 		op := lir.OpAnd
-		if g.rng.Intn(2) == 0 {
+		if g.coin() {
 			op = lir.OpOr
 		}
 		return lir.Binary{Op: op, L: p, R: g.genAtom(scopes)}
@@ -394,7 +422,7 @@ func (g *Generator) genAtom(scopes []genScope) lir.Expr {
 	if g.chance(4) {
 		sub, _ := g.genCorrelatedSub(scopes)
 		e := lir.Expr(lir.Exists{Rel: sub})
-		if g.rng.Intn(2) == 0 {
+		if g.coin() {
 			e = lir.Unary{Op: lir.OpNot, X: e}
 		}
 		return e
@@ -405,7 +433,7 @@ func (g *Generator) genAtom(scopes []genScope) lir.Expr {
 	}
 	col := qcol(s, c.Name)
 	if c.Type == catalog.TypeBool {
-		switch g.rng.Intn(3) {
+		switch g.intn(3) {
 		case 0:
 			return col
 		case 1:
@@ -415,17 +443,16 @@ func (g *Generator) genAtom(scopes []genScope) lir.Expr {
 		}
 	}
 	ops := []lir.BinaryOp{lir.OpEq, lir.OpNe, lir.OpLt, lir.OpLte, lir.OpGt, lir.OpGte}
-	op := ops[g.rng.Intn(len(ops))]
 	if g.chance(4) { // occasionally is_null instead of a comparison
 		return lir.Unary{Op: lir.OpIsNull, X: col}
 	}
-	return lir.Binary{Op: op, L: col, R: qlit(g.literal(c.Type))}
+	return lir.Binary{Op: pick(g, ops), L: col, R: qlit(g.literal(c.Type))}
 }
 
 // genJoinOn joins on an equality between same-typed columns from each side, or
 // a constant true (cross product) when the sides share no comparable type.
 func (g *Generator) genJoinOn(ls, rs []genScope) lir.Expr {
-	for _, typ := range shuffle(g.rng, orderable) {
+	for _, typ := range shuffled(g, orderable) {
 		lc, lsc, lok := g.pickCol(ls, []catalog.Type{typ})
 		rc, rsc, rok := g.pickCol(rs, []catalog.Type{typ})
 		if lok && rok {
@@ -454,7 +481,7 @@ func (g *Generator) pickCol(scopes []genScope, want []catalog.Type) (Column, str
 	if len(hits) == 0 {
 		return Column{}, "", false
 	}
-	h := hits[g.rng.Intn(len(hits))]
+	h := pick(g, hits)
 	return h.c, h.s, true
 }
 
@@ -465,12 +492,12 @@ func (g *Generator) anyCol(scopes []genScope) (Column, string, bool) {
 func (g *Generator) literal(typ catalog.Type) any {
 	switch typ {
 	case catalog.TypeText:
-		return []string{"a", "b", "c", ""}[g.rng.Intn(4)]
+		return pick(g, []string{"a", "b", "c", ""})
 	case catalog.TypeInt64:
-		return []int{math.MinInt64, -1, 0, 1, 2, 100, math.MaxInt64}[g.rng.Intn(7)]
+		return pick(g, []int{math.MinInt64, -1, 0, 1, 2, 100, math.MaxInt64})
 	case catalog.TypeFloat64:
-		return []float64{-1.5, 0, 1.5, 2.5}[g.rng.Intn(4)]
+		return pick(g, []float64{-1.5, 0, 1.5, 2.5})
 	default:
-		return g.rng.Intn(2) == 0
+		return g.coin()
 	}
 }

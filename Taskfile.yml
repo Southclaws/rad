@@ -70,6 +70,10 @@ tasks:
     desc: Run all tests + build the demo app (dynamic linking)
     env:
       CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
+      # Keep the generative differential light in the full-suite run; a deeper
+      # soak is `task test:generative` or RAPID_CHECKS=N. Non-rapid packages
+      # ignore this variable.
+      RAPID_CHECKS: "20"
     cmds:
       - go test ./... {{.CLI_ARGS}}
       - cd examples/demo && go build -o /dev/null .
@@ -82,7 +86,7 @@ tasks:
       - go test ./tests/planner/ -count=1 {{.CLI_ARGS}}
 
   test:generative:
-    desc: "Run the generative differential (synthetic + schema-directed); RAD_GEN_SEEDS tunes depth"
+    desc: "Run the generative differential (synthetic + schema-directed); depth via -rapid.checks=N or RAPID_CHECKS=N"
     env:
       CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:

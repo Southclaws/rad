@@ -1,9 +1,11 @@
 package generative
 
 import (
-	"math/rand"
 	"sort"
 	"testing"
+
+	lir "github.com/Southclaws/rad/rad/engine/03_lir"
+	"pgregory.net/rapid"
 )
 
 // TestGeneratorCoverage audits the generator's reach: it generates many queries
@@ -14,12 +16,12 @@ import (
 // the generator itself.
 func TestGeneratorCoverage(t *testing.T) {
 	const n = 2000
+	qgen := rapid.Custom(func(t *rapid.T) lir.Query {
+		return NewGenerator(t, SynthCatalog(t)).Query()
+	})
 	counts := map[string]int{}
 	for i := 0; i < n; i++ {
-		rng := rand.New(rand.NewSource(int64(i)))
-		spec := SynthCatalog(rng)
-		g := NewGenerator(rng, spec)
-		for f := range Features(g.Query()) {
+		for f := range Features(qgen.Example(i)) {
 			counts[f]++
 		}
 	}

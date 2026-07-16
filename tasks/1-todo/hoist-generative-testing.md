@@ -157,34 +157,45 @@ schema that uses a shape outside that subset. Authoring one or two compatible
 `schema.rad` scenarios (plus the always-on synthetic mode) proves the structure;
 the awkward-schema coverage comes later.
 
-### Phase 2: generalising the generator off arbitrary schemas
+### Phase 2 — DONE: the generator fires at any arbitrary schema
 
-Once the structure is settled, lift the synthetic-shape assumptions in
-`spec.go`/`introspect.go` so the skip list shrinks:
+Two things landed. First, the generator draws every choice from a
+`pgregory.net/rapid` `*rapid.T` (`spec.go`/`data.go`/`query.go`), so a failing
+case **minimises automatically** — the whole triple (schema, data, query)
+shrinks; depth is tuned by `RAPID_CHECKS=N` / `-rapid.checks=N` (the full-suite
+`task test` pins a light `RAPID_CHECKS=20`), and choices are ordered so rapid's
+shrink-toward-first yields simpler queries.
 
-- **`cols[0]` is a text PK named `id`.** Real schemas have composite PKs,
-  non-text PKs, arbitrary names. Derive PK columns/types from
-  `Table.PrimaryKey`; data-gen must mint unique keys per the actual PK type(s),
-  not the `"%s_%d"` text convention.
-- **Correlation always finds a shared text `id`.** `correlate`/`genJoinOn`
-  assume every scope has a text column. Off a real schema, pick correlation/join
-  columns from whatever shared *types* exist, and degrade gracefully (fewer
-  crossings, a `true` join) when two sides share none — the generator already
-  falls back to `qlit(true)`, so this is mostly threading real type sets
-  through `pickCol`.
-- **One nullable text FK, one non-unique index.** Real schemas have unique
-  indexes, multi-column indexes, multiple FKs with typed ref columns. Data-gen
-  must respect unique constraints (today it dodges them by only adding
-  non-unique indexes) and populate FK columns from actually-inserted parent
-  keys of the right type.
-- **Defaults / formats.** Introspected columns may carry defaults; data-gen can
-  exercise omitting them.
+Second, the synthetic-shape assumptions are gone; the spec (`Table` with
+`PrimaryKey`/`Uniques`/`Indexes`/`FKs`) describes any Rad schema and `Introspect`
+no longer skips anything:
 
-Where a schema uses a shape the generator can't yet drive, the manifest/runner
-should **skip with a logged reason** rather than silently narrow coverage — the
-same honesty the coverage audit already enforces for synthetic gaps.
+- **Keys of any arity/type.** `genScope` carries the unique key; scans seed it
+  from `Table.PrimaryKey`; `orderedSub` orders crossing bodies by it (not by a
+  hardcoded `"id"`). Data-gen mints distinct primary-key values per type and
+  dedupes candidate rows on the key.
+- **Correlation/joins off real types.** `correlate`/`genJoinOn` already pick a
+  shared *type* and fall back to `true` — so they generalise for free.
+- **Uniqueness + foreign keys.** Data-gen respects secondary unique indexes
+  (NULL-distinct) by dropping colliding candidates, and fills FK columns by
+  copying a referenced parent row's values (multi-column and typed FKs, FK
+  columns that are also part of the primary key, self- and empty-parent cases
+  all handled — a non-satisfiable non-null FK simply drops the row).
 
-### Manifest (`generative.json`)
+Proven by two `tests/gen` fixtures: `library/` (the text-`id` subset) and
+`composite/` (int64 PK, composite PK, a PK column that is also a foreign key to
+a non-text key, a secondary unique index). Both run the full three-way
+differential green.
+
+Remaining polish (not blocking the goal): synthesise awkward shapes in
+`SynthCatalog` too (so the fuzzer, not just fixtures, exercises them);
+column defaults; the **metamorphic layer** (query→query relations, no oracle) —
+now trivially composable on top of the generator + differential.
+
+### Manifest (`generative.json`) — deferred
+
+A per-scenario manifest is not built yet; phase 1/2 synthesise data and tune
+depth via `RAPID_CHECKS`. When wanted:
 
 Data, not code, like e2e. All optional with sensible defaults:
 
