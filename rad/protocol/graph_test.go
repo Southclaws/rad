@@ -82,8 +82,12 @@ func TestGraphRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatalf("gte right is not a literal: %T", gte.Right.ExprUnion)
 	}
-	if string(lit.Value) != "9007199254740993" {
-		t.Fatalf("int64 precision lost: %s", lit.Value)
+	iv, ok := lit.Value.ValueUnion.(*lirwire.Int64Value)
+	if !ok {
+		t.Fatalf("literal is not an int64 value: %T", lit.Value.ValueUnion)
+	}
+	if iv.Value == nil || *iv.Value != "9007199254740993" {
+		t.Fatalf("int64 precision lost: %v", iv.Value)
 	}
 }
 

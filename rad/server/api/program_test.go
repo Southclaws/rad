@@ -22,7 +22,7 @@ import (
 func oneRow(col string, v int) lirwire.Query {
 	return lirwire.Query{
 		Nodes: map[string]lirwire.Node{
-			"r": lirwire.Rows("r", []lirwire.RowsColumn{{Name: col, Type: "int64"}}, [][]lirwire.Value{{mustValue(v)}}),
+			"r": lirwire.Rows("r", []lirwire.RowsColumn{{Name: col, Type: "int64"}}, [][]lirwire.Cell{{mustValue(v)}}),
 			"o": lirwire.Order("r", []lirwire.OrderTerm{{Expr: lirwire.Col("r", col)}}),
 		},
 		Root: lirwire.Root{Node: "o", Cardinality: "many"},
@@ -57,7 +57,7 @@ func TestExecuteStatementResultBinding(t *testing.T) {
 	prog := pirwire.Prog("filtered",
 		pirwire.Query("base", relBytes(lirwire.Query{
 			Nodes: map[string]lirwire.Node{
-				"r": lirwire.Rows("r", []lirwire.RowsColumn{{Name: "n", Type: "int64"}}, [][]lirwire.Value{{mustValue(1)}, {mustValue(2)}, {mustValue(3)}}),
+				"r": lirwire.Rows("r", []lirwire.RowsColumn{{Name: "n", Type: "int64"}}, [][]lirwire.Cell{{mustValue(1)}, {mustValue(2)}, {mustValue(3)}}),
 				"o": lirwire.Order("r", []lirwire.OrderTerm{{Expr: lirwire.Col("r", "n")}}),
 			},
 			Root: lirwire.Root{Node: "o", Cardinality: "many"},
@@ -120,7 +120,7 @@ func TestExecuteLocalBindingCannotShadowStatement(t *testing.T) {
 	// statement is also named "second".
 	first := lirwire.Query{
 		Nodes: map[string]lirwire.Node{
-			"base": lirwire.Rows("b", []lirwire.RowsColumn{{Name: "n", Type: "int64"}}, [][]lirwire.Value{{mustValue(1)}}),
+			"base": lirwire.Rows("b", []lirwire.RowsColumn{{Name: "n", Type: "int64"}}, [][]lirwire.Cell{{mustValue(1)}}),
 			"u":    lirwire.Ref("second", "u"),
 			"o":    lirwire.Order("u", []lirwire.OrderTerm{{Expr: lirwire.Col("u", "n")}}),
 		},

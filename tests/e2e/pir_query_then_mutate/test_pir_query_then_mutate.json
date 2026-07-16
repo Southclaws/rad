@@ -8,7 +8,7 @@
           "nodes": {
             "u": { "kind": "scan", "table": "users", "scope": "u" },
             "one": { "kind": "filter", "input": "u", "predicate": { "kind": "binary", "op": "eq",
-              "left": { "kind": "col", "scope": "u", "column": "id" }, "right": { "kind": "lit", "value": "u1" } } },
+              "left": { "kind": "col", "scope": "u", "column": "id" }, "right": { "kind": "lit", "value": { "type": "text", "value": "u1" } } } },
             "o": { "kind": "order", "input": "one", "terms": [ { "expr": { "kind": "col", "scope": "u", "column": "id" } } ] }
           },
           "root": { "node": "o", "cardinality": "many" }
@@ -22,7 +22,7 @@
           "nodes": {
             "f": { "kind": "ref", "binding": "found", "scope": "f" },
             "p": { "kind": "project", "input": "f", "fields": [
-              { "as": "id",    "expr": { "kind": "lit", "value": "p1" } },
+              { "as": "id",    "expr": { "kind": "lit", "value": { "type": "text", "value": "p1" } } },
               { "as": "title", "expr": { "kind": "col", "scope": "f", "column": "name" } }
             ] }
           },
@@ -40,7 +40,7 @@
         "nodes": {
           "t": { "kind": "scan", "table": "posts", "scope": "t" },
           "one": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "eq",
-            "left": { "kind": "col", "scope": "t", "column": "id" }, "right": { "kind": "lit", "value": "p1" } } }
+            "left": { "kind": "col", "scope": "t", "column": "id" }, "right": { "kind": "lit", "value": { "type": "text", "value": "p1" } } } }
         },
         "root": { "node": "one", "cardinality": "exactly_one" }
       },

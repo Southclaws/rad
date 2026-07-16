@@ -11,8 +11,8 @@
               "kind": "filter", "input": "t",
               "predicate": {
                 "kind": "binary", "op": "and",
-                "left": { "kind": "binary", "op": "gt", "left": { "kind": "col", "scope": "t", "column": "s" }, "right": { "kind": "lit", "value": "apple" } },
-                "right": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "s" }, "right": { "kind": "lit", "value": "date" } }
+                "left": { "kind": "binary", "op": "gt", "left": { "kind": "col", "scope": "t", "column": "s" }, "right": { "kind": "lit", "value": { "type": "text", "value": "apple" } } },
+                "right": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "s" }, "right": { "kind": "lit", "value": { "type": "text", "value": "date" } } }
               }
             },
             "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "s" } } ] }
@@ -33,8 +33,8 @@
             "kind": "filter", "input": "t",
             "predicate": {
               "kind": "binary", "op": "and",
-              "left": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "t", "column": "s" }, "right": { "kind": "lit", "value": "banana" } },
-              "right": { "kind": "binary", "op": "lte", "left": { "kind": "col", "scope": "t", "column": "s" }, "right": { "kind": "lit", "value": "cherry" } }
+              "left": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "t", "column": "s" }, "right": { "kind": "lit", "value": { "type": "text", "value": "banana" } } },
+              "right": { "kind": "binary", "op": "lte", "left": { "kind": "col", "scope": "t", "column": "s" }, "right": { "kind": "lit", "value": { "type": "text", "value": "cherry" } } }
             }
           },
           "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "s" } } ] }
@@ -48,7 +48,7 @@
       "query": {
         "nodes": {
           "t": { "kind": "scan", "table": "t", "scope": "t" },
-          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "s" }, "right": { "kind": "lit", "value": "apple" } } },
+          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "s" }, "right": { "kind": "lit", "value": { "type": "text", "value": "apple" } } } },
           "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "s" } } ] }
         },
         "root": { "node": "sorted", "cardinality": "many" }
@@ -60,7 +60,7 @@
       "query": {
         "nodes": {
           "t": { "kind": "scan", "table": "t", "scope": "t" },
-          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "s" }, "right": { "kind": "lit", "value": "b" } } },
+          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "s" }, "right": { "kind": "lit", "value": { "type": "text", "value": "b" } } } },
           "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "s" } } ] }
         },
         "root": { "node": "sorted", "cardinality": "many" }
@@ -72,7 +72,7 @@
       "query": {
         "nodes": {
           "t": { "kind": "scan", "table": "t", "scope": "t" },
-          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "t", "column": "s" }, "right": { "kind": "lit", "value": "app" } } },
+          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "t", "column": "s" }, "right": { "kind": "lit", "value": { "type": "text", "value": "app" } } } },
           "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "s" } } ] }
         },
         "root": { "node": "sorted", "cardinality": "many" }
@@ -84,7 +84,7 @@
       "query": {
         "nodes": {
           "t": { "kind": "scan", "table": "t", "scope": "t" },
-          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "gt", "left": { "kind": "col", "scope": "t", "column": "s" }, "right": { "kind": "lit", "value": "cherry" } } },
+          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "gt", "left": { "kind": "col", "scope": "t", "column": "s" }, "right": { "kind": "lit", "value": { "type": "text", "value": "cherry" } } } },
           "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "s" } } ] }
         },
         "root": { "node": "sorted", "cardinality": "many" }

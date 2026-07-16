@@ -21,7 +21,7 @@ func tcol(pairs ...string) []lirwire.RowsColumn {
 	out := make([]lirwire.RowsColumn, 0, len(pairs)/2)
 	for i := 0; i < len(pairs); i += 2 {
 		typ, nullable := strings.CutSuffix(pairs[i+1], "?")
-		col := lirwire.RowsColumn{Name: pairs[i], Type: typ}
+		col := lirwire.RowsColumn{Name: pairs[i], Type: lirwire.ScalarType(typ)}
 		if nullable {
 			col.Nullable = ptrBool(true)
 		}
@@ -31,7 +31,7 @@ func tcol(pairs ...string) []lirwire.RowsColumn {
 }
 
 // rowsRel is a constant relation of literal rows — the common mutation input.
-func rowsRel(scope string, cols []lirwire.RowsColumn, rows [][]lirwire.Value) lirwire.Query {
+func rowsRel(scope string, cols []lirwire.RowsColumn, rows [][]lirwire.Cell) lirwire.Query {
 	return lirwire.Query{
 		Nodes: map[string]lirwire.Node{
 			scope: lirwire.Rows(scope, cols, rows),
@@ -60,7 +60,7 @@ func TestExecuteCreateReadYourWrites(t *testing.T) {
 	prog := pirwire.Prog("all",
 		pirwire.Create("added", "users", relBytes(rowsRel("r",
 			tcol("id", "text", "name", "text", "age", "int64"),
-			[][]lirwire.Value{{mustValue("u1"), mustValue("Ada"), mustValue(36)}, {mustValue("u2"), mustValue("Bob"), mustValue(41)}}))),
+			[][]lirwire.Cell{{mustValue("u1"), mustValue("Ada"), mustValue(36)}, {mustValue("u2"), mustValue("Bob"), mustValue(41)}}))),
 		pirwire.Query("all", relBytes(scanOrdered("users", "u", "id"))),
 	)
 	res, err := c.Execute(ctx, prog)
@@ -103,7 +103,7 @@ func TestExecuteCreateSelfReferentialBatch(t *testing.T) {
 	prog := pirwire.Prog("",
 		pirwire.Create("hires", "employees", relBytes(rowsRel("r",
 			tcol("id", "text", "manager_id", "text?"),
-			[][]lirwire.Value{{mustValue("bob"), mustValue("alice")}, {mustValue("alice"), mustValue(nil)}}))),
+			[][]lirwire.Cell{{mustValue("bob"), mustValue("alice")}, {mustValue("alice"), mustValue(nil)}}))),
 	)
 	res, err := c.Execute(ctx, prog)
 	if err != nil {
@@ -124,7 +124,7 @@ func TestExecuteUpdateUniqueSwap(t *testing.T) {
 	if _, err := c.Execute(ctx, pirwire.Prog("",
 		pirwire.Create("seed", "users", relBytes(rowsRel("r",
 			tcol("id", "text", "name", "text"),
-			[][]lirwire.Value{{mustValue("u1"), mustValue("ada")}, {mustValue("u2"), mustValue("bob")}}))),
+			[][]lirwire.Cell{{mustValue("u1"), mustValue("ada")}, {mustValue("u2"), mustValue("bob")}}))),
 	)); err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestExecuteUpdateUniqueSwap(t *testing.T) {
 	prog := pirwire.Prog("",
 		pirwire.Update("swap", "users", relBytes(rowsRel("r",
 			tcol("id", "text", "name", "text"),
-			[][]lirwire.Value{{mustValue("u1"), mustValue("bob")}, {mustValue("u2"), mustValue("ada")}}))),
+			[][]lirwire.Cell{{mustValue("u1"), mustValue("bob")}, {mustValue("u2"), mustValue("ada")}}))),
 	)
 	res, err := c.Execute(ctx, prog)
 	if err != nil {
@@ -164,7 +164,7 @@ func TestExecuteDeleteFromQuery(t *testing.T) {
 	if _, err := c.Execute(ctx, pirwire.Prog("",
 		pirwire.Create("seed", "users", relBytes(rowsRel("r",
 			tcol("id", "text", "name", "text"),
-			[][]lirwire.Value{{mustValue("u1"), mustValue("ada")}, {mustValue("u2"), mustValue("bob")}, {mustValue("u3"), mustValue("cy")}}))),
+			[][]lirwire.Cell{{mustValue("u1"), mustValue("ada")}, {mustValue("u2"), mustValue("bob")}, {mustValue("u3"), mustValue("cy")}}))),
 	)); err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestExecuteCreateThenReferenceResult(t *testing.T) {
 	prog := pirwire.Prog("post",
 		pirwire.Create("author", "users", relBytes(rowsRel("r",
 			tcol("id", "text", "name", "text"),
-			[][]lirwire.Value{{mustValue("u1"), mustValue("Ada")}}))),
+			[][]lirwire.Cell{{mustValue("u1"), mustValue("Ada")}}))),
 		// project the created user's id into a post row
 		pirwire.Create("post", "posts", relBytes(lirwire.Query{
 			Nodes: map[string]lirwire.Node{
@@ -235,7 +235,7 @@ func TestExecuteUpdateMissFails(t *testing.T) {
 	prog := pirwire.Prog("",
 		pirwire.Update("miss", "users", relBytes(rowsRel("r",
 			tcol("id", "text", "name", "text"),
-			[][]lirwire.Value{{mustValue("ghost"), mustValue("nobody")}}))),
+			[][]lirwire.Cell{{mustValue("ghost"), mustValue("nobody")}}))),
 	)
 	_, err := c.Execute(ctx, prog)
 	if err == nil {
@@ -251,13 +251,13 @@ func TestExecuteDeleteAmbiguousFails(t *testing.T) {
 
 	if _, err := c.Execute(ctx, pirwire.Prog("",
 		pirwire.Create("seed", "users", relBytes(rowsRel("r",
-			tcol("id", "text", "name", "text"), [][]lirwire.Value{{mustValue("u1"), mustValue("ada")}}))),
+			tcol("id", "text", "name", "text"), [][]lirwire.Cell{{mustValue("u1"), mustValue("ada")}}))),
 	)); err != nil {
 		t.Fatal(err)
 	}
 	prog := pirwire.Prog("",
 		pirwire.Delete("dup", "users", relBytes(rowsRel("r",
-			tcol("id", "text"), [][]lirwire.Value{{mustValue("u1")}, {mustValue("u1")}}))),
+			tcol("id", "text"), [][]lirwire.Cell{{mustValue("u1")}, {mustValue("u1")}}))),
 	)
 	_, err := c.Execute(ctx, prog)
 	assertProblem(t, err, protocol.CodeInvalid, "same row twice")
@@ -270,14 +270,14 @@ func TestExecuteUpdateAmbiguousFails(t *testing.T) {
 
 	if _, err := c.Execute(ctx, pirwire.Prog("",
 		pirwire.Create("seed", "users", relBytes(rowsRel("r",
-			tcol("id", "text", "name", "text"), [][]lirwire.Value{{mustValue("u1"), mustValue("ada")}}))),
+			tcol("id", "text", "name", "text"), [][]lirwire.Cell{{mustValue("u1"), mustValue("ada")}}))),
 	)); err != nil {
 		t.Fatal(err)
 	}
 	prog := pirwire.Prog("",
 		pirwire.Update("dup", "users", relBytes(rowsRel("r",
 			tcol("id", "text", "name", "text"),
-			[][]lirwire.Value{{mustValue("u1"), mustValue("x")}, {mustValue("u1"), mustValue("y")}}))),
+			[][]lirwire.Cell{{mustValue("u1"), mustValue("x")}, {mustValue("u1"), mustValue("y")}}))),
 	)
 	_, err := c.Execute(ctx, prog)
 	assertProblem(t, err, protocol.CodeInvalid, "same row twice")
@@ -291,9 +291,9 @@ func TestExecuteProgramAtomicRollback(t *testing.T) {
 
 	prog := pirwire.Prog("ok",
 		pirwire.Create("ok", "users", relBytes(rowsRel("r",
-			tcol("id", "text", "name", "text"), [][]lirwire.Value{{mustValue("u1"), mustValue("ada")}}))),
+			tcol("id", "text", "name", "text"), [][]lirwire.Cell{{mustValue("u1"), mustValue("ada")}}))),
 		pirwire.Update("boom", "users", relBytes(rowsRel("r",
-			tcol("id", "text", "name", "text"), [][]lirwire.Value{{mustValue("ghost"), mustValue("x")}}))),
+			tcol("id", "text", "name", "text"), [][]lirwire.Cell{{mustValue("ghost"), mustValue("x")}}))),
 	)
 	if _, err := c.Execute(ctx, prog); err == nil {
 		t.Fatal("program with a failing statement should fail")

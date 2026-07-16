@@ -15,7 +15,7 @@
                 { "name": "id", "type": "text" },
                 { "name": "n", "type": "int64" }
               ],
-              "rows": [ ["new", 20] ]
+              "rows": [ ["new", "20"] ]
             }
           },
           "root": { "node": "r", "cardinality": "many" }
@@ -31,8 +31,8 @@
               "kind": "filter", "input": "t",
               "predicate": {
                 "kind": "binary", "op": "and",
-                "left": { "kind": "binary", "op": "gt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": 5 } },
-                "right": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": 40 } }
+                "left": { "kind": "binary", "op": "gt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "5" } } },
+                "right": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "40" } } }
               }
             },
             "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ] }
@@ -49,7 +49,7 @@
       "query": {
         "nodes": {
           "t": { "kind": "scan", "table": "t", "scope": "t" },
-          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": 20 } } },
+          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "20" } } } },
           "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
         },
         "root": { "node": "sorted", "cardinality": "many" }

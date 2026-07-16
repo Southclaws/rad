@@ -39,7 +39,7 @@
             "left": { "kind": "binary", "op": "add",
               "left":  { "kind": "col", "scope": "t", "column": "a" },
               "right": { "kind": "col", "scope": "t", "column": "b" } },
-            "right": { "kind": "lit", "value": 5 } } },
+            "right": { "kind": "lit", "value": { "type": "int64", "value": "5" } } } },
           "p": { "kind": "project", "input": "f", "scope": "p", "fields": [
             { "as": "id", "expr": { "kind": "col", "scope": "t", "column": "id" } },
             { "as": "s",  "expr": { "kind": "binary", "op": "add",

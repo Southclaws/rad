@@ -14,7 +14,7 @@
                 "kind": "binary",
                 "op": "lt",
                 "left": { "kind": "col", "scope": "t", "column": "n" },
-                "right": { "kind": "lit", "value": 3 }
+                "right": { "kind": "lit", "value": { "type": "int64", "value": "3" } }
               }
             },
             "o": {

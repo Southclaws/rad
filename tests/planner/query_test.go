@@ -14,9 +14,30 @@ import (
 // relBytes marshals a wire query into a statement's opaque relation payload.
 func relBytes(q lirwire.Query) []byte { b, _ := json.Marshal(q); return b }
 
-// mustValue formats a Go scalar as a raw wire Value, ignoring the (impossible
-// for JSON-encodable scalars) error.
-func mustValue(v any) lirwire.Value { val, _ := lirwire.SetAny(v); return val }
+// mustValue formats a Go scalar as its canonical wire cell lexeme; nil is a
+// NULL cell.
+func mustValue(v any) lirwire.Cell {
+	if v == nil {
+		return nil
+	}
+	switch x := v.(type) {
+	case string:
+		return &x
+	case int:
+		s := strconv.FormatInt(int64(x), 10)
+		return &s
+	case int64:
+		s := strconv.FormatInt(x, 10)
+		return &s
+	case float64:
+		s := strconv.FormatFloat(x, 'g', -1, 64)
+		return &s
+	case bool:
+		s := strconv.FormatBool(x)
+		return &s
+	}
+	return nil
+}
 
 func ptrBool(b bool) *bool                 { return &b }
 func ptrStr(s string) *string              { return &s }

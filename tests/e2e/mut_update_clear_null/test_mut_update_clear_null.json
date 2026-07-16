@@ -35,7 +35,7 @@
             "input": "t",
             "predicate": { "kind": "binary", "op": "eq",
               "left": { "kind": "col", "scope": "t", "column": "id" },
-              "right": { "kind": "lit", "value": "i1" } }
+              "right": { "kind": "lit", "value": { "type": "text", "value": "i1" } } }
           }
         },
         "root": { "node": "one", "cardinality": "exactly_one" }

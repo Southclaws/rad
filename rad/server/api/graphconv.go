@@ -11,9 +11,6 @@ package api
 // cycles, and reachability are all the engine binder's job.
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
 	"slices"
 
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
@@ -89,13 +86,16 @@ func (g *graphConv) rel(name string) (lir.Relation, error) {
 	case *lirwire.RowsNode:
 		cols := make([]lir.RowsCol, len(x.Columns))
 		for i, c := range x.Columns {
-			cols[i] = lir.RowsCol{Name: c.Name, Kind: lir.Kind(c.Type), Nullable: optBool(c.Nullable)}
+			cols[i] = lir.RowsCol{Name: c.Name, Kind: lir.Kind(string(c.Type)), Nullable: optBool(c.Nullable)}
 		}
 		values := make([][]any, len(x.Rows))
 		for i, row := range x.Rows {
+			if len(row) != len(x.Columns) {
+				return nil, wireErrf("node %q row %d has %d cells, want %d", name, i, len(row), len(x.Columns))
+			}
 			cells := make([]any, len(row))
 			for j, cell := range row {
-				v, err := decodeCell(cell)
+				v, err := decodeCell(x.Columns[j].Type, cell)
 				if err != nil {
 					return nil, wireErrf("node %q rows cell [%d][%d]: %v", name, i, j, err)
 				}
@@ -218,7 +218,7 @@ func (g *graphConv) expr(e lirwire.Expr) (lir.Expr, error) {
 		return nil, nil
 
 	case *lirwire.LiteralExpr:
-		raw, err := decodeCell(x.Value)
+		raw, err := decodeValue(x.Value)
 		if err != nil {
 			return nil, wireErrf("literal: %v", err)
 		}
@@ -292,23 +292,6 @@ func (g *graphConv) expr(e lirwire.Expr) (lir.Expr, error) {
 	default:
 		return nil, wireErrf("unknown expression kind %q", e.ExprType())
 	}
-}
-
-// decodeCell decodes one raw wire scalar into the engine's untyped literal
-// form. Numbers decode as json.Number so int64 precision survives to the
-// binder, which types the value against the column it meets. Empty bytes are
-// the NULL literal.
-func decodeCell(raw lirwire.Value) (any, error) {
-	if len(raw) == 0 {
-		return nil, nil
-	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		return nil, fmt.Errorf("decode value: %w", err)
-	}
-	return v, nil
 }
 
 // nodeKind reports a node's discriminator for error messages, tolerating a nil

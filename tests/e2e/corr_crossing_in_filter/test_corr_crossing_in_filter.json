@@ -29,7 +29,7 @@
               "predicate": {
                 "kind": "binary", "op": "gt",
                 "left": { "kind": "scalar", "node": "counted" },
-                "right": { "kind": "lit", "value": 1 }
+                "right": { "kind": "lit", "value": { "type": "int64", "value": "1" } }
               }
             },
             "sorted": {

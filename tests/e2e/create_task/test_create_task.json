@@ -20,7 +20,7 @@
                 { "name": "created_at", "type": "int64" }
               ],
               "rows": [
-                ["task-new-1", "board-launch", "Wire up CI", "todo", 1, "user-ada", 2000]
+                ["task-new-1", "board-launch", "Wire up CI", "todo", "1", "user-ada", "2000"]
               ]
             }
           },
@@ -53,7 +53,7 @@
               "kind": "binary",
               "op": "eq",
               "left": { "kind": "col", "scope": "t", "column": "board_id" },
-              "right": { "kind": "lit", "value": "board-launch" }
+              "right": { "kind": "lit", "value": { "type": "text", "value": "board-launch" } }
             }
           },
           "sorted": {
@@ -83,7 +83,7 @@
               "kind": "binary",
               "op": "eq",
               "left": { "kind": "col", "scope": "t", "column": "id" },
-              "right": { "kind": "lit", "value": "task-new-1" }
+              "right": { "kind": "lit", "value": { "type": "text", "value": "task-new-1" } }
             }
           }
         },

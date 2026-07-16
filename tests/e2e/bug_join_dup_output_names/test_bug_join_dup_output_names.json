@@ -13,7 +13,7 @@
               "left": "l",
               "right": "r",
               "join": "inner",
-              "on": { "kind": "lit", "value": true }
+              "on": { "kind": "lit", "value": { "type": "bool", "value": true } }
             },
             "sorted": {
               "kind": "order",

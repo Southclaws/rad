@@ -13,7 +13,7 @@
               "input": "t",
               "predicate": { "kind": "binary", "op": "eq",
                 "left": { "kind": "col", "scope": "t", "column": "keep" },
-                "right": { "kind": "lit", "value": false } }
+                "right": { "kind": "lit", "value": { "type": "bool", "value": false } } }
             },
             "ids": {
               "kind": "project",

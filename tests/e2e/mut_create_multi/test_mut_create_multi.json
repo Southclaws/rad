@@ -16,9 +16,9 @@
                 { "name": "rank", "type": "int64" }
               ],
               "rows": [
-                ["n1", "first", 1],
-                ["n2", "second", 2],
-                ["n3", "third", 3]
+                ["n1", "first", "1"],
+                ["n2", "second", "2"],
+                ["n3", "third", "3"]
               ]
             }
           },

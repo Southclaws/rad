@@ -15,7 +15,7 @@
                 { "name": "name", "type": "text" },
                 { "name": "qty", "type": "int64" }
               ],
-              "rows": [ ["i1", "widget-mk2", 42] ]
+              "rows": [ ["i1", "widget-mk2", "42"] ]
             }
           },
           "root": { "node": "r", "cardinality": "many" }

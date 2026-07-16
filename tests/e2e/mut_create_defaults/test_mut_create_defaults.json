@@ -40,7 +40,7 @@
               "kind": "binary",
               "op": "eq",
               "left": { "kind": "col", "scope": "t", "column": "id" },
-              "right": { "kind": "lit", "value": "t1" }
+              "right": { "kind": "lit", "value": { "type": "text", "value": "t1" } }
             }
           }
         },

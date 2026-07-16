@@ -13,7 +13,7 @@
               "left": "lefts",
               "right": "rights",
               "join": "inner",
-              "on": { "kind": "lit", "value": true }
+              "on": { "kind": "lit", "value": { "type": "bool", "value": true } }
             },
             "filtered": {
               "kind": "filter",
@@ -21,7 +21,7 @@
               "predicate": {
                 "kind": "binary", "op": "gt",
                 "left": { "kind": "col", "scope": "r", "column": "b" },
-                "right": { "kind": "lit", "value": 100 }
+                "right": { "kind": "lit", "value": { "type": "int64", "value": "100" } }
               }
             }
           },

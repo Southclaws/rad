@@ -105,7 +105,7 @@ tables:
     primary_key: [task_id, label_id]
 `;
 
-// ── runtime ─────────────────────────────────────────────────────────────
+// runtime
 
 export interface Problem {
   type: string;
@@ -132,10 +132,23 @@ export function isConflict(err: unknown): boolean {
 
 export type Scalar = string | number | boolean | null;
 
+/** A self-describing literal scalar: its type names the scalar kind and an
+ * absent value is a typed NULL. Numbers travel as strings for lossless int64
+ * precision; a bool is a native JSON boolean. */
+export type Value =
+  | { type: "text"; value?: string }
+  | { type: "int64"; value?: string }
+  | { type: "float64"; value?: string }
+  | { type: "bool"; value?: boolean };
+
+/** A rows-cell payload, decoded against its column's declared type: null is a
+ * NULL, otherwise the lossless string form (a bool is "true"/"false"). */
+export type Cell = string | null;
+
 /** One typed datum computation. Crossings may produce rows or arrays. */
 export interface Expr {
   kind: "lit" | "col" | "unary" | "binary" | "cast" | "exists" | "first" | "scalar" | "array";
-  value?: Scalar;
+  value?: Value;
   scope?: string;
   column?: string;
   op?: string;
@@ -148,7 +161,7 @@ export interface Expr {
 
 /** One relation operator: a flat tagged union selected by kind. */
 export interface Node {
-  kind: "scan" | "filter" | "project" | "join" | "aggregate" | "order" | "slice";
+  kind: "scan" | "filter" | "project" | "join" | "aggregate" | "order" | "slice" | "rows";
   table?: string;
   scope?: string;
   input?: string;
@@ -164,6 +177,8 @@ export interface Node {
   terms?: OrderTerm[];
   offset?: number;
   limit?: number;
+  columns?: { name: string; type: string; nullable?: boolean }[];
+  rows?: Cell[][];
 }
 
 export interface Field {
@@ -281,8 +296,19 @@ class WireView implements View {
   async query(q: GraphQuery): Promise<Rec[]> {
     return this.records(await this.run({ name: "q", kind: "query", relation: q }));
   }
+  // keyPreds builds the equality predicates identifying a row by key, each
+  // literal typed from the catalog so it is a self-describing Value.
+  private async keyPreds(table: string, key: Rec): Promise<Expr[]> {
+    const types = new Map((await this.columns(table)).map((c) => [c.name, c]));
+    return Object.entries(key).map(([column, value]): Expr => {
+      const c = types.get(column);
+      if (!c) throw new Error("table " + table + " has no column " + column);
+      return eq(col("s", column), lit(toValue(c.type, value as Scalar)));
+    });
+  }
+
   async get(table: string, key: Rec): Promise<Rec | null> {
-    const preds = Object.entries(key).map(([column, value]): Expr => eq(col("s", column), lit(value as Scalar)));
+    const preds = await this.keyPreds(table, key);
     const recs = this.records(await this.run({ name: "get", kind: "query", relation: {
       nodes: {
         s: { kind: "scan", table, scope: "s" },
@@ -306,7 +332,7 @@ class WireView implements View {
             if (!c) throw new Error("table " + table + " has no column " + n);
             return { name: n, type: c.type, nullable: c.nullable ?? false };
           }),
-          rows: [names.map((n) => values[n] as Scalar)],
+          rows: [names.map((n) => toCell(types.get(n)!.type, values[n] as Scalar))],
         },
       },
       root: { node: "r", cardinality: "many" },
@@ -322,12 +348,12 @@ class WireView implements View {
     const cols = await this.columns(table);
     const types = new Map(cols.map((c) => [c.name, c]));
     const relCols: { name: string; type: string; nullable: boolean }[] = [];
-    const row: Scalar[] = [];
+    const row: Cell[] = [];
     const add = (name: string, val: Scalar) => {
       const c = types.get(name);
       if (!c) throw new Error("table " + table + " has no column " + name);
       relCols.push({ name, type: c.type, nullable: c.nullable ?? false });
-      row.push(val);
+      row.push(toCell(c.type, val));
     };
     for (const [k, v] of Object.entries(key)) add(k, v as Scalar);
     for (const [k, v] of Object.entries(set)) add(k, v as Scalar);
@@ -345,8 +371,9 @@ class WireView implements View {
     }
   }
   async del(table: string, key: Rec): Promise<boolean> {
+    const preds = await this.keyPreds(table, key);
     const fields = Object.keys(key).map((k) => ({ as: k, expr: col("s", k) }));
-    const relation = this.keyedProjection(table, key, fields);
+    const relation = this.keyedProjection(table, preds, fields);
     const res = await this.rpc.req<{ statements: { affected: number }[] }>("/execute", {
       statements: [{ name: "delete", kind: "delete", table, relation }],
     });
@@ -354,9 +381,8 @@ class WireView implements View {
   }
 
   // keyedProjection scans a table, filters to the key row, and projects the
-  // given fields — the identify-by-key input for update and delete.
-  private keyedProjection(table: string, key: Rec, fields: { as: string; expr: Expr }[]): GraphQuery {
-    const preds = Object.entries(key).map(([column, value]): Expr => eq(col("s", column), lit(value as Scalar)));
+  // given fields — the identify-by-key input for delete.
+  private keyedProjection(table: string, preds: Expr[], fields: { as: string; expr: Expr }[]): GraphQuery {
     return {
       nodes: {
         s: { kind: "scan", table, scope: "s" },
@@ -384,13 +410,48 @@ function splitPatch(patch: Rec): { set: Rec; clear: string[] } {
   return { set, clear };
 }
 
-// ── graph assembly ──────────────────────────────────────────────────────
+// -
+// graph assembly
+// -
 
 function col(scope: string, column: string): Expr {
   return { kind: "col", scope, column };
 }
-function lit(value: Scalar): Expr {
+function lit(value: Value): Expr {
   return { kind: "lit", value };
+}
+
+// toValue builds a self-describing literal of the given scalar type. null is a
+// typed NULL; numbers serialise as strings so int64 keeps full precision (an
+// int64 column truncates any fractional part).
+function toValue(type: string, v: Scalar): Value {
+  if (v === null) {
+    switch (type) {
+      case "text": return { type: "text" };
+      case "int64": return { type: "int64" };
+      case "float64": return { type: "float64" };
+      case "bool": return { type: "bool" };
+    }
+    throw new Error("unknown scalar type " + type);
+  }
+  switch (type) {
+    case "text": return { type: "text", value: String(v) };
+    case "int64": return { type: "int64", value: typeof v === "number" ? String(Math.trunc(v)) : String(v) };
+    case "float64": return { type: "float64", value: String(v) };
+    case "bool": return { type: "bool", value: Boolean(v) };
+  }
+  throw new Error("unknown scalar type " + type);
+}
+
+// toCell renders a rows cell against its column's type: null stays NULL, a bool
+// is "true"/"false", and everything else is its lossless string form.
+function toCell(type: string, v: Scalar): Cell {
+  if (v === null) return null;
+  switch (type) {
+    case "bool": return v ? "true" : "false";
+    case "int64": return typeof v === "number" ? String(Math.trunc(v)) : String(v);
+    default: return String(v);
+  }
 }
 function eq(left: Expr, right: Expr): Expr {
   return { kind: "binary", op: "eq", left, right };
@@ -539,7 +600,7 @@ function assemble(s: QuerySpec): GraphQuery {
   return { nodes, root: { node: last, cardinality: "many" } };
 }
 
-// ── users ──────────────────────────────────────────────────────────────
+// users
 
 /** One row of "users". Relation fields are present only when included. */
 export interface User {
@@ -601,7 +662,7 @@ export class UserTable {
 
   /** Finds the row by the unique index on (username). */
   async byUsername(username: string): Promise<User | null> {
-    const recs = await this.v.query(assemble({ table: "users", filters: [eq(col("", "username"), lit(username))], orders: [{ expr: col("", "id") }], includes: [], limit: 1 }));
+    const recs = await this.v.query(assemble({ table: "users", filters: [eq(col("", "username"), lit(toValue("text", username)))], orders: [{ expr: col("", "id") }], includes: [], limit: 1 }));
     return recs.length ? (recs[0] as unknown as User) : null;
   }
 
@@ -620,46 +681,46 @@ export class UserQuery {
     this.spec.filters = this.filters;
   }
 
-  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(v))); return this; }
-  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(v))); return this; }
-  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(v))); return this; }
-  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(v))); return this; }
-  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(v))); return this; }
-  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(v))); return this; }
-  usernameEq(v: string): this { this.filters.push(bin("eq", col("", "username"), lit(v))); return this; }
-  usernameNe(v: string): this { this.filters.push(bin("ne", col("", "username"), lit(v))); return this; }
-  usernameLt(v: string): this { this.filters.push(bin("lt", col("", "username"), lit(v))); return this; }
-  usernameLte(v: string): this { this.filters.push(bin("lte", col("", "username"), lit(v))); return this; }
-  usernameGt(v: string): this { this.filters.push(bin("gt", col("", "username"), lit(v))); return this; }
-  usernameGte(v: string): this { this.filters.push(bin("gte", col("", "username"), lit(v))); return this; }
-  displayNameEq(v: string): this { this.filters.push(bin("eq", col("", "display_name"), lit(v))); return this; }
-  displayNameNe(v: string): this { this.filters.push(bin("ne", col("", "display_name"), lit(v))); return this; }
-  displayNameLt(v: string): this { this.filters.push(bin("lt", col("", "display_name"), lit(v))); return this; }
-  displayNameLte(v: string): this { this.filters.push(bin("lte", col("", "display_name"), lit(v))); return this; }
-  displayNameGt(v: string): this { this.filters.push(bin("gt", col("", "display_name"), lit(v))); return this; }
-  displayNameGte(v: string): this { this.filters.push(bin("gte", col("", "display_name"), lit(v))); return this; }
+  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(toValue("text", v)))); return this; }
+  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(toValue("text", v)))); return this; }
+  usernameEq(v: string): this { this.filters.push(bin("eq", col("", "username"), lit(toValue("text", v)))); return this; }
+  usernameNe(v: string): this { this.filters.push(bin("ne", col("", "username"), lit(toValue("text", v)))); return this; }
+  usernameLt(v: string): this { this.filters.push(bin("lt", col("", "username"), lit(toValue("text", v)))); return this; }
+  usernameLte(v: string): this { this.filters.push(bin("lte", col("", "username"), lit(toValue("text", v)))); return this; }
+  usernameGt(v: string): this { this.filters.push(bin("gt", col("", "username"), lit(toValue("text", v)))); return this; }
+  usernameGte(v: string): this { this.filters.push(bin("gte", col("", "username"), lit(toValue("text", v)))); return this; }
+  displayNameEq(v: string): this { this.filters.push(bin("eq", col("", "display_name"), lit(toValue("text", v)))); return this; }
+  displayNameNe(v: string): this { this.filters.push(bin("ne", col("", "display_name"), lit(toValue("text", v)))); return this; }
+  displayNameLt(v: string): this { this.filters.push(bin("lt", col("", "display_name"), lit(toValue("text", v)))); return this; }
+  displayNameLte(v: string): this { this.filters.push(bin("lte", col("", "display_name"), lit(toValue("text", v)))); return this; }
+  displayNameGt(v: string): this { this.filters.push(bin("gt", col("", "display_name"), lit(toValue("text", v)))); return this; }
+  displayNameGte(v: string): this { this.filters.push(bin("gte", col("", "display_name"), lit(toValue("text", v)))); return this; }
   displayNameNull(): this { this.filters.push(un("is_null", col("", "display_name"))); return this; }
   displayNameNotNull(): this { this.filters.push(un("is_not_null", col("", "display_name"))); return this; }
-  passwordHashEq(v: string): this { this.filters.push(bin("eq", col("", "password_hash"), lit(v))); return this; }
-  passwordHashNe(v: string): this { this.filters.push(bin("ne", col("", "password_hash"), lit(v))); return this; }
-  passwordHashLt(v: string): this { this.filters.push(bin("lt", col("", "password_hash"), lit(v))); return this; }
-  passwordHashLte(v: string): this { this.filters.push(bin("lte", col("", "password_hash"), lit(v))); return this; }
-  passwordHashGt(v: string): this { this.filters.push(bin("gt", col("", "password_hash"), lit(v))); return this; }
-  passwordHashGte(v: string): this { this.filters.push(bin("gte", col("", "password_hash"), lit(v))); return this; }
-  emailEq(v: string): this { this.filters.push(bin("eq", col("", "email"), lit(v))); return this; }
-  emailNe(v: string): this { this.filters.push(bin("ne", col("", "email"), lit(v))); return this; }
-  emailLt(v: string): this { this.filters.push(bin("lt", col("", "email"), lit(v))); return this; }
-  emailLte(v: string): this { this.filters.push(bin("lte", col("", "email"), lit(v))); return this; }
-  emailGt(v: string): this { this.filters.push(bin("gt", col("", "email"), lit(v))); return this; }
-  emailGte(v: string): this { this.filters.push(bin("gte", col("", "email"), lit(v))); return this; }
+  passwordHashEq(v: string): this { this.filters.push(bin("eq", col("", "password_hash"), lit(toValue("text", v)))); return this; }
+  passwordHashNe(v: string): this { this.filters.push(bin("ne", col("", "password_hash"), lit(toValue("text", v)))); return this; }
+  passwordHashLt(v: string): this { this.filters.push(bin("lt", col("", "password_hash"), lit(toValue("text", v)))); return this; }
+  passwordHashLte(v: string): this { this.filters.push(bin("lte", col("", "password_hash"), lit(toValue("text", v)))); return this; }
+  passwordHashGt(v: string): this { this.filters.push(bin("gt", col("", "password_hash"), lit(toValue("text", v)))); return this; }
+  passwordHashGte(v: string): this { this.filters.push(bin("gte", col("", "password_hash"), lit(toValue("text", v)))); return this; }
+  emailEq(v: string): this { this.filters.push(bin("eq", col("", "email"), lit(toValue("text", v)))); return this; }
+  emailNe(v: string): this { this.filters.push(bin("ne", col("", "email"), lit(toValue("text", v)))); return this; }
+  emailLt(v: string): this { this.filters.push(bin("lt", col("", "email"), lit(toValue("text", v)))); return this; }
+  emailLte(v: string): this { this.filters.push(bin("lte", col("", "email"), lit(toValue("text", v)))); return this; }
+  emailGt(v: string): this { this.filters.push(bin("gt", col("", "email"), lit(toValue("text", v)))); return this; }
+  emailGte(v: string): this { this.filters.push(bin("gte", col("", "email"), lit(toValue("text", v)))); return this; }
   emailNull(): this { this.filters.push(un("is_null", col("", "email"))); return this; }
   emailNotNull(): this { this.filters.push(un("is_not_null", col("", "email"))); return this; }
-  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(v))); return this; }
-  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(v))); return this; }
-  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(v))); return this; }
-  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(v))); return this; }
-  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(v))); return this; }
-  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(v))); return this; }
+  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
 
   orderById(): this { this.spec.orders.push({ expr: col("", "id") }); return this; }
   orderByIdDesc(): this { this.spec.orders.push({ expr: col("", "id"), desc: true }); return this; }
@@ -849,46 +910,46 @@ export class UserInclude {
     this.kind = kind;
   }
 
-  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(v))); return this; }
-  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(v))); return this; }
-  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(v))); return this; }
-  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(v))); return this; }
-  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(v))); return this; }
-  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(v))); return this; }
-  usernameEq(v: string): this { this.filters.push(bin("eq", col("", "username"), lit(v))); return this; }
-  usernameNe(v: string): this { this.filters.push(bin("ne", col("", "username"), lit(v))); return this; }
-  usernameLt(v: string): this { this.filters.push(bin("lt", col("", "username"), lit(v))); return this; }
-  usernameLte(v: string): this { this.filters.push(bin("lte", col("", "username"), lit(v))); return this; }
-  usernameGt(v: string): this { this.filters.push(bin("gt", col("", "username"), lit(v))); return this; }
-  usernameGte(v: string): this { this.filters.push(bin("gte", col("", "username"), lit(v))); return this; }
-  displayNameEq(v: string): this { this.filters.push(bin("eq", col("", "display_name"), lit(v))); return this; }
-  displayNameNe(v: string): this { this.filters.push(bin("ne", col("", "display_name"), lit(v))); return this; }
-  displayNameLt(v: string): this { this.filters.push(bin("lt", col("", "display_name"), lit(v))); return this; }
-  displayNameLte(v: string): this { this.filters.push(bin("lte", col("", "display_name"), lit(v))); return this; }
-  displayNameGt(v: string): this { this.filters.push(bin("gt", col("", "display_name"), lit(v))); return this; }
-  displayNameGte(v: string): this { this.filters.push(bin("gte", col("", "display_name"), lit(v))); return this; }
+  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(toValue("text", v)))); return this; }
+  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(toValue("text", v)))); return this; }
+  usernameEq(v: string): this { this.filters.push(bin("eq", col("", "username"), lit(toValue("text", v)))); return this; }
+  usernameNe(v: string): this { this.filters.push(bin("ne", col("", "username"), lit(toValue("text", v)))); return this; }
+  usernameLt(v: string): this { this.filters.push(bin("lt", col("", "username"), lit(toValue("text", v)))); return this; }
+  usernameLte(v: string): this { this.filters.push(bin("lte", col("", "username"), lit(toValue("text", v)))); return this; }
+  usernameGt(v: string): this { this.filters.push(bin("gt", col("", "username"), lit(toValue("text", v)))); return this; }
+  usernameGte(v: string): this { this.filters.push(bin("gte", col("", "username"), lit(toValue("text", v)))); return this; }
+  displayNameEq(v: string): this { this.filters.push(bin("eq", col("", "display_name"), lit(toValue("text", v)))); return this; }
+  displayNameNe(v: string): this { this.filters.push(bin("ne", col("", "display_name"), lit(toValue("text", v)))); return this; }
+  displayNameLt(v: string): this { this.filters.push(bin("lt", col("", "display_name"), lit(toValue("text", v)))); return this; }
+  displayNameLte(v: string): this { this.filters.push(bin("lte", col("", "display_name"), lit(toValue("text", v)))); return this; }
+  displayNameGt(v: string): this { this.filters.push(bin("gt", col("", "display_name"), lit(toValue("text", v)))); return this; }
+  displayNameGte(v: string): this { this.filters.push(bin("gte", col("", "display_name"), lit(toValue("text", v)))); return this; }
   displayNameNull(): this { this.filters.push(un("is_null", col("", "display_name"))); return this; }
   displayNameNotNull(): this { this.filters.push(un("is_not_null", col("", "display_name"))); return this; }
-  passwordHashEq(v: string): this { this.filters.push(bin("eq", col("", "password_hash"), lit(v))); return this; }
-  passwordHashNe(v: string): this { this.filters.push(bin("ne", col("", "password_hash"), lit(v))); return this; }
-  passwordHashLt(v: string): this { this.filters.push(bin("lt", col("", "password_hash"), lit(v))); return this; }
-  passwordHashLte(v: string): this { this.filters.push(bin("lte", col("", "password_hash"), lit(v))); return this; }
-  passwordHashGt(v: string): this { this.filters.push(bin("gt", col("", "password_hash"), lit(v))); return this; }
-  passwordHashGte(v: string): this { this.filters.push(bin("gte", col("", "password_hash"), lit(v))); return this; }
-  emailEq(v: string): this { this.filters.push(bin("eq", col("", "email"), lit(v))); return this; }
-  emailNe(v: string): this { this.filters.push(bin("ne", col("", "email"), lit(v))); return this; }
-  emailLt(v: string): this { this.filters.push(bin("lt", col("", "email"), lit(v))); return this; }
-  emailLte(v: string): this { this.filters.push(bin("lte", col("", "email"), lit(v))); return this; }
-  emailGt(v: string): this { this.filters.push(bin("gt", col("", "email"), lit(v))); return this; }
-  emailGte(v: string): this { this.filters.push(bin("gte", col("", "email"), lit(v))); return this; }
+  passwordHashEq(v: string): this { this.filters.push(bin("eq", col("", "password_hash"), lit(toValue("text", v)))); return this; }
+  passwordHashNe(v: string): this { this.filters.push(bin("ne", col("", "password_hash"), lit(toValue("text", v)))); return this; }
+  passwordHashLt(v: string): this { this.filters.push(bin("lt", col("", "password_hash"), lit(toValue("text", v)))); return this; }
+  passwordHashLte(v: string): this { this.filters.push(bin("lte", col("", "password_hash"), lit(toValue("text", v)))); return this; }
+  passwordHashGt(v: string): this { this.filters.push(bin("gt", col("", "password_hash"), lit(toValue("text", v)))); return this; }
+  passwordHashGte(v: string): this { this.filters.push(bin("gte", col("", "password_hash"), lit(toValue("text", v)))); return this; }
+  emailEq(v: string): this { this.filters.push(bin("eq", col("", "email"), lit(toValue("text", v)))); return this; }
+  emailNe(v: string): this { this.filters.push(bin("ne", col("", "email"), lit(toValue("text", v)))); return this; }
+  emailLt(v: string): this { this.filters.push(bin("lt", col("", "email"), lit(toValue("text", v)))); return this; }
+  emailLte(v: string): this { this.filters.push(bin("lte", col("", "email"), lit(toValue("text", v)))); return this; }
+  emailGt(v: string): this { this.filters.push(bin("gt", col("", "email"), lit(toValue("text", v)))); return this; }
+  emailGte(v: string): this { this.filters.push(bin("gte", col("", "email"), lit(toValue("text", v)))); return this; }
   emailNull(): this { this.filters.push(un("is_null", col("", "email"))); return this; }
   emailNotNull(): this { this.filters.push(un("is_not_null", col("", "email"))); return this; }
-  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(v))); return this; }
-  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(v))); return this; }
-  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(v))); return this; }
-  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(v))); return this; }
-  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(v))); return this; }
-  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(v))); return this; }
+  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
 
   orderById(): this { this.orders.push({ expr: col("", "id") }); return this; }
   orderByIdDesc(): this { this.orders.push({ expr: col("", "id"), desc: true }); return this; }
@@ -945,7 +1006,7 @@ export class UserInclude {
   }
 }
 
-// ── sessions ──────────────────────────────────────────────────────────────
+// sessions
 
 /** One row of "sessions". Relation fields are present only when included. */
 export interface Session {
@@ -1010,30 +1071,30 @@ export class SessionQuery {
     this.spec.filters = this.filters;
   }
 
-  tokenEq(v: string): this { this.filters.push(bin("eq", col("", "token"), lit(v))); return this; }
-  tokenNe(v: string): this { this.filters.push(bin("ne", col("", "token"), lit(v))); return this; }
-  tokenLt(v: string): this { this.filters.push(bin("lt", col("", "token"), lit(v))); return this; }
-  tokenLte(v: string): this { this.filters.push(bin("lte", col("", "token"), lit(v))); return this; }
-  tokenGt(v: string): this { this.filters.push(bin("gt", col("", "token"), lit(v))); return this; }
-  tokenGte(v: string): this { this.filters.push(bin("gte", col("", "token"), lit(v))); return this; }
-  userIdEq(v: string): this { this.filters.push(bin("eq", col("", "user_id"), lit(v))); return this; }
-  userIdNe(v: string): this { this.filters.push(bin("ne", col("", "user_id"), lit(v))); return this; }
-  userIdLt(v: string): this { this.filters.push(bin("lt", col("", "user_id"), lit(v))); return this; }
-  userIdLte(v: string): this { this.filters.push(bin("lte", col("", "user_id"), lit(v))); return this; }
-  userIdGt(v: string): this { this.filters.push(bin("gt", col("", "user_id"), lit(v))); return this; }
-  userIdGte(v: string): this { this.filters.push(bin("gte", col("", "user_id"), lit(v))); return this; }
-  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(v))); return this; }
-  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(v))); return this; }
-  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(v))); return this; }
-  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(v))); return this; }
-  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(v))); return this; }
-  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(v))); return this; }
-  expiresAtEq(v: number): this { this.filters.push(bin("eq", col("", "expires_at"), lit(v))); return this; }
-  expiresAtNe(v: number): this { this.filters.push(bin("ne", col("", "expires_at"), lit(v))); return this; }
-  expiresAtLt(v: number): this { this.filters.push(bin("lt", col("", "expires_at"), lit(v))); return this; }
-  expiresAtLte(v: number): this { this.filters.push(bin("lte", col("", "expires_at"), lit(v))); return this; }
-  expiresAtGt(v: number): this { this.filters.push(bin("gt", col("", "expires_at"), lit(v))); return this; }
-  expiresAtGte(v: number): this { this.filters.push(bin("gte", col("", "expires_at"), lit(v))); return this; }
+  tokenEq(v: string): this { this.filters.push(bin("eq", col("", "token"), lit(toValue("text", v)))); return this; }
+  tokenNe(v: string): this { this.filters.push(bin("ne", col("", "token"), lit(toValue("text", v)))); return this; }
+  tokenLt(v: string): this { this.filters.push(bin("lt", col("", "token"), lit(toValue("text", v)))); return this; }
+  tokenLte(v: string): this { this.filters.push(bin("lte", col("", "token"), lit(toValue("text", v)))); return this; }
+  tokenGt(v: string): this { this.filters.push(bin("gt", col("", "token"), lit(toValue("text", v)))); return this; }
+  tokenGte(v: string): this { this.filters.push(bin("gte", col("", "token"), lit(toValue("text", v)))); return this; }
+  userIdEq(v: string): this { this.filters.push(bin("eq", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdNe(v: string): this { this.filters.push(bin("ne", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdLt(v: string): this { this.filters.push(bin("lt", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdLte(v: string): this { this.filters.push(bin("lte", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdGt(v: string): this { this.filters.push(bin("gt", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdGte(v: string): this { this.filters.push(bin("gte", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  expiresAtEq(v: number): this { this.filters.push(bin("eq", col("", "expires_at"), lit(toValue("int64", v)))); return this; }
+  expiresAtNe(v: number): this { this.filters.push(bin("ne", col("", "expires_at"), lit(toValue("int64", v)))); return this; }
+  expiresAtLt(v: number): this { this.filters.push(bin("lt", col("", "expires_at"), lit(toValue("int64", v)))); return this; }
+  expiresAtLte(v: number): this { this.filters.push(bin("lte", col("", "expires_at"), lit(toValue("int64", v)))); return this; }
+  expiresAtGt(v: number): this { this.filters.push(bin("gt", col("", "expires_at"), lit(toValue("int64", v)))); return this; }
+  expiresAtGte(v: number): this { this.filters.push(bin("gte", col("", "expires_at"), lit(toValue("int64", v)))); return this; }
 
   orderByToken(): this { this.spec.orders.push({ expr: col("", "token") }); return this; }
   orderByTokenDesc(): this { this.spec.orders.push({ expr: col("", "token"), desc: true }); return this; }
@@ -1175,30 +1236,30 @@ export class SessionInclude {
     this.kind = kind;
   }
 
-  tokenEq(v: string): this { this.filters.push(bin("eq", col("", "token"), lit(v))); return this; }
-  tokenNe(v: string): this { this.filters.push(bin("ne", col("", "token"), lit(v))); return this; }
-  tokenLt(v: string): this { this.filters.push(bin("lt", col("", "token"), lit(v))); return this; }
-  tokenLte(v: string): this { this.filters.push(bin("lte", col("", "token"), lit(v))); return this; }
-  tokenGt(v: string): this { this.filters.push(bin("gt", col("", "token"), lit(v))); return this; }
-  tokenGte(v: string): this { this.filters.push(bin("gte", col("", "token"), lit(v))); return this; }
-  userIdEq(v: string): this { this.filters.push(bin("eq", col("", "user_id"), lit(v))); return this; }
-  userIdNe(v: string): this { this.filters.push(bin("ne", col("", "user_id"), lit(v))); return this; }
-  userIdLt(v: string): this { this.filters.push(bin("lt", col("", "user_id"), lit(v))); return this; }
-  userIdLte(v: string): this { this.filters.push(bin("lte", col("", "user_id"), lit(v))); return this; }
-  userIdGt(v: string): this { this.filters.push(bin("gt", col("", "user_id"), lit(v))); return this; }
-  userIdGte(v: string): this { this.filters.push(bin("gte", col("", "user_id"), lit(v))); return this; }
-  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(v))); return this; }
-  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(v))); return this; }
-  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(v))); return this; }
-  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(v))); return this; }
-  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(v))); return this; }
-  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(v))); return this; }
-  expiresAtEq(v: number): this { this.filters.push(bin("eq", col("", "expires_at"), lit(v))); return this; }
-  expiresAtNe(v: number): this { this.filters.push(bin("ne", col("", "expires_at"), lit(v))); return this; }
-  expiresAtLt(v: number): this { this.filters.push(bin("lt", col("", "expires_at"), lit(v))); return this; }
-  expiresAtLte(v: number): this { this.filters.push(bin("lte", col("", "expires_at"), lit(v))); return this; }
-  expiresAtGt(v: number): this { this.filters.push(bin("gt", col("", "expires_at"), lit(v))); return this; }
-  expiresAtGte(v: number): this { this.filters.push(bin("gte", col("", "expires_at"), lit(v))); return this; }
+  tokenEq(v: string): this { this.filters.push(bin("eq", col("", "token"), lit(toValue("text", v)))); return this; }
+  tokenNe(v: string): this { this.filters.push(bin("ne", col("", "token"), lit(toValue("text", v)))); return this; }
+  tokenLt(v: string): this { this.filters.push(bin("lt", col("", "token"), lit(toValue("text", v)))); return this; }
+  tokenLte(v: string): this { this.filters.push(bin("lte", col("", "token"), lit(toValue("text", v)))); return this; }
+  tokenGt(v: string): this { this.filters.push(bin("gt", col("", "token"), lit(toValue("text", v)))); return this; }
+  tokenGte(v: string): this { this.filters.push(bin("gte", col("", "token"), lit(toValue("text", v)))); return this; }
+  userIdEq(v: string): this { this.filters.push(bin("eq", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdNe(v: string): this { this.filters.push(bin("ne", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdLt(v: string): this { this.filters.push(bin("lt", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdLte(v: string): this { this.filters.push(bin("lte", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdGt(v: string): this { this.filters.push(bin("gt", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdGte(v: string): this { this.filters.push(bin("gte", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  expiresAtEq(v: number): this { this.filters.push(bin("eq", col("", "expires_at"), lit(toValue("int64", v)))); return this; }
+  expiresAtNe(v: number): this { this.filters.push(bin("ne", col("", "expires_at"), lit(toValue("int64", v)))); return this; }
+  expiresAtLt(v: number): this { this.filters.push(bin("lt", col("", "expires_at"), lit(toValue("int64", v)))); return this; }
+  expiresAtLte(v: number): this { this.filters.push(bin("lte", col("", "expires_at"), lit(toValue("int64", v)))); return this; }
+  expiresAtGt(v: number): this { this.filters.push(bin("gt", col("", "expires_at"), lit(toValue("int64", v)))); return this; }
+  expiresAtGte(v: number): this { this.filters.push(bin("gte", col("", "expires_at"), lit(toValue("int64", v)))); return this; }
 
   orderByToken(): this { this.orders.push({ expr: col("", "token") }); return this; }
   orderByTokenDesc(): this { this.orders.push({ expr: col("", "token"), desc: true }); return this; }
@@ -1227,7 +1288,7 @@ export class SessionInclude {
   }
 }
 
-// ── teams ──────────────────────────────────────────────────────────────
+// teams
 
 /** One row of "teams". Relation fields are present only when included. */
 export interface Team {
@@ -1278,7 +1339,7 @@ export class TeamTable {
 
   /** Finds the row by the unique index on (name). */
   async byName(name: string): Promise<Team | null> {
-    const recs = await this.v.query(assemble({ table: "teams", filters: [eq(col("", "name"), lit(name))], orders: [{ expr: col("", "id") }], includes: [], limit: 1 }));
+    const recs = await this.v.query(assemble({ table: "teams", filters: [eq(col("", "name"), lit(toValue("text", name)))], orders: [{ expr: col("", "id") }], includes: [], limit: 1 }));
     return recs.length ? (recs[0] as unknown as Team) : null;
   }
 
@@ -1297,24 +1358,24 @@ export class TeamQuery {
     this.spec.filters = this.filters;
   }
 
-  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(v))); return this; }
-  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(v))); return this; }
-  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(v))); return this; }
-  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(v))); return this; }
-  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(v))); return this; }
-  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(v))); return this; }
-  nameEq(v: string): this { this.filters.push(bin("eq", col("", "name"), lit(v))); return this; }
-  nameNe(v: string): this { this.filters.push(bin("ne", col("", "name"), lit(v))); return this; }
-  nameLt(v: string): this { this.filters.push(bin("lt", col("", "name"), lit(v))); return this; }
-  nameLte(v: string): this { this.filters.push(bin("lte", col("", "name"), lit(v))); return this; }
-  nameGt(v: string): this { this.filters.push(bin("gt", col("", "name"), lit(v))); return this; }
-  nameGte(v: string): this { this.filters.push(bin("gte", col("", "name"), lit(v))); return this; }
-  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(v))); return this; }
-  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(v))); return this; }
-  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(v))); return this; }
-  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(v))); return this; }
-  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(v))); return this; }
-  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(v))); return this; }
+  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(toValue("text", v)))); return this; }
+  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(toValue("text", v)))); return this; }
+  nameEq(v: string): this { this.filters.push(bin("eq", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameNe(v: string): this { this.filters.push(bin("ne", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameLt(v: string): this { this.filters.push(bin("lt", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameLte(v: string): this { this.filters.push(bin("lte", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameGt(v: string): this { this.filters.push(bin("gt", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameGte(v: string): this { this.filters.push(bin("gte", col("", "name"), lit(toValue("text", v)))); return this; }
+  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
 
   orderById(): this { this.spec.orders.push({ expr: col("", "id") }); return this; }
   orderByIdDesc(): this { this.spec.orders.push({ expr: col("", "id"), desc: true }); return this; }
@@ -1441,24 +1502,24 @@ export class TeamInclude {
     this.kind = kind;
   }
 
-  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(v))); return this; }
-  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(v))); return this; }
-  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(v))); return this; }
-  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(v))); return this; }
-  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(v))); return this; }
-  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(v))); return this; }
-  nameEq(v: string): this { this.filters.push(bin("eq", col("", "name"), lit(v))); return this; }
-  nameNe(v: string): this { this.filters.push(bin("ne", col("", "name"), lit(v))); return this; }
-  nameLt(v: string): this { this.filters.push(bin("lt", col("", "name"), lit(v))); return this; }
-  nameLte(v: string): this { this.filters.push(bin("lte", col("", "name"), lit(v))); return this; }
-  nameGt(v: string): this { this.filters.push(bin("gt", col("", "name"), lit(v))); return this; }
-  nameGte(v: string): this { this.filters.push(bin("gte", col("", "name"), lit(v))); return this; }
-  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(v))); return this; }
-  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(v))); return this; }
-  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(v))); return this; }
-  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(v))); return this; }
-  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(v))); return this; }
-  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(v))); return this; }
+  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(toValue("text", v)))); return this; }
+  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(toValue("text", v)))); return this; }
+  nameEq(v: string): this { this.filters.push(bin("eq", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameNe(v: string): this { this.filters.push(bin("ne", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameLt(v: string): this { this.filters.push(bin("lt", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameLte(v: string): this { this.filters.push(bin("lte", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameGt(v: string): this { this.filters.push(bin("gt", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameGte(v: string): this { this.filters.push(bin("gte", col("", "name"), lit(toValue("text", v)))); return this; }
+  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
 
   orderById(): this { this.orders.push({ expr: col("", "id") }); return this; }
   orderByIdDesc(): this { this.orders.push({ expr: col("", "id"), desc: true }); return this; }
@@ -1497,7 +1558,7 @@ export class TeamInclude {
   }
 }
 
-// ── team_members ──────────────────────────────────────────────────────────────
+// team_members
 
 /** One row of "team_members". Relation fields are present only when included. */
 export interface TeamMember {
@@ -1562,30 +1623,30 @@ export class TeamMemberQuery {
     this.spec.filters = this.filters;
   }
 
-  teamIdEq(v: string): this { this.filters.push(bin("eq", col("", "team_id"), lit(v))); return this; }
-  teamIdNe(v: string): this { this.filters.push(bin("ne", col("", "team_id"), lit(v))); return this; }
-  teamIdLt(v: string): this { this.filters.push(bin("lt", col("", "team_id"), lit(v))); return this; }
-  teamIdLte(v: string): this { this.filters.push(bin("lte", col("", "team_id"), lit(v))); return this; }
-  teamIdGt(v: string): this { this.filters.push(bin("gt", col("", "team_id"), lit(v))); return this; }
-  teamIdGte(v: string): this { this.filters.push(bin("gte", col("", "team_id"), lit(v))); return this; }
-  userIdEq(v: string): this { this.filters.push(bin("eq", col("", "user_id"), lit(v))); return this; }
-  userIdNe(v: string): this { this.filters.push(bin("ne", col("", "user_id"), lit(v))); return this; }
-  userIdLt(v: string): this { this.filters.push(bin("lt", col("", "user_id"), lit(v))); return this; }
-  userIdLte(v: string): this { this.filters.push(bin("lte", col("", "user_id"), lit(v))); return this; }
-  userIdGt(v: string): this { this.filters.push(bin("gt", col("", "user_id"), lit(v))); return this; }
-  userIdGte(v: string): this { this.filters.push(bin("gte", col("", "user_id"), lit(v))); return this; }
-  roleEq(v: string): this { this.filters.push(bin("eq", col("", "role"), lit(v))); return this; }
-  roleNe(v: string): this { this.filters.push(bin("ne", col("", "role"), lit(v))); return this; }
-  roleLt(v: string): this { this.filters.push(bin("lt", col("", "role"), lit(v))); return this; }
-  roleLte(v: string): this { this.filters.push(bin("lte", col("", "role"), lit(v))); return this; }
-  roleGt(v: string): this { this.filters.push(bin("gt", col("", "role"), lit(v))); return this; }
-  roleGte(v: string): this { this.filters.push(bin("gte", col("", "role"), lit(v))); return this; }
-  joinedAtEq(v: number): this { this.filters.push(bin("eq", col("", "joined_at"), lit(v))); return this; }
-  joinedAtNe(v: number): this { this.filters.push(bin("ne", col("", "joined_at"), lit(v))); return this; }
-  joinedAtLt(v: number): this { this.filters.push(bin("lt", col("", "joined_at"), lit(v))); return this; }
-  joinedAtLte(v: number): this { this.filters.push(bin("lte", col("", "joined_at"), lit(v))); return this; }
-  joinedAtGt(v: number): this { this.filters.push(bin("gt", col("", "joined_at"), lit(v))); return this; }
-  joinedAtGte(v: number): this { this.filters.push(bin("gte", col("", "joined_at"), lit(v))); return this; }
+  teamIdEq(v: string): this { this.filters.push(bin("eq", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdNe(v: string): this { this.filters.push(bin("ne", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdLt(v: string): this { this.filters.push(bin("lt", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdLte(v: string): this { this.filters.push(bin("lte", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdGt(v: string): this { this.filters.push(bin("gt", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdGte(v: string): this { this.filters.push(bin("gte", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  userIdEq(v: string): this { this.filters.push(bin("eq", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdNe(v: string): this { this.filters.push(bin("ne", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdLt(v: string): this { this.filters.push(bin("lt", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdLte(v: string): this { this.filters.push(bin("lte", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdGt(v: string): this { this.filters.push(bin("gt", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdGte(v: string): this { this.filters.push(bin("gte", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  roleEq(v: string): this { this.filters.push(bin("eq", col("", "role"), lit(toValue("text", v)))); return this; }
+  roleNe(v: string): this { this.filters.push(bin("ne", col("", "role"), lit(toValue("text", v)))); return this; }
+  roleLt(v: string): this { this.filters.push(bin("lt", col("", "role"), lit(toValue("text", v)))); return this; }
+  roleLte(v: string): this { this.filters.push(bin("lte", col("", "role"), lit(toValue("text", v)))); return this; }
+  roleGt(v: string): this { this.filters.push(bin("gt", col("", "role"), lit(toValue("text", v)))); return this; }
+  roleGte(v: string): this { this.filters.push(bin("gte", col("", "role"), lit(toValue("text", v)))); return this; }
+  joinedAtEq(v: number): this { this.filters.push(bin("eq", col("", "joined_at"), lit(toValue("int64", v)))); return this; }
+  joinedAtNe(v: number): this { this.filters.push(bin("ne", col("", "joined_at"), lit(toValue("int64", v)))); return this; }
+  joinedAtLt(v: number): this { this.filters.push(bin("lt", col("", "joined_at"), lit(toValue("int64", v)))); return this; }
+  joinedAtLte(v: number): this { this.filters.push(bin("lte", col("", "joined_at"), lit(toValue("int64", v)))); return this; }
+  joinedAtGt(v: number): this { this.filters.push(bin("gt", col("", "joined_at"), lit(toValue("int64", v)))); return this; }
+  joinedAtGte(v: number): this { this.filters.push(bin("gte", col("", "joined_at"), lit(toValue("int64", v)))); return this; }
 
   orderByTeamId(): this { this.spec.orders.push({ expr: col("", "team_id") }); return this; }
   orderByTeamIdDesc(): this { this.spec.orders.push({ expr: col("", "team_id"), desc: true }); return this; }
@@ -1723,30 +1784,30 @@ export class TeamMemberInclude {
     this.kind = kind;
   }
 
-  teamIdEq(v: string): this { this.filters.push(bin("eq", col("", "team_id"), lit(v))); return this; }
-  teamIdNe(v: string): this { this.filters.push(bin("ne", col("", "team_id"), lit(v))); return this; }
-  teamIdLt(v: string): this { this.filters.push(bin("lt", col("", "team_id"), lit(v))); return this; }
-  teamIdLte(v: string): this { this.filters.push(bin("lte", col("", "team_id"), lit(v))); return this; }
-  teamIdGt(v: string): this { this.filters.push(bin("gt", col("", "team_id"), lit(v))); return this; }
-  teamIdGte(v: string): this { this.filters.push(bin("gte", col("", "team_id"), lit(v))); return this; }
-  userIdEq(v: string): this { this.filters.push(bin("eq", col("", "user_id"), lit(v))); return this; }
-  userIdNe(v: string): this { this.filters.push(bin("ne", col("", "user_id"), lit(v))); return this; }
-  userIdLt(v: string): this { this.filters.push(bin("lt", col("", "user_id"), lit(v))); return this; }
-  userIdLte(v: string): this { this.filters.push(bin("lte", col("", "user_id"), lit(v))); return this; }
-  userIdGt(v: string): this { this.filters.push(bin("gt", col("", "user_id"), lit(v))); return this; }
-  userIdGte(v: string): this { this.filters.push(bin("gte", col("", "user_id"), lit(v))); return this; }
-  roleEq(v: string): this { this.filters.push(bin("eq", col("", "role"), lit(v))); return this; }
-  roleNe(v: string): this { this.filters.push(bin("ne", col("", "role"), lit(v))); return this; }
-  roleLt(v: string): this { this.filters.push(bin("lt", col("", "role"), lit(v))); return this; }
-  roleLte(v: string): this { this.filters.push(bin("lte", col("", "role"), lit(v))); return this; }
-  roleGt(v: string): this { this.filters.push(bin("gt", col("", "role"), lit(v))); return this; }
-  roleGte(v: string): this { this.filters.push(bin("gte", col("", "role"), lit(v))); return this; }
-  joinedAtEq(v: number): this { this.filters.push(bin("eq", col("", "joined_at"), lit(v))); return this; }
-  joinedAtNe(v: number): this { this.filters.push(bin("ne", col("", "joined_at"), lit(v))); return this; }
-  joinedAtLt(v: number): this { this.filters.push(bin("lt", col("", "joined_at"), lit(v))); return this; }
-  joinedAtLte(v: number): this { this.filters.push(bin("lte", col("", "joined_at"), lit(v))); return this; }
-  joinedAtGt(v: number): this { this.filters.push(bin("gt", col("", "joined_at"), lit(v))); return this; }
-  joinedAtGte(v: number): this { this.filters.push(bin("gte", col("", "joined_at"), lit(v))); return this; }
+  teamIdEq(v: string): this { this.filters.push(bin("eq", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdNe(v: string): this { this.filters.push(bin("ne", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdLt(v: string): this { this.filters.push(bin("lt", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdLte(v: string): this { this.filters.push(bin("lte", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdGt(v: string): this { this.filters.push(bin("gt", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdGte(v: string): this { this.filters.push(bin("gte", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  userIdEq(v: string): this { this.filters.push(bin("eq", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdNe(v: string): this { this.filters.push(bin("ne", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdLt(v: string): this { this.filters.push(bin("lt", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdLte(v: string): this { this.filters.push(bin("lte", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdGt(v: string): this { this.filters.push(bin("gt", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  userIdGte(v: string): this { this.filters.push(bin("gte", col("", "user_id"), lit(toValue("text", v)))); return this; }
+  roleEq(v: string): this { this.filters.push(bin("eq", col("", "role"), lit(toValue("text", v)))); return this; }
+  roleNe(v: string): this { this.filters.push(bin("ne", col("", "role"), lit(toValue("text", v)))); return this; }
+  roleLt(v: string): this { this.filters.push(bin("lt", col("", "role"), lit(toValue("text", v)))); return this; }
+  roleLte(v: string): this { this.filters.push(bin("lte", col("", "role"), lit(toValue("text", v)))); return this; }
+  roleGt(v: string): this { this.filters.push(bin("gt", col("", "role"), lit(toValue("text", v)))); return this; }
+  roleGte(v: string): this { this.filters.push(bin("gte", col("", "role"), lit(toValue("text", v)))); return this; }
+  joinedAtEq(v: number): this { this.filters.push(bin("eq", col("", "joined_at"), lit(toValue("int64", v)))); return this; }
+  joinedAtNe(v: number): this { this.filters.push(bin("ne", col("", "joined_at"), lit(toValue("int64", v)))); return this; }
+  joinedAtLt(v: number): this { this.filters.push(bin("lt", col("", "joined_at"), lit(toValue("int64", v)))); return this; }
+  joinedAtLte(v: number): this { this.filters.push(bin("lte", col("", "joined_at"), lit(toValue("int64", v)))); return this; }
+  joinedAtGt(v: number): this { this.filters.push(bin("gt", col("", "joined_at"), lit(toValue("int64", v)))); return this; }
+  joinedAtGte(v: number): this { this.filters.push(bin("gte", col("", "joined_at"), lit(toValue("int64", v)))); return this; }
 
   orderByTeamId(): this { this.orders.push({ expr: col("", "team_id") }); return this; }
   orderByTeamIdDesc(): this { this.orders.push({ expr: col("", "team_id"), desc: true }); return this; }
@@ -1781,7 +1842,7 @@ export class TeamMemberInclude {
   }
 }
 
-// ── boards ──────────────────────────────────────────────────────────────
+// boards
 
 /** One row of "boards". Relation fields are present only when included. */
 export interface Board {
@@ -1837,7 +1898,7 @@ export class BoardTable {
 
   /** Finds the row by the unique index on (team_id, name). */
   async byTeamIdName(teamId: string, name: string): Promise<Board | null> {
-    const recs = await this.v.query(assemble({ table: "boards", filters: [eq(col("", "team_id"), lit(teamId)), eq(col("", "name"), lit(name))], orders: [{ expr: col("", "id") }], includes: [], limit: 1 }));
+    const recs = await this.v.query(assemble({ table: "boards", filters: [eq(col("", "team_id"), lit(toValue("text", teamId))), eq(col("", "name"), lit(toValue("text", name)))], orders: [{ expr: col("", "id") }], includes: [], limit: 1 }));
     return recs.length ? (recs[0] as unknown as Board) : null;
   }
 
@@ -1856,32 +1917,32 @@ export class BoardQuery {
     this.spec.filters = this.filters;
   }
 
-  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(v))); return this; }
-  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(v))); return this; }
-  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(v))); return this; }
-  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(v))); return this; }
-  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(v))); return this; }
-  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(v))); return this; }
-  teamIdEq(v: string): this { this.filters.push(bin("eq", col("", "team_id"), lit(v))); return this; }
-  teamIdNe(v: string): this { this.filters.push(bin("ne", col("", "team_id"), lit(v))); return this; }
-  teamIdLt(v: string): this { this.filters.push(bin("lt", col("", "team_id"), lit(v))); return this; }
-  teamIdLte(v: string): this { this.filters.push(bin("lte", col("", "team_id"), lit(v))); return this; }
-  teamIdGt(v: string): this { this.filters.push(bin("gt", col("", "team_id"), lit(v))); return this; }
-  teamIdGte(v: string): this { this.filters.push(bin("gte", col("", "team_id"), lit(v))); return this; }
-  nameEq(v: string): this { this.filters.push(bin("eq", col("", "name"), lit(v))); return this; }
-  nameNe(v: string): this { this.filters.push(bin("ne", col("", "name"), lit(v))); return this; }
-  nameLt(v: string): this { this.filters.push(bin("lt", col("", "name"), lit(v))); return this; }
-  nameLte(v: string): this { this.filters.push(bin("lte", col("", "name"), lit(v))); return this; }
-  nameGt(v: string): this { this.filters.push(bin("gt", col("", "name"), lit(v))); return this; }
-  nameGte(v: string): this { this.filters.push(bin("gte", col("", "name"), lit(v))); return this; }
-  archivedEq(v: boolean): this { this.filters.push(bin("eq", col("", "archived"), lit(v))); return this; }
-  archivedNe(v: boolean): this { this.filters.push(bin("ne", col("", "archived"), lit(v))); return this; }
-  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(v))); return this; }
-  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(v))); return this; }
-  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(v))); return this; }
-  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(v))); return this; }
-  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(v))); return this; }
-  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(v))); return this; }
+  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(toValue("text", v)))); return this; }
+  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(toValue("text", v)))); return this; }
+  teamIdEq(v: string): this { this.filters.push(bin("eq", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdNe(v: string): this { this.filters.push(bin("ne", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdLt(v: string): this { this.filters.push(bin("lt", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdLte(v: string): this { this.filters.push(bin("lte", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdGt(v: string): this { this.filters.push(bin("gt", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdGte(v: string): this { this.filters.push(bin("gte", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  nameEq(v: string): this { this.filters.push(bin("eq", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameNe(v: string): this { this.filters.push(bin("ne", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameLt(v: string): this { this.filters.push(bin("lt", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameLte(v: string): this { this.filters.push(bin("lte", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameGt(v: string): this { this.filters.push(bin("gt", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameGte(v: string): this { this.filters.push(bin("gte", col("", "name"), lit(toValue("text", v)))); return this; }
+  archivedEq(v: boolean): this { this.filters.push(bin("eq", col("", "archived"), lit(toValue("bool", v)))); return this; }
+  archivedNe(v: boolean): this { this.filters.push(bin("ne", col("", "archived"), lit(toValue("bool", v)))); return this; }
+  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
 
   orderById(): this { this.spec.orders.push({ expr: col("", "id") }); return this; }
   orderByIdDesc(): this { this.spec.orders.push({ expr: col("", "id"), desc: true }); return this; }
@@ -2036,32 +2097,32 @@ export class BoardInclude {
     this.kind = kind;
   }
 
-  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(v))); return this; }
-  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(v))); return this; }
-  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(v))); return this; }
-  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(v))); return this; }
-  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(v))); return this; }
-  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(v))); return this; }
-  teamIdEq(v: string): this { this.filters.push(bin("eq", col("", "team_id"), lit(v))); return this; }
-  teamIdNe(v: string): this { this.filters.push(bin("ne", col("", "team_id"), lit(v))); return this; }
-  teamIdLt(v: string): this { this.filters.push(bin("lt", col("", "team_id"), lit(v))); return this; }
-  teamIdLte(v: string): this { this.filters.push(bin("lte", col("", "team_id"), lit(v))); return this; }
-  teamIdGt(v: string): this { this.filters.push(bin("gt", col("", "team_id"), lit(v))); return this; }
-  teamIdGte(v: string): this { this.filters.push(bin("gte", col("", "team_id"), lit(v))); return this; }
-  nameEq(v: string): this { this.filters.push(bin("eq", col("", "name"), lit(v))); return this; }
-  nameNe(v: string): this { this.filters.push(bin("ne", col("", "name"), lit(v))); return this; }
-  nameLt(v: string): this { this.filters.push(bin("lt", col("", "name"), lit(v))); return this; }
-  nameLte(v: string): this { this.filters.push(bin("lte", col("", "name"), lit(v))); return this; }
-  nameGt(v: string): this { this.filters.push(bin("gt", col("", "name"), lit(v))); return this; }
-  nameGte(v: string): this { this.filters.push(bin("gte", col("", "name"), lit(v))); return this; }
-  archivedEq(v: boolean): this { this.filters.push(bin("eq", col("", "archived"), lit(v))); return this; }
-  archivedNe(v: boolean): this { this.filters.push(bin("ne", col("", "archived"), lit(v))); return this; }
-  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(v))); return this; }
-  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(v))); return this; }
-  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(v))); return this; }
-  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(v))); return this; }
-  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(v))); return this; }
-  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(v))); return this; }
+  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(toValue("text", v)))); return this; }
+  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(toValue("text", v)))); return this; }
+  teamIdEq(v: string): this { this.filters.push(bin("eq", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdNe(v: string): this { this.filters.push(bin("ne", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdLt(v: string): this { this.filters.push(bin("lt", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdLte(v: string): this { this.filters.push(bin("lte", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdGt(v: string): this { this.filters.push(bin("gt", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdGte(v: string): this { this.filters.push(bin("gte", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  nameEq(v: string): this { this.filters.push(bin("eq", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameNe(v: string): this { this.filters.push(bin("ne", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameLt(v: string): this { this.filters.push(bin("lt", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameLte(v: string): this { this.filters.push(bin("lte", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameGt(v: string): this { this.filters.push(bin("gt", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameGte(v: string): this { this.filters.push(bin("gte", col("", "name"), lit(toValue("text", v)))); return this; }
+  archivedEq(v: boolean): this { this.filters.push(bin("eq", col("", "archived"), lit(toValue("bool", v)))); return this; }
+  archivedNe(v: boolean): this { this.filters.push(bin("ne", col("", "archived"), lit(toValue("bool", v)))); return this; }
+  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
 
   orderById(): this { this.orders.push({ expr: col("", "id") }); return this; }
   orderByIdDesc(): this { this.orders.push({ expr: col("", "id"), desc: true }); return this; }
@@ -2098,7 +2159,7 @@ export class BoardInclude {
   }
 }
 
-// ── tasks ──────────────────────────────────────────────────────────────
+// tasks
 
 /** One row of "tasks". Relation fields are present only when included. */
 export interface Task {
@@ -2193,88 +2254,88 @@ export class TaskQuery {
     this.spec.filters = this.filters;
   }
 
-  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(v))); return this; }
-  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(v))); return this; }
-  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(v))); return this; }
-  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(v))); return this; }
-  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(v))); return this; }
-  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(v))); return this; }
-  boardIdEq(v: string): this { this.filters.push(bin("eq", col("", "board_id"), lit(v))); return this; }
-  boardIdNe(v: string): this { this.filters.push(bin("ne", col("", "board_id"), lit(v))); return this; }
-  boardIdLt(v: string): this { this.filters.push(bin("lt", col("", "board_id"), lit(v))); return this; }
-  boardIdLte(v: string): this { this.filters.push(bin("lte", col("", "board_id"), lit(v))); return this; }
-  boardIdGt(v: string): this { this.filters.push(bin("gt", col("", "board_id"), lit(v))); return this; }
-  boardIdGte(v: string): this { this.filters.push(bin("gte", col("", "board_id"), lit(v))); return this; }
-  titleEq(v: string): this { this.filters.push(bin("eq", col("", "title"), lit(v))); return this; }
-  titleNe(v: string): this { this.filters.push(bin("ne", col("", "title"), lit(v))); return this; }
-  titleLt(v: string): this { this.filters.push(bin("lt", col("", "title"), lit(v))); return this; }
-  titleLte(v: string): this { this.filters.push(bin("lte", col("", "title"), lit(v))); return this; }
-  titleGt(v: string): this { this.filters.push(bin("gt", col("", "title"), lit(v))); return this; }
-  titleGte(v: string): this { this.filters.push(bin("gte", col("", "title"), lit(v))); return this; }
-  descriptionEq(v: string): this { this.filters.push(bin("eq", col("", "description"), lit(v))); return this; }
-  descriptionNe(v: string): this { this.filters.push(bin("ne", col("", "description"), lit(v))); return this; }
-  descriptionLt(v: string): this { this.filters.push(bin("lt", col("", "description"), lit(v))); return this; }
-  descriptionLte(v: string): this { this.filters.push(bin("lte", col("", "description"), lit(v))); return this; }
-  descriptionGt(v: string): this { this.filters.push(bin("gt", col("", "description"), lit(v))); return this; }
-  descriptionGte(v: string): this { this.filters.push(bin("gte", col("", "description"), lit(v))); return this; }
+  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(toValue("text", v)))); return this; }
+  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(toValue("text", v)))); return this; }
+  boardIdEq(v: string): this { this.filters.push(bin("eq", col("", "board_id"), lit(toValue("text", v)))); return this; }
+  boardIdNe(v: string): this { this.filters.push(bin("ne", col("", "board_id"), lit(toValue("text", v)))); return this; }
+  boardIdLt(v: string): this { this.filters.push(bin("lt", col("", "board_id"), lit(toValue("text", v)))); return this; }
+  boardIdLte(v: string): this { this.filters.push(bin("lte", col("", "board_id"), lit(toValue("text", v)))); return this; }
+  boardIdGt(v: string): this { this.filters.push(bin("gt", col("", "board_id"), lit(toValue("text", v)))); return this; }
+  boardIdGte(v: string): this { this.filters.push(bin("gte", col("", "board_id"), lit(toValue("text", v)))); return this; }
+  titleEq(v: string): this { this.filters.push(bin("eq", col("", "title"), lit(toValue("text", v)))); return this; }
+  titleNe(v: string): this { this.filters.push(bin("ne", col("", "title"), lit(toValue("text", v)))); return this; }
+  titleLt(v: string): this { this.filters.push(bin("lt", col("", "title"), lit(toValue("text", v)))); return this; }
+  titleLte(v: string): this { this.filters.push(bin("lte", col("", "title"), lit(toValue("text", v)))); return this; }
+  titleGt(v: string): this { this.filters.push(bin("gt", col("", "title"), lit(toValue("text", v)))); return this; }
+  titleGte(v: string): this { this.filters.push(bin("gte", col("", "title"), lit(toValue("text", v)))); return this; }
+  descriptionEq(v: string): this { this.filters.push(bin("eq", col("", "description"), lit(toValue("text", v)))); return this; }
+  descriptionNe(v: string): this { this.filters.push(bin("ne", col("", "description"), lit(toValue("text", v)))); return this; }
+  descriptionLt(v: string): this { this.filters.push(bin("lt", col("", "description"), lit(toValue("text", v)))); return this; }
+  descriptionLte(v: string): this { this.filters.push(bin("lte", col("", "description"), lit(toValue("text", v)))); return this; }
+  descriptionGt(v: string): this { this.filters.push(bin("gt", col("", "description"), lit(toValue("text", v)))); return this; }
+  descriptionGte(v: string): this { this.filters.push(bin("gte", col("", "description"), lit(toValue("text", v)))); return this; }
   descriptionNull(): this { this.filters.push(un("is_null", col("", "description"))); return this; }
   descriptionNotNull(): this { this.filters.push(un("is_not_null", col("", "description"))); return this; }
-  statusEq(v: string): this { this.filters.push(bin("eq", col("", "status"), lit(v))); return this; }
-  statusNe(v: string): this { this.filters.push(bin("ne", col("", "status"), lit(v))); return this; }
-  statusLt(v: string): this { this.filters.push(bin("lt", col("", "status"), lit(v))); return this; }
-  statusLte(v: string): this { this.filters.push(bin("lte", col("", "status"), lit(v))); return this; }
-  statusGt(v: string): this { this.filters.push(bin("gt", col("", "status"), lit(v))); return this; }
-  statusGte(v: string): this { this.filters.push(bin("gte", col("", "status"), lit(v))); return this; }
-  priorityEq(v: number): this { this.filters.push(bin("eq", col("", "priority"), lit(v))); return this; }
-  priorityNe(v: number): this { this.filters.push(bin("ne", col("", "priority"), lit(v))); return this; }
-  priorityLt(v: number): this { this.filters.push(bin("lt", col("", "priority"), lit(v))); return this; }
-  priorityLte(v: number): this { this.filters.push(bin("lte", col("", "priority"), lit(v))); return this; }
-  priorityGt(v: number): this { this.filters.push(bin("gt", col("", "priority"), lit(v))); return this; }
-  priorityGte(v: number): this { this.filters.push(bin("gte", col("", "priority"), lit(v))); return this; }
-  estimateEq(v: number): this { this.filters.push(bin("eq", col("", "estimate"), lit(v))); return this; }
-  estimateNe(v: number): this { this.filters.push(bin("ne", col("", "estimate"), lit(v))); return this; }
-  estimateLt(v: number): this { this.filters.push(bin("lt", col("", "estimate"), lit(v))); return this; }
-  estimateLte(v: number): this { this.filters.push(bin("lte", col("", "estimate"), lit(v))); return this; }
-  estimateGt(v: number): this { this.filters.push(bin("gt", col("", "estimate"), lit(v))); return this; }
-  estimateGte(v: number): this { this.filters.push(bin("gte", col("", "estimate"), lit(v))); return this; }
+  statusEq(v: string): this { this.filters.push(bin("eq", col("", "status"), lit(toValue("text", v)))); return this; }
+  statusNe(v: string): this { this.filters.push(bin("ne", col("", "status"), lit(toValue("text", v)))); return this; }
+  statusLt(v: string): this { this.filters.push(bin("lt", col("", "status"), lit(toValue("text", v)))); return this; }
+  statusLte(v: string): this { this.filters.push(bin("lte", col("", "status"), lit(toValue("text", v)))); return this; }
+  statusGt(v: string): this { this.filters.push(bin("gt", col("", "status"), lit(toValue("text", v)))); return this; }
+  statusGte(v: string): this { this.filters.push(bin("gte", col("", "status"), lit(toValue("text", v)))); return this; }
+  priorityEq(v: number): this { this.filters.push(bin("eq", col("", "priority"), lit(toValue("int64", v)))); return this; }
+  priorityNe(v: number): this { this.filters.push(bin("ne", col("", "priority"), lit(toValue("int64", v)))); return this; }
+  priorityLt(v: number): this { this.filters.push(bin("lt", col("", "priority"), lit(toValue("int64", v)))); return this; }
+  priorityLte(v: number): this { this.filters.push(bin("lte", col("", "priority"), lit(toValue("int64", v)))); return this; }
+  priorityGt(v: number): this { this.filters.push(bin("gt", col("", "priority"), lit(toValue("int64", v)))); return this; }
+  priorityGte(v: number): this { this.filters.push(bin("gte", col("", "priority"), lit(toValue("int64", v)))); return this; }
+  estimateEq(v: number): this { this.filters.push(bin("eq", col("", "estimate"), lit(toValue("float64", v)))); return this; }
+  estimateNe(v: number): this { this.filters.push(bin("ne", col("", "estimate"), lit(toValue("float64", v)))); return this; }
+  estimateLt(v: number): this { this.filters.push(bin("lt", col("", "estimate"), lit(toValue("float64", v)))); return this; }
+  estimateLte(v: number): this { this.filters.push(bin("lte", col("", "estimate"), lit(toValue("float64", v)))); return this; }
+  estimateGt(v: number): this { this.filters.push(bin("gt", col("", "estimate"), lit(toValue("float64", v)))); return this; }
+  estimateGte(v: number): this { this.filters.push(bin("gte", col("", "estimate"), lit(toValue("float64", v)))); return this; }
   estimateNull(): this { this.filters.push(un("is_null", col("", "estimate"))); return this; }
   estimateNotNull(): this { this.filters.push(un("is_not_null", col("", "estimate"))); return this; }
-  assigneeIdEq(v: string): this { this.filters.push(bin("eq", col("", "assignee_id"), lit(v))); return this; }
-  assigneeIdNe(v: string): this { this.filters.push(bin("ne", col("", "assignee_id"), lit(v))); return this; }
-  assigneeIdLt(v: string): this { this.filters.push(bin("lt", col("", "assignee_id"), lit(v))); return this; }
-  assigneeIdLte(v: string): this { this.filters.push(bin("lte", col("", "assignee_id"), lit(v))); return this; }
-  assigneeIdGt(v: string): this { this.filters.push(bin("gt", col("", "assignee_id"), lit(v))); return this; }
-  assigneeIdGte(v: string): this { this.filters.push(bin("gte", col("", "assignee_id"), lit(v))); return this; }
+  assigneeIdEq(v: string): this { this.filters.push(bin("eq", col("", "assignee_id"), lit(toValue("text", v)))); return this; }
+  assigneeIdNe(v: string): this { this.filters.push(bin("ne", col("", "assignee_id"), lit(toValue("text", v)))); return this; }
+  assigneeIdLt(v: string): this { this.filters.push(bin("lt", col("", "assignee_id"), lit(toValue("text", v)))); return this; }
+  assigneeIdLte(v: string): this { this.filters.push(bin("lte", col("", "assignee_id"), lit(toValue("text", v)))); return this; }
+  assigneeIdGt(v: string): this { this.filters.push(bin("gt", col("", "assignee_id"), lit(toValue("text", v)))); return this; }
+  assigneeIdGte(v: string): this { this.filters.push(bin("gte", col("", "assignee_id"), lit(toValue("text", v)))); return this; }
   assigneeIdNull(): this { this.filters.push(un("is_null", col("", "assignee_id"))); return this; }
   assigneeIdNotNull(): this { this.filters.push(un("is_not_null", col("", "assignee_id"))); return this; }
-  creatorIdEq(v: string): this { this.filters.push(bin("eq", col("", "creator_id"), lit(v))); return this; }
-  creatorIdNe(v: string): this { this.filters.push(bin("ne", col("", "creator_id"), lit(v))); return this; }
-  creatorIdLt(v: string): this { this.filters.push(bin("lt", col("", "creator_id"), lit(v))); return this; }
-  creatorIdLte(v: string): this { this.filters.push(bin("lte", col("", "creator_id"), lit(v))); return this; }
-  creatorIdGt(v: string): this { this.filters.push(bin("gt", col("", "creator_id"), lit(v))); return this; }
-  creatorIdGte(v: string): this { this.filters.push(bin("gte", col("", "creator_id"), lit(v))); return this; }
-  parentIdEq(v: string): this { this.filters.push(bin("eq", col("", "parent_id"), lit(v))); return this; }
-  parentIdNe(v: string): this { this.filters.push(bin("ne", col("", "parent_id"), lit(v))); return this; }
-  parentIdLt(v: string): this { this.filters.push(bin("lt", col("", "parent_id"), lit(v))); return this; }
-  parentIdLte(v: string): this { this.filters.push(bin("lte", col("", "parent_id"), lit(v))); return this; }
-  parentIdGt(v: string): this { this.filters.push(bin("gt", col("", "parent_id"), lit(v))); return this; }
-  parentIdGte(v: string): this { this.filters.push(bin("gte", col("", "parent_id"), lit(v))); return this; }
+  creatorIdEq(v: string): this { this.filters.push(bin("eq", col("", "creator_id"), lit(toValue("text", v)))); return this; }
+  creatorIdNe(v: string): this { this.filters.push(bin("ne", col("", "creator_id"), lit(toValue("text", v)))); return this; }
+  creatorIdLt(v: string): this { this.filters.push(bin("lt", col("", "creator_id"), lit(toValue("text", v)))); return this; }
+  creatorIdLte(v: string): this { this.filters.push(bin("lte", col("", "creator_id"), lit(toValue("text", v)))); return this; }
+  creatorIdGt(v: string): this { this.filters.push(bin("gt", col("", "creator_id"), lit(toValue("text", v)))); return this; }
+  creatorIdGte(v: string): this { this.filters.push(bin("gte", col("", "creator_id"), lit(toValue("text", v)))); return this; }
+  parentIdEq(v: string): this { this.filters.push(bin("eq", col("", "parent_id"), lit(toValue("text", v)))); return this; }
+  parentIdNe(v: string): this { this.filters.push(bin("ne", col("", "parent_id"), lit(toValue("text", v)))); return this; }
+  parentIdLt(v: string): this { this.filters.push(bin("lt", col("", "parent_id"), lit(toValue("text", v)))); return this; }
+  parentIdLte(v: string): this { this.filters.push(bin("lte", col("", "parent_id"), lit(toValue("text", v)))); return this; }
+  parentIdGt(v: string): this { this.filters.push(bin("gt", col("", "parent_id"), lit(toValue("text", v)))); return this; }
+  parentIdGte(v: string): this { this.filters.push(bin("gte", col("", "parent_id"), lit(toValue("text", v)))); return this; }
   parentIdNull(): this { this.filters.push(un("is_null", col("", "parent_id"))); return this; }
   parentIdNotNull(): this { this.filters.push(un("is_not_null", col("", "parent_id"))); return this; }
-  dueAtEq(v: number): this { this.filters.push(bin("eq", col("", "due_at"), lit(v))); return this; }
-  dueAtNe(v: number): this { this.filters.push(bin("ne", col("", "due_at"), lit(v))); return this; }
-  dueAtLt(v: number): this { this.filters.push(bin("lt", col("", "due_at"), lit(v))); return this; }
-  dueAtLte(v: number): this { this.filters.push(bin("lte", col("", "due_at"), lit(v))); return this; }
-  dueAtGt(v: number): this { this.filters.push(bin("gt", col("", "due_at"), lit(v))); return this; }
-  dueAtGte(v: number): this { this.filters.push(bin("gte", col("", "due_at"), lit(v))); return this; }
+  dueAtEq(v: number): this { this.filters.push(bin("eq", col("", "due_at"), lit(toValue("int64", v)))); return this; }
+  dueAtNe(v: number): this { this.filters.push(bin("ne", col("", "due_at"), lit(toValue("int64", v)))); return this; }
+  dueAtLt(v: number): this { this.filters.push(bin("lt", col("", "due_at"), lit(toValue("int64", v)))); return this; }
+  dueAtLte(v: number): this { this.filters.push(bin("lte", col("", "due_at"), lit(toValue("int64", v)))); return this; }
+  dueAtGt(v: number): this { this.filters.push(bin("gt", col("", "due_at"), lit(toValue("int64", v)))); return this; }
+  dueAtGte(v: number): this { this.filters.push(bin("gte", col("", "due_at"), lit(toValue("int64", v)))); return this; }
   dueAtNull(): this { this.filters.push(un("is_null", col("", "due_at"))); return this; }
   dueAtNotNull(): this { this.filters.push(un("is_not_null", col("", "due_at"))); return this; }
-  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(v))); return this; }
-  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(v))); return this; }
-  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(v))); return this; }
-  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(v))); return this; }
-  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(v))); return this; }
-  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(v))); return this; }
+  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
 
   orderById(): this { this.spec.orders.push({ expr: col("", "id") }); return this; }
   orderByIdDesc(): this { this.spec.orders.push({ expr: col("", "id"), desc: true }); return this; }
@@ -2608,88 +2669,88 @@ export class TaskInclude {
     this.kind = kind;
   }
 
-  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(v))); return this; }
-  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(v))); return this; }
-  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(v))); return this; }
-  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(v))); return this; }
-  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(v))); return this; }
-  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(v))); return this; }
-  boardIdEq(v: string): this { this.filters.push(bin("eq", col("", "board_id"), lit(v))); return this; }
-  boardIdNe(v: string): this { this.filters.push(bin("ne", col("", "board_id"), lit(v))); return this; }
-  boardIdLt(v: string): this { this.filters.push(bin("lt", col("", "board_id"), lit(v))); return this; }
-  boardIdLte(v: string): this { this.filters.push(bin("lte", col("", "board_id"), lit(v))); return this; }
-  boardIdGt(v: string): this { this.filters.push(bin("gt", col("", "board_id"), lit(v))); return this; }
-  boardIdGte(v: string): this { this.filters.push(bin("gte", col("", "board_id"), lit(v))); return this; }
-  titleEq(v: string): this { this.filters.push(bin("eq", col("", "title"), lit(v))); return this; }
-  titleNe(v: string): this { this.filters.push(bin("ne", col("", "title"), lit(v))); return this; }
-  titleLt(v: string): this { this.filters.push(bin("lt", col("", "title"), lit(v))); return this; }
-  titleLte(v: string): this { this.filters.push(bin("lte", col("", "title"), lit(v))); return this; }
-  titleGt(v: string): this { this.filters.push(bin("gt", col("", "title"), lit(v))); return this; }
-  titleGte(v: string): this { this.filters.push(bin("gte", col("", "title"), lit(v))); return this; }
-  descriptionEq(v: string): this { this.filters.push(bin("eq", col("", "description"), lit(v))); return this; }
-  descriptionNe(v: string): this { this.filters.push(bin("ne", col("", "description"), lit(v))); return this; }
-  descriptionLt(v: string): this { this.filters.push(bin("lt", col("", "description"), lit(v))); return this; }
-  descriptionLte(v: string): this { this.filters.push(bin("lte", col("", "description"), lit(v))); return this; }
-  descriptionGt(v: string): this { this.filters.push(bin("gt", col("", "description"), lit(v))); return this; }
-  descriptionGte(v: string): this { this.filters.push(bin("gte", col("", "description"), lit(v))); return this; }
+  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(toValue("text", v)))); return this; }
+  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(toValue("text", v)))); return this; }
+  boardIdEq(v: string): this { this.filters.push(bin("eq", col("", "board_id"), lit(toValue("text", v)))); return this; }
+  boardIdNe(v: string): this { this.filters.push(bin("ne", col("", "board_id"), lit(toValue("text", v)))); return this; }
+  boardIdLt(v: string): this { this.filters.push(bin("lt", col("", "board_id"), lit(toValue("text", v)))); return this; }
+  boardIdLte(v: string): this { this.filters.push(bin("lte", col("", "board_id"), lit(toValue("text", v)))); return this; }
+  boardIdGt(v: string): this { this.filters.push(bin("gt", col("", "board_id"), lit(toValue("text", v)))); return this; }
+  boardIdGte(v: string): this { this.filters.push(bin("gte", col("", "board_id"), lit(toValue("text", v)))); return this; }
+  titleEq(v: string): this { this.filters.push(bin("eq", col("", "title"), lit(toValue("text", v)))); return this; }
+  titleNe(v: string): this { this.filters.push(bin("ne", col("", "title"), lit(toValue("text", v)))); return this; }
+  titleLt(v: string): this { this.filters.push(bin("lt", col("", "title"), lit(toValue("text", v)))); return this; }
+  titleLte(v: string): this { this.filters.push(bin("lte", col("", "title"), lit(toValue("text", v)))); return this; }
+  titleGt(v: string): this { this.filters.push(bin("gt", col("", "title"), lit(toValue("text", v)))); return this; }
+  titleGte(v: string): this { this.filters.push(bin("gte", col("", "title"), lit(toValue("text", v)))); return this; }
+  descriptionEq(v: string): this { this.filters.push(bin("eq", col("", "description"), lit(toValue("text", v)))); return this; }
+  descriptionNe(v: string): this { this.filters.push(bin("ne", col("", "description"), lit(toValue("text", v)))); return this; }
+  descriptionLt(v: string): this { this.filters.push(bin("lt", col("", "description"), lit(toValue("text", v)))); return this; }
+  descriptionLte(v: string): this { this.filters.push(bin("lte", col("", "description"), lit(toValue("text", v)))); return this; }
+  descriptionGt(v: string): this { this.filters.push(bin("gt", col("", "description"), lit(toValue("text", v)))); return this; }
+  descriptionGte(v: string): this { this.filters.push(bin("gte", col("", "description"), lit(toValue("text", v)))); return this; }
   descriptionNull(): this { this.filters.push(un("is_null", col("", "description"))); return this; }
   descriptionNotNull(): this { this.filters.push(un("is_not_null", col("", "description"))); return this; }
-  statusEq(v: string): this { this.filters.push(bin("eq", col("", "status"), lit(v))); return this; }
-  statusNe(v: string): this { this.filters.push(bin("ne", col("", "status"), lit(v))); return this; }
-  statusLt(v: string): this { this.filters.push(bin("lt", col("", "status"), lit(v))); return this; }
-  statusLte(v: string): this { this.filters.push(bin("lte", col("", "status"), lit(v))); return this; }
-  statusGt(v: string): this { this.filters.push(bin("gt", col("", "status"), lit(v))); return this; }
-  statusGte(v: string): this { this.filters.push(bin("gte", col("", "status"), lit(v))); return this; }
-  priorityEq(v: number): this { this.filters.push(bin("eq", col("", "priority"), lit(v))); return this; }
-  priorityNe(v: number): this { this.filters.push(bin("ne", col("", "priority"), lit(v))); return this; }
-  priorityLt(v: number): this { this.filters.push(bin("lt", col("", "priority"), lit(v))); return this; }
-  priorityLte(v: number): this { this.filters.push(bin("lte", col("", "priority"), lit(v))); return this; }
-  priorityGt(v: number): this { this.filters.push(bin("gt", col("", "priority"), lit(v))); return this; }
-  priorityGte(v: number): this { this.filters.push(bin("gte", col("", "priority"), lit(v))); return this; }
-  estimateEq(v: number): this { this.filters.push(bin("eq", col("", "estimate"), lit(v))); return this; }
-  estimateNe(v: number): this { this.filters.push(bin("ne", col("", "estimate"), lit(v))); return this; }
-  estimateLt(v: number): this { this.filters.push(bin("lt", col("", "estimate"), lit(v))); return this; }
-  estimateLte(v: number): this { this.filters.push(bin("lte", col("", "estimate"), lit(v))); return this; }
-  estimateGt(v: number): this { this.filters.push(bin("gt", col("", "estimate"), lit(v))); return this; }
-  estimateGte(v: number): this { this.filters.push(bin("gte", col("", "estimate"), lit(v))); return this; }
+  statusEq(v: string): this { this.filters.push(bin("eq", col("", "status"), lit(toValue("text", v)))); return this; }
+  statusNe(v: string): this { this.filters.push(bin("ne", col("", "status"), lit(toValue("text", v)))); return this; }
+  statusLt(v: string): this { this.filters.push(bin("lt", col("", "status"), lit(toValue("text", v)))); return this; }
+  statusLte(v: string): this { this.filters.push(bin("lte", col("", "status"), lit(toValue("text", v)))); return this; }
+  statusGt(v: string): this { this.filters.push(bin("gt", col("", "status"), lit(toValue("text", v)))); return this; }
+  statusGte(v: string): this { this.filters.push(bin("gte", col("", "status"), lit(toValue("text", v)))); return this; }
+  priorityEq(v: number): this { this.filters.push(bin("eq", col("", "priority"), lit(toValue("int64", v)))); return this; }
+  priorityNe(v: number): this { this.filters.push(bin("ne", col("", "priority"), lit(toValue("int64", v)))); return this; }
+  priorityLt(v: number): this { this.filters.push(bin("lt", col("", "priority"), lit(toValue("int64", v)))); return this; }
+  priorityLte(v: number): this { this.filters.push(bin("lte", col("", "priority"), lit(toValue("int64", v)))); return this; }
+  priorityGt(v: number): this { this.filters.push(bin("gt", col("", "priority"), lit(toValue("int64", v)))); return this; }
+  priorityGte(v: number): this { this.filters.push(bin("gte", col("", "priority"), lit(toValue("int64", v)))); return this; }
+  estimateEq(v: number): this { this.filters.push(bin("eq", col("", "estimate"), lit(toValue("float64", v)))); return this; }
+  estimateNe(v: number): this { this.filters.push(bin("ne", col("", "estimate"), lit(toValue("float64", v)))); return this; }
+  estimateLt(v: number): this { this.filters.push(bin("lt", col("", "estimate"), lit(toValue("float64", v)))); return this; }
+  estimateLte(v: number): this { this.filters.push(bin("lte", col("", "estimate"), lit(toValue("float64", v)))); return this; }
+  estimateGt(v: number): this { this.filters.push(bin("gt", col("", "estimate"), lit(toValue("float64", v)))); return this; }
+  estimateGte(v: number): this { this.filters.push(bin("gte", col("", "estimate"), lit(toValue("float64", v)))); return this; }
   estimateNull(): this { this.filters.push(un("is_null", col("", "estimate"))); return this; }
   estimateNotNull(): this { this.filters.push(un("is_not_null", col("", "estimate"))); return this; }
-  assigneeIdEq(v: string): this { this.filters.push(bin("eq", col("", "assignee_id"), lit(v))); return this; }
-  assigneeIdNe(v: string): this { this.filters.push(bin("ne", col("", "assignee_id"), lit(v))); return this; }
-  assigneeIdLt(v: string): this { this.filters.push(bin("lt", col("", "assignee_id"), lit(v))); return this; }
-  assigneeIdLte(v: string): this { this.filters.push(bin("lte", col("", "assignee_id"), lit(v))); return this; }
-  assigneeIdGt(v: string): this { this.filters.push(bin("gt", col("", "assignee_id"), lit(v))); return this; }
-  assigneeIdGte(v: string): this { this.filters.push(bin("gte", col("", "assignee_id"), lit(v))); return this; }
+  assigneeIdEq(v: string): this { this.filters.push(bin("eq", col("", "assignee_id"), lit(toValue("text", v)))); return this; }
+  assigneeIdNe(v: string): this { this.filters.push(bin("ne", col("", "assignee_id"), lit(toValue("text", v)))); return this; }
+  assigneeIdLt(v: string): this { this.filters.push(bin("lt", col("", "assignee_id"), lit(toValue("text", v)))); return this; }
+  assigneeIdLte(v: string): this { this.filters.push(bin("lte", col("", "assignee_id"), lit(toValue("text", v)))); return this; }
+  assigneeIdGt(v: string): this { this.filters.push(bin("gt", col("", "assignee_id"), lit(toValue("text", v)))); return this; }
+  assigneeIdGte(v: string): this { this.filters.push(bin("gte", col("", "assignee_id"), lit(toValue("text", v)))); return this; }
   assigneeIdNull(): this { this.filters.push(un("is_null", col("", "assignee_id"))); return this; }
   assigneeIdNotNull(): this { this.filters.push(un("is_not_null", col("", "assignee_id"))); return this; }
-  creatorIdEq(v: string): this { this.filters.push(bin("eq", col("", "creator_id"), lit(v))); return this; }
-  creatorIdNe(v: string): this { this.filters.push(bin("ne", col("", "creator_id"), lit(v))); return this; }
-  creatorIdLt(v: string): this { this.filters.push(bin("lt", col("", "creator_id"), lit(v))); return this; }
-  creatorIdLte(v: string): this { this.filters.push(bin("lte", col("", "creator_id"), lit(v))); return this; }
-  creatorIdGt(v: string): this { this.filters.push(bin("gt", col("", "creator_id"), lit(v))); return this; }
-  creatorIdGte(v: string): this { this.filters.push(bin("gte", col("", "creator_id"), lit(v))); return this; }
-  parentIdEq(v: string): this { this.filters.push(bin("eq", col("", "parent_id"), lit(v))); return this; }
-  parentIdNe(v: string): this { this.filters.push(bin("ne", col("", "parent_id"), lit(v))); return this; }
-  parentIdLt(v: string): this { this.filters.push(bin("lt", col("", "parent_id"), lit(v))); return this; }
-  parentIdLte(v: string): this { this.filters.push(bin("lte", col("", "parent_id"), lit(v))); return this; }
-  parentIdGt(v: string): this { this.filters.push(bin("gt", col("", "parent_id"), lit(v))); return this; }
-  parentIdGte(v: string): this { this.filters.push(bin("gte", col("", "parent_id"), lit(v))); return this; }
+  creatorIdEq(v: string): this { this.filters.push(bin("eq", col("", "creator_id"), lit(toValue("text", v)))); return this; }
+  creatorIdNe(v: string): this { this.filters.push(bin("ne", col("", "creator_id"), lit(toValue("text", v)))); return this; }
+  creatorIdLt(v: string): this { this.filters.push(bin("lt", col("", "creator_id"), lit(toValue("text", v)))); return this; }
+  creatorIdLte(v: string): this { this.filters.push(bin("lte", col("", "creator_id"), lit(toValue("text", v)))); return this; }
+  creatorIdGt(v: string): this { this.filters.push(bin("gt", col("", "creator_id"), lit(toValue("text", v)))); return this; }
+  creatorIdGte(v: string): this { this.filters.push(bin("gte", col("", "creator_id"), lit(toValue("text", v)))); return this; }
+  parentIdEq(v: string): this { this.filters.push(bin("eq", col("", "parent_id"), lit(toValue("text", v)))); return this; }
+  parentIdNe(v: string): this { this.filters.push(bin("ne", col("", "parent_id"), lit(toValue("text", v)))); return this; }
+  parentIdLt(v: string): this { this.filters.push(bin("lt", col("", "parent_id"), lit(toValue("text", v)))); return this; }
+  parentIdLte(v: string): this { this.filters.push(bin("lte", col("", "parent_id"), lit(toValue("text", v)))); return this; }
+  parentIdGt(v: string): this { this.filters.push(bin("gt", col("", "parent_id"), lit(toValue("text", v)))); return this; }
+  parentIdGte(v: string): this { this.filters.push(bin("gte", col("", "parent_id"), lit(toValue("text", v)))); return this; }
   parentIdNull(): this { this.filters.push(un("is_null", col("", "parent_id"))); return this; }
   parentIdNotNull(): this { this.filters.push(un("is_not_null", col("", "parent_id"))); return this; }
-  dueAtEq(v: number): this { this.filters.push(bin("eq", col("", "due_at"), lit(v))); return this; }
-  dueAtNe(v: number): this { this.filters.push(bin("ne", col("", "due_at"), lit(v))); return this; }
-  dueAtLt(v: number): this { this.filters.push(bin("lt", col("", "due_at"), lit(v))); return this; }
-  dueAtLte(v: number): this { this.filters.push(bin("lte", col("", "due_at"), lit(v))); return this; }
-  dueAtGt(v: number): this { this.filters.push(bin("gt", col("", "due_at"), lit(v))); return this; }
-  dueAtGte(v: number): this { this.filters.push(bin("gte", col("", "due_at"), lit(v))); return this; }
+  dueAtEq(v: number): this { this.filters.push(bin("eq", col("", "due_at"), lit(toValue("int64", v)))); return this; }
+  dueAtNe(v: number): this { this.filters.push(bin("ne", col("", "due_at"), lit(toValue("int64", v)))); return this; }
+  dueAtLt(v: number): this { this.filters.push(bin("lt", col("", "due_at"), lit(toValue("int64", v)))); return this; }
+  dueAtLte(v: number): this { this.filters.push(bin("lte", col("", "due_at"), lit(toValue("int64", v)))); return this; }
+  dueAtGt(v: number): this { this.filters.push(bin("gt", col("", "due_at"), lit(toValue("int64", v)))); return this; }
+  dueAtGte(v: number): this { this.filters.push(bin("gte", col("", "due_at"), lit(toValue("int64", v)))); return this; }
   dueAtNull(): this { this.filters.push(un("is_null", col("", "due_at"))); return this; }
   dueAtNotNull(): this { this.filters.push(un("is_not_null", col("", "due_at"))); return this; }
-  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(v))); return this; }
-  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(v))); return this; }
-  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(v))); return this; }
-  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(v))); return this; }
-  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(v))); return this; }
-  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(v))); return this; }
+  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
 
   orderById(): this { this.orders.push({ expr: col("", "id") }); return this; }
   orderByIdDesc(): this { this.orders.push({ expr: col("", "id"), desc: true }); return this; }
@@ -2770,7 +2831,7 @@ export class TaskInclude {
   }
 }
 
-// ── comments ──────────────────────────────────────────────────────────────
+// comments
 
 /** One row of "comments". Relation fields are present only when included. */
 export interface Comment {
@@ -2839,36 +2900,36 @@ export class CommentQuery {
     this.spec.filters = this.filters;
   }
 
-  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(v))); return this; }
-  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(v))); return this; }
-  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(v))); return this; }
-  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(v))); return this; }
-  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(v))); return this; }
-  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(v))); return this; }
-  taskIdEq(v: string): this { this.filters.push(bin("eq", col("", "task_id"), lit(v))); return this; }
-  taskIdNe(v: string): this { this.filters.push(bin("ne", col("", "task_id"), lit(v))); return this; }
-  taskIdLt(v: string): this { this.filters.push(bin("lt", col("", "task_id"), lit(v))); return this; }
-  taskIdLte(v: string): this { this.filters.push(bin("lte", col("", "task_id"), lit(v))); return this; }
-  taskIdGt(v: string): this { this.filters.push(bin("gt", col("", "task_id"), lit(v))); return this; }
-  taskIdGte(v: string): this { this.filters.push(bin("gte", col("", "task_id"), lit(v))); return this; }
-  authorIdEq(v: string): this { this.filters.push(bin("eq", col("", "author_id"), lit(v))); return this; }
-  authorIdNe(v: string): this { this.filters.push(bin("ne", col("", "author_id"), lit(v))); return this; }
-  authorIdLt(v: string): this { this.filters.push(bin("lt", col("", "author_id"), lit(v))); return this; }
-  authorIdLte(v: string): this { this.filters.push(bin("lte", col("", "author_id"), lit(v))); return this; }
-  authorIdGt(v: string): this { this.filters.push(bin("gt", col("", "author_id"), lit(v))); return this; }
-  authorIdGte(v: string): this { this.filters.push(bin("gte", col("", "author_id"), lit(v))); return this; }
-  bodyEq(v: string): this { this.filters.push(bin("eq", col("", "body"), lit(v))); return this; }
-  bodyNe(v: string): this { this.filters.push(bin("ne", col("", "body"), lit(v))); return this; }
-  bodyLt(v: string): this { this.filters.push(bin("lt", col("", "body"), lit(v))); return this; }
-  bodyLte(v: string): this { this.filters.push(bin("lte", col("", "body"), lit(v))); return this; }
-  bodyGt(v: string): this { this.filters.push(bin("gt", col("", "body"), lit(v))); return this; }
-  bodyGte(v: string): this { this.filters.push(bin("gte", col("", "body"), lit(v))); return this; }
-  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(v))); return this; }
-  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(v))); return this; }
-  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(v))); return this; }
-  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(v))); return this; }
-  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(v))); return this; }
-  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(v))); return this; }
+  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(toValue("text", v)))); return this; }
+  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(toValue("text", v)))); return this; }
+  taskIdEq(v: string): this { this.filters.push(bin("eq", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdNe(v: string): this { this.filters.push(bin("ne", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdLt(v: string): this { this.filters.push(bin("lt", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdLte(v: string): this { this.filters.push(bin("lte", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdGt(v: string): this { this.filters.push(bin("gt", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdGte(v: string): this { this.filters.push(bin("gte", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  authorIdEq(v: string): this { this.filters.push(bin("eq", col("", "author_id"), lit(toValue("text", v)))); return this; }
+  authorIdNe(v: string): this { this.filters.push(bin("ne", col("", "author_id"), lit(toValue("text", v)))); return this; }
+  authorIdLt(v: string): this { this.filters.push(bin("lt", col("", "author_id"), lit(toValue("text", v)))); return this; }
+  authorIdLte(v: string): this { this.filters.push(bin("lte", col("", "author_id"), lit(toValue("text", v)))); return this; }
+  authorIdGt(v: string): this { this.filters.push(bin("gt", col("", "author_id"), lit(toValue("text", v)))); return this; }
+  authorIdGte(v: string): this { this.filters.push(bin("gte", col("", "author_id"), lit(toValue("text", v)))); return this; }
+  bodyEq(v: string): this { this.filters.push(bin("eq", col("", "body"), lit(toValue("text", v)))); return this; }
+  bodyNe(v: string): this { this.filters.push(bin("ne", col("", "body"), lit(toValue("text", v)))); return this; }
+  bodyLt(v: string): this { this.filters.push(bin("lt", col("", "body"), lit(toValue("text", v)))); return this; }
+  bodyLte(v: string): this { this.filters.push(bin("lte", col("", "body"), lit(toValue("text", v)))); return this; }
+  bodyGt(v: string): this { this.filters.push(bin("gt", col("", "body"), lit(toValue("text", v)))); return this; }
+  bodyGte(v: string): this { this.filters.push(bin("gte", col("", "body"), lit(toValue("text", v)))); return this; }
+  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
 
   orderById(): this { this.spec.orders.push({ expr: col("", "id") }); return this; }
   orderByIdDesc(): this { this.spec.orders.push({ expr: col("", "id"), desc: true }); return this; }
@@ -3023,36 +3084,36 @@ export class CommentInclude {
     this.kind = kind;
   }
 
-  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(v))); return this; }
-  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(v))); return this; }
-  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(v))); return this; }
-  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(v))); return this; }
-  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(v))); return this; }
-  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(v))); return this; }
-  taskIdEq(v: string): this { this.filters.push(bin("eq", col("", "task_id"), lit(v))); return this; }
-  taskIdNe(v: string): this { this.filters.push(bin("ne", col("", "task_id"), lit(v))); return this; }
-  taskIdLt(v: string): this { this.filters.push(bin("lt", col("", "task_id"), lit(v))); return this; }
-  taskIdLte(v: string): this { this.filters.push(bin("lte", col("", "task_id"), lit(v))); return this; }
-  taskIdGt(v: string): this { this.filters.push(bin("gt", col("", "task_id"), lit(v))); return this; }
-  taskIdGte(v: string): this { this.filters.push(bin("gte", col("", "task_id"), lit(v))); return this; }
-  authorIdEq(v: string): this { this.filters.push(bin("eq", col("", "author_id"), lit(v))); return this; }
-  authorIdNe(v: string): this { this.filters.push(bin("ne", col("", "author_id"), lit(v))); return this; }
-  authorIdLt(v: string): this { this.filters.push(bin("lt", col("", "author_id"), lit(v))); return this; }
-  authorIdLte(v: string): this { this.filters.push(bin("lte", col("", "author_id"), lit(v))); return this; }
-  authorIdGt(v: string): this { this.filters.push(bin("gt", col("", "author_id"), lit(v))); return this; }
-  authorIdGte(v: string): this { this.filters.push(bin("gte", col("", "author_id"), lit(v))); return this; }
-  bodyEq(v: string): this { this.filters.push(bin("eq", col("", "body"), lit(v))); return this; }
-  bodyNe(v: string): this { this.filters.push(bin("ne", col("", "body"), lit(v))); return this; }
-  bodyLt(v: string): this { this.filters.push(bin("lt", col("", "body"), lit(v))); return this; }
-  bodyLte(v: string): this { this.filters.push(bin("lte", col("", "body"), lit(v))); return this; }
-  bodyGt(v: string): this { this.filters.push(bin("gt", col("", "body"), lit(v))); return this; }
-  bodyGte(v: string): this { this.filters.push(bin("gte", col("", "body"), lit(v))); return this; }
-  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(v))); return this; }
-  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(v))); return this; }
-  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(v))); return this; }
-  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(v))); return this; }
-  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(v))); return this; }
-  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(v))); return this; }
+  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(toValue("text", v)))); return this; }
+  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(toValue("text", v)))); return this; }
+  taskIdEq(v: string): this { this.filters.push(bin("eq", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdNe(v: string): this { this.filters.push(bin("ne", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdLt(v: string): this { this.filters.push(bin("lt", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdLte(v: string): this { this.filters.push(bin("lte", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdGt(v: string): this { this.filters.push(bin("gt", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdGte(v: string): this { this.filters.push(bin("gte", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  authorIdEq(v: string): this { this.filters.push(bin("eq", col("", "author_id"), lit(toValue("text", v)))); return this; }
+  authorIdNe(v: string): this { this.filters.push(bin("ne", col("", "author_id"), lit(toValue("text", v)))); return this; }
+  authorIdLt(v: string): this { this.filters.push(bin("lt", col("", "author_id"), lit(toValue("text", v)))); return this; }
+  authorIdLte(v: string): this { this.filters.push(bin("lte", col("", "author_id"), lit(toValue("text", v)))); return this; }
+  authorIdGt(v: string): this { this.filters.push(bin("gt", col("", "author_id"), lit(toValue("text", v)))); return this; }
+  authorIdGte(v: string): this { this.filters.push(bin("gte", col("", "author_id"), lit(toValue("text", v)))); return this; }
+  bodyEq(v: string): this { this.filters.push(bin("eq", col("", "body"), lit(toValue("text", v)))); return this; }
+  bodyNe(v: string): this { this.filters.push(bin("ne", col("", "body"), lit(toValue("text", v)))); return this; }
+  bodyLt(v: string): this { this.filters.push(bin("lt", col("", "body"), lit(toValue("text", v)))); return this; }
+  bodyLte(v: string): this { this.filters.push(bin("lte", col("", "body"), lit(toValue("text", v)))); return this; }
+  bodyGt(v: string): this { this.filters.push(bin("gt", col("", "body"), lit(toValue("text", v)))); return this; }
+  bodyGte(v: string): this { this.filters.push(bin("gte", col("", "body"), lit(toValue("text", v)))); return this; }
+  createdAtEq(v: number): this { this.filters.push(bin("eq", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtNe(v: number): this { this.filters.push(bin("ne", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLt(v: number): this { this.filters.push(bin("lt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtLte(v: number): this { this.filters.push(bin("lte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGt(v: number): this { this.filters.push(bin("gt", col("", "created_at"), lit(toValue("int64", v)))); return this; }
+  createdAtGte(v: number): this { this.filters.push(bin("gte", col("", "created_at"), lit(toValue("int64", v)))); return this; }
 
   orderById(): this { this.orders.push({ expr: col("", "id") }); return this; }
   orderByIdDesc(): this { this.orders.push({ expr: col("", "id"), desc: true }); return this; }
@@ -3089,7 +3150,7 @@ export class CommentInclude {
   }
 }
 
-// ── labels ──────────────────────────────────────────────────────────────
+// labels
 
 /** One row of "labels". Relation fields are present only when included. */
 export interface Label {
@@ -3142,7 +3203,7 @@ export class LabelTable {
 
   /** Finds the row by the unique index on (team_id, name). */
   async byTeamIdName(teamId: string, name: string): Promise<Label | null> {
-    const recs = await this.v.query(assemble({ table: "labels", filters: [eq(col("", "team_id"), lit(teamId)), eq(col("", "name"), lit(name))], orders: [{ expr: col("", "id") }], includes: [], limit: 1 }));
+    const recs = await this.v.query(assemble({ table: "labels", filters: [eq(col("", "team_id"), lit(toValue("text", teamId))), eq(col("", "name"), lit(toValue("text", name)))], orders: [{ expr: col("", "id") }], includes: [], limit: 1 }));
     return recs.length ? (recs[0] as unknown as Label) : null;
   }
 
@@ -3161,30 +3222,30 @@ export class LabelQuery {
     this.spec.filters = this.filters;
   }
 
-  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(v))); return this; }
-  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(v))); return this; }
-  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(v))); return this; }
-  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(v))); return this; }
-  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(v))); return this; }
-  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(v))); return this; }
-  teamIdEq(v: string): this { this.filters.push(bin("eq", col("", "team_id"), lit(v))); return this; }
-  teamIdNe(v: string): this { this.filters.push(bin("ne", col("", "team_id"), lit(v))); return this; }
-  teamIdLt(v: string): this { this.filters.push(bin("lt", col("", "team_id"), lit(v))); return this; }
-  teamIdLte(v: string): this { this.filters.push(bin("lte", col("", "team_id"), lit(v))); return this; }
-  teamIdGt(v: string): this { this.filters.push(bin("gt", col("", "team_id"), lit(v))); return this; }
-  teamIdGte(v: string): this { this.filters.push(bin("gte", col("", "team_id"), lit(v))); return this; }
-  nameEq(v: string): this { this.filters.push(bin("eq", col("", "name"), lit(v))); return this; }
-  nameNe(v: string): this { this.filters.push(bin("ne", col("", "name"), lit(v))); return this; }
-  nameLt(v: string): this { this.filters.push(bin("lt", col("", "name"), lit(v))); return this; }
-  nameLte(v: string): this { this.filters.push(bin("lte", col("", "name"), lit(v))); return this; }
-  nameGt(v: string): this { this.filters.push(bin("gt", col("", "name"), lit(v))); return this; }
-  nameGte(v: string): this { this.filters.push(bin("gte", col("", "name"), lit(v))); return this; }
-  hexColorEq(v: string): this { this.filters.push(bin("eq", col("", "hex_color"), lit(v))); return this; }
-  hexColorNe(v: string): this { this.filters.push(bin("ne", col("", "hex_color"), lit(v))); return this; }
-  hexColorLt(v: string): this { this.filters.push(bin("lt", col("", "hex_color"), lit(v))); return this; }
-  hexColorLte(v: string): this { this.filters.push(bin("lte", col("", "hex_color"), lit(v))); return this; }
-  hexColorGt(v: string): this { this.filters.push(bin("gt", col("", "hex_color"), lit(v))); return this; }
-  hexColorGte(v: string): this { this.filters.push(bin("gte", col("", "hex_color"), lit(v))); return this; }
+  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(toValue("text", v)))); return this; }
+  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(toValue("text", v)))); return this; }
+  teamIdEq(v: string): this { this.filters.push(bin("eq", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdNe(v: string): this { this.filters.push(bin("ne", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdLt(v: string): this { this.filters.push(bin("lt", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdLte(v: string): this { this.filters.push(bin("lte", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdGt(v: string): this { this.filters.push(bin("gt", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdGte(v: string): this { this.filters.push(bin("gte", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  nameEq(v: string): this { this.filters.push(bin("eq", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameNe(v: string): this { this.filters.push(bin("ne", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameLt(v: string): this { this.filters.push(bin("lt", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameLte(v: string): this { this.filters.push(bin("lte", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameGt(v: string): this { this.filters.push(bin("gt", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameGte(v: string): this { this.filters.push(bin("gte", col("", "name"), lit(toValue("text", v)))); return this; }
+  hexColorEq(v: string): this { this.filters.push(bin("eq", col("", "hex_color"), lit(toValue("text", v)))); return this; }
+  hexColorNe(v: string): this { this.filters.push(bin("ne", col("", "hex_color"), lit(toValue("text", v)))); return this; }
+  hexColorLt(v: string): this { this.filters.push(bin("lt", col("", "hex_color"), lit(toValue("text", v)))); return this; }
+  hexColorLte(v: string): this { this.filters.push(bin("lte", col("", "hex_color"), lit(toValue("text", v)))); return this; }
+  hexColorGt(v: string): this { this.filters.push(bin("gt", col("", "hex_color"), lit(toValue("text", v)))); return this; }
+  hexColorGte(v: string): this { this.filters.push(bin("gte", col("", "hex_color"), lit(toValue("text", v)))); return this; }
 
   orderById(): this { this.spec.orders.push({ expr: col("", "id") }); return this; }
   orderByIdDesc(): this { this.spec.orders.push({ expr: col("", "id"), desc: true }); return this; }
@@ -3312,30 +3373,30 @@ export class LabelInclude {
     this.kind = kind;
   }
 
-  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(v))); return this; }
-  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(v))); return this; }
-  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(v))); return this; }
-  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(v))); return this; }
-  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(v))); return this; }
-  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(v))); return this; }
-  teamIdEq(v: string): this { this.filters.push(bin("eq", col("", "team_id"), lit(v))); return this; }
-  teamIdNe(v: string): this { this.filters.push(bin("ne", col("", "team_id"), lit(v))); return this; }
-  teamIdLt(v: string): this { this.filters.push(bin("lt", col("", "team_id"), lit(v))); return this; }
-  teamIdLte(v: string): this { this.filters.push(bin("lte", col("", "team_id"), lit(v))); return this; }
-  teamIdGt(v: string): this { this.filters.push(bin("gt", col("", "team_id"), lit(v))); return this; }
-  teamIdGte(v: string): this { this.filters.push(bin("gte", col("", "team_id"), lit(v))); return this; }
-  nameEq(v: string): this { this.filters.push(bin("eq", col("", "name"), lit(v))); return this; }
-  nameNe(v: string): this { this.filters.push(bin("ne", col("", "name"), lit(v))); return this; }
-  nameLt(v: string): this { this.filters.push(bin("lt", col("", "name"), lit(v))); return this; }
-  nameLte(v: string): this { this.filters.push(bin("lte", col("", "name"), lit(v))); return this; }
-  nameGt(v: string): this { this.filters.push(bin("gt", col("", "name"), lit(v))); return this; }
-  nameGte(v: string): this { this.filters.push(bin("gte", col("", "name"), lit(v))); return this; }
-  hexColorEq(v: string): this { this.filters.push(bin("eq", col("", "hex_color"), lit(v))); return this; }
-  hexColorNe(v: string): this { this.filters.push(bin("ne", col("", "hex_color"), lit(v))); return this; }
-  hexColorLt(v: string): this { this.filters.push(bin("lt", col("", "hex_color"), lit(v))); return this; }
-  hexColorLte(v: string): this { this.filters.push(bin("lte", col("", "hex_color"), lit(v))); return this; }
-  hexColorGt(v: string): this { this.filters.push(bin("gt", col("", "hex_color"), lit(v))); return this; }
-  hexColorGte(v: string): this { this.filters.push(bin("gte", col("", "hex_color"), lit(v))); return this; }
+  idEq(v: string): this { this.filters.push(bin("eq", col("", "id"), lit(toValue("text", v)))); return this; }
+  idNe(v: string): this { this.filters.push(bin("ne", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLt(v: string): this { this.filters.push(bin("lt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idLte(v: string): this { this.filters.push(bin("lte", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGt(v: string): this { this.filters.push(bin("gt", col("", "id"), lit(toValue("text", v)))); return this; }
+  idGte(v: string): this { this.filters.push(bin("gte", col("", "id"), lit(toValue("text", v)))); return this; }
+  teamIdEq(v: string): this { this.filters.push(bin("eq", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdNe(v: string): this { this.filters.push(bin("ne", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdLt(v: string): this { this.filters.push(bin("lt", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdLte(v: string): this { this.filters.push(bin("lte", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdGt(v: string): this { this.filters.push(bin("gt", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  teamIdGte(v: string): this { this.filters.push(bin("gte", col("", "team_id"), lit(toValue("text", v)))); return this; }
+  nameEq(v: string): this { this.filters.push(bin("eq", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameNe(v: string): this { this.filters.push(bin("ne", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameLt(v: string): this { this.filters.push(bin("lt", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameLte(v: string): this { this.filters.push(bin("lte", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameGt(v: string): this { this.filters.push(bin("gt", col("", "name"), lit(toValue("text", v)))); return this; }
+  nameGte(v: string): this { this.filters.push(bin("gte", col("", "name"), lit(toValue("text", v)))); return this; }
+  hexColorEq(v: string): this { this.filters.push(bin("eq", col("", "hex_color"), lit(toValue("text", v)))); return this; }
+  hexColorNe(v: string): this { this.filters.push(bin("ne", col("", "hex_color"), lit(toValue("text", v)))); return this; }
+  hexColorLt(v: string): this { this.filters.push(bin("lt", col("", "hex_color"), lit(toValue("text", v)))); return this; }
+  hexColorLte(v: string): this { this.filters.push(bin("lte", col("", "hex_color"), lit(toValue("text", v)))); return this; }
+  hexColorGt(v: string): this { this.filters.push(bin("gt", col("", "hex_color"), lit(toValue("text", v)))); return this; }
+  hexColorGte(v: string): this { this.filters.push(bin("gte", col("", "hex_color"), lit(toValue("text", v)))); return this; }
 
   orderById(): this { this.orders.push({ expr: col("", "id") }); return this; }
   orderByIdDesc(): this { this.orders.push({ expr: col("", "id"), desc: true }); return this; }
@@ -3370,7 +3431,7 @@ export class LabelInclude {
   }
 }
 
-// ── task_labels ──────────────────────────────────────────────────────────────
+// task_labels
 
 /** One row of "task_labels". Relation fields are present only when included. */
 export interface TaskLabel {
@@ -3429,18 +3490,18 @@ export class TaskLabelQuery {
     this.spec.filters = this.filters;
   }
 
-  taskIdEq(v: string): this { this.filters.push(bin("eq", col("", "task_id"), lit(v))); return this; }
-  taskIdNe(v: string): this { this.filters.push(bin("ne", col("", "task_id"), lit(v))); return this; }
-  taskIdLt(v: string): this { this.filters.push(bin("lt", col("", "task_id"), lit(v))); return this; }
-  taskIdLte(v: string): this { this.filters.push(bin("lte", col("", "task_id"), lit(v))); return this; }
-  taskIdGt(v: string): this { this.filters.push(bin("gt", col("", "task_id"), lit(v))); return this; }
-  taskIdGte(v: string): this { this.filters.push(bin("gte", col("", "task_id"), lit(v))); return this; }
-  labelIdEq(v: string): this { this.filters.push(bin("eq", col("", "label_id"), lit(v))); return this; }
-  labelIdNe(v: string): this { this.filters.push(bin("ne", col("", "label_id"), lit(v))); return this; }
-  labelIdLt(v: string): this { this.filters.push(bin("lt", col("", "label_id"), lit(v))); return this; }
-  labelIdLte(v: string): this { this.filters.push(bin("lte", col("", "label_id"), lit(v))); return this; }
-  labelIdGt(v: string): this { this.filters.push(bin("gt", col("", "label_id"), lit(v))); return this; }
-  labelIdGte(v: string): this { this.filters.push(bin("gte", col("", "label_id"), lit(v))); return this; }
+  taskIdEq(v: string): this { this.filters.push(bin("eq", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdNe(v: string): this { this.filters.push(bin("ne", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdLt(v: string): this { this.filters.push(bin("lt", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdLte(v: string): this { this.filters.push(bin("lte", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdGt(v: string): this { this.filters.push(bin("gt", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdGte(v: string): this { this.filters.push(bin("gte", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  labelIdEq(v: string): this { this.filters.push(bin("eq", col("", "label_id"), lit(toValue("text", v)))); return this; }
+  labelIdNe(v: string): this { this.filters.push(bin("ne", col("", "label_id"), lit(toValue("text", v)))); return this; }
+  labelIdLt(v: string): this { this.filters.push(bin("lt", col("", "label_id"), lit(toValue("text", v)))); return this; }
+  labelIdLte(v: string): this { this.filters.push(bin("lte", col("", "label_id"), lit(toValue("text", v)))); return this; }
+  labelIdGt(v: string): this { this.filters.push(bin("gt", col("", "label_id"), lit(toValue("text", v)))); return this; }
+  labelIdGte(v: string): this { this.filters.push(bin("gte", col("", "label_id"), lit(toValue("text", v)))); return this; }
 
   orderByTaskId(): this { this.spec.orders.push({ expr: col("", "task_id") }); return this; }
   orderByTaskIdDesc(): this { this.spec.orders.push({ expr: col("", "task_id"), desc: true }); return this; }
@@ -3534,18 +3595,18 @@ export class TaskLabelInclude {
     this.kind = kind;
   }
 
-  taskIdEq(v: string): this { this.filters.push(bin("eq", col("", "task_id"), lit(v))); return this; }
-  taskIdNe(v: string): this { this.filters.push(bin("ne", col("", "task_id"), lit(v))); return this; }
-  taskIdLt(v: string): this { this.filters.push(bin("lt", col("", "task_id"), lit(v))); return this; }
-  taskIdLte(v: string): this { this.filters.push(bin("lte", col("", "task_id"), lit(v))); return this; }
-  taskIdGt(v: string): this { this.filters.push(bin("gt", col("", "task_id"), lit(v))); return this; }
-  taskIdGte(v: string): this { this.filters.push(bin("gte", col("", "task_id"), lit(v))); return this; }
-  labelIdEq(v: string): this { this.filters.push(bin("eq", col("", "label_id"), lit(v))); return this; }
-  labelIdNe(v: string): this { this.filters.push(bin("ne", col("", "label_id"), lit(v))); return this; }
-  labelIdLt(v: string): this { this.filters.push(bin("lt", col("", "label_id"), lit(v))); return this; }
-  labelIdLte(v: string): this { this.filters.push(bin("lte", col("", "label_id"), lit(v))); return this; }
-  labelIdGt(v: string): this { this.filters.push(bin("gt", col("", "label_id"), lit(v))); return this; }
-  labelIdGte(v: string): this { this.filters.push(bin("gte", col("", "label_id"), lit(v))); return this; }
+  taskIdEq(v: string): this { this.filters.push(bin("eq", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdNe(v: string): this { this.filters.push(bin("ne", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdLt(v: string): this { this.filters.push(bin("lt", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdLte(v: string): this { this.filters.push(bin("lte", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdGt(v: string): this { this.filters.push(bin("gt", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  taskIdGte(v: string): this { this.filters.push(bin("gte", col("", "task_id"), lit(toValue("text", v)))); return this; }
+  labelIdEq(v: string): this { this.filters.push(bin("eq", col("", "label_id"), lit(toValue("text", v)))); return this; }
+  labelIdNe(v: string): this { this.filters.push(bin("ne", col("", "label_id"), lit(toValue("text", v)))); return this; }
+  labelIdLt(v: string): this { this.filters.push(bin("lt", col("", "label_id"), lit(toValue("text", v)))); return this; }
+  labelIdLte(v: string): this { this.filters.push(bin("lte", col("", "label_id"), lit(toValue("text", v)))); return this; }
+  labelIdGt(v: string): this { this.filters.push(bin("gt", col("", "label_id"), lit(toValue("text", v)))); return this; }
+  labelIdGte(v: string): this { this.filters.push(bin("gte", col("", "label_id"), lit(toValue("text", v)))); return this; }
 
   orderByTaskId(): this { this.orders.push({ expr: col("", "task_id") }); return this; }
   orderByTaskIdDesc(): this { this.orders.push({ expr: col("", "task_id"), desc: true }); return this; }
@@ -3576,7 +3637,7 @@ export class TaskLabelInclude {
   }
 }
 
-// ── client ──────────────────────────────────────────────────────────────
+// client
 
 export class Client {
   private rpc: Rpc;

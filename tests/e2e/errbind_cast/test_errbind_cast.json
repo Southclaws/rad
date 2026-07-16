@@ -8,7 +8,7 @@
           "nodes": {
             "r": { "kind": "rows", "scope": "r",
               "columns": [ { "name": "f", "type": "float64" } ],
-              "rows": [ [7.9] ] },
+              "rows": [ ["7.9"] ] },
             "p": { "kind": "project", "input": "r", "fields": [
               { "as": "s", "expr": { "kind": "cast", "to": "int64",
                 "expr": { "kind": "col", "scope": "r", "column": "f" } } }

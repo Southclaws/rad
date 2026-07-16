@@ -7,9 +7,9 @@
         "relation": {
           "nodes": {
             "a": { "kind": "filter", "input": "b",
-              "predicate": { "kind": "lit", "value": true } },
+              "predicate": { "kind": "lit", "value": { "type": "bool", "value": true } } },
             "b": { "kind": "filter", "input": "a",
-              "predicate": { "kind": "lit", "value": true } }
+              "predicate": { "kind": "lit", "value": { "type": "bool", "value": true } } }
           },
           "root": { "node": "a", "cardinality": "many" }
         }

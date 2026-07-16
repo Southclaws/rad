@@ -24,7 +24,7 @@ func TestPredEqNullLiteralMatchesNothing(t *testing.T) {
 	d.Query(q(map[string]lirwire.Node{
 		"c": lirwire.Scan("customers", "c"),
 		"eq_null": lirwire.Filter("c",
-			lirwire.Binary("eq", lirwire.Col("c", "referrer_id"), lirwire.LitOf(nil))),
+			lirwire.Binary("eq", lirwire.Col("c", "referrer_id"), lirwire.Lit(lirwire.Null(lirwire.ScalarTypeText)))),
 	}, "eq_null", "many")).Empty()
 }
 

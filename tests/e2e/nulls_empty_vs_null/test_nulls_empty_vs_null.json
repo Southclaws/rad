@@ -53,7 +53,7 @@
               "kind": "binary",
               "op": "eq",
               "left": { "kind": "col", "scope": "t", "column": "code" },
-              "right": { "kind": "lit", "value": "" }
+              "right": { "kind": "lit", "value": { "type": "text", "value": "" } }
             }
           }
         },

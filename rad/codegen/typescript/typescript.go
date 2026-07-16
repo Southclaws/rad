@@ -55,6 +55,23 @@ func tsType(goType string) string {
 	return "unknown"
 }
 
+// lirScalar maps a column's Go type to its LIR scalar-type name, which a
+// literal Value must carry — TypeScript collapses int64 and float64 to one
+// `number`, so the generator supplies the distinction the runtime cannot.
+func lirScalar(goType string) string {
+	switch goType {
+	case "string":
+		return "text"
+	case "int64":
+		return "int64"
+	case "float64":
+		return "float64"
+	case "bool":
+		return "bool"
+	}
+	return "text"
+}
+
 // camel converts snake_case to lowerCamelCase: user_id -> userId.
 func camel(s string) string {
 	parts := strings.Split(s, "_")
@@ -116,10 +133,23 @@ export function isConflict(err: unknown): boolean {
 
 export type Scalar = string | number | boolean | null;
 
+/** A self-describing literal scalar: its type names the scalar kind and an
+ * absent value is a typed NULL. Numbers travel as strings for lossless int64
+ * precision; a bool is a native JSON boolean. */
+export type Value =
+  | { type: "text"; value?: string }
+  | { type: "int64"; value?: string }
+  | { type: "float64"; value?: string }
+  | { type: "bool"; value?: boolean };
+
+/** A rows-cell payload, decoded against its column's declared type: null is a
+ * NULL, otherwise the lossless string form (a bool is "true"/"false"). */
+export type Cell = string | null;
+
 /** One typed datum computation. Crossings may produce rows or arrays. */
 export interface Expr {
   kind: "lit" | "col" | "unary" | "binary" | "cast" | "exists" | "first" | "scalar" | "array";
-  value?: Scalar;
+  value?: Value;
   scope?: string;
   column?: string;
   op?: string;
@@ -132,7 +162,7 @@ export interface Expr {
 
 /** One relation operator: a flat tagged union selected by kind. */
 export interface Node {
-  kind: "scan" | "filter" | "project" | "join" | "aggregate" | "order" | "slice";
+  kind: "scan" | "filter" | "project" | "join" | "aggregate" | "order" | "slice" | "rows";
   table?: string;
   scope?: string;
   input?: string;
@@ -148,6 +178,8 @@ export interface Node {
   terms?: OrderTerm[];
   offset?: number;
   limit?: number;
+  columns?: { name: string; type: string; nullable?: boolean }[];
+  rows?: Cell[][];
 }
 
 export interface Field {
@@ -265,8 +297,19 @@ class WireView implements View {
   async query(q: GraphQuery): Promise<Rec[]> {
     return this.records(await this.run({ name: "q", kind: "query", relation: q }));
   }
+  // keyPreds builds the equality predicates identifying a row by key, each
+  // literal typed from the catalog so it is a self-describing Value.
+  private async keyPreds(table: string, key: Rec): Promise<Expr[]> {
+    const types = new Map((await this.columns(table)).map((c) => [c.name, c]));
+    return Object.entries(key).map(([column, value]): Expr => {
+      const c = types.get(column);
+      if (!c) throw new Error("table " + table + " has no column " + column);
+      return eq(col("s", column), lit(toValue(c.type, value as Scalar)));
+    });
+  }
+
   async get(table: string, key: Rec): Promise<Rec | null> {
-    const preds = Object.entries(key).map(([column, value]): Expr => eq(col("s", column), lit(value as Scalar)));
+    const preds = await this.keyPreds(table, key);
     const recs = this.records(await this.run({ name: "get", kind: "query", relation: {
       nodes: {
         s: { kind: "scan", table, scope: "s" },
@@ -290,7 +333,7 @@ class WireView implements View {
             if (!c) throw new Error("table " + table + " has no column " + n);
             return { name: n, type: c.type, nullable: c.nullable ?? false };
           }),
-          rows: [names.map((n) => values[n] as Scalar)],
+          rows: [names.map((n) => toCell(types.get(n)!.type, values[n] as Scalar))],
         },
       },
       root: { node: "r", cardinality: "many" },
@@ -306,12 +349,12 @@ class WireView implements View {
     const cols = await this.columns(table);
     const types = new Map(cols.map((c) => [c.name, c]));
     const relCols: { name: string; type: string; nullable: boolean }[] = [];
-    const row: Scalar[] = [];
+    const row: Cell[] = [];
     const add = (name: string, val: Scalar) => {
       const c = types.get(name);
       if (!c) throw new Error("table " + table + " has no column " + name);
       relCols.push({ name, type: c.type, nullable: c.nullable ?? false });
-      row.push(val);
+      row.push(toCell(c.type, val));
     };
     for (const [k, v] of Object.entries(key)) add(k, v as Scalar);
     for (const [k, v] of Object.entries(set)) add(k, v as Scalar);
@@ -329,8 +372,9 @@ class WireView implements View {
     }
   }
   async del(table: string, key: Rec): Promise<boolean> {
+    const preds = await this.keyPreds(table, key);
     const fields = Object.keys(key).map((k) => ({ as: k, expr: col("s", k) }));
-    const relation = this.keyedProjection(table, key, fields);
+    const relation = this.keyedProjection(table, preds, fields);
     const res = await this.rpc.req<{ statements: { affected: number }[] }>("/execute", {
       statements: [{ name: "delete", kind: "delete", table, relation }],
     });
@@ -338,9 +382,8 @@ class WireView implements View {
   }
 
   // keyedProjection scans a table, filters to the key row, and projects the
-  // given fields — the identify-by-key input for update and delete.
-  private keyedProjection(table: string, key: Rec, fields: { as: string; expr: Expr }[]): GraphQuery {
-    const preds = Object.entries(key).map(([column, value]): Expr => eq(col("s", column), lit(value as Scalar)));
+  // given fields — the identify-by-key input for delete.
+  private keyedProjection(table: string, preds: Expr[], fields: { as: string; expr: Expr }[]): GraphQuery {
     return {
       nodes: {
         s: { kind: "scan", table, scope: "s" },
@@ -375,8 +418,41 @@ function splitPatch(patch: Rec): { set: Rec; clear: string[] } {
 function col(scope: string, column: string): Expr {
   return { kind: "col", scope, column };
 }
-function lit(value: Scalar): Expr {
+function lit(value: Value): Expr {
   return { kind: "lit", value };
+}
+
+// toValue builds a self-describing literal of the given scalar type. null is a
+// typed NULL; numbers serialise as strings so int64 keeps full precision (an
+// int64 column truncates any fractional part).
+function toValue(type: string, v: Scalar): Value {
+  if (v === null) {
+    switch (type) {
+      case "text": return { type: "text" };
+      case "int64": return { type: "int64" };
+      case "float64": return { type: "float64" };
+      case "bool": return { type: "bool" };
+    }
+    throw new Error("unknown scalar type " + type);
+  }
+  switch (type) {
+    case "text": return { type: "text", value: String(v) };
+    case "int64": return { type: "int64", value: typeof v === "number" ? String(Math.trunc(v)) : String(v) };
+    case "float64": return { type: "float64", value: String(v) };
+    case "bool": return { type: "bool", value: Boolean(v) };
+  }
+  throw new Error("unknown scalar type " + type);
+}
+
+// toCell renders a rows cell against its column's type: null stays NULL, a bool
+// is "true"/"false", and everything else is its lossless string form.
+function toCell(type: string, v: Scalar): Cell {
+  if (v === null) return null;
+  switch (type) {
+    case "bool": return v ? "true" : "false";
+    case "int64": return typeof v === "number" ? String(Math.trunc(v)) : String(v);
+    default: return String(v);
+  }
 }
 function eq(left: Expr, right: Expr): Expr {
   return { kind: "binary", op: "eq", left, right };
@@ -634,7 +710,7 @@ func emitTSTable(p func(string, ...any), t *codegen.Table) {
 				params += ", "
 			}
 			params += camel(c.Name) + ": " + tsType(c.GoType)
-			filters = append(filters, fmt.Sprintf("eq(col(\"\", %q), lit(%s))", c.Name, camel(c.Name)))
+			filters = append(filters, fmt.Sprintf("eq(col(\"\", %q), lit(toValue(%q, %s)))", c.Name, lirScalar(c.GoType), camel(c.Name)))
 		}
 		p("")
 		p("  /** Finds the row by the unique index on (%s). */", codegen.UqCols(uq))
@@ -657,13 +733,14 @@ func emitTSFilterMethods(p func(string, ...any), t *codegen.Table) {
 	for _, c := range t.Cols {
 		m := camel(c.Name)
 		ty := tsType(c.GoType)
-		p("  %sEq(v: %s): this { this.filters.push(bin(\"eq\", col(\"\", %q), lit(v))); return this; }", m, ty, c.Name)
-		p("  %sNe(v: %s): this { this.filters.push(bin(\"ne\", col(\"\", %q), lit(v))); return this; }", m, ty, c.Name)
+		sc := lirScalar(c.GoType)
+		p("  %sEq(v: %s): this { this.filters.push(bin(\"eq\", col(\"\", %q), lit(toValue(%q, v)))); return this; }", m, ty, c.Name, sc)
+		p("  %sNe(v: %s): this { this.filters.push(bin(\"ne\", col(\"\", %q), lit(toValue(%q, v)))); return this; }", m, ty, c.Name, sc)
 		if c.GoType != "bool" {
 			for _, op := range []struct{ suffix, op string }{
 				{"Lt", "lt"}, {"Lte", "lte"}, {"Gt", "gt"}, {"Gte", "gte"},
 			} {
-				p("  %s%s(v: %s): this { this.filters.push(bin(%q, col(\"\", %q), lit(v))); return this; }", m, op.suffix, ty, op.op, c.Name)
+				p("  %s%s(v: %s): this { this.filters.push(bin(%q, col(\"\", %q), lit(toValue(%q, v)))); return this; }", m, op.suffix, ty, op.op, c.Name, sc)
 			}
 		}
 		if c.Nullable {

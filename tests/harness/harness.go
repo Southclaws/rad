@@ -214,17 +214,17 @@ func (d *DB) Insert(table string, rows ...Row) {
 			if !ok {
 				d.T.Fatalf("harness: insert into %q: no column %q", table, name)
 			}
-			cols[i] = lirwire.RowsColumn{Name: name, Type: string(col.Type), Nullable: nullableFlag(col.Nullable)}
+			cols[i] = lirwire.RowsColumn{Name: name, Type: lirwire.ScalarType(col.Type), Nullable: nullableFlag(col.Nullable)}
 		}
-		cells := make([][]lirwire.Value, len(grp.rows))
+		cells := make([][]lirwire.Cell, len(grp.rows))
 		for i, r := range grp.rows {
-			cell := make([]lirwire.Value, len(names))
+			cell := make([]lirwire.Cell, len(names))
 			for j, name := range names {
-				v, err := lirwire.SetAny(r[name])
+				c, err := lirwire.MakeCell(cols[j].Type, r[name])
 				if err != nil {
 					d.T.Fatalf("harness: insert into %q: column %q: %v", table, name, err)
 				}
-				cell[j] = v
+				cell[j] = c
 			}
 			cells[i] = cell
 		}

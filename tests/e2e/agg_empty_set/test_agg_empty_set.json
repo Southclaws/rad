@@ -10,7 +10,7 @@
             "none": { "kind": "filter", "input": "t",
               "predicate": { "kind": "binary", "op": "eq",
                 "left": { "kind": "col", "scope": "t", "column": "amount" },
-                "right": { "kind": "lit", "value": 999 } } },
+                "right": { "kind": "lit", "value": { "type": "int64", "value": "999" } } } },
             "agg": { "kind": "aggregate", "input": "none", "scope": "g",
               "aggs": [
                 { "fn": "count", "as": "c" },

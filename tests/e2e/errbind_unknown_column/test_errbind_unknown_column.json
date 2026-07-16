@@ -9,7 +9,7 @@
             "w": { "kind": "scan", "table": "widgets", "scope": "w" },
             "f": { "kind": "filter", "input": "w", "predicate": { "kind": "binary", "op": "eq",
               "left": { "kind": "col", "scope": "w", "column": "nonexistent" },
-              "right": { "kind": "lit", "value": "x" } } }
+              "right": { "kind": "lit", "value": { "type": "text", "value": "x" } } } }
           },
           "root": { "node": "f", "cardinality": "many" }
         }

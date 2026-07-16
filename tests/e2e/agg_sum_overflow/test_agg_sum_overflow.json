@@ -8,7 +8,7 @@
           "nodes": {
             "r": { "kind": "rows", "scope": "r",
               "columns": [ { "name": "v", "type": "int64" } ],
-              "rows": [ [9223372036854775807], [1] ] },
+              "rows": [ ["9223372036854775807"], ["1"] ] },
             "agg": { "kind": "aggregate", "input": "r", "scope": "g",
               "aggs": [ { "fn": "sum", "arg": { "kind": "col", "scope": "r", "column": "v" }, "as": "s" } ] }
           },

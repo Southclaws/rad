@@ -22,7 +22,7 @@
                 "right": {
                   "kind": "binary", "op": "eq",
                   "left": { "kind": "col", "scope": "ka", "column": "kind" },
-                  "right": { "kind": "lit", "value": "A" }
+                  "right": { "kind": "lit", "value": { "type": "text", "value": "A" } }
                 }
               }
             },
@@ -39,7 +39,7 @@
                 "right": {
                   "kind": "binary", "op": "eq",
                   "left": { "kind": "col", "scope": "kb", "column": "kind" },
-                  "right": { "kind": "lit", "value": "B" }
+                  "right": { "kind": "lit", "value": { "type": "text", "value": "B" } }
                 }
               }
             },

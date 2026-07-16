@@ -33,7 +33,7 @@
       "query": {
         "nodes": {
           "t": { "kind": "scan", "table": "t", "scope": "t" },
-          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": 40 } } },
+          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "40" } } } },
           "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" }, "desc": true } ] },
           "top": { "kind": "slice", "input": "sorted", "limit": 2 }
         },

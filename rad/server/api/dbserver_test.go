@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -37,9 +38,27 @@ func relBytes(q lirwire.Query) pirwire.Relation {
 	return b
 }
 
-func mustValue(v any) lirwire.Value {
-	val, _ := lirwire.SetAny(v)
-	return val
+func mustValue(v any) lirwire.Cell {
+	if v == nil {
+		return nil
+	}
+	switch x := v.(type) {
+	case string:
+		return &x
+	case int:
+		s := strconv.FormatInt(int64(x), 10)
+		return &s
+	case int64:
+		s := strconv.FormatInt(x, 10)
+		return &s
+	case float64:
+		s := strconv.FormatFloat(x, 'g', -1, 64)
+		return &s
+	case bool:
+		s := strconv.FormatBool(x)
+		return &s
+	}
+	return nil
 }
 
 func ptrBool(b bool) *bool                 { return &b }

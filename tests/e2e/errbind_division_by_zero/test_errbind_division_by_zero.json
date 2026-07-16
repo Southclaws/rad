@@ -8,7 +8,7 @@
           "nodes": {
             "r": { "kind": "rows", "scope": "r",
               "columns": [ { "name": "num", "type": "int64" }, { "name": "den", "type": "int64" } ],
-              "rows": [ [1, 0] ] },
+              "rows": [ ["1", "0"] ] },
             "p": { "kind": "project", "input": "r", "fields": [
               { "as": "q", "expr": { "kind": "binary", "op": "div",
                 "left": { "kind": "col", "scope": "r", "column": "num" },

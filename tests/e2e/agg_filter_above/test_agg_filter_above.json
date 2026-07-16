@@ -13,7 +13,7 @@
             "big": { "kind": "filter", "input": "agg",
               "predicate": { "kind": "binary", "op": "gt",
                 "left": { "kind": "col", "scope": "g", "column": "n" },
-                "right": { "kind": "lit", "value": 1 } } },
+                "right": { "kind": "lit", "value": { "type": "int64", "value": "1" } } } },
             "ord": { "kind": "order", "input": "big",
               "terms": [ { "expr": { "kind": "col", "scope": "g", "column": "region" } } ] }
           },

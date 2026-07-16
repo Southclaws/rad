@@ -14,7 +14,7 @@
                 "kind": "binary",
                 "op": "lt",
                 "left": { "kind": "col", "scope": "t", "column": "n" },
-                "right": { "kind": "lit", "value": 30 }
+                "right": { "kind": "lit", "value": { "type": "int64", "value": "30" } }
               }
             },
             "sorted": {
@@ -45,7 +45,7 @@
               "kind": "binary",
               "op": "gt",
               "left": { "kind": "col", "scope": "t", "column": "n" },
-              "right": { "kind": "lit", "value": 20 }
+              "right": { "kind": "lit", "value": { "type": "int64", "value": "20" } }
             }
           },
           "sorted": {
@@ -73,7 +73,7 @@
               "kind": "binary",
               "op": "lte",
               "left": { "kind": "col", "scope": "t", "column": "n" },
-              "right": { "kind": "lit", "value": 20 }
+              "right": { "kind": "lit", "value": { "type": "int64", "value": "20" } }
             }
           },
           "sorted": {
@@ -101,7 +101,7 @@
               "kind": "binary",
               "op": "gte",
               "left": { "kind": "col", "scope": "t", "column": "n" },
-              "right": { "kind": "lit", "value": 30 }
+              "right": { "kind": "lit", "value": { "type": "int64", "value": "30" } }
             }
           },
           "sorted": {
@@ -129,7 +129,7 @@
               "kind": "binary",
               "op": "lt",
               "left": { "kind": "col", "scope": "t", "column": "s" },
-              "right": { "kind": "lit", "value": "cherry" }
+              "right": { "kind": "lit", "value": { "type": "text", "value": "cherry" } }
             }
           },
           "sorted": {
@@ -157,7 +157,7 @@
               "kind": "binary",
               "op": "gte",
               "left": { "kind": "col", "scope": "t", "column": "s" },
-              "right": { "kind": "lit", "value": "cherry" }
+              "right": { "kind": "lit", "value": { "type": "text", "value": "cherry" } }
             }
           },
           "sorted": {

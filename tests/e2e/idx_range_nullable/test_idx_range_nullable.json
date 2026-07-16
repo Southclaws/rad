@@ -7,7 +7,7 @@
         "relation": {
           "nodes": {
             "t": { "kind": "scan", "table": "t", "scope": "t" },
-            "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "gt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": 15 } } },
+            "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "gt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "15" } } } },
             "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ] }
           },
           "root": { "node": "sorted", "cardinality": "many" }
@@ -22,7 +22,7 @@
       "query": {
         "nodes": {
           "t": { "kind": "scan", "table": "t", "scope": "t" },
-          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": 25 } } },
+          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "25" } } } },
           "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ] }
         },
         "root": { "node": "sorted", "cardinality": "many" }
@@ -38,8 +38,8 @@
             "kind": "filter", "input": "t",
             "predicate": {
               "kind": "binary", "op": "and",
-              "left": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": 20 } },
-              "right": { "kind": "binary", "op": "lte", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": 30 } }
+              "left": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "20" } } },
+              "right": { "kind": "binary", "op": "lte", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "30" } } }
             }
           },
           "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ] }

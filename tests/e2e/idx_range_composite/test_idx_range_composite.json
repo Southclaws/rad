@@ -14,10 +14,10 @@
                 "kind": "binary", "op": "and",
                 "left": {
                   "kind": "binary", "op": "and",
-                  "left": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "c", "column": "a" }, "right": { "kind": "lit", "value": 1 } },
-                  "right": { "kind": "binary", "op": "gt", "left": { "kind": "col", "scope": "c", "column": "b" }, "right": { "kind": "lit", "value": 10 } }
+                  "left": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "c", "column": "a" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "1" } } },
+                  "right": { "kind": "binary", "op": "gt", "left": { "kind": "col", "scope": "c", "column": "b" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "10" } } }
                 },
-                "right": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "c", "column": "b" }, "right": { "kind": "lit", "value": 30 } }
+                "right": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "c", "column": "b" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "30" } } }
               }
             },
             "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "c", "column": "b" } } ] }
@@ -34,7 +34,7 @@
       "query": {
         "nodes": {
           "c": { "kind": "scan", "table": "c", "scope": "c" },
-          "kept": { "kind": "filter", "input": "c", "predicate": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "c", "column": "a" }, "right": { "kind": "lit", "value": 1 } } },
+          "kept": { "kind": "filter", "input": "c", "predicate": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "c", "column": "a" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "1" } } } },
           "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "c", "column": "b" } } ] }
         },
         "root": { "node": "sorted", "cardinality": "many" }
@@ -46,7 +46,7 @@
       "query": {
         "nodes": {
           "c": { "kind": "scan", "table": "c", "scope": "c" },
-          "kept": { "kind": "filter", "input": "c", "predicate": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "c", "column": "a" }, "right": { "kind": "lit", "value": 2 } } },
+          "kept": { "kind": "filter", "input": "c", "predicate": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "c", "column": "a" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "2" } } } },
           "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "c", "column": "b" } } ] }
         },
         "root": { "node": "sorted", "cardinality": "many" }
@@ -58,7 +58,7 @@
       "query": {
         "nodes": {
           "c": { "kind": "scan", "table": "c", "scope": "c" },
-          "kept": { "kind": "filter", "input": "c", "predicate": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "c", "column": "b" }, "right": { "kind": "lit", "value": 20 } } },
+          "kept": { "kind": "filter", "input": "c", "predicate": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "c", "column": "b" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "20" } } } },
           "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "c", "column": "b" } } ] }
         },
         "root": { "node": "sorted", "cardinality": "many" }
@@ -74,8 +74,8 @@
             "kind": "filter", "input": "c",
             "predicate": {
               "kind": "binary", "op": "and",
-              "left": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "c", "column": "a" }, "right": { "kind": "lit", "value": 1 } },
-              "right": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "c", "column": "b" }, "right": { "kind": "lit", "value": 20 } }
+              "left": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "c", "column": "a" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "1" } } },
+              "right": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "c", "column": "b" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "20" } } }
             }
           },
           "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "c", "column": "b" } } ] }
@@ -93,8 +93,8 @@
             "kind": "filter", "input": "c",
             "predicate": {
               "kind": "binary", "op": "and",
-              "left": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "c", "column": "a" }, "right": { "kind": "lit", "value": 2 } },
-              "right": { "kind": "binary", "op": "lte", "left": { "kind": "col", "scope": "c", "column": "b" }, "right": { "kind": "lit", "value": 15 } }
+              "left": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "c", "column": "a" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "2" } } },
+              "right": { "kind": "binary", "op": "lte", "left": { "kind": "col", "scope": "c", "column": "b" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "15" } } }
             }
           },
           "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "c", "column": "b" } } ] }

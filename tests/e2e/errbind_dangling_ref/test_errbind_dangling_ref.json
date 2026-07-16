@@ -7,7 +7,7 @@
         "relation": {
           "nodes": {
             "f": { "kind": "filter", "input": "missing",
-              "predicate": { "kind": "lit", "value": true } }
+              "predicate": { "kind": "lit", "value": { "type": "bool", "value": true } } }
           },
           "root": { "node": "f", "cardinality": "many" }
         }

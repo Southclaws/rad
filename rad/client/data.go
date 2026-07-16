@@ -69,21 +69,22 @@ func (c *Client) oneRowRelation(ctx context.Context, table string, cells map[str
 	sortStrings(names)
 
 	cols := make([]lirwire.RowsColumn, len(names))
-	row := make([]lirwire.Value, len(names))
+	row := make([]lirwire.Cell, len(names))
 	for i, name := range names {
 		col, ok := types[name]
 		if !ok {
 			return lirwire.Query{}, fmt.Errorf("rad: table %q has no column %q", table, name)
 		}
-		cols[i] = lirwire.RowsColumn{Name: name, Type: col.Type, Nullable: nullableFlag(col.Nullable)}
-		v, err := lirwire.SetAny(cells[name])
+		kind := lirwire.ScalarType(col.Type)
+		cols[i] = lirwire.RowsColumn{Name: name, Type: kind, Nullable: nullableFlag(col.Nullable)}
+		cell, err := lirwire.MakeCell(kind, cells[name])
 		if err != nil {
 			return lirwire.Query{}, fmt.Errorf("rad: column %q: %w", name, err)
 		}
-		row[i] = v
+		row[i] = cell
 	}
 	return lirwire.Query{
-		Nodes: map[string]lirwire.Node{"r": lirwire.Rows("r", cols, [][]lirwire.Value{row})},
+		Nodes: map[string]lirwire.Node{"r": lirwire.Rows("r", cols, [][]lirwire.Cell{row})},
 		Root:  lirwire.Root{Node: "r", Cardinality: "many"},
 	}, nil
 }
@@ -228,18 +229,19 @@ func (c *Client) execUpdate(ctx context.Context, table string, key, set map[stri
 	}
 
 	var cols []lirwire.RowsColumn
-	var row []lirwire.Value
+	var row []lirwire.Cell
 	add := func(name string, val any) error {
 		col, ok := types[name]
 		if !ok {
 			return fmt.Errorf("rad: table %q has no column %q", table, name)
 		}
-		v, err := lirwire.SetAny(val)
+		kind := lirwire.ScalarType(col.Type)
+		cell, err := lirwire.MakeCell(kind, val)
 		if err != nil {
 			return fmt.Errorf("rad: column %q: %w", name, err)
 		}
-		cols = append(cols, lirwire.RowsColumn{Name: name, Type: col.Type, Nullable: nullableFlag(col.Nullable)})
-		row = append(row, v)
+		cols = append(cols, lirwire.RowsColumn{Name: name, Type: kind, Nullable: nullableFlag(col.Nullable)})
+		row = append(row, cell)
 		return nil
 	}
 	for k, v := range key {
@@ -259,7 +261,7 @@ func (c *Client) execUpdate(ctx context.Context, table string, key, set map[stri
 	}
 
 	rel := lirwire.Query{
-		Nodes: map[string]lirwire.Node{"r": lirwire.Rows("r", cols, [][]lirwire.Value{row})},
+		Nodes: map[string]lirwire.Node{"r": lirwire.Rows("r", cols, [][]lirwire.Cell{row})},
 		Root:  lirwire.Root{Node: "r", Cardinality: "many"},
 	}
 	raw, err := relationBytes(rel)
@@ -317,11 +319,7 @@ func (c *Client) execDelete(ctx context.Context, table string, key map[string]an
 func keyPredicate(scope string, key map[string]any) (lirwire.Expr, error) {
 	preds := make([]lirwire.Expr, 0, len(key))
 	for col, val := range key {
-		v, err := lirwire.SetAny(val)
-		if err != nil {
-			return lirwire.Expr{}, fmt.Errorf("rad: key column %q: %w", col, err)
-		}
-		preds = append(preds, lirwire.Binary("eq", lirwire.Col(scope, col), lirwire.Lit(v)))
+		preds = append(preds, lirwire.Binary("eq", lirwire.Col(scope, col), lirwire.LitOf(val)))
 	}
 	return lirwire.AndAll(preds), nil
 }

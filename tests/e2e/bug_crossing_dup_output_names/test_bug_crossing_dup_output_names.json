@@ -10,7 +10,7 @@
               "kind": "rows",
               "scope": "u",
               "columns": [ { "name": "k", "type": "int64" } ],
-              "rows": [ [ 1 ] ]
+              "rows": [ [ "1" ] ]
             },
             "l": { "kind": "scan", "table": "items", "scope": "l" },
             "r": { "kind": "scan", "table": "items", "scope": "r" },
@@ -19,7 +19,7 @@
               "left": "l",
               "right": "r",
               "join": "inner",
-              "on": { "kind": "lit", "value": true }
+              "on": { "kind": "lit", "value": { "type": "bool", "value": true } }
             },
             "sorted": {
               "kind": "order",

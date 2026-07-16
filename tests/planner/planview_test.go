@@ -29,7 +29,7 @@ func TestQueryPlanView(t *testing.T) {
 		"nodes":{
 			"t":{"kind":"scan","table":"items","scope":"t"},
 			"f":{"kind":"filter","input":"t","predicate":{"kind":"binary","op":"eq",
-				"left":{"kind":"col","scope":"t","column":"kind"},"right":{"kind":"lit","value":"a"}}},
+				"left":{"kind":"col","scope":"t","column":"kind"},"right":{"kind":"lit","value":{"type":"text","value":"a"}}}},
 			"o":{"kind":"order","input":"f","terms":[{"expr":{"kind":"col","scope":"t","column":"id"}}]}
 		},
 		"root":{"node":"o","cardinality":"many"}}}]}`))

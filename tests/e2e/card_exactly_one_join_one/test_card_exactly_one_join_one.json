@@ -25,7 +25,7 @@
               "predicate": {
                 "kind": "binary", "op": "eq",
                 "left": { "kind": "col", "scope": "l", "column": "a" },
-                "right": { "kind": "lit", "value": 5 }
+                "right": { "kind": "lit", "value": { "type": "int64", "value": "5" } }
               }
             }
           },

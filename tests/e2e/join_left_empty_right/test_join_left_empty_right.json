@@ -18,7 +18,7 @@
               "left": "lefts",
               "right": "z",
               "join": "left",
-              "on": { "kind": "lit", "value": true }
+              "on": { "kind": "lit", "value": { "type": "bool", "value": true } }
             },
             "sorted": {
               "kind": "order",

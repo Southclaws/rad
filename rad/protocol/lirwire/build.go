@@ -8,13 +8,15 @@ package lirwire
 //
 // Union members are stored as pointers, matching the generated UnmarshalJSON:
 // a built node and a decoded node are the same concrete type, so a type switch
-// over the union is uniform and build -> marshal -> decode round-trips.
+// over the union is uniform and build → marshal → decode round-trips.
 //
 // Regeneration rewrites only lirwire.go (the generated file), never this one.
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
+	"strings"
 )
 
 // -
@@ -25,7 +27,7 @@ func Scan(table, scope string) Node {
 	return Node{&ScanNode{Kind: "scan", Table: table, Scope: scope}}
 }
 
-func Rows(scope string, columns []RowsColumn, rows [][]Value) Node {
+func Rows(scope string, columns []RowsColumn, rows [][]Cell) Node {
 	return Node{&RowsNode{Kind: "rows", Scope: scope, Columns: columns, Rows: rows}}
 }
 
@@ -79,7 +81,6 @@ func Ref(binding, scope string) Node {
 // -
 
 func Lit(value Value) Expr { return Expr{&LiteralExpr{Kind: "lit", Value: value}} }
-
 func Col(scope, column string) Expr {
 	return Expr{&ColumnExpr{Kind: "col", Scope: scope, Column: column}}
 }
@@ -87,20 +88,11 @@ func Unary(op string, e Expr) Expr { return Expr{&UnaryExpr{Kind: "unary", Op: o
 func Binary(op string, l, r Expr) Expr {
 	return Expr{&BinaryExpr{Kind: "binary", Op: op, Left: l, Right: r}}
 }
-func Cast(e Expr, to string) Expr { return Expr{&CastExpr{Kind: "cast", Expr: e, To: to}} }
+func Cast(e Expr, to ScalarType) Expr { return Expr{&CastExpr{Kind: "cast", Expr: e, To: to}} }
 func Exists(node string) Expr     { return Expr{&CrossingExprExists{Kind: "exists", Node: node}} }
 func First(node string) Expr      { return Expr{&CrossingExprFirst{Kind: "first", Node: node}} }
 func Scalar(node string) Expr     { return Expr{&CrossingExprScalar{Kind: "scalar", Node: node}} }
 func Array(node string) Expr      { return Expr{&CrossingExprArray{Kind: "array", Node: node}} }
-
-// LitOf builds a literal expression from an arbitrary Go value, marshalling it
-// to the raw Value form. It is the general path where the concrete type is not
-// known at the call site; it cannot fail for a JSON-encodable scalar. Prefer
-// Lit with a typed SetX helper where the type is known.
-func LitOf(v any) Expr {
-	val, _ := SetAny(v)
-	return Lit(val)
-}
 
 // AndAll left-folds predicates into a binary and-chain: the zero Expr for
 // none (a nil union, which marshals to JSON null), the predicate itself for
@@ -122,41 +114,135 @@ func AndAll(preds []Expr) Expr {
 func (e Expr) IsZero() bool { return e.ExprUnion == nil }
 
 // -
-// Value (raw JSON scalar) helpers
+// scalar values (the self-describing Value union)
 // -
 //
-// Value is a raw-JSON []byte, which is awkward to hand-build. These format
-// the four scalar kinds by hand.
+// A Value is a tagged scalar for a context that has no adjacent column schema —
+// a literal. Its non-NULL payload is a lossless string (numbers keep full
+// precision), except bool, which is a native JSON boolean; a nil payload is a
+// typed NULL. Rows cells use Cell (below) instead, since their column already
+// declares the type.
 
-func SetString(s string) Value {
-	b, _ := json.Marshal(s)
-	return Value(b)
+func Text(s string) Value { return Value{&TextValue{Type: "text", Value: &s}} }
+
+func Int64(i int64) Value {
+	s := strconv.FormatInt(i, 10)
+	return Value{&Int64Value{Type: "int64", Value: &s}}
 }
 
-func SetInt(i int64) Value { return Value(strconv.FormatInt(i, 10)) }
-
-func SetFloat(f float64) Value {
-	b, _ := json.Marshal(f)
-	return Value(b)
+func Float64(f float64) Value {
+	s := strconv.FormatFloat(f, 'g', -1, 64)
+	return Value{&Float64Value{Type: "float64", Value: &s}}
 }
 
-func SetBool(b bool) Value {
-	if b {
-		return Value("true")
+func Bool(b bool) Value { return Value{&BoolValue{Type: "bool", Value: &b}} }
+
+// Null builds a typed NULL of the given scalar type.
+func Null(kind ScalarType) Value {
+	switch kind {
+	case ScalarTypeText:
+		return Value{&TextValue{Type: "text"}}
+	case ScalarTypeInt64:
+		return Value{&Int64Value{Type: "int64"}}
+	case ScalarTypeFloat64:
+		return Value{&Float64Value{Type: "float64"}}
+	case ScalarTypeBool:
+		return Value{&BoolValue{Type: "bool"}}
 	}
-	return Value("false")
+	return Value{}
 }
 
-func SetNull() Value { return Value("null") }
-
-// SetAny formats an arbitrary Go value as a Value by marshalling it to JSON.
-// It is the general path for a typed value whose concrete type is not known at
-// the call site (a fluent client's column literal), preserving json.Number
-// precision. Prefer the typed SetX helpers where the type is known.
-func SetAny(v any) (Value, error) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return nil, err
+// LitOf builds a literal expression from a Go scalar, choosing the Value
+// variant by dynamic type. It cannot type a nil (an untyped NULL has no scalar
+// type) — write Lit(Null(kind)) for a typed NULL literal.
+func LitOf(v any) Expr {
+	switch x := v.(type) {
+	case string:
+		return Lit(Text(x))
+	case int:
+		return Lit(Int64(int64(x)))
+	case int64:
+		return Lit(Int64(x))
+	case float64:
+		return Lit(Float64(x))
+	case bool:
+		return Lit(Bool(x))
+	case json.Number:
+		// A JSON-decoded number of unknown kind. Keep its lexeme verbatim
+		// (a large int can outrun float64), choosing the variant by form.
+		s := x.String()
+		if strings.ContainsAny(s, ".eE") {
+			return Lit(Value{&Float64Value{Type: "float64", Value: &s}})
+		}
+		return Lit(Value{&Int64Value{Type: "int64", Value: &s}})
 	}
-	return Value(b), nil
+	return Lit(Value{})
+}
+
+// -
+// rows cells (schema-directed payloads)
+// -
+//
+// A Cell is one payload in a rows relation, decoded against its column's
+// declared scalar type. It is a *string: nil is a typed NULL; otherwise the
+// lossless string form (a bool cell is "true"/"false", not a JSON boolean).
+
+// Cell encodes a Go scalar as a rows cell for a column of the given type. A nil
+// value is a NULL. The value's Go type must suit the column type: string for
+// text, int/int64/json.Number for int64, int/int64/float64/json.Number for
+// float64 (a JSON-decoded value arrives as json.Number), bool for bool.
+func MakeCell(kind ScalarType, v any) (Cell, error) {
+	if v == nil {
+		return nil, nil
+	}
+	var s string
+	switch kind {
+	case ScalarTypeText:
+		t, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("lirwire: text cell needs a string, got %T", v)
+		}
+		s = t
+	case ScalarTypeInt64:
+		switch n := v.(type) {
+		case int64:
+			s = strconv.FormatInt(n, 10)
+		case int:
+			s = strconv.FormatInt(int64(n), 10)
+		case json.Number:
+			i, err := n.Int64()
+			if err != nil {
+				return nil, fmt.Errorf("lirwire: int64 cell %q: %w", n.String(), err)
+			}
+			s = strconv.FormatInt(i, 10)
+		default:
+			return nil, fmt.Errorf("lirwire: int64 cell needs an integer, got %T", v)
+		}
+	case ScalarTypeFloat64:
+		switch n := v.(type) {
+		case float64:
+			s = strconv.FormatFloat(n, 'g', -1, 64)
+		case int:
+			s = strconv.FormatFloat(float64(n), 'g', -1, 64)
+		case int64:
+			s = strconv.FormatFloat(float64(n), 'g', -1, 64)
+		case json.Number:
+			f, err := n.Float64()
+			if err != nil {
+				return nil, fmt.Errorf("lirwire: float64 cell %q: %w", n.String(), err)
+			}
+			s = strconv.FormatFloat(f, 'g', -1, 64)
+		default:
+			return nil, fmt.Errorf("lirwire: float64 cell needs a number, got %T", v)
+		}
+	case ScalarTypeBool:
+		b, ok := v.(bool)
+		if !ok {
+			return nil, fmt.Errorf("lirwire: bool cell needs a boolean, got %T", v)
+		}
+		s = strconv.FormatBool(b)
+	default:
+		return nil, fmt.Errorf("lirwire: unknown scalar type %q", kind)
+	}
+	return &s, nil
 }

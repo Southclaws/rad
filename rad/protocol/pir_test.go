@@ -21,7 +21,7 @@ func oneRow(col string, v any) lirwire.Query {
 		Nodes: map[string]lirwire.Node{
 			"r": lirwire.Rows("r",
 				[]lirwire.RowsColumn{{Name: col, Type: "int64"}},
-				[][]lirwire.Value{{mustValue(v)}}),
+				[][]lirwire.Cell{{mustValue(v)}}),
 		},
 		Root: lirwire.Root{Node: "r", Cardinality: "many"},
 	}
@@ -33,7 +33,7 @@ func TestProgramRoundTrip(t *testing.T) {
 		Nodes: map[string]lirwire.Node{
 			"r": lirwire.Rows("r",
 				[]lirwire.RowsColumn{{Name: "id", Type: "int64"}, {Name: "name", Type: "text"}},
-				[][]lirwire.Value{{mustValue(big), mustValue("ada")}}),
+				[][]lirwire.Cell{{mustValue(big), mustValue("ada")}}),
 		},
 		Root: lirwire.Root{Node: "r", Cardinality: "many"},
 	}
@@ -76,8 +76,8 @@ func TestProgramRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatalf("relation node r is not rows: %T", rel.Nodes["r"].NodeUnion)
 	}
-	if cell := rows.Rows[0][0]; string(cell) != "9007199254740993" {
-		t.Fatalf("int64 precision lost through the statement relation: %s", cell)
+	if cell := rows.Rows[0][0]; cell == nil || *cell != "9007199254740993" {
+		t.Fatalf("int64 precision lost through the statement relation: %v", cell)
 	}
 }
 

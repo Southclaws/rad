@@ -17,7 +17,7 @@
                   "kind": "binary",
                   "op": "eq",
                   "left": { "kind": "col", "scope": "t", "column": "x" },
-                  "right": { "kind": "lit", "value": 1 }
+                  "right": { "kind": "lit", "value": { "type": "int64", "value": "1" } }
                 }
               }
             },

@@ -22,7 +22,7 @@ func cols(pairs ...string) []lirwire.RowsColumn {
 		if nullable {
 			np = ptrBool(true)
 		}
-		out = append(out, lirwire.RowsColumn{Name: pairs[i], Type: typ, Nullable: np})
+		out = append(out, lirwire.RowsColumn{Name: pairs[i], Type: lirwire.ScalarType(typ), Nullable: np})
 	}
 	return out
 }
@@ -32,7 +32,7 @@ func TestRowsBasic(t *testing.T) {
 	d := shop(t)
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Rows("r", cols("name", "text", "age", "int64"),
-			[][]lirwire.Value{{mustValue("ada"), mustValue(36)}, {mustValue("grace"), mustValue(41)}}),
+			[][]lirwire.Cell{{mustValue("ada"), mustValue(36)}, {mustValue("grace"), mustValue(41)}}),
 	}, "r", "many")).EqualsUnordered(`[
 		{"name":"ada","age":36},
 		{"name":"grace","age":41}
@@ -46,7 +46,7 @@ func TestRowsOrdered(t *testing.T) {
 	d := shop(t)
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Rows("r", cols("n", "int64"),
-			[][]lirwire.Value{{mustValue(3)}, {mustValue(1)}, {mustValue(2)}}),
+			[][]lirwire.Cell{{mustValue(3)}, {mustValue(1)}, {mustValue(2)}}),
 		"o": lirwire.Order("r",
 			[]lirwire.OrderTerm{{Expr: lirwire.Col("r", "n")}}),
 	}, "o", "many")).Equals(`[{"n":1},{"n":2},{"n":3}]`)
@@ -59,7 +59,7 @@ func TestRowsEmpty(t *testing.T) {
 	d := shop(t)
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Rows("r", cols("id", "int64", "label", "text"),
-			[][]lirwire.Value{}),
+			[][]lirwire.Cell{}),
 		"out": lirwire.Project("r", "", nil,
 			[]lirwire.Field{{As: "l", Expr: lirwire.Col("r", "label")}}),
 	}, "out", "many")).Empty()
@@ -72,7 +72,7 @@ func TestRowsAllTypesAndNulls(t *testing.T) {
 	d := shop(t)
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Rows("r", cols("t", "text?", "i", "int64?", "f", "float64?", "b", "bool?"),
-			[][]lirwire.Value{
+			[][]lirwire.Cell{
 				{mustValue("x"), mustValue(1), mustValue(1.5), mustValue(true)},
 				{mustValue(nil), mustValue(nil), mustValue(nil), mustValue(nil)},
 			}),
@@ -89,12 +89,12 @@ func TestRowsNullabilityIsDeclared(t *testing.T) {
 	d := shop(t)
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Rows("r", cols("n", "int64"),
-			[][]lirwire.Value{{mustValue(1)}, {mustValue(nil)}}),
+			[][]lirwire.Cell{{mustValue(1)}, {mustValue(nil)}}),
 	}, "r", "many")).ExpectStatus(422).ExpectError("not nullable")
 
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Rows("r", cols("n", "int64?"),
-			[][]lirwire.Value{{mustValue(1)}, {mustValue(2)}}),
+			[][]lirwire.Cell{{mustValue(1)}, {mustValue(2)}}),
 	}, "r", "many")).EqualsUnordered(`[{"n":1},{"n":2}]`)
 }
 
@@ -105,7 +105,7 @@ func TestRowsInt64Precision(t *testing.T) {
 	d := shop(t)
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Rows("r", cols("big", "int64"),
-			[][]lirwire.Value{{mustValue(int64(9007199254740993))}}),
+			[][]lirwire.Cell{{mustValue(int64(9007199254740993))}}),
 	}, "r", "many")).Equals(`[{"big":9007199254740993}]`)
 }
 
@@ -117,12 +117,12 @@ func TestRowsCardinalityUnderFirst(t *testing.T) {
 	d := shop(t)
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Rows("r", cols("n", "int64"),
-			[][]lirwire.Value{{mustValue(7)}}),
+			[][]lirwire.Cell{{mustValue(7)}}),
 	}, "r", "first")).EqualsDatum(`{"n":7}`)
 
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Rows("r", cols("n", "int64"),
-			[][]lirwire.Value{{mustValue(1)}, {mustValue(2)}}),
+			[][]lirwire.Cell{{mustValue(1)}, {mustValue(2)}}),
 	}, "r", "first")).ExpectError("unordered")
 }
 
@@ -132,7 +132,7 @@ func TestRowsScalarRoot(t *testing.T) {
 	d := shop(t)
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Rows("r", cols("answer", "int64"),
-			[][]lirwire.Value{{mustValue(42)}}),
+			[][]lirwire.Cell{{mustValue(42)}}),
 	}, "r", "scalar")).EqualsDatum(`42`)
 }
 
@@ -144,7 +144,7 @@ func TestRowsJoinAgainstTable(t *testing.T) {
 	d.Query(q(map[string]lirwire.Node{
 		"c": lirwire.Scan("customers", "c"),
 		"m": lirwire.Rows("m", cols("tier", "text", "rank", "int64"),
-			[][]lirwire.Value{{mustValue("gold"), mustValue(1)}, {mustValue("silver"), mustValue(2)}, {mustValue("bronze"), mustValue(3)}}),
+			[][]lirwire.Cell{{mustValue("gold"), mustValue(1)}, {mustValue("silver"), mustValue(2)}, {mustValue("bronze"), mustValue(3)}}),
 		"j": lirwire.Join("c", "m", "inner",
 			lirwire.Binary("eq", lirwire.Col("c", "tier"), lirwire.Col("m", "tier"))),
 		"out": lirwire.Project("j", "", nil, []lirwire.Field{
@@ -166,7 +166,7 @@ func TestRowsAggregate(t *testing.T) {
 	d := shop(t)
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Rows("r", cols("team", "text", "points", "int64"),
-			[][]lirwire.Value{
+			[][]lirwire.Cell{
 				{mustValue("red"), mustValue(3)}, {mustValue("blue"), mustValue(5)}, {mustValue("red"), mustValue(4)}, {mustValue("blue"), mustValue(1)},
 			}),
 		"agg": lirwire.Aggregate("r", "g",
@@ -184,7 +184,7 @@ func TestRowsAsBinding(t *testing.T) {
 	d := shop(t)
 	d.Query(qb(map[string]lirwire.Node{
 		"lit": lirwire.Rows("l", cols("n", "int64"),
-			[][]lirwire.Value{{mustValue(1)}, {mustValue(2)}}),
+			[][]lirwire.Cell{{mustValue(1)}, {mustValue(2)}}),
 		"a": lirwire.Ref("nums", "a"),
 		"b": lirwire.Ref("nums", "b"),
 		"j": lirwire.Join("a", "b", "inner",
@@ -205,7 +205,7 @@ func TestRowsCorrelatedCrossing(t *testing.T) {
 	d.Query(q(map[string]lirwire.Node{
 		"c": lirwire.Scan("customers", "c"),
 		"vip": lirwire.Rows("v", cols("tier", "text"),
-			[][]lirwire.Value{{mustValue("gold")}}),
+			[][]lirwire.Cell{{mustValue("gold")}}),
 		"match": lirwire.Filter("vip",
 			lirwire.Binary("eq", lirwire.Col("v", "tier"), lirwire.Col("c", "tier"))),
 		"keep": lirwire.Filter("c",
@@ -224,7 +224,7 @@ func TestRowsRejectsDuplicateColumns(t *testing.T) {
 	d := shop(t)
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Rows("r", cols("n", "int64", "n", "text"),
-			[][]lirwire.Value{{mustValue(1), mustValue("x")}}),
+			[][]lirwire.Cell{{mustValue(1), mustValue("x")}}),
 	}, "r", "many")).ExpectStatus(422).ExpectError("declares column")
 }
 
@@ -233,7 +233,7 @@ func TestRowsRejectsArityMismatch(t *testing.T) {
 	d := shop(t)
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Rows("r", cols("a", "int64", "b", "text"),
-			[][]lirwire.Value{{mustValue(1), mustValue("x")}, {mustValue(2)}}),
+			[][]lirwire.Cell{{mustValue(1), mustValue("x")}, {mustValue(2)}}),
 	}, "r", "many")).ExpectStatus(422).ExpectError("want 2")
 }
 
@@ -242,7 +242,7 @@ func TestRowsRejectsCellTypeMismatch(t *testing.T) {
 	d := shop(t)
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Rows("r", cols("n", "int64"),
-			[][]lirwire.Value{{mustValue("ten")}}),
+			[][]lirwire.Cell{{mustValue("ten")}}),
 	}, "r", "many")).ExpectStatus(422).ExpectError("int64")
 }
 
@@ -251,7 +251,7 @@ func TestRowsRejectsFractionalInt(t *testing.T) {
 	d := shop(t)
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Rows("r", cols("n", "int64"),
-			[][]lirwire.Value{{mustValue(1.5)}}),
+			[][]lirwire.Cell{{mustValue(1.5)}}),
 	}, "r", "many")).ExpectStatus(422).ExpectError("int64")
 }
 
@@ -262,7 +262,7 @@ func TestRowsRejectsUnknownColumnType(t *testing.T) {
 	// request is even sent.
 	d.Query(q(map[string]lirwire.Node{
 		"r": lirwire.Rows("r", []lirwire.RowsColumn{{Name: "n", Type: "varchar"}},
-			[][]lirwire.Value{{mustValue(1)}}),
+			[][]lirwire.Cell{{mustValue(1)}}),
 	}, "r", "many")).ExpectError("varchar")
 }
 
@@ -274,7 +274,7 @@ func TestRowsRejectsMissingColumns(t *testing.T) {
 	// q() helper: its order synthesis needs a first column to exist.
 	d.Query(lirwire.Query{
 		Nodes: map[string]lirwire.Node{
-			"r": lirwire.Rows("r", []lirwire.RowsColumn{}, [][]lirwire.Value{{mustValue(1)}}),
+			"r": lirwire.Rows("r", []lirwire.RowsColumn{}, [][]lirwire.Cell{{mustValue(1)}}),
 		},
 		Root: lirwire.Root{Node: "r", Cardinality: "many"},
 	}).ExpectError("minItems")
@@ -286,7 +286,7 @@ func TestRowsRejectsDuplicateScope(t *testing.T) {
 	d.Query(q(map[string]lirwire.Node{
 		"c": lirwire.Scan("customers", "c"),
 		"r": lirwire.Rows("c", cols("n", "int64"),
-			[][]lirwire.Value{{mustValue(1)}}),
+			[][]lirwire.Cell{{mustValue(1)}}),
 		"j": lirwire.Join("c", "r", "inner",
 			lirwire.LitOf(true)),
 	}, "j", "many")).ExpectStatus(422).ExpectError("duplicate scope")

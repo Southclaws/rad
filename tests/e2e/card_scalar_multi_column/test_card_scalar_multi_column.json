@@ -14,7 +14,7 @@
                 "kind": "binary",
                 "op": "eq",
                 "left": { "kind": "col", "scope": "t", "column": "id" },
-                "right": { "kind": "lit", "value": "w1" }
+                "right": { "kind": "lit", "value": { "type": "text", "value": "w1" } }
               }
             }
           },
