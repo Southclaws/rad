@@ -4,6 +4,7 @@ package oas
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/go-faster/errors"
 	"github.com/go-faster/jx"
@@ -153,6 +154,12 @@ type DatabaseInfo struct {
 	// The database's catalog management mode: `direct` (the catalog is mutable over this API) or `schema`
 	// (schema.rad migrations own the catalog and the imperative catalog operations are rejected).
 	Mode DatabaseInfoMode `json:"mode"`
+	// The monotonic version of the committed schema. A fresh database starts at zero. Each catalog change
+	// in direct mode increments it once, including each reconciler step; an entire schema-managed
+	// migration increments it once.
+	SchemaVersion int64 `json:"schema_version"`
+	// When the current schema version committed. Absent at version zero.
+	SchemaVersionAt OptDateTime `json:"schema_version_at"`
 	// The configured backing-store location, when the server exposes one.
 	Location OptString `json:"location"`
 }
@@ -160,6 +167,16 @@ type DatabaseInfo struct {
 // GetMode returns the value of Mode.
 func (s *DatabaseInfo) GetMode() DatabaseInfoMode {
 	return s.Mode
+}
+
+// GetSchemaVersion returns the value of SchemaVersion.
+func (s *DatabaseInfo) GetSchemaVersion() int64 {
+	return s.SchemaVersion
+}
+
+// GetSchemaVersionAt returns the value of SchemaVersionAt.
+func (s *DatabaseInfo) GetSchemaVersionAt() OptDateTime {
+	return s.SchemaVersionAt
 }
 
 // GetLocation returns the value of Location.
@@ -170,6 +187,16 @@ func (s *DatabaseInfo) GetLocation() OptString {
 // SetMode sets the value of Mode.
 func (s *DatabaseInfo) SetMode(val DatabaseInfoMode) {
 	s.Mode = val
+}
+
+// SetSchemaVersion sets the value of SchemaVersion.
+func (s *DatabaseInfo) SetSchemaVersion(val int64) {
+	s.SchemaVersion = val
+}
+
+// SetSchemaVersionAt sets the value of SchemaVersionAt.
+func (s *DatabaseInfo) SetSchemaVersionAt(val OptDateTime) {
+	s.SchemaVersionAt = val
 }
 
 // SetLocation sets the value of Location.
@@ -615,6 +642,52 @@ func (o OptColumnUpdateProps) Get() (v ColumnUpdateProps, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptColumnUpdateProps) Or(d ColumnUpdateProps) ColumnUpdateProps {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptDateTime returns new OptDateTime with value set to v.
+func NewOptDateTime(v time.Time) OptDateTime {
+	return OptDateTime{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptDateTime is optional time.Time.
+type OptDateTime struct {
+	Value time.Time
+	Set   bool
+}
+
+// IsSet returns true if OptDateTime was set.
+func (o OptDateTime) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptDateTime) Reset() {
+	var v time.Time
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptDateTime) SetTo(v time.Time) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptDateTime) Get() (v time.Time, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptDateTime) Or(d time.Time) time.Time {
 	if v, ok := o.Get(); ok {
 		return v
 	}

@@ -12,6 +12,8 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"net/http"
 
 	"github.com/Southclaws/rad/rad/api"
@@ -53,7 +55,20 @@ func (a *dbAPI) GetHealth(ctx context.Context) (*oas.Health, error) {
 }
 
 func (a *dbAPI) GetInfo(ctx context.Context) (*oas.DatabaseInfo, error) {
-	info := &oas.DatabaseInfo{Mode: oas.DatabaseInfoMode(a.mode)}
+	revision, err := a.cat.Revision(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if revision.Version > math.MaxInt64 {
+		return nil, fmt.Errorf("catalog: schema version %d exceeds the wire format", revision.Version)
+	}
+	info := &oas.DatabaseInfo{
+		Mode:          oas.DatabaseInfoMode(a.mode),
+		SchemaVersion: int64(revision.Version),
+	}
+	if !revision.CreatedAt.IsZero() {
+		info.SchemaVersionAt = oas.NewOptDateTime(revision.CreatedAt)
+	}
 	if a.location != "" {
 		info.Location = oas.NewOptString(a.location)
 	}

@@ -96,6 +96,18 @@ func (e *Engine) Txn(ctx context.Context, fn func(tx *Tx) error) error {
 	return tx.Commit(ctx)
 }
 
+// CatalogTxn runs a group of catalog operations and their associated data
+// work as one serializable transaction and records one catalog revision when
+// the group changes the schema.
+func (e *Engine) CatalogTxn(ctx context.Context, fn func(tx *Tx, change *catalog.Mutation) error) error {
+	return e.Txn(ctx, func(tx *Tx) error {
+		_, err := catalog.MutateIn(ctx, tx.txn, func(change *catalog.Mutation) error {
+			return fn(tx, change)
+		})
+		return err
+	})
+}
+
 // Begin starts an explicit transaction. Prefer Txn where a callback fits;
 // Begin exists for drivers (like the HTTP server) that hold a transaction
 // open across requests. The caller must Commit or Rollback.

@@ -5,9 +5,11 @@ package oas
 import (
 	"math/bits"
 	"strconv"
+	"time"
 
 	"github.com/go-faster/errors"
 	"github.com/go-faster/jx"
+	"github.com/ogen-go/ogen/json"
 	"github.com/ogen-go/ogen/validate"
 )
 
@@ -590,6 +592,16 @@ func (s *DatabaseInfo) encodeFields(e *jx.Encoder) {
 		s.Mode.Encode(e)
 	}
 	{
+		e.FieldStart("schema_version")
+		e.Int64(s.SchemaVersion)
+	}
+	{
+		if s.SchemaVersionAt.Set {
+			e.FieldStart("schema_version_at")
+			s.SchemaVersionAt.Encode(e, json.EncodeDateTime)
+		}
+	}
+	{
 		if s.Location.Set {
 			e.FieldStart("location")
 			s.Location.Encode(e)
@@ -597,9 +609,11 @@ func (s *DatabaseInfo) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfDatabaseInfo = [2]string{
+var jsonFieldsNameOfDatabaseInfo = [4]string{
 	0: "mode",
-	1: "location",
+	1: "schema_version",
+	2: "schema_version_at",
+	3: "location",
 }
 
 // Decode decodes DatabaseInfo from json.
@@ -621,6 +635,28 @@ func (s *DatabaseInfo) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"mode\"")
 			}
+		case "schema_version":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Int64()
+				s.SchemaVersion = int64(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"schema_version\"")
+			}
+		case "schema_version_at":
+			if err := func() error {
+				s.SchemaVersionAt.Reset()
+				if err := s.SchemaVersionAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"schema_version_at\"")
+			}
 		case "location":
 			if err := func() error {
 				s.Location.Reset()
@@ -641,7 +677,7 @@ func (s *DatabaseInfo) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00000001,
+		0b00000011,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -1755,6 +1791,41 @@ func (s OptColumnUpdateProps) MarshalJSON() ([]byte, error) {
 func (s *OptColumnUpdateProps) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
+}
+
+// Encode encodes time.Time as json.
+func (o OptDateTime) Encode(e *jx.Encoder, format func(*jx.Encoder, time.Time)) {
+	if !o.Set {
+		return
+	}
+	format(e, o.Value)
+}
+
+// Decode decodes time.Time from json.
+func (o *OptDateTime) Decode(d *jx.Decoder, format func(*jx.Decoder) (time.Time, error)) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptDateTime to nil")
+	}
+	o.Set = true
+	v, err := format(d)
+	if err != nil {
+		return err
+	}
+	o.Value = v
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptDateTime) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e, json.EncodeDateTime)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptDateTime) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d, json.DecodeDateTime)
 }
 
 // Encode encodes IndexInfo as json.

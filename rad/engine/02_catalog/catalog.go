@@ -75,40 +75,42 @@ func (t *Table) Index(name string) (Index, bool) {
 // Definition inputs for CreateTable; IDs are assigned by the catalog.
 
 type TableDef struct {
-	Name        string
-	Columns     []ColumnDef
-	PrimaryKey  []string
-	Indexes     []IndexDef
-	ForeignKeys []ForeignKeyDef
+	Name        string          `json:"name"`
+	Columns     []ColumnDef     `json:"columns"`
+	PrimaryKey  []string        `json:"primary_key"`
+	Indexes     []IndexDef      `json:"indexes,omitempty"`
+	ForeignKeys []ForeignKeyDef `json:"foreign_keys,omitempty"`
 }
 
 type ColumnDef struct {
-	Name     string
-	Type     Type
-	Nullable bool
-	Format   string
-	Default  *Default
+	Name     string   `json:"name"`
+	Type     Type     `json:"type"`
+	Nullable bool     `json:"nullable,omitempty"`
+	Format   string   `json:"format,omitempty"`
+	Default  *Default `json:"default,omitempty"`
 }
 
 type IndexDef struct {
-	Name    string
-	Columns []string
-	Unique  bool
+	Name    string   `json:"name"`
+	Columns []string `json:"columns"`
+	Unique  bool     `json:"unique,omitempty"`
 }
 
 type ForeignKeyDef struct {
-	Name       string
-	Columns    []string
-	RefTable   string // table name, resolved to an ID at creation time
-	RefColumns []string
+	Name       string   `json:"name"`
+	Columns    []string `json:"columns"`
+	RefTable   string   `json:"ref_table"` // table name, resolved to an ID at creation time
+	RefColumns []string `json:"ref_columns"`
 }
 
 // Catalog reads and writes table metadata in the KV store. A Rad instance
 // is exactly one database — there is no schema or database hierarchy; two
-// databases are two Rad deployments. Every mutation runs in a
-// SerializableSnapshot transaction, so the ID counter and name-key writes
-// commit atomically and concurrent schema changes conflict instead of
-// corrupting the counter.
+// databases are two Rad deployments. Direct mutations each run in a
+// SerializableSnapshot transaction; schema migrations group the same
+// Mutation operations in one caller-owned transaction. Catalog metadata,
+// revision history, and associated index backfills therefore commit
+// atomically, while concurrent schema changes conflict instead of corrupting
+// either counter.
 type Catalog struct {
 	store kv.TransactionalKV
 }
@@ -142,8 +144,11 @@ func (r Reader) ListTables(ctx context.Context) ([]Table, error) {
 	return listTables(ctx, r.view)
 }
 
-// mutate runs fn in a transaction and commits it if fn returns nil.
-func (c *Catalog) mutate(ctx context.Context, fn func(view kv.KV) error) error {
+// transact runs fn in a transaction and commits it if fn returns nil. It is
+// for catalog metadata operations which are not schema changes, such as
+// settling the catalog mode. Schema changes use mutate, which also records a
+// revision in the same transaction.
+func (c *Catalog) transact(ctx context.Context, fn func(view kv.Txn) error) error {
 	txn, err := c.store.Begin(ctx, kv.SerializableSnapshot)
 	if err != nil {
 		return err
@@ -153,6 +158,15 @@ func (c *Catalog) mutate(ctx context.Context, fn func(view kv.KV) error) error {
 		return err
 	}
 	return txn.Commit(ctx)
+}
+
+// mutate runs one catalog change in a transaction. However many low-level
+// operations fn performs, a successful change records exactly one revision.
+func (c *Catalog) mutate(ctx context.Context, fn func(change *Mutation) error) error {
+	return c.transact(ctx, func(view kv.Txn) error {
+		_, err := MutateIn(ctx, view, fn)
+		return err
+	})
 }
 
 const (
@@ -209,14 +223,24 @@ func validateDefault(cd ColumnDef) error {
 
 func (c *Catalog) CreateTable(ctx context.Context, def TableDef) (Table, error) {
 	var tbl Table
-	err := c.mutate(ctx, func(view kv.KV) error {
+	err := c.mutate(ctx, func(change *Mutation) error {
 		var err error
-		tbl, err = createTable(ctx, view, def)
+		tbl, err = change.CreateTable(ctx, def)
 		return err
 	})
 	if err != nil {
 		return Table{}, err
 	}
+	return tbl, nil
+}
+
+// CreateTable defines a table inside this catalog change.
+func (m *Mutation) CreateTable(ctx context.Context, def TableDef) (Table, error) {
+	tbl, err := createTable(ctx, m.view, def)
+	if err != nil {
+		return Table{}, err
+	}
+	m.changed = true
 	return tbl, nil
 }
 

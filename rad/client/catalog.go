@@ -20,11 +20,24 @@ import (
 // catalog is mutable over this API) or "schema" (schema.rad migrations own
 // the catalog).
 func (c *Client) Mode(ctx context.Context) (string, error) {
+	info, err := c.Info(ctx)
+	return info.Mode, err
+}
+
+// Info reports the database's catalog mode and current schema version.
+func (c *Client) Info(ctx context.Context) (protocol.DatabaseInfo, error) {
 	res, err := c.oas.GetInfo(ctx)
 	if err != nil {
-		return "", transportError(err)
+		return protocol.DatabaseInfo{}, transportError(err)
 	}
-	return string(res.Mode), nil
+	info := protocol.DatabaseInfo{
+		Mode:          string(res.Mode),
+		SchemaVersion: uint64(res.SchemaVersion),
+	}
+	if value, ok := res.SchemaVersionAt.Get(); ok {
+		info.SchemaVersionAt = &value
+	}
+	return info, nil
 }
 
 // TableCreate creates a table: columns, primary key, and optionally indexes

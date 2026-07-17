@@ -73,7 +73,7 @@ func readMode(ctx context.Context, view kv.KV) (Mode, error) {
 // is. Loud beats silent.
 func (c *Catalog) InitMode(ctx context.Context, requested Mode) (Mode, error) {
 	var settled Mode
-	err := c.mutate(ctx, func(view kv.KV) error {
+	err := c.transact(ctx, func(view kv.Txn) error {
 		raw, ok, err := view.Get(ctx, []byte(modeKey))
 		if err != nil {
 			return err

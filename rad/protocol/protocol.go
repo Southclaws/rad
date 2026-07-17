@@ -34,6 +34,7 @@ package protocol
 import (
 	"fmt"
 	"net/url"
+	"time"
 )
 
 // DefaultPort is Rad's default port. Override the listen address with
@@ -135,6 +136,13 @@ func (p Problem) WithReason(reason string) Problem {
 // (objects for first fields — null when absent — and arrays for array
 // fields).
 type Record = map[string]any
+
+// DatabaseInfo is stable metadata about a Rad database.
+type DatabaseInfo struct {
+	Mode            string     `json:"mode"`
+	SchemaVersion   uint64     `json:"schema_version"`
+	SchemaVersionAt *time.Time `json:"schema_version_at,omitempty"`
+}
 
 // TableInfo describes one table for introspection (GET /tables and the
 // catalog mutation responses). It is the definition vocabulary read back:

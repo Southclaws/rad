@@ -205,6 +205,32 @@ tables:
 	}
 }
 
+func TestCanonicalSchemaExcludesMigrationHints(t *testing.T) {
+	s := parse(t, `
+tables:
+  - name: zed
+    renamed_from: old_zed
+    columns:
+      - { name: id, type: string, pk: true }
+      - { name: title, type: string, renamed_from: name }
+  - name: alpha
+    columns:
+      - { name: id, type: int64, pk: true }
+`)
+
+	canonical := s.Canonical()
+	if len(canonical.Tables) != 2 || canonical.Tables[0].Name != "alpha" || canonical.Tables[1].Name != "zed" {
+		t.Fatalf("canonical tables = %+v", canonical.Tables)
+	}
+	raw, err := canonical.CanonicalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "renamed_from") || strings.Contains(string(raw), "old_zed") {
+		t.Fatalf("canonical schema retained migration hints: %s", raw)
+	}
+}
+
 // Structural errors come from the embedded JSON Schema; semantic errors
 // (default/type mismatches, pk conflicts, duplicates) from the compiler.
 func TestParseErrors(t *testing.T) {

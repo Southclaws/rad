@@ -444,8 +444,14 @@ func TestDirectModeAcceptsBothChannels(t *testing.T) {
 	if _, err := c.Migrate(ctx, testSchema); err != nil {
 		t.Fatal(err)
 	}
+	if info, err := c.Info(ctx); err != nil || info.SchemaVersion != 2 {
+		t.Fatalf("two direct-mode reconciliation steps: info=%+v err=%v; want v2", info, err)
+	}
 	if _, err := c.ColumnCreate(ctx, "users", protocol.ColumnDef{Name: "bio", Type: "text", Nullable: true}); err != nil {
 		t.Fatal(err)
+	}
+	if info, err := c.Info(ctx); err != nil || info.SchemaVersion != 3 {
+		t.Fatalf("direct column change: info=%+v err=%v; want v3", info, err)
 	}
 }
 

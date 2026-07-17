@@ -69,7 +69,7 @@ code, wire, errors, step strings, tests, and docs.
 
 - Admin UI editors + data import over these endpoints; mode banner
   (UI reads mode from the admin plane or /health).
-- [catalog-revisions](../1-todo/catalog-revisions.md).
+- [catalog-revisions](catalog-revisions.md).
 - `rad schema pull` + catalog→schema.rad renderer.
 - Name validation rules (URL-safety, reserved names) — own todo.
 - Adoption workflow (direct → schema) — mode stays set-once until then.

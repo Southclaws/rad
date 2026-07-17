@@ -79,7 +79,9 @@ const (
 	ReasonNotFound Reason = "not_found"
 
 	// internal — an unexpected failure; the detail is hidden from the caller.
-	ReasonInternal Reason = "internal"
+	ReasonInternal       Reason = "internal"
+	ReasonCatalogCorrupt Reason = "catalog_corrupt"
+	ReasonCatalogDrift   Reason = "catalog_schema_drift"
 )
 
 // reasonClass maps every reason to its class. A reason missing here is a
@@ -113,6 +115,8 @@ var reasonClass = map[Reason]Class{
 	ReasonSerializableConflict: ClassConflict,
 	ReasonNotFound:             ClassNotFound,
 	ReasonInternal:             ClassInternal,
+	ReasonCatalogCorrupt:       ClassInternal,
+	ReasonCatalogDrift:         ClassInternal,
 }
 
 // Class returns the reason's class, or ClassInternal for an unregistered

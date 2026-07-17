@@ -89,8 +89,9 @@ type Invoker interface {
 	//
 	// Return stable metadata for the database behind this endpoint. `mode` tells management tools whether
 	// catalog changes are available directly through the API or are owned by `schema.rad` migrations.
-	// `location` is the server's configured storage location and is intended for local development and
-	// administrative tooling.
+	// `schema_version` identifies the latest committed catalog state, and `schema_version_at` reports when
+	// that version committed. `location` is the server's configured storage location and is intended for
+	// local development and administrative tooling.
 	//
 	// GET /info
 	GetInfo(ctx context.Context) (*DatabaseInfo, error)
@@ -123,7 +124,9 @@ type Invoker interface {
 	// renaming a column or table does not delete and recreate it.
 	//
 	// A schema that fails to parse or validate, or that requests an unsupported change (such as altering a
-	// column's type), is rejected with an `invalid` problem and the database is left untouched.
+	// column's type), is rejected with an `invalid` problem. On a schema-managed database the whole plan
+	// is one transaction and failure leaves the database untouched. On a directly managed database each
+	// step is an individual catalog change, so steps committed before a later failure remain applied.
 	//
 	// POST /migrate
 	SchemaMigrate(ctx context.Context, request OptMigrateProps) (SchemaMigrateRes, error)
@@ -781,8 +784,9 @@ func (c *Client) sendGetHealth(ctx context.Context) (res *Health, err error) {
 //
 // Return stable metadata for the database behind this endpoint. `mode` tells management tools whether
 // catalog changes are available directly through the API or are owned by `schema.rad` migrations.
-// `location` is the server's configured storage location and is intended for local development and
-// administrative tooling.
+// `schema_version` identifies the latest committed catalog state, and `schema_version_at` reports when
+// that version committed. `location` is the server's configured storage location and is intended for
+// local development and administrative tooling.
 //
 // GET /info
 func (c *Client) GetInfo(ctx context.Context) (*DatabaseInfo, error) {
@@ -1096,7 +1100,9 @@ func (c *Client) sendIndexDelete(ctx context.Context, params IndexDeleteParams) 
 // renaming a column or table does not delete and recreate it.
 //
 // A schema that fails to parse or validate, or that requests an unsupported change (such as altering a
-// column's type), is rejected with an `invalid` problem and the database is left untouched.
+// column's type), is rejected with an `invalid` problem. On a schema-managed database the whole plan
+// is one transaction and failure leaves the database untouched. On a directly managed database each
+// step is an individual catalog change, so steps committed before a later failure remain applied.
 //
 // POST /migrate
 func (c *Client) SchemaMigrate(ctx context.Context, request OptMigrateProps) (SchemaMigrateRes, error) {

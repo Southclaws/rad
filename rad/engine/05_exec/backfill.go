@@ -20,13 +20,19 @@ import (
 // the backfill's table scan tracks its range, so a row inserted while the
 // backfill runs conflicts at commit rather than being missed.
 func (e *Engine) CreateIndexWithBackfill(ctx context.Context, table string, def catalog.IndexDef) error {
-	return e.Txn(ctx, func(tx *Tx) error {
-		tbl, idx, err := catalog.CreateIndexIn(ctx, tx.txn, table, def)
-		if err != nil {
-			return err
-		}
-		return backfillIndexIn(ctx, tx.txn, tbl, idx)
+	return e.CatalogTxn(ctx, func(tx *Tx, change *catalog.Mutation) error {
+		return tx.CreateIndexWithBackfill(ctx, change, table, def)
 	})
+}
+
+// CreateIndexWithBackfill registers and backfills an index inside an existing
+// catalog transaction.
+func (tx *Tx) CreateIndexWithBackfill(ctx context.Context, change *catalog.Mutation, table string, def catalog.IndexDef) error {
+	tbl, idx, err := change.CreateIndex(ctx, table, def)
+	if err != nil {
+		return err
+	}
+	return backfillIndexIn(ctx, tx.txn, tbl, idx)
 }
 
 // backfillIndexIn writes index entries for every existing row of tbl into

@@ -1,13 +1,11 @@
 package frontend
 
-// The catalog-mutation façade: one set of schema-change entry points shared
-// by every channel — the schema.rad reconciler (migrate.go) and the
-// transport's imperative catalog endpoints both land here. The catalog
-// defines the semantics; this layer only composes the operations that need
-// the executor (index backfills) with the ones that don't. Catalog-mode
-// enforcement is a transport concern: both channels call the same methods,
-// so the distinction between direct and schema-managed mutation exists only
-// at the endpoint.
+// The direct catalog-mutation façade. Each call becomes one catalog revision,
+// including each reconciler step on a directly managed database. A
+// schema-managed reconciler groups the same catalog.Mutation operations in one
+// transaction instead, so its complete plan becomes one revision. This layer
+// composes operations that need the executor (index backfills) with the ones
+// that do not. Catalog-mode enforcement remains a transport concern.
 
 import (
 	"context"

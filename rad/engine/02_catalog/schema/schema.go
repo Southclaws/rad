@@ -88,6 +88,16 @@ func (s *Schema) Table(name string) (Table, bool) {
 	return Table{}, false
 }
 
+// Canonical returns the identity-free catalog schema represented by this
+// parsed source, excluding migration-only rename hints.
+func (s *Schema) Canonical() catalog.Schema {
+	defs := make([]catalog.TableDef, len(s.Tables))
+	for i, table := range s.Tables {
+		defs[i] = table.Def
+	}
+	return catalog.SchemaFromDefinitions(defs)
+}
+
 // File-shape structs for the typed second decode (after JSON Schema
 // validation has pinned the structure).
 type fileSchema struct {

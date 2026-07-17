@@ -8,6 +8,8 @@ import (
 	"context"
 	"testing"
 
+	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	radschema "github.com/Southclaws/rad/rad/engine/02_catalog/schema"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
 )
@@ -64,12 +66,19 @@ func migrateTo(t *testing.T, db *frontend.DB, ctx context.Context, src string) [
 func TestMigrationWorkflow(t *testing.T) {
 	ctx := context.Background()
 	db := frontend.Open(memStore(t))
+	if _, err := db.Catalog().InitMode(ctx, catalog.ModeSchema); err != nil {
+		t.Fatal(err)
+	}
 
 	// v1 on an empty store creates everything (including the schema).
 	steps := migrateTo(t, db, ctx, trackerV1)
 	if len(steps) != 2 {
 		t.Fatalf("v1 steps: %v", steps)
 	}
+	if revision, err := db.Catalog().Revision(ctx); err != nil || revision.Version != 1 {
+		t.Fatalf("v1 revision = %+v, %v; want one revision for two steps", revision, err)
+	}
+	assertRevisionSchema(t, db, ctx, trackerV1)
 
 	// Live data under v1.
 	if err := db.Insert(ctx, "users", lir.Row{"id": lir.Text("u1"), "name": lir.Text("ada")}); err != nil {
@@ -83,6 +92,9 @@ func TestMigrationWorkflow(t *testing.T) {
 	if steps := migrateTo(t, db, ctx, trackerV1); len(steps) != 0 {
 		t.Fatalf("re-migrate should be empty, got %v", steps)
 	}
+	if revision, _ := db.Catalog().Revision(ctx); revision.Version != 1 {
+		t.Fatalf("no-op migration moved schema version to %d", revision.Version)
+	}
 
 	// v1 -> v2: rename users.name, add users.email, add composite index
 	// (backfilled), create comments.
@@ -90,6 +102,10 @@ func TestMigrationWorkflow(t *testing.T) {
 	if len(steps) != 4 {
 		t.Fatalf("v2 steps: %v", steps)
 	}
+	if revision, err := db.Catalog().Revision(ctx); err != nil || revision.Version != 2 {
+		t.Fatalf("v2 revision = %+v, %v; want one revision for four steps", revision, err)
+	}
+	assertRevisionSchema(t, db, ctx, trackerV2)
 
 	// Existing data is intact under the new names.
 	user, ok, err := db.Get(ctx, "users", lir.Row{"id": lir.Text("u1")})
@@ -132,6 +148,30 @@ func TestMigrationWorkflow(t *testing.T) {
 	if steps := migrateTo(t, db, ctx, trackerV2); len(steps) != 0 {
 		t.Fatalf("re-migrate v2 should be empty, got %v", steps)
 	}
+	history, err := db.Catalog().Revisions(ctx)
+	if err != nil || len(history) != 2 {
+		t.Fatalf("migration history = %+v, %v", history, err)
+	}
+}
+
+func assertRevisionSchema(t *testing.T, db *frontend.DB, ctx context.Context, source string) {
+	t.Helper()
+	desired, err := radschema.Parse("schema.rad", []byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := db.Catalog().Revision(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	equal, err := revision.Schema.Equal(desired.Canonical())
+	if err != nil || !equal {
+		t.Fatalf("revision schema differs from desired schema: equal=%v err=%v\nrevision=%+v\ndesired=%+v",
+			equal, err, revision.Schema, desired.Canonical())
+	}
+	if err := db.Catalog().ValidateCurrentSchema(ctx); err != nil {
+		t.Fatalf("revision schema differs from physical catalog: %v", err)
+	}
 }
 
 // A unique-index backfill over duplicate data is refused — and the refusal
@@ -141,6 +181,9 @@ func TestMigrationWorkflow(t *testing.T) {
 func TestUniqueBackfillRejectsDuplicates(t *testing.T) {
 	ctx := context.Background()
 	db := frontend.Open(memStore(t))
+	if _, err := db.Catalog().InitMode(ctx, catalog.ModeSchema); err != nil {
+		t.Fatal(err)
+	}
 	migrateTo(t, db, ctx, trackerV1)
 
 	for _, id := range []string{"u1", "u2"} {
@@ -155,6 +198,7 @@ tables:
     columns:
       - { name: id,   type: string, pk: true, default: uuid() }
       - { name: name, type: string, unique: true }
+      - { name: note, type: string, nullable: true }
   - name: tasks
     columns:
       - { name: id,      type: string, pk: true, default: uuid() }
@@ -166,6 +210,10 @@ tables:
 	if err == nil {
 		t.Fatal("unique backfill over duplicates succeeded")
 	}
+	if revision, revisionErr := db.Catalog().Revision(ctx); revisionErr != nil || revision.Version != 1 {
+		t.Fatalf("failed migration revision = %+v, %v; want unchanged v1", revision, revisionErr)
+	}
+	assertRevisionSchema(t, db, ctx, trackerV1)
 
 	// The registration must have rolled back with the backfill: no index on
 	// users. A registered-but-empty index would let reads silently drop rows.
@@ -174,8 +222,13 @@ tables:
 		t.Fatal(err)
 	}
 	for _, tbl := range tables {
-		if tbl.Name == "users" && len(tbl.Indexes) != 0 {
-			t.Fatalf("failed backfill left index registered on users: %+v", tbl.Indexes)
+		if tbl.Name == "users" {
+			if len(tbl.Indexes) != 0 {
+				t.Fatalf("failed backfill left index registered on users: %+v", tbl.Indexes)
+			}
+			if _, ok := tbl.Column("note"); ok {
+				t.Fatal("failed migration left an earlier column step committed")
+			}
 		}
 	}
 
@@ -185,6 +238,9 @@ tables:
 	}
 	if steps := migrateTo(t, db, ctx, uniqueName); len(steps) == 0 {
 		t.Fatal("re-migration after fixing data applied no steps")
+	}
+	if revision, revisionErr := db.Catalog().Revision(ctx); revisionErr != nil || revision.Version != 2 {
+		t.Fatalf("successful retry revision = %+v, %v; want v2", revision, revisionErr)
 	}
 	if err := db.Insert(ctx, "users", lir.Row{"id": lir.Text("u3"), "name": lir.Text("dup")}); err == nil {
 		t.Fatal("unique index registered by re-migration is not enforcing")
