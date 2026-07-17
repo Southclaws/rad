@@ -22,7 +22,15 @@
 //     by enumerated truth-table/edge-value tests.
 //
 // Design law: if a line in here is clever, it is wrong. Slow is fine; obvious
-// is the point. It must be so simple it needs no tests of its own.
+// is the point. But refexec is no longer trivially small — it carries recursion
+// state, its own canonical row identity, projection invariants, aggregation,
+// and crossing substitution — so it is one oracle among several, not an
+// unquestionable source of truth. Its own low-level semantics are pinned by
+// focused tests (row identity, recursive projection), and at the dangerous
+// boundaries — recursive accumulation above all — a query is additionally
+// checked against a smaller, independently-derived model (a state-space BFS,
+// path-count, and bag/set oracles in the test suites), so an accidental shared
+// mistake between engine and refexec cannot pass unseen.
 package refexec
 
 import (

@@ -18,8 +18,8 @@ import (
 // equality, missing slots — would sit in both and the differential would stay
 // green. A linear membership scan is fine; refexec runs over small test data.
 type oracleRowSet struct {
-	fields []lir.Field
-	rows   []oracleRow
+	fields  []lir.Field
+	buckets map[uint64][]oracleRow
 }
 
 // oracleRow is a fully decoded row: one cell per identity field, in field order.
@@ -38,7 +38,7 @@ type oracleCell struct {
 }
 
 func newOracleRowSet(fields []lir.Field) *oracleRowSet {
-	return &oracleRowSet{fields: fields}
+	return &oracleRowSet{fields: fields, buckets: map[uint64][]oracleRow{}}
 }
 
 // canon decodes a row's identity fields into an oracleRow. A field whose slot
@@ -68,16 +68,65 @@ func (s *oracleRowSet) canon(env bound.Env) oracleRow {
 	return row
 }
 
-// add records env's identity and reports whether it was newly seen.
+// add records env's identity and reports whether it was newly seen. The hash
+// only buckets candidates for comparison; equal is the authority, so a weak or
+// even wrong hash could at worst split equal rows across buckets and make the
+// oracle over-count — a loud differential mismatch, never a silent false match.
 func (s *oracleRowSet) add(env bound.Env) bool {
 	cand := s.canon(env)
-	for _, seen := range s.rows {
+	h := cand.hash()
+	for _, seen := range s.buckets[h] {
 		if seen.equal(cand) {
 			return false
 		}
 	}
-	s.rows = append(s.rows, cand)
+	s.buckets[h] = append(s.buckets[h], cand)
 	return true
+}
+
+// hash is an independent FNV-1a over the decoded cells, consistent with equal:
+// rows equal cell-for-cell hash the same. It exists only to bucket membership
+// comparisons, not to define identity.
+func (r oracleRow) hash() uint64 {
+	const (
+		offset = 1469598103934665603
+		prime  = 1099511628211
+	)
+	h := uint64(offset)
+	mix := func(b byte) { h ^= uint64(b); h *= prime }
+	mixU64 := func(v uint64) {
+		for i := range 8 {
+			mix(byte(v >> (8 * i)))
+		}
+	}
+	for _, c := range r {
+		if c.null {
+			mix(0)
+			continue
+		}
+		switch c.typ {
+		case catalog.TypeText:
+			mix(1)
+			mixU64(uint64(len(c.text)))
+			for i := 0; i < len(c.text); i++ {
+				mix(c.text[i])
+			}
+		case catalog.TypeInt64:
+			mix(2)
+			mixU64(uint64(c.int64))
+		case catalog.TypeFloat64:
+			mix(3)
+			mixU64(c.float)
+		case catalog.TypeBool:
+			mix(4)
+			if c.boolv {
+				mix(1)
+			} else {
+				mix(0)
+			}
+		}
+	}
+	return h
 }
 
 // equal is element-wise typed equality between two decoded rows.
