@@ -3,6 +3,13 @@ import {
   StackDiagram,
   ToolchainDiagram,
 } from "@/components/blog-diagrams";
+import {
+  AbstractionCurve,
+  ClauseOrder,
+  CompilerPipeline,
+  LLVMHourglass,
+  SharedIR,
+} from "@/components/relational-ir-diagrams";
 import { SiteNav } from "@/components/site-nav";
 import { blogSource } from "@/lib/source";
 import type { Metadata } from "next";
@@ -79,7 +86,17 @@ export default async function BlogPost({
           </header>
           <div className="doc__body" style={{ marginTop: "2.5rem" }}>
             <MDX
-              components={{ Callout, ToolchainDiagram, StackDiagram, IRDiagram }}
+              components={{
+                Callout,
+                ToolchainDiagram,
+                StackDiagram,
+                IRDiagram,
+                CompilerPipeline,
+                LLVMHourglass,
+                ClauseOrder,
+                SharedIR,
+                AbstractionCurve,
+              }}
             />
           </div>
         </article>

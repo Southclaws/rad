@@ -1,0 +1,18 @@
+# Companion fixture for the "relational IR" blog post: a users→posts schema
+# where a query returns each user with a nested array of their recent posts,
+# showing off Rad's unflattened results. created_at is an int64 unix timestamp
+# (Rad has no datetime type yet).
+tables:
+  - name: users
+    columns:
+      - { name: id,   type: int64, pk: true }
+      - { name: name, type: string }
+
+  - name: posts
+    columns:
+      - { name: id,         type: int64, pk: true }
+      - { name: user_id,    type: int64, ref: users.id }
+      - { name: title,      type: string }
+      - { name: created_at, type: int64 }
+    indexes:
+      - { columns: [user_id] }

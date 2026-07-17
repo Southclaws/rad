@@ -1461,6 +1461,85 @@ main,
   line-height: 1.55;
 }
 
+/* blockquote — a passage lifted onto the blueprint. A phosphor quotation glyph
+   glows in the gutter over drafting hatch that dissolves across the panel;
+   distinct from .callout (our own aside) because these are someone else's
+   words. No side-stripe: the frame is hairline all the way round. */
+.doc__body blockquote {
+  position: relative;
+  margin: 2.25rem 0;
+  padding: 1.45rem 1.6rem 1.45rem clamp(3rem, 9vw, 3.9rem);
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+  font-family: var(--sans);
+  box-shadow: 0 22px 55px -42px var(--green-glow);
+}
+/* drafting hatch, densest by the glyph and dissolving toward the far corner */
+.doc__body blockquote::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: var(--hatch);
+  opacity: 0.6;
+  -webkit-mask-image: radial-gradient(
+    135% 130% at 0% 0%,
+    #000 0%,
+    transparent 60%
+  );
+  mask-image: radial-gradient(135% 130% at 0% 0%, #000 0%, transparent 60%);
+  pointer-events: none;
+}
+/* the phosphor quote mark, set in mono to read as terminal chrome */
+.doc__body blockquote::after {
+  content: "\201C";
+  position: absolute;
+  z-index: 2;
+  top: 0.55rem;
+  left: clamp(0.55rem, 2vw, 0.8rem);
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: clamp(2.8rem, 8vw, 3.6rem);
+  line-height: 1;
+  color: var(--green);
+  text-shadow: 0 0 34px var(--green-glow);
+  pointer-events: none;
+}
+.doc__body blockquote > * {
+  position: relative;
+  z-index: 1;
+}
+.doc__body blockquote > :first-child {
+  margin-top: 0;
+}
+.doc__body blockquote > :last-child {
+  margin-bottom: 0;
+}
+.doc__body blockquote p {
+  color: var(--ink);
+  font-size: 1.08rem;
+  font-style: italic;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+/* attribution: a dimension-line lead-in, mono and phosphor */
+.doc__body blockquote cite,
+.doc__body blockquote footer {
+  display: block;
+  margin-top: 1rem;
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 0.85rem;
+  color: var(--green-mid);
+}
+.doc__body blockquote cite::before,
+.doc__body blockquote footer::before {
+  content: "— ";
+  color: var(--faint);
+}
+
 .doc__toc {
   align-self: start;
   font-size: 0.85rem;
