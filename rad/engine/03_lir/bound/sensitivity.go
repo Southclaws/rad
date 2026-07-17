@@ -24,6 +24,10 @@ func PlanSensitive(rel Relation) bool {
 		// sensitivity the binding's body had was resolved at its own
 		// commitment. The occurrence itself is deterministic.
 		return false
+	case *RecursiveRef:
+		// The frontier is supplied by the fixpoint driver, not chosen by a
+		// plan; the occurrence itself is deterministic, exactly like Ref.
+		return false
 	case *Filter:
 		if exprSensitive(n.Pred) {
 			return true

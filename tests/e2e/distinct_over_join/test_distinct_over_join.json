@@ -1,0 +1,33 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "authors_with_posts",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "a": { "kind": "scan", "table": "authors", "scope": "a" },
+            "p": { "kind": "scan", "table": "posts", "scope": "p" },
+            "j": { "kind": "join", "left": "a", "right": "p", "join": "inner",
+              "on": { "kind": "binary", "op": "eq",
+                "left":  { "kind": "col", "scope": "a", "column": "id" },
+                "right": { "kind": "col", "scope": "p", "column": "author_id" } } },
+            "proj": { "kind": "project", "input": "j", "scope": "o",
+              "fields": [
+                { "as": "id",   "expr": { "kind": "col", "scope": "a", "column": "id" } },
+                { "as": "name", "expr": { "kind": "col", "scope": "a", "column": "name" } }
+              ] },
+            "dist": { "kind": "distinct", "input": "proj" },
+            "ord":  { "kind": "order", "input": "dist",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ] }
+          },
+          "root": { "node": "ord", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "a1", "name": "Ann" },
+    { "id": "a2", "name": "Bo" }
+  ]
+}

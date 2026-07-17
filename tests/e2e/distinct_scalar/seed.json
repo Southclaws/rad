@@ -1,0 +1,10 @@
+[
+  { "table": "products", "rows": [
+    { "id": "p1", "category": "gear" },
+    { "id": "p2", "category": "paper" },
+    { "id": "p3", "category": "gear" },
+    { "id": "p4", "category": "books" },
+    { "id": "p5", "category": "paper" },
+    { "id": "p6", "category": "gear" }
+  ] }
+]

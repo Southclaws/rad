@@ -1,0 +1,9 @@
+# e2e/recursive_reachability — a self-referential referral graph. A recursive
+# binding walks every person reachable from a root through referrer_id, with
+# accumulation: new so a finite graph terminates without a guard.
+tables:
+  - name: people
+    columns:
+      - { name: id, type: string, pk: true }
+      - { name: name, type: string }
+      - { name: referrer_id, type: string, nullable: true }

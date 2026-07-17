@@ -18,6 +18,14 @@ func Print(q *Query) string {
 		if bnd.PlanSensitive {
 			sens = " plan-choice-sensitive"
 		}
+		if bnd.Recursive {
+			fmt.Fprintf(&b, "  Binding %s recursive accumulation=%s%s\n", bnd.Name, bnd.Accumulation, sens)
+			fmt.Fprintf(&b, "    anchor\n")
+			printRel(&b, bnd.Root, 3)
+			fmt.Fprintf(&b, "    step\n")
+			printRel(&b, bnd.Step, 3)
+			continue
+		}
 		fmt.Fprintf(&b, "  Binding %s%s\n", bnd.Name, sens)
 		printRel(&b, bnd.Root, 2)
 	}
@@ -34,6 +42,11 @@ func printRel(b *strings.Builder, rel Relation, depth int) {
 		fmt.Fprintf(b, "%sRows ×%d (%s) %s\n", pad, len(n.Vals), n.Scope, rowType(n.Output()))
 	case *Ref:
 		fmt.Fprintf(b, "%sRef %s (%s) %s\n", pad, n.Binding, n.Scope, rowType(n.Output()))
+	case *RecursiveRef:
+		fmt.Fprintf(b, "%sRecursiveRef %s (%s) %s\n", pad, n.Binding, n.Scope, rowType(n.Output()))
+	case *Distinct:
+		fmt.Fprintf(b, "%sDistinct%s\n", pad, suffix(n))
+		printRel(b, n.In, depth+1)
 	case *Filter:
 		fmt.Fprintf(b, "%sFilter %s%s\n", pad, printExpr(n.Pred), suffix(n))
 		printRel(b, n.In, depth+1)

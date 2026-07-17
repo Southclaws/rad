@@ -57,6 +57,11 @@ var ScalarTypeValues = []ScalarType{
 // join, as long as the result is identical. A relation becomes a datum only at
 // a crossing or the root, never merely by being correlated.
 //
+// Relations have **bag** semantics: an operator changes multiplicity only when
+// that is its job. `aggregate` folds each group to one row, and `distinct`
+// converts an input bag into the corresponding set of complete rows; every
+// other operator preserves multiplicity.
+//
 // # Determinism
 //
 // A key-value scan's encounter order is physical, never logical, and the
@@ -65,7 +70,9 @@ var ScalarTypeValues = []ScalarType{
 // `array` crossings require an `order`; root and crossing `first` permit either
 // an `order` or a proof of at most one row. A positive `slice.offset` also
 // requires an ordered input. An unordered `limit` is permitted only until a
-// later observable boundary imposes its own ordering requirement.
+// later observable boundary imposes its own ordering requirement. `distinct`
+// likewise imposes no logical ordering — an observable ordered distinct result
+// requires an explicit `order` above it, and an ordered input confers none.
 //
 // # NULL and three-valued logic
 //
@@ -224,6 +231,11 @@ func (BoolValue) ValueType() string { return "bool" }
 // join, as long as the result is identical. A relation becomes a datum only at
 // a crossing or the root, never merely by being correlated.
 //
+// Relations have **bag** semantics: an operator changes multiplicity only when
+// that is its job. `aggregate` folds each group to one row, and `distinct`
+// converts an input bag into the corresponding set of complete rows; every
+// other operator preserves multiplicity.
+//
 // # Determinism
 //
 // A key-value scan's encounter order is physical, never logical, and the
@@ -232,7 +244,9 @@ func (BoolValue) ValueType() string { return "bool" }
 // `array` crossings require an `order`; root and crossing `first` permit either
 // an `order` or a proof of at most one row. A positive `slice.offset` also
 // requires an ordered input. An unordered `limit` is permitted only until a
-// later observable boundary imposes its own ordering requirement.
+// later observable boundary imposes its own ordering requirement. `distinct`
+// likewise imposes no logical ordering — an observable ordered distinct result
+// requires an explicit `order` above it, and an ordered input confers none.
 //
 // # NULL and three-valued logic
 //
@@ -489,17 +503,183 @@ type AggTerm struct {
 	Fn string `json:"fn"`
 }
 
-// One named relational value. The binding denotes one committed
-// relational value produced by its defining tree for this statement.
-// Under bag semantics, that value is one committed bag: a
-// nondeterministic body (a slice with no total order) is resolved once,
-// and every reference observes the same choice. The binding's public
-// output is its root's declared output shape — interior scopes never
-// leak.
+// LIR is Rad's low-level intermediate representation: the relation tree a
+// client sends to `POST /query`, and the tree the engine binds, plans, and
+// executes. This schema is its normative specification. The type definitions
+// and the prose in these descriptions are one artifact and move together.
+//
+// LIR is an internal contract with no external compatibility promise yet; it
+// may change while the design is hardened. It is deliberately unstable, but at
+// any moment it is exactly what this document says.
+//
+// # Model
+//
+// LIR has exactly two categories, and no third "shape" category: shaping is
+// projection, and nesting lives in the value model.
+//
+//   - A **relation** is a possibly empty, possibly many stream of structurally
+//     typed rows. Relation operators consume relations and produce relations.
+//   - An **expression** computes exactly one typed *datum* (null, a scalar, a
+//     row, or an array) in some scope. An expression may consume a relation only
+//     through an explicit *crossing* that declares how a stream of rows becomes
+//     one datum.
+//
+// **Relational closure** is a law, not an aspiration: the output of every
+// relation operator is itself an ordinary relation whose every attribute is
+// addressable by later operators. A `filter` above an `aggregate` references a
+// fold's output exactly as it would reference a scanned column.
+//
+// **Correlation** is a derived property, not an operator. A sub-relation that
+// references a scope bound by an enclosing relation is correlated, and is
+// evaluated with that enclosing row in scope. Correlation is a semantic
+// relationship only: the planner may satisfy it per row, by batching, or by a
+// join, as long as the result is identical. A relation becomes a datum only at
+// a crossing or the root, never merely by being correlated.
+//
+// Relations have **bag** semantics: an operator changes multiplicity only when
+// that is its job. `aggregate` folds each group to one row, and `distinct`
+// converts an input bag into the corresponding set of complete rows; every
+// other operator preserves multiplicity.
+//
+// # Determinism
+//
+// A key-value scan's encounter order is physical, never logical, and the
+// engine's access-path choice must never change results. Wherever a stream of
+// rows becomes observable, its order must be explicit. Root `many` results and
+// `array` crossings require an `order`; root and crossing `first` permit either
+// an `order` or a proof of at most one row. A positive `slice.offset` also
+// requires an ordered input. An unordered `limit` is permitted only until a
+// later observable boundary imposes its own ordering requirement. `distinct`
+// likewise imposes no logical ordering — an observable ordered distinct result
+// requires an explicit `order` above it, and an ordered input confers none.
+//
+// # NULL and three-valued logic
+//
+// Predicates evaluate in Kleene three-valued logic (K3): `TRUE`, `FALSE`, or
+// `UNKNOWN`. Any comparison with a NULL operand is `UNKNOWN`. `filter` and a
+// join's `on` keep only rows that evaluate to `TRUE`, never `UNKNOWN`, so
+// `not (x = 1)` does not match rows where `x` is NULL; `is_null` is the only
+// test that matches a NULL. NULLs are distinct under unique indexes.
+//
+// # The wire
+//
+// A query is a flat map of caller-chosen node ids plus a root selector. Every
+// definition is inline; a node id is a plain reference carrying no sharing,
+// memoisation, or materialisation identity. The graph must be acyclic, every
+// node must be reachable from the root and have exactly one consumer, and
+// dangling or shared references are rejected before binding. Nodes and
+// expressions are closed `oneOf` unions selected by `kind`; unknown fields,
+// fields belonging to another variant, and missing required fields are
+// rejected. Literal values travel as raw JSON scalars (see `Value`) and are
+// typed by the binder from the context each literal meets.
+type BindingUnion interface {
+	BindingType() string
+	isBinding()
+}
+
 type Binding struct {
+	BindingUnion
+}
+
+func (w Binding) MarshalJSON() ([]byte, error) {
+	if w.BindingUnion == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(w.BindingUnion)
+}
+
+func (w *Binding) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if bytes.Equal(data, []byte("null")) {
+		w.BindingUnion = nil
+		return nil
+	}
+
+	var peek struct {
+		Type string `json:"kind"`
+	}
+	if err := json.Unmarshal(data, &peek); err != nil {
+		return fmt.Errorf("Binding: invalid JSON: %w", err)
+	}
+	if peek.Type == "" {
+		return fmt.Errorf("Binding: missing discriminator field %q", "kind")
+	}
+
+	var v BindingUnion
+	switch peek.Type {
+	case "derived":
+		v = &DerivedBinding{}
+	case "recursive":
+		v = &RecursiveBinding{}
+	default:
+		return fmt.Errorf("Binding: unknown type %q", peek.Type)
+	}
+
+	if err := json.Unmarshal(data, v); err != nil {
+		return fmt.Errorf("Binding: invalid %q payload: %w", peek.Type, err)
+	}
+
+	w.BindingUnion = v
+	return nil
+}
+
+// A binding whose value is the one committed relational value its defining
+// tree produces for this statement. Under bag semantics that value is one
+// committed bag: a nondeterministic body (a slice with no total order) is
+// resolved once, and every reference observes the same choice. The
+// binding's public output is its root's output shape — interior scopes
+// never leak.
+type DerivedBinding struct {
+	Kind string `json:"kind"`
 	// The id of the binding's defining root node in `nodes`.
 	Node string `json:"node"`
 }
+
+func (DerivedBinding) isBinding() {}
+
+func (DerivedBinding) BindingType() string { return "derived" }
+
+// A recursively-defined relation, evaluated by iterating a step over a
+// frontier. The `anchor` (base case) is evaluated once to seed both the
+// working table and the result; then the `step` (inductive case) is
+// evaluated repeatedly with its `recursive_ref` bound to the previous
+// iteration's rows — the frontier — and each iteration's output is added to
+// the result, until the frontier is empty. `accumulation: new` admits each
+// full row at most once: rows already in the accumulated result, and
+// duplicates produced within the same iteration, are dropped before the
+// next frontier forms (a set fixpoint). `accumulation: all` keeps every
+// generated row, multiplicity included. This is recursive admission, not
+// the unary `distinct` operator — they share canonical full-row identity
+// but are separate constructs. The `step` must contain exactly one
+// `recursive_ref` to this binding and the `anchor` none; the reference
+// denotes the frontier, never the accumulated result.
+//
+// The anchor supplies the binding's column names, order, and kinds;
+// nullability is the least widening that accommodates both the anchor and
+// the recursive step. The relation has no inherent order and termination is
+// not guaranteed — observing it requires an explicit `order`, and a
+// non-terminating recursion is bounded only by the engine's iteration and
+// row limits.
+type RecursiveBinding struct {
+	// How each iteration's rows enter the result and next frontier: `all`
+	// keeps every generated row with its multiplicity; `new` admits each
+	// full row at most once, dropping rows already in the accumulated
+	// result and duplicates within the same iteration. Recursive admission,
+	// not the unary `distinct` operator.
+	//
+	Accumulation string `json:"accumulation"`
+	// The base-case root node. Contains no `recursive_ref`.
+	Anchor string `json:"anchor"`
+	Kind   string `json:"kind"`
+	// The inductive-case root node. Contains exactly one `recursive_ref`
+	// to this binding.
+	//
+	Step string `json:"step"`
+}
+
+func (RecursiveBinding) isBinding() {}
+
+func (RecursiveBinding) BindingType() string { return "recursive" }
 
 // One schema-directed scalar payload, used inside a `rows` relation where
 // each column already declares its type. A string is decoded against the
@@ -587,6 +767,11 @@ type RowsColumn struct {
 // join, as long as the result is identical. A relation becomes a datum only at
 // a crossing or the root, never merely by being correlated.
 //
+// Relations have **bag** semantics: an operator changes multiplicity only when
+// that is its job. `aggregate` folds each group to one row, and `distinct`
+// converts an input bag into the corresponding set of complete rows; every
+// other operator preserves multiplicity.
+//
 // # Determinism
 //
 // A key-value scan's encounter order is physical, never logical, and the
@@ -595,7 +780,9 @@ type RowsColumn struct {
 // `array` crossings require an `order`; root and crossing `first` permit either
 // an `order` or a proof of at most one row. A positive `slice.offset` also
 // requires an ordered input. An unordered `limit` is permitted only until a
-// later observable boundary imposes its own ordering requirement.
+// later observable boundary imposes its own ordering requirement. `distinct`
+// likewise imposes no logical ordering — an observable ordered distinct result
+// requires an explicit `order` above it, and an ordered input confers none.
 //
 // # NULL and three-valued logic
 //
@@ -669,6 +856,10 @@ func (w *Node) UnmarshalJSON(data []byte) error {
 		v = &SliceNode{}
 	case "ref":
 		v = &RefNode{}
+	case "recursive_ref":
+		v = &RecursiveRefNode{}
+	case "distinct":
+		v = &DistinctNode{}
 	default:
 		return fmt.Errorf("Node: unknown type %q", peek.Type)
 	}
@@ -911,8 +1102,8 @@ func (SliceNode) NodeType() string { return "slice" }
 
 // One occurrence of a named binding: a fresh variable ranging over the
 // binding's committed value, exactly as a scan is a fresh variable over
-// a table's snapshot. The occurrence exposes the binding's declared
-// output columns under its own `scope`; the binding's interior scopes
+// a table's snapshot. The occurrence exposes the binding's output
+// columns under its own `scope`; the binding's interior scopes
 // are not visible through it. References are uniformly zero-or-many
 // rows regardless of the body — determinism-sensitive consumers bring
 // their own order or slice.
@@ -929,6 +1120,45 @@ type RefNode struct {
 func (RefNode) isNode() {}
 
 func (RefNode) NodeType() string { return "ref" }
+
+// One occurrence of the enclosing recursive binding's frontier: the rows
+// the previous iteration produced (the working table), exposed under a
+// fresh `scope` exactly as `ref` exposes a committed binding. Legal only
+// inside that binding's `step`, and exactly once. It denotes the frontier,
+// never the accumulated result; the completed fixpoint value is observed
+// from outside the binding through an ordinary `ref`.
+type RecursiveRefNode struct {
+	// The enclosing recursive binding whose frontier this observes.
+	//
+	Binding string `json:"binding"`
+	Kind    string `json:"kind"`
+	// The label this occurrence's rows are bound to. Must be unique across
+	// the query, like a scan's scope.
+	//
+	Scope string `json:"scope"`
+}
+
+func (RecursiveRefNode) isNode() {}
+
+func (RecursiveRefNode) NodeType() string { return "recursive_ref" }
+
+// Remove duplicate complete rows from `input`. Two rows are duplicates when
+// every corresponding datum has the same canonical row identity — the
+// complete row, type- and order-significant, with typed NULL values equal to
+// one another (deliberately unlike three-valued predicate equality). The
+// output has `input`'s row type and contains at most one occurrence of each
+// complete row. `distinct` fixes membership and multiplicity, not order: any
+// observable ordering requires an explicit `order` above it, and an ordered
+// input confers no ordering on the output.
+type DistinctNode struct {
+	// The id of the relation to deduplicate.
+	Input string `json:"input"`
+	Kind  string `json:"kind"`
+}
+
+func (DistinctNode) isNode() {}
+
+func (DistinctNode) NodeType() string { return "distinct" }
 
 // Selects the result relation and how its rows materialise into the
 // response body:
@@ -975,7 +1205,9 @@ type Query struct {
 	// into this namespace, never ordinary node-consumer edges. Binding
 	// trees may themselves reference other bindings: those references
 	// form a separate acyclic dependency graph over the relation forest.
-	// Every declared binding must be referenced at least once.
+	// The single exception is a recursive binding, whose `step` references
+	// the binding itself through `recursive_ref` — the one sanctioned
+	// cycle. Every declared binding must be referenced at least once.
 	//
 	Bindings map[string]Binding `json:"bindings,omitempty"`
 	// The relation nodes of the query, keyed by caller-chosen id. Ids are

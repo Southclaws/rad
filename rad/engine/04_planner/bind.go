@@ -15,6 +15,7 @@ package planner
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/Southclaws/rad/rad/engine/reject"
@@ -132,6 +133,14 @@ func (b *binder) bindBody(q lir.Query, program map[string]*bound.Binding) (bound
 		if b.reserved[name] {
 			return nil, nil, reject.Inputf("planner: binding %q shadows a statement name", name)
 		}
+		if rec, ok := q.Bindings[name].(lir.Recursive); ok {
+			bnd, err := b.bindRecursiveBinding(name, rec)
+			if err != nil {
+				return nil, nil, bindingErr(name, err)
+			}
+			bindings = append(bindings, bnd)
+			continue
+		}
 		body, err := b.bindRel(q.Bindings[name])
 		b.scopes = b.scopes[:0] // interior scopes never escape the binding
 		if err != nil {
@@ -202,6 +211,10 @@ type binder struct {
 	// binding cannot shadow any statement — even one defined later. Empty
 	// for a standalone query.
 	reserved map[string]bool
+	// recursing names the recursive binding whose step is currently being
+	// bound, so a recursive_ref resolves to its provisional (anchor) shape
+	// and is rejected anywhere else.
+	recursing string
 }
 
 // bindingErr annotates a binding-body error with the binding's name; %w
@@ -294,6 +307,13 @@ func lirBindingDeps(r lir.Relation) []string {
 			}
 		case lir.Slice:
 			rel(n.Input)
+		case lir.Recursive:
+			rel(n.Anchor)
+			rel(n.Step)
+		case lir.RecursiveRef:
+			// The sanctioned self-edge: a recursive binding's step refers to
+			// itself through recursive_ref, which is not an ordering
+			// dependency — so the binding graph stays topologically sortable.
 		}
 	}
 	expr = func(e lir.Expr) {
@@ -334,6 +354,19 @@ func (b *binder) bindRel(r lir.Relation) (bound.Relation, error) {
 
 	case lir.Ref:
 		return b.bindRef(n)
+
+	case lir.RecursiveRef:
+		return b.bindRecursiveRef(n)
+
+	case lir.Recursive:
+		return nil, reject.Inputf("planner: a recursive relation is only valid as a binding body, not an ordinary node")
+
+	case lir.Distinct:
+		in, err := b.bindRel(n.Input)
+		if err != nil {
+			return nil, err
+		}
+		return bound.NewDistinct(in), nil
 
 	case lir.Filter:
 		in, err := b.bindRel(n.Input)
@@ -511,6 +544,9 @@ func (b *binder) bindRef(n lir.Ref) (*bound.Ref, error) {
 	}
 	b.used[n.Binding] = true
 	out := bnd.Root.Output()
+	if bnd.Recursive {
+		out = bnd.Out
+	}
 	fields := make([]lir.Field, len(out.Fields))
 	canon := make([]lir.SlotID, len(out.Fields))
 	for i, f := range out.Fields {
@@ -522,6 +558,379 @@ func (b *binder) bindRef(n lir.Ref) (*bound.Ref, error) {
 	b.labels[n.Scope] = true
 	b.scopes = append(b.scopes, scopeEntry{label: n.Scope, rel: r})
 	return r, nil
+}
+
+// bindRecursiveRef binds one occurrence of the enclosing recursive binding's
+// frontier: fresh slots over the binding's provisional (anchor) output,
+// exposed under the occurrence's own scope. Placement and linearity are
+// enforced structurally by validateRecursive before binding begins; this only
+// resolves the reference and rejects a recursive_ref that escaped a step.
+func (b *binder) bindRecursiveRef(n lir.RecursiveRef) (*bound.RecursiveRef, error) {
+	if n.Scope == "" {
+		return nil, reject.Inputf("planner: recursive_ref of binding %q needs a scope label", n.Binding)
+	}
+	if b.labels[n.Scope] {
+		return nil, reject.Inputf("planner: duplicate scope %q", n.Scope)
+	}
+	if n.Binding != b.recursing {
+		return nil, reject.Inputf("planner: recursive_ref to %q is legal only inside that binding's step", n.Binding)
+	}
+	bnd, ok := b.bindings[n.Binding]
+	if !ok || !bnd.Recursive {
+		return nil, reject.Inputf("planner: recursive_ref names %q, which is not a recursive binding", n.Binding)
+	}
+	out := bnd.Out // the provisional anchor shape
+	fields := make([]lir.Field, len(out.Fields))
+	canon := make([]lir.SlotID, len(out.Fields))
+	for i, f := range out.Fields {
+		fields[i] = lir.Field{Name: f.Name, Slot: b.nextSlot, Type: f.Type}
+		canon[i] = f.Slot
+		b.nextSlot++
+	}
+	r := bound.NewRecursiveRef(n.Binding, n.Scope, fields, canon)
+	b.labels[n.Scope] = true
+	b.scopes = append(b.scopes, scopeEntry{label: n.Scope, rel: r})
+	return r, nil
+}
+
+// bindRecursiveBinding binds a recursively-defined binding. The anchor
+// supplies the public shape; the step binds against that provisional shape
+// through recursive_ref, then the two are reconciled — kinds must match,
+// nullability is the join. Errors are name-free; the caller adds the binding
+// name.
+func (b *binder) bindRecursiveBinding(name string, rec lir.Recursive) (*bound.Binding, error) {
+	if err := validateRecursive(name, rec); err != nil {
+		return nil, err
+	}
+
+	anchor, err := b.bindRel(rec.Anchor)
+	b.scopes = b.scopes[:0]
+	if err != nil {
+		return nil, err
+	}
+	if err := recursiveOutputUnique(anchor.Output()); err != nil {
+		return nil, err
+	}
+
+	// Register provisionally so the step's recursive_ref resolves against the
+	// anchor's shape before the reconciled shape exists.
+	bnd := &bound.Binding{
+		Name:         name,
+		Root:         anchor,
+		Out:          anchor.Output(),
+		Recursive:    true,
+		Accumulation: rec.Accumulation,
+	}
+	b.bindings[name] = bnd
+
+	// The step's output nullability can depend on the frontier's — a column
+	// derived from another that widens across iterations — so the public
+	// signature is a fixpoint, not one reconcile. Bind the step against the
+	// current signature, join anchor and step nullability, and re-bind against
+	// the widened signature until it stops changing. Re-binding from the same
+	// slot and label marks is deterministic, so the final pass's slots are the
+	// ones the planner sees; kinds never change and nullability only widens
+	// over a finite lattice, so this terminates in at most one pass per column.
+	prev := b.recursing
+	slotMark := b.nextSlot
+	labelMark := maps.Clone(b.labels)
+	var step bound.Relation
+	for {
+		b.nextSlot = slotMark
+		b.labels = maps.Clone(labelMark)
+		b.scopes = b.scopes[:0]
+
+		b.recursing = name
+		s, err := b.bindRel(rec.Step)
+		b.recursing = prev
+		if err != nil {
+			return nil, err
+		}
+		widened, err := reconcileRecursive(anchor.Output(), s.Output())
+		if err != nil {
+			return nil, err
+		}
+		step = s
+		stable := rowTypeEqual(widened, bnd.Out)
+		bnd.Out = widened
+		if stable {
+			break
+		}
+	}
+	b.scopes = b.scopes[:0]
+
+	bnd.Step = step
+	bnd.PlanSensitive = bound.PlanSensitive(anchor) || bound.PlanSensitive(step)
+	return bnd, nil
+}
+
+// rowTypeEqual reports whether two row types have the same columns with the
+// same kinds and nullability — the fixpoint-stability test for the recursive
+// signature.
+func rowTypeEqual(a, b lir.RowType) bool {
+	if len(a.Fields) != len(b.Fields) {
+		return false
+	}
+	for i := range a.Fields {
+		x, y := a.Fields[i], b.Fields[i]
+		if x.Name != y.Name || x.Type.Kind != y.Type.Kind || x.Type.Nullable != y.Type.Nullable {
+			return false
+		}
+	}
+	return true
+}
+
+// recursiveOutputUnique rejects a recursive anchor whose output has colliding
+// column names — the anchor's shape is the binding's public contract.
+func recursiveOutputUnique(out lir.RowType) error {
+	seen := map[string]bool{}
+	for _, f := range out.Fields {
+		if seen[f.Name] {
+			return reject.Inputf("planner: recursive anchor output has duplicate column %q — project it to a unique set of columns", f.Name)
+		}
+		seen[f.Name] = true
+	}
+	return nil
+}
+
+// reconcileRecursive checks the step's output against the anchor's: the same
+// columns, each with the same kind, taking the nullability join so a column
+// any branch can null is nullable in the binding's public shape.
+func reconcileRecursive(anchor, step lir.RowType) (lir.RowType, error) {
+	if len(anchor.Fields) != len(step.Fields) {
+		return lir.RowType{}, reject.Inputf("planner: recursive anchor produces %d columns but the step produces %d — anchor and step must produce the same columns", len(anchor.Fields), len(step.Fields))
+	}
+	out := make([]lir.Field, len(anchor.Fields))
+	for i, af := range anchor.Fields {
+		sf, ok := step.Lookup(af.Name)
+		if !ok {
+			return lir.RowType{}, reject.Inputf("planner: recursive step is missing anchor column %q — anchor and step must produce the same columns", af.Name)
+		}
+		if sf.Type.Kind != af.Type.Kind {
+			return lir.RowType{}, reject.Inputf("planner: recursive column %q is %s in the anchor but %s in the step — the kinds must match", af.Name, af.Type.Kind, sf.Type.Kind)
+		}
+		f := af
+		f.Type.Nullable = af.Type.Nullable || sf.Type.Nullable
+		out[i] = f
+	}
+	return lir.RowType{Fields: out}, nil
+}
+
+// validateRecursive enforces a recursive binding's structural well-formedness
+// on the unbound trees: the anchor is self-reference-free, and the step
+// contains exactly one recursive_ref to this binding in a monotone position.
+// Errors are name-free; the caller adds the binding name.
+func validateRecursive(name string, rec lir.Recursive) error {
+	if err := checkRecursiveAnchor(name, rec.Anchor); err != nil {
+		return err
+	}
+	count := 0
+	if err := checkRecursiveStep(name, rec.Step, false, &count); err != nil {
+		return err
+	}
+	switch {
+	case count == 0:
+		return reject.Inputf("planner: recursive step contains no recursive_ref — the step must reference the binding to recurse")
+	case count > 1:
+		return reject.Inputf("planner: recursive step contains %d recursive_refs — v0 allows exactly one (linear recursion)", count)
+	}
+	return nil
+}
+
+// checkRecursiveAnchor rejects any recursive_ref (the anchor is the base case)
+// and any ordinary ref back to the binding under definition.
+func checkRecursiveAnchor(name string, r lir.Relation) error {
+	var walk func(lir.Relation) error
+	var expr func(lir.Expr) error
+	walk = func(r lir.Relation) error {
+		switch n := r.(type) {
+		case lir.RecursiveRef:
+			return reject.Inputf("planner: recursive anchor contains a recursive_ref — the anchor is the base case and must not recurse")
+		case lir.Ref:
+			if n.Binding == name {
+				return reject.Inputf("planner: recursive anchor references the binding through an ordinary ref — the base case cannot observe it")
+			}
+		case lir.Recursive:
+			return reject.Inputf("planner: a recursive relation is only valid as a binding body")
+		case lir.Filter:
+			if err := walk(n.Input); err != nil {
+				return err
+			}
+			return expr(n.Pred)
+		case lir.Project:
+			if err := walk(n.Input); err != nil {
+				return err
+			}
+			for _, f := range n.Fields {
+				if err := expr(f.Expr); err != nil {
+					return err
+				}
+			}
+		case lir.Join:
+			if err := walk(n.Left); err != nil {
+				return err
+			}
+			if err := walk(n.Right); err != nil {
+				return err
+			}
+			return expr(n.On)
+		case lir.Aggregate:
+			if err := walk(n.Input); err != nil {
+				return err
+			}
+			for _, g := range n.Groups {
+				if err := expr(g.Expr); err != nil {
+					return err
+				}
+			}
+			for _, t := range n.Terms {
+				if err := expr(t.Arg); err != nil {
+					return err
+				}
+			}
+		case lir.Order:
+			if err := walk(n.Input); err != nil {
+				return err
+			}
+			for _, t := range n.Terms {
+				if err := expr(t.Expr); err != nil {
+					return err
+				}
+			}
+		case lir.Slice:
+			return walk(n.Input)
+		}
+		return nil
+	}
+	expr = func(e lir.Expr) error {
+		switch x := e.(type) {
+		case lir.Unary:
+			return expr(x.X)
+		case lir.Binary:
+			if err := expr(x.L); err != nil {
+				return err
+			}
+			return expr(x.R)
+		case lir.Cast:
+			return expr(x.X)
+		case lir.Exists:
+			return walk(x.Rel)
+		case lir.First:
+			return walk(x.Rel)
+		case lir.Scalar:
+			return walk(x.Rel)
+		case lir.Array:
+			return walk(x.Rel)
+		}
+		return nil
+	}
+	return walk(r)
+}
+
+// checkRecursiveStep walks the step: recursive_ref must target this binding,
+// appear in a monotone position (forbidden under an aggregate, slice, the
+// nullable side of a left join, or a crossing), and there must be no ordinary
+// ref back to this binding. It counts recursive_ref occurrences through count.
+func checkRecursiveStep(name string, r lir.Relation, forbidden bool, count *int) error {
+	switch n := r.(type) {
+	case lir.RecursiveRef:
+		if n.Binding != name {
+			return reject.Inputf("planner: recursive_ref names a different binding %q — v0 does not allow mutual recursion", n.Binding)
+		}
+		if forbidden {
+			return reject.Inputf("planner: recursive_ref appears in a non-monotone position (under an aggregate, slice, the nullable side of a left join, or a crossing) — the step must be monotone in the frontier")
+		}
+		*count++
+		return nil
+	case lir.Ref:
+		if n.Binding == name {
+			return reject.Inputf("planner: the step observes the binding through an ordinary ref — use recursive_ref for the frontier; the completed value is only observable outside")
+		}
+		return nil
+	case lir.Recursive:
+		return reject.Inputf("planner: a recursive relation is only valid as a binding body")
+	case lir.Filter:
+		if err := checkRecursiveStep(name, n.Input, forbidden, count); err != nil {
+			return err
+		}
+		return checkRecursiveStepExpr(name, n.Pred)
+	case lir.Project:
+		if err := checkRecursiveStep(name, n.Input, forbidden, count); err != nil {
+			return err
+		}
+		for _, f := range n.Fields {
+			if err := checkRecursiveStepExpr(name, f.Expr); err != nil {
+				return err
+			}
+		}
+		return nil
+	case lir.Join:
+		if err := checkRecursiveStep(name, n.Left, forbidden, count); err != nil {
+			return err
+		}
+		if err := checkRecursiveStep(name, n.Right, forbidden || n.Kind == lir.LeftJoin, count); err != nil {
+			return err
+		}
+		return checkRecursiveStepExpr(name, n.On)
+	case lir.Aggregate:
+		if err := checkRecursiveStep(name, n.Input, true, count); err != nil {
+			return err
+		}
+		for _, g := range n.Groups {
+			if err := checkRecursiveStepExpr(name, g.Expr); err != nil {
+				return err
+			}
+		}
+		for _, t := range n.Terms {
+			if err := checkRecursiveStepExpr(name, t.Arg); err != nil {
+				return err
+			}
+		}
+		return nil
+	case lir.Order:
+		if err := checkRecursiveStep(name, n.Input, forbidden, count); err != nil {
+			return err
+		}
+		for _, t := range n.Terms {
+			if err := checkRecursiveStepExpr(name, t.Expr); err != nil {
+				return err
+			}
+		}
+		return nil
+	case lir.Slice:
+		return checkRecursiveStep(name, n.Input, true, count)
+	}
+	return nil
+}
+
+// checkRecursiveStepExpr walks a step expression: a recursive_ref inside a
+// crossing is a non-monotone use, so a crossing is always forbidden context.
+func checkRecursiveStepExpr(name string, e lir.Expr) error {
+	switch x := e.(type) {
+	case lir.Unary:
+		return checkRecursiveStepExpr(name, x.X)
+	case lir.Binary:
+		if err := checkRecursiveStepExpr(name, x.L); err != nil {
+			return err
+		}
+		return checkRecursiveStepExpr(name, x.R)
+	case lir.Cast:
+		return checkRecursiveStepExpr(name, x.X)
+	case lir.Exists:
+		return checkRecursiveCrossing(name, x.Rel)
+	case lir.First:
+		return checkRecursiveCrossing(name, x.Rel)
+	case lir.Scalar:
+		return checkRecursiveCrossing(name, x.Rel)
+	case lir.Array:
+		return checkRecursiveCrossing(name, x.Rel)
+	}
+	return nil
+}
+
+func checkRecursiveCrossing(name string, r lir.Relation) error {
+	var ignored int
+	return checkRecursiveStep(name, r, true, &ignored)
 }
 
 // bindProject establishes a new row type. The scopes its subtree bound stop
@@ -930,6 +1339,10 @@ func uniqueKeyFields(rel bound.Relation) []lir.Field {
 		return uniqueKeyFields(n.In)
 	case *bound.Slice:
 		return uniqueKeyFields(n.In)
+	case *bound.Distinct:
+		// After distinct, the complete output row is unique, so all columns
+		// together form a key — an order over them all is total.
+		return n.Output().Fields
 	case *bound.Project:
 		key := uniqueKeyFields(n.In)
 		if key == nil {

@@ -40,12 +40,20 @@ func PlanQuery(q *bound.Query, opts ...PlanOpt) *PhysPlan {
 	pl := &planner{cfg: cfg, nextSlot: q.Slots}
 	bindings := make([]BindingPlan, len(q.Bindings))
 	for i, b := range q.Bindings {
-		bindings[i] = BindingPlan{
+		bp := BindingPlan{
 			Name:      b.Name,
 			Plan:      pl.plan(b.Root, nil),
 			Out:       b.Root.Output(),
 			Sensitive: b.PlanSensitive,
 		}
+		if b.Recursive {
+			bp.Recursive = true
+			bp.Accumulation = b.Accumulation
+			bp.Step = pl.plan(b.Step, nil)
+			bp.StepOut = b.Step.Output()
+			bp.Out = b.Out
+		}
+		bindings[i] = bp
 	}
 	root := pl.plan(q.Root, nil)
 
@@ -53,16 +61,24 @@ func PlanQuery(q *bound.Query, opts ...PlanOpt) *PhysPlan {
 	// that occurrence (its single evaluation IS the commitment); anything
 	// referenced more than once materialises, so nested multi-reference
 	// bindings execute linearly instead of exponentially re-running their
-	// children.
+	// children. A recursive binding always materialises — its fixpoint is
+	// computed before the root runs, and its step's recursive_ref is not an
+	// occurrence of the committed value.
 	refs := map[string]int{}
 	countRefs(root, refs)
 	for i := range bindings {
 		countRefs(bindings[i].Plan, refs)
+		if bindings[i].Recursive {
+			countRefs(bindings[i].Step, refs)
+		}
 	}
 	for i := range bindings {
-		if refs[bindings[i].Name] == 1 {
+		switch {
+		case bindings[i].Recursive:
+			bindings[i].Strategy = BindingMaterialise
+		case refs[bindings[i].Name] == 1:
 			bindings[i].Strategy = BindingReplay
-		} else {
+		default:
 			bindings[i].Strategy = BindingMaterialise
 		}
 	}
@@ -96,6 +112,8 @@ func countRefs(n PhysNode, refs map[string]int) {
 	case *SliceExec:
 		countRefs(x.Input, refs)
 	case *AggregateExec:
+		countRefs(x.Input, refs)
+	case *DistinctExec:
 		countRefs(x.Input, refs)
 	case *NestedLoopJoinExec:
 		countRefs(x.L, refs)
@@ -194,6 +212,12 @@ func (pl *planner) plan(rel bound.Relation, req []bound.OrderTerm) PhysNode {
 
 	case *bound.Ref:
 		return &RefExec{Binding: n.Binding, Out: n.Output(), Canon: n.Canon}
+
+	case *bound.RecursiveRef:
+		return &RecursiveRefExec{Binding: n.Binding, Out: n.Output(), Canon: n.Canon}
+
+	case *bound.Distinct:
+		return &DistinctExec{Input: pl.plan(n.In, nil), Out: n.Output()}
 	}
 	panic("planner: unplannable relation") // sealed interface; unreachable
 }

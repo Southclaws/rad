@@ -13,7 +13,15 @@ import (
 func (b *binder) bindExpr(e lir.Expr) (bound.Expr, error) {
 	switch x := e.(type) {
 	case lir.Literal:
-		// A literal with no column context types itself from its raw form.
+		// A typed NULL (a projected NULL carries its declared type) binds
+		// directly; any other literal with no column context types itself
+		// from its raw form.
+		if x.Raw == nil && x.Kind != "" {
+			if !x.Kind.Scalar() {
+				return nil, reject.Inputf("planner: a NULL literal cannot be of type %s", x.Kind)
+			}
+			return bound.Literal{V: lir.Null(x.Kind.CatalogType())}, nil
+		}
 		v, err := inferLiteral(x.Raw)
 		if err != nil {
 			return nil, err

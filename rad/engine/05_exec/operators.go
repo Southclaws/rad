@@ -27,14 +27,20 @@ type executor struct {
 	view        kv.KV
 	forceNested bool
 	bindings    map[string][]Frame
-	plans       map[string]planner.BindingPlan
+	// frontier holds the current working table of each in-progress recursive
+	// binding, read by its step's RecursiveRefExec.
+	frontier map[string][]Frame
+	plans    map[string]planner.BindingPlan
+	recur    RecursionLimits
 }
 
-func newExecutor(view kv.KV) *executor {
+func newExecutor(view kv.KV, recur RecursionLimits) *executor {
 	return &executor{
 		view:     view,
 		bindings: map[string][]Frame{},
+		frontier: map[string][]Frame{},
 		plans:    map[string]planner.BindingPlan{},
+		recur:    recur,
 	}
 }
 
@@ -48,6 +54,14 @@ func (ex *executor) commit(ctx context.Context, bindings []planner.BindingPlan) 
 		ex.plans[b.Name] = b
 	}
 	for _, b := range bindings {
+		if b.Recursive {
+			frames, err := ex.commitRecursive(ctx, b)
+			if err != nil {
+				return err
+			}
+			ex.bindings[b.Name] = frames
+			continue
+		}
 		if b.Strategy != planner.BindingMaterialise {
 			continue
 		}
@@ -141,6 +155,14 @@ func (ex *executor) build(ctx context.Context, node planner.PhysNode, outer boun
 			return nil, err
 		}
 		return &replayRefOp{n: n, in: in, outer: outer}, nil
+	case *planner.RecursiveRefExec:
+		return &recursiveRefOp{n: n, frames: ex.frontier[n.Binding], outer: outer}, nil
+	case *planner.DistinctExec:
+		in, err := ex.build(ctx, n.Input, outer)
+		if err != nil {
+			return nil, err
+		}
+		return &distinctOp{in: in, out: n.Out}, nil
 	}
 	return nil, fmt.Errorf("exec: unknown physical node %T", node)
 }
@@ -148,13 +170,20 @@ func (ex *executor) build(ctx context.Context, node planner.PhysNode, outer boun
 // remapOccurrence re-exposes one canonical frame under an occurrence's
 // fresh slots, never mutating the source.
 func remapOccurrence(n *planner.RefExec, src Frame, outer bound.Env) Frame {
-	out := newFrame(outer)
-	for i, fld := range n.Out.Fields {
-		if d, ok := src[n.Canon[i]]; ok {
-			out[fld.Slot] = d
+	return remapCanon(n.Out, n.Canon, src, outer)
+}
+
+// remapCanon re-exposes a canonical frame under an occurrence's fresh slots,
+// never mutating the source. Shared by binding refs and recursive-frontier
+// refs.
+func remapCanon(out lir.RowType, canon []lir.SlotID, src Frame, outer bound.Env) Frame {
+	o := newFrame(outer)
+	for i, fld := range out.Fields {
+		if d, ok := src[canon[i]]; ok {
+			o[fld.Slot] = d
 		}
 	}
-	return out
+	return o
 }
 
 // refOp streams one occurrence of a materialised binding.

@@ -152,6 +152,46 @@ type Ref struct {
 	Scope   string
 }
 
+// RecursiveRef is one occurrence of the enclosing recursive binding's
+// frontier: the rows the previous iteration produced, exposed under a fresh
+// scope. Legal only inside that binding's step, where it observes the
+// frontier — not the accumulated result, which an ordinary Ref observes from
+// outside the binding.
+type RecursiveRef struct {
+	Binding string
+	Scope   string
+}
+
+// RecursiveAccumulationMode controls how a recursive step's rows enter the
+// fixpoint result and the next frontier: every generated row (`all`), or only
+// rows not already admitted, by canonical full-row identity (`new`). It is the
+// recursive analogue of — but a separate concept from — the unary Distinct
+// operator.
+type RecursiveAccumulationMode string
+
+const (
+	AccumulateAll RecursiveAccumulationMode = "all"
+	AccumulateNew RecursiveAccumulationMode = "new"
+)
+
+// Recursive is a recursively-defined relation, valid only as a binding body.
+// Anchor is the base case (no RecursiveRef); Step is the inductive case and
+// contains exactly one RecursiveRef to the binding. Accumulation is the
+// admission policy for generated rows.
+type Recursive struct {
+	Anchor       Relation
+	Step         Relation
+	Accumulation RecursiveAccumulationMode
+}
+
+// Distinct removes duplicate complete rows from Input by canonical full-row
+// identity (NULL == NULL, type- and order-significant, unlike three-valued
+// predicate equality). It preserves the input's row type and imposes no
+// ordering — a bag becomes the corresponding set of complete rows.
+type Distinct struct {
+	Input Relation
+}
+
 func (Scan) rel()      {}
 func (Rows) rel()      {}
 func (Filter) rel()    {}
@@ -160,7 +200,10 @@ func (Join) rel()      {}
 func (Aggregate) rel() {}
 func (Order) rel()     {}
 func (Slice) rel()     {}
-func (Ref) rel()       {}
+func (Ref) rel()          {}
+func (RecursiveRef) rel() {}
+func (Recursive) rel()    {}
+func (Distinct) rel()     {}
 
 // RootCard states how the root relation materialises on the wire.
 type RootCard string

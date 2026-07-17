@@ -76,6 +76,35 @@ func Ref(binding, scope string) Node {
 	return Node{&RefNode{Kind: "ref", Binding: binding, Scope: scope}}
 }
 
+// RecursiveRef builds a frontier reference. Legal only inside a recursive
+// binding's step; it observes the previous iteration's rows.
+func RecursiveRef(binding, scope string) Node {
+	return Node{&RecursiveRefNode{Kind: "recursive_ref", Binding: binding, Scope: scope}}
+}
+
+// Distinct builds the unary deduplication operator: it removes duplicate
+// complete rows from input.
+func Distinct(input string) Node {
+	return Node{&DistinctNode{Kind: "distinct", Input: input}}
+}
+
+// -
+// bindings
+// -
+
+// Derived builds an ordinary named binding over one defining root.
+func Derived(node string) Binding {
+	return Binding{&DerivedBinding{Kind: "derived", Node: node}}
+}
+
+// Recursive builds a recursive binding: an anchor (base case) and a step
+// (inductive case) combined into a fixpoint by an accumulation mode ("all"
+// keeps every generated row; "new" admits only rows not already in the
+// result).
+func Recursive(anchor, step, accumulation string) Binding {
+	return Binding{&RecursiveBinding{Kind: "recursive", Anchor: anchor, Step: step, Accumulation: accumulation}}
+}
+
 // -
 // expressions
 // -

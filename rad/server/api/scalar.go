@@ -62,6 +62,23 @@ func decodeCell(kind lirwire.ScalarType, cell lirwire.Cell) (any, error) {
 // scalar type and carries the lexeme; an absent payload is a NULL. The NULL's
 // declared type is not carried into the engine — the binder retypes a NULL
 // from the context it meets (a naked NULL with no context is rejected there).
+// valueScalarType reports a wire value's declared scalar type, even for a
+// NULL (whose payload is absent) — so a typed NULL keeps its type on the way
+// into the engine.
+func valueScalarType(v lirwire.Value) lirwire.ScalarType {
+	switch v.ValueUnion.(type) {
+	case *lirwire.TextValue:
+		return lirwire.ScalarTypeText
+	case *lirwire.Int64Value:
+		return lirwire.ScalarTypeInt64
+	case *lirwire.Float64Value:
+		return lirwire.ScalarTypeFloat64
+	case *lirwire.BoolValue:
+		return lirwire.ScalarTypeBool
+	}
+	return ""
+}
+
 func decodeValue(v lirwire.Value) (any, error) {
 	switch x := v.ValueUnion.(type) {
 	case *lirwire.TextValue:

@@ -22,7 +22,11 @@ func WireQuery(q lir.Query) lirwire.Query {
 	if len(q.Bindings) > 0 {
 		bindings = make(map[string]lirwire.Binding, len(q.Bindings))
 		for name, b := range q.Bindings {
-			bindings[name] = lirwire.Binding{Node: w.rel(b)}
+			if rec, ok := b.(lir.Recursive); ok {
+				bindings[name] = lirwire.Recursive(w.rel(rec.Anchor), w.rel(rec.Step), string(rec.Accumulation))
+				continue
+			}
+			bindings[name] = lirwire.Derived(w.rel(b))
 		}
 	}
 	return lirwire.Query{
@@ -104,6 +108,10 @@ func (w *raiser) rel(r lir.Relation) string {
 		node = lirwire.Slice(w.rel(x.Input), x.Offset, x.Limit)
 	case lir.Ref:
 		node = lirwire.Ref(x.Binding, x.Scope)
+	case lir.RecursiveRef:
+		node = lirwire.RecursiveRef(x.Binding, x.Scope)
+	case lir.Distinct:
+		node = lirwire.Distinct(w.rel(x.Input))
 	default:
 		panic(fmt.Sprintf("api: unknown relation %T", r))
 	}
@@ -117,6 +125,9 @@ func (w *raiser) expr(e lir.Expr) lirwire.Expr {
 	case lir.Column:
 		return lirwire.Col(x.Scope, x.Name)
 	case lir.Literal:
+		if x.Raw == nil && x.Kind != "" {
+			return lirwire.Lit(lirwire.Null(lirwire.ScalarType(string(x.Kind))))
+		}
 		return lirwire.LitOf(x.Raw)
 	case lir.Unary:
 		return lirwire.Unary(string(x.Op), w.expr(x.X))

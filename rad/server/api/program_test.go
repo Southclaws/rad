@@ -124,7 +124,7 @@ func TestExecuteLocalBindingCannotShadowStatement(t *testing.T) {
 			"u":    lirwire.Ref("second", "u"),
 			"o":    lirwire.Order("u", []lirwire.OrderTerm{{Expr: lirwire.Col("u", "n")}}),
 		},
-		Bindings: map[string]lirwire.Binding{"second": {Node: "base"}},
+		Bindings: map[string]lirwire.Binding{"second": lirwire.Derived("base")},
 		Root:     lirwire.Root{Node: "o", Cardinality: "many"},
 	}
 	prog := pirwire.Prog("second",

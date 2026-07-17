@@ -11,10 +11,15 @@ package lir
 type Expr interface{ expr() }
 
 // Literal carries a raw wire scalar — string, json.Number, bool, or nil.
-// It is typed by the binder in context (a JSON number becomes int64 or
-// float64 by the column it meets, never by guessing; nil adopts the
-// column's type as NULL).
-type Literal struct{ Raw any }
+// A non-nil Raw is typed by the binder in context (a JSON number becomes
+// int64 or float64 by the column it meets, never by guessing). A nil Raw is
+// a NULL; Kind, when set, is its declared scalar type, so a NULL with no
+// surrounding context — a projected NULL — still binds. An unset Kind keeps
+// the context-typed behaviour, and a contextless bare NULL is rejected.
+type Literal struct {
+	Raw  any
+	Kind Kind
+}
 
 // Column names a column of a bound scope. Scope is required: bare column
 // references stop working the moment two relations are in play, so

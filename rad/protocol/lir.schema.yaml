@@ -48,6 +48,11 @@ description: |
   join, as long as the result is identical. A relation becomes a datum only at
   a crossing or the root, never merely by being correlated.
 
+  Relations have **bag** semantics: an operator changes multiplicity only when
+  that is its job. `aggregate` folds each group to one row, and `distinct`
+  converts an input bag into the corresponding set of complete rows; every
+  other operator preserves multiplicity.
+
   # Determinism
 
   A key-value scan's encounter order is physical, never logical, and the
@@ -56,7 +61,9 @@ description: |
   `array` crossings require an `order`; root and crossing `first` permit either
   an `order` or a proof of at most one row. A positive `slice.offset` also
   requires an ordered input. An unordered `limit` is permitted only until a
-  later observable boundary imposes its own ordering requirement.
+  later observable boundary imposes its own ordering requirement. `distinct`
+  likewise imposes no logical ordering — an observable ordered distinct result
+  requires an explicit `order` above it, and an ordered input confers none.
 
   # NULL and three-valued logic
 
@@ -125,7 +132,9 @@ $defs:
           into this namespace, never ordinary node-consumer edges. Binding
           trees may themselves reference other bindings: those references
           form a separate acyclic dependency graph over the relation forest.
-          Every declared binding must be referenced at least once.
+          The single exception is a recursive binding, whose `step` references
+          the binding itself through `recursive_ref` — the one sanctioned
+          cycle. Every declared binding must be referenced at least once.
         type: object
         minProperties: 1
         propertyNames: { minLength: 1 }
@@ -135,21 +144,81 @@ $defs:
   Binding:
     title: Binding
     description: |
-      One named relational value. The binding denotes one committed
-      relational value produced by its defining tree for this statement.
-      Under bag semantics, that value is one committed bag: a
-      nondeterministic body (a slice with no total order) is resolved once,
-      and every reference observes the same choice. The binding's public
-      output is its root's declared output shape — interior scopes never
-      leak.
+      One named relational value, a closed tagged union selected by `kind`. A
+      `derived` binding names a single defining root; a `recursive` binding
+      names an `anchor` (base case) and a `step` (inductive case) combined into
+      a fixpoint.
+    oneOf:
+      - { $ref: "#/$defs/DerivedBinding" }
+      - { $ref: "#/$defs/RecursiveBinding" }
+
+  DerivedBinding:
+    title: DerivedBinding
+    description: |
+      A binding whose value is the one committed relational value its defining
+      tree produces for this statement. Under bag semantics that value is one
+      committed bag: a nondeterministic body (a slice with no total order) is
+      resolved once, and every reference observes the same choice. The
+      binding's public output is its root's output shape — interior scopes
+      never leak.
     type: object
     additionalProperties: false
-    required: [node]
+    required: [kind, node]
     properties:
+      kind: { type: string, const: derived }
       node:
         description: The id of the binding's defining root node in `nodes`.
         type: string
         minLength: 1
+
+  RecursiveBinding:
+    title: RecursiveBinding
+    description: |
+      A recursively-defined relation, evaluated by iterating a step over a
+      frontier. The `anchor` (base case) is evaluated once to seed both the
+      working table and the result; then the `step` (inductive case) is
+      evaluated repeatedly with its `recursive_ref` bound to the previous
+      iteration's rows — the frontier — and each iteration's output is added to
+      the result, until the frontier is empty. `accumulation: new` admits each
+      full row at most once: rows already in the accumulated result, and
+      duplicates produced within the same iteration, are dropped before the
+      next frontier forms (a set fixpoint). `accumulation: all` keeps every
+      generated row, multiplicity included. This is recursive admission, not
+      the unary `distinct` operator — they share canonical full-row identity
+      but are separate constructs. The `step` must contain exactly one
+      `recursive_ref` to this binding and the `anchor` none; the reference
+      denotes the frontier, never the accumulated result.
+
+      The anchor supplies the binding's column names, order, and kinds;
+      nullability is the least widening that accommodates both the anchor and
+      the recursive step. The relation has no inherent order and termination is
+      not guaranteed — observing it requires an explicit `order`, and a
+      non-terminating recursion is bounded only by the engine's iteration and
+      row limits.
+    type: object
+    additionalProperties: false
+    required: [kind, anchor, step, accumulation]
+    properties:
+      kind: { type: string, const: recursive }
+      anchor:
+        description: The base-case root node. Contains no `recursive_ref`.
+        type: string
+        minLength: 1
+      step:
+        description: |
+          The inductive-case root node. Contains exactly one `recursive_ref`
+          to this binding.
+        type: string
+        minLength: 1
+      accumulation:
+        description: |
+          How each iteration's rows enter the result and next frontier: `all`
+          keeps every generated row with its multiplicity; `new` admits each
+          full row at most once, dropping rows already in the accumulated
+          result and duplicates within the same iteration. Recursive admission,
+          not the unary `distinct` operator.
+        type: string
+        enum: [all, new]
 
   Root:
     title: Root
@@ -202,13 +271,15 @@ $defs:
       - { $ref: "#/$defs/OrderNode" }
       - { $ref: "#/$defs/SliceNode" }
       - { $ref: "#/$defs/RefNode" }
+      - { $ref: "#/$defs/RecursiveRefNode" }
+      - { $ref: "#/$defs/DistinctNode" }
 
   RefNode:
     description: |
       One occurrence of a named binding: a fresh variable ranging over the
       binding's committed value, exactly as a scan is a fresh variable over
-      a table's snapshot. The occurrence exposes the binding's declared
-      output columns under its own `scope`; the binding's interior scopes
+      a table's snapshot. The occurrence exposes the binding's output
+      columns under its own `scope`; the binding's interior scopes
       are not visible through it. References are uniformly zero-or-many
       rows regardless of the body — determinism-sensitive consumers bring
       their own order or slice.
@@ -225,6 +296,51 @@ $defs:
         description: |
           The label this occurrence's rows are bound to. Must be unique
           across the query, like a scan's scope.
+        type: string
+        minLength: 1
+
+  RecursiveRefNode:
+    description: |
+      One occurrence of the enclosing recursive binding's frontier: the rows
+      the previous iteration produced (the working table), exposed under a
+      fresh `scope` exactly as `ref` exposes a committed binding. Legal only
+      inside that binding's `step`, and exactly once. It denotes the frontier,
+      never the accumulated result; the completed fixpoint value is observed
+      from outside the binding through an ordinary `ref`.
+    type: object
+    additionalProperties: false
+    required: [kind, binding, scope]
+    properties:
+      kind: { type: string, const: recursive_ref }
+      binding:
+        description: |
+          The enclosing recursive binding whose frontier this observes.
+        type: string
+        minLength: 1
+      scope:
+        description: |
+          The label this occurrence's rows are bound to. Must be unique across
+          the query, like a scan's scope.
+        type: string
+        minLength: 1
+
+  DistinctNode:
+    description: |
+      Remove duplicate complete rows from `input`. Two rows are duplicates when
+      every corresponding datum has the same canonical row identity — the
+      complete row, type- and order-significant, with typed NULL values equal to
+      one another (deliberately unlike three-valued predicate equality). The
+      output has `input`'s row type and contains at most one occurrence of each
+      complete row. `distinct` fixes membership and multiplicity, not order: any
+      observable ordering requires an explicit `order` above it, and an ordered
+      input confers no ordering on the output.
+    type: object
+    additionalProperties: false
+    required: [kind, input]
+    properties:
+      kind: { type: string, const: distinct }
+      input:
+        description: The id of the relation to deduplicate.
         type: string
         minLength: 1
 

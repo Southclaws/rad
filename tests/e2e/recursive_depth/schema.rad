@@ -1,0 +1,10 @@
+# e2e/recursive_depth — the same referral graph, but the recursive binding
+# carries a depth: an int64 literal in the anchor, parent.depth + 1 in the
+# step. union all over a finite tree terminates; the result is ordered by
+# (depth, id).
+tables:
+  - name: people
+    columns:
+      - { name: id, type: string, pk: true }
+      - { name: name, type: string }
+      - { name: referrer_id, type: string, nullable: true }

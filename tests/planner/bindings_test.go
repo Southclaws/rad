@@ -48,7 +48,7 @@ func TestBindingCTESelfJoin(t *testing.T) {
 			{As: "n2", Expr: lirwire.Col("b", "n")},
 		}),
 	}, map[string]lirwire.Binding{
-		"expensive": {Node: "per_customer"},
+		"expensive": lirwire.Derived("per_customer"),
 	}, "out", "many")).Equals(`[
 		{"customer":"c1","n1":3,"n2":3},
 		{"customer":"c2","n1":2,"n2":2},
@@ -74,7 +74,7 @@ func TestBindingDiagonalOverWire(t *testing.T) {
 			{As: "r", Expr: lirwire.Col("b", "id")},
 		}),
 	}, map[string]lirwire.Binding{
-		"pair": {Node: "some"},
+		"pair": lirwire.Derived("some"),
 	}, "out", "many")).Len(2)
 	for _, rec := range r.Records {
 		if rec["l"] != rec["r"] {
@@ -96,8 +96,8 @@ func TestBindingChainOverWire(t *testing.T) {
 			nil, []lirwire.AggTerm{{Fn: "count", As: "n"}}),
 		"root": lirwire.Ref("stats", "s"),
 	}, map[string]lirwire.Binding{
-		"pending": {Node: "open"},
-		"stats":   {Node: "fold"},
+		"pending": lirwire.Derived("open"),
+		"stats":   lirwire.Derived("fold"),
 	}, "root", "exactly_one")).Equals(`[{"n":2}]`)
 }
 
@@ -114,7 +114,7 @@ func TestBindingUnusedRejected(t *testing.T) {
 		"o":    lirwire.Scan("orders", "o"),
 		"dead": lirwire.Scan("products", "p"),
 	}, map[string]lirwire.Binding{
-		"unused": {Node: "dead"},
+		"unused": lirwire.Derived("dead"),
 	}, "o", "many")).ExpectError(`binding "unused" is never referenced`)
 }
 
@@ -136,7 +136,7 @@ func TestBindingCycleRejected(t *testing.T) {
 			lirwire.Binary("eq", lirwire.Col("s", "id"), lirwire.LitOf("x"))),
 		"r": lirwire.Ref("loop", "r"),
 	}, map[string]lirwire.Binding{
-		"loop": {Node: "more"},
+		"loop": lirwire.Derived("more"),
 	}, "r", "many")).ExpectError(`binding "loop" is part of a binding cycle`)
 }
 
@@ -155,7 +155,7 @@ func TestBindingRootAlsoConsumedRejected(t *testing.T) {
 		"r": lirwire.Ref("b", "r"),
 		"j": lirwire.Join("f", "r", "inner", lirwire.LitOf(true)),
 	}, map[string]lirwire.Binding{
-		"b": {Node: "o"},
+		"b": lirwire.Derived("o"),
 	}, "j", "many")).ExpectError(`duplicate scope`)
 }
 
@@ -168,7 +168,7 @@ func TestBindingHiddenScopeOverWire(t *testing.T) {
 		"leak": lirwire.Filter("r",
 			lirwire.Binary("eq", lirwire.Col("o", "status"), lirwire.LitOf("pending"))),
 	}, map[string]lirwire.Binding{
-		"all": {Node: "o"},
+		"all": lirwire.Derived("o"),
 	}, "leak", "many")).ExpectError(`scope "o" exists but is not visible`)
 }
 
@@ -184,7 +184,7 @@ func TestBindingNestedDepthStaysLinear(t *testing.T) {
 		"ids": lirwire.Project("base", "", nil,
 			[]lirwire.Field{{As: "id", Expr: lirwire.Col("s0", "id")}}),
 	}
-	bindings := map[string]lirwire.Binding{"b0": {Node: "ids"}}
+	bindings := map[string]lirwire.Binding{"b0": lirwire.Derived("ids")}
 	prev := "b0"
 	for i := 1; i <= 6; i++ {
 		l, r := fmt.Sprintf("l%d", i), fmt.Sprintf("r%d", i)
@@ -196,7 +196,7 @@ func TestBindingNestedDepthStaysLinear(t *testing.T) {
 		nodes[p] = lirwire.Project(j, "", nil,
 			[]lirwire.Field{{As: "id", Expr: lirwire.Col(l, "id")}})
 		name := fmt.Sprintf("b%d", i)
-		bindings[name] = lirwire.Binding{Node: p}
+		bindings[name] = lirwire.Derived(p)
 		prev = name
 	}
 	nodes["top"] = lirwire.Ref(prev, "top")
@@ -219,7 +219,7 @@ func TestBindingDuplicateOutputRejected(t *testing.T) {
 			lirwire.Binary("eq", lirwire.Col("o", "customer_id"), lirwire.Col("c", "id"))),
 		"r": lirwire.Ref("wide", "r"),
 	}, map[string]lirwire.Binding{
-		"wide": {Node: "j"},
+		"wide": lirwire.Derived("j"),
 	}, "r", "many")).ExpectError(`binding "wide" output has duplicate column "id"`)
 }
 
@@ -278,8 +278,8 @@ func TestBindingAlias(t *testing.T) {
 		"fold": lirwire.Aggregate("use", "",
 			nil, []lirwire.AggTerm{{Fn: "count", As: "n"}}),
 	}, map[string]lirwire.Binding{
-		"base":  {Node: "open"},
-		"alias": {Node: "alias_root"},
+		"base":  lirwire.Derived("open"),
+		"alias": lirwire.Derived("alias_root"),
 	}, "fold", "exactly_one")).Equals(`[{"n":2}]`)
 }
 
@@ -294,6 +294,6 @@ func TestBindingDuplicateRefScopeRejected(t *testing.T) {
 		"j": lirwire.Join("x", "y", "inner",
 			lirwire.Binary("eq", lirwire.Col("same", "id"), lirwire.Col("same", "id"))),
 	}, map[string]lirwire.Binding{
-		"b": {Node: "o"},
+		"b": lirwire.Derived("o"),
 	}, "j", "many")).ExpectError(`duplicate scope "same"`)
 }

@@ -1,0 +1,14 @@
+# e2e/distinct_over_join — the canonical reason distinct exists: an inner join
+# fans a row out once per match, and distinct collapses the duplicates back.
+# Here, which authors have written at least one post — each qualifying author
+# appears once regardless of how many posts they wrote, and an author with none
+# is absent.
+tables:
+  - name: authors
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: name, type: string }
+  - name: posts
+    columns:
+      - { name: id,        type: string, pk: true }
+      - { name: author_id, type: string }

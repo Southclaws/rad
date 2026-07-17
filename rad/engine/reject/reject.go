@@ -70,6 +70,7 @@ const (
 	ReasonDivisionByZero   Reason = "division_by_zero"
 	ReasonCardinality      Reason = "cardinality_violation"
 	ReasonMutationNotFound Reason = "mutation_target_not_found"
+	ReasonRecursionLimit   Reason = "recursion_limit"
 
 	// conflict — a lost serializable race; retrying the whole unit may win.
 	ReasonSerializableConflict Reason = "serializable_conflict"
@@ -107,6 +108,7 @@ var reasonClass = map[Reason]Class{
 	ReasonDivisionByZero:   ClassExecutionFailed,
 	ReasonCardinality:      ClassExecutionFailed,
 	ReasonMutationNotFound: ClassExecutionFailed,
+	ReasonRecursionLimit:   ClassExecutionFailed,
 
 	ReasonSerializableConflict: ClassConflict,
 	ReasonNotFound:             ClassNotFound,

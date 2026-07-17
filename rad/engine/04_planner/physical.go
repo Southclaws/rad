@@ -65,6 +65,15 @@ type BindingPlan struct {
 	// Sensitive: plan-choice-sensitive body — the property that forbids
 	// per-occurrence plan divergence, kept visible in EXPLAIN.
 	Sensitive bool
+	// Recursive marks a fixpoint binding. Plan is then the anchor; Step is the
+	// inductive plan (containing a RecursiveRefExec that reads the frontier),
+	// StepOut its output row type (for remapping onto canonical slots), and
+	// Accumulation the admission policy. Recursive bindings are always
+	// materialised.
+	Recursive    bool
+	Step         PhysNode
+	StepOut      lir.RowType
+	Accumulation lir.RecursiveAccumulationMode
 }
 
 // AccessDecision records why the planner picked an access path for a scan:
@@ -200,6 +209,23 @@ type RefExec struct {
 	Canon   []lir.SlotID
 }
 
+// RecursiveRefExec is one occurrence of a recursive binding's frontier: it
+// re-exposes the current working table's canonical frames under the
+// occurrence's fresh slots, exactly as RefExec does for a committed binding.
+type RecursiveRefExec struct {
+	Binding string
+	Out     lir.RowType
+	Canon   []lir.SlotID
+}
+
+// DistinctExec removes duplicate complete rows, blocking: it drains its input,
+// admits each canonical row once, and emits the survivors. Order is not
+// preserved. Out carries the output fields the row identity is taken over.
+type DistinctExec struct {
+	Input PhysNode
+	Out   lir.RowType
+}
+
 // NestedLoopJoinExec joins by materialising the right input and probing it
 // per left row. Inner and left only; ROut is the right side's row type, for
 // NULL-padding unmatched left rows.
@@ -229,6 +255,8 @@ func (*SortExec) phys()           {}
 func (*SliceExec) phys()          {}
 func (*NestedLoopJoinExec) phys() {}
 func (*RefExec) phys()            {}
+func (*RecursiveRefExec) phys()   {}
+func (*DistinctExec) phys()       {}
 func (*AggregateExec) phys()      {}
 
 // -

@@ -193,7 +193,7 @@ func TestRowsAsBinding(t *testing.T) {
 			{As: "lo", Expr: lirwire.Col("a", "n")},
 			{As: "hi", Expr: lirwire.Col("b", "n")},
 		}),
-	}, map[string]lirwire.Binding{"nums": {Node: "lit"}},
+	}, map[string]lirwire.Binding{"nums": lirwire.Derived("lit")},
 		"out", "many")).EqualsUnordered(`[{"lo":1,"hi":2}]`)
 }
 

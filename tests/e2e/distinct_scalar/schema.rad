@@ -1,0 +1,8 @@
+# e2e/distinct_scalar — SELECT DISTINCT over a repeating scalar column: project
+# a category off many products, distinct collapses the duplicates, and an
+# explicit order above it makes the deduped set deterministic.
+tables:
+  - name: products
+    columns:
+      - { name: id,       type: string, pk: true }
+      - { name: category, type: string }

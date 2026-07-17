@@ -64,7 +64,7 @@ func (e *Engine) execute(ctx context.Context, view kv.KV, q lir.Query, forceNest
 	}
 	pp := planner.PlanQuery(bq, planOpts...)
 
-	ex := newExecutor(view)
+	ex := newExecutor(view, e.recur)
 	ex.forceNested = forceNested
 	if err := ex.commit(ctx, pp.Bindings); err != nil {
 		return lir.Datum{}, err

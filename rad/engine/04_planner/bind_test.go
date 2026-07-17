@@ -466,6 +466,27 @@ func TestLiteralCoercion(t *testing.T) {
 		beq(blit(nil), blit(nil)))}, "bare NULL")
 }
 
+// A projected NULL carries its declared wire type, so it binds without a
+// column context — the type it would otherwise have to infer from a
+// comparison. Previously this was rejected as a bare NULL.
+func TestProjectedTypedNull(t *testing.T) {
+	bq := bind(t, lir.Query{Card: lir.CardMany, Root: lir.Project{
+		Input:  bscan("tasks", "t"),
+		Fields: []lir.ProjField{{As: "nothing", Expr: lir.Literal{Kind: lir.KindText}}},
+	}})
+	proj, ok := bq.Root.(*bound.Project)
+	if !ok {
+		t.Fatalf("root = %T, want *bound.Project", bq.Root)
+	}
+	f, ok := proj.Output().Lookup("nothing")
+	if !ok {
+		t.Fatal("projected NULL column missing from output")
+	}
+	if f.Type.Kind != lir.KindText || !f.Type.Nullable {
+		t.Fatalf("projected NULL type = %s, want nullable text", f.Type)
+	}
+}
+
 // -
 // the validation matrix
 // -
@@ -745,6 +766,54 @@ func TestJoinScopesAndZeroLimit(t *testing.T) {
 	zq := bind(t, lir.Query{Card: lir.CardMany, Root: lir.Slice{Input: bscan("tasks", "t"), Limit: new(int(0))}})
 	if got := zq.Root.Card(); !got.AtMostOne() || got.Max != 0 {
 		t.Fatalf("limit 0 card = %v, want 0..0", got)
+	}
+}
+
+// A recursive binding's public nullability is a fixpoint, not a single
+// reconcile. Here the step derives b from parent.a: b is non-null after one
+// pass (the anchor's a is non-null) but nullable at the fixpoint, because a
+// itself widens to nullable and that must propagate to b. A single-pass
+// reconcile would leave b non-null — an unsound public type.
+func TestRecursiveNullabilityFixpoint(t *testing.T) {
+	anchor := lir.Project{
+		Input: bfilter(bscan("tasks", "at"), beq(bcol("at", "id"), blit("root"))),
+		Scope: "a",
+		Fields: []lir.ProjField{
+			{As: "a", Expr: bcol("at", "id")}, // tasks.id: non-null
+			{As: "b", Expr: bcol("at", "id")},
+		},
+	}
+	step := lir.Project{
+		Input: lir.Join{
+			Left:  bscan("tasks", "st"),
+			Right: lir.RecursiveRef{Binding: "chain", Scope: "parent"},
+			Kind:  lir.InnerJoin,
+			On:    beq(bcol("st", "id"), bcol("parent", "a")),
+		},
+		Scope: "s",
+		Fields: []lir.ProjField{
+			{As: "a", Expr: bcol("st", "assignee_id")}, // nullable source
+			{As: "b", Expr: bcol("parent", "a")},       // tracks a, one iteration behind
+		},
+	}
+	bq := bind(t, lir.Query{
+		Card: lir.CardMany,
+		Root: lir.Ref{Binding: "chain", Scope: "r"},
+		Bindings: map[string]lir.Relation{
+			"chain": lir.Recursive{Anchor: anchor, Step: step},
+		},
+	})
+	if len(bq.Bindings) != 1 {
+		t.Fatalf("bindings = %d, want 1", len(bq.Bindings))
+	}
+	for _, name := range []string{"a", "b"} {
+		f, ok := bq.Bindings[0].Out.Lookup(name)
+		if !ok {
+			t.Fatalf("recursive binding output missing column %q", name)
+		}
+		if !f.Type.Nullable {
+			t.Fatalf("column %q nullable = false, want true — nullability must reach a fixpoint, not stop after one pass", name)
+		}
 	}
 }
 

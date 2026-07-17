@@ -15,6 +15,7 @@ package exec
 
 import (
 	"context"
+	"maps"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
@@ -176,10 +177,8 @@ func (e *Engine) runProgram(ctx context.Context, view kv.KV, prog Program, resul
 // relation's rows; a mutation evaluates its input relation, applies it as one
 // set, and returns the affected rows (created, post-image, or pre-image).
 func (e *Engine) runStatement(ctx context.Context, view kv.KV, stmt ProgramStatement, bs planner.BoundStatement, program map[string][]Frame) ([]Frame, error) {
-	ex := newExecutor(view)
-	for name, frames := range program {
-		ex.bindings[name] = frames
-	}
+	ex := newExecutor(view, e.recur)
+	maps.Copy(ex.bindings, program)
 	if stmt.Kind == StmtQuery {
 		return ex.runPlan(ctx, bs.Plan)
 	}

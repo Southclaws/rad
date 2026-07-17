@@ -400,17 +400,86 @@ func NewRef(binding, scope string, fields []lir.Field, canon []lir.SlotID) *Ref 
 
 func (r *Ref) Inputs() []Relation { return nil }
 
+// RecursiveRef is one occurrence of a recursive binding's frontier: fresh
+// occurrence slots ranging over the previous iteration's rows. Like Ref, the
+// binding's body is not an input — the frontier is supplied by the fixpoint
+// driver, not consumed as a subtree — and its cardinality is uniformly
+// 0..many. Canon aligns with Output().Fields: Canon[i] is the frontier's
+// canonical slot for occurrence field i.
+type RecursiveRef struct {
+	laws
+	Binding string
+	Scope   string
+	Canon   []lir.SlotID
+}
+
+// NewRecursiveRef binds one frontier occurrence: fields carry fresh
+// occurrence slots, canon the binding's canonical slots in the same order.
+func NewRecursiveRef(binding, scope string, fields []lir.Field, canon []lir.SlotID) *RecursiveRef {
+	slots := make([]lir.SlotID, len(fields))
+	for i, f := range fields {
+		slots[i] = f.Slot
+	}
+	return &RecursiveRef{
+		laws: laws{
+			out:      lir.RowType{Fields: fields},
+			produced: NewSlotSet(slots...),
+			card:     lir.Cardinality{Min: 0, Max: lir.Unbounded},
+		},
+		Binding: binding,
+		Scope:   scope,
+		Canon:   canon,
+	}
+}
+
+func (r *RecursiveRef) Inputs() []Relation { return nil }
+
 // Binding is one bound named relational value: the body bound once into
 // canonical output slots, plus the derived plan-choice sensitivity — can
 // two valid physical plans commit different legal bags?
 type Binding struct {
 	Name string
 	Root Relation
+	// Out is the binding's public output row type. For a derived binding it is
+	// Root.Output(); for a recursive binding it is the anchor's shape with
+	// nullability widened by the step — the reconciled fixpoint type every
+	// occurrence observes.
+	Out lir.RowType
 	// PlanSensitive: the body contains a selection whose membership (or an
 	// order-materialising crossing whose datum) is not uniquely determined,
 	// so all occurrences must share one committed evaluation.
 	PlanSensitive bool
+	// Recursive marks a recursively-defined binding. Root is then the anchor
+	// (base case) and Step the inductive case, which contains exactly one
+	// RecursiveRef to this binding; Accumulation is the admission policy for
+	// the step's generated rows.
+	Recursive    bool
+	Step         Relation
+	Accumulation lir.RecursiveAccumulationMode
 }
+
+// Distinct removes duplicate complete rows. It preserves its input's row type
+// and slots; the complete output row is a unique key, so a downstream order
+// over all its columns is total.
+type Distinct struct {
+	laws
+	In Relation
+}
+
+// NewDistinct binds the deduplication operator over in.
+func NewDistinct(in Relation) *Distinct {
+	return &Distinct{
+		laws: laws{
+			out:      in.Output(),
+			free:     in.FreeSlots(),
+			produced: in.Produced(),
+			card:     lir.Cardinality{Min: 0, Max: in.Card().Max},
+		},
+		In: in,
+	}
+}
+
+func (d *Distinct) Inputs() []Relation { return []Relation{d.In} }
 
 // Query is a bound root relation plus its materialisation mode.
 type Query struct {

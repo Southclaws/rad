@@ -1,0 +1,44 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "reachable",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "a_scan": { "kind": "scan", "table": "people", "scope": "ac" },
+            "a_filter": { "kind": "filter", "input": "a_scan",
+              "predicate": { "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "ac", "column": "id" },
+                "right": { "kind": "lit", "value": { "type": "text", "value": "p1" } } } },
+            "a_proj": { "kind": "project", "input": "a_filter", "scope": "a",
+              "fields": [ { "as": "id", "expr": { "kind": "col", "scope": "ac", "column": "id" } } ] },
+
+            "s_scan": { "kind": "scan", "table": "people", "scope": "sc" },
+            "s_frontier": { "kind": "recursive_ref", "binding": "tree", "scope": "parent" },
+            "s_join": { "kind": "join", "left": "s_scan", "right": "s_frontier", "join": "inner",
+              "on": { "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "sc", "column": "referrer_id" },
+                "right": { "kind": "col", "scope": "parent", "column": "id" } } },
+            "s_proj": { "kind": "project", "input": "s_join", "scope": "s",
+              "fields": [ { "as": "id", "expr": { "kind": "col", "scope": "sc", "column": "id" } } ] },
+
+            "ref": { "kind": "ref", "binding": "tree", "scope": "r" },
+            "ordered": { "kind": "order", "input": "ref",
+              "terms": [ { "expr": { "kind": "col", "scope": "r", "column": "id" } } ] }
+          },
+          "bindings": {
+            "tree": { "kind": "recursive", "anchor": "a_proj", "step": "s_proj", "accumulation": "new" }
+          },
+          "root": { "node": "ordered", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "p1" },
+    { "id": "p2" },
+    { "id": "p3" },
+    { "id": "p4" }
+  ]
+}

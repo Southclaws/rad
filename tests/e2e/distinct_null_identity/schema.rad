@@ -1,0 +1,9 @@
+# e2e/distinct_null_identity — distinct treats NULL as equal to NULL (unlike
+# three-valued predicate equality, where NULL = NULL is unknown). Several events
+# carry a null kind; distinct collapses them to a single null row alongside the
+# distinct non-null kinds.
+tables:
+  - name: events
+    columns:
+      - { name: id,   type: string, pk: true }
+      - { name: kind, type: string, nullable: true }

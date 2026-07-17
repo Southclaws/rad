@@ -31,7 +31,7 @@ func lowerQuery(q lirwire.Query) (lir.Query, error) {
 	if len(q.Bindings) > 0 {
 		bindings = make(map[string]lir.Relation, len(q.Bindings))
 		for name, b := range q.Bindings {
-			body, err := g.rel(b.Node)
+			body, err := g.binding(b)
 			if err != nil {
 				return lir.Query{}, err
 			}
@@ -207,8 +207,41 @@ func (g *graphConv) rel(name string) (lir.Relation, error) {
 	case *lirwire.RefNode:
 		return lir.Ref{Binding: x.Binding, Scope: x.Scope}, nil
 
+	case *lirwire.RecursiveRefNode:
+		return lir.RecursiveRef{Binding: x.Binding, Scope: x.Scope}, nil
+
+	case *lirwire.DistinctNode:
+		in, err := g.rel(x.Input)
+		if err != nil {
+			return nil, err
+		}
+		return lir.Distinct{Input: in}, nil
+
 	default:
 		return nil, wireErrf("node %q has unknown kind %q", name, nodeKind(n))
+	}
+}
+
+// binding lowers a wire binding: a derived binding is its defining tree; a
+// recursive binding lowers to a lir.Recursive body carrying its anchor and
+// step. Both branches reach their nodes through g.rel, so orphan detection
+// still sees them.
+func (g *graphConv) binding(b lirwire.Binding) (lir.Relation, error) {
+	switch x := b.BindingUnion.(type) {
+	case *lirwire.DerivedBinding:
+		return g.rel(x.Node)
+	case *lirwire.RecursiveBinding:
+		anchor, err := g.rel(x.Anchor)
+		if err != nil {
+			return nil, err
+		}
+		step, err := g.rel(x.Step)
+		if err != nil {
+			return nil, err
+		}
+		return lir.Recursive{Anchor: anchor, Step: step, Accumulation: lir.RecursiveAccumulationMode(x.Accumulation)}, nil
+	default:
+		return nil, wireErrf("binding has unknown kind")
 	}
 }
 
@@ -222,7 +255,13 @@ func (g *graphConv) expr(e lirwire.Expr) (lir.Expr, error) {
 		if err != nil {
 			return nil, wireErrf("literal: %v", err)
 		}
-		return lir.Literal{Raw: raw}, nil
+		lit := lir.Literal{Raw: raw}
+		if raw == nil {
+			// A wire NULL is always typed; carry that type so a projected NULL,
+			// which meets no column context, still binds.
+			lit.Kind = lir.Kind(string(valueScalarType(x.Value)))
+		}
+		return lit, nil
 
 	case *lirwire.ColumnExpr:
 		return lir.Column{Scope: x.Scope, Name: x.Column}, nil

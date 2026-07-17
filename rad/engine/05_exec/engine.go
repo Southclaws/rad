@@ -25,10 +25,52 @@ import (
 type Engine struct {
 	store kv.TransactionalKV
 	cat   *catalog.Catalog
+	recur RecursionLimits
 }
 
-func New(store kv.TransactionalKV, cat *catalog.Catalog) *Engine {
-	return &Engine{store: store, cat: cat}
+// RecursionLimits bounds a recursive binding's fixpoint. They are execution
+// safeguards, not query semantics — a terminating recursion never reaches
+// them — so tune them to the deepest legitimate hierarchy and the most rows a
+// query may return, not to any property of the language.
+type RecursionLimits struct {
+	MaxIterations int // frontier rounds before the query fails
+	MaxRows       int // accumulated rows before the query fails
+}
+
+const (
+	defaultMaxRecursionIterations = 10000
+	defaultMaxRecursionRows       = 1_000_000
+)
+
+// Option configures an Engine at construction.
+type Option func(*Engine)
+
+// WithRecursionLimits overrides the fixpoint safeguards; a zero field keeps
+// its default.
+func WithRecursionLimits(l RecursionLimits) Option {
+	return func(e *Engine) {
+		if l.MaxIterations > 0 {
+			e.recur.MaxIterations = l.MaxIterations
+		}
+		if l.MaxRows > 0 {
+			e.recur.MaxRows = l.MaxRows
+		}
+	}
+}
+
+func New(store kv.TransactionalKV, cat *catalog.Catalog, opts ...Option) *Engine {
+	e := &Engine{
+		store: store,
+		cat:   cat,
+		recur: RecursionLimits{
+			MaxIterations: defaultMaxRecursionIterations,
+			MaxRows:       defaultMaxRecursionRows,
+		},
+	}
+	for _, o := range opts {
+		o(e)
+	}
+	return e
 }
 
 // Tx is a transaction-scoped view of the engine. All reads see the snapshot

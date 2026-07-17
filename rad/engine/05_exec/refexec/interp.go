@@ -47,12 +47,19 @@ type ScanFunc func(ctx context.Context, tbl catalog.Table) ([]lir.Row, error)
 // allocation, not the interesting semantics. The split is after binding: this
 // is the oracle for planner + physical plan + execution.
 func Interpret(ctx context.Context, scan ScanFunc, q *bound.Query) (lir.Datum, error) {
-	in := &interp{ctx: ctx, scan: scan, next: q.Slots, bindings: map[string][]bound.Env{}}
+	in := &interp{ctx: ctx, scan: scan, next: q.Slots, bindings: map[string][]bound.Env{}, frontier: map[string][]bound.Env{}}
 
 	// Commit-once, exactly like the engine: each binding evaluates once, in
-	// dependency order, and every ref observes that one committed value.
+	// dependency order, and every ref observes that one committed value. A
+	// recursive binding commits its fixpoint instead of a single evaluation.
 	for _, bnd := range q.Bindings {
-		committed, err := in.rel(bnd.Root, bound.Env{})
+		var committed []bound.Env
+		var err error
+		if bnd.Recursive {
+			committed, err = in.fixpoint(bnd)
+		} else {
+			committed, err = in.rel(bnd.Root, bound.Env{})
+		}
 		if err != nil {
 			return lir.Datum{}, err
 		}
@@ -98,6 +105,9 @@ type interp struct {
 	scan     ScanFunc
 	next     lir.SlotID // scratch slots for crossing substitution
 	bindings map[string][]bound.Env
+	// frontier holds the current working table of each in-progress recursive
+	// binding, read by its step's recursive_ref.
+	frontier map[string][]bound.Env
 }
 
 // newFrame starts a frame seeded from the outer environment — a correlated
@@ -137,6 +147,146 @@ func frameToObject(out lir.RowType, f bound.Env) lir.Datum {
 	return lir.ObjectDatum(fields)
 }
 
+// Recursion safeguards: a valid recursive query can still fail to terminate,
+// so the fixpoint is bounded. These are backstops, not semantics.
+const (
+	maxRecursionIterations = 10000
+	maxRecursionRows       = 1_000_000
+)
+
+// slotProjection maps a source slot onto a canonical output slot.
+type slotProjection struct{ src, dst lir.SlotID }
+
+// makeProjection precomputes how a produced row (the source's fields) maps onto
+// the canonical output slots, matched by name. A canonical field with no source
+// is a broken bound-plan invariant, so it errors rather than silently reading
+// slot zero.
+func makeProjection(canon, source []lir.Field) ([]slotProjection, error) {
+	byName := make(map[string]lir.SlotID, len(source))
+	for _, f := range source {
+		byName[f.Name] = f.Slot
+	}
+	pairs := make([]slotProjection, 0, len(canon))
+	for _, cf := range canon {
+		src, ok := byName[cf.Name]
+		if !ok {
+			return nil, fmt.Errorf("refexec: recursive output missing canonical field %q", cf.Name)
+		}
+		pairs = append(pairs, slotProjection{src: src, dst: cf.Slot})
+	}
+	return pairs, nil
+}
+
+// project rebuilds a row on the canonical slots. A missing source slot is a
+// broken invariant, never silently dropped, so a "missing" cell can never
+// masquerade as a NULL in a downstream identity test.
+func project(row bound.Env, pairs []slotProjection) (bound.Env, error) {
+	out := make(bound.Env, len(pairs))
+	for _, p := range pairs {
+		d, ok := row[p.src]
+		if !ok {
+			return nil, fmt.Errorf("refexec: recursive output row missing source slot %d", p.src)
+		}
+		out[p.dst] = d
+	}
+	return out, nil
+}
+
+// fixpoint evaluates a recursive binding by semi-naive iteration: the anchor
+// seeds the result and the frontier; each round the step runs with the frontier
+// in scope, its rows — admitted against the whole result under admit-new
+// accumulation, by refexec's own canonical identity — become the next frontier
+// and extend the result, until the frontier is empty. Rows are projected onto
+// the binding's canonical slots so every occurrence — the outer ref and the
+// step's recursive_ref — reads them the same way.
+func (in *interp) fixpoint(bnd *bound.Binding) ([]bound.Env, error) {
+	canon := bnd.Root.Output().Fields
+	anchorProj, err := makeProjection(canon, canon)
+	if err != nil {
+		return nil, err
+	}
+	stepProj, err := makeProjection(canon, bnd.Step.Output().Fields)
+	if err != nil {
+		return nil, err
+	}
+
+	var seen *oracleRowSet
+	if bnd.Accumulation == lir.AccumulateNew {
+		seen = newOracleRowSet(canon)
+	}
+	admit := func(row bound.Env) (bound.Env, bool) {
+		if seen == nil {
+			return row, true
+		}
+		if !seen.add(row) {
+			return nil, false
+		}
+		return row, true
+	}
+
+	// The frontier map is shared interpreter state; restore it on every exit —
+	// success, cap, or a step error — so a failed query leaves nothing stale and
+	// a re-entrant evaluation would stay correct.
+	prev, existed := in.frontier[bnd.Name]
+	defer func() {
+		if existed {
+			in.frontier[bnd.Name] = prev
+		} else {
+			delete(in.frontier, bnd.Name)
+		}
+	}()
+
+	overRowCap := func() error {
+		return reject.Fail(reject.ReasonRecursionLimit, "refexec: recursive binding %q produced more than %d rows", bnd.Name, maxRecursionRows)
+	}
+
+	anchorRows, err := in.rel(bnd.Root, bound.Env{})
+	if err != nil {
+		return nil, err
+	}
+	var result, frontier []bound.Env
+	for _, row := range anchorRows {
+		c, err := project(row, anchorProj)
+		if err != nil {
+			return nil, err
+		}
+		if adm, ok := admit(c); ok {
+			result = append(result, adm)
+			frontier = append(frontier, adm)
+			if len(result) > maxRecursionRows {
+				return nil, overRowCap()
+			}
+		}
+	}
+
+	for i := 0; len(frontier) > 0; i++ {
+		if i >= maxRecursionIterations {
+			return nil, reject.Fail(reject.ReasonRecursionLimit, "refexec: recursive binding %q did not terminate within %d iterations", bnd.Name, maxRecursionIterations)
+		}
+		in.frontier[bnd.Name] = frontier
+		produced, err := in.rel(bnd.Step, bound.Env{})
+		if err != nil {
+			return nil, err
+		}
+		var next []bound.Env
+		for _, row := range produced {
+			c, err := project(row, stepProj)
+			if err != nil {
+				return nil, err
+			}
+			if adm, ok := admit(c); ok {
+				next = append(next, adm)
+				result = append(result, adm)
+				if len(result) > maxRecursionRows {
+					return nil, overRowCap()
+				}
+			}
+		}
+		frontier = next
+	}
+	return result, nil
+}
+
 func (in *interp) rel(r bound.Relation, outer bound.Env) ([]bound.Env, error) {
 	switch n := r.(type) {
 	case *bound.Ref:
@@ -155,6 +305,37 @@ func (in *interp) rel(r bound.Relation, outer bound.Env) ([]bound.Env, error) {
 			out[i] = env
 		}
 		return out, nil
+
+	case *bound.RecursiveRef:
+		src, ok := in.frontier[n.Binding]
+		if !ok {
+			return nil, fmt.Errorf("refexec: frontier for %q not available", n.Binding)
+		}
+		out := make([]bound.Env, len(src))
+		for i, row := range src {
+			env := newFrame(outer)
+			for j, fld := range n.Output().Fields {
+				if d, has := row[n.Canon[j]]; has {
+					env[fld.Slot] = d
+				}
+			}
+			out[i] = env
+		}
+		return out, nil
+
+	case *bound.Distinct:
+		rows, err := in.rel(n.In, outer)
+		if err != nil {
+			return nil, err
+		}
+		seen := newOracleRowSet(n.Output().Fields)
+		var deduped []bound.Env
+		for _, row := range rows {
+			if seen.add(row) {
+				deduped = append(deduped, row)
+			}
+		}
+		return deduped, nil
 
 	case *bound.Rows:
 		out := make([]bound.Env, len(n.Vals))

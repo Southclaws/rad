@@ -1,0 +1,8 @@
+[
+  { "table": "readings", "rows": [
+    { "id": "r1", "sensor": "s1", "ok": true },
+    { "id": "r2", "sensor": "s1", "ok": true },
+    { "id": "r3", "sensor": "s1", "ok": false },
+    { "id": "r4", "sensor": "s2", "ok": true }
+  ] }
+]

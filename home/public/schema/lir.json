@@ -129,20 +129,16 @@
       "type": "object"
     },
     "Binding": {
-      "additionalProperties": false,
-      "description": "One named relational value. The binding denotes one committed\nrelational value produced by its defining tree for this statement.\nUnder bag semantics, that value is one committed bag: a\nnondeterministic body (a slice with no total order) is resolved once,\nand every reference observes the same choice. The binding's public\noutput is its root's declared output shape — interior scopes never\nleak.\n",
-      "properties": {
-        "node": {
-          "description": "The id of the binding's defining root node in `nodes`.",
-          "minLength": 1,
-          "type": "string"
+      "description": "One named relational value, a closed tagged union selected by `kind`. A\n`derived` binding names a single defining root; a `recursive` binding\nnames an `anchor` (base case) and a `step` (inductive case) combined into\na fixpoint.\n",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/DerivedBinding"
+        },
+        {
+          "$ref": "#/$defs/RecursiveBinding"
         }
-      },
-      "required": [
-        "node"
       ],
-      "title": "Binding",
-      "type": "object"
+      "title": "Binding"
     },
     "BoolValue": {
       "additionalProperties": false,
@@ -298,6 +294,47 @@
       "required": [
         "kind",
         "node"
+      ],
+      "type": "object"
+    },
+    "DerivedBinding": {
+      "additionalProperties": false,
+      "description": "A binding whose value is the one committed relational value its defining\ntree produces for this statement. Under bag semantics that value is one\ncommitted bag: a nondeterministic body (a slice with no total order) is\nresolved once, and every reference observes the same choice. The\nbinding's public output is its root's output shape — interior scopes\nnever leak.\n",
+      "properties": {
+        "kind": {
+          "const": "derived",
+          "type": "string"
+        },
+        "node": {
+          "description": "The id of the binding's defining root node in `nodes`.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "node"
+      ],
+      "title": "DerivedBinding",
+      "type": "object"
+    },
+    "DistinctNode": {
+      "additionalProperties": false,
+      "description": "Remove duplicate complete rows from `input`. Two rows are duplicates when\nevery corresponding datum has the same canonical row identity — the\ncomplete row, type- and order-significant, with typed NULL values equal to\none another (deliberately unlike three-valued predicate equality). The\noutput has `input`'s row type and contains at most one occurrence of each\ncomplete row. `distinct` fixes membership and multiplicity, not order: any\nobservable ordering requires an explicit `order` above it, and an ordered\ninput confers no ordering on the output.\n",
+      "properties": {
+        "input": {
+          "description": "The id of the relation to deduplicate.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "distinct",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "input"
       ],
       "type": "object"
     },
@@ -527,6 +564,12 @@
         },
         {
           "$ref": "#/$defs/RefNode"
+        },
+        {
+          "$ref": "#/$defs/RecursiveRefNode"
+        },
+        {
+          "$ref": "#/$defs/DistinctNode"
         }
       ],
       "title": "Node"
@@ -642,7 +685,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/Binding"
           },
-          "description": "Named relational values, each identifying the root node of its\ndefining tree within `nodes`. A binding's tree is subject to the\nsame single-consumer rules as the main tree; `ref` nodes are edges\ninto this namespace, never ordinary node-consumer edges. Binding\ntrees may themselves reference other bindings: those references\nform a separate acyclic dependency graph over the relation forest.\nEvery declared binding must be referenced at least once.\n",
+          "description": "Named relational values, each identifying the root node of its\ndefining tree within `nodes`. A binding's tree is subject to the\nsame single-consumer rules as the main tree; `ref` nodes are edges\ninto this namespace, never ordinary node-consumer edges. Binding\ntrees may themselves reference other bindings: those references\nform a separate acyclic dependency graph over the relation forest.\nThe single exception is a recursive binding, whose `step` references\nthe binding itself through `recursive_ref` — the one sanctioned\ncycle. Every declared binding must be referenced at least once.\n",
           "minProperties": 1,
           "propertyNames": {
             "minLength": 1
@@ -671,9 +714,71 @@
       "title": "Query",
       "type": "object"
     },
+    "RecursiveBinding": {
+      "additionalProperties": false,
+      "description": "A recursively-defined relation, evaluated by iterating a step over a\nfrontier. The `anchor` (base case) is evaluated once to seed both the\nworking table and the result; then the `step` (inductive case) is\nevaluated repeatedly with its `recursive_ref` bound to the previous\niteration's rows — the frontier — and each iteration's output is added to\nthe result, until the frontier is empty. `accumulation: new` admits each\nfull row at most once: rows already in the accumulated result, and\nduplicates produced within the same iteration, are dropped before the\nnext frontier forms (a set fixpoint). `accumulation: all` keeps every\ngenerated row, multiplicity included. This is recursive admission, not\nthe unary `distinct` operator — they share canonical full-row identity\nbut are separate constructs. The `step` must contain exactly one\n`recursive_ref` to this binding and the `anchor` none; the reference\ndenotes the frontier, never the accumulated result.\n\nThe anchor supplies the binding's column names, order, and kinds;\nnullability is the least widening that accommodates both the anchor and\nthe recursive step. The relation has no inherent order and termination is\nnot guaranteed — observing it requires an explicit `order`, and a\nnon-terminating recursion is bounded only by the engine's iteration and\nrow limits.\n",
+      "properties": {
+        "accumulation": {
+          "description": "How each iteration's rows enter the result and next frontier: `all`\nkeeps every generated row with its multiplicity; `new` admits each\nfull row at most once, dropping rows already in the accumulated\nresult and duplicates within the same iteration. Recursive admission,\nnot the unary `distinct` operator.\n",
+          "enum": [
+            "all",
+            "new"
+          ],
+          "type": "string"
+        },
+        "anchor": {
+          "description": "The base-case root node. Contains no `recursive_ref`.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "recursive",
+          "type": "string"
+        },
+        "step": {
+          "description": "The inductive-case root node. Contains exactly one `recursive_ref`\nto this binding.\n",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "anchor",
+        "step",
+        "accumulation"
+      ],
+      "title": "RecursiveBinding",
+      "type": "object"
+    },
+    "RecursiveRefNode": {
+      "additionalProperties": false,
+      "description": "One occurrence of the enclosing recursive binding's frontier: the rows\nthe previous iteration produced (the working table), exposed under a\nfresh `scope` exactly as `ref` exposes a committed binding. Legal only\ninside that binding's `step`, and exactly once. It denotes the frontier,\nnever the accumulated result; the completed fixpoint value is observed\nfrom outside the binding through an ordinary `ref`.\n",
+      "properties": {
+        "binding": {
+          "description": "The enclosing recursive binding whose frontier this observes.\n",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "recursive_ref",
+          "type": "string"
+        },
+        "scope": {
+          "description": "The label this occurrence's rows are bound to. Must be unique across\nthe query, like a scan's scope.\n",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "binding",
+        "scope"
+      ],
+      "type": "object"
+    },
     "RefNode": {
       "additionalProperties": false,
-      "description": "One occurrence of a named binding: a fresh variable ranging over the\nbinding's committed value, exactly as a scan is a fresh variable over\na table's snapshot. The occurrence exposes the binding's declared\noutput columns under its own `scope`; the binding's interior scopes\nare not visible through it. References are uniformly zero-or-many\nrows regardless of the body — determinism-sensitive consumers bring\ntheir own order or slice.\n",
+      "description": "One occurrence of a named binding: a fresh variable ranging over the\nbinding's committed value, exactly as a scan is a fresh variable over\na table's snapshot. The occurrence exposes the binding's output\ncolumns under its own `scope`; the binding's interior scopes\nare not visible through it. References are uniformly zero-or-many\nrows regardless of the body — determinism-sensitive consumers bring\ntheir own order or slice.\n",
       "properties": {
         "binding": {
           "description": "The name of the binding this occurrence observes.",
@@ -928,6 +1033,6 @@
   "$id": "https://www.radengine.dev/schema/lir.json",
   "$ref": "#/$defs/Query",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "LIR is Rad's low-level intermediate representation: the relation tree a\nclient sends to `POST /query`, and the tree the engine binds, plans, and\nexecutes. This schema is its normative specification. The type definitions\nand the prose in these descriptions are one artifact and move together.\n\nLIR is an internal contract with no external compatibility promise yet; it\nmay change while the design is hardened. It is deliberately unstable, but at\nany moment it is exactly what this document says.\n\n# Model\n\nLIR has exactly two categories, and no third \"shape\" category: shaping is\nprojection, and nesting lives in the value model.\n\n- A **relation** is a possibly empty, possibly many stream of structurally\n  typed rows. Relation operators consume relations and produce relations.\n- An **expression** computes exactly one typed *datum* (null, a scalar, a\n  row, or an array) in some scope. An expression may consume a relation only\n  through an explicit *crossing* that declares how a stream of rows becomes\n  one datum.\n\n**Relational closure** is a law, not an aspiration: the output of every\nrelation operator is itself an ordinary relation whose every attribute is\naddressable by later operators. A `filter` above an `aggregate` references a\nfold's output exactly as it would reference a scanned column.\n\n**Correlation** is a derived property, not an operator. A sub-relation that\nreferences a scope bound by an enclosing relation is correlated, and is\nevaluated with that enclosing row in scope. Correlation is a semantic\nrelationship only: the planner may satisfy it per row, by batching, or by a\njoin, as long as the result is identical. A relation becomes a datum only at\na crossing or the root, never merely by being correlated.\n\n# Determinism\n\nA key-value scan's encounter order is physical, never logical, and the\nengine's access-path choice must never change results. Wherever a stream of\nrows becomes observable, its order must be explicit. Root `many` results and\n`array` crossings require an `order`; root and crossing `first` permit either\nan `order` or a proof of at most one row. A positive `slice.offset` also\nrequires an ordered input. An unordered `limit` is permitted only until a\nlater observable boundary imposes its own ordering requirement.\n\n# NULL and three-valued logic\n\nPredicates evaluate in Kleene three-valued logic (K3): `TRUE`, `FALSE`, or\n`UNKNOWN`. Any comparison with a NULL operand is `UNKNOWN`. `filter` and a\njoin's `on` keep only rows that evaluate to `TRUE`, never `UNKNOWN`, so\n`not (x = 1)` does not match rows where `x` is NULL; `is_null` is the only\ntest that matches a NULL. NULLs are distinct under unique indexes.\n\n# The wire\n\nA query is a flat map of caller-chosen node ids plus a root selector. Every\ndefinition is inline; a node id is a plain reference carrying no sharing,\nmemoisation, or materialisation identity. The graph must be acyclic, every\nnode must be reachable from the root and have exactly one consumer, and\ndangling or shared references are rejected before binding. Nodes and\nexpressions are closed `oneOf` unions selected by `kind`; unknown fields,\nfields belonging to another variant, and missing required fields are\nrejected. Literal values travel as raw JSON scalars (see `Value`) and are\ntyped by the binder from the context each literal meets.\n",
+  "description": "LIR is Rad's low-level intermediate representation: the relation tree a\nclient sends to `POST /query`, and the tree the engine binds, plans, and\nexecutes. This schema is its normative specification. The type definitions\nand the prose in these descriptions are one artifact and move together.\n\nLIR is an internal contract with no external compatibility promise yet; it\nmay change while the design is hardened. It is deliberately unstable, but at\nany moment it is exactly what this document says.\n\n# Model\n\nLIR has exactly two categories, and no third \"shape\" category: shaping is\nprojection, and nesting lives in the value model.\n\n- A **relation** is a possibly empty, possibly many stream of structurally\n  typed rows. Relation operators consume relations and produce relations.\n- An **expression** computes exactly one typed *datum* (null, a scalar, a\n  row, or an array) in some scope. An expression may consume a relation only\n  through an explicit *crossing* that declares how a stream of rows becomes\n  one datum.\n\n**Relational closure** is a law, not an aspiration: the output of every\nrelation operator is itself an ordinary relation whose every attribute is\naddressable by later operators. A `filter` above an `aggregate` references a\nfold's output exactly as it would reference a scanned column.\n\n**Correlation** is a derived property, not an operator. A sub-relation that\nreferences a scope bound by an enclosing relation is correlated, and is\nevaluated with that enclosing row in scope. Correlation is a semantic\nrelationship only: the planner may satisfy it per row, by batching, or by a\njoin, as long as the result is identical. A relation becomes a datum only at\na crossing or the root, never merely by being correlated.\n\nRelations have **bag** semantics: an operator changes multiplicity only when\nthat is its job. `aggregate` folds each group to one row, and `distinct`\nconverts an input bag into the corresponding set of complete rows; every\nother operator preserves multiplicity.\n\n# Determinism\n\nA key-value scan's encounter order is physical, never logical, and the\nengine's access-path choice must never change results. Wherever a stream of\nrows becomes observable, its order must be explicit. Root `many` results and\n`array` crossings require an `order`; root and crossing `first` permit either\nan `order` or a proof of at most one row. A positive `slice.offset` also\nrequires an ordered input. An unordered `limit` is permitted only until a\nlater observable boundary imposes its own ordering requirement. `distinct`\nlikewise imposes no logical ordering — an observable ordered distinct result\nrequires an explicit `order` above it, and an ordered input confers none.\n\n# NULL and three-valued logic\n\nPredicates evaluate in Kleene three-valued logic (K3): `TRUE`, `FALSE`, or\n`UNKNOWN`. Any comparison with a NULL operand is `UNKNOWN`. `filter` and a\njoin's `on` keep only rows that evaluate to `TRUE`, never `UNKNOWN`, so\n`not (x = 1)` does not match rows where `x` is NULL; `is_null` is the only\ntest that matches a NULL. NULLs are distinct under unique indexes.\n\n# The wire\n\nA query is a flat map of caller-chosen node ids plus a root selector. Every\ndefinition is inline; a node id is a plain reference carrying no sharing,\nmemoisation, or materialisation identity. The graph must be acyclic, every\nnode must be reachable from the root and have exactly one consumer, and\ndangling or shared references are rejected before binding. Nodes and\nexpressions are closed `oneOf` unions selected by `kind`; unknown fields,\nfields belonging to another variant, and missing required fields are\nrejected. Literal values travel as raw JSON scalars (see `Value`) and are\ntyped by the binder from the context each literal meets.\n",
   "title": "Rad LIR"
 }
