@@ -1,11 +1,8 @@
 package exec
 
-// The recursive-binding fixpoint: semi-naive evaluation over the pull
-// operators. The anchor seeds the result and the working table (frontier);
-// each round the step runs with the frontier published for its
-// recursive_ref, and the rows it produces — admitted against the whole result
-// under admit-new accumulation, by the shared canonical row identity — become
-// the next frontier and extend the result, until the frontier is empty.
+// Recursive bindings use semi-naive evaluation: the anchor seeds a frontier,
+// and each round evaluates the step against only that frontier. Admit-new
+// accumulation compares candidates against the complete result.
 
 import (
 	"context"
@@ -16,11 +13,9 @@ import (
 	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
-// commitRecursive computes a recursive binding's fixpoint. Rows are projected
-// onto the binding's canonical slots so the outer ref and the step's
-// recursive_ref read them identically, exactly as a materialised binding's
-// canonical frames are read.
-func (ex *executor) commitRecursive(ctx context.Context, b planner.BindingPlan) ([]Frame, error) {
+// Canonical slots give outer references and recursive references the same row
+// identity.
+func (ex *executor) commitRecursive(ctx context.Context, b planner.BindingPlan) ([]frame, error) {
 	canon := b.Out.Fields
 	anchorSrc := map[string]lir.SlotID{}
 	for _, f := range canon {
@@ -30,8 +25,8 @@ func (ex *executor) commitRecursive(ctx context.Context, b planner.BindingPlan) 
 	for _, f := range b.StepOut.Fields {
 		stepSrc[f.Name] = f.Slot
 	}
-	project := func(src Frame, srcSlot map[string]lir.SlotID) Frame {
-		out := make(Frame, len(canon))
+	project := func(src frame, srcSlot map[string]lir.SlotID) frame {
+		out := make(frame, len(canon))
 		for _, cf := range canon {
 			if d, ok := src[srcSlot[cf.Name]]; ok {
 				out[cf.Slot] = d
@@ -44,7 +39,7 @@ func (ex *executor) commitRecursive(ctx context.Context, b planner.BindingPlan) 
 	if b.Accumulation == lir.AccumulateNew {
 		seen = bound.NewCanonicalRowSet(canon)
 	}
-	admit := func(f Frame) (Frame, bool) {
+	admit := func(f frame) (frame, bool) {
 		if seen == nil {
 			return f, true
 		}
@@ -58,13 +53,12 @@ func (ex *executor) commitRecursive(ctx context.Context, b planner.BindingPlan) 
 	if err != nil {
 		return nil, err
 	}
-	anchorFrames, err := drainOp(ctx, anchorOp)
-	anchorOp.Close()
+	anchorFrames, err := drainAndClose(ctx, anchorOp)
 	if err != nil {
 		return nil, err
 	}
 
-	var result, frontier []Frame
+	var result, frontier []frame
 	for _, f := range anchorFrames {
 		if c, ok := admit(project(f, anchorSrc)); ok {
 			result = append(result, c)
@@ -81,12 +75,11 @@ func (ex *executor) commitRecursive(ctx context.Context, b planner.BindingPlan) 
 		if err != nil {
 			return nil, err
 		}
-		produced, err := drainOp(ctx, stepOp)
-		stepOp.Close()
+		produced, err := drainAndClose(ctx, stepOp)
 		if err != nil {
 			return nil, err
 		}
-		var next []Frame
+		var next []frame
 		for _, f := range produced {
 			if c, ok := admit(project(f, stepSrc)); ok {
 				next = append(next, c)
@@ -105,14 +98,14 @@ func (ex *executor) commitRecursive(ctx context.Context, b planner.BindingPlan) 
 // recursiveRefOp streams one occurrence of a recursive binding's frontier.
 type recursiveRefOp struct {
 	n      *planner.RecursiveRefExec
-	frames []Frame
+	frames []frame
 	outer  bound.Env
 	pos    int
 }
 
-func (o *recursiveRefOp) Next(context.Context) (Frame, bool, error) {
+func (o *recursiveRefOp) Next(context.Context) (frame, bool, error) {
 	if o.pos >= len(o.frames) {
-		return Frame{}, false, nil
+		return frame{}, false, nil
 	}
 	src := o.frames[o.pos]
 	o.pos++
@@ -120,4 +113,3 @@ func (o *recursiveRefOp) Next(context.Context) (Frame, bool, error) {
 }
 
 func (o *recursiveRefOp) Close() error { return nil }
-

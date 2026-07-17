@@ -1,21 +1,8 @@
 package exec
 
-// attachOp: the home of deduplicated correlated execution. Every crossing
-// the planner extracted — from a projection field, a filter predicate, an
-// order term, an aggregate argument — materialises here as an explicit
-// sub-plan writing one slot, by strategy:
-//
-//   key-correlated:  dedupe the outer key tuples across the batch, run the
-//                    inner plan once per DISTINCT key (a NULL key component
-//                    short-circuits to the empty result with no KV work),
-//                    and share the result among the frames of each key;
-//                    grandchildren batch across each inner batch in turn.
-//   uncorrelated:    run once, share the result with every frame.
-//   general:         per-frame nested evaluation — the fallback.
-//
-// All three strategies are result-equivalent; the conformance suite asserts
-// batched ≡ nested. Frames re-emit in input order, so attaching preserves
-// any provided ordering.
+// attachOp evaluates extracted sub-plans without changing input order.
+// Uncorrelated plans run once, key-correlated plans run once per distinct key,
+// and general correlations run once per input frame.
 
 import (
 	"context"
@@ -28,24 +15,24 @@ import (
 
 type attachOp struct {
 	ex    *executor
-	in    Operator
+	in    operator
 	specs []*planner.AttachSpec
 	outer bound.Env
 
-	out    []Frame
+	out    []frame
 	pos    int
 	primed bool
 }
 
-func (o *attachOp) Next(ctx context.Context) (Frame, bool, error) {
+func (o *attachOp) Next(ctx context.Context) (frame, bool, error) {
 	if !o.primed {
 		if err := o.attachAll(ctx); err != nil {
-			return Frame{}, false, err
+			return frame{}, false, err
 		}
 		o.primed = true
 	}
 	if o.pos >= len(o.out) {
-		return Frame{}, false, nil
+		return frame{}, false, nil
 	}
 	f := o.out[o.pos]
 	o.pos++
@@ -68,7 +55,7 @@ func (o *attachOp) attachAll(ctx context.Context) error {
 	return nil
 }
 
-func (o *attachOp) attach(ctx context.Context, a *planner.AttachSpec, batch []Frame) error {
+func (o *attachOp) attach(ctx context.Context, a *planner.AttachSpec, batch []frame) error {
 	switch {
 	case a.Corr.Kind == planner.Uncorrelated:
 		d, err := o.runAttach(ctx, a, o.outer)
@@ -81,22 +68,8 @@ func (o *attachOp) attach(ctx context.Context, a *planner.AttachSpec, batch []Fr
 		return nil
 
 	case a.Corr.Kind == planner.KeyCorrelated && !o.ex.forceNested:
-		// Dedupe the outer key tuples over the batch; fetch per DISTINCT key.
-		//
-		// INVARIANT: never derive crossing emptiness from access emptiness
-		// across an aggregate boundary. Key-grouping may skip *redundant*
-		// executions (same key ⇒ same result), but it must not replace
-		// executing a group with a crossing-kind default — because "the keyed
-		// access matched no base rows" is an INPUT condition, not the sub-plan's
-		// final result. Operators above the access decide what empty input
-		// means: filter/project/order/slice/join preserve emptiness, but a
-		// global aggregate produces one row from empty input (count 0, sum/min/
-		// max NULL), and `rows` originates rows with no input at all. So a NULL
-		// key — which matches nothing, since the residual filter re-applies the
-		// correlation predicate and NULL = x is UNKNOWN under 3VL — is still an
-		// ordinary key group whose sub-plan runs; the aggregate then folds the
-		// empty match, and the crossing consumes that. Short-circuiting a NULL
-		// key to null/[]/false silently dropped the aggregate's empty-input row.
+		// NULL keys still execute their sub-plan. Their access path may be empty,
+		// but a global aggregate above that path still produces one row.
 		type keyGroup struct {
 			env    bound.Env
 			frames []int
@@ -157,8 +130,6 @@ func (o *attachOp) attach(ctx context.Context, a *planner.AttachSpec, batch []Fr
 	}
 }
 
-// runAttach executes the attached plan under env and folds the resulting
-// frames into the crossing's shape — every shape is a datum.
 func (o *attachOp) runAttach(ctx context.Context, a *planner.AttachSpec, env bound.Env) (lir.Datum, error) {
 	op, err := o.ex.build(ctx, a.Plan, env)
 	if err != nil {
@@ -192,45 +163,34 @@ func (o *attachOp) runAttach(ctx context.Context, a *planner.AttachSpec, env bou
 		if !ok {
 			return lir.NullDatum(), nil
 		}
-		d, has := f[a.Out.Fields[0].Slot]
-		if !has {
-			return lir.NullDatum(), nil
-		}
-		return d, nil
+		return frameScalar(a.Out, f), nil
 
 	case planner.CrossArray:
 		frames, err := drainOp(ctx, op)
 		if err != nil {
 			return lir.Datum{}, err
 		}
-		elems := make([]lir.Datum, len(frames))
-		for i, f := range frames {
-			elems[i] = frameToObject(a.Out, f)
-		}
-		return lir.ArrayDatum(elems), nil
+		return framesToArray(a.Out, frames), nil
 	}
 	return lir.Datum{}, fmt.Errorf("exec: unknown crossing %q", a.Kind)
 }
 
-// projectOp assembles output rows from pure expressions, streaming — the
-// blocking batch point moved into attachOp, which exists only when a field
-// actually needs one.
 type projectOp struct {
-	in     Operator
+	in     operator
 	fields []planner.PhysField
 	outer  bound.Env
 }
 
-func (o *projectOp) Next(ctx context.Context) (Frame, bool, error) {
+func (o *projectOp) Next(ctx context.Context) (frame, bool, error) {
 	in, ok, err := o.in.Next(ctx)
 	if err != nil || !ok {
-		return Frame{}, false, err
+		return frame{}, false, err
 	}
 	out := newFrame(o.outer)
 	for _, fld := range o.fields {
 		d, err := bound.EvalDatum(fld.Expr, in)
 		if err != nil {
-			return Frame{}, false, err
+			return frame{}, false, err
 		}
 		out[fld.Slot] = d
 	}

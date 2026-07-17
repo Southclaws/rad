@@ -1,11 +1,7 @@
 package exec
 
-// The distinct operator: blocking deduplication by canonical full-row identity
-// (bound.CanonicalRowSet, shared with recursive admit-new accumulation, so the
-// two can never disagree). It drains its input, admits each canonical row once,
-// and emits the survivors. It makes no ordering promise — an ordered distinct
-// result needs an explicit order above it — so first-occurrence emission is an
-// implementation detail, not a contract.
+// distinctOp shares canonical row identity with recursive accumulation. It
+// makes no ordering promise; ordered results require an explicit sort.
 
 import (
 	"context"
@@ -15,18 +11,18 @@ import (
 )
 
 type distinctOp struct {
-	in    Operator
+	in    operator
 	out   lir.RowType
-	rows  []Frame
+	rows  []frame
 	pos   int
 	drawn bool
 }
 
-func (o *distinctOp) Next(ctx context.Context) (Frame, bool, error) {
+func (o *distinctOp) Next(ctx context.Context) (frame, bool, error) {
 	if !o.drawn {
 		frames, err := drainOp(ctx, o.in)
 		if err != nil {
-			return Frame{}, false, err
+			return frame{}, false, err
 		}
 		seen := bound.NewCanonicalRowSet(o.out.Fields)
 		for _, f := range frames {
@@ -37,7 +33,7 @@ func (o *distinctOp) Next(ctx context.Context) (Frame, bool, error) {
 		o.drawn = true
 	}
 	if o.pos >= len(o.rows) {
-		return Frame{}, false, nil
+		return frame{}, false, nil
 	}
 	f := o.rows[o.pos]
 	o.pos++

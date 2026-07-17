@@ -10,15 +10,14 @@
 package exec
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"github.com/Southclaws/rad/rad/engine/reject"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
 	keyenc "github.com/Southclaws/rad/rad/engine/01_kv/keyenc"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
+	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
 // Engine executes reads and writes against the database's tables.
@@ -197,11 +196,7 @@ func (e *Engine) insert(ctx context.Context, view kv.KV, table string, row lir.R
 	if err != nil {
 		return nil, err
 	}
-	withDefaults, err := applyDefaults(tbl, row)
-	if err != nil {
-		return nil, err
-	}
-	stored, err := normalizeRow(tbl, withDefaults)
+	stored, err := prepareRow(tbl, row)
 	if err != nil {
 		return nil, err
 	}
@@ -210,8 +205,7 @@ func (e *Engine) insert(ctx context.Context, view kv.KV, table string, row lir.R
 	if err != nil {
 		return nil, err
 	}
-	rowKey := DataKey(tbl.ID, pkTuple)
-	if _, ok, err := view.Get(ctx, rowKey); err != nil {
+	if _, ok, err := view.Get(ctx, DataKey(tbl.ID, pkTuple)); err != nil {
 		return nil, err
 	} else if ok {
 		return nil, reject.Inputf("exec: duplicate primary key in table %q", table)
@@ -224,108 +218,10 @@ func (e *Engine) insert(ctx context.Context, view kv.KV, table string, row lir.R
 		return nil, err
 	}
 
-	rowBytes, err := MarshalRow(tbl, stored)
-	if err != nil {
+	if err := writeRow(ctx, view, tbl, stored, pkTuple); err != nil {
 		return nil, err
-	}
-	if err := view.Put(ctx, rowKey, rowBytes); err != nil {
-		return nil, err
-	}
-	for _, idx := range tbl.Indexes {
-		idxTuple, err := encodeRowTuple(stored, idx.Columns)
-		if err != nil {
-			return nil, err
-		}
-		if err := view.Put(ctx, IndexKey(tbl.ID, idx.ID, idxTuple, pkTuple), pkTuple); err != nil {
-			return nil, err
-		}
 	}
 	return stored, nil
-}
-
-// checkForeignKeys verifies each referenced parent row exists. If any FK
-// column is NULL the constraint is not checked (matches SQL semantics).
-// Inside a serializable transaction the parent read is tracked, so a
-// concurrent delete of the parent conflicts at commit.
-func checkForeignKeys(ctx context.Context, view kv.KV, tbl catalog.Table, row lir.Row) error {
-	for _, fk := range tbl.ForeignKeys {
-		vals := make([]lir.Value, len(fk.Columns))
-		null := false
-		for i, name := range fk.Columns {
-			vals[i] = row[name]
-			null = null || vals[i].Null
-		}
-		if null {
-			continue
-		}
-		parentTuple, err := EncodeTuple(vals)
-		if err != nil {
-			return err
-		}
-		_, ok, err := view.Get(ctx, DataKey(fk.RefTableID, parentTuple))
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return reject.Inputf("exec: foreign key %q violation: referenced row does not exist", fk.Name)
-		}
-	}
-	return nil
-}
-
-// checkUniqueIndexes rejects the insert if a unique index already contains
-// the indexed tuple under a different primary key. Because tuple encodings
-// are self-delimiting and an index always has a fixed column count, a prefix
-// scan on the full indexed tuple matches exactly the entries with equal
-// indexed values.
-//
-// NULLs are distinct: a tuple with any NULL component is exempt from
-// uniqueness (its index entry is still written). NULL equals nothing,
-// including NULL.
-//
-// Inside a serializable transaction the *requested* prefix range is tracked
-// even when the scan returns nothing, so two concurrent inserts of the same
-// unique value (different PKs, hence different index keys) conflict at
-// commit instead of both succeeding.
-func checkUniqueIndexes(ctx context.Context, view kv.KV, tbl catalog.Table, row lir.Row, pkTuple []byte) error {
-	for _, idx := range tbl.Indexes {
-		if !idx.Unique || anyNullComponent(row, idx.Columns) {
-			continue
-		}
-		idxTuple, err := encodeRowTuple(row, idx.Columns)
-		if err != nil {
-			return err
-		}
-		prefix := append(IndexPrefix(tbl.ID, idx.ID), idxTuple...)
-		it, err := view.Scan(ctx, prefix, keyenc.PrefixEnd(prefix))
-		if err != nil {
-			return err
-		}
-		for it.Next() {
-			if !bytes.Equal(it.Value(), pkTuple) {
-				_ = it.Close()
-				return reject.Inputf("exec: unique index %q violation in table %q", idx.Name, tbl.Name)
-			}
-		}
-		err = it.Err()
-		if cerr := it.Close(); err == nil {
-			err = cerr
-		}
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// anyNullComponent reports whether any of the named columns is NULL in row.
-func anyNullComponent(row lir.Row, cols []string) bool {
-	for _, c := range cols {
-		if row[c].Null {
-			return true
-		}
-	}
-	return false
 }
 
 // GetByPrimaryKey fetches one row by its primary key values. key must contain
@@ -348,22 +244,8 @@ func getByPrimaryKey(ctx context.Context, view kv.KV, table string, key lir.Row)
 	if err != nil {
 		return nil, false, err
 	}
-	if len(key) != len(tbl.PrimaryKey) {
-		return nil, false, reject.Inputf("exec: primary key of %q has %d columns, got %d values", table, len(tbl.PrimaryKey), len(key))
-	}
-	pkTuple, err := encodeRowTuple(key, tbl.PrimaryKey)
-	if err != nil {
-		return nil, false, err
-	}
-	raw, ok, err := view.Get(ctx, DataKey(tbl.ID, pkTuple))
-	if err != nil || !ok {
-		return nil, false, err
-	}
-	row, err := UnmarshalRow(tbl, raw)
-	if err != nil {
-		return nil, false, err
-	}
-	return row, true, nil
+	row, _, err := loadByPK(ctx, view, tbl, key)
+	return row, row != nil, err
 }
 
 // RowIterator streams rows from a scan.

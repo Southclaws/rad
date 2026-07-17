@@ -1,15 +1,14 @@
 package exec
 
 import (
-	"bytes"
 	"context"
-	"github.com/Southclaws/rad/rad/engine/reject"
+	"maps"
 	"slices"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
-	keyenc "github.com/Southclaws/rad/rad/engine/01_kv/keyenc"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
+	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
 // Update merges set into the row identified by key (exactly the primary key
@@ -43,7 +42,6 @@ func (e *Engine) update(ctx context.Context, view kv.KV, table string, key, set 
 		return nil, false, err
 	}
 
-	// Validate the patch: known columns, immutable PK.
 	for name := range set {
 		if _, ok := tbl.Column(name); !ok {
 			return nil, false, reject.Inputf("exec: table %q has no column %q", table, name)
@@ -53,19 +51,13 @@ func (e *Engine) update(ctx context.Context, view kv.KV, table string, key, set 
 		}
 	}
 
-	merged := make(lir.Row, len(current))
-	for k, v := range current {
-		merged[k] = v
-	}
-	for k, v := range set {
-		merged[k] = v
-	}
+	merged := maps.Clone(current)
+	maps.Copy(merged, set)
 	stored, err := normalizeRow(tbl, merged)
 	if err != nil {
 		return nil, false, err
 	}
 
-	// Re-check constraints that the patch can affect.
 	if err := checkForeignKeysFor(ctx, view, tbl, stored, set); err != nil {
 		return nil, false, err
 	}
@@ -73,44 +65,14 @@ func (e *Engine) update(ctx context.Context, view kv.KV, table string, key, set 
 		return nil, false, err
 	}
 
-	rowBytes, err := MarshalRow(tbl, stored)
-	if err != nil {
+	if err := replaceRow(ctx, view, tbl, current, stored, pkTuple); err != nil {
 		return nil, false, err
-	}
-	if err := view.Put(ctx, DataKey(tbl.ID, pkTuple), rowBytes); err != nil {
-		return nil, false, err
-	}
-
-	// Rewrite index entries whose indexed values changed.
-	for _, idx := range tbl.Indexes {
-		if !touches(idx.Columns, set) {
-			continue
-		}
-		oldTuple, err := encodeRowTuple(current, idx.Columns)
-		if err != nil {
-			return nil, false, err
-		}
-		newTuple, err := encodeRowTuple(stored, idx.Columns)
-		if err != nil {
-			return nil, false, err
-		}
-		if bytes.Equal(oldTuple, newTuple) {
-			continue
-		}
-		if err := view.Delete(ctx, IndexKey(tbl.ID, idx.ID, oldTuple, pkTuple)); err != nil {
-			return nil, false, err
-		}
-		if err := view.Put(ctx, IndexKey(tbl.ID, idx.ID, newTuple, pkTuple), pkTuple); err != nil {
-			return nil, false, err
-		}
 	}
 	return stored, true, nil
 }
 
-// Delete removes the row identified by key (exactly the primary key
-// columns) along with its index entries. It fails if any other row
-// references it through a foreign key (restrict semantics — the POC has no
-// cascades). It reports whether the row existed.
+// Delete removes the row identified by key and reports whether it existed.
+// References from other rows prevent deletion.
 func (e *Engine) Delete(ctx context.Context, table string, key lir.Row) (bool, error) {
 	var found bool
 	err := e.Txn(ctx, func(tx *Tx) error {
@@ -135,20 +97,10 @@ func (e *Engine) delete(ctx context.Context, view kv.KV, table string, key lir.R
 		return false, err
 	}
 
-	if err := e.checkNoReferences(ctx, view, tbl, current); err != nil {
+	if err := checkNoReferences(ctx, view, tbl, current); err != nil {
 		return false, err
 	}
-
-	for _, idx := range tbl.Indexes {
-		idxTuple, err := encodeRowTuple(current, idx.Columns)
-		if err != nil {
-			return false, err
-		}
-		if err := view.Delete(ctx, IndexKey(tbl.ID, idx.ID, idxTuple, pkTuple)); err != nil {
-			return false, err
-		}
-	}
-	if err := view.Delete(ctx, DataKey(tbl.ID, pkTuple)); err != nil {
+	if err := deleteRow(ctx, view, tbl, current, pkTuple); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -173,141 +125,4 @@ func loadByPK(ctx context.Context, view kv.KV, tbl catalog.Table, key lir.Row) (
 		return nil, nil, err
 	}
 	return row, pkTuple, nil
-}
-
-// touches reports whether the patch changes any of the named columns.
-func touches(columns []string, set lir.Row) bool {
-	for _, c := range columns {
-		if _, ok := set[c]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-// checkForeignKeysFor re-validates only the foreign keys whose columns the
-// patch touches.
-func checkForeignKeysFor(ctx context.Context, view kv.KV, tbl catalog.Table, row lir.Row, set lir.Row) error {
-	scoped := tbl
-	scoped.ForeignKeys = nil
-	for _, fk := range tbl.ForeignKeys {
-		if touches(fk.Columns, set) {
-			scoped.ForeignKeys = append(scoped.ForeignKeys, fk)
-		}
-	}
-	return checkForeignKeys(ctx, view, scoped, row)
-}
-
-// checkUniqueIndexesFor re-validates only the unique indexes whose columns
-// the patch touches.
-func checkUniqueIndexesFor(ctx context.Context, view kv.KV, tbl catalog.Table, row lir.Row, pkTuple []byte, set lir.Row) error {
-	scoped := tbl
-	scoped.Indexes = nil
-	for _, idx := range tbl.Indexes {
-		if idx.Unique && touches(idx.Columns, set) {
-			scoped.Indexes = append(scoped.Indexes, idx)
-		}
-	}
-	return checkUniqueIndexes(ctx, view, scoped, row, pkTuple)
-}
-
-// checkNoReferences enforces delete-restrict: no row in any table may hold
-// a foreign key pointing at the row being deleted. Referencing rows are
-// found through an index on the FK columns when one exists, falling back to
-// a full scan.
-func (e *Engine) checkNoReferences(ctx context.Context, view kv.KV, tbl catalog.Table, row lir.Row) error {
-	all, err := catalog.NewReader(view).ListTables(ctx)
-	if err != nil {
-		return err
-	}
-	for _, child := range all {
-		for _, fk := range child.ForeignKeys {
-			if fk.RefTableID != tbl.ID {
-				continue
-			}
-			// The parent values the child would reference.
-			want := make(lir.Row, len(fk.Columns))
-			for i, childCol := range fk.Columns {
-				want[childCol] = row[fk.RefColumns[i]]
-			}
-			found, err := e.anyRowMatching(ctx, view, child, fk.Columns, want, tbl, row)
-			if err != nil {
-				return err
-			}
-			if found {
-				return reject.Inputf("exec: cannot delete from %q: row is referenced by %q via %q", tbl.Name, child.Name, fk.Name)
-			}
-		}
-	}
-	return nil
-}
-
-// anyRowMatching reports whether child has any row whose cols equal want.
-// Self-referential checks skip the row being deleted itself.
-func (e *Engine) anyRowMatching(ctx context.Context, view kv.KV, child catalog.Table, cols []string, want lir.Row, parent catalog.Table, parentRow lir.Row) (bool, error) {
-	selfPK := []byte(nil)
-	if child.ID == parent.ID {
-		pk, err := encodeRowTuple(parentRow, parent.PrimaryKey)
-		if err != nil {
-			return false, err
-		}
-		selfPK = pk
-	}
-
-	// Prefer an index whose leading columns cover the FK columns.
-	for _, idx := range child.Indexes {
-		if len(idx.Columns) < len(cols) || !slices.Equal(idx.Columns[:len(cols)], cols) {
-			continue
-		}
-		prefixTuple, err := encodeRowTuple(want, cols)
-		if err != nil {
-			return false, err
-		}
-		keyPrefix := append(IndexPrefix(child.ID, idx.ID), prefixTuple...)
-		it, err := view.Scan(ctx, keyPrefix, keyenc.PrefixEnd(keyPrefix))
-		if err != nil {
-			return false, err
-		}
-		defer it.Close()
-		for it.Next() {
-			if selfPK != nil && bytes.Equal(it.Value(), selfPK) {
-				continue
-			}
-			return true, it.Err()
-		}
-		return false, it.Err()
-	}
-
-	// Fall back to a full table scan.
-	it, err := scanTable(ctx, view, child)
-	if err != nil {
-		return false, err
-	}
-	defer it.Close()
-	for {
-		r, ok, err := it.Next()
-		if err != nil || !ok {
-			return false, err
-		}
-		match := true
-		for _, c := range cols {
-			if !r[c].Equal(want[c]) {
-				match = false
-				break
-			}
-		}
-		if !match {
-			continue
-		}
-		if selfPK != nil {
-			pk, err := encodeRowTuple(r, child.PrimaryKey)
-			if err != nil {
-				return false, err
-			}
-			if bytes.Equal(pk, selfPK) {
-				continue
-			}
-		}
-		return true, nil
-	}
 }

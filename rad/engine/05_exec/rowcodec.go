@@ -45,17 +45,15 @@ func UnmarshalRow(tbl catalog.Table, raw []byte) (lir.Row, error) {
 			row[col.Name] = v
 			continue
 		}
-		row[col.Name] = missingColumnValue(col)
-	}
-	return row, nil
-}
-
-func missingColumnValue(col catalog.Column) lir.Value {
-	if d := col.Default; d != nil && d.Func == "" {
-		v, err := defaultValue(col)
-		if err == nil {
-			return v
+		if col.Default != nil && col.Default.Func == "" {
+			v, err := defaultValue(col)
+			if err != nil {
+				return nil, err
+			}
+			row[col.Name] = v
+		} else {
+			row[col.Name] = lir.Null(col.Type)
 		}
 	}
-	return lir.Null(col.Type)
+	return row, nil
 }

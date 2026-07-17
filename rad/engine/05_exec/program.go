@@ -62,12 +62,9 @@ type StatementResult struct {
 // ExecOptions tune a program run's observability and side effects. The zero
 // value is the normal path: execute, return only the result.
 type ExecOptions struct {
-	// DryRun binds and plans every statement but executes none — no writes, no
-	// result. Planning is data-independent today, so this is total.
+	// DryRun binds and plans every statement but executes none.
 	DryRun bool
-	// CollectPlan captures a query-plan view per statement into ProgramResult
-	// (available even when a later stage errors, so a failure still yields the
-	// plan it got to).
+	// CollectPlan preserves each statement's plan even if execution fails.
 	CollectPlan bool
 }
 
@@ -129,8 +126,6 @@ func (e *Engine) runProgram(ctx context.Context, view kv.KV, prog Program, resul
 		return ProgramResult{}, err
 	}
 
-	// The query-plan views are ready once binding+planning is done, before any
-	// execution — so a statement that later fails still surfaces its plan.
 	var plans []StatementPlan
 	if opts.CollectPlan {
 		plans = make([]StatementPlan, len(planned))
@@ -144,7 +139,7 @@ func (e *Engine) runProgram(ctx context.Context, view kv.KV, prog Program, resul
 
 	// Accumulated statement results, injected into each statement's executor
 	// so its refs resolve to earlier results.
-	program := map[string][]Frame{}
+	program := map[string][]frame{}
 	summary := make([]StatementResult, len(prog.Statements))
 	var result lir.Datum
 	haveResult := false
@@ -176,7 +171,7 @@ func (e *Engine) runProgram(ctx context.Context, view kv.KV, prog Program, resul
 // frames keyed by the statement's result schema. A query returns the
 // relation's rows; a mutation evaluates its input relation, applies it as one
 // set, and returns the affected rows (created, post-image, or pre-image).
-func (e *Engine) runStatement(ctx context.Context, view kv.KV, stmt ProgramStatement, bs planner.BoundStatement, program map[string][]Frame) ([]Frame, error) {
+func (e *Engine) runStatement(ctx context.Context, view kv.KV, stmt ProgramStatement, bs planner.BoundStatement, program map[string][]frame) ([]frame, error) {
 	ex := newExecutor(view, e.recur)
 	maps.Copy(ex.bindings, program)
 	if stmt.Kind == StmtQuery {
@@ -189,7 +184,10 @@ func (e *Engine) runStatement(ctx context.Context, view kv.KV, stmt ProgramState
 	if err != nil {
 		return nil, err
 	}
-	inputRows := framesToRows(bs.Plan.Out, inputFrames)
+	inputRows, err := framesToRows(bs.Plan.Out, inputFrames)
+	if err != nil {
+		return nil, err
+	}
 
 	tbl, err := tableIn(ctx, view, stmt.Table)
 	if err != nil {
@@ -198,11 +196,11 @@ func (e *Engine) runStatement(ctx context.Context, view kv.KV, stmt ProgramState
 	var affected []lir.Row
 	switch stmt.Kind {
 	case StmtCreate:
-		affected, err = e.applyCreate(ctx, view, tbl, inputRows)
+		affected, err = applyCreate(ctx, view, tbl, inputRows)
 	case StmtUpdate:
-		affected, err = e.applyUpdate(ctx, view, tbl, bs.Plan.Out, inputRows)
+		affected, err = applyUpdate(ctx, view, tbl, bs.Plan.Out, inputRows)
 	case StmtDelete:
-		affected, err = e.applyDelete(ctx, view, tbl, bs.Plan.Out, inputRows)
+		affected, err = applyDelete(ctx, view, tbl, bs.Plan.Out, inputRows)
 	default:
 		return nil, reject.Inputf("exec: unknown statement kind %q", stmt.Kind)
 	}
@@ -212,28 +210,26 @@ func (e *Engine) runStatement(ctx context.Context, view kv.KV, stmt ProgramState
 	return rowsToFrames(bs.ResultOut, affected), nil
 }
 
-// framesToRows lifts input frames into scalar rows keyed by column name, per
-// the input relation's schema.
-func framesToRows(out lir.RowType, frames []Frame) []lir.Row {
+func framesToRows(out lir.RowType, frames []frame) ([]lir.Row, error) {
 	rows := make([]lir.Row, len(frames))
 	for i, f := range frames {
 		row := make(lir.Row, len(out.Fields))
 		for _, fld := range out.Fields {
 			v, err := f.ScalarAt(fld.Slot, fld.Name, fld.Type)
 			if err != nil {
-				v = lir.Null(fld.Type.Kind.CatalogType())
+				return nil, err
 			}
 			row[fld.Name] = v
 		}
 		rows[i] = row
 	}
-	return rows
+	return rows, nil
 }
 
 // rowsToFrames renders result rows as frames keyed by the result schema's
 // slots, so later statements' refs remap them.
-func rowsToFrames(out lir.RowType, rows []lir.Row) []Frame {
-	frames := make([]Frame, len(rows))
+func rowsToFrames(out lir.RowType, rows []lir.Row) []frame {
+	frames := make([]frame, len(rows))
 	for i, row := range rows {
 		f := newFrame(bound.Env{})
 		for _, fld := range out.Fields {
@@ -246,7 +242,7 @@ func rowsToFrames(out lir.RowType, rows []lir.Row) []Frame {
 
 // runPlan commits the plan's local bindings and drains its root, returning
 // every result frame (keyed by the root's output slots).
-func (ex *executor) runPlan(ctx context.Context, plan *planner.PhysPlan) ([]Frame, error) {
+func (ex *executor) runPlan(ctx context.Context, plan *planner.PhysPlan) ([]frame, error) {
 	if err := ex.commit(ctx, plan.Bindings); err != nil {
 		return nil, err
 	}
@@ -254,13 +250,11 @@ func (ex *executor) runPlan(ctx context.Context, plan *planner.PhysPlan) ([]Fram
 	if err != nil {
 		return nil, err
 	}
-	defer op.Close()
-	return drainOp(ctx, op)
+	return drainAndClose(ctx, op)
 }
 
-// shapeFrames materialises drained frames into a datum per the root
-// cardinality, mirroring Execute's switch over a materialised slice.
-func shapeFrames(card lir.RootCard, out lir.RowType, frames []Frame) (lir.Datum, error) {
+// shapeFrames materialises frames according to the root cardinality.
+func shapeFrames(card lir.RootCard, out lir.RowType, frames []frame) (lir.Datum, error) {
 	switch card {
 	case lir.CardFirst:
 		if len(frames) == 0 {
@@ -279,15 +273,8 @@ func shapeFrames(card lir.RootCard, out lir.RowType, frames []Frame) (lir.Datum,
 		if len(frames) == 0 {
 			return lir.NullDatum(), nil
 		}
-		if d, has := frames[0][out.Fields[0].Slot]; has {
-			return d, nil
-		}
-		return lir.NullDatum(), nil
+		return frameScalar(out, frames[0]), nil
 	default: // many
-		elems := make([]lir.Datum, len(frames))
-		for i, f := range frames {
-			elems[i] = frameToObject(out, f)
-		}
-		return lir.ArrayDatum(elems), nil
+		return framesToArray(out, frames), nil
 	}
 }

@@ -109,20 +109,13 @@ func (e *Engine) execute(ctx context.Context, view kv.KV, q lir.Query, forceNest
 		if !ok {
 			return lir.NullDatum(), nil
 		}
-		if d, has := f[pp.Out.Fields[0].Slot]; has {
-			return d, nil
-		}
-		return lir.NullDatum(), nil
+		return frameScalar(pp.Out, f), nil
 
 	default: // many
 		frames, err := drainOp(ctx, op)
 		if err != nil {
 			return lir.Datum{}, err
 		}
-		elems := make([]lir.Datum, len(frames))
-		for i, f := range frames {
-			elems[i] = frameToObject(pp.Out, f)
-		}
-		return lir.ArrayDatum(elems), nil
+		return framesToArray(pp.Out, frames), nil
 	}
 }

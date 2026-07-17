@@ -1,11 +1,7 @@
 package exec
 
-// The operator seam for the relation-graph executor: a pull pipeline of
-// Frames. Nothing in this contract requires materialisation — scans stream,
-// filters stream, projections stream, slices stop pulling early — though
-// blocking operators (sort, aggregate, attach) buffer internally. Full
-// streaming end-to-end is not implemented; this seam is what would let it
-// land as a change instead of a rewrite.
+// Operators form a pull pipeline. Scans, filters, projections, and slices
+// stream; sort, aggregate, distinct, and attach buffer their input.
 
 import (
 	"context"
@@ -14,25 +10,18 @@ import (
 	"github.com/Southclaws/rad/rad/engine/03_lir/bound"
 )
 
-// Frame is one execution row: a datum per slot in scope. Scalar slots hold
-// scalar datums, row- and array-typed slots hold materialised nested datums
-// — one value vocabulary end to end, so any output can be referenced,
-// reprojected, or spread regardless of its shape.
-type Frame = bound.Env
+type frame = bound.Env
 
-// newFrame starts a frame from the outer environment — correlated
-// sub-relations see their enclosing rows' slots exactly like their own.
-func newFrame(outer bound.Env) Frame {
-	f := make(Frame, len(outer)+8)
+func newFrame(outer bound.Env) frame {
+	f := make(frame, len(outer)+8)
 	for k, v := range outer {
 		f[k] = v
 	}
 	return f
 }
 
-// mergeFrames unions two frames — slots are disjoint by construction.
-func mergeFrames(l, r Frame) Frame {
-	out := make(Frame, len(l)+len(r))
+func mergeFrames(l, r frame) frame {
+	out := make(frame, len(l)+len(r))
 	for k, v := range l {
 		out[k] = v
 	}
@@ -42,16 +31,15 @@ func mergeFrames(l, r Frame) Frame {
 	return out
 }
 
-// Operator is the pull seam: Next yields the next frame until ok is false.
-// Operators must be Closed; closing is idempotent.
-type Operator interface {
-	Next(ctx context.Context) (Frame, bool, error)
+// Closing an operator is idempotent.
+type operator interface {
+	Next(ctx context.Context) (frame, bool, error)
 	Close() error
 }
 
 // frameToObject renders a frame as an object datum in the row type's field
 // order. A missing slot is NULL — the one representation of absence.
-func frameToObject(out lir.RowType, f Frame) lir.Datum {
+func frameToObject(out lir.RowType, f frame) lir.Datum {
 	fields := make([]lir.ObjectField, len(out.Fields))
 	for i, fld := range out.Fields {
 		d, ok := f[fld.Slot]
@@ -63,9 +51,23 @@ func frameToObject(out lir.RowType, f Frame) lir.Datum {
 	return lir.ObjectDatum(fields)
 }
 
-// drainOp pulls every remaining frame. The caller owns Close.
-func drainOp(ctx context.Context, op Operator) ([]Frame, error) {
-	var out []Frame
+func frameScalar(out lir.RowType, f frame) lir.Datum {
+	if datum, ok := f[out.Fields[0].Slot]; ok {
+		return datum
+	}
+	return lir.NullDatum()
+}
+
+func framesToArray(out lir.RowType, frames []frame) lir.Datum {
+	elements := make([]lir.Datum, len(frames))
+	for i, frame := range frames {
+		elements[i] = frameToObject(out, frame)
+	}
+	return lir.ArrayDatum(elements)
+}
+
+func drainOp(ctx context.Context, op operator) ([]frame, error) {
+	var out []frame
 	for {
 		f, ok, err := op.Next(ctx)
 		if err != nil {
@@ -76,4 +78,12 @@ func drainOp(ctx context.Context, op Operator) ([]Frame, error) {
 		}
 		out = append(out, f)
 	}
+}
+
+func drainAndClose(ctx context.Context, op operator) ([]frame, error) {
+	frames, err := drainOp(ctx, op)
+	if closeErr := op.Close(); err == nil {
+		err = closeErr
+	}
+	return frames, err
 }

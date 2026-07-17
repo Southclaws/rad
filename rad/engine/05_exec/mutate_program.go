@@ -1,20 +1,13 @@
 package exec
 
-// Mutation statement execution for PIR programs. Each mutation consumes its
-// input relation as one set and applies it with statement-boundary
-// constraint checking: every row is written first, then the affected
-// constraints are validated over the resulting state. That ordering is what
-// makes the semantic upgrades in the design work — a create batch whose rows
-// reference each other, and an update that swaps two unique values — because
-// the checks see the whole post-statement state, not one row at a time.
-//
-// The input relation was fully evaluated before any write (the statement
-// snapshot), so a mutation never observes its own effects while deriving its
-// input.
+// Mutation inputs are fully evaluated before any writes. Each batch is then
+// written before its constraints are checked, so validation sees the complete
+// post-statement state.
 
 import (
-	"bytes"
 	"context"
+	"maps"
+	"slices"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
@@ -22,21 +15,15 @@ import (
 	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
-// applyCreate inserts every input row and returns the stored rows (defaults
-// included). Primary-key collisions — within the batch or against existing
-// rows — are rejected; uniqueness and foreign keys are checked once the whole
-// batch is written, so rows may reference each other.
-func (e *Engine) applyCreate(ctx context.Context, view kv.KV, tbl catalog.Table, inputRows []lir.Row) ([]lir.Row, error) {
+// Constraints are checked after every row is visible, allowing rows in one
+// statement to reference each other.
+func applyCreate(ctx context.Context, view kv.KV, tbl catalog.Table, inputRows []lir.Row) ([]lir.Row, error) {
 	stored := make([]lir.Row, 0, len(inputRows))
 	tuples := make([][]byte, 0, len(inputRows))
 	seen := map[string]bool{}
 
 	for _, in := range inputRows {
-		withDefaults, err := applyDefaults(tbl, in)
-		if err != nil {
-			return nil, err
-		}
-		row, err := normalizeRow(tbl, withDefaults)
+		row, err := prepareRow(tbl, in)
 		if err != nil {
 			return nil, err
 		}
@@ -53,7 +40,7 @@ func (e *Engine) applyCreate(ctx context.Context, view kv.KV, tbl catalog.Table,
 			return nil, reject.Inputf("exec: duplicate primary key in table %q", tbl.Name)
 		}
 		seen[string(pkTuple)] = true
-		if err := writeRowRaw(ctx, view, tbl, row, pkTuple); err != nil {
+		if err := writeRow(ctx, view, tbl, row, pkTuple); err != nil {
 			return nil, err
 		}
 		stored = append(stored, row)
@@ -71,11 +58,9 @@ func (e *Engine) applyCreate(ctx context.Context, view kv.KV, tbl catalog.Table,
 	return stored, nil
 }
 
-// applyUpdate identifies rows by the input relation's primary-key columns and
-// assigns the remaining columns, returning the post-images. The whole batch
-// is written before constraints are re-checked, so a statement may swap unique
-// values between rows.
-func (e *Engine) applyUpdate(ctx context.Context, view kv.KV, tbl catalog.Table, in lir.RowType, inputRows []lir.Row) ([]lir.Row, error) {
+// Rows are replaced before constraints are checked, allowing unique values to
+// move between rows within one statement.
+func applyUpdate(ctx context.Context, view kv.KV, tbl catalog.Table, in lir.RowType, inputRows []lir.Row) ([]lir.Row, error) {
 	assign, err := updateColumns(tbl, in)
 	if err != nil {
 		return nil, err
@@ -90,10 +75,7 @@ func (e *Engine) applyUpdate(ctx context.Context, view kv.KV, tbl catalog.Table,
 	seen := map[string]bool{}
 
 	for _, row := range inputRows {
-		key := make(lir.Row, len(tbl.PrimaryKey))
-		for _, pk := range tbl.PrimaryKey {
-			key[pk] = row[pk]
-		}
+		key := selectColumns(row, tbl.PrimaryKey)
 		current, pkTuple, err := loadByPK(ctx, view, tbl, key)
 		if err != nil {
 			return nil, err
@@ -107,10 +89,7 @@ func (e *Engine) applyUpdate(ctx context.Context, view kv.KV, tbl catalog.Table,
 		seen[string(pkTuple)] = true
 
 		set := make(lir.Row, len(assign))
-		merged := make(lir.Row, len(current))
-		for k, v := range current {
-			merged[k] = v
-		}
+		merged := maps.Clone(current)
 		for _, col := range assign {
 			merged[col] = row[col]
 			set[col] = row[col]
@@ -123,7 +102,7 @@ func (e *Engine) applyUpdate(ctx context.Context, view kv.KV, tbl catalog.Table,
 	}
 
 	for _, w := range work {
-		if err := writeRowUpdate(ctx, view, tbl, w.current, w.stored, w.pkTuple); err != nil {
+		if err := replaceRow(ctx, view, tbl, w.current, w.stored, w.pkTuple); err != nil {
 			return nil, err
 		}
 	}
@@ -143,10 +122,9 @@ func (e *Engine) applyUpdate(ctx context.Context, view kv.KV, tbl catalog.Table,
 	return out, nil
 }
 
-// applyDelete removes rows identified by the input's primary-key columns and
-// returns their pre-images. The referential check runs after the whole batch
-// is deleted, so a program may delete a parent and its children together.
-func (e *Engine) applyDelete(ctx context.Context, view kv.KV, tbl catalog.Table, in lir.RowType, inputRows []lir.Row) ([]lir.Row, error) {
+// Referential checks run after every target row is removed, allowing related
+// rows to be deleted by one statement.
+func applyDelete(ctx context.Context, view kv.KV, tbl catalog.Table, in lir.RowType, inputRows []lir.Row) ([]lir.Row, error) {
 	if err := deleteColumns(tbl, in); err != nil {
 		return nil, err
 	}
@@ -158,10 +136,7 @@ func (e *Engine) applyDelete(ctx context.Context, view kv.KV, tbl catalog.Table,
 	seen := map[string]bool{}
 
 	for _, row := range inputRows {
-		key := make(lir.Row, len(tbl.PrimaryKey))
-		for _, pk := range tbl.PrimaryKey {
-			key[pk] = row[pk]
-		}
+		key := selectColumns(row, tbl.PrimaryKey)
 		current, pkTuple, err := loadByPK(ctx, view, tbl, key)
 		if err != nil {
 			return nil, err
@@ -177,12 +152,12 @@ func (e *Engine) applyDelete(ctx context.Context, view kv.KV, tbl catalog.Table,
 	}
 
 	for _, w := range work {
-		if err := deleteRowRaw(ctx, view, tbl, w.current, w.pkTuple); err != nil {
+		if err := deleteRow(ctx, view, tbl, w.current, w.pkTuple); err != nil {
 			return nil, err
 		}
 	}
 	for _, w := range work {
-		if err := e.checkNoReferences(ctx, view, tbl, w.current); err != nil {
+		if err := checkNoReferences(ctx, view, tbl, w.current); err != nil {
 			return nil, err
 		}
 	}
@@ -216,7 +191,7 @@ func updateColumns(tbl catalog.Table, in lir.RowType) ([]string, error) {
 	}
 	var assign []string
 	for _, f := range in.Fields {
-		if isPrimaryKey(tbl, f.Name) {
+		if slices.Contains(tbl.PrimaryKey, f.Name) {
 			continue
 		}
 		assign = append(assign, f.Name)
@@ -234,87 +209,17 @@ func deleteColumns(tbl catalog.Table, in lir.RowType) error {
 		return reject.Inputf("exec: delete of %q needs exactly the primary-key columns", tbl.Name)
 	}
 	for _, f := range in.Fields {
-		if !isPrimaryKey(tbl, f.Name) {
+		if !slices.Contains(tbl.PrimaryKey, f.Name) {
 			return reject.Inputf("exec: delete of %q input column %q is not part of the primary key", tbl.Name, f.Name)
 		}
 	}
 	return nil
 }
 
-func isPrimaryKey(tbl catalog.Table, col string) bool {
-	for _, pk := range tbl.PrimaryKey {
-		if pk == col {
-			return true
-		}
+func selectColumns(row lir.Row, columns []string) lir.Row {
+	selected := make(lir.Row, len(columns))
+	for _, column := range columns {
+		selected[column] = row[column]
 	}
-	return false
-}
-
-// writeRowRaw writes a row's data and every index entry, without any
-// constraint check — the batch runners validate afterwards.
-func writeRowRaw(ctx context.Context, view kv.KV, tbl catalog.Table, row lir.Row, pkTuple []byte) error {
-	rowBytes, err := MarshalRow(tbl, row)
-	if err != nil {
-		return err
-	}
-	if err := view.Put(ctx, DataKey(tbl.ID, pkTuple), rowBytes); err != nil {
-		return err
-	}
-	for _, idx := range tbl.Indexes {
-		idxTuple, err := encodeRowTuple(row, idx.Columns)
-		if err != nil {
-			return err
-		}
-		if err := view.Put(ctx, IndexKey(tbl.ID, idx.ID, idxTuple, pkTuple), pkTuple); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// writeRowUpdate overwrites a row's data and rewrites the index entries whose
-// indexed values changed, without any constraint check.
-func writeRowUpdate(ctx context.Context, view kv.KV, tbl catalog.Table, current, stored lir.Row, pkTuple []byte) error {
-	rowBytes, err := MarshalRow(tbl, stored)
-	if err != nil {
-		return err
-	}
-	if err := view.Put(ctx, DataKey(tbl.ID, pkTuple), rowBytes); err != nil {
-		return err
-	}
-	for _, idx := range tbl.Indexes {
-		oldTuple, err := encodeRowTuple(current, idx.Columns)
-		if err != nil {
-			return err
-		}
-		newTuple, err := encodeRowTuple(stored, idx.Columns)
-		if err != nil {
-			return err
-		}
-		if bytes.Equal(oldTuple, newTuple) {
-			continue
-		}
-		if err := view.Delete(ctx, IndexKey(tbl.ID, idx.ID, oldTuple, pkTuple)); err != nil {
-			return err
-		}
-		if err := view.Put(ctx, IndexKey(tbl.ID, idx.ID, newTuple, pkTuple), pkTuple); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// deleteRowRaw removes a row's data and every index entry, without the
-// referential check — the batch runner validates afterwards.
-func deleteRowRaw(ctx context.Context, view kv.KV, tbl catalog.Table, row lir.Row, pkTuple []byte) error {
-	for _, idx := range tbl.Indexes {
-		idxTuple, err := encodeRowTuple(row, idx.Columns)
-		if err != nil {
-			return err
-		}
-		if err := view.Delete(ctx, IndexKey(tbl.ID, idx.ID, idxTuple, pkTuple)); err != nil {
-			return err
-		}
-	}
-	return view.Delete(ctx, DataKey(tbl.ID, pkTuple))
+	return selected
 }

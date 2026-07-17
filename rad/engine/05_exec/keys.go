@@ -1,8 +1,7 @@
 package exec
 
 // Data and index key construction. Top-level namespaces are literal path
-// strings per the POC key layout; only the tuple segments are
-// order-preserving encoded bytes (see 01_kv/keyenc).
+// strings; tuple segments use order-preserving encodings from 01_kv/keyenc.
 //
 //	/rad/data/{table_id}/primary/{pk_tuple}
 //	/rad/index/{table_id}/{index_id}/{indexed_tuple}{pk_tuple}

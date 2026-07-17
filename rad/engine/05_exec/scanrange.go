@@ -6,9 +6,7 @@ package exec
 // Get, interleaved with the open iterator, so a lazy consumer (a slice
 // stopping early) never pays for the rest of the range.
 //
-// A conformance test pins that interleaving Gets with an open iterator works
-// inside kvslate transactions; if a future backend can't do it, this file is
-// where a chunked fallback goes.
+// The KV contract permits Gets while the range iterator remains open.
 
 import (
 	"bytes"
