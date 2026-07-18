@@ -28,7 +28,7 @@ const URLTAG = "radengine.dev";
 // truetype to a plain fetch (no woff2-capable UA), subset to `text`.
 async function loadFont(weight: number, text: string) {
   const url = `https://fonts.googleapis.com/css2?family=Spline+Sans+Mono:wght@${weight}&text=${encodeURIComponent(
-    text,
+    text
   )}`;
   const css = await (await fetch(url)).text();
   const src = css.match(/src: url\((.+?)\) format\('(?:opentype|truetype)'\)/);
@@ -38,7 +38,10 @@ async function loadFont(weight: number, text: string) {
 
 export default async function OpengraphImage() {
   const text = WORDMARK + HEADLINE + SUB + PROMPT + URLTAG + "$v0";
-  const [regular, bold] = await Promise.all([loadFont(400, text), loadFont(700, text)]);
+  const [regular, bold] = await Promise.all([
+    loadFont(400, text),
+    loadFont(700, text),
+  ]);
 
   return new ImageResponse(
     (
@@ -81,15 +84,6 @@ export default async function OpengraphImage() {
           >
             {WORDMARK}
           </div>
-          <div
-            style={{
-              width: 26,
-              height: 128,
-              marginLeft: 18,
-              marginBottom: 14,
-              background: GREEN,
-            }}
-          />
         </div>
 
         {/* headline + sub */}
@@ -140,9 +134,14 @@ export default async function OpengraphImage() {
     {
       ...size,
       fonts: [
-        { name: "Spline Sans Mono", data: regular, weight: 400, style: "normal" },
+        {
+          name: "Spline Sans Mono",
+          data: regular,
+          weight: 400,
+          style: "normal",
+        },
         { name: "Spline Sans Mono", data: bold, weight: 700, style: "normal" },
       ],
-    },
+    }
   );
 }
