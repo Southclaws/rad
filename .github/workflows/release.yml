@@ -252,6 +252,7 @@ jobs:
 
       - name: Publish moving edge release
         env:
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
           VERSION: ${{ needs.metadata.outputs.version }}
