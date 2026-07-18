@@ -69,12 +69,12 @@ jobs:
           - runner: windows-2022
             goos: windows
             goarch: amd64
-            rust_target: x86_64-pc-windows-gnullvm
+            rust_target: x86_64-pc-windows-msvc
             cc: clang
           - runner: windows-11-arm
             goos: windows
             goarch: arm64
-            rust_target: aarch64-pc-windows-gnullvm
+            rust_target: aarch64-pc-windows-msvc
             cc: clang
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -96,8 +96,6 @@ jobs:
 
       - name: Build SlateDB native library
         env:
-          CC: ${{ matrix.cc }}
-          CXX: ${{ matrix.cc && 'clang++' || '' }}
           RUST_TARGET: ${{ matrix.rust_target }}
         run: |
           set -euo pipefail
@@ -115,19 +113,24 @@ jobs:
           rustup toolchain install "$rust_toolchain" --profile minimal
           echo "RUSTUP_TOOLCHAIN=$rust_toolchain" >> "$GITHUB_ENV"
 
-          target_args=()
+          target_arg=""
           libdir="slatedb-src/target/release"
           if [ -n "$RUST_TARGET" ]; then
             rustup target add --toolchain "$rust_toolchain" "$RUST_TARGET"
-            target_args=(--target "$RUST_TARGET")
+            target_arg="$RUST_TARGET"
             libdir="slatedb-src/target/$RUST_TARGET/release"
           fi
 
+          cargo_args=(
+            --release
+            -p slatedb-uniffi
+            --manifest-path slatedb-src/Cargo.toml
+          )
+          if [ -n "$target_arg" ]; then
+            cargo_args+=(--target "$target_arg")
+          fi
           RUSTUP_TOOLCHAIN="$rust_toolchain" cargo rustc \
-            --release \
-            -p slatedb-uniffi \
-            --manifest-path slatedb-src/Cargo.toml \
-            "${target_args[@]}" \
+            "${cargo_args[@]}" \
             -- \
             --print native-static-libs 2>&1 | tee slatedb-build.log
           grep -m1 -o 'native-static-libs: .*' slatedb-build.log \
@@ -135,7 +138,15 @@ jobs:
 
           static_dir="$PWD/lib/static"
           mkdir -p "$static_dir"
-          cp "$libdir/libslatedb_uniffi.a" "$static_dir/"
+          static_lib="$(find "$libdir" -maxdepth 1 -type f \
+            \( -name libslatedb_uniffi.a -o -name slatedb_uniffi.lib \) \
+            -print -quit)"
+          if [ -z "$static_lib" ]; then
+            echo "SlateDB static library not found in $libdir" >&2
+            find "$libdir" -maxdepth 1 -type f -print >&2
+            exit 1
+          fi
+          cp "$static_lib" "$static_dir/"
           if [ "$RUNNER_OS" = Windows ]; then
             # CGO invokes native clang outside MSYS path translation.
             static_dir="$(cygpath -m "$static_dir")"
@@ -157,13 +168,14 @@ jobs:
           if [ "$GOOS" = windows ]; then extension=".exe"; fi
           if [ "$GOOS" = darwin ]; then extra_ldflags="-Wl,-w"; fi
 
+          mkdir -p release-bin
           export CGO_LDFLAGS="-L$LIBDIR $NATIVE_LIBS $extra_ldflags"
           go build \
             -trimpath \
             -ldflags "-s -w -X main.version=$VERSION" \
-            -o "rad$extension" \
+            -o "release-bin/rad$extension" \
             ./cmd/rad
-          "./rad$extension" --version
+          "./release-bin/rad$extension" --version
 
       - name: Package
         env:
@@ -173,9 +185,9 @@ jobs:
           set -euo pipefail
           name="rad-$GOOS-$GOARCH"
           if [ "$GOOS" = windows ]; then
-            7z a "$name.zip" rad.exe
+            (cd release-bin && 7z a "../$name.zip" rad.exe)
           else
-            tar czf "$name.tar.gz" rad
+            tar czf "$name.tar.gz" -C release-bin rad
           fi
 
       - name: Upload packaged binary
