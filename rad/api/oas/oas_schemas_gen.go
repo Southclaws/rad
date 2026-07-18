@@ -238,7 +238,7 @@ func (*ColumnUpdateUnprocessableEntity) columnUpdateRes() {}
 // Ref: #/components/schemas/DatabaseInfo
 type DatabaseInfo struct {
 	// The database's catalog management mode: `direct` (the catalog is mutable over this API) or `schema`
-	// (schema.rad migrations own the catalog and the imperative catalog operations are rejected).
+	// (rad.schema.yaml migrations own the catalog and the imperative catalog operations are rejected).
 	Mode DatabaseInfoMode `json:"mode"`
 	// The monotonic version of the committed schema. A fresh database starts at zero. Each catalog change
 	// in direct mode increments it once, including each reconciler step; an entire schema-managed
@@ -291,7 +291,7 @@ func (s *DatabaseInfo) SetLocation(val OptString) {
 }
 
 // The database's catalog management mode: `direct` (the catalog is mutable over this API) or `schema`
-// (schema.rad migrations own the catalog and the imperative catalog operations are rejected).
+// (rad.schema.yaml migrations own the catalog and the imperative catalog operations are rejected).
 type DatabaseInfoMode string
 
 const (
@@ -403,7 +403,7 @@ func (s *ForeignKeyInfo) SetRefColumns(val []string) {
 type Health struct {
 	Status string `json:"status"`
 	// The database's catalog management mode: `direct` (the catalog is mutable over this API) or `schema`
-	// (schema.rad migrations own the catalog and the imperative catalog operations are rejected).
+	// (rad.schema.yaml migrations own the catalog and the imperative catalog operations are rejected).
 	Mode string `json:"mode"`
 }
 
@@ -511,7 +511,7 @@ func (s *InternalServerErrorStatusCode) SetResponse(val Problem) {
 // A request to reconcile the database with a schema.
 // Ref: #/components/schemas/MigrateProps
 type MigrateProps struct {
-	// The full `schema.rad` source document, as YAML.
+	// The full `rad.schema.yaml` source document, as YAML.
 	Schema string `json:"schema"`
 }
 
@@ -1291,9 +1291,9 @@ type TableCreateUnprocessableEntity Problem
 
 func (*TableCreateUnprocessableEntity) tableCreateRes() {}
 
-// A new table's definition, mirroring a `schema.rad` entry as JSON. The direct API may omit logical
-// IDs for the catalog to allocate. Column types are `text`, `int64`, `float64`, or `bool`; the primary
-// key is required and its columns must not be nullable.
+// A new table's definition, mirroring a `rad.schema.yaml` entry as JSON. The direct API may omit
+// logical IDs for the catalog to allocate. Column types are `text`, `int64`, `float64`, or `bool`; the
+// primary key is required and its columns must not be nullable.
 // Ref: #/components/schemas/TableDef
 type TableDef struct {
 	// An optional stable logical identity; direct mode allocates one when omitted.

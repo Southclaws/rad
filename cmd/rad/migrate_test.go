@@ -11,29 +11,41 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
-func TestMigrateURL(t *testing.T) {
-	t.Run("flag wins", func(t *testing.T) {
-		t.Setenv("RAD_URL", "rad://environment")
-		if got := migrateURL("rad://flag"); got != "rad://flag" {
-			t.Fatalf("migrateURL() = %q, want rad://flag", got)
-		}
-	})
+func TestProjectConfig(t *testing.T) {
+	dir := t.TempDir()
+	filename := filepath.Join(dir, defaultConfigFile)
+	if err := os.WriteFile(filename, []byte("database_url: rad://configured\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := loadProjectConfig(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.DatabaseURL != "rad://configured" {
+		t.Fatalf("database URL = %q", config.DatabaseURL)
+	}
+}
 
-	t.Run("environment fallback", func(t *testing.T) {
-		t.Setenv("RAD_URL", "rad://environment")
-		if got := migrateURL(""); got != "rad://environment" {
-			t.Fatalf("migrateURL() = %q, want rad://environment", got)
-		}
-	})
-
-	t.Run("localhost default", func(t *testing.T) {
-		t.Setenv("RAD_URL", "")
-		if got := migrateURL(""); got != defaultMigrateURL {
-			t.Fatalf("migrateURL() = %q, want %q", got, defaultMigrateURL)
-		}
-	})
+func TestProjectConfigRejectsInvalidFiles(t *testing.T) {
+	for name, source := range map[string]string{
+		"missing database_url": "{}\n",
+		"invalid database_url": "database_url: http://localhost\n",
+		"unknown field":        "database_url: rad://localhost\ndatabase: rad://other\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			filename := filepath.Join(t.TempDir(), defaultConfigFile)
+			if err := os.WriteFile(filename, []byte(source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := loadProjectConfig(filename); err == nil {
+				t.Fatal("invalid project config was accepted")
+			}
+		})
+	}
 }
 
 func TestMigrateCmdSendsSchemaToServer(t *testing.T) {
@@ -62,15 +74,20 @@ func TestMigrateCmdSendsSchemaToServer(t *testing.T) {
 	}
 	target := "rad://" + httpURL.Host
 	schema := "tables:\n  - id: 1\n    name: accounts\n"
-	file := filepath.Join(t.TempDir(), "schema.rad")
+	dir := t.TempDir()
+	file := filepath.Join(dir, defaultSchemaFile)
 	if err := os.WriteFile(file, []byte(schema), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configFile := filepath.Join(dir, defaultConfigFile)
+	if err := os.WriteFile(configFile, []byte("database_url: "+target+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	cmd := migrateCmd()
 	var output bytes.Buffer
 	cmd.SetOut(&output)
-	cmd.SetArgs([]string{"--url", target, "--file", file})
+	cmd.SetArgs([]string{"--config", configFile, "--file", file})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -85,10 +102,29 @@ func TestMigrateCmdSendsSchemaToServer(t *testing.T) {
 
 func TestMigrateCmdHasNoStorageFlag(t *testing.T) {
 	cmd := migrateCmd()
-	if flag := cmd.Flags().Lookup("db"); flag != nil {
-		t.Fatalf("migrate exposes storage flag --db")
+	for _, name := range []string{"db", "url"} {
+		if flag := cmd.Flags().Lookup(name); flag != nil {
+			t.Fatalf("migrate exposes removed flag --%s", name)
+		}
 	}
-	if flag := cmd.Flags().ShorthandLookup("d"); flag != nil {
-		t.Fatalf("migrate exposes storage shorthand -d")
+	for _, shorthand := range []string{"d", "u"} {
+		if flag := cmd.Flags().ShorthandLookup(shorthand); flag != nil {
+			t.Fatalf("migrate exposes removed shorthand -%s", shorthand)
+		}
+	}
+}
+
+func TestProjectFileDefaults(t *testing.T) {
+	commands := []*cobra.Command{migrateCmd(), generateCmd(), validateCmd()}
+	for _, command := range commands {
+		if got := command.Flags().Lookup("file").DefValue; got != defaultSchemaFile {
+			t.Fatalf("%s schema default = %q, want %q", command.Name(), got, defaultSchemaFile)
+		}
+	}
+	if got := migrateCmd().Flags().Lookup("config").DefValue; got != defaultConfigFile {
+		t.Fatalf("config default = %q, want %q", got, defaultConfigFile)
+	}
+	if defaultStateDir != "rad.state" {
+		t.Fatalf("state directory = %q, want rad.state", defaultStateDir)
 	}
 }

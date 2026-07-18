@@ -7,14 +7,15 @@ package exec
 // per-statement inside one transaction — and exposes its result as a
 // program binding that later statements consume through an ordinary `ref`.
 //
-// Binding and planning happen up front (pure over the schema, which no
-// statement changes); execution then runs the plans in document order. Each
-// statement runs in its own executor seeded with the accumulated program
-// results, so a statement's local bindings never leak into another's — only
-// statement results, keyed by name, cross the boundary.
+// Catalog statements change the transaction-visible schema. Relational
+// statements therefore bind and execute in document order, after every
+// preceding catalog effect. Each relational statement runs in its own
+// executor seeded with the accumulated program results, so local bindings
+// never leak across statement boundaries.
 
 import (
 	"context"
+	"fmt"
 	"maps"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
@@ -33,20 +34,39 @@ const (
 	StmtCreate StatementKind = "create"
 	StmtUpdate StatementKind = "update"
 	StmtDelete StatementKind = "delete"
+
+	StmtCreateTable  StatementKind = "create_table"
+	StmtRenameTable  StatementKind = "rename_table"
+	StmtDeleteTable  StatementKind = "delete_table"
+	StmtCreateColumn StatementKind = "create_column"
+	StmtRenameColumn StatementKind = "rename_column"
+	StmtDeleteColumn StatementKind = "delete_column"
+	StmtCreateIndex  StatementKind = "create_index"
+	StmtDeleteIndex  StatementKind = "delete_index"
 )
 
-// ProgramStatement is one unbound statement: its program-scope name, its
-// kind, the target table for mutations, and its LIR relation.
+// ProgramStatement is one lowered PIR statement. Relational kinds use Table
+// and Rel; catalog kinds use the stable identities and canonical catalog
+// definitions relevant to their operation.
 type ProgramStatement struct {
-	Name  string
-	Kind  StatementKind
+	Name string
+	Kind StatementKind
+
 	Table string
 	Rel   lir.Query
+
+	TableID   catalog.SchemaID
+	ColumnID  catalog.SchemaID
+	To        string
+	TableDef  catalog.TableDef
+	Column    catalog.ColumnDef
+	Index     catalog.IndexDef
+	IndexName string
 }
 
-// Program is an ordered list of statements plus the name of the statement
-// whose result is returned. Result may be empty only for a single-statement
-// program, whose sole statement is the result.
+// Program is an ordered list of statements plus the name of the relational
+// statement whose result is returned. Catalog-only programs omit Result and
+// return a null datum.
 type Program struct {
 	Statements []ProgramStatement
 	Result     string
@@ -60,12 +80,18 @@ type StatementResult struct {
 }
 
 // ExecOptions tune a program run's observability and side effects. The zero
-// value is the normal path: execute, return only the result.
+// value permits relational statements and forbids catalog statements.
 type ExecOptions struct {
 	// DryRun binds and plans every statement but executes none.
 	DryRun bool
 	// CollectPlan preserves each statement's plan even if execution fails.
 	CollectPlan bool
+	// Catalog selects whether catalog statements are authorised and how their
+	// successful changes become schema revisions.
+	Catalog CatalogPolicy
+	// ExpectedCatalog, when set by an internal reconciler, prevents a program
+	// planned from a stale catalog snapshot from committing over newer schema.
+	ExpectedCatalog *catalog.Schema
 }
 
 // StatementPlan is one statement's query-plan view — the observability artifact
@@ -90,80 +116,275 @@ func (e *Engine) ExecuteProgram(ctx context.Context, prog Program, opts ExecOpti
 	if err != nil {
 		return ProgramResult{}, err
 	}
-	var out ProgramResult
-	err = e.Txn(ctx, func(tx *Tx) error {
-		r, err := e.runProgram(ctx, tx.txn, prog, resultName, opts)
-		out = r
-		return err
+	if err := validateCatalogPolicy(prog, opts.Catalog); err != nil {
+		return ProgramResult{}, err
+	}
+	plans, err := e.preflightProgram(ctx, prog, opts.CollectPlan, opts.ExpectedCatalog)
+	if err != nil {
+		return ProgramResult{Plans: plans}, err
+	}
+	if opts.DryRun {
+		return ProgramResult{Plans: plans}, nil
+	}
+	tx, err := e.Begin(ctx)
+	if err != nil {
+		return ProgramResult{}, err
+	}
+	defer tx.Rollback()
+	runOpts := opts
+	runOpts.DryRun = false
+	runOpts.CollectPlan = false
+	out, err := e.runProgram(ctx, tx, prog, resultName, runOpts)
+	out.Plans = plans
+	if err != nil {
+		return out, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func validateCatalogPolicy(prog Program, policy CatalogPolicy) error {
+	switch policy {
+	case CatalogForbidden:
+		for _, stmt := range prog.Statements {
+			if stmt.Kind.catalog() {
+				return reject.Inputf("exec: catalog statement %q is not authorised", stmt.Name)
+			}
+		}
+		return nil
+	case CatalogRevisionPerStatement, CatalogRevisionPerProgram:
+		return nil
+	default:
+		return reject.Inputf("exec: unknown catalog policy %d", policy)
+	}
+}
+
+// preflightProgram validates catalog transitions and binds every relational
+// statement in order against a rollback-only transaction. It deliberately
+// skips data execution and index backfills: checks depending on stored rows
+// belong to the real execution pass.
+func (e *Engine) preflightProgram(ctx context.Context, prog Program, collectPlan bool, expected *catalog.Schema) ([]StatementPlan, error) {
+	tx, err := e.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if err := expectCatalog(ctx, tx.txn, expected); err != nil {
+		return nil, err
+	}
+
+	relNames := make([]string, 0, len(prog.Statements))
+	for _, stmt := range prog.Statements {
+		if !stmt.Kind.catalog() {
+			relNames = append(relNames, stmt.Name)
+		}
+	}
+	binder, err := planner.NewProgramBinder(ctx, catalog.NewReader(tx.txn), relNames)
+	if err != nil {
+		return nil, err
+	}
+	var plans []StatementPlan
+	_, err = catalog.MutateIn(ctx, tx.txn, func(change *catalog.Mutation) error {
+		for _, stmt := range prog.Statements {
+			if stmt.Kind.catalog() {
+				if err := tx.preflightCatalogStatement(ctx, change, stmt); err != nil {
+					return fmt.Errorf("exec: statement %q: %w", stmt.Name, err)
+				}
+				continue
+			}
+			bound, err := binder.Bind(planner.ProgramStmt{
+				Name: stmt.Name, Rel: stmt.Rel,
+				Mutation: stmt.Kind != StmtQuery, Table: stmt.Table,
+			})
+			if err != nil {
+				return err
+			}
+			if collectPlan {
+				plans = append(plans, StatementPlan{Name: bound.Name, View: planner.NewPlanView(bound.Plan)})
+			}
+		}
+		return nil
 	})
-	return out, err
+	return plans, err
 }
 
 // resultStatement resolves which statement's result is returned: the explicit
 // selector, or the sole statement of a one-statement program.
 func resultStatement(prog Program) (string, error) {
-	if prog.Result != "" {
-		return prog.Result, nil
+	if len(prog.Statements) == 0 {
+		return "", reject.Inputf("exec: a program needs at least one statement")
 	}
-	if len(prog.Statements) == 1 {
+	names := make(map[string]bool, len(prog.Statements))
+	for _, stmt := range prog.Statements {
+		if stmt.Name == "" {
+			return "", reject.Inputf("exec: statement name must not be empty")
+		}
+		if names[stmt.Name] {
+			return "", reject.Inputf("exec: duplicate statement name %q", stmt.Name)
+		}
+		names[stmt.Name] = true
+		if !stmt.Kind.valid() {
+			return "", reject.Inputf("exec: unknown statement kind %q", stmt.Kind)
+		}
+	}
+	if prog.Result != "" {
+		for _, stmt := range prog.Statements {
+			if stmt.Name != prog.Result {
+				continue
+			}
+			if stmt.Kind.catalog() {
+				return "", reject.Inputf("exec: result names catalog statement %q", prog.Result)
+			}
+			return prog.Result, nil
+		}
+		return "", reject.Inputf("exec: result names unknown statement %q", prog.Result)
+	}
+	if len(prog.Statements) == 1 && !prog.Statements[0].Kind.catalog() {
 		return prog.Statements[0].Name, nil
+	}
+	allCatalog := true
+	for _, stmt := range prog.Statements {
+		allCatalog = allCatalog && stmt.Kind.catalog()
+	}
+	if allCatalog {
+		return "", nil
 	}
 	return "", reject.Inputf("exec: a program with %d statements must name its result", len(prog.Statements))
 }
 
-func (e *Engine) runProgram(ctx context.Context, view kv.KV, prog Program, resultName string, opts ExecOptions) (ProgramResult, error) {
-	stmts := make([]planner.ProgramStmt, len(prog.Statements))
-	for i, s := range prog.Statements {
-		stmts[i] = planner.ProgramStmt{
-			Name:     s.Name,
-			Rel:      s.Rel,
-			Mutation: s.Kind != StmtQuery,
-			Table:    s.Table,
+func (e *Engine) runProgram(ctx context.Context, tx *Tx, prog Program, resultName string, opts ExecOptions) (ProgramResult, error) {
+	if err := expectCatalog(ctx, tx.txn, opts.ExpectedCatalog); err != nil {
+		return ProgramResult{}, err
+	}
+	relNames := make([]string, 0, len(prog.Statements))
+	for _, stmt := range prog.Statements {
+		if !stmt.Kind.catalog() {
+			relNames = append(relNames, stmt.Name)
 		}
 	}
-	planned, err := planner.BindProgram(ctx, catalog.NewReader(view), stmts)
+	binder, err := planner.NewProgramBinder(ctx, catalog.NewReader(tx.txn), relNames)
 	if err != nil {
 		return ProgramResult{}, err
 	}
 
 	var plans []StatementPlan
-	if opts.CollectPlan {
-		plans = make([]StatementPlan, len(planned))
-		for i, bs := range planned {
-			plans[i] = StatementPlan{Name: bs.Name, View: planner.NewPlanView(bs.Plan)}
-		}
-	}
-	if opts.DryRun {
-		return ProgramResult{Plans: plans}, nil
-	}
-
-	// Accumulated statement results, injected into each statement's executor
-	// so its refs resolve to earlier results.
 	program := map[string][]frame{}
 	summary := make([]StatementResult, len(prog.Statements))
 	var result lir.Datum
 	haveResult := false
 
-	for i, bs := range planned {
-		stmt := prog.Statements[i]
-		frames, err := e.runStatement(ctx, view, stmt, bs, program)
-		if err != nil {
-			return ProgramResult{Plans: plans}, err
-		}
-		program[bs.Name] = frames
-		summary[i] = StatementResult{Name: bs.Name, Affected: len(frames)}
-		if bs.Name == resultName {
-			d, err := shapeFrames(bs.ResultCard, bs.ResultOut, frames)
-			if err != nil {
-				return ProgramResult{Plans: plans}, err
+	run := func(change *catalog.Mutation) error {
+		for i, stmt := range prog.Statements {
+			if stmt.Kind.catalog() {
+				apply := func(active *catalog.Mutation) error {
+					return tx.runCatalogStatement(ctx, active, stmt)
+				}
+				var err error
+				if change != nil {
+					err = apply(change)
+				} else {
+					_, err = catalog.MutateIn(ctx, tx.txn, apply)
+				}
+				if err != nil {
+					return fmt.Errorf("exec: statement %q: %w", stmt.Name, err)
+				}
+				if !opts.DryRun {
+					summary[i] = StatementResult{Name: stmt.Name, Affected: 1}
+				}
+				continue
 			}
-			result, haveResult = d, true
+
+			bs, err := binder.Bind(planner.ProgramStmt{
+				Name: stmt.Name, Rel: stmt.Rel,
+				Mutation: stmt.Kind != StmtQuery, Table: stmt.Table,
+			})
+			if err != nil {
+				return err
+			}
+			if opts.CollectPlan {
+				plans = append(plans, StatementPlan{Name: bs.Name, View: planner.NewPlanView(bs.Plan)})
+			}
+			if opts.DryRun {
+				continue
+			}
+			frames, err := e.runStatement(ctx, tx.txn, stmt, bs, program)
+			if err != nil {
+				return err
+			}
+			program[bs.Name] = frames
+			summary[i] = StatementResult{Name: bs.Name, Affected: len(frames)}
+			if bs.Name == resultName {
+				d, err := shapeFrames(bs.ResultCard, bs.ResultOut, frames)
+				if err != nil {
+					return err
+				}
+				result, haveResult = d, true
+			}
 		}
+		return nil
+	}
+
+	switch opts.Catalog {
+	case CatalogRevisionPerProgram:
+		_, err = catalog.MutateIn(ctx, tx.txn, run)
+	case CatalogForbidden, CatalogRevisionPerStatement:
+		err = run(nil)
+	default:
+		err = reject.Inputf("exec: unknown catalog policy %d", opts.Catalog)
+	}
+	if err != nil {
+		return ProgramResult{Plans: plans}, err
+	}
+	if opts.DryRun {
+		return ProgramResult{Plans: plans}, nil
+	}
+	if resultName == "" {
+		return ProgramResult{Statements: summary, Plans: plans}, nil
 	}
 	if !haveResult {
 		return ProgramResult{Plans: plans}, reject.Inputf("exec: result names unknown statement %q", resultName)
 	}
 	return ProgramResult{Result: result, Statements: summary, Plans: plans}, nil
+}
+
+func expectCatalog(ctx context.Context, view kv.KV, expected *catalog.Schema) error {
+	if expected == nil {
+		return nil
+	}
+	actual, err := catalog.NewReader(view).Schema(ctx)
+	if err != nil {
+		return err
+	}
+	equal, err := expected.Equal(actual)
+	if err != nil {
+		return err
+	}
+	if !equal {
+		return fmt.Errorf("exec: catalog changed since program planning: %w", kv.ErrConflict)
+	}
+	return nil
+}
+
+func (k StatementKind) catalog() bool {
+	switch k {
+	case StmtCreateTable, StmtRenameTable, StmtDeleteTable,
+		StmtCreateColumn, StmtRenameColumn, StmtDeleteColumn,
+		StmtCreateIndex, StmtDeleteIndex:
+		return true
+	default:
+		return false
+	}
+}
+
+func (k StatementKind) valid() bool {
+	switch k {
+	case StmtQuery, StmtCreate, StmtUpdate, StmtDelete:
+		return true
+	default:
+		return k.catalog()
+	}
 }
 
 // runStatement evaluates one statement against the transaction view, with the

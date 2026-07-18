@@ -1,5 +1,117 @@
 {
   "$defs": {
+    "CatalogName": {
+      "description": "A non-empty catalog name. PIR deliberately does not impose identifier\nsyntax beyond non-emptiness; the catalog owns the shared naming rules for\nevery schema and API surface.\n",
+      "minLength": 1,
+      "title": "CatalogName",
+      "type": "string"
+    },
+    "ColumnDefault": {
+      "description": "A closed tagged union selected by `kind`: either a builtin generator or\none literal JSON scalar. The literal's JSON type must match the column\ntype; `int64` literals must be integral and in range. JSON null is not a\ndefault — use a nullable column and omit the default instead.\n",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/GeneratorDefault"
+        },
+        {
+          "$ref": "#/$defs/LiteralDefault"
+        }
+      ],
+      "title": "ColumnDefault"
+    },
+    "ColumnDefinition": {
+      "additionalProperties": false,
+      "description": "The logical definition of a column. `id` is stable within the table and\noptional only for Direct-mode allocation. `format` is uninterpreted\nsemantic metadata for tooling and code generation. Default compatibility\nwith the column type is checked during catalog preflight.\n",
+      "properties": {
+        "default": {
+          "$ref": "#/$defs/ColumnDefault"
+        },
+        "format": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/$defs/SchemaID"
+        },
+        "name": {
+          "$ref": "#/$defs/CatalogName"
+        },
+        "nullable": {
+          "type": "boolean"
+        },
+        "type": {
+          "$ref": "#/$defs/ColumnType"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "ColumnDefinition",
+      "type": "object"
+    },
+    "ColumnType": {
+      "description": "The closed set of physical scalar column types.",
+      "enum": [
+        "text",
+        "int64",
+        "float64",
+        "bool"
+      ],
+      "title": "ColumnType",
+      "type": "string"
+    },
+    "CreateColumnStatement": {
+      "additionalProperties": false,
+      "description": "Append `column` to the table identified by `table_id`. The definition's\nstable ID is required in a schema-managed migration and may be allocated\nin Direct mode. Because rows written before this statement have no stored\nvalue for the new column, it must be nullable or carry a literal default.\nGenerator defaults are rejected for added columns: reading an old row\nmust not synthesize a different generated value each time.\n\nThe new column is visible to later statements. This operation does not\nbackfill stored rows; their missing value is interpreted according to the\nnullable/default rule above.\n",
+      "properties": {
+        "column": {
+          "$ref": "#/$defs/ColumnDefinition"
+        },
+        "kind": {
+          "const": "create_column",
+          "type": "string"
+        },
+        "name": {
+          "$ref": "#/$defs/StatementName"
+        },
+        "table_id": {
+          "$ref": "#/$defs/SchemaID"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "table_id",
+        "column"
+      ],
+      "type": "object"
+    },
+    "CreateIndexStatement": {
+      "additionalProperties": false,
+      "description": "Create `index` on the table identified by `table_id` and backfill it from\nevery transaction-visible row. Registration and backfill are one atomic\nstatement: the planner never observes an index without its entries. A\nunique index whose existing keys are not unique rejects the complete\nprogram. Rows written by preceding statements participate in the\nbackfill; rows written later are maintained through the new index.\n",
+      "properties": {
+        "index": {
+          "$ref": "#/$defs/IndexDefinition"
+        },
+        "kind": {
+          "const": "create_index",
+          "type": "string"
+        },
+        "name": {
+          "$ref": "#/$defs/StatementName"
+        },
+        "table_id": {
+          "$ref": "#/$defs/SchemaID"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "table_id",
+        "index"
+      ],
+      "type": "object"
+    },
     "CreateStatement": {
       "additionalProperties": false,
       "description": "Create one stored row in `table` for every row of `relation`. The\nrelation's output columns map to target columns by name; omitted columns\ntake their schema default (generators applied per row); unknown columns\nare rejected; cell types must be assignable to the catalog columns. The\nstatement's result is the created rows, defaults included.\n",
@@ -23,6 +135,80 @@
         "name",
         "table",
         "relation"
+      ],
+      "type": "object"
+    },
+    "CreateTableStatement": {
+      "additionalProperties": false,
+      "description": "Create one table from a complete logical definition. Columns, primary\nkey, secondary indexes, and foreign keys are installed as one statement.\nA foreign key may reference the new table itself or a table visible after\npreceding statements; forward references are rejected.\n\n`table.id` and every `column.id` are stable schema identities. A\nschema-managed migration must provide them. Direct mode may omit them and\nthe catalog allocates identities transactionally; allocated identities\nbecome part of the resulting canonical schema and are never reused.\n",
+      "properties": {
+        "kind": {
+          "const": "create_table",
+          "type": "string"
+        },
+        "name": {
+          "$ref": "#/$defs/StatementName"
+        },
+        "table": {
+          "$ref": "#/$defs/TableDefinition"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "table"
+      ],
+      "type": "object"
+    },
+    "DeleteColumnStatement": {
+      "additionalProperties": false,
+      "description": "Delete the column identified by `column_id` within `table_id`. Stored\ncells for it become unreachable garbage. A primary-key column, or a\ncolumn still used by an index or foreign key, cannot be deleted. The\ncolumn is absent for every later statement.\n",
+      "properties": {
+        "column_id": {
+          "$ref": "#/$defs/SchemaID"
+        },
+        "kind": {
+          "const": "delete_column",
+          "type": "string"
+        },
+        "name": {
+          "$ref": "#/$defs/StatementName"
+        },
+        "table_id": {
+          "$ref": "#/$defs/SchemaID"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "table_id",
+        "column_id"
+      ],
+      "type": "object"
+    },
+    "DeleteIndexStatement": {
+      "additionalProperties": false,
+      "description": "Delete `index` from the table identified by `table_id`. Its stored entries\nbecome unreachable garbage and the planner cannot select it for later\nstatements. Index names are unique only within a table and, unlike tables\nand columns, do not currently carry stable schema IDs.\n",
+      "properties": {
+        "index": {
+          "$ref": "#/$defs/CatalogName"
+        },
+        "kind": {
+          "const": "delete_index",
+          "type": "string"
+        },
+        "name": {
+          "$ref": "#/$defs/StatementName"
+        },
+        "table_id": {
+          "$ref": "#/$defs/SchemaID"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "table_id",
+        "index"
       ],
       "type": "object"
     },
@@ -52,17 +238,145 @@
       ],
       "type": "object"
     },
+    "DeleteTableStatement": {
+      "additionalProperties": false,
+      "description": "Delete the table identified by `table_id`. Its rows and index entries\nbecome unreachable garbage; schema and physical identities are never\nreused. A table referenced by another live table's foreign key cannot be\ndeleted until the referencing schema is removed. The table is absent for\nevery later statement in the program.\n",
+      "properties": {
+        "kind": {
+          "const": "delete_table",
+          "type": "string"
+        },
+        "name": {
+          "$ref": "#/$defs/StatementName"
+        },
+        "table_id": {
+          "$ref": "#/$defs/SchemaID"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "table_id"
+      ],
+      "type": "object"
+    },
+    "ForeignKeyDefinition": {
+      "additionalProperties": false,
+      "description": "One foreign key. `columns` names columns on the new table; `ref_table`\nnames a table visible at this statement (or the new table itself), and\n`ref_columns` must be that table's complete primary key in key order.\n",
+      "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/CatalogName"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "name": {
+          "$ref": "#/$defs/CatalogName"
+        },
+        "ref_columns": {
+          "items": {
+            "$ref": "#/$defs/CatalogName"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "ref_table": {
+          "$ref": "#/$defs/CatalogName"
+        }
+      },
+      "required": [
+        "name",
+        "columns",
+        "ref_table",
+        "ref_columns"
+      ],
+      "title": "ForeignKeyDefinition",
+      "type": "object"
+    },
+    "GeneratorDefault": {
+      "additionalProperties": false,
+      "properties": {
+        "func": {
+          "description": "A builtin generator; `uuid` requires text and `now_ms` requires int64.",
+          "enum": [
+            "uuid",
+            "now_ms"
+          ],
+          "type": "string"
+        },
+        "kind": {
+          "const": "generator",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "func"
+      ],
+      "title": "GeneratorDefault",
+      "type": "object"
+    },
+    "IndexDefinition": {
+      "additionalProperties": false,
+      "description": "One secondary index; column order is the index key order.",
+      "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/CatalogName"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "name": {
+          "$ref": "#/$defs/CatalogName"
+        },
+        "unique": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "columns"
+      ],
+      "title": "IndexDefinition",
+      "type": "object"
+    },
+    "LiteralDefault": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "literal",
+          "type": "string"
+        },
+        "value": {
+          "description": "A non-null JSON string, number, or boolean.",
+          "format": "raw",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "title": "LiteralDefault",
+      "type": "object"
+    },
     "Program": {
       "additionalProperties": false,
-      "description": "A complete execution program: an ordered list of statements plus an\noptional selector naming the statement whose result is returned.\n\n`statements` executes in document order within one transaction. A\nstatement's result becomes available, under its name, to every later\nstatement — the program binding namespace, consumed through LIR `ref`\nnodes. References may only point backwards; the engine enforces that at\nbind time.\n\n`result` names the statement whose relation is returned to the caller.\nIt may be omitted only when the program has exactly one statement, which\nis then the result; a program with more than one statement must name its\nresult explicitly, so appending a statement never silently changes the\nresponse. (This rule spans fields the schema cannot express alone; the\nserver enforces it.)\n\nStatement names and statement-local binding names share one\nnon-shadowing namespace: within any statement's LIR document, no local\nbinding may carry the name of any statement in the program. Local\nbindings in separate statements may still repeat — their scopes are\ndistinct. (Also enforced by the engine, not the schema.)\n",
+      "description": "A complete execution program: an ordered list of statements plus an\noptional selector naming the statement whose result is returned.\n\n`statements` executes in document order within one transaction. A\nstatement's result becomes available, under its name, to every later\nstatement — the program binding namespace, consumed through LIR `ref`\nnodes. References may only point backwards; the engine enforces that at\nbind time.\n\n`result` names the relational statement whose relation is returned to the\ncaller. It cannot name a catalog statement. It may be omitted when the\nprogram contains only catalog statements (the returned datum is JSON\nnull), or when the program consists of exactly one relational statement\n(that statement is the result). Every other program must name its result\nexplicitly, so appending a statement never silently changes the response.\nThese rules span fields the schema cannot express alone; the engine\nenforces them during preflight.\n\nAll statement names are unique, including catalog statement names.\nRelational statement names and statement-local binding names share one\nnon-shadowing namespace: within any statement's LIR document, no local\nbinding may carry the name of a relational statement in the program.\nLocal bindings in separate statements may still repeat — their scopes\nare distinct. (Also enforced by the engine, not the schema.)\n",
       "properties": {
         "result": {
-          "description": "The name of the statement whose result relation is returned.\nOptional only for a single-statement program.\n",
+          "description": "The name of the relational statement whose result relation is\nreturned. Catalog statements cannot be selected.\n",
           "minLength": 1,
           "type": "string"
         },
         "statements": {
-          "description": "The program's statements, in execution order. Names must be unique;\neach is a fresh program binding available to later statements.\n",
+          "description": "The program's statements, in execution order. Names must be unique.\nEach relational statement creates a fresh program binding available\nto later relational statements; catalog statements do not.\n",
           "items": {
             "$ref": "#/$defs/Statement"
           },
@@ -103,8 +417,71 @@
       "format": "raw",
       "title": "Relation"
     },
+    "RenameColumnStatement": {
+      "additionalProperties": false,
+      "description": "Rename the column identified by `column_id` within `table_id` to `to`.\nThe operation rewrites every catalog reference to that column, including\nprimary keys, indexes, and foreign keys. Stored rows are untouched because\ntheir cells use the column's physical ID. Later statements see only the\nnew name.\n",
+      "properties": {
+        "column_id": {
+          "$ref": "#/$defs/SchemaID"
+        },
+        "kind": {
+          "const": "rename_column",
+          "type": "string"
+        },
+        "name": {
+          "$ref": "#/$defs/StatementName"
+        },
+        "table_id": {
+          "$ref": "#/$defs/SchemaID"
+        },
+        "to": {
+          "$ref": "#/$defs/CatalogName"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "table_id",
+        "column_id",
+        "to"
+      ],
+      "type": "object"
+    },
+    "RenameTableStatement": {
+      "additionalProperties": false,
+      "description": "Rename the table identified by `table_id` to `to`. The identity, stored\nrows, indexes, and inbound foreign keys are unchanged because physical\nreferences use opaque IDs. The new name is visible to every later\nstatement; the old name is not. A conflicting name is rejected.\n",
+      "properties": {
+        "kind": {
+          "const": "rename_table",
+          "type": "string"
+        },
+        "name": {
+          "$ref": "#/$defs/StatementName"
+        },
+        "table_id": {
+          "$ref": "#/$defs/SchemaID"
+        },
+        "to": {
+          "$ref": "#/$defs/CatalogName"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "table_id",
+        "to"
+      ],
+      "type": "object"
+    },
+    "SchemaID": {
+      "description": "A human-authored stable logical identity. Table IDs are unique for the\nlifetime of the database; column IDs are unique for the lifetime of their\ntable. Zero is reserved for Direct-mode allocation and is represented by\nomitting an ID from a new definition, never by sending zero.\n",
+      "maximum": 2147483647,
+      "minimum": 1,
+      "title": "SchemaID",
+      "type": "integer"
+    },
     "Statement": {
-      "description": "One statement of a program: a closed tagged union selected by `kind`.\nEvery statement has a unique `name` and an LIR `relation`. `query` reads\nit; `create`, `update`, and `delete` apply it as a mutation against a\ntarget `table`.\n",
+      "description": "One statement of a program: a closed tagged union selected by `kind`.\nEvery statement has a unique `name`. Relational statements carry an LIR\n`relation`: `query` reads it, while `create`, `update`, and `delete` apply\nit as a mutation against a target `table`. Catalog statements instead\ncarry the stable identities and definitions needed for one schema change.\n",
       "oneOf": [
         {
           "$ref": "#/$defs/QueryStatement"
@@ -117,15 +494,85 @@
         },
         {
           "$ref": "#/$defs/DeleteStatement"
+        },
+        {
+          "$ref": "#/$defs/CreateTableStatement"
+        },
+        {
+          "$ref": "#/$defs/RenameTableStatement"
+        },
+        {
+          "$ref": "#/$defs/DeleteTableStatement"
+        },
+        {
+          "$ref": "#/$defs/CreateColumnStatement"
+        },
+        {
+          "$ref": "#/$defs/RenameColumnStatement"
+        },
+        {
+          "$ref": "#/$defs/DeleteColumnStatement"
+        },
+        {
+          "$ref": "#/$defs/CreateIndexStatement"
+        },
+        {
+          "$ref": "#/$defs/DeleteIndexStatement"
         }
       ],
       "title": "Statement"
     },
     "StatementName": {
-      "description": "A statement's name: unique within the program, and the label under which\nits result enters the program binding namespace for later statements.\n",
+      "description": "A statement's unique program-local name. Relational statement names label\ntheir result bindings; catalog statement names identify their diagnostic\nand summary entries but do not create bindings.\n",
       "minLength": 1,
       "title": "StatementName",
       "type": "string"
+    },
+    "TableDefinition": {
+      "additionalProperties": false,
+      "description": "The complete logical definition of a new table. It mirrors the catalog's\ncanonical table definition and contains no opaque physical storage IDs.\n`id` is optional only for Direct-mode allocation. Column order and primary\nkey order are significant; index and foreign-key order is not.\n",
+      "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/ColumnDefinition"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "foreign_keys": {
+          "items": {
+            "$ref": "#/$defs/ForeignKeyDefinition"
+          },
+          "type": "array"
+        },
+        "id": {
+          "$ref": "#/$defs/SchemaID"
+        },
+        "indexes": {
+          "items": {
+            "$ref": "#/$defs/IndexDefinition"
+          },
+          "type": "array"
+        },
+        "name": {
+          "$ref": "#/$defs/CatalogName"
+        },
+        "primary_key": {
+          "description": "The primary-key column names, in key order.",
+          "items": {
+            "$ref": "#/$defs/CatalogName"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "columns",
+        "primary_key"
+      ],
+      "title": "TableDefinition",
+      "type": "object"
     },
     "TableName": {
       "description": "The catalog table a mutation statement targets.",
@@ -163,6 +610,6 @@
   "$id": "https://www.radengine.dev/schema/pir.json",
   "$ref": "#/$defs/Program",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "PIR is Rad's program intermediate representation: the effectful layer above\nLIR. A client sends one program to `POST /execute`; the engine runs it as a\nsingle atomic unit. This schema is its normative specification. The type\ndefinitions and the prose in these descriptions are one artifact and move\ntogether.\n\nPIR is an internal contract with no external compatibility promise yet; it\nmay change while the design is hardened.\n\n# Model\n\nA program is an ordered array of named statements executed sequentially\nwithin one implicit transaction. Each statement evaluates its complete input\nrelation against the transaction's initial snapshot plus the complete effects\nof all preceding statements, but never observes its own effects while\nderiving that input.\n\nA mutation statement (`create`, `update`, `delete`) derives one logical\nmutation set from that complete relation, validates constraints against the\npost-statement state the whole set produces, then applies the set atomically.\nInput row encounter order has no semantic effect: there is no per-row\ninterleaving of read, write, and check, so a create batch whose rows\nreference each other and an update that swaps two unique values both succeed\nwhen the end state is valid, and no partial statement effect is ever\nobservable — not even to the rest of the program.\n\nEach successful statement produces one logical result relation. Its name\nenters the program binding namespace, and later statements consume it through\nan ordinary LIR `ref` — statement names and statement-local binding names\nshare one namespace. A statement-result binding is produced exactly once and\nis never replayed: consuming it never re-executes its producing statement\n(unlike an ordinary LIR binding, whose single reference the planner may\nreplay). References may only point backwards. A statement always has a\nlogical result relation, but the engine need not construct or retain it when\nit is neither referenced by a later statement nor selected as the program\nresult — an unreferenced 100,000-row delete may keep only its affected count.\n\nIf any statement or the commit fails, the whole program fails and no effects\nbecome externally visible. Exactly one statement result is returned to the\ncaller.\n\nThere are four statement kinds. `query` reads. `create`, `update`, and\n`delete` mutate, and consume a *relation* rather than a literal row payload —\na literal row is simply a one-row relation (LIR's `rows` node). LIR stays a\npure relational language with no execution-order semantics; ordering and\neffects live here, in PIR.\n\n# The wire and its layers\n\nA program is `{ statements: [...], result? }`. Statements are an ordered\narray, never a map: statement order is the execution order, and a JSON\nobject would not preserve it. Each statement carries an LIR document in its\n`relation` field, opaque to this schema. Validation runs in three phases:\n\n1. this schema validates the program envelope and statement grammar;\n2. the independent LIR schema validates each `relation` on its own;\n3. the engine binds and type-checks the whole program in statement order,\n   against the catalog and each earlier statement's result schema.\n\nThe first two phases are per-document and independent; the third is not,\nbecause a statement's relation may reference an earlier statement's result.\nPhase three is where backward references, result schemas, namespace\ncollisions, the create/update/delete column shapes, type assignability, and\nthe result selector are checked — so a malformed program is rejected before\nany effect is applied.\n",
+  "description": "PIR is Rad's program intermediate representation: the effectful layer above\nLIR. A client sends one program to `POST /execute`; the engine runs it as a\nsingle atomic unit. This schema is its normative specification. The type\ndefinitions and the prose in these descriptions are one artifact and move\ntogether.\n\nPIR is an internal contract with no external compatibility promise yet; it\nmay change while the design is hardened.\n\n# Model\n\nA program is an ordered array of named statements executed sequentially\nwithin one implicit transaction. Relational statements evaluate their\ncomplete input relation against the transaction's initial snapshot plus the\ncomplete data and catalog effects of all preceding statements, but never\nobserve their own effects while deriving that input.\n\nA mutation statement (`create`, `update`, `delete`) derives one logical\nmutation set from that complete relation, validates constraints against the\npost-statement state the whole set produces, then applies the set atomically.\nInput row encounter order has no semantic effect: there is no per-row\ninterleaving of read, write, and check, so a create batch whose rows\nreference each other and an update that swaps two unique values both succeed\nwhen the end state is valid, and no partial statement effect is ever\nobservable — not even to the rest of the program.\n\nEach successful relational statement produces one logical result relation.\nIts name enters the program binding namespace, and later relational\nstatements consume it through an ordinary LIR `ref` — statement names and\nstatement-local binding names share one namespace. A statement-result binding\nis produced exactly once and is never replayed: consuming it never\nre-executes its producing statement (unlike an ordinary LIR binding, whose\nsingle reference the planner may replay). References may only point\nbackwards. The engine need not construct or retain a relational result when\nit is neither referenced by a later statement nor selected as the program\nresult — an unreferenced 100,000-row delete may keep only its affected count.\n\nCatalog statements change the schema visible to every later statement in the\nsame program. They have names for diagnostics and per-statement summaries,\nbut produce no relation, do not enter the LIR binding namespace, and cannot be\nselected by `result`. Their effects are nevertheless ordinary transaction\nwrites: a later failure rolls them back with the program, and no other client\nobserves an intermediate catalog or data state.\n\nIf any statement or the commit fails, the whole program fails and no effects\nbecome externally visible. A program with a selected relational result\nreturns exactly that datum; a catalog-only program returns JSON null.\n\nThere are two statement families. `query` reads data. `create`, `update`, and\n`delete` mutate data, and consume a *relation* rather than a literal row\npayload — a literal row is simply a one-row relation (LIR's `rows` node).\n`create_table`, `rename_table`, `delete_table`, `create_column`,\n`rename_column`, `delete_column`, `create_index`, and `delete_index` mutate\nthe catalog. LIR stays a pure relational language with no execution-order or\nschema-change semantics; ordering and effects live here, in PIR.\n\n# Catalog changes\n\nPIR is the sole engine-level path for catalog mutation. A transport may keep\nergonomic catalog endpoints such as `POST /tables`, but those endpoints are\nadapters: they resolve their name-based resource arguments, construct a\none-statement PIR program, and execute it. They do not call a second catalog\nmutation path and acquire no independent transaction or revision semantics.\n\nExisting tables and columns are addressed by their stable numeric schema IDs,\nnot their mutable names. This makes a program deterministic across renames and\nprevents a stale name from selecting a different object. Indexes currently\nhave no schema ID and are addressed by name within their table. New table and\ncolumn definitions may omit IDs only when Direct mode is authorised to\nallocate them; a schema-managed migration must carry the IDs authored in\n`rad.schema.yaml`.\n\nBinding and preflight advance through a logical catalog in statement order.\nA data statement binds against all preceding catalog changes; a catalog\nstatement validates against the catalog left by its predecessors. Renames\ntherefore take effect immediately, tables and columns may be used only after\ncreation and not after deletion, and a foreign key may target a table created\nearlier in the same program. Execution repeats that order against the real\ntransaction. Data-dependent checks, such as building a unique index over\nexisting rows, use the transaction-visible data left by preceding statements.\n\nCatalog authority is not granted by syntax. The caller supplies an execution\npolicy that either forbids catalog statements, records each successful\ncatalog statement as one revision, or groups the program's complete catalog\nwork into one revision. Which entrypoints and catalog modes select each policy\nis product policy deliberately outside PIR. A failed program records no\nrevisions.\n\n# The wire and its layers\n\nA program is `{ statements: [...], result? }`. Statements are an ordered\narray, never a map: statement order is the execution order, and a JSON\nobject would not preserve it. Each relational statement carries an LIR\ndocument in its `relation` field, opaque to this schema. Validation runs in\nthree phases:\n\n1. this schema validates the program envelope and statement grammar;\n2. the independent LIR schema validates each `relation` on its own;\n3. the engine simulates catalog statements and binds relational statements\n   in program order, against the catalog visible at each statement and each\n   earlier relational statement's result schema.\n\nThe first two phases are per-document and independent; the third is not,\nbecause a statement's relation may reference an earlier statement's result\nand its names resolve against an evolving catalog. Phase three is where\nbackward references, result schemas, namespace collisions, catalog identity,\nthe create/update/delete column shapes, type assignability, and the result\nselector are checked — so a malformed program is rejected before any effect\nis applied. Checks that depend on stored data remain execution-time checks and\nstill roll back the complete program on failure.\n",
   "title": "Rad PIR"
 }

@@ -53,7 +53,7 @@ someone who has the same complaints you do.
 
 ## Design Principles
 
-1. **Show the actual thing.** Real `schema.rad`, the real generated client,
+1. **Show the actual thing.** Real `rad.schema.yaml`, the real generated client,
    real `rad` CLI output. The DX _is_ the pitch, so demonstrate it — never
    substitute a metaphor or an abstract diagram for the concrete artifact.
 2. **Speak to peers.** Precise, checkable claims over persuasion. If a line

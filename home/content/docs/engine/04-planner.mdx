@@ -46,7 +46,7 @@ satisfies the interface too, which is what tests use.
 
 Every `Bind` error is client-caused and carries the `planner:` prefix. The
 server's `isEngineClientError` (`rad/server/dbserver.go`) recognises that prefix
-(along with `exec:`, `catalog:`, `migrate:`, `schema.rad:`) and maps the error
+(along with `exec:`, `catalog:`, `migrate:`, `rad.schema.yaml:`) and maps the error
 to an invalid-request problem — HTTP 422 with the message relayed verbatim —
 instead of a generic 500. `bindErr` in `bind_test.go` asserts on every
 rejection that the prefix survived wrapping.

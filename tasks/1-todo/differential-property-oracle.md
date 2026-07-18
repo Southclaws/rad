@@ -264,7 +264,7 @@ running both forms through **both** the engine and the reference interpreter
 A raw generated failure (12 tables, 84 rows, 31 nodes) is nearly useless. The
 harness must shrink toward: fewer tables/rows/columns/nodes, simpler predicates,
 literals `0`/`1`/`NULL`, one binding. The shrunk case is then emitted
-**automatically as a permanent `tests/e2e` fixture** (schema.rad + seed.json +
+**automatically as a permanent `tests/e2e` fixture** (rad.schema.yaml + seed.json +
 test_*.json) with a note recording the seed and which oracle/property caught it.
 That turns property testing into a fixture-production machine — every failure
 becomes a small, permanent, human-readable regression. The seed alone already

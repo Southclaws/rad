@@ -7,7 +7,7 @@ the Admin UI editors build on it next.
 ## What shipped
 
 **Modes.** Every database is `direct` (default — the live catalog is the
-source of truth) or `schema` (schema.rad migrations own the catalog). The
+source of truth) or `schema` (rad.schema.yaml migrations own the catalog). The
 mode is catalog metadata (`/rad/catalog/meta/mode`), stamped once at first
 initialisation and immutable: `rad serve --catalog-mode` / `RAD_CATALOG_MODE`
 applies only to a fresh database, and an explicit mismatch with the stored
@@ -19,7 +19,7 @@ the imperative endpoints is free.
 (`CreateTable`, `DeleteTable`, `RenameTable`, `CreateColumn`,
 `DeleteColumn`, `RenameColumn`, `CreateIndex`+backfill, `DeleteIndex`) are
 fronted by a single frontend façade (06_frontend/catalog.go) that both the
-schema.rad reconciler and the wire endpoints drive — capability parity by
+rad.schema.yaml reconciler and the wire endpoints drive — capability parity by
 construction. Enforcement lives only at the transport: a schema-managed
 database rejects each imperative endpoint with an `invalid` problem
 ("schema-managed" detail) before touching anything.
@@ -70,7 +70,7 @@ code, wire, errors, step strings, tests, and docs.
 - Admin UI editors + data import over these endpoints; mode banner
   (UI reads mode from the admin plane or /health).
 - [catalog-revisions](catalog-revisions.md).
-- `rad schema pull` + catalog→schema.rad renderer.
+- `rad schema pull` + catalog→rad.schema.yaml renderer.
 - Name validation rules (URL-safety, reserved names) — own todo.
 - Adoption workflow (direct → schema) — mode stays set-once until then.
 

@@ -12,7 +12,7 @@ import (
 // SchemaID is a human-authored logical identity. It is independent of the
 // catalog's opaque physical IDs and remains stable when a table or column is
 // renamed. Zero is reserved to mean "allocate one" on direct catalog calls;
-// schema.rad requires every ID explicitly.
+// rad.schema.yaml requires every ID explicitly.
 type SchemaID uint32
 
 // MaxSchemaID keeps IDs in a simple positive signed-31-bit range that every

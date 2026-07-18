@@ -2,12 +2,12 @@
 // client, connected to a Rad server over the wire. This is the proof of the
 // developer experience:
 //
-//	schema.rad  ->  rad migrate  ->  rad generate  ->  this file
+//	rad.schema.yaml  ->  rad migrate  ->  rad generate  ->  this file
 //
 // Everything below uses examples/demo/generated (typed models, query builders,
 // transactions) speaking rad:// to a server — no SQL, no IR, no keys, and
 // no cgo in the application. Set RAD_URL to point elsewhere (default
-// rad://localhost:7237); when schema.rad evolves, `rad generate` keeps this
+// rad://localhost:7237); when rad.schema.yaml evolves, `rad generate` keeps this
 // compiling.
 package main
 
@@ -101,7 +101,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		for _, u := range []tracker.User{ada, grace, linus} {
+		for _, u := range []tracker.Account{ada, grace, linus} {
 			role := "member"
 			if u.ID == ada.ID {
 				role = "owner"
@@ -293,7 +293,7 @@ func run() error {
 	fmt.Printf("   %q done, assignee cleared (nil=%v)\n", fix.Title, fix.AssigneeID == nil)
 
 	// grace still owns tasks and comments reference linus: restrict wins.
-	if _, err := db.Users.Delete(ctx, grace.ID); err != nil {
+	if _, err := db.Accounts.Delete(ctx, grace.ID); err != nil {
 		fmt.Printf("   deleting grace blocked: %v\n", err)
 	}
 
@@ -343,21 +343,21 @@ func hash(password string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func signup(ctx context.Context, db *tracker.Client, username, password string, email *string) (tracker.User, error) {
-	u, err := db.Users.Create(ctx, tracker.UserCreate{
+func signup(ctx context.Context, db *tracker.Client, username, password string, email *string) (tracker.Account, error) {
+	u, err := db.Accounts.Create(ctx, tracker.AccountCreate{
 		Username:     username,
 		PasswordHash: hash(password),
 		Email:        email,
 	})
 	if err != nil {
-		return tracker.User{}, err
+		return tracker.Account{}, err
 	}
 	fmt.Printf("   signed up %s (id %s…)\n", u.Username, u.ID[:8])
 	return u, nil
 }
 
 func login(ctx context.Context, db *tracker.Client, username, password string) (tracker.Session, error) {
-	u, ok, err := db.Users.ByUsername(ctx, username)
+	u, ok, err := db.Accounts.ByUsername(ctx, username)
 	if err != nil {
 		return tracker.Session{}, err
 	}
@@ -370,17 +370,17 @@ func login(ctx context.Context, db *tracker.Client, username, password string) (
 	})
 }
 
-func whoami(ctx context.Context, db *tracker.Client, token string) (tracker.User, error) {
+func whoami(ctx context.Context, db *tracker.Client, token string) (tracker.Account, error) {
 	s, ok, err := db.Sessions.Get(ctx, token)
 	if err != nil {
-		return tracker.User{}, err
+		return tracker.Account{}, err
 	}
 	if !ok || s.ExpiresAt < time.Now().UnixMilli() {
-		return tracker.User{}, errors.New("session expired")
+		return tracker.Account{}, errors.New("session expired")
 	}
-	u, ok, err := db.Users.Get(ctx, s.UserID)
+	u, ok, err := db.Accounts.Get(ctx, s.UserID)
 	if err != nil || !ok {
-		return tracker.User{}, errors.Join(err, errors.New("user missing"))
+		return tracker.Account{}, errors.Join(err, errors.New("user missing"))
 	}
 	return u, nil
 }

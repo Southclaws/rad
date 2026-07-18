@@ -6,7 +6,7 @@ type Lang = "yaml" | "go" | "ts";
 
 const FILES: { name: string; lang: Lang; code: string }[] = [
   {
-    name: "schema.rad",
+    name: "rad.schema.yaml",
     lang: "yaml",
     code: `tables:
   - name: boards

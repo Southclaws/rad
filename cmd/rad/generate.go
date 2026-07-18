@@ -20,7 +20,7 @@ func generateCmd() *cobra.Command {
 	var file, out, pkg, lang string
 	cmd := &cobra.Command{
 		Use:   "generate",
-		Short: "Generate a typed client for a schema.rad",
+		Short: "Generate a typed client for rad.schema.yaml",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			src, err := os.ReadFile(file)
@@ -62,7 +62,7 @@ func generateCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&file, "file", "f", "schema.rad", "schema file")
+	cmd.Flags().StringVarP(&file, "file", "f", defaultSchemaFile, "schema file")
 	cmd.Flags().StringVarP(&out, "out", "o", "generated", "output directory")
 	cmd.Flags().StringVar(&pkg, "pkg", "db", "generated package (Go) / file basename")
 	cmd.Flags().StringVar(&lang, "lang", "go", "client language: go, ts")

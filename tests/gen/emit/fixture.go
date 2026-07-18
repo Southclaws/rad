@@ -27,7 +27,7 @@ import (
 
 // Case is a minimal failing differential case, captured for emission. Spec and
 // Data are the shrunk catalog and rows; Query is the failing query. SchemaSrc,
-// when set, is the original schema.rad for a schema-directed case — copied
+// when set, is the original rad.schema.yaml for a schema-directed case — copied
 // verbatim rather than re-serialised from Spec. Mode and Detail describe the
 // failure for the BUG.md record.
 type Case struct {
@@ -71,9 +71,9 @@ func Fixture(ctx context.Context, dir string, c Case) (string, error) {
 
 	schema := c.SchemaSrc
 	if schema == nil {
-		schema = []byte(SchemaRAD(c.Spec))
+		schema = []byte(SchemaYAML(c.Spec))
 	}
-	if err := os.WriteFile(filepath.Join(fixDir, "schema.rad"), schema, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(fixDir, "rad.schema.yaml"), schema, 0o644); err != nil {
 		return "", err
 	}
 
@@ -120,7 +120,7 @@ func reproduce(ctx context.Context, c Case) (engine, oracle lir.Datum, err error
 	db := frontend.Open(store)
 
 	if c.SchemaSrc != nil {
-		if _, err := db.MigrateFile(ctx, "schema.rad", c.SchemaSrc); err != nil {
+		if _, err := db.MigrateFile(ctx, "rad.schema.yaml", c.SchemaSrc); err != nil {
 			return lir.Datum{}, lir.Datum{}, fmt.Errorf("migrate: %w", err)
 		}
 	} else {
@@ -168,10 +168,10 @@ func seedGroups(spec *generative.Catalog, data map[string][]lir.Row) []map[strin
 	return groups
 }
 
-// SchemaRAD serialises a synthetic spec as schema.rad. It handles the shapes the
+// SchemaYAML serialises a synthetic spec as rad.schema.yaml. It handles the shapes the
 // synthesiser produces (single or composite keys, single-column foreign keys
 // and indexes); a schema-directed case carries its original source instead.
-func SchemaRAD(spec *generative.Catalog) string {
+func SchemaYAML(spec *generative.Catalog) string {
 	var b strings.Builder
 	b.WriteString("tables:\n")
 	for tableIndex, t := range spec.Tables {

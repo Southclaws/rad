@@ -17,17 +17,17 @@ go test ./tests/e2e/ -run E2E/create_task   # one fixture
 
 ```
 tests/e2e/<test-name>/
-  schema.rad            # this test's schema — only the tables it needs
+  rad.schema.yaml            # this test's schema — only the tables it needs
   seed.json              # rows to insert before the program runs
   test_<test-name>.json  # the program to run, its expected result, and assertions
 ```
 
-## `schema.rad`
+## `rad.schema.yaml`
 
 A minimal schema scoped to the one scenario — not the full demo schema.
 Keeps each fixture self-contained and fast, and means a fixture never breaks
 because an unrelated table changed shape. Same YAML format `rad migrate`
-consumes (see `examples/demo/schema.rad` for the full-featured reference).
+consumes (see `examples/demo/rad.schema.yaml` for the full-featured reference).
 
 Omit `default: uuid()` / `default: now_ms()` on any column whose value feeds
 into `result` or an assertion's `expect` — see Determinism below.
@@ -140,7 +140,7 @@ this directory should supply ids and timestamps as plain literals instead
 
 ## Adding a fixture
 
-1. Write `schema.rad` scoped to just what the scenario needs.
+1. Write `rad.schema.yaml` scoped to just what the scenario needs.
 2. Write `seed.json` — the pre-existing state, in FK-safe insertion order.
 3. Write `test_<name>.json` — the program, its expected result, and enough
    assertions to pin down the state it left behind (or an `error` for a
@@ -149,5 +149,5 @@ this directory should supply ids and timestamps as plain literals instead
    up automatically. No Go to write.
 
 Exactly one `test_*.json` per directory; a directory without one is
-skipped (so a bare `schema.rad`/`seed.json` in progress won't fail the
+skipped (so a bare `rad.schema.yaml`/`seed.json` in progress won't fail the
 suite).

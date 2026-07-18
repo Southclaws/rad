@@ -124,7 +124,7 @@ func (c *Client) Tables(ctx context.Context) ([]protocol.TableInfo, error) {
 	return api.TablesFromOAS(res.Tables), nil
 }
 
-// Migrate reconciles the server's database with a schema.rad source and
+// Migrate reconciles the server's database with a rad.schema.yaml source and
 // returns the applied steps.
 func (c *Client) Migrate(ctx context.Context, schemaSrc string) ([]string, error) {
 	res, err := c.oas.SchemaMigrate(ctx, oas.NewOptMigrateProps(oas.MigrateProps{Schema: schemaSrc}))

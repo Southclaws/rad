@@ -144,9 +144,19 @@ func (r Reader) GetTableByID(ctx context.Context, id string) (Table, bool, error
 	return getTableByID(ctx, r.view, id)
 }
 
+// GetTableBySchemaID resolves a table by its stable logical identity.
+func (r Reader) GetTableBySchemaID(ctx context.Context, id SchemaID) (Table, bool, error) {
+	return getTableBySchemaID(ctx, r.view, id)
+}
+
 // ListTables returns every table in the database, sorted by name.
 func (r Reader) ListTables(ctx context.Context) ([]Table, error) {
 	return listTables(ctx, r.view)
+}
+
+// Schema rebuilds the canonical schema through this reader's KV view.
+func (r Reader) Schema(ctx context.Context) (Schema, error) {
+	return schemaIn(ctx, r.view)
 }
 
 // transact runs fn in a transaction and commits it if fn returns nil. It is
@@ -408,6 +418,11 @@ func (c *Catalog) GetTableByID(ctx context.Context, id string) (Table, bool, err
 	return getTableByID(ctx, c.store, id)
 }
 
+// GetTableBySchemaID resolves a table by its stable logical identity.
+func (c *Catalog) GetTableBySchemaID(ctx context.Context, id SchemaID) (Table, bool, error) {
+	return getTableBySchemaID(ctx, c.store, id)
+}
+
 // ListTables returns every table in the database, sorted by name.
 func (c *Catalog) ListTables(ctx context.Context) ([]Table, error) {
 	return listTables(ctx, c.store)
@@ -446,4 +461,27 @@ func getTableByID(ctx context.Context, view kv.KV, id string) (Table, bool, erro
 		return Table{}, false, err
 	}
 	return t, true, nil
+}
+
+func getTableBySchemaID(ctx context.Context, view kv.KV, id SchemaID) (Table, bool, error) {
+	if id == 0 || id > MaxSchemaID {
+		return Table{}, false, reject.Inputf("catalog: invalid table schema ID %d", id)
+	}
+	tables, err := listTables(ctx, view)
+	if err != nil {
+		return Table{}, false, err
+	}
+	var found Table
+	have := false
+	for _, table := range tables {
+		if table.SchemaID != id {
+			continue
+		}
+		if have {
+			return Table{}, false, reject.Fail(reject.ReasonCatalogDrift,
+				"catalog: tables %q and %q share schema ID %d", found.Name, table.Name, id)
+		}
+		found, have = table, true
+	}
+	return found, have, nil
 }

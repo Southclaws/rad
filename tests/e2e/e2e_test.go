@@ -128,9 +128,9 @@ func runFixture(t *testing.T, dir, testFile string) {
 	d := harness.New(t)
 
 	// 1. Migrate the fixture's schema.
-	schemaSrc, err := os.ReadFile(filepath.Join(dir, "schema.rad"))
+	schemaSrc, err := os.ReadFile(filepath.Join(dir, "rad.schema.yaml"))
 	if err != nil {
-		t.Fatalf("read schema.rad: %v", err)
+		t.Fatalf("read rad.schema.yaml: %v", err)
 	}
 	if _, err := d.Client.Migrate(ctx, string(schemaSrc)); err != nil {
 		t.Fatalf("migrate: %v", err)

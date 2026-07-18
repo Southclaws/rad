@@ -13,7 +13,7 @@ tolerance:
 - **URL paths** (`PATCH /tables/{table}/columns/{column}`) — anything
   URL-encodes, but names with `/`, `.`, whitespace, or emptiness make for
   hostile URLs and confusing logs.
-- **schema.rad** — YAML keys; currently whatever the parser accepts.
+- **rad.schema.yaml** — YAML keys; currently whatever the parser accepts.
 - **Generated code** (Go + TS clients) — names become identifiers;
   codegen must mangle or reject what it can't express (`user-events`,
   `2fa_codes`, names differing only by case or by mangle-collision).

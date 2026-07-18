@@ -44,22 +44,24 @@ func (db *DB) migrateDirect(ctx context.Context, desired *schema.Schema) ([]migr
 }
 
 func (db *DB) migrateSchema(ctx context.Context, desired *schema.Schema) ([]migrate.Step, error) {
-	var steps []migrate.Step
-	err := db.eng.CatalogTxn(ctx, func(tx *exec.Tx, change *catalog.Mutation) error {
-		current, err := change.ListTables(ctx)
-		if err != nil {
-			return err
-		}
-		steps, err = migrate.Diff(current, desired)
-		if err != nil {
-			return err
-		}
-		for _, step := range steps {
-			if err := db.applySchemaStep(ctx, tx, change, step); err != nil {
-				return fmt.Errorf("applying %q: %w", step, err)
-			}
-		}
-		return nil
+	current, err := db.cat.ListTables(ctx)
+	if err != nil {
+		return nil, err
+	}
+	steps, err := migrate.Diff(current, desired)
+	if err != nil || len(steps) == 0 {
+		return steps, err
+	}
+	expected, err := catalog.BuildSchema(current)
+	if err != nil {
+		return nil, err
+	}
+	program, err := migrationProgram(current, steps)
+	if err != nil {
+		return nil, err
+	}
+	_, err = db.eng.ExecuteProgram(ctx, program, exec.ExecOptions{
+		Catalog: exec.CatalogRevisionPerProgram, ExpectedCatalog: &expected,
 	})
 	return steps, err
 }
@@ -91,34 +93,7 @@ func (db *DB) applyDirectStep(ctx context.Context, step migrate.Step) error {
 	}
 }
 
-func (db *DB) applySchemaStep(ctx context.Context, tx *exec.Tx, change *catalog.Mutation, step migrate.Step) error {
-	switch s := step.(type) {
-	case migrate.RenameTable:
-		return change.RenameTable(ctx, s.From, s.To)
-	case migrate.RenameColumn:
-		_, err := change.RenameColumn(ctx, s.Table, s.From, s.To)
-		return err
-	case migrate.CreateTable:
-		_, err := change.CreateTable(ctx, s.Def)
-		return err
-	case migrate.CreateColumn:
-		_, err := change.CreateColumn(ctx, s.Table, s.Def)
-		return err
-	case migrate.CreateIndex:
-		return tx.CreateIndexWithBackfill(ctx, change, s.Table, s.Def)
-	case migrate.DeleteIndex:
-		return change.DeleteIndex(ctx, s.Table, s.Index)
-	case migrate.DeleteColumn:
-		_, err := change.DeleteColumn(ctx, s.Table, s.Column)
-		return err
-	case migrate.DeleteTable:
-		return change.DeleteTable(ctx, s.Table)
-	default:
-		return fmt.Errorf("unknown migration step %T", step)
-	}
-}
-
-// MigrateFile is Migrate for schema source text (typically a schema.rad
+// MigrateFile is Migrate for schema source text (typically a rad.schema.yaml
 // file's contents).
 func (db *DB) MigrateFile(ctx context.Context, filename string, src []byte) ([]migrate.Step, error) {
 	desired, err := schema.Parse(filename, src)

@@ -437,7 +437,7 @@ func TestSchemaManagedModeGatesCatalogOps(t *testing.T) {
 }
 
 // A direct-mode database reports its mode and accepts both channels: the
-// imperative operations and the schema.rad reconciler.
+// imperative operations and the rad.schema.yaml reconciler.
 func TestDirectModeAcceptsBothChannels(t *testing.T) {
 	c := testServerInMode(t, catalog.ModeDirect)
 	ctx := context.Background()

@@ -2,9 +2,9 @@
 // in one binary. The database engine lives under ./rad/engine and the HTTP
 // implementation under ./rad/server; this package is only the CLI shell.
 //
-//	rad migrate  -u rad://host -f schema.rad reconcile the database with a schema
-//	rad generate -f schema.rad -o ./gen      emit the typed Go client
-//	rad serve    -d ./data                   devtool server (REST API + web UI)
+//	rad migrate                         reconcile the configured database
+//	rad generate -o ./gen               emit the typed Go client
+//	rad serve -d ./data                 devtool server (REST API + web UI)
 package main
 
 import (

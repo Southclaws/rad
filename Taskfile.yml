@@ -122,8 +122,8 @@ tasks:
     env:
       CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
-      - go run ./cmd/rad generate -f examples/demo/schema.rad -o examples/demo/generated --pkg tracker
-      - go run ./cmd/rad generate -f examples/demo/schema.rad -o examples/demo/generated --pkg tracker --lang ts
+      - go run ./cmd/rad generate -f examples/demo/rad.schema.yaml -o examples/demo/generated --pkg tracker
+      - go run ./cmd/rad generate -f examples/demo/rad.schema.yaml -o examples/demo/generated --pkg tracker --lang ts
 
   protocol:generate:
     desc: Regenerate LIR and PIR wire types, OpenAPI transport, and the public schemas
@@ -153,11 +153,11 @@ tasks:
         node examples/demo/tracker-demo.ts
 
   migrate:
-    desc: Apply examples/demo/schema.rad to the running Rad server
+    desc: Apply examples/demo/rad.schema.yaml to the running Rad server
     env:
       CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
-      - go run ./cmd/rad migrate -f examples/demo/schema.rad -u rad://localhost
+      - go run ./cmd/rad migrate --config examples/demo/rad.config.yaml --file examples/demo/rad.schema.yaml
 
   build:
     desc: Build mostly-static binaries (SlateDB linked in) -> bin/

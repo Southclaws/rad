@@ -201,7 +201,7 @@ referencing-table-first to satisfy the same rule
 Every database carries a management mode, stored as catalog metadata under
 `/rad/catalog/meta/mode`: **direct** (the live catalog is the source of
 truth; the transport's imperative catalog operations are allowed) or
-**schema** (a `schema.rad` document is the source of truth; migration is the
+**schema** (a `rad.schema.yaml` document is the source of truth; migration is the
 only mutation channel). The mode is settled once, at first initialisation
 (`InitMode`, driven by `rad serve --catalog-mode` / `RAD_CATALOG_MODE`), and
 never changes; a boot that explicitly requests a different mode than the
@@ -219,7 +219,7 @@ is sound). This package only records and reports it.
 Two subpackages round out the layer; both are frontends *to* the catalog and
 depend on nothing above layer 02.
 
-`schema` parses declarative `schema.rad` files (YAML, structurally validated
+`schema` parses declarative `rad.schema.yaml` files (YAML, structurally validated
 against the embedded JSON Schema `radschema.json`) into `catalog.TableDef`s.
 It desugars column-level shorthands — `pk`, `unique`/`index` (which derive
 deterministic index names via `indexName`, e.g. `users_email_uq`),

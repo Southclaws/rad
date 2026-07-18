@@ -13,8 +13,8 @@ func validateCmd() *cobra.Command {
 	var file string
 	cmd := &cobra.Command{
 		Use:   "validate",
-		Short: "Validate a schema.rad file without a running database",
-		Long: `Parse and validate a schema.rad file — structure, types, and references —
+		Short: "Validate rad.schema.yaml without a running database",
+		Long: `Parse and validate rad.schema.yaml — structure, types, and references —
 without touching a database.`,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
@@ -42,6 +42,6 @@ without touching a database.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&file, "file", "f", "schema.rad", "schema file")
+	cmd.Flags().StringVarP(&file, "file", "f", defaultSchemaFile, "schema file")
 	return cmd
 }

@@ -1,7 +1,7 @@
 // Package harness runs planner battle tests end to end with no codegen in
 // the loop: a real server (in-memory SlateDB, the full HTTP stack) fronted
 // by the real client, with the schema created by direct catalog mutation
-// instead of schema.rad migrations.
+// instead of rad.schema.yaml migrations.
 //
 //	d := harness.New(t)
 //	d.Table("tasks", harness.Text("id"), harness.Text("status")).Create()

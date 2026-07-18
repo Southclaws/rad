@@ -471,7 +471,7 @@ signature (id-only through five typed/nullable columns) — and `tests/gen`'s
 chosen plan vs. forced full scan vs. reference interpreter), shrinking any
 divergence and, under `RAD_GEN_EMIT`, emitting it as a permanent e2e fixture
 (the recursive query round-trips through `api.WireQuery`, the edge schema
-through `emit.SchemaRAD`). Termination is guaranteed by construction — acyclic
+through `emit.SchemaYAML`). Termination is guaranteed by construction — acyclic
 graphs (edges point forward in node order) carry rich state under either accumulation
 mode; arbitrary, possibly-cyclic graphs use `accumulation: new` over id-only rows,
 which closes on the finite node set — so every case checks a *result*, not the

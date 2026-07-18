@@ -46,8 +46,8 @@ func UnmarshalProgram(raw []byte) (pirwire.Program, error) {
 	return p, nil
 }
 
-// statementNameAndRelation pulls the name and raw LIR payload out of a wire
-// statement without caring which kind it is — the two fields every kind shares.
+// statementNameAndRelation pulls the name and optional raw LIR payload out of
+// a wire statement. Catalog statements return a nil relation.
 func statementNameAndRelation(s pirwire.Statement) (string, json.RawMessage) {
 	switch x := s.StatementUnion.(type) {
 	case *pirwire.QueryStatement:
@@ -58,6 +58,22 @@ func statementNameAndRelation(s pirwire.Statement) (string, json.RawMessage) {
 		return x.Name, x.Relation
 	case *pirwire.DeleteStatement:
 		return x.Name, x.Relation
+	case *pirwire.CreateTableStatement:
+		return x.Name, nil
+	case *pirwire.RenameTableStatement:
+		return x.Name, nil
+	case *pirwire.DeleteTableStatement:
+		return x.Name, nil
+	case *pirwire.CreateColumnStatement:
+		return x.Name, nil
+	case *pirwire.RenameColumnStatement:
+		return x.Name, nil
+	case *pirwire.DeleteColumnStatement:
+		return x.Name, nil
+	case *pirwire.CreateIndexStatement:
+		return x.Name, nil
+	case *pirwire.DeleteIndexStatement:
+		return x.Name, nil
 	default:
 		return "", nil
 	}

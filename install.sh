@@ -91,8 +91,8 @@ main() {
 	echo ""
 	echo "Get started:"
 	echo "  rad serve                 # start a database (RAD_STORAGE=memory|file|s3)"
-	echo "  rad migrate -u rad://localhost -f schema.rad"
-	echo "  rad generate -f schema.rad -o ./generated --pkg db"
+	echo "  rad migrate               # uses rad.config.yaml and rad.schema.yaml"
+	echo "  rad generate -o ./generated --pkg db"
 }
 
 main "$@"

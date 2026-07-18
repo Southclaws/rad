@@ -21,7 +21,7 @@ const LOOP: {
   {
     n: "01",
     verb: "define",
-    hint: "schema.rad",
+    hint: "rad.schema.yaml",
     desc: "Describe your data model.",
   },
   {
@@ -86,10 +86,10 @@ const FEATURES: Feature[] = [
   {
     tag: "migrations",
     h: "Migrations from a schema diff",
-    p: "Change the schema. Rad computes and runs the migration. Rename hints keep intent without unnecessary rewrites.",
+    p: "Change the schema. Rad computes and runs the migration. Stable IDs preserve rename intent without unnecessary rewrites.",
     code: (
       <>
-        <b>rad migrate</b> --url rad://localhost
+        <b>rad migrate</b>
       </>
     ),
   },

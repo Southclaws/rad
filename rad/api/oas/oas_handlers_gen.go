@@ -871,7 +871,7 @@ func (s *Server) handleGetHealthRequest(args [0]string, argsEscaped bool, w http
 // handleGetInfoRequest handles GetInfo operation.
 //
 // Return stable metadata for the database behind this endpoint. `mode` tells management tools whether
-// catalog changes are available directly through the API or are owned by `schema.rad` migrations.
+// catalog changes are available directly through the API or are owned by `rad.schema.yaml` migrations.
 // `schema_version` identifies the latest committed catalog state, and `schema_version_at` reports when
 // that version committed. `location` is the server's configured storage location and is intended for
 // local development and administrative tooling.
@@ -1342,9 +1342,9 @@ func (s *Server) handleIndexDeleteRequest(args [2]string, argsEscaped bool, w ht
 
 // handleSchemaMigrateRequest handles SchemaMigrate operation.
 //
-// Take a `schema.rad` source document, compute the difference against the database's current catalog,
-// and apply whatever changes are needed to make them match. The response lists the steps that were
-// applied, in order.
+// Take a `rad.schema.yaml` source document, compute the difference against the database's current
+// catalog, and apply whatever changes are needed to make them match. The response lists the steps that
+// were applied, in order.
 //
 // Migration is idempotent. Submitting a schema that already matches the database applies nothing and
 // returns an empty step list. Stable numeric table and column IDs identify renames, so names and other
@@ -1508,7 +1508,7 @@ func (s *Server) handleSchemaMigrateRequest(args [0]string, argsEscaped bool, w 
 // handleTableCreateRequest handles TableCreate operation.
 //
 // Define a new table in one call: columns, primary key, and optionally indexes and foreign keys,
-// exactly as a `schema.rad` entry would. Stable schema IDs may be supplied or are assigned by the
+// exactly as a `rad.schema.yaml` entry would. Stable schema IDs may be supplied or are assigned by the
 // catalog, and the whole definition commits atomically — a rejected definition leaves nothing
 // behind, including the name.
 //
@@ -1831,7 +1831,7 @@ func (s *Server) handleTableDeleteRequest(args [1]string, argsEscaped bool, w ht
 // reflects the schema as it exists right now, after the most recent successful migration. An empty
 // database returns an empty list, not an error.
 //
-// Use this to introspect a running server without access to the original `schema.rad` file.
+// Use this to introspect a running server without access to the original `rad.schema.yaml` file.
 //
 // GET /tables
 func (s *Server) handleTableListRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {

@@ -14,14 +14,14 @@ import (
 	"github.com/Southclaws/rad/rad/protocol/lirwire"
 )
 
-// SchemaSource is the schema.rad this client was generated from.
-const SchemaSource = "# Tracker — a team task-tracking product built on Rad.\n#\n# This file is the product's source of truth: `rad migrate` reconciles the\n# database against it, `rad generate` emits the typed client in generated/.\n# The format is YAML, validated by Rad's JSON Schema.\n#\n# It deliberately exercises the database's limits:\n#   - uuid / unix_ms / email formats\n#   - generator and literal defaults (uuid(), now_ms(), strings, ints, bools)\n#   - nullable columns and nullable foreign keys\n#   - two foreign keys from one table to the same target (assignee/creator)\n#   - a self-referential foreign key (subtasks)\n#   - composite primary keys (join tables)\n#   - composite unique constraints and composite secondary indexes\n#   - a many-to-many relationship (tasks <-> labels)\n\ntables:\n  - id: 1\n    name: users\n    columns:\n      - { id: 1, name: id,            type: string, pk: true, default: uuid(), format: uuid }\n      - { id: 2, name: username,      type: string, unique: true }\n      - { id: 3, name: display_name,  type: string, nullable: true }\n      - { id: 4, name: password_hash, type: string }\n      - { id: 5, name: email,         type: string, nullable: true, format: email }\n      - { id: 6, name: created_at,    type: int64, format: unix_ms, default: now_ms() }\n\n  - id: 2\n    name: sessions\n    columns:\n      - { id: 1, name: token,      type: string, pk: true, default: uuid(), format: uuid }\n      - { id: 2, name: user_id,    type: string, ref: users.id, index: true }\n      - { id: 3, name: created_at, type: int64, format: unix_ms, default: now_ms() }\n      - { id: 4, name: expires_at, type: int64, format: unix_ms }\n\n  - id: 3\n    name: teams\n    columns:\n      - { id: 1, name: id,         type: string, pk: true, default: uuid(), format: uuid }\n      - { id: 2, name: name,       type: string, unique: true }\n      - { id: 3, name: created_at, type: int64, format: unix_ms, default: now_ms() }\n\n  - id: 4\n    name: team_members\n    columns:\n      - { id: 1, name: team_id,   type: string, ref: teams.id }\n      - { id: 2, name: user_id,   type: string, ref: users.id, index: true }\n      - { id: 3, name: role,      type: string, default: member }\n      - { id: 4, name: joined_at, type: int64, format: unix_ms, default: now_ms() }\n    primary_key: [team_id, user_id]\n\n  - id: 5\n    name: boards\n    columns:\n      - { id: 1, name: id,         type: string, pk: true, default: uuid(), format: uuid }\n      - { id: 2, name: team_id,    type: string, ref: teams.id }\n      - { id: 3, name: name,       type: string }\n      - { id: 4, name: archived,   type: bool, default: false }\n      - { id: 5, name: created_at, type: int64, format: unix_ms, default: now_ms() }\n    indexes:\n      - { columns: [team_id, name], unique: true }\n\n  - id: 6\n    name: tasks\n    columns:\n      - { id: 1, name: id,          type: string, pk: true, default: uuid(), format: uuid }\n      - { id: 2, name: board_id,    type: string, ref: boards.id }\n      - { id: 3, name: title,       type: string }\n      - { id: 4, name: description, type: string, nullable: true }\n      - { id: 5, name: status,      type: string, default: todo }\n      - { id: 6, name: priority,    type: int64, default: 2 }\n      - { id: 7, name: estimate,    type: float64, nullable: true }\n      - { id: 8, name: assignee_id, type: string, nullable: true, ref: users.id, index: true }\n      - { id: 9, name: creator_id,  type: string, ref: users.id }\n      - { id: 10, name: parent_id,   type: string, nullable: true, ref: tasks.id, index: true }\n      - { id: 11, name: due_at,      type: int64, nullable: true, format: unix_ms }\n      - { id: 12, name: created_at,  type: int64, format: unix_ms, default: now_ms() }\n    indexes:\n      - { columns: [board_id, status] }\n      - { columns: [assignee_id, status] }\n\n  - id: 7\n    name: comments\n    columns:\n      - { id: 1, name: id,         type: string, pk: true, default: uuid(), format: uuid }\n      - { id: 2, name: task_id,    type: string, ref: tasks.id, index: true }\n      - { id: 3, name: author_id,  type: string, ref: users.id }\n      - { id: 4, name: body,       type: string }\n      - { id: 5, name: created_at, type: int64, format: unix_ms, default: now_ms() }\n\n  - id: 8\n    name: labels\n    columns:\n      - { id: 1, name: id,      type: string, pk: true, default: uuid(), format: uuid }\n      - { id: 2, name: team_id, type: string, ref: teams.id }\n      - { id: 3, name: name,    type: string }\n      - { id: 4, name: hex_color, type: string, default: \"#8899aa\" }\n    indexes:\n      - { columns: [team_id, name], unique: true }\n\n  - id: 9\n    name: task_labels\n    columns:\n      - { id: 1, name: task_id,  type: string, ref: tasks.id }\n      - { id: 2, name: label_id, type: string, ref: labels.id, index: true }\n    primary_key: [task_id, label_id]\n"
+// SchemaSource is the rad.schema.yaml this client was generated from.
+const SchemaSource = "# Tracker — a team task-tracking product built on Rad.\n#\n# This file is the product's source of truth: `rad migrate` reconciles the\n# database against it, `rad generate` emits the typed client in generated/.\n# The format is YAML, validated by Rad's JSON Schema.\n#\n# It deliberately exercises the database's limits:\n#   - uuid / unix_ms / email formats\n#   - generator and literal defaults (uuid(), now_ms(), strings, ints, bools)\n#   - nullable columns and nullable foreign keys\n#   - two foreign keys from one table to the same target (assignee/creator)\n#   - a self-referential foreign key (subtasks)\n#   - composite primary keys (join tables)\n#   - composite unique constraints and composite secondary indexes\n#   - a many-to-many relationship (tasks <-> labels)\n\ntables:\n  - id: 1\n    name: accounts\n    columns:\n      - { id: 1, name: id,            type: string, pk: true, default: uuid(), format: uuid }\n      - { id: 2, name: username,      type: string, unique: true }\n      - { id: 3, name: display_name,  type: string, nullable: true }\n      - { id: 4, name: password_hash, type: string }\n      - { id: 5, name: email,         type: string, nullable: true, format: email }\n      - { id: 6, name: created_at,    type: int64, format: unix_ms, default: now_ms() }\n\n  - id: 2\n    name: sessions\n    columns:\n      - { id: 1, name: token,      type: string, pk: true, default: uuid(), format: uuid }\n      - { id: 2, name: user_id,    type: string, ref: accounts.id, index: true }\n      - { id: 3, name: created_at, type: int64, format: unix_ms, default: now_ms() }\n      - { id: 4, name: expires_at, type: int64, format: unix_ms }\n\n  - id: 3\n    name: teams\n    columns:\n      - { id: 1, name: id,         type: string, pk: true, default: uuid(), format: uuid }\n      - { id: 2, name: name,       type: string, unique: true }\n      - { id: 3, name: created_at, type: int64, format: unix_ms, default: now_ms() }\n\n  - id: 4\n    name: team_members\n    columns:\n      - { id: 1, name: team_id,   type: string, ref: teams.id }\n      - { id: 2, name: user_id,   type: string, ref: accounts.id, index: true }\n      - { id: 3, name: role,      type: string, default: member }\n      - { id: 4, name: joined_at, type: int64, format: unix_ms, default: now_ms() }\n    primary_key: [team_id, user_id]\n\n  - id: 5\n    name: boards\n    columns:\n      - { id: 1, name: id,         type: string, pk: true, default: uuid(), format: uuid }\n      - { id: 2, name: team_id,    type: string, ref: teams.id }\n      - { id: 3, name: name,       type: string }\n      - { id: 4, name: archived,   type: bool, default: false }\n      - { id: 5, name: created_at, type: int64, format: unix_ms, default: now_ms() }\n    indexes:\n      - { columns: [team_id, name], unique: true }\n\n  - id: 6\n    name: tasks\n    columns:\n      - { id: 1, name: id,          type: string, pk: true, default: uuid(), format: uuid }\n      - { id: 2, name: board_id,    type: string, ref: boards.id }\n      - { id: 3, name: title,       type: string }\n      - { id: 4, name: description, type: string, nullable: true }\n      - { id: 5, name: status,      type: string, default: todo }\n      - { id: 6, name: priority,    type: int64, default: 2 }\n      - { id: 7, name: estimate,    type: float64, nullable: true }\n      - { id: 8, name: assignee_id, type: string, nullable: true, ref: accounts.id, index: true }\n      - { id: 9, name: creator_id,  type: string, ref: accounts.id }\n      - { id: 10, name: parent_id,   type: string, nullable: true, ref: tasks.id, index: true }\n      - { id: 11, name: due_at,      type: int64, nullable: true, format: unix_ms }\n      - { id: 12, name: created_at,  type: int64, format: unix_ms, default: now_ms() }\n    indexes:\n      - { columns: [board_id, status] }\n      - { columns: [assignee_id, status] }\n\n  - id: 7\n    name: comments\n    columns:\n      - { id: 1, name: id,         type: string, pk: true, default: uuid(), format: uuid }\n      - { id: 2, name: task_id,    type: string, ref: tasks.id, index: true }\n      - { id: 3, name: author_id,  type: string, ref: accounts.id }\n      - { id: 4, name: body,       type: string }\n      - { id: 5, name: created_at, type: int64, format: unix_ms, default: now_ms() }\n\n  - id: 8\n    name: labels\n    columns:\n      - { id: 1, name: id,      type: string, pk: true, default: uuid(), format: uuid }\n      - { id: 2, name: team_id, type: string, ref: teams.id }\n      - { id: 3, name: name,    type: string }\n      - { id: 4, name: hex_color, type: string, default: \"#8899aa\" }\n    indexes:\n      - { columns: [team_id, name], unique: true }\n\n  - id: 9\n    name: task_labels\n    columns:\n      - { id: 1, name: task_id,  type: string, ref: tasks.id }\n      - { id: 2, name: label_id, type: string, ref: labels.id, index: true }\n    primary_key: [task_id, label_id]\n"
 
 // Client is the database handle: Connect to a Rad server, then use the
 // table handles. All methods are safe for concurrent use.
 type Client struct {
 	rc          *radclient.Client
-	Users       UserTable
+	Accounts    AccountTable
 	Sessions    SessionTable
 	Teams       TeamTable
 	TeamMembers TeamMemberTable
@@ -44,7 +44,7 @@ func Connect(url string, opts ...radclient.Option) (*Client, error) {
 // New wraps an existing runtime client.
 func New(rc *radclient.Client) *Client {
 	c := &Client{rc: rc}
-	c.Users = UserTable{v: rc}
+	c.Accounts = AccountTable{v: rc}
 	c.Sessions = SessionTable{v: rc}
 	c.Teams = TeamTable{v: rc}
 	c.TeamMembers = TeamMemberTable{v: rc}
@@ -305,9 +305,9 @@ func recBoolPtr(m protocol.Record, k string) *bool {
 	return &v
 }
 
-// User is one row of "users". Relation fields are populated only when the
+// Account is one row of "accounts". Relation fields are populated only when the
 // corresponding Include* option was used on the query.
-type User struct {
+type Account struct {
 	ID              string       `json:"id"`
 	Username        string       `json:"username"`
 	DisplayName     *string      `json:"display_name,omitempty"`
@@ -321,9 +321,9 @@ type User struct {
 	Comments        []Comment    `json:"comments,omitempty"`
 }
 
-// UserCreate is the input to Create. Pointer fields are optional:
+// AccountCreate is the input to Create. Pointer fields are optional:
 // nil defers to the column default or NULL.
-type UserCreate struct {
+type AccountCreate struct {
 	ID           *string
 	Username     string
 	DisplayName  *string
@@ -332,9 +332,9 @@ type UserCreate struct {
 	CreatedAt    *int64
 }
 
-// UserPatch is the input to Update. Nil fields are left untouched;
+// AccountPatch is the input to Update. Nil fields are left untouched;
 // Clear* sets a nullable column to NULL.
-type UserPatch struct {
+type AccountPatch struct {
 	Username         *string
 	DisplayName      *string
 	PasswordHash     *string
@@ -344,10 +344,10 @@ type UserPatch struct {
 	ClearEmail       bool
 }
 
-// UserTable provides typed access to "users".
-type UserTable struct{ v radclient.View }
+// AccountTable provides typed access to "accounts".
+type AccountTable struct{ v radclient.View }
 
-func (t UserTable) Create(ctx context.Context, in UserCreate) (User, error) {
+func (t AccountTable) Create(ctx context.Context, in AccountCreate) (Account, error) {
 	values := map[string]any{}
 	if in.ID != nil {
 		values["id"] = *in.ID
@@ -363,22 +363,22 @@ func (t UserTable) Create(ctx context.Context, in UserCreate) (User, error) {
 	if in.CreatedAt != nil {
 		values["created_at"] = *in.CreatedAt
 	}
-	rec, err := t.v.Create(ctx, "users", values)
+	rec, err := t.v.Create(ctx, "accounts", values)
 	if err != nil {
-		return User{}, err
+		return Account{}, err
 	}
-	return userFromRecord(rec), nil
+	return accountFromRecord(rec), nil
 }
 
-func (t UserTable) Get(ctx context.Context, id string) (User, bool, error) {
-	rec, found, err := t.v.Get(ctx, "users", map[string]any{"id": id})
+func (t AccountTable) Get(ctx context.Context, id string) (Account, bool, error) {
+	rec, found, err := t.v.Get(ctx, "accounts", map[string]any{"id": id})
 	if err != nil || !found {
-		return User{}, false, err
+		return Account{}, false, err
 	}
-	return userFromRecord(rec), true, nil
+	return accountFromRecord(rec), true, nil
 }
 
-func (t UserTable) Update(ctx context.Context, id string, patch UserPatch) (User, bool, error) {
+func (t AccountTable) Update(ctx context.Context, id string, patch AccountPatch) (Account, bool, error) {
 	set := map[string]any{}
 	var clear []string
 	if patch.Username != nil {
@@ -402,298 +402,298 @@ func (t UserTable) Update(ctx context.Context, id string, patch UserPatch) (User
 	if patch.CreatedAt != nil {
 		set["created_at"] = *patch.CreatedAt
 	}
-	rec, found, err := t.v.Update(ctx, "users", map[string]any{"id": id}, set, clear)
+	rec, found, err := t.v.Update(ctx, "accounts", map[string]any{"id": id}, set, clear)
 	if err != nil || !found {
-		return User{}, false, err
+		return Account{}, false, err
 	}
-	return userFromRecord(rec), true, nil
+	return accountFromRecord(rec), true, nil
 }
 
-func (t UserTable) Delete(ctx context.Context, id string) (bool, error) {
-	return t.v.Delete(ctx, "users", map[string]any{"id": id})
+func (t AccountTable) Delete(ctx context.Context, id string) (bool, error) {
+	return t.v.Delete(ctx, "accounts", map[string]any{"id": id})
 }
 
 // ByUsername finds the row by the unique index on (username).
-func (t UserTable) ByUsername(ctx context.Context, username string) (User, bool, error) {
-	recs, err := t.v.Query(ctx, assemble(querySpec{table: "users", orders: []lirwire.OrderTerm{lirwire.OrderTerm{Expr: lirwire.Col("", "id")}}, limit: 1, limitSet: true, filters: []lirwire.Expr{
+func (t AccountTable) ByUsername(ctx context.Context, username string) (Account, bool, error) {
+	recs, err := t.v.Query(ctx, assemble(querySpec{table: "accounts", orders: []lirwire.OrderTerm{lirwire.OrderTerm{Expr: lirwire.Col("", "id")}}, limit: 1, limitSet: true, filters: []lirwire.Expr{
 		lirwire.Binary("eq", lirwire.Col("", "username"), lirwire.LitOf(username)),
 	}}))
 	if err != nil || len(recs) == 0 {
-		return User{}, false, err
+		return Account{}, false, err
 	}
-	return userFromRecord(recs[0]), true, nil
+	return accountFromRecord(recs[0]), true, nil
 }
 
-func (t UserTable) Query() *UserQuery {
-	return &UserQuery{v: t.v, spec: querySpec{table: "users"}}
+func (t AccountTable) Query() *AccountQuery {
+	return &AccountQuery{v: t.v, spec: querySpec{table: "accounts"}}
 }
 
-// UserQuery is a fluent query builder for "users". Conditions AND together.
-type UserQuery struct {
+// AccountQuery is a fluent query builder for "accounts". Conditions AND together.
+type AccountQuery struct {
 	v    radclient.View
 	spec querySpec
 }
 
-func (q *UserQuery) IDEq(v string) *UserQuery {
+func (q *AccountQuery) IDEq(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) IDNe(v string) *UserQuery {
+func (q *AccountQuery) IDNe(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) IDLt(v string) *UserQuery {
+func (q *AccountQuery) IDLt(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) IDLte(v string) *UserQuery {
+func (q *AccountQuery) IDLte(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) IDGt(v string) *UserQuery {
+func (q *AccountQuery) IDGt(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) IDGte(v string) *UserQuery {
+func (q *AccountQuery) IDGte(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) UsernameEq(v string) *UserQuery {
+func (q *AccountQuery) UsernameEq(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "username"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) UsernameNe(v string) *UserQuery {
+func (q *AccountQuery) UsernameNe(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "username"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) UsernameLt(v string) *UserQuery {
+func (q *AccountQuery) UsernameLt(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "username"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) UsernameLte(v string) *UserQuery {
+func (q *AccountQuery) UsernameLte(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "username"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) UsernameGt(v string) *UserQuery {
+func (q *AccountQuery) UsernameGt(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "username"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) UsernameGte(v string) *UserQuery {
+func (q *AccountQuery) UsernameGte(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "username"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) DisplayNameEq(v string) *UserQuery {
+func (q *AccountQuery) DisplayNameEq(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "display_name"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) DisplayNameNe(v string) *UserQuery {
+func (q *AccountQuery) DisplayNameNe(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "display_name"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) DisplayNameLt(v string) *UserQuery {
+func (q *AccountQuery) DisplayNameLt(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "display_name"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) DisplayNameLte(v string) *UserQuery {
+func (q *AccountQuery) DisplayNameLte(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "display_name"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) DisplayNameGt(v string) *UserQuery {
+func (q *AccountQuery) DisplayNameGt(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "display_name"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) DisplayNameGte(v string) *UserQuery {
+func (q *AccountQuery) DisplayNameGte(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "display_name"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) DisplayNameNull() *UserQuery {
+func (q *AccountQuery) DisplayNameNull() *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Unary("is_null", lirwire.Col("", "display_name")))
 	return q
 }
 
-func (q *UserQuery) DisplayNameNotNull() *UserQuery {
+func (q *AccountQuery) DisplayNameNotNull() *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Unary("is_not_null", lirwire.Col("", "display_name")))
 	return q
 }
 
-func (q *UserQuery) PasswordHashEq(v string) *UserQuery {
+func (q *AccountQuery) PasswordHashEq(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "password_hash"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) PasswordHashNe(v string) *UserQuery {
+func (q *AccountQuery) PasswordHashNe(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "password_hash"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) PasswordHashLt(v string) *UserQuery {
+func (q *AccountQuery) PasswordHashLt(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "password_hash"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) PasswordHashLte(v string) *UserQuery {
+func (q *AccountQuery) PasswordHashLte(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "password_hash"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) PasswordHashGt(v string) *UserQuery {
+func (q *AccountQuery) PasswordHashGt(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "password_hash"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) PasswordHashGte(v string) *UserQuery {
+func (q *AccountQuery) PasswordHashGte(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "password_hash"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) EmailEq(v string) *UserQuery {
+func (q *AccountQuery) EmailEq(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "email"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) EmailNe(v string) *UserQuery {
+func (q *AccountQuery) EmailNe(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "email"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) EmailLt(v string) *UserQuery {
+func (q *AccountQuery) EmailLt(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "email"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) EmailLte(v string) *UserQuery {
+func (q *AccountQuery) EmailLte(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "email"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) EmailGt(v string) *UserQuery {
+func (q *AccountQuery) EmailGt(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "email"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) EmailGte(v string) *UserQuery {
+func (q *AccountQuery) EmailGte(v string) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "email"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) EmailNull() *UserQuery {
+func (q *AccountQuery) EmailNull() *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Unary("is_null", lirwire.Col("", "email")))
 	return q
 }
 
-func (q *UserQuery) EmailNotNull() *UserQuery {
+func (q *AccountQuery) EmailNotNull() *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Unary("is_not_null", lirwire.Col("", "email")))
 	return q
 }
 
-func (q *UserQuery) CreatedAtEq(v int64) *UserQuery {
+func (q *AccountQuery) CreatedAtEq(v int64) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "created_at"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) CreatedAtNe(v int64) *UserQuery {
+func (q *AccountQuery) CreatedAtNe(v int64) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "created_at"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) CreatedAtLt(v int64) *UserQuery {
+func (q *AccountQuery) CreatedAtLt(v int64) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "created_at"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) CreatedAtLte(v int64) *UserQuery {
+func (q *AccountQuery) CreatedAtLte(v int64) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "created_at"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) CreatedAtGt(v int64) *UserQuery {
+func (q *AccountQuery) CreatedAtGt(v int64) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "created_at"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) CreatedAtGte(v int64) *UserQuery {
+func (q *AccountQuery) CreatedAtGte(v int64) *AccountQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "created_at"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) OrderByID() *UserQuery {
+func (q *AccountQuery) OrderByID() *AccountQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "id")})
 	return q
 }
 
-func (q *UserQuery) OrderByIDDesc() *UserQuery {
+func (q *AccountQuery) OrderByIDDesc() *AccountQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "id"), Desc: ptrBool(true)})
 	return q
 }
-func (q *UserQuery) OrderByUsername() *UserQuery {
+func (q *AccountQuery) OrderByUsername() *AccountQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "username")})
 	return q
 }
 
-func (q *UserQuery) OrderByUsernameDesc() *UserQuery {
+func (q *AccountQuery) OrderByUsernameDesc() *AccountQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "username"), Desc: ptrBool(true)})
 	return q
 }
-func (q *UserQuery) OrderByDisplayName() *UserQuery {
+func (q *AccountQuery) OrderByDisplayName() *AccountQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "display_name")})
 	return q
 }
 
-func (q *UserQuery) OrderByDisplayNameDesc() *UserQuery {
+func (q *AccountQuery) OrderByDisplayNameDesc() *AccountQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "display_name"), Desc: ptrBool(true)})
 	return q
 }
-func (q *UserQuery) OrderByPasswordHash() *UserQuery {
+func (q *AccountQuery) OrderByPasswordHash() *AccountQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "password_hash")})
 	return q
 }
 
-func (q *UserQuery) OrderByPasswordHashDesc() *UserQuery {
+func (q *AccountQuery) OrderByPasswordHashDesc() *AccountQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "password_hash"), Desc: ptrBool(true)})
 	return q
 }
-func (q *UserQuery) OrderByEmail() *UserQuery {
+func (q *AccountQuery) OrderByEmail() *AccountQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "email")})
 	return q
 }
 
-func (q *UserQuery) OrderByEmailDesc() *UserQuery {
+func (q *AccountQuery) OrderByEmailDesc() *AccountQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "email"), Desc: ptrBool(true)})
 	return q
 }
-func (q *UserQuery) OrderByCreatedAt() *UserQuery {
+func (q *AccountQuery) OrderByCreatedAt() *AccountQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at")})
 	return q
 }
 
-func (q *UserQuery) OrderByCreatedAtDesc() *UserQuery {
+func (q *AccountQuery) OrderByCreatedAtDesc() *AccountQuery {
 	q.spec.orders = append(q.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at"), Desc: ptrBool(true)})
 	return q
 }
 
-func (q *UserQuery) Limit(n int) *UserQuery  { q.spec.limit, q.spec.limitSet = n, true; return q }
-func (q *UserQuery) Offset(n int) *UserQuery { q.spec.offset = n; return q }
+func (q *AccountQuery) Limit(n int) *AccountQuery  { q.spec.limit, q.spec.limitSet = n, true; return q }
+func (q *AccountQuery) Offset(n int) *AccountQuery { q.spec.offset = n; return q }
 
 // IncludeSessions embeds the Session rows referencing this row.
-func (q *UserQuery) IncludeSessions(opts ...func(*SessionInclude)) *UserQuery {
+func (q *AccountQuery) IncludeSessions(opts ...func(*SessionInclude)) *AccountQuery {
 	b := &SessionInclude{spec: includeSpec{table: "sessions", pairs: [][2]string{{"user_id", "id"}}, as: "sessions", kind: "array"}}
 	for _, o := range opts {
 		o(b)
@@ -704,7 +704,7 @@ func (q *UserQuery) IncludeSessions(opts ...func(*SessionInclude)) *UserQuery {
 }
 
 // IncludeTeamMembers embeds the TeamMember rows referencing this row.
-func (q *UserQuery) IncludeTeamMembers(opts ...func(*TeamMemberInclude)) *UserQuery {
+func (q *AccountQuery) IncludeTeamMembers(opts ...func(*TeamMemberInclude)) *AccountQuery {
 	b := &TeamMemberInclude{spec: includeSpec{table: "team_members", pairs: [][2]string{{"user_id", "id"}}, as: "team_members", kind: "array"}}
 	for _, o := range opts {
 		o(b)
@@ -715,7 +715,7 @@ func (q *UserQuery) IncludeTeamMembers(opts ...func(*TeamMemberInclude)) *UserQu
 }
 
 // IncludeTasksByAssignee embeds the Task rows referencing this row.
-func (q *UserQuery) IncludeTasksByAssignee(opts ...func(*TaskInclude)) *UserQuery {
+func (q *AccountQuery) IncludeTasksByAssignee(opts ...func(*TaskInclude)) *AccountQuery {
 	b := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"assignee_id", "id"}}, as: "tasks_by_assignee", kind: "array"}}
 	for _, o := range opts {
 		o(b)
@@ -726,7 +726,7 @@ func (q *UserQuery) IncludeTasksByAssignee(opts ...func(*TaskInclude)) *UserQuer
 }
 
 // IncludeTasksByCreator embeds the Task rows referencing this row.
-func (q *UserQuery) IncludeTasksByCreator(opts ...func(*TaskInclude)) *UserQuery {
+func (q *AccountQuery) IncludeTasksByCreator(opts ...func(*TaskInclude)) *AccountQuery {
 	b := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"creator_id", "id"}}, as: "tasks_by_creator", kind: "array"}}
 	for _, o := range opts {
 		o(b)
@@ -737,7 +737,7 @@ func (q *UserQuery) IncludeTasksByCreator(opts ...func(*TaskInclude)) *UserQuery
 }
 
 // IncludeComments embeds the Comment rows referencing this row.
-func (q *UserQuery) IncludeComments(opts ...func(*CommentInclude)) *UserQuery {
+func (q *AccountQuery) IncludeComments(opts ...func(*CommentInclude)) *AccountQuery {
 	b := &CommentInclude{spec: includeSpec{table: "comments", pairs: [][2]string{{"author_id", "id"}}, as: "comments", kind: "array"}}
 	for _, o := range opts {
 		o(b)
@@ -748,34 +748,34 @@ func (q *UserQuery) IncludeComments(opts ...func(*CommentInclude)) *UserQuery {
 }
 
 // All executes the query.
-func (q *UserQuery) All(ctx context.Context) ([]User, error) {
+func (q *AccountQuery) All(ctx context.Context) ([]Account, error) {
 	recs, err := q.v.Query(ctx, assemble(q.spec))
 	if err != nil {
 		return nil, err
 	}
-	out := make([]User, len(recs))
+	out := make([]Account, len(recs))
 	for i, r := range recs {
-		out[i] = userFromRecord(r)
+		out[i] = accountFromRecord(r)
 	}
 	return out, nil
 }
 
 // First executes the query with limit 1.
-func (q *UserQuery) First(ctx context.Context) (User, bool, error) {
+func (q *AccountQuery) First(ctx context.Context) (Account, bool, error) {
 	if len(q.spec.orders) == 0 {
 		q.spec.orders = []lirwire.OrderTerm{lirwire.OrderTerm{Expr: lirwire.Col("", "id")}}
 	}
 	q.spec.limit, q.spec.limitSet = 1, true
 	rows, err := q.All(ctx)
 	if err != nil || len(rows) == 0 {
-		return User{}, false, err
+		return Account{}, false, err
 	}
 	return rows[0], true, nil
 }
 
 // fold sends the builder's filter as an aggregate query and returns the
 // one scalar record the server produces.
-func (q *UserQuery) fold(ctx context.Context, aggs []lirwire.AggTerm) (protocol.Record, error) {
+func (q *AccountQuery) fold(ctx context.Context, aggs []lirwire.AggTerm) (protocol.Record, error) {
 	spec := q.spec
 	spec.orders, spec.includes, spec.limit, spec.limitSet, spec.offset = nil, nil, 0, false, 0
 	spec.aggs = aggs
@@ -787,7 +787,7 @@ func (q *UserQuery) fold(ctx context.Context, aggs []lirwire.AggTerm) (protocol.
 }
 
 // Count returns how many rows match (never NULL: 0 when none).
-func (q *UserQuery) Count(ctx context.Context) (int64, error) {
+func (q *AccountQuery) Count(ctx context.Context) (int64, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "count", As: "v"}})
 	if err != nil {
 		return 0, err
@@ -796,7 +796,7 @@ func (q *UserQuery) Count(ctx context.Context) (int64, error) {
 }
 
 // MinID is the smallest "id" over matching rows (nil when none).
-func (q *UserQuery) MinID(ctx context.Context) (*string, error) {
+func (q *AccountQuery) MinID(ctx context.Context) (*string, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "id")), As: "v"}})
 	if err != nil {
 		return nil, err
@@ -805,7 +805,7 @@ func (q *UserQuery) MinID(ctx context.Context) (*string, error) {
 }
 
 // MaxID is the largest "id" over matching rows (nil when none).
-func (q *UserQuery) MaxID(ctx context.Context) (*string, error) {
+func (q *AccountQuery) MaxID(ctx context.Context) (*string, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "id")), As: "v"}})
 	if err != nil {
 		return nil, err
@@ -814,7 +814,7 @@ func (q *UserQuery) MaxID(ctx context.Context) (*string, error) {
 }
 
 // MinUsername is the smallest "username" over matching rows (nil when none).
-func (q *UserQuery) MinUsername(ctx context.Context) (*string, error) {
+func (q *AccountQuery) MinUsername(ctx context.Context) (*string, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "username")), As: "v"}})
 	if err != nil {
 		return nil, err
@@ -823,7 +823,7 @@ func (q *UserQuery) MinUsername(ctx context.Context) (*string, error) {
 }
 
 // MaxUsername is the largest "username" over matching rows (nil when none).
-func (q *UserQuery) MaxUsername(ctx context.Context) (*string, error) {
+func (q *AccountQuery) MaxUsername(ctx context.Context) (*string, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "username")), As: "v"}})
 	if err != nil {
 		return nil, err
@@ -832,7 +832,7 @@ func (q *UserQuery) MaxUsername(ctx context.Context) (*string, error) {
 }
 
 // MinDisplayName is the smallest "display_name" over matching rows (nil when none).
-func (q *UserQuery) MinDisplayName(ctx context.Context) (*string, error) {
+func (q *AccountQuery) MinDisplayName(ctx context.Context) (*string, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "display_name")), As: "v"}})
 	if err != nil {
 		return nil, err
@@ -841,7 +841,7 @@ func (q *UserQuery) MinDisplayName(ctx context.Context) (*string, error) {
 }
 
 // MaxDisplayName is the largest "display_name" over matching rows (nil when none).
-func (q *UserQuery) MaxDisplayName(ctx context.Context) (*string, error) {
+func (q *AccountQuery) MaxDisplayName(ctx context.Context) (*string, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "display_name")), As: "v"}})
 	if err != nil {
 		return nil, err
@@ -850,7 +850,7 @@ func (q *UserQuery) MaxDisplayName(ctx context.Context) (*string, error) {
 }
 
 // MinPasswordHash is the smallest "password_hash" over matching rows (nil when none).
-func (q *UserQuery) MinPasswordHash(ctx context.Context) (*string, error) {
+func (q *AccountQuery) MinPasswordHash(ctx context.Context) (*string, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "password_hash")), As: "v"}})
 	if err != nil {
 		return nil, err
@@ -859,7 +859,7 @@ func (q *UserQuery) MinPasswordHash(ctx context.Context) (*string, error) {
 }
 
 // MaxPasswordHash is the largest "password_hash" over matching rows (nil when none).
-func (q *UserQuery) MaxPasswordHash(ctx context.Context) (*string, error) {
+func (q *AccountQuery) MaxPasswordHash(ctx context.Context) (*string, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "password_hash")), As: "v"}})
 	if err != nil {
 		return nil, err
@@ -868,7 +868,7 @@ func (q *UserQuery) MaxPasswordHash(ctx context.Context) (*string, error) {
 }
 
 // MinEmail is the smallest "email" over matching rows (nil when none).
-func (q *UserQuery) MinEmail(ctx context.Context) (*string, error) {
+func (q *AccountQuery) MinEmail(ctx context.Context) (*string, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "email")), As: "v"}})
 	if err != nil {
 		return nil, err
@@ -877,7 +877,7 @@ func (q *UserQuery) MinEmail(ctx context.Context) (*string, error) {
 }
 
 // MaxEmail is the largest "email" over matching rows (nil when none).
-func (q *UserQuery) MaxEmail(ctx context.Context) (*string, error) {
+func (q *AccountQuery) MaxEmail(ctx context.Context) (*string, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "email")), As: "v"}})
 	if err != nil {
 		return nil, err
@@ -886,7 +886,7 @@ func (q *UserQuery) MaxEmail(ctx context.Context) (*string, error) {
 }
 
 // SumCreatedAt totals "created_at" over matching rows (nil when none).
-func (q *UserQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
+func (q *AccountQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "sum", Arg: ptrExpr(lirwire.Col("", "created_at")), As: "v"}})
 	if err != nil {
 		return nil, err
@@ -895,7 +895,7 @@ func (q *UserQuery) SumCreatedAt(ctx context.Context) (*int64, error) {
 }
 
 // AvgCreatedAt averages "created_at" (nil when none).
-func (q *UserQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
+func (q *AccountQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "avg", Arg: ptrExpr(lirwire.Col("", "created_at")), As: "v"}})
 	if err != nil {
 		return nil, err
@@ -904,7 +904,7 @@ func (q *UserQuery) AvgCreatedAt(ctx context.Context) (*float64, error) {
 }
 
 // MinCreatedAt is the smallest "created_at" over matching rows (nil when none).
-func (q *UserQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
+func (q *AccountQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "created_at")), As: "v"}})
 	if err != nil {
 		return nil, err
@@ -913,7 +913,7 @@ func (q *UserQuery) MinCreatedAt(ctx context.Context) (*int64, error) {
 }
 
 // MaxCreatedAt is the largest "created_at" over matching rows (nil when none).
-func (q *UserQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
+func (q *AccountQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "created_at")), As: "v"}})
 	if err != nil {
 		return nil, err
@@ -921,401 +921,404 @@ func (q *UserQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 	return recInt64Ptr(rec, "v"), nil
 }
 
-// UserCountByID is one per-id row count.
-type UserCountByID struct {
+// AccountCountByID is one per-id row count.
+type AccountCountByID struct {
 	ID    string
 	Count int64
 }
 
 // CountByID counts matching rows per distinct "id", ordered by the
 // group key — one round trip, no rows fetched.
-func (q *UserQuery) CountByID(ctx context.Context) ([]UserCountByID, error) {
+func (q *AccountQuery) CountByID(ctx context.Context) ([]AccountCountByID, error) {
 	spec := q.spec
 	spec.filters = q.spec.filters
 	recs, err := q.v.Query(ctx, assembleGrouped(spec, "id"))
 	if err != nil {
 		return nil, err
 	}
-	out := make([]UserCountByID, len(recs))
+	out := make([]AccountCountByID, len(recs))
 	for i, r := range recs {
-		out[i] = UserCountByID{ID: recString(r, "id"), Count: recInt64(r, "count")}
+		out[i] = AccountCountByID{ID: recString(r, "id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
 
-// UserCountByUsername is one per-username row count.
-type UserCountByUsername struct {
+// AccountCountByUsername is one per-username row count.
+type AccountCountByUsername struct {
 	Username string
 	Count    int64
 }
 
 // CountByUsername counts matching rows per distinct "username", ordered by the
 // group key — one round trip, no rows fetched.
-func (q *UserQuery) CountByUsername(ctx context.Context) ([]UserCountByUsername, error) {
+func (q *AccountQuery) CountByUsername(ctx context.Context) ([]AccountCountByUsername, error) {
 	spec := q.spec
 	spec.filters = q.spec.filters
 	recs, err := q.v.Query(ctx, assembleGrouped(spec, "username"))
 	if err != nil {
 		return nil, err
 	}
-	out := make([]UserCountByUsername, len(recs))
+	out := make([]AccountCountByUsername, len(recs))
 	for i, r := range recs {
-		out[i] = UserCountByUsername{Username: recString(r, "username"), Count: recInt64(r, "count")}
+		out[i] = AccountCountByUsername{Username: recString(r, "username"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
 
-// UserCountByDisplayName is one per-display_name row count.
-type UserCountByDisplayName struct {
+// AccountCountByDisplayName is one per-display_name row count.
+type AccountCountByDisplayName struct {
 	DisplayName *string
 	Count       int64
 }
 
 // CountByDisplayName counts matching rows per distinct "display_name", ordered by the
 // group key — one round trip, no rows fetched.
-func (q *UserQuery) CountByDisplayName(ctx context.Context) ([]UserCountByDisplayName, error) {
+func (q *AccountQuery) CountByDisplayName(ctx context.Context) ([]AccountCountByDisplayName, error) {
 	spec := q.spec
 	spec.filters = q.spec.filters
 	recs, err := q.v.Query(ctx, assembleGrouped(spec, "display_name"))
 	if err != nil {
 		return nil, err
 	}
-	out := make([]UserCountByDisplayName, len(recs))
+	out := make([]AccountCountByDisplayName, len(recs))
 	for i, r := range recs {
-		out[i] = UserCountByDisplayName{DisplayName: recStringPtr(r, "display_name"), Count: recInt64(r, "count")}
+		out[i] = AccountCountByDisplayName{DisplayName: recStringPtr(r, "display_name"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
 
-// UserCountByPasswordHash is one per-password_hash row count.
-type UserCountByPasswordHash struct {
+// AccountCountByPasswordHash is one per-password_hash row count.
+type AccountCountByPasswordHash struct {
 	PasswordHash string
 	Count        int64
 }
 
 // CountByPasswordHash counts matching rows per distinct "password_hash", ordered by the
 // group key — one round trip, no rows fetched.
-func (q *UserQuery) CountByPasswordHash(ctx context.Context) ([]UserCountByPasswordHash, error) {
+func (q *AccountQuery) CountByPasswordHash(ctx context.Context) ([]AccountCountByPasswordHash, error) {
 	spec := q.spec
 	spec.filters = q.spec.filters
 	recs, err := q.v.Query(ctx, assembleGrouped(spec, "password_hash"))
 	if err != nil {
 		return nil, err
 	}
-	out := make([]UserCountByPasswordHash, len(recs))
+	out := make([]AccountCountByPasswordHash, len(recs))
 	for i, r := range recs {
-		out[i] = UserCountByPasswordHash{PasswordHash: recString(r, "password_hash"), Count: recInt64(r, "count")}
+		out[i] = AccountCountByPasswordHash{PasswordHash: recString(r, "password_hash"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
 
-// UserCountByEmail is one per-email row count.
-type UserCountByEmail struct {
+// AccountCountByEmail is one per-email row count.
+type AccountCountByEmail struct {
 	Email *string
 	Count int64
 }
 
 // CountByEmail counts matching rows per distinct "email", ordered by the
 // group key — one round trip, no rows fetched.
-func (q *UserQuery) CountByEmail(ctx context.Context) ([]UserCountByEmail, error) {
+func (q *AccountQuery) CountByEmail(ctx context.Context) ([]AccountCountByEmail, error) {
 	spec := q.spec
 	spec.filters = q.spec.filters
 	recs, err := q.v.Query(ctx, assembleGrouped(spec, "email"))
 	if err != nil {
 		return nil, err
 	}
-	out := make([]UserCountByEmail, len(recs))
+	out := make([]AccountCountByEmail, len(recs))
 	for i, r := range recs {
-		out[i] = UserCountByEmail{Email: recStringPtr(r, "email"), Count: recInt64(r, "count")}
+		out[i] = AccountCountByEmail{Email: recStringPtr(r, "email"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
 
-// UserCountByCreatedAt is one per-created_at row count.
-type UserCountByCreatedAt struct {
+// AccountCountByCreatedAt is one per-created_at row count.
+type AccountCountByCreatedAt struct {
 	CreatedAt int64
 	Count     int64
 }
 
 // CountByCreatedAt counts matching rows per distinct "created_at", ordered by the
 // group key — one round trip, no rows fetched.
-func (q *UserQuery) CountByCreatedAt(ctx context.Context) ([]UserCountByCreatedAt, error) {
+func (q *AccountQuery) CountByCreatedAt(ctx context.Context) ([]AccountCountByCreatedAt, error) {
 	spec := q.spec
 	spec.filters = q.spec.filters
 	recs, err := q.v.Query(ctx, assembleGrouped(spec, "created_at"))
 	if err != nil {
 		return nil, err
 	}
-	out := make([]UserCountByCreatedAt, len(recs))
+	out := make([]AccountCountByCreatedAt, len(recs))
 	for i, r := range recs {
-		out[i] = UserCountByCreatedAt{CreatedAt: recInt64(r, "created_at"), Count: recInt64(r, "count")}
+		out[i] = AccountCountByCreatedAt{CreatedAt: recInt64(r, "created_at"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
 
-// UserInclude refines an included "users" fetch.
-type UserInclude struct {
+// AccountInclude refines an included "accounts" fetch.
+type AccountInclude struct {
 	spec includeSpec
 }
 
-func (b *UserInclude) IDEq(v string) *UserInclude {
+func (b *AccountInclude) IDEq(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) IDNe(v string) *UserInclude {
+func (b *AccountInclude) IDNe(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) IDLt(v string) *UserInclude {
+func (b *AccountInclude) IDLt(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) IDLte(v string) *UserInclude {
+func (b *AccountInclude) IDLte(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) IDGt(v string) *UserInclude {
+func (b *AccountInclude) IDGt(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) IDGte(v string) *UserInclude {
+func (b *AccountInclude) IDGte(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) UsernameEq(v string) *UserInclude {
+func (b *AccountInclude) UsernameEq(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "username"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) UsernameNe(v string) *UserInclude {
+func (b *AccountInclude) UsernameNe(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "username"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) UsernameLt(v string) *UserInclude {
+func (b *AccountInclude) UsernameLt(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "username"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) UsernameLte(v string) *UserInclude {
+func (b *AccountInclude) UsernameLte(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "username"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) UsernameGt(v string) *UserInclude {
+func (b *AccountInclude) UsernameGt(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "username"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) UsernameGte(v string) *UserInclude {
+func (b *AccountInclude) UsernameGte(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "username"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) DisplayNameEq(v string) *UserInclude {
+func (b *AccountInclude) DisplayNameEq(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "display_name"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) DisplayNameNe(v string) *UserInclude {
+func (b *AccountInclude) DisplayNameNe(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "display_name"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) DisplayNameLt(v string) *UserInclude {
+func (b *AccountInclude) DisplayNameLt(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "display_name"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) DisplayNameLte(v string) *UserInclude {
+func (b *AccountInclude) DisplayNameLte(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "display_name"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) DisplayNameGt(v string) *UserInclude {
+func (b *AccountInclude) DisplayNameGt(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "display_name"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) DisplayNameGte(v string) *UserInclude {
+func (b *AccountInclude) DisplayNameGte(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "display_name"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) DisplayNameNull() *UserInclude {
+func (b *AccountInclude) DisplayNameNull() *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Unary("is_null", lirwire.Col("", "display_name")))
 	return b
 }
 
-func (b *UserInclude) DisplayNameNotNull() *UserInclude {
+func (b *AccountInclude) DisplayNameNotNull() *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Unary("is_not_null", lirwire.Col("", "display_name")))
 	return b
 }
 
-func (b *UserInclude) PasswordHashEq(v string) *UserInclude {
+func (b *AccountInclude) PasswordHashEq(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "password_hash"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) PasswordHashNe(v string) *UserInclude {
+func (b *AccountInclude) PasswordHashNe(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "password_hash"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) PasswordHashLt(v string) *UserInclude {
+func (b *AccountInclude) PasswordHashLt(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "password_hash"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) PasswordHashLte(v string) *UserInclude {
+func (b *AccountInclude) PasswordHashLte(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "password_hash"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) PasswordHashGt(v string) *UserInclude {
+func (b *AccountInclude) PasswordHashGt(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "password_hash"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) PasswordHashGte(v string) *UserInclude {
+func (b *AccountInclude) PasswordHashGte(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "password_hash"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) EmailEq(v string) *UserInclude {
+func (b *AccountInclude) EmailEq(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "email"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) EmailNe(v string) *UserInclude {
+func (b *AccountInclude) EmailNe(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "email"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) EmailLt(v string) *UserInclude {
+func (b *AccountInclude) EmailLt(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "email"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) EmailLte(v string) *UserInclude {
+func (b *AccountInclude) EmailLte(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "email"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) EmailGt(v string) *UserInclude {
+func (b *AccountInclude) EmailGt(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "email"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) EmailGte(v string) *UserInclude {
+func (b *AccountInclude) EmailGte(v string) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "email"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) EmailNull() *UserInclude {
+func (b *AccountInclude) EmailNull() *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Unary("is_null", lirwire.Col("", "email")))
 	return b
 }
 
-func (b *UserInclude) EmailNotNull() *UserInclude {
+func (b *AccountInclude) EmailNotNull() *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Unary("is_not_null", lirwire.Col("", "email")))
 	return b
 }
 
-func (b *UserInclude) CreatedAtEq(v int64) *UserInclude {
+func (b *AccountInclude) CreatedAtEq(v int64) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "created_at"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) CreatedAtNe(v int64) *UserInclude {
+func (b *AccountInclude) CreatedAtNe(v int64) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "created_at"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) CreatedAtLt(v int64) *UserInclude {
+func (b *AccountInclude) CreatedAtLt(v int64) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "created_at"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) CreatedAtLte(v int64) *UserInclude {
+func (b *AccountInclude) CreatedAtLte(v int64) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "created_at"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) CreatedAtGt(v int64) *UserInclude {
+func (b *AccountInclude) CreatedAtGt(v int64) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "created_at"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) CreatedAtGte(v int64) *UserInclude {
+func (b *AccountInclude) CreatedAtGte(v int64) *AccountInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "created_at"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) OrderByID() *UserInclude {
+func (b *AccountInclude) OrderByID() *AccountInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "id")})
 	return b
 }
 
-func (b *UserInclude) OrderByIDDesc() *UserInclude {
+func (b *AccountInclude) OrderByIDDesc() *AccountInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "id"), Desc: ptrBool(true)})
 	return b
 }
-func (b *UserInclude) OrderByUsername() *UserInclude {
+func (b *AccountInclude) OrderByUsername() *AccountInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "username")})
 	return b
 }
 
-func (b *UserInclude) OrderByUsernameDesc() *UserInclude {
+func (b *AccountInclude) OrderByUsernameDesc() *AccountInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "username"), Desc: ptrBool(true)})
 	return b
 }
-func (b *UserInclude) OrderByDisplayName() *UserInclude {
+func (b *AccountInclude) OrderByDisplayName() *AccountInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "display_name")})
 	return b
 }
 
-func (b *UserInclude) OrderByDisplayNameDesc() *UserInclude {
+func (b *AccountInclude) OrderByDisplayNameDesc() *AccountInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "display_name"), Desc: ptrBool(true)})
 	return b
 }
-func (b *UserInclude) OrderByPasswordHash() *UserInclude {
+func (b *AccountInclude) OrderByPasswordHash() *AccountInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "password_hash")})
 	return b
 }
 
-func (b *UserInclude) OrderByPasswordHashDesc() *UserInclude {
+func (b *AccountInclude) OrderByPasswordHashDesc() *AccountInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "password_hash"), Desc: ptrBool(true)})
 	return b
 }
-func (b *UserInclude) OrderByEmail() *UserInclude {
+func (b *AccountInclude) OrderByEmail() *AccountInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "email")})
 	return b
 }
 
-func (b *UserInclude) OrderByEmailDesc() *UserInclude {
+func (b *AccountInclude) OrderByEmailDesc() *AccountInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "email"), Desc: ptrBool(true)})
 	return b
 }
-func (b *UserInclude) OrderByCreatedAt() *UserInclude {
+func (b *AccountInclude) OrderByCreatedAt() *AccountInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at")})
 	return b
 }
 
-func (b *UserInclude) OrderByCreatedAtDesc() *UserInclude {
+func (b *AccountInclude) OrderByCreatedAtDesc() *AccountInclude {
 	b.spec.orders = append(b.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", "created_at"), Desc: ptrBool(true)})
 	return b
 }
 
-func (b *UserInclude) Limit(n int) *UserInclude { b.spec.limit, b.spec.limitSet = n, true; return b }
+func (b *AccountInclude) Limit(n int) *AccountInclude {
+	b.spec.limit, b.spec.limitSet = n, true
+	return b
+}
 
-func (b *UserInclude) IncludeSessions(opts ...func(*SessionInclude)) *UserInclude {
+func (b *AccountInclude) IncludeSessions(opts ...func(*SessionInclude)) *AccountInclude {
 	n := &SessionInclude{spec: includeSpec{table: "sessions", pairs: [][2]string{{"user_id", "id"}}, as: "sessions", kind: "array"}}
 	for _, o := range opts {
 		o(n)
@@ -1324,7 +1327,7 @@ func (b *UserInclude) IncludeSessions(opts ...func(*SessionInclude)) *UserInclud
 	return b
 }
 
-func (b *UserInclude) IncludeTeamMembers(opts ...func(*TeamMemberInclude)) *UserInclude {
+func (b *AccountInclude) IncludeTeamMembers(opts ...func(*TeamMemberInclude)) *AccountInclude {
 	n := &TeamMemberInclude{spec: includeSpec{table: "team_members", pairs: [][2]string{{"user_id", "id"}}, as: "team_members", kind: "array"}}
 	for _, o := range opts {
 		o(n)
@@ -1333,7 +1336,7 @@ func (b *UserInclude) IncludeTeamMembers(opts ...func(*TeamMemberInclude)) *User
 	return b
 }
 
-func (b *UserInclude) IncludeTasksByAssignee(opts ...func(*TaskInclude)) *UserInclude {
+func (b *AccountInclude) IncludeTasksByAssignee(opts ...func(*TaskInclude)) *AccountInclude {
 	n := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"assignee_id", "id"}}, as: "tasks_by_assignee", kind: "array"}}
 	for _, o := range opts {
 		o(n)
@@ -1342,7 +1345,7 @@ func (b *UserInclude) IncludeTasksByAssignee(opts ...func(*TaskInclude)) *UserIn
 	return b
 }
 
-func (b *UserInclude) IncludeTasksByCreator(opts ...func(*TaskInclude)) *UserInclude {
+func (b *AccountInclude) IncludeTasksByCreator(opts ...func(*TaskInclude)) *AccountInclude {
 	n := &TaskInclude{spec: includeSpec{table: "tasks", pairs: [][2]string{{"creator_id", "id"}}, as: "tasks_by_creator", kind: "array"}}
 	for _, o := range opts {
 		o(n)
@@ -1351,7 +1354,7 @@ func (b *UserInclude) IncludeTasksByCreator(opts ...func(*TaskInclude)) *UserInc
 	return b
 }
 
-func (b *UserInclude) IncludeComments(opts ...func(*CommentInclude)) *UserInclude {
+func (b *AccountInclude) IncludeComments(opts ...func(*CommentInclude)) *AccountInclude {
 	n := &CommentInclude{spec: includeSpec{table: "comments", pairs: [][2]string{{"author_id", "id"}}, as: "comments", kind: "array"}}
 	for _, o := range opts {
 		o(n)
@@ -1360,8 +1363,8 @@ func (b *UserInclude) IncludeComments(opts ...func(*CommentInclude)) *UserInclud
 	return b
 }
 
-func userFromRecord(rec protocol.Record) User {
-	m := User{}
+func accountFromRecord(rec protocol.Record) Account {
+	m := Account{}
 	m.ID = recString(rec, "id")
 	m.Username = recString(rec, "username")
 	m.DisplayName = recStringPtr(rec, "display_name")
@@ -1409,11 +1412,11 @@ func userFromRecord(rec protocol.Record) User {
 // Session is one row of "sessions". Relation fields are populated only when the
 // corresponding Include* option was used on the query.
 type Session struct {
-	Token     string `json:"token"`
-	UserID    string `json:"user_id"`
-	CreatedAt int64  `json:"created_at"`
-	ExpiresAt int64  `json:"expires_at"`
-	User      *User  `json:"user,omitempty"`
+	Token     string   `json:"token"`
+	UserID    string   `json:"user_id"`
+	CreatedAt int64    `json:"created_at"`
+	ExpiresAt int64    `json:"expires_at"`
+	User      *Account `json:"user,omitempty"`
 }
 
 // SessionCreate is the input to Create. Pointer fields are optional:
@@ -1654,9 +1657,9 @@ func (q *SessionQuery) OrderByExpiresAtDesc() *SessionQuery {
 func (q *SessionQuery) Limit(n int) *SessionQuery  { q.spec.limit, q.spec.limitSet = n, true; return q }
 func (q *SessionQuery) Offset(n int) *SessionQuery { q.spec.offset = n; return q }
 
-// IncludeUser embeds the referenced User (nil when the FK is NULL).
-func (q *SessionQuery) IncludeUser(opts ...func(*UserInclude)) *SessionQuery {
-	b := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "user_id"}}, as: "user", kind: "first"}}
+// IncludeUser embeds the referenced Account (nil when the FK is NULL).
+func (q *SessionQuery) IncludeUser(opts ...func(*AccountInclude)) *SessionQuery {
+	b := &AccountInclude{spec: includeSpec{table: "accounts", pairs: [][2]string{{"id", "user_id"}}, as: "user", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
@@ -2076,8 +2079,8 @@ func (b *SessionInclude) Limit(n int) *SessionInclude {
 	return b
 }
 
-func (b *SessionInclude) IncludeUser(opts ...func(*UserInclude)) *SessionInclude {
-	n := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "user_id"}}, as: "user", kind: "first"}}
+func (b *SessionInclude) IncludeUser(opts ...func(*AccountInclude)) *SessionInclude {
+	n := &AccountInclude{spec: includeSpec{table: "accounts", pairs: [][2]string{{"id", "user_id"}}, as: "user", kind: "first"}}
 	for _, o := range opts {
 		o(n)
 	}
@@ -2092,7 +2095,7 @@ func sessionFromRecord(rec protocol.Record) Session {
 	m.CreatedAt = recInt64(rec, "created_at")
 	m.ExpiresAt = recInt64(rec, "expires_at")
 	if parent, ok := rec["user"].(map[string]any); ok {
-		v := userFromRecord(parent)
+		v := accountFromRecord(parent)
 		m.User = &v
 	}
 	return m
@@ -2716,12 +2719,12 @@ func teamFromRecord(rec protocol.Record) Team {
 // TeamMember is one row of "team_members". Relation fields are populated only when the
 // corresponding Include* option was used on the query.
 type TeamMember struct {
-	TeamID   string `json:"team_id"`
-	UserID   string `json:"user_id"`
-	Role     string `json:"role"`
-	JoinedAt int64  `json:"joined_at"`
-	Team     *Team  `json:"team,omitempty"`
-	User     *User  `json:"user,omitempty"`
+	TeamID   string   `json:"team_id"`
+	UserID   string   `json:"user_id"`
+	Role     string   `json:"role"`
+	JoinedAt int64    `json:"joined_at"`
+	Team     *Team    `json:"team,omitempty"`
+	User     *Account `json:"user,omitempty"`
 }
 
 // TeamMemberCreate is the input to Create. Pointer fields are optional:
@@ -2972,9 +2975,9 @@ func (q *TeamMemberQuery) IncludeTeam(opts ...func(*TeamInclude)) *TeamMemberQue
 	return q
 }
 
-// IncludeUser embeds the referenced User (nil when the FK is NULL).
-func (q *TeamMemberQuery) IncludeUser(opts ...func(*UserInclude)) *TeamMemberQuery {
-	b := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "user_id"}}, as: "user", kind: "first"}}
+// IncludeUser embeds the referenced Account (nil when the FK is NULL).
+func (q *TeamMemberQuery) IncludeUser(opts ...func(*AccountInclude)) *TeamMemberQuery {
+	b := &AccountInclude{spec: includeSpec{table: "accounts", pairs: [][2]string{{"id", "user_id"}}, as: "user", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
@@ -3385,8 +3388,8 @@ func (b *TeamMemberInclude) IncludeTeam(opts ...func(*TeamInclude)) *TeamMemberI
 	return b
 }
 
-func (b *TeamMemberInclude) IncludeUser(opts ...func(*UserInclude)) *TeamMemberInclude {
-	n := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "user_id"}}, as: "user", kind: "first"}}
+func (b *TeamMemberInclude) IncludeUser(opts ...func(*AccountInclude)) *TeamMemberInclude {
+	n := &AccountInclude{spec: includeSpec{table: "accounts", pairs: [][2]string{{"id", "user_id"}}, as: "user", kind: "first"}}
 	for _, o := range opts {
 		o(n)
 	}
@@ -3405,7 +3408,7 @@ func teamMemberFromRecord(rec protocol.Record) TeamMember {
 		m.Team = &v
 	}
 	if parent, ok := rec["user"].(map[string]any); ok {
-		v := userFromRecord(parent)
+		v := accountFromRecord(parent)
 		m.User = &v
 	}
 	return m
@@ -4226,8 +4229,8 @@ type Task struct {
 	DueAt       *int64      `json:"due_at,omitempty"`
 	CreatedAt   int64       `json:"created_at"`
 	Board       *Board      `json:"board,omitempty"`
-	Assignee    *User       `json:"assignee,omitempty"`
-	Creator     *User       `json:"creator,omitempty"`
+	Assignee    *Account    `json:"assignee,omitempty"`
+	Creator     *Account    `json:"creator,omitempty"`
 	Parent      *Task       `json:"parent,omitempty"`
 	Tasks       []Task      `json:"tasks,omitempty"`
 	Comments    []Comment   `json:"comments,omitempty"`
@@ -4927,9 +4930,9 @@ func (q *TaskQuery) IncludeBoard(opts ...func(*BoardInclude)) *TaskQuery {
 	return q
 }
 
-// IncludeAssignee embeds the referenced User (nil when the FK is NULL).
-func (q *TaskQuery) IncludeAssignee(opts ...func(*UserInclude)) *TaskQuery {
-	b := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "assignee_id"}}, as: "assignee", kind: "first"}}
+// IncludeAssignee embeds the referenced Account (nil when the FK is NULL).
+func (q *TaskQuery) IncludeAssignee(opts ...func(*AccountInclude)) *TaskQuery {
+	b := &AccountInclude{spec: includeSpec{table: "accounts", pairs: [][2]string{{"id", "assignee_id"}}, as: "assignee", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
@@ -4938,9 +4941,9 @@ func (q *TaskQuery) IncludeAssignee(opts ...func(*UserInclude)) *TaskQuery {
 	return q
 }
 
-// IncludeCreator embeds the referenced User (nil when the FK is NULL).
-func (q *TaskQuery) IncludeCreator(opts ...func(*UserInclude)) *TaskQuery {
-	b := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "creator_id"}}, as: "creator", kind: "first"}}
+// IncludeCreator embeds the referenced Account (nil when the FK is NULL).
+func (q *TaskQuery) IncludeCreator(opts ...func(*AccountInclude)) *TaskQuery {
+	b := &AccountInclude{spec: includeSpec{table: "accounts", pairs: [][2]string{{"id", "creator_id"}}, as: "creator", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
@@ -6128,8 +6131,8 @@ func (b *TaskInclude) IncludeBoard(opts ...func(*BoardInclude)) *TaskInclude {
 	return b
 }
 
-func (b *TaskInclude) IncludeAssignee(opts ...func(*UserInclude)) *TaskInclude {
-	n := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "assignee_id"}}, as: "assignee", kind: "first"}}
+func (b *TaskInclude) IncludeAssignee(opts ...func(*AccountInclude)) *TaskInclude {
+	n := &AccountInclude{spec: includeSpec{table: "accounts", pairs: [][2]string{{"id", "assignee_id"}}, as: "assignee", kind: "first"}}
 	for _, o := range opts {
 		o(n)
 	}
@@ -6137,8 +6140,8 @@ func (b *TaskInclude) IncludeAssignee(opts ...func(*UserInclude)) *TaskInclude {
 	return b
 }
 
-func (b *TaskInclude) IncludeCreator(opts ...func(*UserInclude)) *TaskInclude {
-	n := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "creator_id"}}, as: "creator", kind: "first"}}
+func (b *TaskInclude) IncludeCreator(opts ...func(*AccountInclude)) *TaskInclude {
+	n := &AccountInclude{spec: includeSpec{table: "accounts", pairs: [][2]string{{"id", "creator_id"}}, as: "creator", kind: "first"}}
 	for _, o := range opts {
 		o(n)
 	}
@@ -6201,11 +6204,11 @@ func taskFromRecord(rec protocol.Record) Task {
 		m.Board = &v
 	}
 	if parent, ok := rec["assignee"].(map[string]any); ok {
-		v := userFromRecord(parent)
+		v := accountFromRecord(parent)
 		m.Assignee = &v
 	}
 	if parent, ok := rec["creator"].(map[string]any); ok {
-		v := userFromRecord(parent)
+		v := accountFromRecord(parent)
 		m.Creator = &v
 	}
 	if parent, ok := rec["parent"].(map[string]any); ok {
@@ -6239,13 +6242,13 @@ func taskFromRecord(rec protocol.Record) Task {
 // Comment is one row of "comments". Relation fields are populated only when the
 // corresponding Include* option was used on the query.
 type Comment struct {
-	ID        string `json:"id"`
-	TaskID    string `json:"task_id"`
-	AuthorID  string `json:"author_id"`
-	Body      string `json:"body"`
-	CreatedAt int64  `json:"created_at"`
-	Task      *Task  `json:"task,omitempty"`
-	Author    *User  `json:"author,omitempty"`
+	ID        string   `json:"id"`
+	TaskID    string   `json:"task_id"`
+	AuthorID  string   `json:"author_id"`
+	Body      string   `json:"body"`
+	CreatedAt int64    `json:"created_at"`
+	Task      *Task    `json:"task,omitempty"`
+	Author    *Account `json:"author,omitempty"`
 }
 
 // CommentCreate is the input to Create. Pointer fields are optional:
@@ -6542,9 +6545,9 @@ func (q *CommentQuery) IncludeTask(opts ...func(*TaskInclude)) *CommentQuery {
 	return q
 }
 
-// IncludeAuthor embeds the referenced User (nil when the FK is NULL).
-func (q *CommentQuery) IncludeAuthor(opts ...func(*UserInclude)) *CommentQuery {
-	b := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "author_id"}}, as: "author", kind: "first"}}
+// IncludeAuthor embeds the referenced Account (nil when the FK is NULL).
+func (q *CommentQuery) IncludeAuthor(opts ...func(*AccountInclude)) *CommentQuery {
+	b := &AccountInclude{spec: includeSpec{table: "accounts", pairs: [][2]string{{"id", "author_id"}}, as: "author", kind: "first"}}
 	for _, o := range opts {
 		o(b)
 	}
@@ -7034,8 +7037,8 @@ func (b *CommentInclude) IncludeTask(opts ...func(*TaskInclude)) *CommentInclude
 	return b
 }
 
-func (b *CommentInclude) IncludeAuthor(opts ...func(*UserInclude)) *CommentInclude {
-	n := &UserInclude{spec: includeSpec{table: "users", pairs: [][2]string{{"id", "author_id"}}, as: "author", kind: "first"}}
+func (b *CommentInclude) IncludeAuthor(opts ...func(*AccountInclude)) *CommentInclude {
+	n := &AccountInclude{spec: includeSpec{table: "accounts", pairs: [][2]string{{"id", "author_id"}}, as: "author", kind: "first"}}
 	for _, o := range opts {
 		o(n)
 	}
@@ -7055,7 +7058,7 @@ func commentFromRecord(rec protocol.Record) Comment {
 		m.Task = &v
 	}
 	if parent, ok := rec["author"].(map[string]any); ok {
-		v := userFromRecord(parent)
+		v := accountFromRecord(parent)
 		m.Author = &v
 	}
 	return m

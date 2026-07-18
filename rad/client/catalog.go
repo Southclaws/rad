@@ -17,7 +17,7 @@ import (
 )
 
 // Mode reports the database's catalog management mode: "direct" (the
-// catalog is mutable over this API) or "schema" (schema.rad migrations own
+// catalog is mutable over this API) or "schema" (rad.schema.yaml migrations own
 // the catalog).
 func (c *Client) Mode(ctx context.Context) (string, error) {
 	info, err := c.Info(ctx)

@@ -5,21 +5,23 @@ labels) built **entirely** on Rad's generated client. This directory is the
 proof of the developer experience:
 
 ```
-schema.rad          the product's data model (YAML, JSON-Schema validated)
-generated/          typed Go client emitted by `rad generate` (do not edit)
-main.go             the application — imports only ./generated
+rad.schema.yaml   the product's data model (YAML, JSON-Schema validated)
+rad.config.yaml   the target Rad database
+rad.state/        CLI-managed migration state
+generated/        typed Go client emitted by `rad generate` (do not edit)
+main.go           the application — imports only ./generated
 ```
 
 ## The workflow this proves
 
 ```
-edit schema.rad
+edit rad.schema.yaml
    │
    ▼
-rad migrate  -u rad://localhost -f examples/demo/schema.rad   # reconcile the server's DB
+rad migrate                                             # reconcile the configured DB
    │
    ▼
-rad generate -f examples/demo/schema.rad -o examples/demo/generated --pkg tracker
+rad generate -o generated --pkg tracker
    │
    ▼
 go build .                                           # compiler catches schema drift
@@ -33,12 +35,17 @@ SlateDB. Point it anywhere with RAD_URL (default rad://localhost:7237).
 
 No SQL is written anywhere — not by the app, not by the tools.
 
-Run it from the repo root (`task demo` starts a fresh server and the app),
-or against any running Rad server:
+Run it from the repo root (`task demo` starts a fresh server and the app), or
+run the project commands from this directory against any running Rad server:
 
 ```
+rad migrate
+rad generate -o generated --pkg tracker
 RAD_URL=rad://your-server go run .
 ```
+
+`rad.config.yaml` selects the migration target. `RAD_URL` is separate application
+runtime configuration for the demo process.
 
 The app migrates the remote database on startup (the client embeds its
 schema),

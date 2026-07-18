@@ -1,4 +1,4 @@
-// These tests document the schema.rad format: YAML validated by an embedded
+// These tests document the rad.schema.yaml format: YAML validated by an embedded
 // JSON Schema, then compiled to catalog definitions. The demo application's
 // real schema is parsed at the end as an integration check.
 package schema_test
@@ -333,11 +333,11 @@ tables:
 // The demo application's schema is the reference document for the format;
 // it must parse, and its shape sanity-checks the features it exercises.
 func TestParseDemoSchema(t *testing.T) {
-	src, err := os.ReadFile("../../../../examples/demo/schema.rad")
+	src, err := os.ReadFile("../../../../examples/demo/rad.schema.yaml")
 	if err != nil {
 		t.Skipf("demo schema not available: %v", err)
 	}
-	s, err := schema.Parse("examples/demo/schema.rad", src)
+	s, err := schema.Parse("examples/demo/rad.schema.yaml", src)
 	if err != nil {
 		t.Fatal(err)
 	}

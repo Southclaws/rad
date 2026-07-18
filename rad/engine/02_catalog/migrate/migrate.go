@@ -1,5 +1,5 @@
 // Package migrate computes the schema-change steps that reconcile a live
-// catalog with a desired schema (a parsed schema.rad file).
+// catalog with a desired schema (a parsed rad.schema.yaml file).
 //
 // The differ is pure: it takes the current tables and the desired schema and
 // returns an ordered list of steps. Applying them (catalog mutations plus

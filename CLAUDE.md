@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Rad is a relational database and generated-client toolchain in Go, built on SlateDB. The product is the developer experience, not the storage engine: `schema.rad → rad migrate → rad generate → typed application code, never write SQL`. It is an early proof of concept at v0.0.0 with zero users — never add backwards-compatibility shims or frame a change as "legacy" support; just make the change. See `README.md` for scope, `PRODUCT.md` for positioning, and `tasks/` (1-todo / 2-building / 3-done) for planned and in-flight work notes.
+Rad is a relational database and generated-client toolchain in Go, built on SlateDB. The product is the developer experience, not the storage engine: `rad.schema.yaml → rad migrate → rad generate → typed application code, never write SQL`. It is an early proof of concept at v0.0.0 with zero users — never add backwards-compatibility shims or frame a change as "legacy" support; just make the change. See `README.md` for scope, `PRODUCT.md` for positioning, and `tasks/` (1-todo / 2-building / 3-done) for planned and in-flight work notes.
 
 Also read `AGENTS.md`. Its key rule: never delimit a Go file into sections with banner comments — a section wanting a banner is a concern wanting its own file in the same package. Split the file instead, and remove banners you encounter in code you touch.
 
@@ -46,7 +46,7 @@ Task (go-task) is the entry point; `task --list-all` shows everything.
 - `task build` — mostly-static binaries into `bin/`
 - `task demo` / `task up` — fresh server + Tracker demo (`up` keeps serving, admin UI on :7238)
 - `task serve` — build the admin SPA then run the server
-- `task generate` — regenerate the demo's typed clients (Go + TypeScript) from `examples/demo/schema.rad`
+- `task generate` — regenerate the demo's typed clients (Go + TypeScript) from `examples/demo/rad.schema.yaml`
 - `task protocol:generate` — regenerate LIR/PIR wire types and OpenAPI transport after editing `rad/protocol/*.schema.yaml` (needs the `schemancer` tool)
 - `task ui:dev` — Vite dev server for the admin SPA (proxying to a running `task serve`)
 
@@ -91,7 +91,7 @@ Server config comes from env, flags override: `RAD_ADDR` (default :7237), `RAD_S
 
 ## Tests
 
-- `tests/e2e/` — fixture-driven conformance suite: each directory is one scenario (`schema.rad` + `seed.json` + `test_<name>.json`) run through the real client → server → plan → execute path. The suite grows by adding directories, never by editing the runner. Read `tests/e2e/README.md` before writing a fixture — determinism rules (no `uuid()`/`now_ms()` defaults on asserted columns) and mutation-result ordering caveats matter.
+- `tests/e2e/` — fixture-driven conformance suite: each directory is one scenario (`rad.schema.yaml` + `seed.json` + `test_<name>.json`) run through the real client → server → plan → execute path. The suite grows by adding directories, never by editing the runner. Read `tests/e2e/README.md` before writing a fixture — determinism rules (no `uuid()`/`now_ms()` defaults on asserted columns) and mutation-result ordering caveats matter.
 - `tests/planner/` — planner battle-test corpus.
 - `tests/harness/` — shared in-process client/server harness.
 - `rad/engine/05_exec/refexec` — reference interpreter; engine results are checked against it as an oracle in engine tests.

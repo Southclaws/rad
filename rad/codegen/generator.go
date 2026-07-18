@@ -28,7 +28,7 @@ type GeneratedFile struct {
 type Options struct {
 	// Package is the Go package name (Go) or the file basename (TypeScript).
 	Package string
-	// SchemaSource is the schema.rad text, embedded verbatim so the generated
+	// SchemaSource is the rad.schema.yaml text, embedded verbatim so the generated
 	// client can migrate its own database.
 	SchemaSource []byte
 }

@@ -12,17 +12,17 @@ const steps = await db.migrate();
 console.log(`── migrate: ${steps.length} schema steps applied`);
 
 // Accounts (unique username enforced by the database).
-const ada = await db.users.create({ username: "ada-ts", password_hash: "…" });
-const grace = await db.users.create({
+const ada = await db.accounts.create({ username: "ada-ts", password_hash: "…" });
+const grace = await db.accounts.create({
   username: "grace-ts",
   password_hash: "…",
 });
 try {
-  await db.users.create({ username: "ada-ts", password_hash: "…" });
+  await db.accounts.create({ username: "ada-ts", password_hash: "…" });
 } catch (err) {
   console.log(`   duplicate username rejected: ${(err as Error).message}`);
 }
-const found = await db.users.byUsername("ada-ts");
+const found = await db.accounts.byUsername("ada-ts");
 console.log(`   byUsername: ${found?.username}`);
 
 // A team, board, and tasks. Each write is its own execution program; a

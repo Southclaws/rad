@@ -11,7 +11,7 @@ package gen
 //
 // The interpreter is fed the exact rows loaded here, so the comparison also
 // pins the insert -> encode -> decode round-trip. Two sources feed it: a
-// synthetic random catalog, and a directory of schema.rad scenarios the
+// synthetic random catalog, and a directory of rad.schema.yaml scenarios the
 // generator runs against once it introspects one into a shape it drives (single
 // text "id" key, nullable text FKs, non-unique indexes); a schema outside that
 // shape is skipped with the reason. New scenarios are new directories.
@@ -62,7 +62,7 @@ func TestGenerativeSchemas(t *testing.T) {
 		if !e.IsDir() {
 			continue
 		}
-		path := filepath.Join(e.Name(), "schema.rad")
+		path := filepath.Join(e.Name(), "rad.schema.yaml")
 		src, err := os.ReadFile(path)
 		if os.IsNotExist(err) {
 			continue // not a scenario directory
@@ -123,7 +123,7 @@ func dumpSchema(capt *capture, spec *generative.Catalog) string {
 	if len(capt.schemaSrc) > 0 {
 		return string(capt.schemaSrc)
 	}
-	return emit.SchemaRAD(spec)
+	return emit.SchemaYAML(spec)
 }
 
 // dumpResult executes q for the run dump, recording the error instead when the

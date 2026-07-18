@@ -12,7 +12,7 @@ What shipped, and how it differs from the design below:
   as `api.WireQuery` in `rad/server/api`, the exported inverse of the existing
   `lowerQuery` (wire -> engine); a round-trip test executes original vs
   wire-lowered and requires equal results.
-- **`tests/gen/emit`** — `emit.Fixture(ctx, dir, Case)` writes `schema.rad`
+- **`tests/gen/emit`** — `emit.Fixture(ctx, dir, Case)` writes `rad.schema.yaml`
   (copied verbatim for schema-directed cases, serialised from the spec for
   synthetic), `seed.json`, `test_<name>.json` (the query as a one-statement wire
   program, expected = the reference interpreter's result), and `BUG.md`
@@ -44,7 +44,7 @@ regression that survives after the random seed is forgotten.
 
 ```
 random seed diverges  →  shrink (delta-debug) to a minimal still-diverging case
-                      →  emit tests/e2e/<name>/ {schema.rad, seed.json, test_*.json, BUG.md}
+                      →  emit tests/e2e/<name>/ {rad.schema.yaml, seed.json, test_*.json, BUG.md}
 ```
 
 This is the persistence half of the loop we already do by hand (the `bug_*`
@@ -117,7 +117,7 @@ per candidate — only the query changes), and only rebuild the store for the da
 Once minimal, serialise the case to a fixture directory, same shape the hand
 fixtures use so it reads identically:
 
-- `schema.rad` from the (shrunk) catalog spec;
+- `rad.schema.yaml` from the (shrunk) catalog spec;
 - `seed.json` from the (shrunk) rows, in FK-safe order;
 - `test_<name>.json`: the query wrapped as a one-statement `query` program, with
   the **expected value taken from the reference interpreter** (the trusted
@@ -136,7 +136,7 @@ from hand-authored ones but live in the same suite.
 
 **No Go is generated** — the e2e runner is data-driven (it discovers fixture
 directories; "a fixture is data, not code"), so emission is pure serialisation
-and never triggers a compile. Formats: `schema.rad` is YAML, `seed.json` and
+and never triggers a compile. Formats: `rad.schema.yaml` is YAML, `seed.json` and
 `test_*.json` are JSON.
 
 **Serialisation wrinkle to plan for.** The generator builds the engine's
@@ -149,7 +149,7 @@ has to be written. Two clean options: (a) add that small converter and reuse
 `MarshalProgram`; or (b) have the generator build the `protocol` wire model
 directly and convert wire → `lir` (the existing server path) for the differential
 run — which also removes the marshaller need at emit time. Decide when building;
-neither is hard, but it is not free. `schema.rad` (from the catalog spec) and
+neither is hard, but it is not free. `rad.schema.yaml` (from the catalog spec) and
 `seed.json` (from the rows) are straightforward to serialise.
 
 ## Sequencing

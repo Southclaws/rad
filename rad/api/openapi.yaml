@@ -39,14 +39,14 @@ tags:
   - name: meta
     description: Liveness and schema introspection.
   - name: schema
-    description: Reconciling the database with a schema.rad file.
+    description: Reconciling the database with a rad.schema.yaml file.
   - name: catalog
     description: >
       Imperative catalog mutation: creating, updating, and deleting tables,
       columns, and indexes over the API. Available only on directly managed
       databases; a schema-managed database rejects every operation in this
       group with an `invalid` problem, since its catalog is owned by
-      `schema.rad` migrations.
+      `rad.schema.yaml` migrations.
   - name: data
     description: Reading and writing rows against committed state.
   - name: transactions
@@ -60,7 +60,7 @@ paths:
       description: |
         Return stable metadata for the database behind this endpoint. `mode`
         tells management tools whether catalog changes are available directly
-        through the API or are owned by `schema.rad` migrations.
+        through the API or are owned by `rad.schema.yaml` migrations.
         `schema_version` identifies the latest committed catalog state, and
         `schema_version_at` reports when that version committed. `location` is
         the server's configured storage location and is intended for local
@@ -95,7 +95,7 @@ paths:
         returns an empty list, not an error.
 
         Use this to introspect a running server without access to the original
-        `schema.rad` file.
+        `rad.schema.yaml` file.
       tags: [meta]
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
@@ -105,7 +105,7 @@ paths:
       summary: Create a table.
       description: |
         Define a new table in one call: columns, primary key, and optionally
-        indexes and foreign keys, exactly as a `schema.rad` entry would. Stable
+        indexes and foreign keys, exactly as a `rad.schema.yaml` entry would. Stable
         schema IDs may be supplied or are assigned by the catalog, and the
         whole definition commits
         atomically — a rejected definition leaves nothing behind, including
@@ -269,7 +269,7 @@ paths:
       operationId: SchemaMigrate
       summary: Reconcile the database with a schema.
       description: |
-        Take a `schema.rad` source document, compute the difference against the
+        Take a `rad.schema.yaml` source document, compute the difference against the
         database's current catalog, and apply whatever changes are needed to
         make them match. The response lists the steps that were applied, in
         order.
@@ -652,7 +652,7 @@ components:
 
     TableDef:
       description: |
-        A new table's definition, mirroring a `schema.rad` entry as JSON. The
+        A new table's definition, mirroring a `rad.schema.yaml` entry as JSON. The
         direct API may omit logical IDs for the catalog to allocate. Column
         types are `text`, `int64`, `float64`, or `bool`; the primary key is
         required and its columns must not be nullable.
@@ -691,7 +691,7 @@ components:
         mode:
           description: |
             The database's catalog management mode: `direct` (the catalog
-            is mutable over this API) or `schema` (schema.rad migrations own
+            is mutable over this API) or `schema` (rad.schema.yaml migrations own
             the catalog and the imperative catalog operations are rejected).
           type: string
 
@@ -703,7 +703,7 @@ components:
         mode:
           description: |
             The database's catalog management mode: `direct` (the catalog
-            is mutable over this API) or `schema` (schema.rad migrations own
+            is mutable over this API) or `schema` (rad.schema.yaml migrations own
             the catalog and the imperative catalog operations are rejected).
           type: string
           enum: [direct, schema]
@@ -739,7 +739,7 @@ components:
       required: [schema]
       properties:
         schema:
-          description: The full `schema.rad` source document, as YAML.
+          description: The full `rad.schema.yaml` source document, as YAML.
           type: string
 
     MigrateResult:

@@ -24,7 +24,7 @@ export const schemaSource = `# Tracker — a team task-tracking product built on
 
 tables:
   - id: 1
-    name: users
+    name: accounts
     columns:
       - { id: 1, name: id,            type: string, pk: true, default: uuid(), format: uuid }
       - { id: 2, name: username,      type: string, unique: true }
@@ -37,7 +37,7 @@ tables:
     name: sessions
     columns:
       - { id: 1, name: token,      type: string, pk: true, default: uuid(), format: uuid }
-      - { id: 2, name: user_id,    type: string, ref: users.id, index: true }
+      - { id: 2, name: user_id,    type: string, ref: accounts.id, index: true }
       - { id: 3, name: created_at, type: int64, format: unix_ms, default: now_ms() }
       - { id: 4, name: expires_at, type: int64, format: unix_ms }
 
@@ -52,7 +52,7 @@ tables:
     name: team_members
     columns:
       - { id: 1, name: team_id,   type: string, ref: teams.id }
-      - { id: 2, name: user_id,   type: string, ref: users.id, index: true }
+      - { id: 2, name: user_id,   type: string, ref: accounts.id, index: true }
       - { id: 3, name: role,      type: string, default: member }
       - { id: 4, name: joined_at, type: int64, format: unix_ms, default: now_ms() }
     primary_key: [team_id, user_id]
@@ -78,8 +78,8 @@ tables:
       - { id: 5, name: status,      type: string, default: todo }
       - { id: 6, name: priority,    type: int64, default: 2 }
       - { id: 7, name: estimate,    type: float64, nullable: true }
-      - { id: 8, name: assignee_id, type: string, nullable: true, ref: users.id, index: true }
-      - { id: 9, name: creator_id,  type: string, ref: users.id }
+      - { id: 8, name: assignee_id, type: string, nullable: true, ref: accounts.id, index: true }
+      - { id: 9, name: creator_id,  type: string, ref: accounts.id }
       - { id: 10, name: parent_id,   type: string, nullable: true, ref: tasks.id, index: true }
       - { id: 11, name: due_at,      type: int64, nullable: true, format: unix_ms }
       - { id: 12, name: created_at,  type: int64, format: unix_ms, default: now_ms() }
@@ -92,7 +92,7 @@ tables:
     columns:
       - { id: 1, name: id,         type: string, pk: true, default: uuid(), format: uuid }
       - { id: 2, name: task_id,    type: string, ref: tasks.id, index: true }
-      - { id: 3, name: author_id,  type: string, ref: users.id }
+      - { id: 3, name: author_id,  type: string, ref: accounts.id }
       - { id: 4, name: body,       type: string }
       - { id: 5, name: created_at, type: int64, format: unix_ms, default: now_ms() }
 
@@ -609,10 +609,10 @@ function assemble(s: QuerySpec): GraphQuery {
   return { nodes, root: { node: last, cardinality: "many" } };
 }
 
-// users
+// accounts
 
-/** One row of "users". Relation fields are present only when included. */
-export interface User {
+/** One row of "accounts". Relation fields are present only when included. */
+export interface Account {
   id: string;
   username: string;
   display_name: string | null;
@@ -627,7 +627,7 @@ export interface User {
 }
 
 /** Input to create; omitted optional fields defer to defaults or NULL. */
-export interface UserCreate {
+export interface AccountCreate {
   id?: string;
   username: string;
   display_name?: string | null;
@@ -638,7 +638,7 @@ export interface UserCreate {
 
 /** Input to update: undefined leaves a column untouched; null clears a
  * nullable column. */
-export interface UserPatch {
+export interface AccountPatch {
   username?: string;
   display_name?: string | null;
   password_hash?: string;
@@ -646,44 +646,44 @@ export interface UserPatch {
   created_at?: number;
 }
 
-export class UserTable {
+export class AccountTable {
   private v: View;
   constructor(v: View) {
     this.v = v;
   }
 
-  async create(input: UserCreate): Promise<User> {
-    return (await this.v.create("users", input as unknown as Rec)) as unknown as User;
+  async create(input: AccountCreate): Promise<Account> {
+    return (await this.v.create("accounts", input as unknown as Rec)) as unknown as Account;
   }
 
-  async get(id: string): Promise<User | null> {
-    return (await this.v.get("users", { id: id })) as User | null;
+  async get(id: string): Promise<Account | null> {
+    return (await this.v.get("accounts", { id: id })) as Account | null;
   }
 
-  async update(id: string, patch: UserPatch): Promise<User | null> {
+  async update(id: string, patch: AccountPatch): Promise<Account | null> {
     const { set, clear } = splitPatch(patch as unknown as Rec);
-    return (await this.v.update("users", { id: id }, set, clear)) as User | null;
+    return (await this.v.update("accounts", { id: id }, set, clear)) as Account | null;
   }
 
   async delete(id: string): Promise<boolean> {
-    return this.v.del("users", { id: id });
+    return this.v.del("accounts", { id: id });
   }
 
   /** Finds the row by the unique index on (username). */
-  async byUsername(username: string): Promise<User | null> {
-    const recs = await this.v.query(assemble({ table: "users", filters: [eq(col("", "username"), lit(toValue("text", username)))], orders: [{ expr: col("", "id") }], includes: [], limit: 1 }));
-    return recs.length ? (recs[0] as unknown as User) : null;
+  async byUsername(username: string): Promise<Account | null> {
+    const recs = await this.v.query(assemble({ table: "accounts", filters: [eq(col("", "username"), lit(toValue("text", username)))], orders: [{ expr: col("", "id") }], includes: [], limit: 1 }));
+    return recs.length ? (recs[0] as unknown as Account) : null;
   }
 
-  query(): UserQuery {
-    return new UserQuery(this.v);
+  query(): AccountQuery {
+    return new AccountQuery(this.v);
   }
 }
 
-/** Fluent query builder for "users"; conditions AND together. */
-export class UserQuery {
+/** Fluent query builder for "accounts"; conditions AND together. */
+export class AccountQuery {
   private filters: Expr[] = [];
-  private spec: QuerySpec = { table: "users", filters: [], orders: [], includes: [] };
+  private spec: QuerySpec = { table: "accounts", filters: [], orders: [], includes: [] };
   private v: View;
   constructor(v: View) {
     this.v = v;
@@ -778,12 +778,12 @@ export class UserQuery {
     return this;
   }
 
-  async all(): Promise<User[]> {
+  async all(): Promise<Account[]> {
     if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "id") }];
-    return (await this.v.query(assemble(this.spec))) as unknown as User[];
+    return (await this.v.query(assemble(this.spec))) as unknown as Account[];
   }
 
-  async first(): Promise<User | null> {
+  async first(): Promise<Account | null> {
     if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "id") }];
     this.spec.limit = 1;
     const rows = await this.all();
@@ -902,8 +902,8 @@ export class UserQuery {
   }
 }
 
-/** Refines an included "users" fetch. */
-export class UserInclude {
+/** Refines an included "accounts" fetch. */
+export class AccountInclude {
   private filters: Expr[] = [];
   private orders: OrderTerm[] = [];
   private nested: IncludeSpec[] = [];
@@ -1023,7 +1023,7 @@ export interface Session {
   user_id: string;
   created_at: number;
   expires_at: number;
-  user?: User | null;
+  user?: Account | null;
 }
 
 /** Input to create; omitted optional fields defer to defaults or NULL. */
@@ -1117,8 +1117,8 @@ export class SessionQuery {
   limit(n: number): this { this.spec.limit = n; return this; }
   offset(n: number): this { this.spec.offset = n; return this; }
 
-  includeUser(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("users", [["id", "user_id"]], "user", "first");
+  includeUser(fn?: (b: AccountInclude) => void): this {
+    const b = new AccountInclude("accounts", [["id", "user_id"]], "user", "first");
     fn?.(b);
     this.spec.includes.push(b.build());
     return this;
@@ -1281,8 +1281,8 @@ export class SessionInclude {
 
   limit(n: number): this { this.max = n; return this; }
 
-  includeUser(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("users", [["id", "user_id"]], "user", "first");
+  includeUser(fn?: (b: AccountInclude) => void): this {
+    const b = new AccountInclude("accounts", [["id", "user_id"]], "user", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
@@ -1576,7 +1576,7 @@ export interface TeamMember {
   role: string;
   joined_at: number;
   team?: Team | null;
-  user?: User | null;
+  user?: Account | null;
 }
 
 /** Input to create; omitted optional fields defer to defaults or NULL. */
@@ -1675,8 +1675,8 @@ export class TeamMemberQuery {
     this.spec.includes.push(b.build());
     return this;
   }
-  includeUser(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("users", [["id", "user_id"]], "user", "first");
+  includeUser(fn?: (b: AccountInclude) => void): this {
+    const b = new AccountInclude("accounts", [["id", "user_id"]], "user", "first");
     fn?.(b);
     this.spec.includes.push(b.build());
     return this;
@@ -1835,8 +1835,8 @@ export class TeamMemberInclude {
     this.nested.push(b.build());
     return this;
   }
-  includeUser(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("users", [["id", "user_id"]], "user", "first");
+  includeUser(fn?: (b: AccountInclude) => void): this {
+    const b = new AccountInclude("accounts", [["id", "user_id"]], "user", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
@@ -2185,8 +2185,8 @@ export interface Task {
   due_at: number | null;
   created_at: number;
   board?: Board | null;
-  assignee?: User | null;
-  creator?: User | null;
+  assignee?: Account | null;
+  creator?: Account | null;
   parent?: Task | null;
   tasks?: Task[];
   comments?: Comment[];
@@ -2380,14 +2380,14 @@ export class TaskQuery {
     this.spec.includes.push(b.build());
     return this;
   }
-  includeAssignee(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("users", [["id", "assignee_id"]], "assignee", "first");
+  includeAssignee(fn?: (b: AccountInclude) => void): this {
+    const b = new AccountInclude("accounts", [["id", "assignee_id"]], "assignee", "first");
     fn?.(b);
     this.spec.includes.push(b.build());
     return this;
   }
-  includeCreator(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("users", [["id", "creator_id"]], "creator", "first");
+  includeCreator(fn?: (b: AccountInclude) => void): this {
+    const b = new AccountInclude("accounts", [["id", "creator_id"]], "creator", "first");
     fn?.(b);
     this.spec.includes.push(b.build());
     return this;
@@ -2794,14 +2794,14 @@ export class TaskInclude {
     this.nested.push(b.build());
     return this;
   }
-  includeAssignee(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("users", [["id", "assignee_id"]], "assignee", "first");
+  includeAssignee(fn?: (b: AccountInclude) => void): this {
+    const b = new AccountInclude("accounts", [["id", "assignee_id"]], "assignee", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
-  includeCreator(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("users", [["id", "creator_id"]], "creator", "first");
+  includeCreator(fn?: (b: AccountInclude) => void): this {
+    const b = new AccountInclude("accounts", [["id", "creator_id"]], "creator", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
@@ -2850,7 +2850,7 @@ export interface Comment {
   body: string;
   created_at: number;
   task?: Task | null;
-  author?: User | null;
+  author?: Account | null;
 }
 
 /** Input to create; omitted optional fields defer to defaults or NULL. */
@@ -2960,8 +2960,8 @@ export class CommentQuery {
     this.spec.includes.push(b.build());
     return this;
   }
-  includeAuthor(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("users", [["id", "author_id"]], "author", "first");
+  includeAuthor(fn?: (b: AccountInclude) => void): this {
+    const b = new AccountInclude("accounts", [["id", "author_id"]], "author", "first");
     fn?.(b);
     this.spec.includes.push(b.build());
     return this;
@@ -3143,8 +3143,8 @@ export class CommentInclude {
     this.nested.push(b.build());
     return this;
   }
-  includeAuthor(fn?: (b: UserInclude) => void): this {
-    const b = new UserInclude("users", [["id", "author_id"]], "author", "first");
+  includeAuthor(fn?: (b: AccountInclude) => void): this {
+    const b = new AccountInclude("accounts", [["id", "author_id"]], "author", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
@@ -3650,7 +3650,7 @@ export class TaskLabelInclude {
 
 export class Client {
   private rpc: Rpc;
-  readonly users: UserTable;
+  readonly accounts: AccountTable;
   readonly sessions: SessionTable;
   readonly teams: TeamTable;
   readonly teamMembers: TeamMemberTable;
@@ -3664,7 +3664,7 @@ export class Client {
   constructor(url: string, fetchImpl?: typeof fetch) {
     this.rpc = new Rpc(parseRadUrl(url), fetchImpl);
     const view = new WireView(this.rpc);
-    this.users = new UserTable(view);
+    this.accounts = new AccountTable(view);
     this.sessions = new SessionTable(view);
     this.teams = new TeamTable(view);
     this.teamMembers = new TeamMemberTable(view);

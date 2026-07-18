@@ -57,7 +57,7 @@ tables:
 
 func migrateTo(t *testing.T, db *frontend.DB, ctx context.Context, src string) []string {
 	t.Helper()
-	steps, err := db.MigrateFile(ctx, "schema.rad", []byte(src))
+	steps, err := db.MigrateFile(ctx, "rad.schema.yaml", []byte(src))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestMigrationWorkflow(t *testing.T) {
 
 func assertRevisionSchema(t *testing.T, db *frontend.DB, ctx context.Context, source string) {
 	t.Helper()
-	desired, err := radschema.Parse("schema.rad", []byte(source))
+	desired, err := radschema.Parse("rad.schema.yaml", []byte(source))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ tables:
       - { id: 3, name: title,   type: string }
       - { id: 4, name: done,    type: bool, default: false }
 `
-	_, err := db.MigrateFile(ctx, "schema.rad", []byte(uniqueName))
+	_, err := db.MigrateFile(ctx, "rad.schema.yaml", []byte(uniqueName))
 	if err == nil {
 		t.Fatal("unique backfill over duplicates succeeded")
 	}

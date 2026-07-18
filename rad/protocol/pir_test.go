@@ -94,6 +94,85 @@ func TestQueryProgramSingleStatement(t *testing.T) {
 	}
 }
 
+func TestCatalogProgramRoundTrip(t *testing.T) {
+	tableID, columnID := 7, 1
+	defaultValue := pirwire.ColumnDefault{ColumnDefaultUnion: &pirwire.LiteralDefault{
+		Kind: "literal", Value: json.RawMessage("9007199254740993"),
+	}}
+	create := pirwire.Statement{StatementUnion: &pirwire.CreateTableStatement{
+		Kind: "create_table",
+		Name: "create_accounts",
+		Table: pirwire.TableDefinition{
+			ID:   &tableID,
+			Name: "accounts",
+			Columns: []pirwire.ColumnDefinition{{
+				ID: &columnID, Name: "id", Type: pirwire.ColumnTypeInt64,
+				Default: &defaultValue,
+			}},
+			PrimaryKey: []pirwire.CatalogName{"id"},
+		},
+	}}
+	program := pirwire.Prog("", create)
+
+	raw, err := MarshalProgram(program)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got, err := UnmarshalProgram(raw)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(got, program) {
+		t.Fatalf("catalog program drifted over the wire.\n got: %#v\nwant: %#v", got, program)
+	}
+
+	statement := got.Statements[0].StatementUnion.(*pirwire.CreateTableStatement)
+	literal := statement.Table.Columns[0].Default.ColumnDefaultUnion.(*pirwire.LiteralDefault)
+	if string(literal.Value) != "9007199254740993" {
+		t.Fatalf("literal default lost precision: %s", literal.Value)
+	}
+}
+
+func TestMultiStatementCatalogProgramNeedsNoResult(t *testing.T) {
+	program := pirwire.Prog("",
+		pirwire.Statement{StatementUnion: &pirwire.RenameTableStatement{
+			Kind: "rename_table", Name: "rename", TableID: 1, To: "accounts",
+		}},
+		pirwire.Statement{StatementUnion: &pirwire.CreateIndexStatement{
+			Kind: "create_index", Name: "index", TableID: 1,
+			Index: pirwire.IndexDefinition{Name: "accounts_email", Columns: []pirwire.CatalogName{"email"}},
+		}},
+	)
+	if _, err := MarshalProgram(program); err != nil {
+		t.Fatalf("catalog-only program should not need a result: %v", err)
+	}
+}
+
+func TestCatalogStatementCannotBeProgramResult(t *testing.T) {
+	program := pirwire.Prog("rename",
+		pirwire.Statement{StatementUnion: &pirwire.RenameTableStatement{
+			Kind: "rename_table", Name: "rename", TableID: 1, To: "accounts",
+		}},
+	)
+	_, err := MarshalProgram(program)
+	if err == nil || !strings.Contains(err.Error(), "has no relation") {
+		t.Fatalf("catalog result error = %v", err)
+	}
+}
+
+func TestMixedProgramNeedsRelationalResult(t *testing.T) {
+	program := pirwire.Prog("",
+		pirwire.Statement{StatementUnion: &pirwire.RenameTableStatement{
+			Kind: "rename_table", Name: "rename", TableID: 1, To: "accounts",
+		}},
+		pirwire.Query("rows", relBytes(oneRow("n", 1))),
+	)
+	_, err := MarshalProgram(program)
+	if err == nil || !strings.Contains(err.Error(), "must name its result") {
+		t.Fatalf("mixed result error = %v", err)
+	}
+}
+
 func TestProgramValidationRejections(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -169,5 +248,16 @@ func TestProgramRejectsUnknownKind(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "upsert") {
 		t.Fatalf("error should name the unknown kind, got %q", err)
+	}
+}
+
+func TestCatalogStatementReportsVariantError(t *testing.T) {
+	raw := []byte(`{"statements":[{"kind":"rename_table","name":"rename","to":"accounts"}]}`)
+	err := ValidatePIRJSON(raw)
+	if err == nil {
+		t.Fatal("rename_table without table_id should be rejected")
+	}
+	if !strings.Contains(err.Error(), "rename_table") || !strings.Contains(err.Error(), "table_id") {
+		t.Fatalf("error should identify the variant and missing field, got %q", err)
 	}
 }

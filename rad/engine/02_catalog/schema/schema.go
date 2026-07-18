@@ -1,4 +1,4 @@
-// Package schema parses Rad's declarative schema files (schema.rad) into
+// Package schema parses Rad's declarative schema files (rad.schema.yaml) into
 // catalog definitions.
 //
 // The format is YAML, structurally validated against an embedded JSON
@@ -124,7 +124,7 @@ type fileIndex struct {
 	Unique  bool     `yaml:"unique"`
 }
 
-// Parse parses and validates a schema.rad source. The filename is used in
+// Parse parses and validates a rad.schema.yaml source. The filename is used in
 // error messages only. Every parse error is the schema author's to fix, so
 // the whole surface is marked caller-fault for transport classification.
 func Parse(filename string, src []byte) (*Schema, error) {

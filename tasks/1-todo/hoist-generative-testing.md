@@ -125,12 +125,12 @@ tests/gen/          // the consumer: glue + Test bodies + fixtures
   generative_test.go   // discovers dirs; synthetic + schema-directed; composes
                        //   generative + differential against a frontend.DB
   <schema-name>/
-    schema.rad         // required
+    rad.schema.yaml         // required
     generative.json    // optional manifest (seeds, modes, bounds, floors) [phase 2]
     seed.json          // optional fixed seed data (else synthesised) [phase 2]
 ```
 
-Discovery mirrors `tests/e2e/e2e_test.go`: each subdirectory with a `schema.rad`
+Discovery mirrors `tests/e2e/e2e_test.go`: each subdirectory with a `rad.schema.yaml`
 is one scenario; the runner is fixture-agnostic and never grows per scenario.
 `TestGeneratorCoverage` lives in `generative` (a `coverage_test.go` beside the
 generator it audits), needing no engine at all.
@@ -140,7 +140,7 @@ generator it audits), needing no engine at all.
 - **Synthetic** (today's behaviour): random spec → random data → random queries.
   Keep it as the always-on fuzz mode (a `_synthetic` pseudo-scenario, or just a
   top-level subtest), env-tunable via `RAD_GEN_SEEDS`.
-- **Schema-directed** (new): `MigrateFile(schema.rad)` into a fresh in-process
+- **Schema-directed** (new): `MigrateFile(rad.schema.yaml)` into a fresh in-process
   `DB`, `Tables()` → introspect into the generator's spec, then synthesise data
   (or load `seed.json`) and generate queries typed to *that* schema. Same
   three-way differential and coverage audit.
@@ -154,7 +154,7 @@ generator rewrite, phase 1 restricts schema-directed scenarios to the shape the
 generator already drives (single text `id` PK per table, nullable text FKs,
 non-unique indexes) and has `introspect.go` **skip-with-logged-reason** any
 schema that uses a shape outside that subset. Authoring one or two compatible
-`schema.rad` scenarios (plus the always-on synthetic mode) proves the structure;
+`rad.schema.yaml` scenarios (plus the always-on synthetic mode) proves the structure;
 the awkward-schema coverage comes later.
 
 ### Phase 2 — DONE: the generator fires at any arbitrary schema
@@ -222,7 +222,7 @@ Phase 1 — structure — **DONE:**
 4. `rad/engine/05_exec/differential` — `Subject`, `ThreeWay`, compare helpers.
 5. `tests/gen` — the composed runner: synthetic + schema-directed, both bag and
    ordered, driving a `frontend.DB` through `differential.ThreeWay` fed the
-   inserted dataset; one compatible `schema.rad` scenario (`library/`). The old
+   inserted dataset; one compatible `rad.schema.yaml` scenario (`library/`). The old
    `generate_test.go` in `package exec` is retired (its three-way needs no
    privates now).
 6. `task test:generative` (→ `./tests/gen/`), `RAD_GEN_SEEDS` soak knob retained.
@@ -240,7 +240,7 @@ synthesises data and defaults seeds via `RAD_GEN_SEEDS`.
   the natural follow-on (the reason the seam was published).
 - **Determinism across schemas.** Seed → (spec, data, query) must stay
   reproducible per scenario; the seed space is per-directory so a failing seed
-  reproduces against its own `schema.rad`. The failure message already prints
+  reproduces against its own `rad.schema.yaml`. The failure message already prints
   the reproducing seed and `%#v` query — keep that.
 - **Cost.** Schema-directed runs multiply seeds × scenarios; default seed counts
   per scenario should stay modest (the synthetic soak mode is where big

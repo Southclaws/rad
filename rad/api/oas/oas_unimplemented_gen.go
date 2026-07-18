@@ -88,7 +88,7 @@ func (UnimplementedHandler) GetHealth(ctx context.Context) (r *Health, _ error) 
 // GetInfo implements GetInfo operation.
 //
 // Return stable metadata for the database behind this endpoint. `mode` tells management tools whether
-// catalog changes are available directly through the API or are owned by `schema.rad` migrations.
+// catalog changes are available directly through the API or are owned by `rad.schema.yaml` migrations.
 // `schema_version` identifies the latest committed catalog state, and `schema_version_at` reports when
 // that version committed. `location` is the server's configured storage location and is intended for
 // local development and administrative tooling.
@@ -124,9 +124,9 @@ func (UnimplementedHandler) IndexDelete(ctx context.Context, params IndexDeleteP
 
 // SchemaMigrate implements SchemaMigrate operation.
 //
-// Take a `schema.rad` source document, compute the difference against the database's current catalog,
-// and apply whatever changes are needed to make them match. The response lists the steps that were
-// applied, in order.
+// Take a `rad.schema.yaml` source document, compute the difference against the database's current
+// catalog, and apply whatever changes are needed to make them match. The response lists the steps that
+// were applied, in order.
 //
 // Migration is idempotent. Submitting a schema that already matches the database applies nothing and
 // returns an empty step list. Stable numeric table and column IDs identify renames, so names and other
@@ -145,7 +145,7 @@ func (UnimplementedHandler) SchemaMigrate(ctx context.Context, req OptMigratePro
 // TableCreate implements TableCreate operation.
 //
 // Define a new table in one call: columns, primary key, and optionally indexes and foreign keys,
-// exactly as a `schema.rad` entry would. Stable schema IDs may be supplied or are assigned by the
+// exactly as a `rad.schema.yaml` entry would. Stable schema IDs may be supplied or are assigned by the
 // catalog, and the whole definition commits atomically — a rejected definition leaves nothing
 // behind, including the name.
 //
@@ -178,7 +178,7 @@ func (UnimplementedHandler) TableDelete(ctx context.Context, params TableDeleteP
 // reflects the schema as it exists right now, after the most recent successful migration. An empty
 // database returns an empty list, not an error.
 //
-// Use this to introspect a running server without access to the original `schema.rad` file.
+// Use this to introspect a running server without access to the original `rad.schema.yaml` file.
 //
 // GET /tables
 func (UnimplementedHandler) TableList(ctx context.Context) (r *TableList, _ error) {

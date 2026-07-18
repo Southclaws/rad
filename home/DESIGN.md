@@ -91,7 +91,7 @@ prose. Body line length capped 68ch. Line-height +0.06 on light-on-dark.
 
 - **Terminal window** — titlebar with a `rad` label and three dots rendered
   as monospace glyphs (not skeuomorphic), a prompt line, and output. The
-  primary hero imagery. Real `schema.rad`, real generated client, real CLI
+  primary hero imagery. Real `rad.schema.yaml`, real generated client, real CLI
   output — never lorem.
 - **Prompt line** — `$` in `--green-mid`, command in `--ink`, a block cursor
   `▌` that blinks (reduced-motion: solid).

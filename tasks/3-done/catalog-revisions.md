@@ -36,11 +36,11 @@ are positive integers unique within their table, making a column identity the
 pair `(table ID, column ID)`. IDs are immutable, have no ordering semantics,
 and are never reused within a database's revision history. Direct catalog
 operations allocate monotonically increasing IDs when callers omit them;
-`schema.rad` requires authors to provide them. Renames retain the same ID and
+`rad.schema.yaml` requires authors to provide them. Renames retain the same ID and
 may be combined with other structural edits in one migration, so the old
 `renamed_from` hint is no longer part of the format.
 
-The same shape is built from parsed `schema.rad` definitions and reconstructed
+The same shape is built from parsed `rad.schema.yaml` definitions and reconstructed
 from physical catalog metadata. Revision creation always uses the latter: it
 rebuilds the post-change state through the transaction's own view, then writes
 that snapshot with the version counter in the same commit.

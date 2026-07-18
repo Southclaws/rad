@@ -1,7 +1,7 @@
 // Copies Rad's canonical JSON Schemas into public/ so their $id URLs resolve
 // to the real documents on the deployed site:
 //
-//   https://www.radengine.dev/schema.rad.json  -> the schema.rad table format
+//   https://www.radengine.dev/rad.schema.json  -> the rad.schema.yaml table format
 //   https://www.radengine.dev/schema/lir.json  -> the query IR
 //
 // The canonical copies live under the Go module's rad/ tree, which is the
@@ -22,7 +22,7 @@ const publicDir = join(here, "..", "public");
 const schemas = [
   {
     src: join(repo, "rad", "engine", "02_catalog", "schema", "radschema.json"),
-    dst: join(publicDir, "schema.rad.json"),
+    dst: join(publicDir, "rad.schema.json"),
   },
   {
     src: join(repo, "rad", "protocol", "lir.schema.json"),

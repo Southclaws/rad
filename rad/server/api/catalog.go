@@ -2,7 +2,7 @@ package api
 
 // The imperative catalog operations: create/update/delete for tables,
 // columns, and indexes. These are the direct-mode mutation channel; they
-// drive exactly the same frontend catalog façade the schema.rad reconciler
+// drive exactly the same frontend catalog façade the rad.schema.yaml reconciler
 // uses, so the two channels cannot diverge semantically. The only extra
 // behaviour here is the mode gate: a schema-managed database rejects every
 // operation in this group before touching the catalog.

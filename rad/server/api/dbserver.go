@@ -92,7 +92,7 @@ func (a *dbAPI) TableList(ctx context.Context) (*oas.TableList, error) {
 }
 
 func (a *dbAPI) SchemaMigrate(ctx context.Context, req oas.OptMigrateProps) (oas.SchemaMigrateRes, error) {
-	steps, err := a.db.MigrateFile(ctx, "schema.rad", []byte(req.Or(oas.MigrateProps{}).Schema))
+	steps, err := a.db.MigrateFile(ctx, "rad.schema.yaml", []byte(req.Or(oas.MigrateProps{}).Schema))
 	if err != nil {
 		if p := clientProblem(err); p != nil {
 			op := api.ProblemToOAS(*p)

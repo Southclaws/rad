@@ -51,7 +51,7 @@ front of the existing client, not a new capability of the engine.
   foreign keys) but nothing else from a live server. `Client.Tables(ctx)`
   already returns exactly that shape (`protocol.TableInfo`/`ColumnInfo`,
   `client.go:117`), and `schema.Parse` (`rad/engine/02_catalog/schema/
-schema.go:126`) parses a local `schema.rad` file into the same
+schema.go:126`) parses a local `rad.schema.yaml` file into the same
   information without a connection at all — either is a sufficient input to
   the compiler's binder. Compiling one query touches the network zero
   times beyond that one-time schema fetch.
@@ -389,7 +389,7 @@ mapping-level ones.
 The point of this project is external correctness pressure, so the POC's
 test plan should not just be "the compiler's own unit tests pass." Plan:
 
-1. Reuse the `tests/e2e` fixture shape (`schema.rad` + `seed.json`) as the
+1. Reuse the `tests/e2e` fixture shape (`rad.schema.yaml` + `seed.json`) as the
    shared ground truth: load the same schema and seed data into both a
    Rad instance and a real SQLite database (`modernc.org/sqlite`, pure Go,
    no cgo — keeps this dependency-light regardless of what wins as the

@@ -44,7 +44,7 @@ func TestGenerativeRecursive(t *testing.T) {
 		q := generative.GenRecursiveQuery(rt, g)
 		casesChecked.Add(1)
 		if dumpEnabled() {
-			dumpCase(capt.mode, emit.SchemaRAD(spec), q, dumpResult(ctx, db, q))
+			dumpCase(capt.mode, emit.SchemaYAML(spec), q, dumpResult(ctx, db, q))
 		}
 		if err := differential.ThreeWay(ctx, db, scanOf(data), q, false); err != nil {
 			capt.record(emit.Case{Spec: spec, Data: data, Query: q, Ordered: false, Detail: err.Error()})

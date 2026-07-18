@@ -8,10 +8,11 @@ package protocol
 //     statement's kind variant and reported with the statement's index.
 //  2. Program semantics — cross-field rules the schema cannot express: unique
 //     statement names and the result-selection rule.
-//  3. Two-phase LIR — each statement's opaque relation is validated against
-//     the independent LIR schema. PIR never learns the LIR grammar; it hands
-//     each payload to ValidateLIRJSON. Backward-reference resolution (a `ref`
-//     to a statement name) is the engine's job at bind time, not here.
+//  3. Two-phase LIR — each relational statement's opaque relation is validated
+//     against the independent LIR schema. PIR never learns the LIR grammar; it
+//     hands each payload to ValidateLIRJSON. Catalog statements have no
+//     relation. Backward-reference and evolving-catalog resolution are the
+//     engine's job at bind time, not here.
 
 import (
 	"bytes"
@@ -26,10 +27,18 @@ import (
 
 // statementDefs maps a statement `kind` to its named variant in the schema.
 var statementDefs = map[string]string{
-	"query":  "QueryStatement",
-	"create": "CreateStatement",
-	"update": "UpdateStatement",
-	"delete": "DeleteStatement",
+	"query":         "QueryStatement",
+	"create":        "CreateStatement",
+	"update":        "UpdateStatement",
+	"delete":        "DeleteStatement",
+	"create_table":  "CreateTableStatement",
+	"rename_table":  "RenameTableStatement",
+	"delete_table":  "DeleteTableStatement",
+	"create_column": "CreateColumnStatement",
+	"rename_column": "RenameColumnStatement",
+	"delete_column": "DeleteColumnStatement",
+	"create_index":  "CreateIndexStatement",
+	"delete_index":  "DeleteIndexStatement",
 }
 
 var resolvePIRSchema = sync.OnceValues(func() (*jsonschema.Resolved, error) {
@@ -91,6 +100,9 @@ func ValidatePIRJSON(raw []byte) error {
 	}
 	for _, s := range w.Statements {
 		name, rel := statementNameAndRelation(s)
+		if rel == nil {
+			continue
+		}
 		if err := ValidateLIRJSON(rel); err != nil {
 			return fmt.Errorf("protocol: statement %q relation: %w", name, err)
 		}
@@ -99,25 +111,32 @@ func ValidatePIRJSON(raw []byte) error {
 }
 
 // checkProgramSemantics enforces the cross-field rules: statement names are
-// unique, and the result selector is present when required and names a real
-// statement.
+// unique, and the result selector is present when required and names a
+// relational statement.
 func checkProgramSemantics(w pirwire.Program) error {
 	seen := make(map[string]bool, len(w.Statements))
+	relational := make(map[string]bool, len(w.Statements))
 	for _, s := range w.Statements {
-		name, _ := statementNameAndRelation(s)
+		name, rel := statementNameAndRelation(s)
 		if seen[name] {
 			return fmt.Errorf("protocol: duplicate statement name %q", name)
 		}
 		seen[name] = true
+		if rel != nil {
+			relational[name] = true
+		}
 	}
 	if w.Result == nil {
-		if len(w.Statements) != 1 {
-			return fmt.Errorf("protocol: a program with %d statements must name its result", len(w.Statements))
+		if len(relational) == 0 || len(w.Statements) == 1 {
+			return nil
 		}
-		return nil
+		return fmt.Errorf("protocol: a program with %d statements including relational work must name its result", len(w.Statements))
 	}
 	if !seen[*w.Result] {
 		return fmt.Errorf("protocol: result names unknown statement %q", *w.Result)
+	}
+	if !relational[*w.Result] {
+		return fmt.Errorf("protocol: result names catalog statement %q, which has no relation", *w.Result)
 	}
 	return nil
 }

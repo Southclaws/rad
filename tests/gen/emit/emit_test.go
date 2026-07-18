@@ -40,7 +40,7 @@ func TestFixtureIsValid(t *testing.T) {
 		t.Fatalf("emit: %v", err)
 	}
 
-	for _, f := range []string{"schema.rad", "seed.json", "BUG.md"} {
+	for _, f := range []string{"rad.schema.yaml", "seed.json", "BUG.md"} {
 		if _, err := os.Stat(filepath.Join(fixDir, f)); err != nil {
 			t.Errorf("missing %s: %v", f, err)
 		}
@@ -71,7 +71,7 @@ func TestFixtureIsValid(t *testing.T) {
 	}
 
 	// The schema migrates cleanly into a fresh database.
-	schema, err := os.ReadFile(filepath.Join(fixDir, "schema.rad"))
+	schema, err := os.ReadFile(filepath.Join(fixDir, "rad.schema.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestFixtureIsValid(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := frontend.Open(store).MigrateFile(ctx, "schema.rad", schema); err != nil {
-		t.Fatalf("emitted schema.rad does not migrate: %v", err)
+	if _, err := frontend.Open(store).MigrateFile(ctx, "rad.schema.yaml", schema); err != nil {
+		t.Fatalf("emitted rad.schema.yaml does not migrate: %v", err)
 	}
 }

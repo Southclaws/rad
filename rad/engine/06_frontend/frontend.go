@@ -33,11 +33,6 @@ func Open(store kv.TransactionalKV) *DB {
 // Catalog exposes schema metadata (table definitions, schema changes).
 func (db *DB) Catalog() *catalog.Catalog { return db.cat }
 
-// CreateTable defines a new table.
-func (db *DB) CreateTable(ctx context.Context, def catalog.TableDef) (catalog.Table, error) {
-	return db.cat.CreateTable(ctx, def)
-}
-
 // ExecuteProgram runs a PIR program as one atomic transaction and returns the
 // declared result statement's datum, a per-statement summary, and — per opts —
 // the per-statement query-plan views and/or a dry-run (plan-only) outcome.

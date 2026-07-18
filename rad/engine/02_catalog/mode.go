@@ -2,7 +2,7 @@ package catalog
 
 // Catalog management mode. Every database is either directly managed (the
 // database is the source of truth; imperative catalog mutation over the
-// wire is allowed) or schema-managed (a schema.rad document is the source
+// wire is allowed) or schema-managed (a rad.schema.yaml document is the source
 // of truth; the only mutation path is migration). The mode is decided once, when the database
 // is first initialised, and never changes — adoption flows between modes are
 // future work.
@@ -26,7 +26,7 @@ type Mode string
 const (
 	// ModeDirect: the live catalog is the source of truth. The default.
 	ModeDirect Mode = "direct"
-	// ModeSchema: schema.rad migrations are the source of truth.
+	// ModeSchema: rad.schema.yaml migrations are the source of truth.
 	ModeSchema Mode = "schema"
 )
 
