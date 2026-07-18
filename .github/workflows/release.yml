@@ -21,6 +21,7 @@ env:
   # Keep these aligned with slatedb.io/slatedb-go in go.mod. The commit is the
   # peeled target of the binding's annotated tag, not the mutable tag itself.
   SLATEDB_COMMIT: 3fe856c15c43f158236e978947ca0b4b6b071306
+  SLATEDB_RUST_TOOLCHAIN: "1.91.1"
   SLATEDB_VERSION: v0.14.1
 
 jobs:
@@ -60,15 +61,19 @@ jobs:
           - runner: ubuntu-24.04
             goos: linux
             goarch: amd64
+            cache_target: native
           - runner: ubuntu-24.04-arm
             goos: linux
             goarch: arm64
+            cache_target: native
           - runner: macos-14
             goos: darwin
             goarch: arm64
+            cache_target: native
           - runner: windows-2022
             goos: windows
             goarch: amd64
+            cache_target: x86_64-pc-windows-msvc
             rust_target: x86_64-pc-windows-msvc
             # Go adds a GNU linker script when native clang selects link.exe.
             # LLD is MSVC-compatible and makes Go skip that incompatible script.
@@ -76,6 +81,7 @@ jobs:
           - runner: windows-11-arm
             goos: windows
             goarch: arm64
+            cache_target: aarch64-pc-windows-msvc
             rust_target: aarch64-pc-windows-msvc
             cc: clang
     runs-on: ${{ matrix.runner }}
@@ -97,7 +103,6 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Prepare SlateDB source
-        id: slatedb
         env:
           RUST_TARGET: ${{ matrix.rust_target }}
         run: |
@@ -113,17 +118,18 @@ jobs:
           git -C slatedb-src checkout --detach FETCH_HEAD
 
           rust_toolchain="$(sed -n 's/^channel = "\([^"]*\)"/\1/p' slatedb-src/rust-toolchain.toml)"
+          if [ "$rust_toolchain" != "$SLATEDB_RUST_TOOLCHAIN" ]; then
+            echo "SlateDB uses Rust $rust_toolchain; update the audited workflow pin" >&2
+            exit 1
+          fi
           rustup toolchain install "$rust_toolchain" --profile minimal
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/slatedb-target" >> "$GITHUB_ENV"
+          echo "SLATEDB_CACHE_DIR=$RUNNER_TEMP/slatedb-cache" >> "$GITHUB_ENV"
           echo "RUSTUP_TOOLCHAIN=$rust_toolchain" >> "$GITHUB_ENV"
-          echo "rust-toolchain=$rust_toolchain" >> "$GITHUB_OUTPUT"
 
-          cache_target="native"
           if [ -n "$RUST_TARGET" ]; then
             rustup target add --toolchain "$rust_toolchain" "$RUST_TARGET"
-            cache_target="$RUST_TARGET"
           fi
-          echo "rust-target=$cache_target" >> "$GITHUB_OUTPUT"
 
       - name: Restore SlateDB build cache
         id: slatedb-cache
@@ -131,14 +137,16 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/slatedb-target
+            ${{ runner.temp }}/slatedb-cache
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: slatedb-uniffi-release-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.slatedb.outputs.rust-target }}-${{ steps.slatedb.outputs.rust-toolchain }}-${{ env.SLATEDB_COMMIT }}
+          key: slatedb-uniffi-release-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.cache_target }}-${{ env.SLATEDB_RUST_TOOLCHAIN }}-${{ env.SLATEDB_COMMIT }}
 
       - name: Build SlateDB native library
         env:
           RUST_TARGET: ${{ matrix.rust_target }}
+          SLATEDB_CACHE_HIT: ${{ steps.slatedb-cache.outputs.cache-hit }}
         run: |
           set -euo pipefail
           target_arg=""
@@ -156,12 +164,18 @@ jobs:
           if [ -n "$target_arg" ]; then
             cargo_args+=(--target "$target_arg")
           fi
-          cargo rustc \
-            "${cargo_args[@]}" \
-            -- \
-            --print native-static-libs 2>&1 | tee slatedb-build.log
-          grep -m1 -o 'native-static-libs: .*' slatedb-build.log \
-            | sed 's/native-static-libs: //' > slatedb-native-libs.txt
+          mkdir -p "$SLATEDB_CACHE_DIR"
+          if [ "$SLATEDB_CACHE_HIT" != true ]; then
+            cargo rustc \
+              "${cargo_args[@]}" \
+              -- \
+              --print native-static-libs 2>&1 | tee "$SLATEDB_CACHE_DIR/build.log"
+            grep -m1 -o 'native-static-libs: .*' "$SLATEDB_CACHE_DIR/build.log" \
+              | sed 's/native-static-libs: //' > "$SLATEDB_CACHE_DIR/native-libs.txt"
+          else
+            echo "Using cached SlateDB native build"
+          fi
+          test -s "$SLATEDB_CACHE_DIR/native-libs.txt"
 
           static_dir="$PWD/lib/static"
           mkdir -p "$static_dir"
@@ -175,7 +189,7 @@ jobs:
           fi
           cp "$static_lib" "$static_dir/"
 
-          native_libs="$(cat slatedb-native-libs.txt)"
+          native_libs="$(cat "$SLATEDB_CACHE_DIR/native-libs.txt")"
           if [ "$RUNNER_OS" = Windows ]; then
             # rustc reports MSVC linker syntax, while cgo invokes Clang's
             # GCC-style driver. Make the flags compatible and colocate any
@@ -258,6 +272,7 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/slatedb-target
+            ${{ runner.temp }}/slatedb-cache
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db

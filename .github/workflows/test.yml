@@ -11,6 +11,7 @@ env:
   # Keep these aligned with slatedb.io/slatedb-go in go.mod. The commit is the
   # peeled target of the binding's annotated tag, not the mutable tag itself.
   SLATEDB_COMMIT: 3fe856c15c43f158236e978947ca0b4b6b071306
+  SLATEDB_RUST_TOOLCHAIN: "1.91.1"
   SLATEDB_VERSION: v0.14.1
 
 jobs:
@@ -31,7 +32,6 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Prepare SlateDB source
-        id: slatedb
         run: |
           set -euo pipefail
           actual_version="$(go list -m slatedb.io/slatedb-go | cut -d' ' -f2)"
@@ -45,31 +45,50 @@ jobs:
           git -C /tmp/slatedb checkout --detach FETCH_HEAD
 
           rust_toolchain="$(sed -n 's/^channel = "\([^"]*\)"/\1/p' /tmp/slatedb/rust-toolchain.toml)"
+          if [ "$rust_toolchain" != "$SLATEDB_RUST_TOOLCHAIN" ]; then
+            echo "SlateDB uses Rust $rust_toolchain; update the audited workflow pin" >&2
+            exit 1
+          fi
           rustup toolchain install "$rust_toolchain" --profile minimal
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/slatedb-target" >> "$GITHUB_ENV"
+          echo "SLATEDB_CACHE_DIR=$RUNNER_TEMP/slatedb-cache" >> "$GITHUB_ENV"
           echo "RUSTUP_TOOLCHAIN=$rust_toolchain" >> "$GITHUB_ENV"
-          echo "rust-toolchain=$rust_toolchain" >> "$GITHUB_OUTPUT"
 
+      # This is an exact-key cache of compiled native output. There are no
+      # restore prefixes: any audited input change must rebuild from source.
       - name: Restore SlateDB build cache
         id: slatedb-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ runner.temp }}/slatedb-target
+            ${{ runner.temp }}/slatedb-cache
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: slatedb-uniffi-release-v1-${{ runner.os }}-${{ runner.arch }}-native-${{ steps.slatedb.outputs.rust-toolchain }}-${{ env.SLATEDB_COMMIT }}
+          key: slatedb-uniffi-release-v2-${{ runner.os }}-${{ runner.arch }}-native-${{ env.SLATEDB_RUST_TOOLCHAIN }}-${{ env.SLATEDB_COMMIT }}
 
       - name: Build SlateDB native library
+        env:
+          SLATEDB_CACHE_HIT: ${{ steps.slatedb-cache.outputs.cache-hit }}
         run: |
           set -euo pipefail
-          cargo rustc \
-            --release \
-            -p slatedb-uniffi \
-            --manifest-path /tmp/slatedb/Cargo.toml \
-            -- \
-            --print native-static-libs
+          mkdir -p "$SLATEDB_CACHE_DIR"
+          if [ "$SLATEDB_CACHE_HIT" != true ]; then
+            cargo rustc \
+              --release \
+              -p slatedb-uniffi \
+              --manifest-path /tmp/slatedb/Cargo.toml \
+              -- \
+              --print native-static-libs 2>&1 | tee "$SLATEDB_CACHE_DIR/build.log"
+            grep -m1 -o 'native-static-libs: .*' "$SLATEDB_CACHE_DIR/build.log" \
+              | sed 's/native-static-libs: //' > "$SLATEDB_CACHE_DIR/native-libs.txt"
+          else
+            echo "Using cached SlateDB native build"
+          fi
+          test -s "$SLATEDB_CACHE_DIR/native-libs.txt"
+          test -f "$CARGO_TARGET_DIR/release/libslatedb_uniffi.a"
+          test -f "$CARGO_TARGET_DIR/release/libslatedb_uniffi.so"
           mkdir -p "$GITHUB_WORKSPACE/lib"
           cp "$CARGO_TARGET_DIR/release/libslatedb_uniffi.so" "$GITHUB_WORKSPACE/lib/"
 
@@ -93,6 +112,7 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/slatedb-target
+            ${{ runner.temp }}/slatedb-cache
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
