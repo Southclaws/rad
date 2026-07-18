@@ -70,7 +70,9 @@ jobs:
             goos: windows
             goarch: amd64
             rust_target: x86_64-pc-windows-msvc
-            cc: clang
+            # Go adds a GNU linker script when native clang selects link.exe.
+            # LLD is MSVC-compatible and makes Go skip that incompatible script.
+            cc: clang -fuse-ld=lld
           - runner: windows-11-arm
             goos: windows
             goarch: arm64
