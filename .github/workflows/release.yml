@@ -147,12 +147,37 @@ jobs:
             exit 1
           fi
           cp "$static_lib" "$static_dir/"
+
+          native_libs="$(cat slatedb-native-libs.txt)"
           if [ "$RUNNER_OS" = Windows ]; then
+            # rustc reports MSVC linker syntax, while cgo invokes Clang's
+            # GCC-style driver. Make the flags compatible and colocate any
+            # Cargo-provided import libraries with the SlateDB archive.
+            clang_libs=()
+            for native_lib in $native_libs; do
+              case "$native_lib" in
+                *.lib)
+                  support_lib="$(find slatedb-src/target "$HOME/.cargo" "$HOME/.rustup" \
+                    -type f -name "$native_lib" -print -quit 2>/dev/null)"
+                  if [ -n "$support_lib" ]; then
+                    cp "$support_lib" "$static_dir/"
+                  elif [[ "$native_lib" == windows.*.lib ]]; then
+                    echo "Cargo import library $native_lib not found" >&2
+                    exit 1
+                  fi
+                  clang_libs+=("-l${native_lib%.lib}")
+                  ;;
+                /defaultlib:*) clang_libs+=("-Wl,$native_lib") ;;
+                *) clang_libs+=("$native_lib") ;;
+              esac
+            done
+            native_libs="${clang_libs[*]}"
+
             # CGO invokes native clang outside MSYS path translation.
             static_dir="$(cygpath -m "$static_dir")"
           fi
           echo "LIBDIR=$static_dir" >> "$GITHUB_ENV"
-          echo "NATIVE_LIBS=$(cat slatedb-native-libs.txt)" >> "$GITHUB_ENV"
+          echo "NATIVE_LIBS=$native_libs" >> "$GITHUB_ENV"
 
       - name: Build rad
         env:
