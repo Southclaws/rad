@@ -54,11 +54,12 @@ type BoundStatement struct {
 type ProgramBinder struct {
 	b       *binder
 	program map[string]*bound.Binding
+	names   []string
+	next    int
 }
 
-// NewProgramBinder creates a binder whose reserved names are every relational
-// statement in the complete program. Reserving future names prevents a local
-// LIR binding from shadowing a later program result.
+// NewProgramBinder reserves the complete statement namespace so local LIR
+// bindings cannot make reference resolution depend on statement order.
 func NewProgramBinder(ctx context.Context, cat Catalog, names []string) (*ProgramBinder, error) {
 	reserved := make(map[string]bool, len(names))
 	for _, name := range names {
@@ -79,12 +80,20 @@ func NewProgramBinder(ctx context.Context, cat Catalog, names []string) (*Progra
 			reserved: reserved,
 		},
 		program: map[string]*bound.Binding{},
+		names:   append([]string(nil), names...),
 	}, nil
 }
 
 // Bind binds and plans the next relational statement against the catalog and
 // program results visible at this point, then publishes its result binding.
 func (p *ProgramBinder) Bind(s ProgramStmt) (BoundStatement, error) {
+	if p.next >= len(p.names) {
+		return BoundStatement{}, reject.Inputf("planner: unexpected statement %q", s.Name)
+	}
+	if want := p.names[p.next]; s.Name != want {
+		return BoundStatement{}, reject.Inputf("planner: expected statement %q, got %q", want, s.Name)
+	}
+
 	var (
 		bq         *bound.Query
 		err        error
@@ -97,12 +106,6 @@ func (p *ProgramBinder) Bind(s ProgramStmt) (BoundStatement, error) {
 		if err != nil {
 			return BoundStatement{}, statementErr(s.Name, err)
 		}
-		schema, serr := p.b.tableSchema(s.Table)
-		if serr != nil {
-			return BoundStatement{}, statementErr(s.Name, serr)
-		}
-		resultRoot = schema
-		resultOut = schema.Output()
 		resultCard = lir.CardMany
 	} else {
 		bq, err = p.b.bindQuery(s.Rel, p.program)
@@ -116,7 +119,16 @@ func (p *ProgramBinder) Bind(s ProgramStmt) (BoundStatement, error) {
 
 	pp := PlanQuery(bq)
 	p.b.nextSlot = pp.Slots
+	if s.Mutation {
+		schema, err := p.b.tableSchema(s.Table)
+		if err != nil {
+			return BoundStatement{}, statementErr(s.Name, err)
+		}
+		resultRoot = schema
+		resultOut = schema.Output()
+	}
 	p.program[s.Name] = &bound.Binding{Name: s.Name, Root: resultRoot}
+	p.next++
 	return BoundStatement{Name: s.Name, Plan: pp, ResultOut: resultOut, ResultCard: resultCard}, nil
 }
 
@@ -159,12 +171,7 @@ func (b *binder) tableSchema(table string) (bound.Relation, error) {
 	if !ok {
 		return nil, reject.Fail(reject.ReasonUnknownTable, "planner: unknown table %q", table)
 	}
-	slots := make([]lir.SlotID, len(tbl.Columns))
-	for i := range slots {
-		slots[i] = b.nextSlot
-		b.nextSlot++
-	}
-	return bound.NewScan(tbl, "", slots), nil
+	return bound.NewScan(tbl, "", b.freshSlots(len(tbl.Columns))), nil
 }
 
 // statementErr annotates a statement-body error with the statement's name;

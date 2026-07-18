@@ -104,6 +104,8 @@ func Classify(rel bound.Relation) Correlation {
 			chain = n.In
 		case *bound.Aggregate:
 			chain = n.In
+		case *bound.Distinct:
+			chain = n.In
 		default:
 			chain = nil
 		}
@@ -116,7 +118,7 @@ func Classify(rel bound.Relation) Correlation {
 	// count usages everywhere, subtract the candidates', and anything left
 	// means general correlation.
 	usage := map[lir.SlotID]int{}
-	countFreeUsage(rel, rel.Produced(), usage)
+	countFreeUsage(rel, free, usage)
 	for _, k := range candidates {
 		usage[k.OuterSlot]--
 	}
@@ -128,9 +130,7 @@ func Classify(rel bound.Relation) Correlation {
 	return Correlation{Kind: KeyCorrelated, Keys: candidates}
 }
 
-// scanBelow descends a single-input chain — through filters, ordering,
-// slicing, shaping, and folding — to the scan the correlation keys would
-// constrain. Joins have no single scan.
+// scanBelow descends operators that preserve a single underlying scan.
 func scanBelow(rel bound.Relation) *bound.Scan {
 	for {
 		switch n := rel.(type) {
@@ -146,55 +146,22 @@ func scanBelow(rel bound.Relation) *bound.Scan {
 			rel = n.In
 		case *bound.Aggregate:
 			rel = n.In
+		case *bound.Distinct:
+			rel = n.In
 		default:
 			return nil
 		}
 	}
 }
 
-// countFreeUsage tallies references to slots outside produced. A candidate key
-// equation contributes one outer reference, which Classify subtracts.
-func countFreeUsage(rel bound.Relation, produced bound.SlotSet, usage map[lir.SlotID]int) {
-	countExpr := func(expr bound.Expr) {
-		if expr == nil {
-			return
+// countFreeUsage tallies references to the relation's free slots. Slots owned
+// by a nested crossing are local to that crossing even though they are not
+// produced by the enclosing relation.
+func countFreeUsage(rel bound.Relation, free bound.SlotSet, usage map[lir.SlotID]int) {
+	bound.WalkRelation(rel, nil, func(expr bound.Expr) {
+		ref, ok := expr.(bound.SlotRef)
+		if ok && free.Contains(ref.Slot) {
+			usage[ref.Slot]++
 		}
-		for _, slot := range expr.FreeSlots().Slots() {
-			if !produced.Contains(slot) {
-				usage[slot]++
-			}
-		}
-	}
-	switch rel := rel.(type) {
-	case *bound.Scan:
-	case *bound.Filter:
-		for _, conjunct := range conjuncts(rel.Pred) {
-			countExpr(conjunct)
-		}
-		countFreeUsage(rel.In, produced, usage)
-	case *bound.Project:
-		for _, field := range rel.Fields {
-			countExpr(field.Expr)
-		}
-		countFreeUsage(rel.In, produced, usage)
-	case *bound.Join:
-		countExpr(rel.On)
-		countFreeUsage(rel.L, produced, usage)
-		countFreeUsage(rel.R, produced, usage)
-	case *bound.Aggregate:
-		for _, group := range rel.Groups {
-			countExpr(group.Expr)
-		}
-		for _, term := range rel.Terms {
-			countExpr(term.Arg)
-		}
-		countFreeUsage(rel.In, produced, usage)
-	case *bound.Order:
-		for _, term := range rel.Terms {
-			countExpr(term.Expr)
-		}
-		countFreeUsage(rel.In, produced, usage)
-	case *bound.Slice:
-		countFreeUsage(rel.In, produced, usage)
-	}
+	})
 }

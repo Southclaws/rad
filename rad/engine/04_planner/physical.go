@@ -48,9 +48,7 @@ const (
 	BindingMaterialise BindingStrategy = "materialise"
 	// BindingReplay streams the plan inline at the occurrence. Sound only
 	// for a single reference: one occurrence's evaluation IS the
-	// commitment, so nothing else can observe a difference. Multi-reference
-	// replay of insensitive bodies is a possible future refinement; it is
-	// never valid for sensitive ones.
+	// commitment, so nothing else can observe a difference.
 	BindingReplay BindingStrategy = "replay"
 )
 
@@ -258,71 +256,3 @@ func (*RefExec) phys()            {}
 func (*RecursiveRefExec) phys()   {}
 func (*DistinctExec) phys()       {}
 func (*AggregateExec) phys()      {}
-
-// -
-// physical ordering properties
-// -
-
-// providedOrder reports the ascending slot order a node's output arrives in,
-// and whether the node is a singleton (at most one row satisfies any
-// ordering). Filters and slices preserve their input's order; everything
-// else provides none.
-func providedOrder(n PhysNode) (slots []lir.SlotID, singleton bool) {
-	switch x := n.(type) {
-	case *PKGetExec:
-		return nil, true
-	case *TableScanExec:
-		return pkSlots(x.Scan), false
-	case *IndexRangeScanExec:
-		var out []lir.SlotID
-		for _, col := range x.Index.Columns[len(x.EqPrefix):] {
-			if f, ok := x.Scan.Output().Lookup(col); ok {
-				out = append(out, f.Slot)
-			}
-		}
-		return append(out, pkSlots(x.Scan)...), false
-	case *FilterExec:
-		return providedOrder(x.Input)
-	case *AttachExec:
-		return providedOrder(x.Input)
-	case *SliceExec:
-		return providedOrder(x.Input)
-	}
-	return nil, false
-}
-
-func pkSlots(s *bound.Scan) []lir.SlotID {
-	out := make([]lir.SlotID, 0, len(s.Table.PrimaryKey))
-	for _, col := range s.Table.PrimaryKey {
-		if f, ok := s.Output().Lookup(col); ok {
-			out = append(out, f.Slot)
-		}
-	}
-	return out
-}
-
-// satisfiesOrder reports whether the node's provided order already yields
-// the required terms: every term ascending, each a bare slot reference
-// matching the provided order as a prefix.
-func satisfiesOrder(n PhysNode, req []bound.OrderTerm) bool {
-	if len(req) == 0 {
-		return true
-	}
-	provided, singleton := providedOrder(n)
-	if singleton {
-		return true
-	}
-	if len(req) > len(provided) {
-		return false
-	}
-	for i, t := range req {
-		if t.Desc {
-			return false
-		}
-		ref, ok := t.Expr.(bound.SlotRef)
-		if !ok || ref.Slot != provided[i] {
-			return false
-		}
-	}
-	return true
-}

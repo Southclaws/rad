@@ -95,30 +95,11 @@ func PlanQuery(q *bound.Query, opts ...PlanOpt) *PhysPlan {
 // countRefs tallies RefExec occurrences per binding across a plan tree,
 // including plans attached for extracted crossings.
 func countRefs(n PhysNode, refs map[string]int) {
-	switch x := n.(type) {
-	case *RefExec:
-		refs[x.Binding]++
-	case *FilterExec:
-		countRefs(x.Input, refs)
-	case *AttachExec:
-		for _, spec := range x.Specs {
-			countRefs(spec.Plan, refs)
+	walkPhys(n, func(n PhysNode) {
+		if ref, ok := n.(*RefExec); ok {
+			refs[ref.Binding]++
 		}
-		countRefs(x.Input, refs)
-	case *ProjectExec:
-		countRefs(x.Input, refs)
-	case *SortExec:
-		countRefs(x.Input, refs)
-	case *SliceExec:
-		countRefs(x.Input, refs)
-	case *AggregateExec:
-		countRefs(x.Input, refs)
-	case *DistinctExec:
-		countRefs(x.Input, refs)
-	case *NestedLoopJoinExec:
-		countRefs(x.L, refs)
-		countRefs(x.R, refs)
-	}
+	})
 }
 
 type planner struct {

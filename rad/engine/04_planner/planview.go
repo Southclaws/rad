@@ -7,8 +7,7 @@ package planner
 // devtool get the text from the same artifact.
 //
 // It captures the plan tree plus the access-path decision (candidates and
-// scores). Actual-row metrics, spans, and rewrite history are not yet
-// represented.
+// scores).
 
 import (
 	"fmt"
@@ -27,7 +26,10 @@ type PlanBindingView struct {
 	Name                string        `json:"name"`
 	Strategy            string        `json:"strategy"`
 	PlanChoiceSensitive bool          `json:"planChoiceSensitive,omitempty"`
+	Recursive           bool          `json:"recursive,omitempty"`
+	Accumulation        string        `json:"accumulation,omitempty"`
 	Plan                *PlanNodeView `json:"plan"`
+	Step                *PlanNodeView `json:"step,omitempty"`
 }
 
 // PlanNodeView is one physical operator: its kind, a human summary of its
@@ -37,18 +39,33 @@ type PlanNodeView struct {
 	Detail   string            `json:"detail,omitempty"`
 	Access   []AccessCandidate `json:"access,omitempty"`
 	Children []*PlanNodeView   `json:"children,omitempty"`
+
+	renderLines  []string
+	renderAttach []planAttachRender
+	renderInput  *PlanNodeView
+}
+
+type planAttachRender struct {
+	header string
+	plan   *PlanNodeView
 }
 
 // NewPlanView converts a physical plan into its view artifact.
 func NewPlanView(p *PhysPlan) *PlanView {
 	v := &PlanView{Cardinality: string(p.Card), Root: viewNode(p.Root)}
 	for _, bp := range p.Bindings {
-		v.Bindings = append(v.Bindings, PlanBindingView{
+		binding := PlanBindingView{
 			Name:                bp.Name,
 			Strategy:            string(bp.Strategy),
 			PlanChoiceSensitive: bp.Sensitive,
 			Plan:                viewNode(bp.Plan),
-		})
+		}
+		if bp.Recursive {
+			binding.Recursive = true
+			binding.Accumulation = string(bp.Accumulation)
+			binding.Step = viewNode(bp.Step)
+		}
+		v.Bindings = append(v.Bindings, binding)
 	}
 	return v
 }
@@ -79,23 +96,30 @@ func viewNode(n PhysNode) *PlanNodeView {
 		return &PlanNodeView{Op: "Filter", Detail: bound.PrintExpr(x.Pred), Children: []*PlanNodeView{viewNode(x.Input)}}
 	case *RefExec:
 		return &PlanNodeView{Op: "Ref", Detail: x.Binding}
+	case *RecursiveRefExec:
+		return &PlanNodeView{Op: "RecursiveRef", Detail: x.Binding}
 	case *AttachExec:
-		n := &PlanNodeView{Op: "Attach"}
+		view := &PlanNodeView{Op: "Attach"}
 		for _, a := range x.Specs {
-			spec := viewNode(a.Plan)
-			spec.Detail = fmt.Sprintf("#%d = %s %s%s", a.Slot, a.Kind, a.Corr.Kind, corrKeys(a.Corr)) +
-				detailSuffix(spec.Detail)
-			n.Children = append(n.Children, spec)
+			header := fmt.Sprintf("#%d = %s %s%s", a.Slot, a.Kind, a.Corr.Kind, corrKeys(a.Corr))
+			plan := viewNode(a.Plan)
+			spec := *plan
+			spec.Detail = header + detailSuffix(plan.Detail)
+			view.Children = append(view.Children, &spec)
+			view.renderAttach = append(view.renderAttach, planAttachRender{header: header, plan: plan})
 		}
-		n.Children = append(n.Children, viewNode(x.Input))
-		return n
+		view.renderInput = viewNode(x.Input)
+		view.Children = append(view.Children, view.renderInput)
+		return view
 	case *ProjectExec:
 		fields := make([]string, len(x.Fields))
+		renderLines := make([]string, len(x.Fields))
 		for i, f := range x.Fields {
 			fields[i] = fmt.Sprintf("%s#%d=%s", f.Name, f.Slot, bound.PrintExpr(f.Expr))
+			renderLines[i] = fmt.Sprintf("%s#%d = %s", f.Name, f.Slot, bound.PrintExpr(f.Expr))
 		}
 		return &PlanNodeView{Op: "Project", Detail: strings.Join(fields, ", "),
-			Children: []*PlanNodeView{viewNode(x.Input)}}
+			Children: []*PlanNodeView{viewNode(x.Input)}, renderLines: renderLines}
 	case *SortExec:
 		terms := make([]string, len(x.Terms))
 		for i, t := range x.Terms {
@@ -131,8 +155,10 @@ func viewNode(n PhysNode) *PlanNodeView {
 		}
 		return &PlanNodeView{Op: "Aggregate", Detail: strings.Join(parts, ", "),
 			Children: []*PlanNodeView{viewNode(x.Input)}}
+	case *DistinctExec:
+		return &PlanNodeView{Op: "Distinct", Children: []*PlanNodeView{viewNode(x.Input)}}
 	default:
-		return &PlanNodeView{Op: fmt.Sprintf("%T", n)}
+		panic(fmt.Sprintf("planner: unknown physical node %T", n))
 	}
 }
 
@@ -150,9 +176,19 @@ func detailSuffix(s string) string {
 	return " " + s
 }
 
-// String renders the plan view as a deterministic indented tree, including the
-// access-path decision under each scan that had a non-trivial choice.
+// PrintPlan renders a physical plan as a deterministic indented tree for
+// golden tests and diagnostics.
+func PrintPlan(p *PhysPlan) string {
+	return NewPlanView(p).render(false)
+}
+
+// String renders the plan view as a deterministic indented tree, including
+// non-trivial access-path decisions.
 func (v *PlanView) String() string {
+	return v.render(true)
+}
+
+func (v *PlanView) render(showAccess bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Plan card=%s\n", v.Cardinality)
 	for _, bp := range v.Bindings {
@@ -160,18 +196,45 @@ func (v *PlanView) String() string {
 		if bp.PlanChoiceSensitive {
 			sens = " plan-choice-sensitive"
 		}
+		if bp.Recursive {
+			fmt.Fprintf(&b, "  Binding %s %s%s recursive accumulation=%s\n", bp.Name, bp.Strategy, sens, bp.Accumulation)
+			fmt.Fprintln(&b, "    Anchor")
+			writeNode(&b, bp.Plan, 3, showAccess)
+			fmt.Fprintln(&b, "    Step")
+			writeNode(&b, bp.Step, 3, showAccess)
+			continue
+		}
 		fmt.Fprintf(&b, "  Binding %s %s%s\n", bp.Name, bp.Strategy, sens)
-		writeNode(&b, bp.Plan, 2)
+		writeNode(&b, bp.Plan, 2, showAccess)
 	}
-	writeNode(&b, v.Root, 1)
+	writeNode(&b, v.Root, 1, showAccess)
 	return b.String()
 }
 
-func writeNode(b *strings.Builder, n *PlanNodeView, depth int) {
+func writeNode(b *strings.Builder, n *PlanNodeView, depth int, showAccess bool) {
 	if n == nil {
 		return
 	}
 	pad := strings.Repeat("  ", depth)
+	if len(n.renderAttach) > 0 {
+		fmt.Fprintf(b, "%s%s\n", pad, n.Op)
+		for _, attach := range n.renderAttach {
+			fmt.Fprintf(b, "%s  %s\n", pad, attach.header)
+			writeNode(b, attach.plan, depth+2, showAccess)
+		}
+		writeNode(b, n.renderInput, depth+1, showAccess)
+		return
+	}
+	if len(n.renderLines) > 0 {
+		fmt.Fprintf(b, "%s%s\n", pad, n.Op)
+		for _, line := range n.renderLines {
+			fmt.Fprintf(b, "%s  %s\n", pad, line)
+		}
+		for _, child := range n.Children {
+			writeNode(b, child, depth+1, showAccess)
+		}
+		return
+	}
 	if n.Detail != "" {
 		fmt.Fprintf(b, "%s%s %s\n", pad, n.Op, n.Detail)
 	} else {
@@ -179,11 +242,13 @@ func writeNode(b *strings.Builder, n *PlanNodeView, depth int) {
 	}
 	// Render the access decision only when the planner had a real choice
 	// (an index or PK point-get won, or a scored index alternative existed).
-	if a := accessLine(n.Access); a != "" {
-		fmt.Fprintf(b, "%s  access: %s\n", pad, a)
+	if showAccess {
+		if a := accessLine(n.Access); a != "" {
+			fmt.Fprintf(b, "%s  access: %s\n", pad, a)
+		}
 	}
 	for _, c := range n.Children {
-		writeNode(b, c, depth+1)
+		writeNode(b, c, depth+1, showAccess)
 	}
 }
 
@@ -219,4 +284,49 @@ func accessLine(cands []AccessCandidate) string {
 		}
 	}
 	return strings.Join(parts, " · ")
+}
+
+func keyEqs(cols []string, vals []ConstVal) string {
+	parts := make([]string, len(vals))
+	for i, v := range vals {
+		parts[i] = cols[i] + " = " + constStr(v)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func constStr(v ConstVal) string {
+	if v.Lit != nil {
+		return v.Lit.String()
+	}
+	return fmt.Sprintf("@%d", *v.Outer)
+}
+
+func rangeStr(r *RangeSpec) string {
+	var parts []string
+	if r.Lo != nil {
+		op := ">"
+		if r.Lo.Inclusive {
+			op = ">="
+		}
+		parts = append(parts, fmt.Sprintf("%s %s %s", r.Column, op, r.Lo.V))
+	}
+	if r.Hi != nil {
+		op := "<"
+		if r.Hi.Inclusive {
+			op = "<="
+		}
+		parts = append(parts, fmt.Sprintf("%s %s %s", r.Column, op, r.Hi.V))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func corrKeys(c Correlation) string {
+	if len(c.Keys) == 0 {
+		return ""
+	}
+	parts := make([]string, len(c.Keys))
+	for i, k := range c.Keys {
+		parts[i] = fmt.Sprintf("%s#%d = @%d", k.InnerCol, k.InnerSlot, k.OuterSlot)
+	}
+	return " [" + strings.Join(parts, ", ") + "]"
 }
