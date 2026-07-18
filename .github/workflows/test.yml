@@ -42,23 +42,21 @@ jobs:
           git -C /tmp/slatedb remote add origin https://github.com/slatedb/slatedb
           git -C /tmp/slatedb fetch --depth 1 origin "$SLATEDB_COMMIT"
           git -C /tmp/slatedb checkout --detach FETCH_HEAD
-          cargo rustc \
+          cargo build \
             --release \
             -p slatedb-uniffi \
-            --manifest-path /tmp/slatedb/Cargo.toml \
-            -- \
-            --print native-static-libs 2>&1 | tee /tmp/slatedb-build.log
-          grep -m1 -o 'native-static-libs: .*' /tmp/slatedb-build.log \
-            | sed 's/native-static-libs: //' > /tmp/slatedb-native-libs.txt
+            --manifest-path /tmp/slatedb/Cargo.toml
+          mkdir -p "$GITHUB_WORKSPACE/lib"
+          cp /tmp/slatedb/target/release/libslatedb_uniffi.so "$GITHUB_WORKSPACE/lib/"
 
-      # Keep this in lockstep with `task test`: the static library makes the
-      # runner self-contained, while the commands and RAPID_CHECKS are the same.
+      # Keep this in lockstep with `task test`: tests use the dynamic library
+      # with an rpath, while release binaries use the isolated static archive.
       - name: Run full test suite
         env:
           CGO_ENABLED: "1"
           RAPID_CHECKS: "20"
         run: |
           set -euo pipefail
-          export CGO_LDFLAGS="-L/tmp/slatedb/target/release $(cat /tmp/slatedb-native-libs.txt)"
+          export CGO_LDFLAGS="-L$GITHUB_WORKSPACE/lib -Wl,-rpath,$GITHUB_WORKSPACE/lib"
           go test ./...
           (cd examples/demo && go build -o /dev/null .)

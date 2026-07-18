@@ -133,12 +133,14 @@ jobs:
           grep -m1 -o 'native-static-libs: .*' slatedb-build.log \
             | sed 's/native-static-libs: //' > slatedb-native-libs.txt
 
-          libdir="$PWD/$libdir"
+          static_dir="$PWD/lib/static"
+          mkdir -p "$static_dir"
+          cp "$libdir/libslatedb_uniffi.a" "$static_dir/"
           if [ "$RUNNER_OS" = Windows ]; then
             # CGO invokes native clang outside MSYS path translation.
-            libdir="$(cygpath -m "$libdir")"
+            static_dir="$(cygpath -m "$static_dir")"
           fi
-          echo "LIBDIR=$libdir" >> "$GITHUB_ENV"
+          echo "LIBDIR=$static_dir" >> "$GITHUB_ENV"
           echo "NATIVE_LIBS=$(cat slatedb-native-libs.txt)" >> "$GITHUB_ENV"
 
       - name: Build rad
