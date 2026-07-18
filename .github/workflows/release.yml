@@ -96,7 +96,8 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: Build SlateDB native library
+      - name: Prepare SlateDB source
+        id: slatedb
         env:
           RUST_TARGET: ${{ matrix.rust_target }}
         run: |
@@ -113,14 +114,38 @@ jobs:
 
           rust_toolchain="$(sed -n 's/^channel = "\([^"]*\)"/\1/p' slatedb-src/rust-toolchain.toml)"
           rustup toolchain install "$rust_toolchain" --profile minimal
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/slatedb-target" >> "$GITHUB_ENV"
           echo "RUSTUP_TOOLCHAIN=$rust_toolchain" >> "$GITHUB_ENV"
+          echo "rust-toolchain=$rust_toolchain" >> "$GITHUB_OUTPUT"
 
-          target_arg=""
-          libdir="slatedb-src/target/release"
+          cache_target="native"
           if [ -n "$RUST_TARGET" ]; then
             rustup target add --toolchain "$rust_toolchain" "$RUST_TARGET"
+            cache_target="$RUST_TARGET"
+          fi
+          echo "rust-target=$cache_target" >> "$GITHUB_OUTPUT"
+
+      - name: Restore SlateDB build cache
+        id: slatedb-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/slatedb-target
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: slatedb-uniffi-release-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.slatedb.outputs.rust-target }}-${{ steps.slatedb.outputs.rust-toolchain }}-${{ env.SLATEDB_COMMIT }}
+
+      - name: Build SlateDB native library
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          set -euo pipefail
+          target_arg=""
+          libdir="$CARGO_TARGET_DIR/release"
+          if [ -n "$RUST_TARGET" ]; then
             target_arg="$RUST_TARGET"
-            libdir="slatedb-src/target/$RUST_TARGET/release"
+            libdir="$CARGO_TARGET_DIR/$RUST_TARGET/release"
           fi
 
           cargo_args=(
@@ -159,7 +184,7 @@ jobs:
             for native_lib in $native_libs; do
               case "$native_lib" in
                 *.lib)
-                  support_lib="$(find slatedb-src/target "$HOME/.cargo" "$HOME/.rustup" \
+                  support_lib="$(find "$CARGO_TARGET_DIR" "$HOME/.cargo" "$HOME/.rustup" \
                     -type f -name "$native_lib" -print -quit 2>/dev/null)"
                   if [ -n "$support_lib" ]; then
                     cp "$support_lib" "$static_dir/"
@@ -226,6 +251,17 @@ jobs:
             rad-*.zip
           if-no-files-found: error
           retention-days: 7
+
+      - name: Save SlateDB build cache
+        if: steps.slatedb-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/slatedb-target
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ steps.slatedb-cache.outputs.cache-primary-key }}
 
   release:
     name: publish edge release

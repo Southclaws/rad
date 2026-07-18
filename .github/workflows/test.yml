@@ -30,7 +30,8 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: Build SlateDB native library
+      - name: Prepare SlateDB source
+        id: slatedb
         run: |
           set -euo pipefail
           actual_version="$(go list -m slatedb.io/slatedb-go | cut -d' ' -f2)"
@@ -42,12 +43,35 @@ jobs:
           git -C /tmp/slatedb remote add origin https://github.com/slatedb/slatedb
           git -C /tmp/slatedb fetch --depth 1 origin "$SLATEDB_COMMIT"
           git -C /tmp/slatedb checkout --detach FETCH_HEAD
-          cargo build \
+
+          rust_toolchain="$(sed -n 's/^channel = "\([^"]*\)"/\1/p' /tmp/slatedb/rust-toolchain.toml)"
+          rustup toolchain install "$rust_toolchain" --profile minimal
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/slatedb-target" >> "$GITHUB_ENV"
+          echo "RUSTUP_TOOLCHAIN=$rust_toolchain" >> "$GITHUB_ENV"
+          echo "rust-toolchain=$rust_toolchain" >> "$GITHUB_OUTPUT"
+
+      - name: Restore SlateDB build cache
+        id: slatedb-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/slatedb-target
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: slatedb-uniffi-release-v1-${{ runner.os }}-${{ runner.arch }}-native-${{ steps.slatedb.outputs.rust-toolchain }}-${{ env.SLATEDB_COMMIT }}
+
+      - name: Build SlateDB native library
+        run: |
+          set -euo pipefail
+          cargo rustc \
             --release \
             -p slatedb-uniffi \
-            --manifest-path /tmp/slatedb/Cargo.toml
+            --manifest-path /tmp/slatedb/Cargo.toml \
+            -- \
+            --print native-static-libs
           mkdir -p "$GITHUB_WORKSPACE/lib"
-          cp /tmp/slatedb/target/release/libslatedb_uniffi.so "$GITHUB_WORKSPACE/lib/"
+          cp "$CARGO_TARGET_DIR/release/libslatedb_uniffi.so" "$GITHUB_WORKSPACE/lib/"
 
       # Keep this in lockstep with `task test`: tests use the dynamic library
       # with an rpath, while release binaries use the isolated static archive.
@@ -60,3 +84,16 @@ jobs:
           export CGO_LDFLAGS="-L$GITHUB_WORKSPACE/lib -Wl,-rpath,$GITHUB_WORKSPACE/lib"
           go test ./...
           (cd examples/demo && go build -o /dev/null .)
+
+      # Pull requests may restore the trusted main cache, but only successful
+      # pushes can populate a branch cache.
+      - name: Save SlateDB build cache
+        if: github.event_name == 'push' && steps.slatedb-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/slatedb-target
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ steps.slatedb-cache.outputs.cache-primary-key }}
