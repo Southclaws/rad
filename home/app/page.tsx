@@ -8,8 +8,7 @@ import { Reveal } from "@/components/reveal";
 import { SiteNav } from "@/components/site-nav";
 
 const GITHUB = "https://github.com/Southclaws/rad";
-const INSTALL =
-  "curl -fsSL https://raw.githubusercontent.com/Southclaws/rad/main/install.sh | sh";
+const INSTALL = "curl -fsSL https://radengine.dev/install.sh | sh";
 
 const LOOP: {
   n: string;

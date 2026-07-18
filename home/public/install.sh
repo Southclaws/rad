@@ -1,7 +1,7 @@
 #!/bin/sh
 # Rad installer for Linux and macOS.
 #
-#   curl -fsSL https://raw.githubusercontent.com/Southclaws/rad/main/install.sh | sh
+#   curl -fsSL https://radengine.dev/install.sh | sh
 #
 # Environment:
 #   RAD_VERSION   install a specific version tag (default: latest release)

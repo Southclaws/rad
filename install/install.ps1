@@ -1,6 +1,6 @@
 # Rad installer for Windows.
 #
-#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/Southclaws/rad/main/install.ps1 | iex"
+#   powershell -ExecutionPolicy Bypass -c "irm https://radengine.dev/install.ps1 | iex"
 #
 # Environment:
 #   $env:RAD_VERSION   install a specific version tag (default: latest release)
@@ -21,9 +21,6 @@ $InstallDir = if ($env:RAD_INSTALL) { $env:RAD_INSTALL } else { $DefaultInstallD
 $BinDir = $InstallDir
 
 $Arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq "Arm64") { "arm64" } else { "amd64" }
-if ($Arch -ne "amd64") {
-  Write-Error "rad currently ships windows-amd64 builds only (detected $Arch)"
-}
 
 $Asset = "rad-windows-$Arch.zip"
 $Url = if ($env:RAD_VERSION) {
@@ -55,11 +52,11 @@ $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if (($UserPath -split ";") -notcontains $BinDir) {
   [Environment]::SetEnvironmentVariable("Path", "$BinDir;$UserPath", "User")
   $env:Path = "$BinDir;$env:Path"
-  Write-Host "Added $BinDir to your user PATH (restart other terminals to pick it up)."
+  Write-Host "Added $BinDir to your user `$Path."
 }
 
 Write-Host ""
 Write-Host "Get started:"
 Write-Host "  rad serve                 # start a database (RAD_STORAGE=memory|file|s3)"
 Write-Host "  rad schema migrate        # uses rad.config.yaml and rad.schema.yaml"
-Write-Host "  rad generate -o ./generated --pkg db"
+Write-Host "  rad generate"
