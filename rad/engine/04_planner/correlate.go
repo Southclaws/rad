@@ -152,50 +152,49 @@ func scanBelow(rel bound.Relation) *bound.Scan {
 	}
 }
 
-// countFreeUsage tallies references to slots outside produced, walking every
-// expression in the relation tree. A conjunct that IS a candidate key
-// equation contributes exactly one outer reference, which Classify subtracts.
+// countFreeUsage tallies references to slots outside produced. A candidate key
+// equation contributes one outer reference, which Classify subtracts.
 func countFreeUsage(rel bound.Relation, produced bound.SlotSet, usage map[lir.SlotID]int) {
-	countExpr := func(e bound.Expr) {
-		if e == nil {
+	countExpr := func(expr bound.Expr) {
+		if expr == nil {
 			return
 		}
-		for _, s := range e.FreeSlots().Slots() {
-			if !produced.Contains(s) {
-				usage[s]++
+		for _, slot := range expr.FreeSlots().Slots() {
+			if !produced.Contains(slot) {
+				usage[slot]++
 			}
 		}
 	}
-	switch n := rel.(type) {
+	switch rel := rel.(type) {
 	case *bound.Scan:
 	case *bound.Filter:
-		for _, c := range conjuncts(n.Pred) {
-			countExpr(c)
+		for _, conjunct := range conjuncts(rel.Pred) {
+			countExpr(conjunct)
 		}
-		countFreeUsage(n.In, produced, usage)
+		countFreeUsage(rel.In, produced, usage)
 	case *bound.Project:
-		for _, f := range n.Fields {
-			countExpr(f.Expr)
+		for _, field := range rel.Fields {
+			countExpr(field.Expr)
 		}
-		countFreeUsage(n.In, produced, usage)
+		countFreeUsage(rel.In, produced, usage)
 	case *bound.Join:
-		countExpr(n.On)
-		countFreeUsage(n.L, produced, usage)
-		countFreeUsage(n.R, produced, usage)
+		countExpr(rel.On)
+		countFreeUsage(rel.L, produced, usage)
+		countFreeUsage(rel.R, produced, usage)
 	case *bound.Aggregate:
-		for _, g := range n.Groups {
-			countExpr(g.Expr)
+		for _, group := range rel.Groups {
+			countExpr(group.Expr)
 		}
-		for _, t := range n.Terms {
-			countExpr(t.Arg)
+		for _, term := range rel.Terms {
+			countExpr(term.Arg)
 		}
-		countFreeUsage(n.In, produced, usage)
+		countFreeUsage(rel.In, produced, usage)
 	case *bound.Order:
-		for _, t := range n.Terms {
-			countExpr(t.Expr)
+		for _, term := range rel.Terms {
+			countExpr(term.Expr)
 		}
-		countFreeUsage(n.In, produced, usage)
+		countFreeUsage(rel.In, produced, usage)
 	case *bound.Slice:
-		countFreeUsage(n.In, produced, usage)
+		countFreeUsage(rel.In, produced, usage)
 	}
 }

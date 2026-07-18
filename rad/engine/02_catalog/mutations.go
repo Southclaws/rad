@@ -1,13 +1,14 @@
 package catalog
 
-// Schema-evolution operations. Each runs in its own serializable
-// transaction, mutating table metadata only:
+// Catalog methods open serializable transactions. Mutation methods apply the
+// same changes to a caller-owned transaction so metadata and data work can
+// commit atomically:
 //
 //   - Renames are free: rows are stored keyed by column ID and data keys by
 //     table ID, so renaming updates nothing but the catalog.
-//   - DeleteTable / DeleteIndex orphan their data and index entries. IDs are
-//     never reused, so orphans are unreachable garbage awaiting a future
-//     vacuum — acceptable for the POC.
+//   - DeleteTable / DeleteIndex leave their data and index entries unreachable.
+//     Physical IDs are never reused, so those entries cannot become visible
+//     through another catalog object.
 //   - CreateIndex records metadata only; backfilling entries for existing rows
 //     is the executor's job. The two must commit together — a registered
 //     index with no entries would let the planner return wrong results — so
@@ -16,11 +17,11 @@ package catalog
 import (
 	"context"
 	"encoding/json"
-	"github.com/Southclaws/rad/rad/engine/reject"
 	"slices"
-	"strings"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/naming"
+	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
 // saveTable persists an updated table definition.
@@ -150,14 +151,14 @@ func (m *Mutation) RenameTable(ctx context.Context, oldName, newName string) err
 	}
 	for i := range tbl.Indexes {
 		index := &tbl.Indexes[i]
-		if index.Name == derivedIndexName(oldName, index.Columns, index.Unique) {
-			index.Name = derivedIndexName(newName, index.Columns, index.Unique)
+		if index.Name == naming.Index(oldName, index.Columns, index.Unique) {
+			index.Name = naming.Index(newName, index.Columns, index.Unique)
 		}
 	}
 	for i := range tbl.ForeignKeys {
 		foreignKey := &tbl.ForeignKeys[i]
-		if len(foreignKey.Columns) == 1 && foreignKey.Name == derivedForeignKeyName(oldName, foreignKey.Columns[0]) {
-			foreignKey.Name = derivedForeignKeyName(newName, foreignKey.Columns[0])
+		if len(foreignKey.Columns) == 1 && foreignKey.Name == naming.ForeignKey(oldName, foreignKey.Columns[0]) {
+			foreignKey.Name = naming.ForeignKey(newName, foreignKey.Columns[0])
 		}
 	}
 	tbl.Name = newName
@@ -198,25 +199,17 @@ func (m *Mutation) CreateColumn(ctx context.Context, tableName string, def Colum
 		if _, exists := tbl.Column(def.Name); exists {
 			return reject.Inputf("catalog: column %q already exists in table %q", def.Name, tableName)
 		}
-		switch def.Type {
-		case TypeText, TypeInt64, TypeFloat64, TypeBool:
-		default:
-			return reject.Inputf("catalog: column %q has unsupported type %q", def.Name, def.Type)
-		}
-		if err := validateDefault(def); err != nil {
+		if err := validateColumnDef(def); err != nil {
 			return err
 		}
 		if !def.Nullable && (def.Default == nil || def.Default.Func != "") {
 			return reject.Inputf("catalog: new column %q must be nullable or have a literal default (existing rows need a value)", def.Name)
 		}
-		id, err := nextID(ctx, view, "c")
+		column, err := buildColumn(ctx, view, def)
 		if err != nil {
 			return err
 		}
-		tbl.Columns = append(tbl.Columns, Column{
-			ID: id, SchemaID: def.ID, Name: def.Name, Type: def.Type, Nullable: def.Nullable,
-			Format: def.Format, Default: def.Default,
-		})
+		tbl.Columns = append(tbl.Columns, column)
 		return nil
 	})
 }
@@ -298,19 +291,19 @@ func (m *Mutation) RenameColumn(ctx context.Context, tableName, oldName, newName
 		}
 		for i := range tbl.Indexes {
 			index := &tbl.Indexes[i]
-			generated := index.Name == derivedIndexName(tableName, index.Columns, index.Unique)
+			generated := index.Name == naming.Index(tableName, index.Columns, index.Unique)
 			rename(index.Columns)
 			if generated {
-				index.Name = derivedIndexName(tableName, index.Columns, index.Unique)
+				index.Name = naming.Index(tableName, index.Columns, index.Unique)
 			}
 		}
 		for i := range tbl.ForeignKeys {
 			foreignKey := &tbl.ForeignKeys[i]
 			generated := len(foreignKey.Columns) == 1 &&
-				foreignKey.Name == derivedForeignKeyName(tableName, foreignKey.Columns[0])
+				foreignKey.Name == naming.ForeignKey(tableName, foreignKey.Columns[0])
 			rename(foreignKey.Columns)
 			if generated {
-				foreignKey.Name = derivedForeignKeyName(tableName, foreignKey.Columns[0])
+				foreignKey.Name = naming.ForeignKey(tableName, foreignKey.Columns[0])
 			}
 			if foreignKey.RefTableID == tbl.ID {
 				rename(foreignKey.RefColumns)
@@ -358,18 +351,6 @@ func (m *Mutation) RenameColumn(ctx context.Context, tableName, oldName, newName
 	return renamed, nil
 }
 
-func derivedIndexName(table string, columns []string, unique bool) string {
-	suffix := "idx"
-	if unique {
-		suffix = "uq"
-	}
-	return table + "_" + strings.Join(columns, "_") + "_" + suffix
-}
-
-func derivedForeignKeyName(table, column string) string {
-	return table + "_" + column + "_fk"
-}
-
 // createIndexIn records a new index in the catalog against the caller's view
 // and returns the updated table plus the new index. Entries for existing
 // rows are NOT written here — the executor backfills them, in the same
@@ -381,21 +362,12 @@ func createIndexIn(ctx context.Context, view kv.KV, tableName string, def IndexD
 		if _, exists := tbl.Index(def.Name); exists {
 			return reject.Inputf("catalog: index %q already exists on table %q", def.Name, tableName)
 		}
-		if len(def.Columns) == 0 {
-			return reject.Inputf("catalog: index %q has no columns", def.Name)
+		var err error
+		added, err = buildIndex(ctx, view, *tbl, def)
+		if err == nil {
+			tbl.Indexes = append(tbl.Indexes, added)
 		}
-		for _, col := range def.Columns {
-			if _, ok := tbl.Column(col); !ok {
-				return reject.Inputf("catalog: index %q references unknown column %q", def.Name, col)
-			}
-		}
-		id, err := nextID(ctx, view, "i")
-		if err != nil {
-			return err
-		}
-		added = Index{ID: id, Name: def.Name, Columns: def.Columns, Unique: def.Unique}
-		tbl.Indexes = append(tbl.Indexes, added)
-		return nil
+		return err
 	})
 	if err != nil {
 		return Table{}, Index{}, err

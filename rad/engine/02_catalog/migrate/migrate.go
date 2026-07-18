@@ -17,13 +17,13 @@ package migrate
 
 import (
 	"fmt"
-
-	"github.com/Southclaws/rad/rad/engine/reject"
 	"slices"
 	"strings"
 
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/naming"
 	"github.com/Southclaws/rad/rad/engine/02_catalog/schema"
+	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
 // Step is one schema-change operation of a migration plan. Steps are ordered so that
@@ -35,20 +35,25 @@ type Step interface {
 	String() string
 }
 
-type RenameTable struct{ From, To string }
-type RenameColumn struct{ Table, From, To string }
-type CreateTable struct{ Def catalog.TableDef }
-type CreateColumn struct {
-	Table string
-	Def   catalog.ColumnDef
-}
+type (
+	RenameTable  struct{ From, To string }
+	RenameColumn struct{ Table, From, To string }
+	CreateTable  struct{ Def catalog.TableDef }
+	CreateColumn struct {
+		Table string
+		Def   catalog.ColumnDef
+	}
+)
+
 type CreateIndex struct {
 	Table string
 	Def   catalog.IndexDef
 }
-type DeleteIndex struct{ Table, Index string }
-type DeleteColumn struct{ Table, Column string }
-type DeleteTable struct{ Table string }
+type (
+	DeleteIndex  struct{ Table, Index string }
+	DeleteColumn struct{ Table, Column string }
+	DeleteTable  struct{ Table string }
+)
 
 func (RenameTable) step()  {}
 func (RenameColumn) step() {}
@@ -280,7 +285,8 @@ func diffTable(
 		if c.Format != dc.Format {
 			return tableSteps{}, reject.Inputf("migrate: %s.%s: changing format is not supported", name, dc.Name)
 		}
-		if !defaultsEqual(c.Default, dc.Default) {
+		if (c.Default == nil) != (dc.Default == nil) ||
+			c.Default != nil && *c.Default != *dc.Default {
 			return tableSteps{}, reject.Inputf("migrate: %s.%s: changing the default is not supported", name, dc.Name)
 		}
 	}
@@ -331,10 +337,10 @@ func diffTable(
 	}
 	curIdx := map[string]catalog.Index{}
 	for _, idx := range cur.Indexes {
-		generated := idx.Name == derivedIndexName(cur.Name, idx.Columns, idx.Unique)
+		generated := idx.Name == naming.Index(cur.Name, idx.Columns, idx.Unique)
 		applyRenames(idx.Columns, out.renames)
 		if generated {
-			idx.Name = derivedIndexName(name, idx.Columns, idx.Unique)
+			idx.Name = naming.Index(name, idx.Columns, idx.Unique)
 		}
 		curIdx[sig(idx.Columns, idx.Unique)] = idx
 	}
@@ -362,21 +368,6 @@ func diffTable(
 	sortSteps(out.indexCreates)
 	sortSteps(out.columnDeletes)
 	return out, nil
-}
-
-func defaultsEqual(a, b *catalog.Default) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return *a == *b
-}
-
-func derivedIndexName(table string, columns []string, unique bool) string {
-	suffix := "idx"
-	if unique {
-		suffix = "uq"
-	}
-	return table + "_" + strings.Join(columns, "_") + "_" + suffix
 }
 
 // applyRenames rewrites names in-place according to RenameColumn steps.
@@ -419,10 +410,10 @@ func compareFKs(
 		}
 		cols := slices.Clone(fk.Columns)
 		name := fk.Name
-		generated := len(cols) == 1 && name == derivedForeignKeyName(cur.Name, cols[0])
+		generated := len(cols) == 1 && name == naming.ForeignKey(cur.Name, cols[0])
 		applyRenames(cols, renames)
 		if generated {
-			name = derivedForeignKeyName(d.Def.Name, cols[0])
+			name = naming.ForeignKey(d.Def.Name, cols[0])
 		}
 		curSet[canon(name, cols, refTable.SchemaID)] = true
 	}
@@ -444,10 +435,6 @@ func compareFKs(
 		}
 	}
 	return nil
-}
-
-func derivedForeignKeyName(table, column string) string {
-	return table + "_" + column + "_fk"
 }
 
 // orderCreates topologically sorts new tables by their FK dependencies on

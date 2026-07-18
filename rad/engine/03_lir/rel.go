@@ -63,8 +63,7 @@ type Project struct {
 	Fields []ProjField
 }
 
-// JoinKind enumerates join flavours. Inner and left are implemented; semi
-// and anti are reserved values, not yet built.
+// JoinKind enumerates supported join behavior.
 type JoinKind string
 
 const (
@@ -192,14 +191,14 @@ type Distinct struct {
 	Input Relation
 }
 
-func (Scan) rel()      {}
-func (Rows) rel()      {}
-func (Filter) rel()    {}
-func (Project) rel()   {}
-func (Join) rel()      {}
-func (Aggregate) rel() {}
-func (Order) rel()     {}
-func (Slice) rel()     {}
+func (Scan) rel()         {}
+func (Rows) rel()         {}
+func (Filter) rel()       {}
+func (Project) rel()      {}
+func (Join) rel()         {}
+func (Aggregate) rel()    {}
+func (Order) rel()        {}
+func (Slice) rel()        {}
 func (Ref) rel()          {}
 func (RecursiveRef) rel() {}
 func (Recursive) rel()    {}

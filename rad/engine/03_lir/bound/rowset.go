@@ -1,20 +1,10 @@
 package bound
 
-import (
-	"fmt"
-	"strings"
+import lir "github.com/Southclaws/rad/rad/engine/03_lir"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
-	lir "github.com/Southclaws/rad/rad/engine/03_lir"
-)
-
-// CanonicalRowSet tracks membership by canonical full-row identity over a fixed
-// set of output fields: the complete row, type- and order-significant, with
-// NULL equal to NULL — deliberately unlike three-valued predicate equality
-// (where NULL ≠ NULL). It is the one definition of row identity shared by the
-// `distinct` operator and recursive admit-new accumulation, so those two can
-// never disagree. Like EvalPred/EvalDatum, it is a value-semantics primitive
-// rather than query logic, pinned by the distinct and recursion tests.
+// CanonicalRowSet gives distinct and recursive accumulation the same full-row
+// identity. Field order and scalar types are significant, and NULL equals NULL
+// rather than following three-valued predicate equality.
 type CanonicalRowSet struct {
 	fields []lir.Field
 	seen   map[string]bool
@@ -40,30 +30,15 @@ func (s *CanonicalRowSet) Add(row Env) bool {
 // Contains reports whether an identical row has already been added.
 func (s *CanonicalRowSet) Contains(row Env) bool { return s.seen[s.key(row)] }
 
-// key encodes a row's fields for identity: each datum as a type-tagged,
-// length-framed token with a distinct marker for NULL, so NULL == NULL and no
-// two distinct values or kinds collide. Values are scalars in the current value
-// domain.
 func (s *CanonicalRowSet) key(row Env) string {
-	var b strings.Builder
+	var key []byte
 	for _, f := range s.fields {
 		d, ok := row[f.Slot]
 		if !ok || d.Kind == lir.DatumNull {
-			b.WriteString("|N")
+			key = append(key, "|N"...)
 			continue
 		}
-		v := d.Scalar
-		fmt.Fprintf(&b, "|%s:", v.Type)
-		switch v.Type {
-		case catalog.TypeText:
-			fmt.Fprintf(&b, "%d:%s", len(v.Text), v.Text)
-		case catalog.TypeInt64:
-			fmt.Fprintf(&b, "%d", v.Int64)
-		case catalog.TypeFloat64:
-			fmt.Fprintf(&b, "%v", v.Float64)
-		case catalog.TypeBool:
-			fmt.Fprintf(&b, "%t", v.Bool)
-		}
+		key = d.Scalar.AppendIdentity(key)
 	}
-	return b.String()
+	return string(key)
 }

@@ -39,12 +39,12 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/Southclaws/rad/rad/engine/reject"
-
 	yaml "github.com/goccy/go-yaml"
 	"github.com/google/jsonschema-go/jsonschema"
 
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/naming"
+	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
 //go:embed radschema.json
@@ -223,18 +223,18 @@ func buildTable(filename string, ft fileTable) (Table, error) {
 		}
 		if fc.Unique {
 			t.Def.Indexes = append(t.Def.Indexes, catalog.IndexDef{
-				Name: indexName(ft.Name, []string{fc.Name}, true), Columns: []string{fc.Name}, Unique: true,
+				Name: naming.Index(ft.Name, []string{fc.Name}, true), Columns: []string{fc.Name}, Unique: true,
 			})
 		}
 		if fc.Index {
 			t.Def.Indexes = append(t.Def.Indexes, catalog.IndexDef{
-				Name: indexName(ft.Name, []string{fc.Name}, false), Columns: []string{fc.Name},
+				Name: naming.Index(ft.Name, []string{fc.Name}, false), Columns: []string{fc.Name},
 			})
 		}
 		if fc.Ref != "" {
 			refTable, refCol, _ := cutRef(fc.Ref)
 			t.Def.ForeignKeys = append(t.Def.ForeignKeys, catalog.ForeignKeyDef{
-				Name:     fmt.Sprintf("%s_%s_fk", ft.Name, fc.Name),
+				Name:     naming.ForeignKey(ft.Name, fc.Name),
 				Columns:  []string{fc.Name},
 				RefTable: refTable, RefColumns: []string{refCol},
 			})
@@ -253,7 +253,7 @@ func buildTable(filename string, ft fileTable) (Table, error) {
 	for _, fi := range ft.Indexes {
 		name := fi.Name
 		if name == "" {
-			name = indexName(ft.Name, fi.Columns, fi.Unique)
+			name = naming.Index(ft.Name, fi.Columns, fi.Unique)
 		}
 		t.Def.Indexes = append(t.Def.Indexes, catalog.IndexDef{
 			Name: name, Columns: fi.Columns, Unique: fi.Unique,
@@ -307,20 +307,6 @@ func parseDefault(raw any, typ catalog.Type) (*catalog.Default, error) {
 	default:
 		return nil, fmt.Errorf("cannot use %T as a default", raw)
 	}
-}
-
-// indexName derives the deterministic name for an index, e.g.
-// tasks_board_id_status_idx or boards_team_id_name_uq.
-func indexName(table string, cols []string, unique bool) string {
-	suffix := "idx"
-	if unique {
-		suffix = "uq"
-	}
-	name := table
-	for _, c := range cols {
-		name += "_" + c
-	}
-	return name + "_" + suffix
 }
 
 func cutRef(ref string) (table, column string, ok bool) {

@@ -34,6 +34,26 @@ func Float64(f float64) Value   { return Value{Type: catalog.TypeFloat64, Float6
 func Bool(b bool) Value         { return Value{Type: catalog.TypeBool, Bool: b} }
 func Null(t catalog.Type) Value { return Value{Type: t, Null: true} }
 
+// AppendIdentity appends the type-tagged scalar representation used for
+// full-row set identity.
+func (v Value) AppendIdentity(dst []byte) []byte {
+	if v.Null {
+		return append(dst, "|N"...)
+	}
+	dst = fmt.Appendf(dst, "|%s:", v.Type)
+	switch v.Type {
+	case catalog.TypeText:
+		return fmt.Appendf(dst, "%d:%s", len(v.Text), v.Text)
+	case catalog.TypeInt64:
+		return fmt.Appendf(dst, "%d", v.Int64)
+	case catalog.TypeFloat64:
+		return fmt.Appendf(dst, "%v", v.Float64)
+	case catalog.TypeBool:
+		return fmt.Appendf(dst, "%t", v.Bool)
+	}
+	return dst
+}
+
 // Equal compares two values two-valued: nulls never equal anything,
 // including each other. (Three-valued comparison lives in the bound
 // expression evaluator; Equal serves storage-side checks like index

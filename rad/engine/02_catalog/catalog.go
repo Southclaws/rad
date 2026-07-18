@@ -6,15 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-
-	"github.com/Southclaws/rad/rad/engine/reject"
 	"slices"
 	"strconv"
 	"strings"
 
-	keyenc "github.com/Southclaws/rad/rad/engine/01_kv/keyenc"
-
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
+	keyenc "github.com/Southclaws/rad/rad/engine/01_kv/keyenc"
+	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
 type Table struct {
@@ -212,30 +210,6 @@ func nextID(ctx context.Context, view kv.KV, kind string) (string, error) {
 	return fmt.Sprintf("%s%d", kind, n), nil
 }
 
-// validateDefault checks a column default against the column's type: a
-// generator function must be compatible (uuid on text, now_ms on int64).
-// Literal defaults carry the column's type by construction.
-func validateDefault(cd ColumnDef) error {
-	if cd.Default == nil {
-		return nil
-	}
-	switch cd.Default.Func {
-	case "":
-		return nil
-	case DefaultUUID:
-		if cd.Type != TypeText {
-			return reject.Inputf("catalog: column %q: uuid() default requires a string column", cd.Name)
-		}
-	case DefaultNowMS:
-		if cd.Type != TypeInt64 {
-			return reject.Inputf("catalog: column %q: now_ms() default requires an int64 column", cd.Name)
-		}
-	default:
-		return reject.Inputf("catalog: column %q: unknown default function %q", cd.Name, cd.Default.Func)
-	}
-	return nil
-}
-
 func (c *Catalog) CreateTable(ctx context.Context, def TableDef) (Table, error) {
 	var tbl Table
 	err := c.mutate(ctx, func(change *Mutation) error {
@@ -286,22 +260,14 @@ func createTable(ctx context.Context, view kv.KV, def TableDef) (Table, error) {
 			return Table{}, reject.Inputf("catalog: duplicate column %q", cd.Name)
 		}
 		seen[cd.Name] = true
-		switch cd.Type {
-		case TypeText, TypeInt64, TypeFloat64, TypeBool:
-		default:
-			return Table{}, reject.Inputf("catalog: column %q has unsupported type %q", cd.Name, cd.Type)
-		}
-		if err := validateDefault(cd); err != nil {
+		if err := validateColumnDef(cd); err != nil {
 			return Table{}, err
 		}
-		id, err := nextID(ctx, view, "c")
+		column, err := buildColumn(ctx, view, cd)
 		if err != nil {
 			return Table{}, err
 		}
-		tbl.Columns = append(tbl.Columns, Column{
-			ID: id, SchemaID: cd.ID, Name: cd.Name, Type: cd.Type, Nullable: cd.Nullable,
-			Format: cd.Format, Default: cd.Default,
-		})
+		tbl.Columns = append(tbl.Columns, column)
 	}
 
 	if len(def.PrimaryKey) == 0 {
@@ -318,20 +284,12 @@ func createTable(ctx context.Context, view kv.KV, def TableDef) (Table, error) {
 	}
 	tbl.PrimaryKey = def.PrimaryKey
 
-	for _, id := range def.Indexes {
-		if len(id.Columns) == 0 {
-			return Table{}, reject.Inputf("catalog: index %q has no columns", id.Name)
-		}
-		for _, name := range id.Columns {
-			if _, ok := tbl.Column(name); !ok {
-				return Table{}, reject.Inputf("catalog: index %q references unknown column %q", id.Name, name)
-			}
-		}
-		iid, err := nextID(ctx, view, "i")
+	for _, index := range def.Indexes {
+		created, err := buildIndex(ctx, view, tbl, index)
 		if err != nil {
 			return Table{}, err
 		}
-		tbl.Indexes = append(tbl.Indexes, Index{ID: iid, Name: id.Name, Columns: id.Columns, Unique: id.Unique})
+		tbl.Indexes = append(tbl.Indexes, created)
 	}
 
 	for _, fd := range def.ForeignKeys {
@@ -352,8 +310,8 @@ func createTable(ctx context.Context, view kv.KV, def TableDef) (Table, error) {
 				return Table{}, reject.Inputf("catalog: foreign key %q references unknown table %q", fd.Name, fd.RefTable)
 			}
 		}
-		// POC restriction: foreign keys may only reference the parent's
-		// full primary key.
+		// Requiring the full primary key keeps every reference aligned with
+		// the parent row identity used by storage and constraint checks.
 		if len(fd.RefColumns) != len(ref.PrimaryKey) {
 			return Table{}, reject.Inputf("catalog: foreign key %q must reference %q's primary key", fd.Name, fd.RefTable)
 		}
@@ -385,11 +343,7 @@ func createTable(ctx context.Context, view kv.KV, def TableDef) (Table, error) {
 		})
 	}
 
-	raw, err := json.Marshal(tbl)
-	if err != nil {
-		return Table{}, err
-	}
-	if err := view.Put(ctx, []byte(tablePrefix+tbl.ID), raw); err != nil {
+	if err := saveTable(ctx, view, tbl); err != nil {
 		return Table{}, err
 	}
 	if err := view.Put(ctx, []byte(nameKey), []byte(tbl.ID)); err != nil {

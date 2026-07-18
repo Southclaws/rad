@@ -4,8 +4,7 @@ package catalog
 // database is the source of truth; imperative catalog mutation over the
 // wire is allowed) or schema-managed (a rad.schema.yaml document is the source
 // of truth; the only mutation path is migration). The mode is decided once, when the database
-// is first initialised, and never changes — adoption flows between modes are
-// future work.
+// is first initialised, and never changes.
 //
 // The mode is catalog metadata, stored under the same meta prefix as the ID
 // counter, so it is snapshot-consistent with everything else in the catalog.
