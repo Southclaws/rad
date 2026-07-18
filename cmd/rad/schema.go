@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Southclaws/rad/cmd/rad/config"
 	radclient "github.com/Southclaws/rad/rad/client"
 )
 
@@ -21,8 +22,8 @@ func schemaCmd() *cobra.Command {
 		Short: "Inspect and manage the database schema",
 		Args:  cobra.NoArgs,
 	}
-	cmd.PersistentFlags().StringVar(&options.configFile, "config", defaultConfigFile, "project config file")
-	cmd.PersistentFlags().StringVarP(&options.schemaFile, "file", "f", defaultSchemaFile, "desired schema file")
+	cmd.PersistentFlags().StringVar(&options.configFile, "config", config.DefaultConfigFile, "project config file")
+	cmd.PersistentFlags().StringVarP(&options.schemaFile, "file", "f", config.DefaultSchemaFile, "desired schema file")
 	cmd.AddCommand(
 		schemaStatusCmd(options),
 		schemaDiffCmd(options),

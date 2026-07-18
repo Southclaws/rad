@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Southclaws/rad/cmd/rad/config"
 	"github.com/Southclaws/rad/rad/codegen"
 	_ "github.com/Southclaws/rad/rad/codegen/golang"
 	_ "github.com/Southclaws/rad/rad/codegen/typescript"
@@ -26,14 +27,14 @@ func generateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			accepted, err := projectstate.New(filepath.Join(filepath.Dir(absoluteFile), defaultStateDir)).Load()
+			accepted, err := projectstate.New(filepath.Join(filepath.Dir(absoluteFile), config.DefaultStateDir)).Load()
 			if err != nil {
 				return fmt.Errorf("load accepted schema state: %w", err)
 			}
 			return generateOne(cmd, absoluteFile, out, pkg, lang, accepted)
 		},
 	}
-	cmd.Flags().StringVarP(&file, "file", "f", defaultSchemaFile, "desired schema file")
+	cmd.Flags().StringVarP(&file, "file", "f", config.DefaultSchemaFile, "desired schema file")
 	cmd.Flags().StringVarP(&out, "out", "o", "generated", "output directory")
 	cmd.Flags().StringVar(&pkg, "pkg", "db", "generated package or client name")
 	cmd.Flags().StringVar(&lang, "lang", "go", "client language: go, ts")
@@ -42,11 +43,11 @@ func generateCmd() *cobra.Command {
 
 func generateProject(cmd *cobra.Command, project project, accepted projectstate.Accepted) error {
 	for _, target := range project.Config.Generate {
-		output := target.Output
+		output := target.GetOutput()
 		if !filepath.IsAbs(output) {
 			output = filepath.Join(project.Root, output)
 		}
-		if err := generateOne(cmd, project.SchemaFile, output, target.Package, target.Language, accepted); err != nil {
+		if err := generateOne(cmd, project.SchemaFile, output, target.GetPackage(), target.GetLanguage(), accepted); err != nil {
 			return err
 		}
 	}

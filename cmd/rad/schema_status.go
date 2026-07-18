@@ -71,7 +71,7 @@ func generatedState(project project, version uint64, hash string) string {
 		return "not configured"
 	}
 	for _, target := range project.Config.Generate {
-		language := target.Language
+		language := target.GetLanguage()
 		filename := codegen.GoClientFilename
 		versionText := "SchemaVersion uint64 = " + strconv.FormatUint(version, 10)
 		hashText := "SchemaHash = " + strconv.Quote(hash)
@@ -80,7 +80,7 @@ func generatedState(project project, version uint64, hash string) string {
 			versionText = "schemaVersion = " + strconv.FormatUint(version, 10)
 			hashText = "schemaHash = " + strconv.Quote(hash)
 		}
-		output := target.Output
+		output := target.GetOutput()
 		if !filepath.IsAbs(output) {
 			output = filepath.Join(project.Root, output)
 		}

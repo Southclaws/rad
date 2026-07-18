@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Southclaws/rad/cmd/rad/config"
 	"github.com/Southclaws/rad/rad/codegen"
 	catalogschema "github.com/Southclaws/rad/rad/engine/02_catalog/schema"
 	projectstate "github.com/Southclaws/rad/rad/state"
@@ -23,7 +24,7 @@ tables:
 
 func TestGenerateOneUsesAcceptedIdentity(t *testing.T) {
 	directory := t.TempDir()
-	desired := filepath.Join(directory, defaultSchemaFile)
+	desired := filepath.Join(directory, config.DefaultSchemaFile)
 	if err := os.WriteFile(desired, []byte(acceptedSchemaFixture), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +45,7 @@ func TestGenerateOneUsesAcceptedIdentity(t *testing.T) {
 
 func TestGenerateOneRemovesOnlySupersededRadGoClients(t *testing.T) {
 	directory := t.TempDir()
-	desired := filepath.Join(directory, defaultSchemaFile)
+	desired := filepath.Join(directory, config.DefaultSchemaFile)
 	if err := os.WriteFile(desired, []byte(acceptedSchemaFixture), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +74,7 @@ func TestGenerateOneRemovesOnlySupersededRadGoClients(t *testing.T) {
 
 func TestGenerateOneRemovesOnlySupersededRadTypeScriptClients(t *testing.T) {
 	directory := t.TempDir()
-	desired := filepath.Join(directory, defaultSchemaFile)
+	desired := filepath.Join(directory, config.DefaultSchemaFile)
 	if err := os.WriteFile(desired, []byte(acceptedSchemaFixture), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +106,7 @@ func TestGenerateOneRemovesOnlySupersededRadTypeScriptClients(t *testing.T) {
 
 func TestGenerateOneRefusesUnappliedDesiredSchema(t *testing.T) {
 	directory := t.TempDir()
-	desired := filepath.Join(directory, defaultSchemaFile)
+	desired := filepath.Join(directory, config.DefaultSchemaFile)
 	modified := strings.Replace(acceptedSchemaFixture, "users", "accounts", 1)
 	if err := os.WriteFile(desired, []byte(modified), 0o600); err != nil {
 		t.Fatal(err)

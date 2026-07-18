@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Southclaws/rad/cmd/rad/config"
 	schema "github.com/Southclaws/rad/rad/engine/02_catalog/schema"
 )
 
@@ -42,6 +43,6 @@ without touching a database.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&file, "file", "f", defaultSchemaFile, "schema file")
+	cmd.Flags().StringVarP(&file, "file", "f", config.DefaultSchemaFile, "schema file")
 	return cmd
 }

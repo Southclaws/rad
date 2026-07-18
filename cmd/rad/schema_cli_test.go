@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Southclaws/rad/cmd/rad/config"
 	"github.com/Southclaws/rad/rad/codegen"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 	"github.com/Southclaws/rad/rad/protocol"
@@ -33,12 +34,12 @@ func TestSchemaMigrateDestructiveDefaultsToNo(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	directory, config := schemaCLIProject(t, server.URL, acceptedSchemaFixture)
+	directory, configFile := schemaCLIProject(t, server.URL, acceptedSchemaFixture)
 
 	cmd := schemaCmd()
 	cmd.SetIn(strings.NewReader(""))
 	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetArgs([]string{"migrate", "--config", config, "--no-generate"})
+	cmd.SetArgs([]string{"migrate", "--config", configFile, "--no-generate"})
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "cancelled") {
 		t.Fatalf("error = %v", err)
@@ -46,7 +47,7 @@ func TestSchemaMigrateDestructiveDefaultsToNo(t *testing.T) {
 	if migrated {
 		t.Fatal("non-interactive input implied data-loss consent")
 	}
-	if _, err := os.Stat(filepath.Join(directory, defaultStateDir, "schema.lock.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(directory, config.DefaultStateDir, "schema.lock.json")); !os.IsNotExist(err) {
 		t.Fatalf("local state changed before commit: %v", err)
 	}
 }
@@ -64,33 +65,33 @@ func TestSchemaPullProtectsAndBacksUpLocalChanges(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	directory, config := schemaCLIProject(t, server.URL, acceptedSchemaFixture)
+	directory, configFile := schemaCLIProject(t, server.URL, acceptedSchemaFixture)
 
 	refuse := schemaCmd()
 	refuse.SetOut(&bytes.Buffer{})
-	refuse.SetArgs([]string{"pull", "--config", config, "--no-generate"})
+	refuse.SetArgs([]string{"pull", "--config", configFile, "--no-generate"})
 	if err := refuse.Execute(); err == nil || !strings.Contains(err.Error(), "--force") {
 		t.Fatalf("pull error = %v", err)
 	}
 
 	force := schemaCmd()
 	force.SetOut(&bytes.Buffer{})
-	force.SetArgs([]string{"pull", "--config", config, "--force"})
+	force.SetArgs([]string{"pull", "--config", configFile, "--force"})
 	if err := force.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	backups, err := filepath.Glob(filepath.Join(directory, defaultStateDir, "backups", "*.rad.schema.yaml"))
+	backups, err := filepath.Glob(filepath.Join(directory, config.DefaultStateDir, "backups", "*.rad.schema.yaml"))
 	if err != nil || len(backups) != 1 {
 		t.Fatalf("backups = %v, %v", backups, err)
 	}
-	accepted, err := projectstate.New(filepath.Join(directory, defaultStateDir)).Load()
+	accepted, err := projectstate.New(filepath.Join(directory, config.DefaultStateDir)).Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if accepted.Lock.SchemaVersion != 2 || accepted.Lock.SchemaHash != serverState.SchemaHash {
 		t.Fatalf("accepted state = %+v", accepted.Lock)
 	}
-	desired, err := os.ReadFile(filepath.Join(directory, defaultSchemaFile))
+	desired, err := os.ReadFile(filepath.Join(directory, config.DefaultSchemaFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,14 +110,14 @@ func schemaCLIProject(t *testing.T, serverURL, desired string) (string, string) 
 		t.Fatal(err)
 	}
 	directory := t.TempDir()
-	config := filepath.Join(directory, defaultConfigFile)
-	if err := os.WriteFile(config, []byte("database_url: rad://"+parsed.Host+"\n"), 0o600); err != nil {
+	configFile := filepath.Join(directory, config.DefaultConfigFile)
+	if err := os.WriteFile(configFile, []byte("database_url: rad://"+parsed.Host+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(directory, defaultSchemaFile), []byte(desired), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, config.DefaultSchemaFile), []byte(desired), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return directory, config
+	return directory, configFile
 }
 
 func commandSchemaState(t *testing.T, version uint64, table string) protocol.SchemaState {

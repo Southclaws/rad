@@ -13,22 +13,23 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Southclaws/rad/cmd/rad/config"
 	"github.com/Southclaws/rad/rad/codegen"
 	catalogschema "github.com/Southclaws/rad/rad/engine/02_catalog/schema"
 )
 
 func TestProjectConfig(t *testing.T) {
 	dir := t.TempDir()
-	filename := filepath.Join(dir, defaultConfigFile)
+	filename := filepath.Join(dir, config.DefaultConfigFile)
 	if err := os.WriteFile(filename, []byte("database_url: rad://configured\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	config, err := loadProjectConfig(filename)
+	projectConfig, err := config.Load(filename)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.DatabaseURL != "rad://configured" {
-		t.Fatalf("database URL = %q", config.DatabaseURL)
+	if projectConfig.DatabaseURL != "rad://configured" {
+		t.Fatalf("database URL = %q", projectConfig.DatabaseURL)
 	}
 }
 
@@ -39,11 +40,11 @@ func TestProjectConfigRejectsInvalidFiles(t *testing.T) {
 		"unknown field":        "database_url: rad://localhost\ndatabase: rad://other\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			filename := filepath.Join(t.TempDir(), defaultConfigFile)
+			filename := filepath.Join(t.TempDir(), config.DefaultConfigFile)
 			if err := os.WriteFile(filename, []byte(source), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := loadProjectConfig(filename); err == nil {
+			if _, err := config.Load(filename); err == nil {
 				t.Fatal("invalid project config was accepted")
 			}
 		})
@@ -82,11 +83,11 @@ func TestMigrateCmdSendsSchemaToServer(t *testing.T) {
 	}
 	target := "rad://" + httpURL.Host
 	dir := t.TempDir()
-	file := filepath.Join(dir, defaultSchemaFile)
+	file := filepath.Join(dir, config.DefaultSchemaFile)
 	if err := os.WriteFile(file, []byte(schema), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	configFile := filepath.Join(dir, defaultConfigFile)
+	configFile := filepath.Join(dir, config.DefaultConfigFile)
 	if err := os.WriteFile(configFile, []byte("database_url: "+target+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +106,7 @@ func TestMigrateCmdSendsSchemaToServer(t *testing.T) {
 	if !strings.Contains(output.String(), "Schema version 1 committed") {
 		t.Fatalf("output = %q", output.String())
 	}
-	if _, err := os.Stat(filepath.Join(dir, defaultStateDir, "changelog", "00000001.rad.schema.yaml")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, config.DefaultStateDir, "changelog", "00000001.rad.schema.yaml")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "generated", codegen.GoClientFilename)); err != nil {
@@ -135,14 +136,14 @@ func TestProjectFileDefaults(t *testing.T) {
 		if command == schema {
 			flags = command.PersistentFlags()
 		}
-		if got := flags.Lookup("file").DefValue; got != defaultSchemaFile {
-			t.Fatalf("%s schema default = %q, want %q", command.Name(), got, defaultSchemaFile)
+		if got := flags.Lookup("file").DefValue; got != config.DefaultSchemaFile {
+			t.Fatalf("%s schema default = %q, want %q", command.Name(), got, config.DefaultSchemaFile)
 		}
 	}
-	if got := schema.PersistentFlags().Lookup("config").DefValue; got != defaultConfigFile {
-		t.Fatalf("config default = %q, want %q", got, defaultConfigFile)
+	if got := schema.PersistentFlags().Lookup("config").DefValue; got != config.DefaultConfigFile {
+		t.Fatalf("config default = %q, want %q", got, config.DefaultConfigFile)
 	}
-	if defaultStateDir != "rad.state" {
-		t.Fatalf("state directory = %q, want rad.state", defaultStateDir)
+	if config.DefaultStateDir != "rad.state" {
+		t.Fatalf("state directory = %q, want rad.state", config.DefaultStateDir)
 	}
 }
