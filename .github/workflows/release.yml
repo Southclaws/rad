@@ -258,20 +258,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/edge" >/dev/null 2>&1; then
-            gh api \
-              --method PATCH \
-              "repos/$GITHUB_REPOSITORY/git/refs/tags/edge" \
-              -f sha="$RELEASE_SHA" \
-              -F force=true >/dev/null
-          else
-            gh api \
-              --method POST \
-              "repos/$GITHUB_REPOSITORY/git/refs" \
-              -f ref="refs/tags/edge" \
-              -f sha="$RELEASE_SHA" >/dev/null
-          fi
-
           notes="Automated prototype build from \`$RELEASE_SHA\`. Binary version: \`$VERSION\`."
           if gh release view edge >/dev/null 2>&1; then
             gh release upload edge dist/* --clobber
