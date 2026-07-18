@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"github.com/Southclaws/rad/rad/engine/reject"
 	"slices"
+	"strings"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
 )
@@ -146,6 +147,18 @@ func (m *Mutation) RenameTable(ctx context.Context, oldName, newName string) err
 	var tbl Table
 	if err := json.Unmarshal(raw, &tbl); err != nil {
 		return err
+	}
+	for i := range tbl.Indexes {
+		index := &tbl.Indexes[i]
+		if index.Name == derivedIndexName(oldName, index.Columns, index.Unique) {
+			index.Name = derivedIndexName(newName, index.Columns, index.Unique)
+		}
+	}
+	for i := range tbl.ForeignKeys {
+		foreignKey := &tbl.ForeignKeys[i]
+		if len(foreignKey.Columns) == 1 && foreignKey.Name == derivedForeignKeyName(oldName, foreignKey.Columns[0]) {
+			foreignKey.Name = derivedForeignKeyName(newName, foreignKey.Columns[0])
+		}
 	}
 	tbl.Name = newName
 	if err := saveTable(ctx, m.view, tbl); err != nil {
@@ -283,21 +296,32 @@ func (m *Mutation) RenameColumn(ctx context.Context, tableName, oldName, newName
 				}
 			}
 		}
+		for i := range tbl.Indexes {
+			index := &tbl.Indexes[i]
+			generated := index.Name == derivedIndexName(tableName, index.Columns, index.Unique)
+			rename(index.Columns)
+			if generated {
+				index.Name = derivedIndexName(tableName, index.Columns, index.Unique)
+			}
+		}
+		for i := range tbl.ForeignKeys {
+			foreignKey := &tbl.ForeignKeys[i]
+			generated := len(foreignKey.Columns) == 1 &&
+				foreignKey.Name == derivedForeignKeyName(tableName, foreignKey.Columns[0])
+			rename(foreignKey.Columns)
+			if generated {
+				foreignKey.Name = derivedForeignKeyName(tableName, foreignKey.Columns[0])
+			}
+			if foreignKey.RefTableID == tbl.ID {
+				rename(foreignKey.RefColumns)
+			}
+		}
 		for i := range tbl.Columns {
 			if tbl.Columns[i].Name == oldName {
 				tbl.Columns[i].Name = newName
 			}
 		}
 		rename(tbl.PrimaryKey)
-		for i := range tbl.Indexes {
-			rename(tbl.Indexes[i].Columns)
-		}
-		for i := range tbl.ForeignKeys {
-			rename(tbl.ForeignKeys[i].Columns)
-			if tbl.ForeignKeys[i].RefTableID == tbl.ID {
-				rename(tbl.ForeignKeys[i].RefColumns)
-			}
-		}
 		return nil
 	})
 	if err != nil {
@@ -332,6 +356,18 @@ func (m *Mutation) RenameColumn(ctx context.Context, tableName, oldName, newName
 		}
 	}
 	return renamed, nil
+}
+
+func derivedIndexName(table string, columns []string, unique bool) string {
+	suffix := "idx"
+	if unique {
+		suffix = "uq"
+	}
+	return table + "_" + strings.Join(columns, "_") + "_" + suffix
+}
+
+func derivedForeignKeyName(table, column string) string {
+	return table + "_" + column + "_fk"
 }
 
 // createIndexIn records a new index in the catalog against the caller's view

@@ -132,7 +132,13 @@ func runFixture(t *testing.T, dir, testFile string) {
 	if err != nil {
 		t.Fatalf("read rad.schema.yaml: %v", err)
 	}
-	if _, err := d.Client.Migrate(ctx, string(schemaSrc)); err != nil {
+	diff, err := d.Client.SchemaDiff(ctx, string(schemaSrc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Client.SchemaMigrate(ctx, string(schemaSrc), protocol.SchemaIdentity{
+		SchemaVersion: diff.CurrentVersion, SchemaHash: diff.CurrentHash,
+	}, false); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 

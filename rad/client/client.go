@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Southclaws/rad/rad/api"
@@ -32,6 +33,15 @@ type Client struct {
 	http   *http.Client
 	oas    *oas.Client
 	schema schemaCache
+	compat schemaCompatibility
+}
+
+type schemaCompatibility struct {
+	mu      sync.Mutex
+	version uint64
+	hash    string
+	checked bool
+	enabled bool
 }
 
 // Option configures a Client.
@@ -111,12 +121,42 @@ func transportError(err error) error {
 
 // Ping checks server liveness.
 func (c *Client) Ping(ctx context.Context) error {
+	if err := c.ensureSchema(ctx); err != nil {
+		return err
+	}
 	_, err := c.oas.GetHealth(ctx)
 	return transportError(err)
 }
 
+// ExpectSchema configures a one-time server compatibility check before the
+// first generated-client operation. Direct runtime clients leave it unset.
+func (c *Client) ExpectSchema(version uint64, hash string) {
+	c.compat.mu.Lock()
+	defer c.compat.mu.Unlock()
+	c.compat.version = version
+	c.compat.hash = hash
+	c.compat.checked = false
+	c.compat.enabled = true
+}
+
+func (c *Client) ensureSchema(ctx context.Context) error {
+	c.compat.mu.Lock()
+	defer c.compat.mu.Unlock()
+	if !c.compat.enabled || c.compat.checked {
+		return nil
+	}
+	if err := c.CheckSchema(ctx, c.compat.version, c.compat.hash); err != nil {
+		return err
+	}
+	c.compat.checked = true
+	return nil
+}
+
 // Tables fetches the database's table definitions.
 func (c *Client) Tables(ctx context.Context) ([]protocol.TableInfo, error) {
+	if err := c.ensureSchema(ctx); err != nil {
+		return nil, err
+	}
 	res, err := c.oas.TableList(ctx)
 	if err != nil {
 		return nil, transportError(err)
@@ -124,21 +164,17 @@ func (c *Client) Tables(ctx context.Context) ([]protocol.TableInfo, error) {
 	return api.TablesFromOAS(res.Tables), nil
 }
 
-// Migrate reconciles the server's database with a rad.schema.yaml source and
-// returns the applied steps.
-func (c *Client) Migrate(ctx context.Context, schemaSrc string) ([]string, error) {
-	res, err := c.oas.SchemaMigrate(ctx, oas.NewOptMigrateProps(oas.MigrateProps{Schema: schemaSrc}))
-	if err != nil {
-		return nil, transportError(err)
+func decodeRawValue(raw oas.Value) any {
+	if len(raw) == 0 {
+		return nil
 	}
-	switch v := res.(type) {
-	case *oas.MigrateResult:
-		return v.Steps, nil
-	case *oas.Problem:
-		return nil, apiError(*v)
-	default:
-		return nil, fmt.Errorf("rad: unexpected migrate response %T", res)
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil
 	}
+	return value
 }
 
 // View is the read/write surface generated table handles operate on. Every

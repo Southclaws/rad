@@ -213,7 +213,17 @@ tables:
       - { id: 3, name: title,   type: string }
       - { id: 4, name: done,    type: bool, default: false }
 `
-	_, err := db.MigrateFile(ctx, "rad.schema.yaml", []byte(uniqueName))
+	plan, err := db.PlanMigrationFile(ctx, "rad.schema.yaml", []byte(uniqueName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Blocking) != 1 || plan.Blocking[0].Kind != "unique_index_duplicates" {
+		t.Fatalf("blocking findings = %+v", plan.Blocking)
+	}
+	if _, err := db.ApplyMigrationFile(ctx, "rad.schema.yaml", []byte(uniqueName), true); err == nil {
+		t.Fatal("data-loss acceptance bypassed a blocking constraint")
+	}
+	_, err = db.MigrateFile(ctx, "rad.schema.yaml", []byte(uniqueName))
 	if err == nil {
 		t.Fatal("unique backfill over duplicates succeeded")
 	}
@@ -251,5 +261,51 @@ tables:
 	}
 	if err := db.Insert(ctx, "users", lir.Row{"id": lir.Text("u3"), "name": lir.Text("dup")}); err == nil {
 		t.Fatal("unique index registered by re-migration is not enforcing")
+	}
+}
+
+func TestDestructiveMigrationRequiresExplicitAcceptance(t *testing.T) {
+	ctx := context.Background()
+	db := frontend.Open(memStore(t))
+	if _, err := db.Catalog().InitMode(ctx, catalog.ModeSchema); err != nil {
+		t.Fatal(err)
+	}
+	migrateTo(t, db, ctx, trackerV1)
+	if err := db.Insert(ctx, "users", lir.Row{"id": lir.Text("u1"), "name": lir.Text("Ada")}); err != nil {
+		t.Fatal(err)
+	}
+
+	withoutName := `
+tables:
+  - id: 1
+    name: users
+    columns:
+      - { id: 1, name: id, type: string, pk: true, default: uuid() }
+  - id: 2
+    name: tasks
+    columns:
+      - { id: 1, name: id,      type: string, pk: true, default: uuid() }
+      - { id: 2, name: user_id, type: string, ref: users.id }
+      - { id: 3, name: title,   type: string }
+      - { id: 4, name: done,    type: bool, default: false }
+`
+	plan, err := db.PlanMigrationFile(ctx, "rad.schema.yaml", []byte(withoutName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Destructive) != 1 || plan.Destructive[0].Rows != 1 {
+		t.Fatalf("destructive findings = %+v", plan.Destructive)
+	}
+	if _, err := db.ApplyMigrationFile(ctx, "rad.schema.yaml", []byte(withoutName), false); err == nil {
+		t.Fatal("destructive migration applied without consent")
+	}
+	if revision, _ := db.Catalog().Revision(ctx); revision.Version != 1 {
+		t.Fatalf("rejected destructive migration moved version to %d", revision.Version)
+	}
+	if _, err := db.ApplyMigrationFile(ctx, "rad.schema.yaml", []byte(withoutName), true); err != nil {
+		t.Fatal(err)
+	}
+	if revision, _ := db.Catalog().Revision(ctx); revision.Version != 2 {
+		t.Fatalf("accepted destructive migration version = %d", revision.Version)
 	}
 }

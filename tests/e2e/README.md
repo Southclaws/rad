@@ -26,7 +26,7 @@ tests/e2e/<test-name>/
 
 A minimal schema scoped to the one scenario — not the full demo schema.
 Keeps each fixture self-contained and fast, and means a fixture never breaks
-because an unrelated table changed shape. Same YAML format `rad migrate`
+because an unrelated table changed shape. Same YAML format `rad schema migrate`
 consumes (see `examples/demo/rad.schema.yaml` for the full-featured reference).
 
 Omit `default: uuid()` / `default: now_ms()` on any column whose value feeds

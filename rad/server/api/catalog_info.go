@@ -79,3 +79,32 @@ func (a *dbAPI) tableOAS(ctx context.Context, table catalog.Table) (*oas.TableIn
 	out := api.TableToOAS(info)
 	return &out, nil
 }
+
+func schemaDocument(canonical catalog.Schema) oas.SchemaDocument {
+	tables := make([]oas.TableDef, len(canonical.Tables))
+	for i, table := range canonical.Tables {
+		definition := protocol.TableDef{
+			ID: uint32(table.ID), Name: table.Name, PrimaryKey: table.PrimaryKey,
+		}
+		for _, column := range table.Columns {
+			definition.Columns = append(definition.Columns, protocol.ColumnDef{
+				ID: uint32(column.ID), Name: column.Name, Type: string(column.Type),
+				Nullable: column.Nullable, Format: column.Format,
+				Default: defaultInfo(catalog.Column{Type: column.Type, Default: column.Default}),
+			})
+		}
+		for _, index := range table.Indexes {
+			definition.Indexes = append(definition.Indexes, protocol.IndexDef{
+				Name: index.Name, Columns: index.Columns, Unique: index.Unique,
+			})
+		}
+		for _, foreignKey := range table.ForeignKeys {
+			definition.ForeignKeys = append(definition.ForeignKeys, protocol.ForeignKeyDef{
+				Name: foreignKey.Name, Columns: foreignKey.Columns,
+				RefTable: foreignKey.RefTable, RefColumns: foreignKey.RefColumns,
+			})
+		}
+		tables[i] = api.TableDefToOAS(definition)
+	}
+	return oas.SchemaDocument{Tables: tables}
+}

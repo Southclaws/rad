@@ -99,11 +99,12 @@ type fileSchema struct {
 }
 
 type fileTable struct {
-	ID         catalog.SchemaID `yaml:"id"`
-	Name       string           `yaml:"name"`
-	Columns    []fileColumn     `yaml:"columns"`
-	PrimaryKey []string         `yaml:"primary_key"`
-	Indexes    []fileIndex      `yaml:"indexes"`
+	ID          catalog.SchemaID `yaml:"id"`
+	Name        string           `yaml:"name"`
+	Columns     []fileColumn     `yaml:"columns"`
+	PrimaryKey  []string         `yaml:"primary_key"`
+	Indexes     []fileIndex      `yaml:"indexes"`
+	ForeignKeys []fileForeignKey `yaml:"foreign_keys"`
 }
 
 type fileColumn struct {
@@ -120,8 +121,16 @@ type fileColumn struct {
 }
 
 type fileIndex struct {
+	Name    string   `yaml:"name"`
 	Columns []string `yaml:"columns"`
 	Unique  bool     `yaml:"unique"`
+}
+
+type fileForeignKey struct {
+	Name       string   `yaml:"name"`
+	Columns    []string `yaml:"columns"`
+	RefTable   string   `yaml:"ref_table"`
+	RefColumns []string `yaml:"ref_columns"`
 }
 
 // Parse parses and validates a rad.schema.yaml source. The filename is used in
@@ -242,8 +251,17 @@ func buildTable(filename string, ft fileTable) (Table, error) {
 	}
 
 	for _, fi := range ft.Indexes {
+		name := fi.Name
+		if name == "" {
+			name = indexName(ft.Name, fi.Columns, fi.Unique)
+		}
 		t.Def.Indexes = append(t.Def.Indexes, catalog.IndexDef{
-			Name: indexName(ft.Name, fi.Columns, fi.Unique), Columns: fi.Columns, Unique: fi.Unique,
+			Name: name, Columns: fi.Columns, Unique: fi.Unique,
+		})
+	}
+	for _, fk := range ft.ForeignKeys {
+		t.Def.ForeignKeys = append(t.Def.ForeignKeys, catalog.ForeignKeyDef{
+			Name: fk.Name, Columns: fk.Columns, RefTable: fk.RefTable, RefColumns: fk.RefColumns,
 		})
 	}
 	return t, nil

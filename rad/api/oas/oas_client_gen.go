@@ -95,6 +95,12 @@ type Invoker interface {
 	//
 	// GET /info
 	GetInfo(ctx context.Context) (*DatabaseInfo, error)
+	// GetSchema invokes GetSchema operation.
+	//
+	// Return the committed canonical schema together with its monotonic version and canonical hash.
+	//
+	// GET /schema
+	GetSchema(ctx context.Context) (*SchemaState, error)
 	// IndexCreate invokes IndexCreate operation.
 	//
 	// Register a secondary index and backfill entries for every existing row, atomically: the index never
@@ -113,23 +119,26 @@ type Invoker interface {
 	//
 	// DELETE /tables/{table}/indexes/{index}
 	IndexDelete(ctx context.Context, params IndexDeleteParams) (IndexDeleteRes, error)
+	// SchemaCompatibility invokes SchemaCompatibility operation.
+	//
+	// Verify an exact generated-client schema identity.
+	//
+	// POST /schema/compatibility
+	SchemaCompatibility(ctx context.Context, request OptSchemaCompatibilityRequest) (SchemaCompatibilityRes, error)
+	// SchemaDiff invokes SchemaDiff operation.
+	//
+	// Plan and preflight a desired schema without changing anything.
+	//
+	// POST /schema/diff
+	SchemaDiff(ctx context.Context, request OptSchemaRequest) (SchemaDiffRes, error)
 	// SchemaMigrate invokes SchemaMigrate operation.
 	//
-	// Take a `rad.schema.yaml` source document, compute the difference against the database's current
-	// catalog, and apply whatever changes are needed to make them match. The response lists the steps that
-	// were applied, in order.
+	// The server parses the desired schema, computes and preflights its semantic diff, lowers it to
+	// catalog PIR, and commits the complete program as one schema revision. Destructive findings require
+	// `accept_data_loss`; blocking findings can never be bypassed.
 	//
-	// Migration is idempotent. Submitting a schema that already matches the database applies nothing and
-	// returns an empty step list. Stable numeric table and column IDs identify renames, so names and other
-	// properties can change together without deleting and recreating stored data.
-	//
-	// A schema that fails to parse or validate, or that requests an unsupported change (such as altering a
-	// column's type), is rejected with an `invalid` problem. On a schema-managed database the whole plan
-	// is one transaction and failure leaves the database untouched. On a directly managed database each
-	// step is an individual catalog change, so steps committed before a later failure remain applied.
-	//
-	// POST /migrate
-	SchemaMigrate(ctx context.Context, request OptMigrateProps) (SchemaMigrateRes, error)
+	// POST /schema/migrate
+	SchemaMigrate(ctx context.Context, request OptSchemaMigrateRequest) (SchemaMigrateRes, error)
 	// TableCreate invokes TableCreate operation.
 	//
 	// Define a new table in one call: columns, primary key, and optionally indexes and foreign keys,
@@ -865,6 +874,86 @@ func (c *Client) sendGetInfo(ctx context.Context) (res *DatabaseInfo, err error)
 	return result, nil
 }
 
+// GetSchema invokes GetSchema operation.
+//
+// Return the committed canonical schema together with its monotonic version and canonical hash.
+//
+// GET /schema
+func (c *Client) GetSchema(ctx context.Context) (*SchemaState, error) {
+	res, err := c.sendGetSchema(ctx)
+	return res, err
+}
+
+func (c *Client) sendGetSchema(ctx context.Context) (res *SchemaState, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("GetSchema"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/schema"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetSchemaOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/schema"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetSchemaResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // IndexCreate invokes IndexCreate operation.
 //
 // Register a secondary index and backfill entries for every existing row, atomically: the index never
@@ -1090,32 +1179,189 @@ func (c *Client) sendIndexDelete(ctx context.Context, params IndexDeleteParams) 
 	return result, nil
 }
 
+// SchemaCompatibility invokes SchemaCompatibility operation.
+//
+// Verify an exact generated-client schema identity.
+//
+// POST /schema/compatibility
+func (c *Client) SchemaCompatibility(ctx context.Context, request OptSchemaCompatibilityRequest) (SchemaCompatibilityRes, error) {
+	res, err := c.sendSchemaCompatibility(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendSchemaCompatibility(ctx context.Context, request OptSchemaCompatibilityRequest) (res SchemaCompatibilityRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("SchemaCompatibility"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/schema/compatibility"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, SchemaCompatibilityOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/schema/compatibility"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeSchemaCompatibilityRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeSchemaCompatibilityResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// SchemaDiff invokes SchemaDiff operation.
+//
+// Plan and preflight a desired schema without changing anything.
+//
+// POST /schema/diff
+func (c *Client) SchemaDiff(ctx context.Context, request OptSchemaRequest) (SchemaDiffRes, error) {
+	res, err := c.sendSchemaDiff(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendSchemaDiff(ctx context.Context, request OptSchemaRequest) (res SchemaDiffRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("SchemaDiff"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/schema/diff"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, SchemaDiffOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/schema/diff"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeSchemaDiffRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeSchemaDiffResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // SchemaMigrate invokes SchemaMigrate operation.
 //
-// Take a `rad.schema.yaml` source document, compute the difference against the database's current
-// catalog, and apply whatever changes are needed to make them match. The response lists the steps that
-// were applied, in order.
+// The server parses the desired schema, computes and preflights its semantic diff, lowers it to
+// catalog PIR, and commits the complete program as one schema revision. Destructive findings require
+// `accept_data_loss`; blocking findings can never be bypassed.
 //
-// Migration is idempotent. Submitting a schema that already matches the database applies nothing and
-// returns an empty step list. Stable numeric table and column IDs identify renames, so names and other
-// properties can change together without deleting and recreating stored data.
-//
-// A schema that fails to parse or validate, or that requests an unsupported change (such as altering a
-// column's type), is rejected with an `invalid` problem. On a schema-managed database the whole plan
-// is one transaction and failure leaves the database untouched. On a directly managed database each
-// step is an individual catalog change, so steps committed before a later failure remain applied.
-//
-// POST /migrate
-func (c *Client) SchemaMigrate(ctx context.Context, request OptMigrateProps) (SchemaMigrateRes, error) {
+// POST /schema/migrate
+func (c *Client) SchemaMigrate(ctx context.Context, request OptSchemaMigrateRequest) (SchemaMigrateRes, error) {
 	res, err := c.sendSchemaMigrate(ctx, request)
 	return res, err
 }
 
-func (c *Client) sendSchemaMigrate(ctx context.Context, request OptMigrateProps) (res SchemaMigrateRes, err error) {
+func (c *Client) sendSchemaMigrate(ctx context.Context, request OptSchemaMigrateRequest) (res SchemaMigrateRes, err error) {
 	otelAttrs := []attribute.KeyValue{
 		otelogen.OperationID("SchemaMigrate"),
 		semconv.HTTPRequestMethodKey.String("POST"),
-		semconv.URLTemplateKey.String("/migrate"),
+		semconv.URLTemplateKey.String("/schema/migrate"),
 	}
 	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
 
@@ -1149,7 +1395,7 @@ func (c *Client) sendSchemaMigrate(ctx context.Context, request OptMigrateProps)
 	stage = "BuildURL"
 	u := uri.Clone(c.requestURL(ctx))
 	var pathParts [1]string
-	pathParts[0] = "/migrate"
+	pathParts[0] = "/schema/migrate"
 	uri.AddPathParts(u, pathParts[:]...)
 
 	stage = "EncodeRequest"

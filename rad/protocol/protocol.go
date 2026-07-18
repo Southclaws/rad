@@ -141,7 +141,56 @@ type Record = map[string]any
 type DatabaseInfo struct {
 	Mode            string     `json:"mode"`
 	SchemaVersion   uint64     `json:"schema_version"`
+	SchemaHash      string     `json:"schema_hash"`
 	SchemaVersionAt *time.Time `json:"schema_version_at,omitempty"`
+}
+
+// SchemaDocument is the transport mirror of the canonical catalog schema.
+// The engine owns the canonical representation; API boundaries map it into
+// this storage-free shape.
+type SchemaDocument struct {
+	Tables []TableDef `json:"tables,omitempty"`
+}
+
+type SchemaState struct {
+	SchemaVersion uint64         `json:"schema_version"`
+	SchemaHash    string         `json:"schema_hash"`
+	Schema        SchemaDocument `json:"schema"`
+}
+
+type SchemaIdentity struct {
+	SchemaVersion uint64 `json:"schema_version"`
+	SchemaHash    string `json:"schema_hash"`
+}
+
+type SchemaChange struct {
+	Kind    string `json:"kind"`
+	Summary string `json:"summary"`
+	Table   string `json:"table,omitempty"`
+	Column  string `json:"column,omitempty"`
+}
+
+type SchemaFinding struct {
+	Kind    string `json:"kind"`
+	Summary string `json:"summary"`
+	Table   string `json:"table,omitempty"`
+	Column  string `json:"column,omitempty"`
+	Rows    uint64 `json:"rows,omitempty"`
+}
+
+type SchemaDiff struct {
+	CurrentVersion uint64          `json:"current_version"`
+	CurrentHash    string          `json:"current_hash"`
+	DesiredHash    string          `json:"desired_hash"`
+	Changes        []SchemaChange  `json:"changes"`
+	Program        any             `json:"program"`
+	Destructive    []SchemaFinding `json:"destructive"`
+	Blocking       []SchemaFinding `json:"blocking"`
+}
+
+type SchemaMigration struct {
+	SchemaState
+	Changes []SchemaChange `json:"changes"`
 }
 
 // TableInfo describes one table for introspection (GET /tables and the

@@ -177,3 +177,57 @@ func TableDefFromOAS(o oas.TableDef) protocol.TableDef {
 	}
 	return d
 }
+
+func SchemaDocumentToOAS(document protocol.SchemaDocument) oas.SchemaDocument {
+	tables := make([]oas.TableDef, len(document.Tables))
+	for i, table := range document.Tables {
+		tables[i] = TableDefToOAS(table)
+	}
+	return oas.SchemaDocument{Tables: tables}
+}
+
+func SchemaDocumentFromOAS(document oas.SchemaDocument) protocol.SchemaDocument {
+	tables := make([]protocol.TableDef, len(document.Tables))
+	for i, table := range document.Tables {
+		tables[i] = TableDefFromOAS(table)
+	}
+	return protocol.SchemaDocument{Tables: tables}
+}
+
+func SchemaChangeFromOAS(change oas.SchemaChange) protocol.SchemaChange {
+	return protocol.SchemaChange{
+		Kind: change.Kind, Summary: change.Summary,
+		Table: change.Table.Or(""), Column: change.Column.Or(""),
+	}
+}
+
+func SchemaFindingFromOAS(finding oas.SchemaFinding) protocol.SchemaFinding {
+	return protocol.SchemaFinding{
+		Kind: finding.Kind, Summary: finding.Summary,
+		Table: finding.Table.Or(""), Column: finding.Column.Or(""),
+		Rows: uint64(finding.Rows.Or(0)),
+	}
+}
+
+func SchemaChangesFromOAS(changes []oas.SchemaChange) []protocol.SchemaChange {
+	out := make([]protocol.SchemaChange, len(changes))
+	for i, change := range changes {
+		out[i] = SchemaChangeFromOAS(change)
+	}
+	return out
+}
+
+func SchemaFindingsFromOAS(findings []oas.SchemaFinding) []protocol.SchemaFinding {
+	out := make([]protocol.SchemaFinding, len(findings))
+	for i, finding := range findings {
+		out[i] = SchemaFindingFromOAS(finding)
+	}
+	return out
+}
+
+func SchemaStateFromOAS(state oas.SchemaState) protocol.SchemaState {
+	return protocol.SchemaState{
+		SchemaVersion: uint64(state.SchemaVersion), SchemaHash: state.SchemaHash,
+		Schema: SchemaDocumentFromOAS(state.Schema),
+	}
+}

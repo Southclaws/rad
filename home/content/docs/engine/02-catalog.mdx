@@ -239,14 +239,15 @@ uniqueness), not by name, so a column rename never forces a needless
 delete-and-backfill. Unsupported changes (column type or nullability, primary
 keys, FKs on existing tables) are errors, not destructive guesses.
 
-Applying the plan is the frontend's job (`DB.Migrate` in
-`rad/engine/06_frontend/migrate.go`). In schema mode the entire plan is one
-serializable transaction and becomes one schema revision. In direct mode each
-step is its own catalog mutation and revision. Every revision stores the full
-post-change canonical schema under `/rad/catalog/meta/schema_revision/`; its
-logical IDs make snapshots comparable across renames. Retired logical IDs are
-rejected if they appear in a later create, while omitted IDs on direct catalog
-calls are allocated above every ID seen in current state or history.
+Applying the plan is the frontend's job (`DB.ApplyMigration` in
+`rad/engine/06_frontend/migrate.go`). A desired-state migration is one catalog
+PIR program, one serializable transaction, and one schema revision in both
+modes. Direct-mode convenience operations remain one revision per individual
+operation. Every revision stores the full post-change canonical schema and its
+SHA-256 identity under `/rad/catalog/meta/schema_revision/`; logical IDs make
+snapshots comparable across renames. Retired logical IDs are rejected if they
+appear in a later create, while omitted IDs on direct catalog calls are
+allocated above every ID seen in current state or history.
 
 ## Invariants downstream layers rely on
 

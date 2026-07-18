@@ -10,7 +10,6 @@
   "properties": {
     "tables": {
       "type": "array",
-      "minItems": 1,
       "items": {
         "$ref": "#/$defs/table"
       }
@@ -59,6 +58,12 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/index"
+          }
+        },
+        "foreign_keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/foreign_key"
           }
         }
       }
@@ -123,6 +128,9 @@
       ],
       "additionalProperties": false,
       "properties": {
+        "name": {
+          "$ref": "#/$defs/identifier"
+        },
         "columns": {
           "type": "array",
           "minItems": 1,
@@ -132,6 +140,30 @@
         },
         "unique": {
           "type": "boolean"
+        }
+      }
+    },
+    "foreign_key": {
+      "type": "object",
+      "required": [
+        "name",
+        "columns",
+        "ref_table",
+        "ref_columns"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "$ref": "#/$defs/identifier" },
+        "columns": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "ref_table": { "$ref": "#/$defs/identifier" },
+        "ref_columns": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/identifier" }
         }
       }
     }

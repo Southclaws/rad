@@ -36,7 +36,7 @@ func TestRenameColumnPreservesData(t *testing.T) {
 	if err := eng.Insert(ctx, "users", lir.Row{"id": lir.Int64(2), "full_name": lir.Text("Bob")}); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := eng.ScanIndex(ctx, "users", "users_name_idx", lir.Row{"full_name": lir.Text("Alice")})
+	rows, err := eng.ScanIndex(ctx, "users", "users_full_name_idx", lir.Row{"full_name": lir.Text("Alice")})
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("index after rename: rows=%d err=%v", len(rows), err)
 	}

@@ -2,6 +2,15 @@ package codegen
 
 import "sort"
 
+// GoClientFilename is the stable filename for Rad's generated Go client.
+// Package names remain configurable; the artifact name does not.
+const GoClientFilename = "rad_client_gen.go"
+
+// TypeScriptClientFilename is the stable filename for Rad's generated
+// TypeScript client. Package names remain configurable; the artifact name does
+// not.
+const TypeScriptClientFilename = "rad-client.generated.ts"
+
 // A Generator turns the language-agnostic Model into one or more source files
 // for a target language. It is the single seam every client generator sits
 // behind — built-in (Go, TypeScript) today, or an external `rad-gen-<name>`
@@ -26,11 +35,13 @@ type GeneratedFile struct {
 // Options are the generic knobs every generator honours. Language-specific
 // options are the generator's own concern.
 type Options struct {
-	// Package is the Go package name (Go) or the file basename (TypeScript).
+	// Package is the generated package or client name.
 	Package string
-	// SchemaSource is the rad.schema.yaml text, embedded verbatim so the generated
-	// client can migrate its own database.
-	SchemaSource []byte
+	// SchemaSource is the exact accepted rad.schema.yaml snapshot embedded in
+	// generated code for inspection and reproducible generation.
+	SchemaSource  []byte
+	SchemaVersion uint64
+	SchemaHash    string
 }
 
 // registry holds the built-in generators, keyed by the --lang name. Each

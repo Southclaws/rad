@@ -1,1 +1,8 @@
 database_url: rad://localhost
+generate:
+  - language: go
+    output: generated
+    package: tracker
+  - language: ts
+    output: generated
+    package: tracker

@@ -1,6 +1,6 @@
 # Tracker — a team task-tracking product built on Rad.
 #
-# This file is the product's source of truth: `rad migrate` reconciles the
+# This file is the product's source of truth: `rad schema migrate` reconciles the
 # database against it, `rad generate` emits the typed client in generated/.
 # The format is YAML, validated by Rad's JSON Schema.
 #
@@ -16,65 +16,150 @@
 
 tables:
   - id: 1
-    name: accounts
+    name: users
     columns:
-      - { id: 1, name: id,            type: string, pk: true, default: uuid(), format: uuid }
-      - { id: 2, name: username,      type: string, unique: true }
-      - { id: 3, name: display_name,  type: string, nullable: true }
+      - {
+          id: 1,
+          name: id,
+          type: string,
+          pk: true,
+          default: uuid(),
+          format: uuid,
+        }
+      - { id: 2, name: username, type: string, unique: true }
+      - { id: 3, name: display_name, type: string, nullable: true }
       - { id: 4, name: password_hash, type: string }
-      - { id: 5, name: email,         type: string, nullable: true, format: email }
-      - { id: 6, name: created_at,    type: int64, format: unix_ms, default: now_ms() }
+      - { id: 5, name: email, type: string, nullable: true, format: email }
+      - {
+          id: 6,
+          name: created_at,
+          type: int64,
+          format: unix_ms,
+          default: now_ms(),
+        }
 
   - id: 2
     name: sessions
     columns:
-      - { id: 1, name: token,      type: string, pk: true, default: uuid(), format: uuid }
-      - { id: 2, name: user_id,    type: string, ref: accounts.id, index: true }
-      - { id: 3, name: created_at, type: int64, format: unix_ms, default: now_ms() }
+      - {
+          id: 1,
+          name: token,
+          type: string,
+          pk: true,
+          default: uuid(),
+          format: uuid,
+        }
+      - { id: 2, name: user_id, type: string, ref: users.id, index: true }
+      - {
+          id: 3,
+          name: created_at,
+          type: int64,
+          format: unix_ms,
+          default: now_ms(),
+        }
       - { id: 4, name: expires_at, type: int64, format: unix_ms }
 
   - id: 3
     name: teams
     columns:
-      - { id: 1, name: id,         type: string, pk: true, default: uuid(), format: uuid }
-      - { id: 2, name: name,       type: string, unique: true }
-      - { id: 3, name: created_at, type: int64, format: unix_ms, default: now_ms() }
+      - {
+          id: 1,
+          name: id,
+          type: string,
+          pk: true,
+          default: uuid(),
+          format: uuid,
+        }
+      - { id: 2, name: name, type: string, unique: true }
+      - {
+          id: 3,
+          name: created_at,
+          type: int64,
+          format: unix_ms,
+          default: now_ms(),
+        }
 
   - id: 4
     name: team_members
     columns:
-      - { id: 1, name: team_id,   type: string, ref: teams.id }
-      - { id: 2, name: user_id,   type: string, ref: accounts.id, index: true }
-      - { id: 3, name: role,      type: string, default: member }
-      - { id: 4, name: joined_at, type: int64, format: unix_ms, default: now_ms() }
+      - { id: 1, name: team_id, type: string, ref: teams.id }
+      - { id: 2, name: user_id, type: string, ref: users.id, index: true }
+      - { id: 3, name: role, type: string, default: member }
+      - {
+          id: 4,
+          name: joined_at,
+          type: int64,
+          format: unix_ms,
+          default: now_ms(),
+        }
     primary_key: [team_id, user_id]
 
   - id: 5
     name: boards
     columns:
-      - { id: 1, name: id,         type: string, pk: true, default: uuid(), format: uuid }
-      - { id: 2, name: team_id,    type: string, ref: teams.id }
-      - { id: 3, name: name,       type: string }
-      - { id: 4, name: archived,   type: bool, default: false }
-      - { id: 5, name: created_at, type: int64, format: unix_ms, default: now_ms() }
+      - {
+          id: 1,
+          name: id,
+          type: string,
+          pk: true,
+          default: uuid(),
+          format: uuid,
+        }
+      - { id: 2, name: team_id, type: string, ref: teams.id }
+      - { id: 3, name: name, type: string }
+      - { id: 4, name: archived, type: bool, default: false }
+      - {
+          id: 5,
+          name: created_at,
+          type: int64,
+          format: unix_ms,
+          default: now_ms(),
+        }
     indexes:
       - { columns: [team_id, name], unique: true }
 
   - id: 6
     name: tasks
     columns:
-      - { id: 1, name: id,          type: string, pk: true, default: uuid(), format: uuid }
-      - { id: 2, name: board_id,    type: string, ref: boards.id }
-      - { id: 3, name: title,       type: string }
+      - {
+          id: 1,
+          name: id,
+          type: string,
+          pk: true,
+          default: uuid(),
+          format: uuid,
+        }
+      - { id: 2, name: board_id, type: string, ref: boards.id }
+      - { id: 3, name: title, type: string }
       - { id: 4, name: description, type: string, nullable: true }
-      - { id: 5, name: status,      type: string, default: todo }
-      - { id: 6, name: priority,    type: int64, default: 2 }
-      - { id: 7, name: estimate,    type: float64, nullable: true }
-      - { id: 8, name: assignee_id, type: string, nullable: true, ref: accounts.id, index: true }
-      - { id: 9, name: creator_id,  type: string, ref: accounts.id }
-      - { id: 10, name: parent_id,   type: string, nullable: true, ref: tasks.id, index: true }
-      - { id: 11, name: due_at,      type: int64, nullable: true, format: unix_ms }
-      - { id: 12, name: created_at,  type: int64, format: unix_ms, default: now_ms() }
+      - { id: 5, name: status, type: string, default: todo }
+      - { id: 6, name: priority, type: int64, default: 2 }
+      - { id: 7, name: estimate, type: float64, nullable: true }
+      - {
+          id: 8,
+          name: assignee_id,
+          type: string,
+          nullable: true,
+          ref: users.id,
+          index: true,
+        }
+      - { id: 9, name: creator_id, type: string, ref: users.id }
+      - {
+          id: 10,
+          name: parent_id,
+          type: string,
+          nullable: true,
+          ref: tasks.id,
+          index: true,
+        }
+      - { id: 11, name: due_at, type: int64, nullable: true, format: unix_ms }
+      - {
+          id: 12,
+          name: created_at,
+          type: int64,
+          format: unix_ms,
+          default: now_ms(),
+        }
     indexes:
       - { columns: [board_id, status] }
       - { columns: [assignee_id, status] }
@@ -82,18 +167,38 @@ tables:
   - id: 7
     name: comments
     columns:
-      - { id: 1, name: id,         type: string, pk: true, default: uuid(), format: uuid }
-      - { id: 2, name: task_id,    type: string, ref: tasks.id, index: true }
-      - { id: 3, name: author_id,  type: string, ref: accounts.id }
-      - { id: 4, name: body,       type: string }
-      - { id: 5, name: created_at, type: int64, format: unix_ms, default: now_ms() }
+      - {
+          id: 1,
+          name: id,
+          type: string,
+          pk: true,
+          default: uuid(),
+          format: uuid,
+        }
+      - { id: 2, name: task_id, type: string, ref: tasks.id, index: true }
+      - { id: 3, name: author_id, type: string, ref: users.id }
+      - { id: 4, name: body, type: string }
+      - {
+          id: 5,
+          name: created_at,
+          type: int64,
+          format: unix_ms,
+          default: now_ms(),
+        }
 
   - id: 8
     name: labels
     columns:
-      - { id: 1, name: id,      type: string, pk: true, default: uuid(), format: uuid }
+      - {
+          id: 1,
+          name: id,
+          type: string,
+          pk: true,
+          default: uuid(),
+          format: uuid,
+        }
       - { id: 2, name: team_id, type: string, ref: teams.id }
-      - { id: 3, name: name,    type: string }
+      - { id: 3, name: name, type: string }
       - { id: 4, name: hex_color, type: string, default: "#8899aa" }
     indexes:
       - { columns: [team_id, name], unique: true }
@@ -101,6 +206,6 @@ tables:
   - id: 9
     name: task_labels
     columns:
-      - { id: 1, name: task_id,  type: string, ref: tasks.id }
+      - { id: 1, name: task_id, type: string, ref: tasks.id }
       - { id: 2, name: label_id, type: string, ref: labels.id, index: true }
     primary_key: [task_id, label_id]

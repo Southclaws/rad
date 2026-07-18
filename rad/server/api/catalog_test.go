@@ -399,7 +399,7 @@ func TestSchemaManagedModeGatesCatalogOps(t *testing.T) {
 	}
 
 	// Migration is the sanctioned channel and works.
-	if _, err := c.Migrate(ctx, testSchema); err != nil {
+	if _, err := migrateSchema(ctx, c, testSchema); err != nil {
 		t.Fatal(err)
 	}
 
@@ -445,17 +445,17 @@ func TestDirectModeAcceptsBothChannels(t *testing.T) {
 	if mode, err := c.Mode(ctx); err != nil || mode != "direct" {
 		t.Fatalf("mode=%q err=%v", mode, err)
 	}
-	if _, err := c.Migrate(ctx, testSchema); err != nil {
+	if _, err := migrateSchema(ctx, c, testSchema); err != nil {
 		t.Fatal(err)
 	}
-	if info, err := c.Info(ctx); err != nil || info.SchemaVersion != 2 {
-		t.Fatalf("two direct-mode reconciliation steps: info=%+v err=%v; want v2", info, err)
+	if info, err := c.Info(ctx); err != nil || info.SchemaVersion != 1 {
+		t.Fatalf("one transactional schema migration: info=%+v err=%v; want v1", info, err)
 	}
 	if _, err := c.ColumnCreate(ctx, "users", protocol.ColumnDef{Name: "bio", Type: "text", Nullable: true}); err != nil {
 		t.Fatal(err)
 	}
-	if info, err := c.Info(ctx); err != nil || info.SchemaVersion != 3 {
-		t.Fatalf("direct column change: info=%+v err=%v; want v3", info, err)
+	if info, err := c.Info(ctx); err != nil || info.SchemaVersion != 2 {
+		t.Fatalf("direct column change: info=%+v err=%v; want v2", info, err)
 	}
 }
 

@@ -3,6 +3,7 @@
 //
 //   https://www.radengine.dev/rad.schema.json  -> the rad.schema.yaml table format
 //   https://www.radengine.dev/schema/lir.json  -> the query IR
+//   https://www.radengine.dev/schema/pir.json  -> the program IR
 //
 // The canonical copies live under the Go module's rad/ tree, which is the
 // single source of truth. This runs before the build to refresh the served
@@ -27,6 +28,10 @@ const schemas = [
   {
     src: join(repo, "rad", "protocol", "lir.schema.json"),
     dst: join(publicDir, "schema", "lir.json"),
+  },
+  {
+    src: join(repo, "rad", "protocol", "pir.schema.json"),
+    dst: join(publicDir, "schema", "pir.json"),
   },
 ];
 

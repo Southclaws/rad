@@ -89,7 +89,7 @@ const FEATURES: Feature[] = [
     p: "Change the schema. Rad computes and runs the migration. Stable IDs preserve rename intent without unnecessary rewrites.",
     code: (
       <>
-        <b>rad migrate</b>
+        <b>rad schema migrate</b>
       </>
     ),
   },

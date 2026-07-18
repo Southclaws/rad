@@ -8,7 +8,7 @@ proof of the developer experience:
 rad.schema.yaml   the product's data model (YAML, JSON-Schema validated)
 rad.config.yaml   the target Rad database
 rad.state/        CLI-managed migration state
-generated/        typed Go client emitted by `rad generate` (do not edit)
+generated/        `rad_client_gen.go` and `rad-client.generated.ts` (do not edit)
 main.go           the application — imports only ./generated
 ```
 
@@ -18,10 +18,7 @@ main.go           the application — imports only ./generated
 edit rad.schema.yaml
    │
    ▼
-rad migrate                                             # reconcile the configured DB
-   │
-   ▼
-rad generate -o generated --pkg tracker
+rad schema migrate                                      # reconcile the configured DB
    │
    ▼
 go build .                                           # compiler catches schema drift
@@ -39,17 +36,16 @@ Run it from the repo root (`task demo` starts a fresh server and the app), or
 run the project commands from this directory against any running Rad server:
 
 ```
-rad migrate
-rad generate -o generated --pkg tracker
+rad schema migrate
 RAD_URL=rad://your-server go run .
 ```
 
 `rad.config.yaml` selects the migration target. `RAD_URL` is separate application
 runtime configuration for the demo process.
 
-The app migrates the remote database on startup (the client embeds its
-schema),
-then walks through: signup/login with a unique username index, an atomic
+The generated client checks its accepted schema version and hash against the
+server on first use. The app then walks through: signup/login with a unique
+username index, an atomic
 multi-table seed transaction, a three-level nested board view (tasks →
 assignee/comments→author/labels), typed queries (filters, ordering,
 pagination, IS NULL), patches with clear-to-NULL, delete-restrict foreign

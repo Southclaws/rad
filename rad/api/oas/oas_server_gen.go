@@ -75,6 +75,12 @@ type Handler interface {
 	//
 	// GET /info
 	GetInfo(ctx context.Context) (*DatabaseInfo, error)
+	// GetSchema implements GetSchema operation.
+	//
+	// Return the committed canonical schema together with its monotonic version and canonical hash.
+	//
+	// GET /schema
+	GetSchema(ctx context.Context) (*SchemaState, error)
 	// IndexCreate implements IndexCreate operation.
 	//
 	// Register a secondary index and backfill entries for every existing row, atomically: the index never
@@ -93,23 +99,26 @@ type Handler interface {
 	//
 	// DELETE /tables/{table}/indexes/{index}
 	IndexDelete(ctx context.Context, params IndexDeleteParams) (IndexDeleteRes, error)
+	// SchemaCompatibility implements SchemaCompatibility operation.
+	//
+	// Verify an exact generated-client schema identity.
+	//
+	// POST /schema/compatibility
+	SchemaCompatibility(ctx context.Context, req OptSchemaCompatibilityRequest) (SchemaCompatibilityRes, error)
+	// SchemaDiff implements SchemaDiff operation.
+	//
+	// Plan and preflight a desired schema without changing anything.
+	//
+	// POST /schema/diff
+	SchemaDiff(ctx context.Context, req OptSchemaRequest) (SchemaDiffRes, error)
 	// SchemaMigrate implements SchemaMigrate operation.
 	//
-	// Take a `rad.schema.yaml` source document, compute the difference against the database's current
-	// catalog, and apply whatever changes are needed to make them match. The response lists the steps that
-	// were applied, in order.
+	// The server parses the desired schema, computes and preflights its semantic diff, lowers it to
+	// catalog PIR, and commits the complete program as one schema revision. Destructive findings require
+	// `accept_data_loss`; blocking findings can never be bypassed.
 	//
-	// Migration is idempotent. Submitting a schema that already matches the database applies nothing and
-	// returns an empty step list. Stable numeric table and column IDs identify renames, so names and other
-	// properties can change together without deleting and recreating stored data.
-	//
-	// A schema that fails to parse or validate, or that requests an unsupported change (such as altering a
-	// column's type), is rejected with an `invalid` problem. On a schema-managed database the whole plan
-	// is one transaction and failure leaves the database untouched. On a directly managed database each
-	// step is an individual catalog change, so steps committed before a later failure remain applied.
-	//
-	// POST /migrate
-	SchemaMigrate(ctx context.Context, req OptMigrateProps) (SchemaMigrateRes, error)
+	// POST /schema/migrate
+	SchemaMigrate(ctx context.Context, req OptSchemaMigrateRequest) (SchemaMigrateRes, error)
 	// TableCreate implements TableCreate operation.
 	//
 	// Define a new table in one call: columns, primary key, and optionally indexes and foreign keys,

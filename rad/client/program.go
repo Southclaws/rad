@@ -45,6 +45,9 @@ func DryRun() ExecuteOption {
 // Execute runs a program and returns its result. Options attach the query plan
 // (WithPlan) and/or skip execution (DryRun).
 func (c *Client) Execute(ctx context.Context, prog pirwire.Program, opts ...ExecuteOption) (ProgramResult, error) {
+	if err := c.ensureSchema(ctx); err != nil {
+		return ProgramResult{}, err
+	}
 	raw, err := protocol.MarshalProgram(prog)
 	if err != nil {
 		return ProgramResult{}, err

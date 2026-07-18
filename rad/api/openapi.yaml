@@ -84,6 +84,55 @@ paths:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/GetHealthOK" }
 
+  /schema:
+    get:
+      operationId: GetSchema
+      summary: Return the current accepted schema.
+      description: Return the committed canonical schema together with its monotonic version and canonical hash.
+      tags: [schema]
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/GetSchemaOK" }
+
+  /schema/diff:
+    post:
+      operationId: SchemaDiff
+      summary: Plan and preflight a desired schema without changing anything.
+      tags: [schema]
+      requestBody: { $ref: "#/components/requestBodies/SchemaDiff" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/SchemaDiffOK" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /schema/migrate:
+    post:
+      operationId: SchemaMigrate
+      summary: Transactionally reconcile the database with a desired schema.
+      description: |
+        The server parses the desired schema, computes and preflights its
+        semantic diff, lowers it to catalog PIR, and commits the complete
+        program as one schema revision. Destructive findings require
+        `accept_data_loss`; blocking findings can never be bypassed.
+      tags: [schema]
+      requestBody: { $ref: "#/components/requestBodies/SchemaMigrate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/SchemaMigrateOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /schema/compatibility:
+    post:
+      operationId: SchemaCompatibility
+      summary: Verify an exact generated-client schema identity.
+      tags: [schema]
+      requestBody: { $ref: "#/components/requestBodies/SchemaCompatibility" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "204": { $ref: "#/components/responses/NoContent" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
   /tables:
     get:
       operationId: TableList
@@ -264,34 +313,6 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
-  /migrate:
-    post:
-      operationId: SchemaMigrate
-      summary: Reconcile the database with a schema.
-      description: |
-        Take a `rad.schema.yaml` source document, compute the difference against the
-        database's current catalog, and apply whatever changes are needed to
-        make them match. The response lists the steps that were applied, in
-        order.
-
-        Migration is idempotent. Submitting a schema that already matches the
-        database applies nothing and returns an empty step list. Stable numeric
-        table and column IDs identify renames, so names and other properties can
-        change together without deleting and recreating stored data.
-
-        A schema that fails to parse or validate, or that requests an
-        unsupported change (such as altering a column's type), is rejected with
-        an `invalid` problem. On a schema-managed database the whole plan is one
-        transaction and failure leaves the database untouched. On a directly
-        managed database each step is an individual catalog change, so steps
-        committed before a later failure remain applied.
-      tags: [schema]
-      requestBody: { $ref: "#/components/requestBodies/SchemaMigrate" }
-      responses:
-        default: { $ref: "#/components/responses/InternalServerError" }
-        "200": { $ref: "#/components/responses/SchemaMigrateOK" }
-        "422": { $ref: "#/components/responses/UnprocessableEntity" }
-
   /execute:
     post:
       operationId: Execute
@@ -374,10 +395,20 @@ components:
         type: string
 
   requestBodies:
+    SchemaDiff:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SchemaRequest" }
+
     SchemaMigrate:
       content:
         application/json:
-          schema: { $ref: "#/components/schemas/MigrateProps" }
+          schema: { $ref: "#/components/schemas/SchemaMigrateRequest" }
+
+    SchemaCompatibility:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SchemaCompatibilityRequest" }
 
     Execute:
       content:
@@ -448,6 +479,16 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/DatabaseInfo" }
+    GetSchemaOK:
+      description: The current accepted schema and identity.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SchemaState" }
+    SchemaDiffOK:
+      description: The semantic diff, catalog PIR, and preflight findings.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SchemaDiffResult" }
     TableListOK:
       description: The current set of tables.
       content:
@@ -459,10 +500,10 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/TableInfo" }
     SchemaMigrateOK:
-      description: The schema was reconciled and the applied steps are listed.
+      description: The committed accepted schema and its identity.
       content:
         application/json:
-          schema: { $ref: "#/components/schemas/MigrateResult" }
+          schema: { $ref: "#/components/schemas/SchemaMigrateResult" }
     ExecuteOK:
       description: The result statement's datum plus a per-statement summary.
       content:
@@ -698,7 +739,7 @@ components:
     DatabaseInfo:
       description: Stable metadata about a Rad database.
       type: object
-      required: [mode, schema_version]
+      required: [mode, schema_version, schema_hash]
       properties:
         mode:
           description: |
@@ -716,6 +757,9 @@ components:
           type: integer
           format: int64
           minimum: 0
+        schema_hash:
+          description: SHA-256 of the canonical committed schema JSON.
+          type: string
         schema_version_at:
           description: When the current schema version committed. Absent at version zero.
           type: string
@@ -733,27 +777,119 @@ components:
           type: array
           items: { $ref: "#/components/schemas/TableInfo" }
 
-    MigrateProps:
-      description: A request to reconcile the database with a schema.
+    SchemaRequest:
+      description: A desired schema source to plan.
       type: object
       required: [schema]
+      additionalProperties: false
       properties:
         schema:
           description: The full `rad.schema.yaml` source document, as YAML.
           type: string
 
-    MigrateResult:
-      description: The outcome of a migration.
+    SchemaMigrateRequest:
+      description: A desired schema, the preflighted server identity, and explicit data-loss consent.
       type: object
-      required: [steps]
+      required: [schema, current_version, current_hash]
+      additionalProperties: false
       properties:
-        steps:
-          description: |
-            A human readable description of each change that was applied, in the
-            order it was applied. Empty when the database already matched.
+        schema:
+          type: string
+        current_version:
+          type: integer
+          format: int64
+          minimum: 0
+        current_hash:
+          type: string
+        accept_data_loss:
+          type: boolean
+
+    SchemaCompatibilityRequest:
+      type: object
+      required: [schema_version, schema_hash]
+      additionalProperties: false
+      properties:
+        schema_version:
+          type: integer
+          format: int64
+          minimum: 0
+        schema_hash:
+          type: string
+
+    SchemaDocument:
+      description: The accepted canonical logical schema.
+      type: object
+      required: [tables]
+      properties:
+        tables:
           type: array
-          items:
-            type: string
+          items: { $ref: "#/components/schemas/TableDef" }
+
+    SchemaState:
+      type: object
+      required: [schema_version, schema_hash, schema]
+      properties:
+        schema_version:
+          type: integer
+          format: int64
+          minimum: 0
+        schema_hash:
+          type: string
+        schema:
+          $ref: "#/components/schemas/SchemaDocument"
+
+    SchemaChange:
+      type: object
+      required: [kind, summary]
+      properties:
+        kind: { type: string }
+        summary: { type: string }
+        table: { type: string }
+        column: { type: string }
+
+    SchemaFinding:
+      type: object
+      required: [kind, summary]
+      properties:
+        kind: { type: string }
+        summary: { type: string }
+        table: { type: string }
+        column: { type: string }
+        rows:
+          type: integer
+          format: int64
+          minimum: 0
+
+    SchemaDiffResult:
+      type: object
+      required: [current_version, current_hash, desired_hash, changes, program, destructive, blocking]
+      properties:
+        current_version:
+          type: integer
+          format: int64
+          minimum: 0
+        current_hash: { type: string }
+        desired_hash: { type: string }
+        changes:
+          type: array
+          items: { $ref: "#/components/schemas/SchemaChange" }
+        program: { $ref: "#/components/schemas/Value" }
+        destructive:
+          type: array
+          items: { $ref: "#/components/schemas/SchemaFinding" }
+        blocking:
+          type: array
+          items: { $ref: "#/components/schemas/SchemaFinding" }
+
+    SchemaMigrateResult:
+      allOf:
+        - $ref: "#/components/schemas/SchemaState"
+        - type: object
+          required: [changes]
+          properties:
+            changes:
+              type: array
+              items: { $ref: "#/components/schemas/SchemaChange" }
 
     QueryResult:
       description: |

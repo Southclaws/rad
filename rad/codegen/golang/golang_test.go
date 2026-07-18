@@ -42,8 +42,8 @@ func selfRefModel() *codegen.Model {
 
 func TestGenerate(t *testing.T) {
 	files, err := generator{}.Generate(selfRefModel(), codegen.Options{
-		Package:      "testclient",
-		SchemaSource: []byte("table categories { ... }"),
+		Package: "testclient", SchemaVersion: 4, SchemaHash: "sha256:accepted",
+		SchemaSource: []byte("tables: []\n"),
 	})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -52,8 +52,8 @@ func TestGenerate(t *testing.T) {
 		t.Fatalf("want 1 file, got %d", len(files))
 	}
 	f := files[0]
-	if f.Path != "testclient.go" {
-		t.Errorf("path = %q, want testclient.go", f.Path)
+	if f.Path != codegen.GoClientFilename {
+		t.Errorf("path = %q, want %s", f.Path, codegen.GoClientFilename)
 	}
 	if len(f.Content) == 0 {
 		t.Fatal("empty content")
@@ -89,5 +89,15 @@ func TestGenerate(t *testing.T) {
 	// protocol.Record is kept, so the protocol import must remain.
 	if !bytes.Contains(f.Content, []byte("protocol.Record")) {
 		t.Error("expected protocol.Record to be retained")
+	}
+	for _, metadata := range []string{
+		"const SchemaVersion uint64 = 4",
+		`const SchemaHash = "sha256:accepted"`,
+		`const RawSchema = "tables: []\n"`,
+		"rc.ExpectSchema(SchemaVersion, SchemaHash)",
+	} {
+		if !bytes.Contains(f.Content, []byte(metadata)) {
+			t.Errorf("generated source is missing %q", metadata)
+		}
 	}
 }

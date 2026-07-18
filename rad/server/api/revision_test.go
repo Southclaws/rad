@@ -70,27 +70,27 @@ tables:
       - { columns: [id] }
 `
 
-	steps, err := c.Migrate(ctx, v1)
-	if err != nil || len(steps) != 2 {
-		t.Fatalf("v1 migration = %v, %v", steps, err)
+	migration, err := migrateSchema(ctx, c, v1)
+	if err != nil || len(migration.Changes) != 2 {
+		t.Fatalf("v1 migration = %v, %v", migration.Changes, err)
 	}
 	info, err := c.Info(ctx)
 	if err != nil || info.SchemaVersion != 1 {
 		t.Fatalf("v1 info = %+v, %v", info, err)
 	}
 
-	steps, err = c.Migrate(ctx, v1)
-	if err != nil || len(steps) != 0 {
-		t.Fatalf("no-op migration = %v, %v", steps, err)
+	migration, err = migrateSchema(ctx, c, v1)
+	if err != nil || len(migration.Changes) != 0 {
+		t.Fatalf("no-op migration = %v, %v", migration.Changes, err)
 	}
 	info, _ = c.Info(ctx)
 	if info.SchemaVersion != 1 {
 		t.Fatalf("no-op migration moved schema version to %d", info.SchemaVersion)
 	}
 
-	steps, err = c.Migrate(ctx, v2)
-	if err != nil || len(steps) != 2 {
-		t.Fatalf("v2 migration = %v, %v", steps, err)
+	migration, err = migrateSchema(ctx, c, v2)
+	if err != nil || len(migration.Changes) != 2 {
+		t.Fatalf("v2 migration = %v, %v", migration.Changes, err)
 	}
 	info, err = c.Info(ctx)
 	if err != nil || info.SchemaVersion != 2 || info.SchemaVersionAt == nil {

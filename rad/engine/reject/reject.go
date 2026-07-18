@@ -64,6 +64,7 @@ const (
 	ReasonMutationAmbiguous   Reason = "mutation_target_ambiguous"
 	ReasonMutationShape       Reason = "mutation_shape"
 	ReasonSchemaManaged       Reason = "schema_managed"
+	ReasonDataLossAcceptance  Reason = "schema_data_loss_acceptance_required"
 
 	// execution_failed — a valid request failed on the data it met.
 	ReasonExecutionFailed  Reason = "execution_failed" // class catch-all (Runtimef)
@@ -105,6 +106,7 @@ var reasonClass = map[Reason]Class{
 	ReasonMutationAmbiguous:   ClassInvalid,
 	ReasonMutationShape:       ClassInvalid,
 	ReasonSchemaManaged:       ClassInvalid,
+	ReasonDataLossAcceptance:  ClassInvalid,
 
 	ReasonExecutionFailed:  ClassExecutionFailed,
 	ReasonDivisionByZero:   ClassExecutionFailed,
@@ -187,4 +189,10 @@ func IsInput(err error) bool {
 func IsRuntime(err error) bool {
 	r, ok := ReasonOf(err)
 	return ok && r.Class() == ClassExecutionFailed
+}
+
+// IsConflict reports whether err names a retryable conflict reason.
+func IsConflict(err error) bool {
+	r, ok := ReasonOf(err)
+	return ok && r.Class() == ClassConflict
 }

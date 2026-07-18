@@ -62,6 +62,7 @@ tasks:
         SERVER_PID=$!
         trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
         until curl -s -m 1 -o /dev/null http://127.0.0.1:7237/health; do sleep 0.3; done
+        ./bin/rad schema migrate --config examples/demo/rad.config.yaml --no-generate
         (cd examples/demo && go run .)
         wait $SERVER_PID
 
@@ -115,6 +116,7 @@ tasks:
         SERVER_PID=$!
         trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
         until curl -s -m 1 -o /dev/null http://127.0.0.1:7237/health; do sleep 0.3; done
+        ./bin/rad schema migrate --config examples/demo/rad.config.yaml --no-generate
         cd examples/demo && go run .
 
   generate:
@@ -150,6 +152,7 @@ tasks:
         SERVER_PID=$!
         trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
         until curl -s -m 1 -o /dev/null http://127.0.0.1:7237/health; do sleep 0.3; done
+        ./bin/rad schema migrate --config examples/demo/rad.config.yaml --no-generate
         node examples/demo/tracker-demo.ts
 
   migrate:
@@ -157,7 +160,7 @@ tasks:
     env:
       CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
     cmds:
-      - go run ./cmd/rad migrate --config examples/demo/rad.config.yaml --file examples/demo/rad.schema.yaml
+      - go run ./cmd/rad schema migrate --config examples/demo/rad.config.yaml --no-generate
 
   build:
     desc: Build mostly-static binaries (SlateDB linked in) -> bin/

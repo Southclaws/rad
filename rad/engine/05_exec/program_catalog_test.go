@@ -9,7 +9,7 @@ import (
 
 func TestExecuteProgramRejectsStaleExpectedCatalog(t *testing.T) {
 	engine, ctx := setup(t)
-	expected, err := engine.Catalog().Schema(ctx)
+	expected, err := engine.Catalog().Revision(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

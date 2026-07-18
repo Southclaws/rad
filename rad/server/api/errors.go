@@ -30,7 +30,7 @@ func clientProblem(err error) *protocol.Problem {
 	case errors.As(err, &we):
 		p := protocol.NewProblem(protocol.CodeInvalid, http.StatusUnprocessableEntity, err.Error())
 		return &p
-	case frontend.IsConflict(err):
+	case frontend.IsConflict(err) || reject.IsConflict(err):
 		p := protocol.NewProblem(protocol.CodeConflict, http.StatusConflict, err.Error())
 		return withReason(&p, err)
 	case reject.IsInput(err):

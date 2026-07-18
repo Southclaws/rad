@@ -6,112 +6,380 @@
 // wire. Note: int64 columns decode as JavaScript numbers; values beyond
 // 2^53 lose precision.
 
-export const schemaSource = `# Tracker — a team task-tracking product built on Rad.
-#
-# This file is the product's source of truth: \`rad migrate\` reconciles the
-# database against it, \`rad generate\` emits the typed client in generated/.
-# The format is YAML, validated by Rad's JSON Schema.
-#
-# It deliberately exercises the database's limits:
-#   - uuid / unix_ms / email formats
-#   - generator and literal defaults (uuid(), now_ms(), strings, ints, bools)
-#   - nullable columns and nullable foreign keys
-#   - two foreign keys from one table to the same target (assignee/creator)
-#   - a self-referential foreign key (subtasks)
-#   - composite primary keys (join tables)
-#   - composite unique constraints and composite secondary indexes
-#   - a many-to-many relationship (tasks <-> labels)
-
-tables:
+export const schemaVersion = 1;
+export const schemaHash = "sha256:82199fcd831adec16d68d6b2604983b7140e8d786a15f75c85d85bf538108796";
+export const rawSchema = `tables:
+- id: 1
+  name: users
+  columns:
   - id: 1
-    name: accounts
-    columns:
-      - { id: 1, name: id,            type: string, pk: true, default: uuid(), format: uuid }
-      - { id: 2, name: username,      type: string, unique: true }
-      - { id: 3, name: display_name,  type: string, nullable: true }
-      - { id: 4, name: password_hash, type: string }
-      - { id: 5, name: email,         type: string, nullable: true, format: email }
-      - { id: 6, name: created_at,    type: int64, format: unix_ms, default: now_ms() }
-
+    name: id
+    type: string
+    format: uuid
+    default: uuid()
   - id: 2
-    name: sessions
-    columns:
-      - { id: 1, name: token,      type: string, pk: true, default: uuid(), format: uuid }
-      - { id: 2, name: user_id,    type: string, ref: accounts.id, index: true }
-      - { id: 3, name: created_at, type: int64, format: unix_ms, default: now_ms() }
-      - { id: 4, name: expires_at, type: int64, format: unix_ms }
-
+    name: username
+    type: string
   - id: 3
-    name: teams
-    columns:
-      - { id: 1, name: id,         type: string, pk: true, default: uuid(), format: uuid }
-      - { id: 2, name: name,       type: string, unique: true }
-      - { id: 3, name: created_at, type: int64, format: unix_ms, default: now_ms() }
-
+    name: display_name
+    type: string
+    nullable: true
   - id: 4
-    name: team_members
-    columns:
-      - { id: 1, name: team_id,   type: string, ref: teams.id }
-      - { id: 2, name: user_id,   type: string, ref: accounts.id, index: true }
-      - { id: 3, name: role,      type: string, default: member }
-      - { id: 4, name: joined_at, type: int64, format: unix_ms, default: now_ms() }
-    primary_key: [team_id, user_id]
-
+    name: password_hash
+    type: string
   - id: 5
-    name: boards
-    columns:
-      - { id: 1, name: id,         type: string, pk: true, default: uuid(), format: uuid }
-      - { id: 2, name: team_id,    type: string, ref: teams.id }
-      - { id: 3, name: name,       type: string }
-      - { id: 4, name: archived,   type: bool, default: false }
-      - { id: 5, name: created_at, type: int64, format: unix_ms, default: now_ms() }
-    indexes:
-      - { columns: [team_id, name], unique: true }
-
+    name: email
+    type: string
+    nullable: true
+    format: email
   - id: 6
-    name: tasks
+    name: created_at
+    type: int64
+    format: unix_ms
+    default: now_ms()
+  primary_key:
+  - id
+  indexes:
+  - name: users_username_uq
     columns:
-      - { id: 1, name: id,          type: string, pk: true, default: uuid(), format: uuid }
-      - { id: 2, name: board_id,    type: string, ref: boards.id }
-      - { id: 3, name: title,       type: string }
-      - { id: 4, name: description, type: string, nullable: true }
-      - { id: 5, name: status,      type: string, default: todo }
-      - { id: 6, name: priority,    type: int64, default: 2 }
-      - { id: 7, name: estimate,    type: float64, nullable: true }
-      - { id: 8, name: assignee_id, type: string, nullable: true, ref: accounts.id, index: true }
-      - { id: 9, name: creator_id,  type: string, ref: accounts.id }
-      - { id: 10, name: parent_id,   type: string, nullable: true, ref: tasks.id, index: true }
-      - { id: 11, name: due_at,      type: int64, nullable: true, format: unix_ms }
-      - { id: 12, name: created_at,  type: int64, format: unix_ms, default: now_ms() }
-    indexes:
-      - { columns: [board_id, status] }
-      - { columns: [assignee_id, status] }
-
+    - username
+    unique: true
+- id: 2
+  name: sessions
+  columns:
+  - id: 1
+    name: token
+    type: string
+    format: uuid
+    default: uuid()
+  - id: 2
+    name: user_id
+    type: string
+  - id: 3
+    name: created_at
+    type: int64
+    format: unix_ms
+    default: now_ms()
+  - id: 4
+    name: expires_at
+    type: int64
+    format: unix_ms
+  primary_key:
+  - token
+  indexes:
+  - name: sessions_user_id_idx
+    columns:
+    - user_id
+    unique: false
+  foreign_keys:
+  - name: sessions_user_id_fk
+    columns:
+    - user_id
+    ref_table: users
+    ref_columns:
+    - id
+- id: 3
+  name: teams
+  columns:
+  - id: 1
+    name: id
+    type: string
+    format: uuid
+    default: uuid()
+  - id: 2
+    name: name
+    type: string
+  - id: 3
+    name: created_at
+    type: int64
+    format: unix_ms
+    default: now_ms()
+  primary_key:
+  - id
+  indexes:
+  - name: teams_name_uq
+    columns:
+    - name
+    unique: true
+- id: 4
+  name: team_members
+  columns:
+  - id: 1
+    name: team_id
+    type: string
+  - id: 2
+    name: user_id
+    type: string
+  - id: 3
+    name: role
+    type: string
+    default: member
+  - id: 4
+    name: joined_at
+    type: int64
+    format: unix_ms
+    default: now_ms()
+  primary_key:
+  - team_id
+  - user_id
+  indexes:
+  - name: team_members_user_id_idx
+    columns:
+    - user_id
+    unique: false
+  foreign_keys:
+  - name: team_members_team_id_fk
+    columns:
+    - team_id
+    ref_table: teams
+    ref_columns:
+    - id
+  - name: team_members_user_id_fk
+    columns:
+    - user_id
+    ref_table: users
+    ref_columns:
+    - id
+- id: 5
+  name: boards
+  columns:
+  - id: 1
+    name: id
+    type: string
+    format: uuid
+    default: uuid()
+  - id: 2
+    name: team_id
+    type: string
+  - id: 3
+    name: name
+    type: string
+  - id: 4
+    name: archived
+    type: bool
+    default: false
+  - id: 5
+    name: created_at
+    type: int64
+    format: unix_ms
+    default: now_ms()
+  primary_key:
+  - id
+  indexes:
+  - name: boards_team_id_name_uq
+    columns:
+    - team_id
+    - name
+    unique: true
+  foreign_keys:
+  - name: boards_team_id_fk
+    columns:
+    - team_id
+    ref_table: teams
+    ref_columns:
+    - id
+- id: 6
+  name: tasks
+  columns:
+  - id: 1
+    name: id
+    type: string
+    format: uuid
+    default: uuid()
+  - id: 2
+    name: board_id
+    type: string
+  - id: 3
+    name: title
+    type: string
+  - id: 4
+    name: description
+    type: string
+    nullable: true
+  - id: 5
+    name: status
+    type: string
+    default: todo
+  - id: 6
+    name: priority
+    type: int64
+    default: 2
   - id: 7
-    name: comments
-    columns:
-      - { id: 1, name: id,         type: string, pk: true, default: uuid(), format: uuid }
-      - { id: 2, name: task_id,    type: string, ref: tasks.id, index: true }
-      - { id: 3, name: author_id,  type: string, ref: accounts.id }
-      - { id: 4, name: body,       type: string }
-      - { id: 5, name: created_at, type: int64, format: unix_ms, default: now_ms() }
-
+    name: estimate
+    type: float64
+    nullable: true
   - id: 8
-    name: labels
-    columns:
-      - { id: 1, name: id,      type: string, pk: true, default: uuid(), format: uuid }
-      - { id: 2, name: team_id, type: string, ref: teams.id }
-      - { id: 3, name: name,    type: string }
-      - { id: 4, name: hex_color, type: string, default: "#8899aa" }
-    indexes:
-      - { columns: [team_id, name], unique: true }
-
+    name: assignee_id
+    type: string
+    nullable: true
   - id: 9
-    name: task_labels
+    name: creator_id
+    type: string
+  - id: 10
+    name: parent_id
+    type: string
+    nullable: true
+  - id: 11
+    name: due_at
+    type: int64
+    nullable: true
+    format: unix_ms
+  - id: 12
+    name: created_at
+    type: int64
+    format: unix_ms
+    default: now_ms()
+  primary_key:
+  - id
+  indexes:
+  - name: tasks_assignee_id_idx
     columns:
-      - { id: 1, name: task_id,  type: string, ref: tasks.id }
-      - { id: 2, name: label_id, type: string, ref: labels.id, index: true }
-    primary_key: [task_id, label_id]
+    - assignee_id
+    unique: false
+  - name: tasks_assignee_id_status_idx
+    columns:
+    - assignee_id
+    - status
+    unique: false
+  - name: tasks_board_id_status_idx
+    columns:
+    - board_id
+    - status
+    unique: false
+  - name: tasks_parent_id_idx
+    columns:
+    - parent_id
+    unique: false
+  foreign_keys:
+  - name: tasks_assignee_id_fk
+    columns:
+    - assignee_id
+    ref_table: users
+    ref_columns:
+    - id
+  - name: tasks_board_id_fk
+    columns:
+    - board_id
+    ref_table: boards
+    ref_columns:
+    - id
+  - name: tasks_creator_id_fk
+    columns:
+    - creator_id
+    ref_table: users
+    ref_columns:
+    - id
+  - name: tasks_parent_id_fk
+    columns:
+    - parent_id
+    ref_table: tasks
+    ref_columns:
+    - id
+- id: 7
+  name: comments
+  columns:
+  - id: 1
+    name: id
+    type: string
+    format: uuid
+    default: uuid()
+  - id: 2
+    name: task_id
+    type: string
+  - id: 3
+    name: author_id
+    type: string
+  - id: 4
+    name: body
+    type: string
+  - id: 5
+    name: created_at
+    type: int64
+    format: unix_ms
+    default: now_ms()
+  primary_key:
+  - id
+  indexes:
+  - name: comments_task_id_idx
+    columns:
+    - task_id
+    unique: false
+  foreign_keys:
+  - name: comments_author_id_fk
+    columns:
+    - author_id
+    ref_table: users
+    ref_columns:
+    - id
+  - name: comments_task_id_fk
+    columns:
+    - task_id
+    ref_table: tasks
+    ref_columns:
+    - id
+- id: 8
+  name: labels
+  columns:
+  - id: 1
+    name: id
+    type: string
+    format: uuid
+    default: uuid()
+  - id: 2
+    name: team_id
+    type: string
+  - id: 3
+    name: name
+    type: string
+  - id: 4
+    name: hex_color
+    type: string
+    default: "#8899aa"
+  primary_key:
+  - id
+  indexes:
+  - name: labels_team_id_name_uq
+    columns:
+    - team_id
+    - name
+    unique: true
+  foreign_keys:
+  - name: labels_team_id_fk
+    columns:
+    - team_id
+    ref_table: teams
+    ref_columns:
+    - id
+- id: 9
+  name: task_labels
+  columns:
+  - id: 1
+    name: task_id
+    type: string
+  - id: 2
+    name: label_id
+    type: string
+  primary_key:
+  - task_id
+  - label_id
+  indexes:
+  - name: task_labels_label_id_idx
+    columns:
+    - label_id
+    unique: false
+  foreign_keys:
+  - name: task_labels_label_id_fk
+    columns:
+    - label_id
+    ref_table: labels
+    ref_columns:
+    - id
+  - name: task_labels_task_id_fk
+    columns:
+    - task_id
+    ref_table: tasks
+    ref_columns:
+    - id
 `;
 
 // runtime
@@ -122,6 +390,7 @@ export interface Problem {
   status: number;
   detail?: string;
   code: string;
+  reason: string;
 }
 
 /** A non-2xx response from the server (RFC 7807 Problem Details). */
@@ -230,12 +499,28 @@ export function parseRadUrl(url: string): string {
 class Rpc {
   private base: string;
   private fetchImpl: typeof fetch;
+  private compatibility?: Promise<void>;
   constructor(base: string, fetchImpl?: typeof fetch) {
     this.base = base;
     this.fetchImpl = fetchImpl ?? fetch;
   }
 
   async req<T>(path: string, body?: unknown): Promise<T> {
+    await this.ensureCompatible();
+    return this.rawReq(path, body);
+  }
+
+  private async ensureCompatible(): Promise<void> {
+    if (!this.compatibility) {
+      this.compatibility = this.rawReq<void>("/schema/compatibility", {
+        schema_version: schemaVersion,
+        schema_hash: schemaHash,
+      });
+    }
+    return this.compatibility;
+  }
+
+  private async rawReq<T>(path: string, body?: unknown): Promise<T> {
     const res = await this.fetchImpl(this.base + path, {
       method: body === undefined ? "GET" : "POST",
       headers: body === undefined ? undefined : { "Content-Type": "application/json" },
@@ -246,7 +531,7 @@ class Rpc {
       try {
         problem = (await res.json()) as Problem;
       } catch {
-        problem = { type: "urn:rad:problem:internal", title: res.statusText, status: res.status, code: "internal" };
+        problem = { type: "urn:rad:problem:internal", title: res.statusText, status: res.status, code: "internal", reason: "internal" };
       }
       throw new RadError(problem);
     }
@@ -609,10 +894,10 @@ function assemble(s: QuerySpec): GraphQuery {
   return { nodes, root: { node: last, cardinality: "many" } };
 }
 
-// accounts
+// users
 
-/** One row of "accounts". Relation fields are present only when included. */
-export interface Account {
+/** One row of "users". Relation fields are present only when included. */
+export interface User {
   id: string;
   username: string;
   display_name: string | null;
@@ -627,7 +912,7 @@ export interface Account {
 }
 
 /** Input to create; omitted optional fields defer to defaults or NULL. */
-export interface AccountCreate {
+export interface UserCreate {
   id?: string;
   username: string;
   display_name?: string | null;
@@ -638,7 +923,7 @@ export interface AccountCreate {
 
 /** Input to update: undefined leaves a column untouched; null clears a
  * nullable column. */
-export interface AccountPatch {
+export interface UserPatch {
   username?: string;
   display_name?: string | null;
   password_hash?: string;
@@ -646,44 +931,44 @@ export interface AccountPatch {
   created_at?: number;
 }
 
-export class AccountTable {
+export class UserTable {
   private v: View;
   constructor(v: View) {
     this.v = v;
   }
 
-  async create(input: AccountCreate): Promise<Account> {
-    return (await this.v.create("accounts", input as unknown as Rec)) as unknown as Account;
+  async create(input: UserCreate): Promise<User> {
+    return (await this.v.create("users", input as unknown as Rec)) as unknown as User;
   }
 
-  async get(id: string): Promise<Account | null> {
-    return (await this.v.get("accounts", { id: id })) as Account | null;
+  async get(id: string): Promise<User | null> {
+    return (await this.v.get("users", { id: id })) as User | null;
   }
 
-  async update(id: string, patch: AccountPatch): Promise<Account | null> {
+  async update(id: string, patch: UserPatch): Promise<User | null> {
     const { set, clear } = splitPatch(patch as unknown as Rec);
-    return (await this.v.update("accounts", { id: id }, set, clear)) as Account | null;
+    return (await this.v.update("users", { id: id }, set, clear)) as User | null;
   }
 
   async delete(id: string): Promise<boolean> {
-    return this.v.del("accounts", { id: id });
+    return this.v.del("users", { id: id });
   }
 
   /** Finds the row by the unique index on (username). */
-  async byUsername(username: string): Promise<Account | null> {
-    const recs = await this.v.query(assemble({ table: "accounts", filters: [eq(col("", "username"), lit(toValue("text", username)))], orders: [{ expr: col("", "id") }], includes: [], limit: 1 }));
-    return recs.length ? (recs[0] as unknown as Account) : null;
+  async byUsername(username: string): Promise<User | null> {
+    const recs = await this.v.query(assemble({ table: "users", filters: [eq(col("", "username"), lit(toValue("text", username)))], orders: [{ expr: col("", "id") }], includes: [], limit: 1 }));
+    return recs.length ? (recs[0] as unknown as User) : null;
   }
 
-  query(): AccountQuery {
-    return new AccountQuery(this.v);
+  query(): UserQuery {
+    return new UserQuery(this.v);
   }
 }
 
-/** Fluent query builder for "accounts"; conditions AND together. */
-export class AccountQuery {
+/** Fluent query builder for "users"; conditions AND together. */
+export class UserQuery {
   private filters: Expr[] = [];
-  private spec: QuerySpec = { table: "accounts", filters: [], orders: [], includes: [] };
+  private spec: QuerySpec = { table: "users", filters: [], orders: [], includes: [] };
   private v: View;
   constructor(v: View) {
     this.v = v;
@@ -778,12 +1063,12 @@ export class AccountQuery {
     return this;
   }
 
-  async all(): Promise<Account[]> {
+  async all(): Promise<User[]> {
     if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "id") }];
-    return (await this.v.query(assemble(this.spec))) as unknown as Account[];
+    return (await this.v.query(assemble(this.spec))) as unknown as User[];
   }
 
-  async first(): Promise<Account | null> {
+  async first(): Promise<User | null> {
     if (!this.spec.orders.length) this.spec.orders = [{ expr: col("", "id") }];
     this.spec.limit = 1;
     const rows = await this.all();
@@ -902,8 +1187,8 @@ export class AccountQuery {
   }
 }
 
-/** Refines an included "accounts" fetch. */
-export class AccountInclude {
+/** Refines an included "users" fetch. */
+export class UserInclude {
   private filters: Expr[] = [];
   private orders: OrderTerm[] = [];
   private nested: IncludeSpec[] = [];
@@ -1023,7 +1308,7 @@ export interface Session {
   user_id: string;
   created_at: number;
   expires_at: number;
-  user?: Account | null;
+  user?: User | null;
 }
 
 /** Input to create; omitted optional fields defer to defaults or NULL. */
@@ -1117,8 +1402,8 @@ export class SessionQuery {
   limit(n: number): this { this.spec.limit = n; return this; }
   offset(n: number): this { this.spec.offset = n; return this; }
 
-  includeUser(fn?: (b: AccountInclude) => void): this {
-    const b = new AccountInclude("accounts", [["id", "user_id"]], "user", "first");
+  includeUser(fn?: (b: UserInclude) => void): this {
+    const b = new UserInclude("users", [["id", "user_id"]], "user", "first");
     fn?.(b);
     this.spec.includes.push(b.build());
     return this;
@@ -1281,8 +1566,8 @@ export class SessionInclude {
 
   limit(n: number): this { this.max = n; return this; }
 
-  includeUser(fn?: (b: AccountInclude) => void): this {
-    const b = new AccountInclude("accounts", [["id", "user_id"]], "user", "first");
+  includeUser(fn?: (b: UserInclude) => void): this {
+    const b = new UserInclude("users", [["id", "user_id"]], "user", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
@@ -1576,7 +1861,7 @@ export interface TeamMember {
   role: string;
   joined_at: number;
   team?: Team | null;
-  user?: Account | null;
+  user?: User | null;
 }
 
 /** Input to create; omitted optional fields defer to defaults or NULL. */
@@ -1675,8 +1960,8 @@ export class TeamMemberQuery {
     this.spec.includes.push(b.build());
     return this;
   }
-  includeUser(fn?: (b: AccountInclude) => void): this {
-    const b = new AccountInclude("accounts", [["id", "user_id"]], "user", "first");
+  includeUser(fn?: (b: UserInclude) => void): this {
+    const b = new UserInclude("users", [["id", "user_id"]], "user", "first");
     fn?.(b);
     this.spec.includes.push(b.build());
     return this;
@@ -1835,8 +2120,8 @@ export class TeamMemberInclude {
     this.nested.push(b.build());
     return this;
   }
-  includeUser(fn?: (b: AccountInclude) => void): this {
-    const b = new AccountInclude("accounts", [["id", "user_id"]], "user", "first");
+  includeUser(fn?: (b: UserInclude) => void): this {
+    const b = new UserInclude("users", [["id", "user_id"]], "user", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
@@ -2184,9 +2469,9 @@ export interface Task {
   parent_id: string | null;
   due_at: number | null;
   created_at: number;
+  assignee?: User | null;
   board?: Board | null;
-  assignee?: Account | null;
-  creator?: Account | null;
+  creator?: User | null;
   parent?: Task | null;
   tasks?: Task[];
   comments?: Comment[];
@@ -2374,20 +2659,20 @@ export class TaskQuery {
   limit(n: number): this { this.spec.limit = n; return this; }
   offset(n: number): this { this.spec.offset = n; return this; }
 
+  includeAssignee(fn?: (b: UserInclude) => void): this {
+    const b = new UserInclude("users", [["id", "assignee_id"]], "assignee", "first");
+    fn?.(b);
+    this.spec.includes.push(b.build());
+    return this;
+  }
   includeBoard(fn?: (b: BoardInclude) => void): this {
     const b = new BoardInclude("boards", [["id", "board_id"]], "board", "first");
     fn?.(b);
     this.spec.includes.push(b.build());
     return this;
   }
-  includeAssignee(fn?: (b: AccountInclude) => void): this {
-    const b = new AccountInclude("accounts", [["id", "assignee_id"]], "assignee", "first");
-    fn?.(b);
-    this.spec.includes.push(b.build());
-    return this;
-  }
-  includeCreator(fn?: (b: AccountInclude) => void): this {
-    const b = new AccountInclude("accounts", [["id", "creator_id"]], "creator", "first");
+  includeCreator(fn?: (b: UserInclude) => void): this {
+    const b = new UserInclude("users", [["id", "creator_id"]], "creator", "first");
     fn?.(b);
     this.spec.includes.push(b.build());
     return this;
@@ -2788,20 +3073,20 @@ export class TaskInclude {
 
   limit(n: number): this { this.max = n; return this; }
 
+  includeAssignee(fn?: (b: UserInclude) => void): this {
+    const b = new UserInclude("users", [["id", "assignee_id"]], "assignee", "first");
+    fn?.(b);
+    this.nested.push(b.build());
+    return this;
+  }
   includeBoard(fn?: (b: BoardInclude) => void): this {
     const b = new BoardInclude("boards", [["id", "board_id"]], "board", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
-  includeAssignee(fn?: (b: AccountInclude) => void): this {
-    const b = new AccountInclude("accounts", [["id", "assignee_id"]], "assignee", "first");
-    fn?.(b);
-    this.nested.push(b.build());
-    return this;
-  }
-  includeCreator(fn?: (b: AccountInclude) => void): this {
-    const b = new AccountInclude("accounts", [["id", "creator_id"]], "creator", "first");
+  includeCreator(fn?: (b: UserInclude) => void): this {
+    const b = new UserInclude("users", [["id", "creator_id"]], "creator", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
@@ -2849,8 +3134,8 @@ export interface Comment {
   author_id: string;
   body: string;
   created_at: number;
+  author?: User | null;
   task?: Task | null;
-  author?: Account | null;
 }
 
 /** Input to create; omitted optional fields defer to defaults or NULL. */
@@ -2954,14 +3239,14 @@ export class CommentQuery {
   limit(n: number): this { this.spec.limit = n; return this; }
   offset(n: number): this { this.spec.offset = n; return this; }
 
-  includeTask(fn?: (b: TaskInclude) => void): this {
-    const b = new TaskInclude("tasks", [["id", "task_id"]], "task", "first");
+  includeAuthor(fn?: (b: UserInclude) => void): this {
+    const b = new UserInclude("users", [["id", "author_id"]], "author", "first");
     fn?.(b);
     this.spec.includes.push(b.build());
     return this;
   }
-  includeAuthor(fn?: (b: AccountInclude) => void): this {
-    const b = new AccountInclude("accounts", [["id", "author_id"]], "author", "first");
+  includeTask(fn?: (b: TaskInclude) => void): this {
+    const b = new TaskInclude("tasks", [["id", "task_id"]], "task", "first");
     fn?.(b);
     this.spec.includes.push(b.build());
     return this;
@@ -3137,14 +3422,14 @@ export class CommentInclude {
 
   limit(n: number): this { this.max = n; return this; }
 
-  includeTask(fn?: (b: TaskInclude) => void): this {
-    const b = new TaskInclude("tasks", [["id", "task_id"]], "task", "first");
+  includeAuthor(fn?: (b: UserInclude) => void): this {
+    const b = new UserInclude("users", [["id", "author_id"]], "author", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
-  includeAuthor(fn?: (b: AccountInclude) => void): this {
-    const b = new AccountInclude("accounts", [["id", "author_id"]], "author", "first");
+  includeTask(fn?: (b: TaskInclude) => void): this {
+    const b = new TaskInclude("tasks", [["id", "task_id"]], "task", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
@@ -3446,8 +3731,8 @@ export class LabelInclude {
 export interface TaskLabel {
   task_id: string;
   label_id: string;
-  task?: Task | null;
   label?: Label | null;
+  task?: Task | null;
 }
 
 /** Input to create; omitted optional fields defer to defaults or NULL. */
@@ -3520,14 +3805,14 @@ export class TaskLabelQuery {
   limit(n: number): this { this.spec.limit = n; return this; }
   offset(n: number): this { this.spec.offset = n; return this; }
 
-  includeTask(fn?: (b: TaskInclude) => void): this {
-    const b = new TaskInclude("tasks", [["id", "task_id"]], "task", "first");
+  includeLabel(fn?: (b: LabelInclude) => void): this {
+    const b = new LabelInclude("labels", [["id", "label_id"]], "label", "first");
     fn?.(b);
     this.spec.includes.push(b.build());
     return this;
   }
-  includeLabel(fn?: (b: LabelInclude) => void): this {
-    const b = new LabelInclude("labels", [["id", "label_id"]], "label", "first");
+  includeTask(fn?: (b: TaskInclude) => void): this {
+    const b = new TaskInclude("tasks", [["id", "task_id"]], "task", "first");
     fn?.(b);
     this.spec.includes.push(b.build());
     return this;
@@ -3624,14 +3909,14 @@ export class TaskLabelInclude {
 
   limit(n: number): this { this.max = n; return this; }
 
-  includeTask(fn?: (b: TaskInclude) => void): this {
-    const b = new TaskInclude("tasks", [["id", "task_id"]], "task", "first");
+  includeLabel(fn?: (b: LabelInclude) => void): this {
+    const b = new LabelInclude("labels", [["id", "label_id"]], "label", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
   }
-  includeLabel(fn?: (b: LabelInclude) => void): this {
-    const b = new LabelInclude("labels", [["id", "label_id"]], "label", "first");
+  includeTask(fn?: (b: TaskInclude) => void): this {
+    const b = new TaskInclude("tasks", [["id", "task_id"]], "task", "first");
     fn?.(b);
     this.nested.push(b.build());
     return this;
@@ -3650,7 +3935,7 @@ export class TaskLabelInclude {
 
 export class Client {
   private rpc: Rpc;
-  readonly accounts: AccountTable;
+  readonly users: UserTable;
   readonly sessions: SessionTable;
   readonly teams: TeamTable;
   readonly teamMembers: TeamMemberTable;
@@ -3664,7 +3949,7 @@ export class Client {
   constructor(url: string, fetchImpl?: typeof fetch) {
     this.rpc = new Rpc(parseRadUrl(url), fetchImpl);
     const view = new WireView(this.rpc);
-    this.accounts = new AccountTable(view);
+    this.users = new UserTable(view);
     this.sessions = new SessionTable(view);
     this.teams = new TeamTable(view);
     this.teamMembers = new TeamMemberTable(view);
@@ -3678,12 +3963,6 @@ export class Client {
   /** Verifies the server is reachable. */
   async ping(): Promise<void> {
     await this.rpc.req("/health");
-  }
-
-  /** Reconciles the server's database with schemaSource; returns steps. */
-  async migrate(): Promise<string[]> {
-    const res = await this.rpc.req<{ steps: string[] }>("/migrate", { schema: schemaSource });
-    return res.steps;
   }
 }
 

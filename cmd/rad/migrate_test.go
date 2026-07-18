@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +12,9 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/Southclaws/rad/rad/codegen"
+	catalogschema "github.com/Southclaws/rad/rad/engine/02_catalog/schema"
 )
 
 func TestProjectConfig(t *testing.T) {
@@ -49,22 +51,28 @@ func TestProjectConfigRejectsInvalidFiles(t *testing.T) {
 }
 
 func TestMigrateCmdSendsSchemaToServer(t *testing.T) {
-	var received string
+	var diffReceived, migrateReceived bool
+	schema := "tables:\n  - id: 1\n    name: accounts\n    columns:\n      - id: 1\n        name: id\n        type: string\n    primary_key: [id]\n"
+	parsed, err := catalogschema.Parse("rad.schema.yaml", []byte(schema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := parsed.Canonical().Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/migrate" {
-			http.Error(w, "unexpected request", http.StatusNotFound)
-			return
-		}
-		var request struct {
-			Schema string `json:"schema"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		received = request.Schema
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"steps":["create table accounts"]}`)
+		switch r.URL.Path {
+		case "/schema/diff":
+			diffReceived = true
+			fmt.Fprintf(w, `{"current_version":0,"current_hash":"sha256:empty","desired_hash":%q,"changes":[{"kind":"create_table","summary":"create table accounts","table":"accounts"}],"program":{},"destructive":[],"blocking":[]}`, hash)
+		case "/schema/migrate":
+			migrateReceived = true
+			fmt.Fprintf(w, `{"schema_version":1,"schema_hash":%q,"schema":{"tables":[{"id":1,"name":"accounts","columns":[{"id":1,"name":"id","type":"text"}],"primary_key":["id"]}]},"changes":[{"kind":"create_table","summary":"create table accounts","table":"accounts"}]}`, hash)
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
 	}))
 	defer server.Close()
 
@@ -73,7 +81,6 @@ func TestMigrateCmdSendsSchemaToServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := "rad://" + httpURL.Host
-	schema := "tables:\n  - id: 1\n    name: accounts\n"
 	dir := t.TempDir()
 	file := filepath.Join(dir, defaultSchemaFile)
 	if err := os.WriteFile(file, []byte(schema), 0o600); err != nil {
@@ -84,24 +91,30 @@ func TestMigrateCmdSendsSchemaToServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := migrateCmd()
+	cmd := schemaCmd()
 	var output bytes.Buffer
 	cmd.SetOut(&output)
-	cmd.SetArgs([]string{"--config", configFile, "--file", file})
+	cmd.SetArgs([]string{"migrate", "--config", configFile, "--file", file})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
 
-	if received != schema {
-		t.Fatalf("server received schema %q, want %q", received, schema)
+	if !diffReceived || !migrateReceived {
+		t.Fatalf("requests: diff=%t migrate=%t", diffReceived, migrateReceived)
 	}
-	if !strings.Contains(output.String(), "applied 1 steps to "+target) {
+	if !strings.Contains(output.String(), "Schema version 1 committed") {
 		t.Fatalf("output = %q", output.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, defaultStateDir, "changelog", "00000001.rad.schema.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "generated", codegen.GoClientFilename)); err != nil {
+		t.Fatalf("generated client: %v", err)
 	}
 }
 
 func TestMigrateCmdHasNoStorageFlag(t *testing.T) {
-	cmd := migrateCmd()
+	cmd := schemaCmd()
 	for _, name := range []string{"db", "url"} {
 		if flag := cmd.Flags().Lookup(name); flag != nil {
 			t.Fatalf("migrate exposes removed flag --%s", name)
@@ -115,13 +128,18 @@ func TestMigrateCmdHasNoStorageFlag(t *testing.T) {
 }
 
 func TestProjectFileDefaults(t *testing.T) {
-	commands := []*cobra.Command{migrateCmd(), generateCmd(), validateCmd()}
+	schema := schemaCmd()
+	commands := []*cobra.Command{schema, generateCmd(), validateCmd()}
 	for _, command := range commands {
-		if got := command.Flags().Lookup("file").DefValue; got != defaultSchemaFile {
+		flags := command.Flags()
+		if command == schema {
+			flags = command.PersistentFlags()
+		}
+		if got := flags.Lookup("file").DefValue; got != defaultSchemaFile {
 			t.Fatalf("%s schema default = %q, want %q", command.Name(), got, defaultSchemaFile)
 		}
 	}
-	if got := migrateCmd().Flags().Lookup("config").DefValue; got != defaultConfigFile {
+	if got := schema.PersistentFlags().Lookup("config").DefValue; got != defaultConfigFile {
 		t.Fatalf("config default = %q, want %q", got, defaultConfigFile)
 	}
 	if defaultStateDir != "rad.state" {

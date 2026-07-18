@@ -65,6 +65,7 @@ func (a *dbAPI) GetInfo(ctx context.Context) (*oas.DatabaseInfo, error) {
 	info := &oas.DatabaseInfo{
 		Mode:          oas.DatabaseInfoMode(a.mode),
 		SchemaVersion: int64(revision.Version),
+		SchemaHash:    revision.Hash,
 	}
 	if !revision.CreatedAt.IsZero() {
 		info.SchemaVersionAt = oas.NewOptDateTime(revision.CreatedAt)
@@ -89,22 +90,6 @@ func (a *dbAPI) TableList(ctx context.Context) (*oas.TableList, error) {
 		infos[i] = info
 	}
 	return &oas.TableList{Tables: api.TablesToOAS(infos)}, nil
-}
-
-func (a *dbAPI) SchemaMigrate(ctx context.Context, req oas.OptMigrateProps) (oas.SchemaMigrateRes, error) {
-	steps, err := a.db.MigrateFile(ctx, "rad.schema.yaml", []byte(req.Or(oas.MigrateProps{}).Schema))
-	if err != nil {
-		if p := clientProblem(err); p != nil {
-			op := api.ProblemToOAS(*p)
-			return &op, nil
-		}
-		return nil, err
-	}
-	out := []string{}
-	for _, s := range steps {
-		out = append(out, s.String())
-	}
-	return &oas.MigrateResult{Steps: out}, nil
 }
 
 // New builds the wire-protocol HTTP handler: the generated OpenAPI database

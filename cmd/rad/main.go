@@ -2,7 +2,7 @@
 // in one binary. The database engine lives under ./rad/engine and the HTTP
 // implementation under ./rad/server; this package is only the CLI shell.
 //
-//	rad migrate                         reconcile the configured database
+//	rad schema migrate                  reconcile the configured database
 //	rad generate -o ./gen               emit the typed Go client
 //	rad serve -d ./data                 devtool server (REST API + web UI)
 package main
@@ -30,7 +30,7 @@ func main() {
 		SilenceErrors: false,
 	}
 	root.CompletionOptions.HiddenDefaultCmd = true
-	root.AddCommand(serveCmd(), validateCmd(), migrateCmd(), generateCmd())
+	root.AddCommand(serveCmd(), validateCmd(), schemaCmd(), generateCmd())
 
 	// Bare `rad` prints the splash; keep the default help for subcommands.
 	root.Run = func(cmd *cobra.Command, args []string) { fmt.Print(splash(root)) }

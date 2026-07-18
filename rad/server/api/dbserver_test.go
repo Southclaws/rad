@@ -7,12 +7,10 @@ package api
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -22,47 +20,7 @@ import (
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
 	"github.com/Southclaws/rad/rad/protocol"
 	"github.com/Southclaws/rad/rad/protocol/lirwire"
-	"github.com/Southclaws/rad/rad/protocol/pirwire"
 )
-
-// -
-// shared LIR/PIR test builders
-// -
-//
-// The handwritten protocol IR is gone; tests build relations with the lirwire
-// builders and carry them in PIR statements as opaque marshalled bytes. These
-// helpers are shared across every _test.go in this package.
-
-func relBytes(q lirwire.Query) pirwire.Relation {
-	b, _ := json.Marshal(q)
-	return b
-}
-
-func mustValue(v any) lirwire.Cell {
-	if v == nil {
-		return nil
-	}
-	switch x := v.(type) {
-	case string:
-		return &x
-	case int:
-		s := strconv.FormatInt(int64(x), 10)
-		return &s
-	case int64:
-		s := strconv.FormatInt(x, 10)
-		return &s
-	case float64:
-		s := strconv.FormatFloat(x, 'g', -1, 64)
-		return &s
-	case bool:
-		s := strconv.FormatBool(x)
-		return &s
-	}
-	return nil
-}
-
-func ptrBool(b bool) *bool                 { return &b }
-func ptrExpr(e lirwire.Expr) *lirwire.Expr { return &e }
 
 const testSchema = `
 tables:
@@ -161,30 +119,30 @@ func filteredQ(table string, pred lirwire.Expr) lirwire.Query {
 func migrated(t *testing.T) *radclient.Client {
 	t.Helper()
 	c := testServer(t)
-	if _, err := c.Migrate(context.Background(), testSchema); err != nil {
+	if _, err := migrateSchema(context.Background(), c, testSchema); err != nil {
 		t.Fatal(err)
 	}
 	return c
 }
 
-func TestClientPingAndMigrate(t *testing.T) {
+func TestClientPingAndSchemaMigrate(t *testing.T) {
 	c := testServer(t)
 	ctx := context.Background()
 
 	if err := c.Ping(ctx); err != nil {
 		t.Fatal(err)
 	}
-	steps, err := c.Migrate(ctx, testSchema)
+	migration, err := migrateSchema(ctx, c, testSchema)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(steps) != 2 {
-		t.Fatalf("steps = %v", steps)
+	if len(migration.Changes) != 2 {
+		t.Fatalf("changes = %v", migration.Changes)
 	}
 	// Idempotent.
-	steps, err = c.Migrate(ctx, testSchema)
-	if err != nil || len(steps) != 0 {
-		t.Fatalf("re-migrate: steps=%v err=%v", steps, err)
+	migration, err = migrateSchema(ctx, c, testSchema)
+	if err != nil || len(migration.Changes) != 0 {
+		t.Fatalf("re-migrate: changes=%v err=%v", migration.Changes, err)
 	}
 	tables, err := c.Tables(ctx)
 	if err != nil || len(tables) != 2 {

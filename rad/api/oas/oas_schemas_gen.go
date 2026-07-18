@@ -244,6 +244,8 @@ type DatabaseInfo struct {
 	// in direct mode increments it once, including each reconciler step; an entire schema-managed
 	// migration increments it once.
 	SchemaVersion int64 `json:"schema_version"`
+	// SHA-256 of the canonical committed schema JSON.
+	SchemaHash string `json:"schema_hash"`
 	// When the current schema version committed. Absent at version zero.
 	SchemaVersionAt OptDateTime `json:"schema_version_at"`
 	// The configured backing-store location, when the server exposes one.
@@ -258,6 +260,11 @@ func (s *DatabaseInfo) GetMode() DatabaseInfoMode {
 // GetSchemaVersion returns the value of SchemaVersion.
 func (s *DatabaseInfo) GetSchemaVersion() int64 {
 	return s.SchemaVersion
+}
+
+// GetSchemaHash returns the value of SchemaHash.
+func (s *DatabaseInfo) GetSchemaHash() string {
+	return s.SchemaHash
 }
 
 // GetSchemaVersionAt returns the value of SchemaVersionAt.
@@ -278,6 +285,11 @@ func (s *DatabaseInfo) SetMode(val DatabaseInfoMode) {
 // SetSchemaVersion sets the value of SchemaVersion.
 func (s *DatabaseInfo) SetSchemaVersion(val int64) {
 	s.SchemaVersion = val
+}
+
+// SetSchemaHash sets the value of SchemaHash.
+func (s *DatabaseInfo) SetSchemaHash(val string) {
+	s.SchemaHash = val
 }
 
 // SetSchemaVersionAt sets the value of SchemaVersionAt.
@@ -508,47 +520,11 @@ func (s *InternalServerErrorStatusCode) SetResponse(val Problem) {
 	s.Response = val
 }
 
-// A request to reconcile the database with a schema.
-// Ref: #/components/schemas/MigrateProps
-type MigrateProps struct {
-	// The full `rad.schema.yaml` source document, as YAML.
-	Schema string `json:"schema"`
-}
-
-// GetSchema returns the value of Schema.
-func (s *MigrateProps) GetSchema() string {
-	return s.Schema
-}
-
-// SetSchema sets the value of Schema.
-func (s *MigrateProps) SetSchema(val string) {
-	s.Schema = val
-}
-
-// The outcome of a migration.
-// Ref: #/components/schemas/MigrateResult
-type MigrateResult struct {
-	// A human readable description of each change that was applied, in the order it was applied. Empty
-	// when the database already matched.
-	Steps []string `json:"steps"`
-}
-
-// GetSteps returns the value of Steps.
-func (s *MigrateResult) GetSteps() []string {
-	return s.Steps
-}
-
-// SetSteps sets the value of Steps.
-func (s *MigrateResult) SetSteps(val []string) {
-	s.Steps = val
-}
-
-func (*MigrateResult) schemaMigrateRes() {}
-
 // Ref: #/components/responses/NoContent
 type NoContent struct{}
 
-func (*NoContent) tableDeleteRes() {}
+func (*NoContent) schemaCompatibilityRes() {}
+func (*NoContent) tableDeleteRes()         {}
 
 // NewOptBool returns new OptBool with value set to v.
 func NewOptBool(v bool) OptBool {
@@ -872,38 +848,38 @@ func (o OptInt64) Or(d int64) int64 {
 	return d
 }
 
-// NewOptMigrateProps returns new OptMigrateProps with value set to v.
-func NewOptMigrateProps(v MigrateProps) OptMigrateProps {
-	return OptMigrateProps{
+// NewOptSchemaCompatibilityRequest returns new OptSchemaCompatibilityRequest with value set to v.
+func NewOptSchemaCompatibilityRequest(v SchemaCompatibilityRequest) OptSchemaCompatibilityRequest {
+	return OptSchemaCompatibilityRequest{
 		Value: v,
 		Set:   true,
 	}
 }
 
-// OptMigrateProps is optional MigrateProps.
-type OptMigrateProps struct {
-	Value MigrateProps
+// OptSchemaCompatibilityRequest is optional SchemaCompatibilityRequest.
+type OptSchemaCompatibilityRequest struct {
+	Value SchemaCompatibilityRequest
 	Set   bool
 }
 
-// IsSet returns true if OptMigrateProps was set.
-func (o OptMigrateProps) IsSet() bool { return o.Set }
+// IsSet returns true if OptSchemaCompatibilityRequest was set.
+func (o OptSchemaCompatibilityRequest) IsSet() bool { return o.Set }
 
 // Reset unsets value.
-func (o *OptMigrateProps) Reset() {
-	var v MigrateProps
+func (o *OptSchemaCompatibilityRequest) Reset() {
+	var v SchemaCompatibilityRequest
 	o.Value = v
 	o.Set = false
 }
 
 // SetTo sets value to v.
-func (o *OptMigrateProps) SetTo(v MigrateProps) {
+func (o *OptSchemaCompatibilityRequest) SetTo(v SchemaCompatibilityRequest) {
 	o.Set = true
 	o.Value = v
 }
 
 // Get returns value and boolean that denotes whether value was set.
-func (o OptMigrateProps) Get() (v MigrateProps, ok bool) {
+func (o OptSchemaCompatibilityRequest) Get() (v SchemaCompatibilityRequest, ok bool) {
 	if !o.Set {
 		return v, false
 	}
@@ -911,7 +887,99 @@ func (o OptMigrateProps) Get() (v MigrateProps, ok bool) {
 }
 
 // Or returns value if set, or given parameter if does not.
-func (o OptMigrateProps) Or(d MigrateProps) MigrateProps {
+func (o OptSchemaCompatibilityRequest) Or(d SchemaCompatibilityRequest) SchemaCompatibilityRequest {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptSchemaMigrateRequest returns new OptSchemaMigrateRequest with value set to v.
+func NewOptSchemaMigrateRequest(v SchemaMigrateRequest) OptSchemaMigrateRequest {
+	return OptSchemaMigrateRequest{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptSchemaMigrateRequest is optional SchemaMigrateRequest.
+type OptSchemaMigrateRequest struct {
+	Value SchemaMigrateRequest
+	Set   bool
+}
+
+// IsSet returns true if OptSchemaMigrateRequest was set.
+func (o OptSchemaMigrateRequest) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptSchemaMigrateRequest) Reset() {
+	var v SchemaMigrateRequest
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptSchemaMigrateRequest) SetTo(v SchemaMigrateRequest) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptSchemaMigrateRequest) Get() (v SchemaMigrateRequest, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptSchemaMigrateRequest) Or(d SchemaMigrateRequest) SchemaMigrateRequest {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptSchemaRequest returns new OptSchemaRequest with value set to v.
+func NewOptSchemaRequest(v SchemaRequest) OptSchemaRequest {
+	return OptSchemaRequest{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptSchemaRequest is optional SchemaRequest.
+type OptSchemaRequest struct {
+	Value SchemaRequest
+	Set   bool
+}
+
+// IsSet returns true if OptSchemaRequest was set.
+func (o OptSchemaRequest) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptSchemaRequest) Reset() {
+	var v SchemaRequest
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptSchemaRequest) SetTo(v SchemaRequest) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptSchemaRequest) Get() (v SchemaRequest, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptSchemaRequest) Or(d SchemaRequest) SchemaRequest {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -1140,7 +1208,8 @@ func (s *Problem) SetReason(val string) {
 	s.Reason = val
 }
 
-func (*Problem) schemaMigrateRes() {}
+func (*Problem) schemaCompatibilityRes() {}
+func (*Problem) schemaDiffRes()          {}
 
 // The machine readable class. One of `invalid` for a malformed or rejected request, `execution_failed`
 // for a valid query that failed on the data it met (division by zero, a violated cardinality
@@ -1254,6 +1323,400 @@ func (s *ProgramResult) SetPlan(val Value) {
 }
 
 func (*ProgramResult) executeRes() {}
+
+// Ref: #/components/schemas/SchemaChange
+type SchemaChange struct {
+	Kind    string    `json:"kind"`
+	Summary string    `json:"summary"`
+	Table   OptString `json:"table"`
+	Column  OptString `json:"column"`
+}
+
+// GetKind returns the value of Kind.
+func (s *SchemaChange) GetKind() string {
+	return s.Kind
+}
+
+// GetSummary returns the value of Summary.
+func (s *SchemaChange) GetSummary() string {
+	return s.Summary
+}
+
+// GetTable returns the value of Table.
+func (s *SchemaChange) GetTable() OptString {
+	return s.Table
+}
+
+// GetColumn returns the value of Column.
+func (s *SchemaChange) GetColumn() OptString {
+	return s.Column
+}
+
+// SetKind sets the value of Kind.
+func (s *SchemaChange) SetKind(val string) {
+	s.Kind = val
+}
+
+// SetSummary sets the value of Summary.
+func (s *SchemaChange) SetSummary(val string) {
+	s.Summary = val
+}
+
+// SetTable sets the value of Table.
+func (s *SchemaChange) SetTable(val OptString) {
+	s.Table = val
+}
+
+// SetColumn sets the value of Column.
+func (s *SchemaChange) SetColumn(val OptString) {
+	s.Column = val
+}
+
+// Ref: #/components/schemas/SchemaCompatibilityRequest
+type SchemaCompatibilityRequest struct {
+	SchemaVersion int64  `json:"schema_version"`
+	SchemaHash    string `json:"schema_hash"`
+}
+
+// GetSchemaVersion returns the value of SchemaVersion.
+func (s *SchemaCompatibilityRequest) GetSchemaVersion() int64 {
+	return s.SchemaVersion
+}
+
+// GetSchemaHash returns the value of SchemaHash.
+func (s *SchemaCompatibilityRequest) GetSchemaHash() string {
+	return s.SchemaHash
+}
+
+// SetSchemaVersion sets the value of SchemaVersion.
+func (s *SchemaCompatibilityRequest) SetSchemaVersion(val int64) {
+	s.SchemaVersion = val
+}
+
+// SetSchemaHash sets the value of SchemaHash.
+func (s *SchemaCompatibilityRequest) SetSchemaHash(val string) {
+	s.SchemaHash = val
+}
+
+// Ref: #/components/schemas/SchemaDiffResult
+type SchemaDiffResult struct {
+	CurrentVersion int64           `json:"current_version"`
+	CurrentHash    string          `json:"current_hash"`
+	DesiredHash    string          `json:"desired_hash"`
+	Changes        []SchemaChange  `json:"changes"`
+	Program        Value           `json:"program"`
+	Destructive    []SchemaFinding `json:"destructive"`
+	Blocking       []SchemaFinding `json:"blocking"`
+}
+
+// GetCurrentVersion returns the value of CurrentVersion.
+func (s *SchemaDiffResult) GetCurrentVersion() int64 {
+	return s.CurrentVersion
+}
+
+// GetCurrentHash returns the value of CurrentHash.
+func (s *SchemaDiffResult) GetCurrentHash() string {
+	return s.CurrentHash
+}
+
+// GetDesiredHash returns the value of DesiredHash.
+func (s *SchemaDiffResult) GetDesiredHash() string {
+	return s.DesiredHash
+}
+
+// GetChanges returns the value of Changes.
+func (s *SchemaDiffResult) GetChanges() []SchemaChange {
+	return s.Changes
+}
+
+// GetProgram returns the value of Program.
+func (s *SchemaDiffResult) GetProgram() Value {
+	return s.Program
+}
+
+// GetDestructive returns the value of Destructive.
+func (s *SchemaDiffResult) GetDestructive() []SchemaFinding {
+	return s.Destructive
+}
+
+// GetBlocking returns the value of Blocking.
+func (s *SchemaDiffResult) GetBlocking() []SchemaFinding {
+	return s.Blocking
+}
+
+// SetCurrentVersion sets the value of CurrentVersion.
+func (s *SchemaDiffResult) SetCurrentVersion(val int64) {
+	s.CurrentVersion = val
+}
+
+// SetCurrentHash sets the value of CurrentHash.
+func (s *SchemaDiffResult) SetCurrentHash(val string) {
+	s.CurrentHash = val
+}
+
+// SetDesiredHash sets the value of DesiredHash.
+func (s *SchemaDiffResult) SetDesiredHash(val string) {
+	s.DesiredHash = val
+}
+
+// SetChanges sets the value of Changes.
+func (s *SchemaDiffResult) SetChanges(val []SchemaChange) {
+	s.Changes = val
+}
+
+// SetProgram sets the value of Program.
+func (s *SchemaDiffResult) SetProgram(val Value) {
+	s.Program = val
+}
+
+// SetDestructive sets the value of Destructive.
+func (s *SchemaDiffResult) SetDestructive(val []SchemaFinding) {
+	s.Destructive = val
+}
+
+// SetBlocking sets the value of Blocking.
+func (s *SchemaDiffResult) SetBlocking(val []SchemaFinding) {
+	s.Blocking = val
+}
+
+func (*SchemaDiffResult) schemaDiffRes() {}
+
+// The accepted canonical logical schema.
+// Ref: #/components/schemas/SchemaDocument
+type SchemaDocument struct {
+	Tables []TableDef `json:"tables"`
+}
+
+// GetTables returns the value of Tables.
+func (s *SchemaDocument) GetTables() []TableDef {
+	return s.Tables
+}
+
+// SetTables sets the value of Tables.
+func (s *SchemaDocument) SetTables(val []TableDef) {
+	s.Tables = val
+}
+
+// Ref: #/components/schemas/SchemaFinding
+type SchemaFinding struct {
+	Kind    string    `json:"kind"`
+	Summary string    `json:"summary"`
+	Table   OptString `json:"table"`
+	Column  OptString `json:"column"`
+	Rows    OptInt64  `json:"rows"`
+}
+
+// GetKind returns the value of Kind.
+func (s *SchemaFinding) GetKind() string {
+	return s.Kind
+}
+
+// GetSummary returns the value of Summary.
+func (s *SchemaFinding) GetSummary() string {
+	return s.Summary
+}
+
+// GetTable returns the value of Table.
+func (s *SchemaFinding) GetTable() OptString {
+	return s.Table
+}
+
+// GetColumn returns the value of Column.
+func (s *SchemaFinding) GetColumn() OptString {
+	return s.Column
+}
+
+// GetRows returns the value of Rows.
+func (s *SchemaFinding) GetRows() OptInt64 {
+	return s.Rows
+}
+
+// SetKind sets the value of Kind.
+func (s *SchemaFinding) SetKind(val string) {
+	s.Kind = val
+}
+
+// SetSummary sets the value of Summary.
+func (s *SchemaFinding) SetSummary(val string) {
+	s.Summary = val
+}
+
+// SetTable sets the value of Table.
+func (s *SchemaFinding) SetTable(val OptString) {
+	s.Table = val
+}
+
+// SetColumn sets the value of Column.
+func (s *SchemaFinding) SetColumn(val OptString) {
+	s.Column = val
+}
+
+// SetRows sets the value of Rows.
+func (s *SchemaFinding) SetRows(val OptInt64) {
+	s.Rows = val
+}
+
+type SchemaMigrateConflict Problem
+
+func (*SchemaMigrateConflict) schemaMigrateRes() {}
+
+// A desired schema, the preflighted server identity, and explicit data-loss consent.
+// Ref: #/components/schemas/SchemaMigrateRequest
+type SchemaMigrateRequest struct {
+	Schema         string  `json:"schema"`
+	CurrentVersion int64   `json:"current_version"`
+	CurrentHash    string  `json:"current_hash"`
+	AcceptDataLoss OptBool `json:"accept_data_loss"`
+}
+
+// GetSchema returns the value of Schema.
+func (s *SchemaMigrateRequest) GetSchema() string {
+	return s.Schema
+}
+
+// GetCurrentVersion returns the value of CurrentVersion.
+func (s *SchemaMigrateRequest) GetCurrentVersion() int64 {
+	return s.CurrentVersion
+}
+
+// GetCurrentHash returns the value of CurrentHash.
+func (s *SchemaMigrateRequest) GetCurrentHash() string {
+	return s.CurrentHash
+}
+
+// GetAcceptDataLoss returns the value of AcceptDataLoss.
+func (s *SchemaMigrateRequest) GetAcceptDataLoss() OptBool {
+	return s.AcceptDataLoss
+}
+
+// SetSchema sets the value of Schema.
+func (s *SchemaMigrateRequest) SetSchema(val string) {
+	s.Schema = val
+}
+
+// SetCurrentVersion sets the value of CurrentVersion.
+func (s *SchemaMigrateRequest) SetCurrentVersion(val int64) {
+	s.CurrentVersion = val
+}
+
+// SetCurrentHash sets the value of CurrentHash.
+func (s *SchemaMigrateRequest) SetCurrentHash(val string) {
+	s.CurrentHash = val
+}
+
+// SetAcceptDataLoss sets the value of AcceptDataLoss.
+func (s *SchemaMigrateRequest) SetAcceptDataLoss(val OptBool) {
+	s.AcceptDataLoss = val
+}
+
+// Merged schema.
+// Ref: #/components/schemas/SchemaMigrateResult
+type SchemaMigrateResult struct {
+	SchemaVersion int64          `json:"schema_version"`
+	SchemaHash    string         `json:"schema_hash"`
+	Schema        SchemaDocument `json:"schema"`
+	Changes       []SchemaChange `json:"changes"`
+}
+
+// GetSchemaVersion returns the value of SchemaVersion.
+func (s *SchemaMigrateResult) GetSchemaVersion() int64 {
+	return s.SchemaVersion
+}
+
+// GetSchemaHash returns the value of SchemaHash.
+func (s *SchemaMigrateResult) GetSchemaHash() string {
+	return s.SchemaHash
+}
+
+// GetSchema returns the value of Schema.
+func (s *SchemaMigrateResult) GetSchema() SchemaDocument {
+	return s.Schema
+}
+
+// GetChanges returns the value of Changes.
+func (s *SchemaMigrateResult) GetChanges() []SchemaChange {
+	return s.Changes
+}
+
+// SetSchemaVersion sets the value of SchemaVersion.
+func (s *SchemaMigrateResult) SetSchemaVersion(val int64) {
+	s.SchemaVersion = val
+}
+
+// SetSchemaHash sets the value of SchemaHash.
+func (s *SchemaMigrateResult) SetSchemaHash(val string) {
+	s.SchemaHash = val
+}
+
+// SetSchema sets the value of Schema.
+func (s *SchemaMigrateResult) SetSchema(val SchemaDocument) {
+	s.Schema = val
+}
+
+// SetChanges sets the value of Changes.
+func (s *SchemaMigrateResult) SetChanges(val []SchemaChange) {
+	s.Changes = val
+}
+
+func (*SchemaMigrateResult) schemaMigrateRes() {}
+
+type SchemaMigrateUnprocessableEntity Problem
+
+func (*SchemaMigrateUnprocessableEntity) schemaMigrateRes() {}
+
+// A desired schema source to plan.
+// Ref: #/components/schemas/SchemaRequest
+type SchemaRequest struct {
+	// The full `rad.schema.yaml` source document, as YAML.
+	Schema string `json:"schema"`
+}
+
+// GetSchema returns the value of Schema.
+func (s *SchemaRequest) GetSchema() string {
+	return s.Schema
+}
+
+// SetSchema sets the value of Schema.
+func (s *SchemaRequest) SetSchema(val string) {
+	s.Schema = val
+}
+
+// Ref: #/components/schemas/SchemaState
+type SchemaState struct {
+	SchemaVersion int64          `json:"schema_version"`
+	SchemaHash    string         `json:"schema_hash"`
+	Schema        SchemaDocument `json:"schema"`
+}
+
+// GetSchemaVersion returns the value of SchemaVersion.
+func (s *SchemaState) GetSchemaVersion() int64 {
+	return s.SchemaVersion
+}
+
+// GetSchemaHash returns the value of SchemaHash.
+func (s *SchemaState) GetSchemaHash() string {
+	return s.SchemaHash
+}
+
+// GetSchema returns the value of Schema.
+func (s *SchemaState) GetSchema() SchemaDocument {
+	return s.Schema
+}
+
+// SetSchemaVersion sets the value of SchemaVersion.
+func (s *SchemaState) SetSchemaVersion(val int64) {
+	s.SchemaVersion = val
+}
+
+// SetSchemaHash sets the value of SchemaHash.
+func (s *SchemaState) SetSchemaHash(val string) {
+	s.SchemaHash = val
+}
+
+// SetSchema sets the value of Schema.
+func (s *SchemaState) SetSchema(val SchemaDocument) {
+	s.Schema = val
+}
 
 // One statement's lightweight outcome.
 // Ref: #/components/schemas/StatementResult

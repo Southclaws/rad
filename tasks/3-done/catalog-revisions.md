@@ -12,9 +12,9 @@ revision history as a schema-managed database.
   persisted revision record or timestamp because no change has committed.
 - `/rad/catalog/meta/schema_version` stores the latest monotonic version.
 - `/rad/catalog/meta/schema_revision/{version}` stores a JSON record containing
-  the version, its UTC commit timestamp, and the complete canonical schema
-  after that change. Version keys are zero-padded so a prefix scan returns
-  history in version order.
+  the version, its UTC commit timestamp, canonical SHA-256 hash, and the
+  complete canonical schema after that change. Version keys are zero-padded
+  so a prefix scan returns history in version order.
 - The catalog changes, current-version counter, revision record, and associated
   index backfills commit in the same serializable transaction. A failed change
   leaves all of them untouched.
@@ -52,28 +52,28 @@ claimed schema and real catalog have not diverged.
 
 ## Increment semantics
 
-- **Direct mode:** every successful individual catalog change increments the
-  version once, including each step applied through the schema reconciler.
-  Failed changes and successful no-ops do not increment it.
+- **Direct mode:** every successful convenience catalog operation increments
+  the version once. A desired-state schema migration is one catalog PIR program
+  and increments once regardless of its number of statements.
 - **Schema mode:** one migration increments the version once, regardless of how
-  many diff steps it contains. The diff and every step run in one transaction;
-  a failed or empty migration does not increment the version.
+  many diff steps it contains. The diff and every statement run in one
+  transaction; a failed or empty migration does not increment the version.
 
 The transaction-bound `catalog.Mutation` surface is the single implementation
-point for catalog edits. Direct operations and reconciler steps each wrap one
-mutation call, while a schema-managed reconciler groups the entire plan through
-the same surface.
+point for catalog edits. Direct operations lower to one-statement catalog PIR;
+the reconciler lowers its entire plan to one program through the same executor.
 
 ## Read surface
 
-`GET /info` exposes `schema_version` and the optional `schema_version_at`
-timestamp beside the catalog mode. The engine exposes the complete ordered
-snapshot history through `Catalog.Revisions` for future history and diff APIs.
+`GET /info` exposes `schema_version`, `schema_hash`, and the optional
+`schema_version_at` timestamp beside the catalog mode. `GET /schema` returns
+the identity plus accepted schema. The engine exposes the complete ordered
+snapshot history through `Catalog.Revisions`.
 
 ## Consumers
 
 - Query traces can carry the schema version they were planned against.
-- Generated clients can record the version they were generated from and detect
-  drift through the cheap `/info` request.
+- Generated clients embed the accepted version, hash, and raw snapshot, then
+  check the exact identity through `/schema/compatibility` on first use.
 - Future schema diffing, migration audit, adoption, and reconciliation tooling
   can extend the stored revision records.

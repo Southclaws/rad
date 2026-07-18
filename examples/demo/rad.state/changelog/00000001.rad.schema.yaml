@@ -1,0 +1,372 @@
+tables:
+- id: 1
+  name: users
+  columns:
+  - id: 1
+    name: id
+    type: string
+    format: uuid
+    default: uuid()
+  - id: 2
+    name: username
+    type: string
+  - id: 3
+    name: display_name
+    type: string
+    nullable: true
+  - id: 4
+    name: password_hash
+    type: string
+  - id: 5
+    name: email
+    type: string
+    nullable: true
+    format: email
+  - id: 6
+    name: created_at
+    type: int64
+    format: unix_ms
+    default: now_ms()
+  primary_key:
+  - id
+  indexes:
+  - name: users_username_uq
+    columns:
+    - username
+    unique: true
+- id: 2
+  name: sessions
+  columns:
+  - id: 1
+    name: token
+    type: string
+    format: uuid
+    default: uuid()
+  - id: 2
+    name: user_id
+    type: string
+  - id: 3
+    name: created_at
+    type: int64
+    format: unix_ms
+    default: now_ms()
+  - id: 4
+    name: expires_at
+    type: int64
+    format: unix_ms
+  primary_key:
+  - token
+  indexes:
+  - name: sessions_user_id_idx
+    columns:
+    - user_id
+    unique: false
+  foreign_keys:
+  - name: sessions_user_id_fk
+    columns:
+    - user_id
+    ref_table: users
+    ref_columns:
+    - id
+- id: 3
+  name: teams
+  columns:
+  - id: 1
+    name: id
+    type: string
+    format: uuid
+    default: uuid()
+  - id: 2
+    name: name
+    type: string
+  - id: 3
+    name: created_at
+    type: int64
+    format: unix_ms
+    default: now_ms()
+  primary_key:
+  - id
+  indexes:
+  - name: teams_name_uq
+    columns:
+    - name
+    unique: true
+- id: 4
+  name: team_members
+  columns:
+  - id: 1
+    name: team_id
+    type: string
+  - id: 2
+    name: user_id
+    type: string
+  - id: 3
+    name: role
+    type: string
+    default: member
+  - id: 4
+    name: joined_at
+    type: int64
+    format: unix_ms
+    default: now_ms()
+  primary_key:
+  - team_id
+  - user_id
+  indexes:
+  - name: team_members_user_id_idx
+    columns:
+    - user_id
+    unique: false
+  foreign_keys:
+  - name: team_members_team_id_fk
+    columns:
+    - team_id
+    ref_table: teams
+    ref_columns:
+    - id
+  - name: team_members_user_id_fk
+    columns:
+    - user_id
+    ref_table: users
+    ref_columns:
+    - id
+- id: 5
+  name: boards
+  columns:
+  - id: 1
+    name: id
+    type: string
+    format: uuid
+    default: uuid()
+  - id: 2
+    name: team_id
+    type: string
+  - id: 3
+    name: name
+    type: string
+  - id: 4
+    name: archived
+    type: bool
+    default: false
+  - id: 5
+    name: created_at
+    type: int64
+    format: unix_ms
+    default: now_ms()
+  primary_key:
+  - id
+  indexes:
+  - name: boards_team_id_name_uq
+    columns:
+    - team_id
+    - name
+    unique: true
+  foreign_keys:
+  - name: boards_team_id_fk
+    columns:
+    - team_id
+    ref_table: teams
+    ref_columns:
+    - id
+- id: 6
+  name: tasks
+  columns:
+  - id: 1
+    name: id
+    type: string
+    format: uuid
+    default: uuid()
+  - id: 2
+    name: board_id
+    type: string
+  - id: 3
+    name: title
+    type: string
+  - id: 4
+    name: description
+    type: string
+    nullable: true
+  - id: 5
+    name: status
+    type: string
+    default: todo
+  - id: 6
+    name: priority
+    type: int64
+    default: 2
+  - id: 7
+    name: estimate
+    type: float64
+    nullable: true
+  - id: 8
+    name: assignee_id
+    type: string
+    nullable: true
+  - id: 9
+    name: creator_id
+    type: string
+  - id: 10
+    name: parent_id
+    type: string
+    nullable: true
+  - id: 11
+    name: due_at
+    type: int64
+    nullable: true
+    format: unix_ms
+  - id: 12
+    name: created_at
+    type: int64
+    format: unix_ms
+    default: now_ms()
+  primary_key:
+  - id
+  indexes:
+  - name: tasks_assignee_id_idx
+    columns:
+    - assignee_id
+    unique: false
+  - name: tasks_assignee_id_status_idx
+    columns:
+    - assignee_id
+    - status
+    unique: false
+  - name: tasks_board_id_status_idx
+    columns:
+    - board_id
+    - status
+    unique: false
+  - name: tasks_parent_id_idx
+    columns:
+    - parent_id
+    unique: false
+  foreign_keys:
+  - name: tasks_assignee_id_fk
+    columns:
+    - assignee_id
+    ref_table: users
+    ref_columns:
+    - id
+  - name: tasks_board_id_fk
+    columns:
+    - board_id
+    ref_table: boards
+    ref_columns:
+    - id
+  - name: tasks_creator_id_fk
+    columns:
+    - creator_id
+    ref_table: users
+    ref_columns:
+    - id
+  - name: tasks_parent_id_fk
+    columns:
+    - parent_id
+    ref_table: tasks
+    ref_columns:
+    - id
+- id: 7
+  name: comments
+  columns:
+  - id: 1
+    name: id
+    type: string
+    format: uuid
+    default: uuid()
+  - id: 2
+    name: task_id
+    type: string
+  - id: 3
+    name: author_id
+    type: string
+  - id: 4
+    name: body
+    type: string
+  - id: 5
+    name: created_at
+    type: int64
+    format: unix_ms
+    default: now_ms()
+  primary_key:
+  - id
+  indexes:
+  - name: comments_task_id_idx
+    columns:
+    - task_id
+    unique: false
+  foreign_keys:
+  - name: comments_author_id_fk
+    columns:
+    - author_id
+    ref_table: users
+    ref_columns:
+    - id
+  - name: comments_task_id_fk
+    columns:
+    - task_id
+    ref_table: tasks
+    ref_columns:
+    - id
+- id: 8
+  name: labels
+  columns:
+  - id: 1
+    name: id
+    type: string
+    format: uuid
+    default: uuid()
+  - id: 2
+    name: team_id
+    type: string
+  - id: 3
+    name: name
+    type: string
+  - id: 4
+    name: hex_color
+    type: string
+    default: "#8899aa"
+  primary_key:
+  - id
+  indexes:
+  - name: labels_team_id_name_uq
+    columns:
+    - team_id
+    - name
+    unique: true
+  foreign_keys:
+  - name: labels_team_id_fk
+    columns:
+    - team_id
+    ref_table: teams
+    ref_columns:
+    - id
+- id: 9
+  name: task_labels
+  columns:
+  - id: 1
+    name: task_id
+    type: string
+  - id: 2
+    name: label_id
+    type: string
+  primary_key:
+  - task_id
+  - label_id
+  indexes:
+  - name: task_labels_label_id_idx
+    columns:
+    - label_id
+    unique: false
+  foreign_keys:
+  - name: task_labels_label_id_fk
+    columns:
+    - label_id
+    ref_table: labels
+    ref_columns:
+    - id
+  - name: task_labels_task_id_fk
+    columns:
+    - task_id
+    ref_table: tasks
+    ref_columns:
+    - id

@@ -3,6 +3,7 @@ package catalog
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -23,6 +24,17 @@ type Schema struct {
 // CanonicalJSON returns the stable JSON representation of s.
 func (s Schema) CanonicalJSON() ([]byte, error) {
 	return json.Marshal(s)
+}
+
+// Hash identifies the schema's canonical logical content. Physical catalog
+// IDs, source formatting, comments, and YAML key order never participate.
+func (s Schema) Hash() (string, error) {
+	raw, err := s.CanonicalJSON()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return fmt.Sprintf("sha256:%x", sum), nil
 }
 
 // Equal reports whether two canonical schemas have identical JSON forms.

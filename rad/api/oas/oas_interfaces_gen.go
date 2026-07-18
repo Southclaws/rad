@@ -25,6 +25,14 @@ type IndexDeleteRes interface {
 	indexDeleteRes()
 }
 
+type SchemaCompatibilityRes interface {
+	schemaCompatibilityRes()
+}
+
+type SchemaDiffRes interface {
+	schemaDiffRes()
+}
+
 type SchemaMigrateRes interface {
 	schemaMigrateRes()
 }

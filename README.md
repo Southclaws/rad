@@ -39,7 +39,7 @@ The vision for the developer experience is your schema is in charge. You author 
 - a pretty decent relational model that does 80% of the CRUD work you often find in the average webapp: joins, CTEs, the usual stuff. You won't find graph-y traversals, vectors, pubsub or any other features that probably warrant just using the right tool for the job. Rad just does relational, hopefully does it well, and not much else.
 
 ```text
-rad.schema.yaml → rad migrate → rad generate → application code
+rad.schema.yaml → rad schema migrate → generated application client
 ```
 
 ## Disclaimer
@@ -76,6 +76,10 @@ Configure the database target in `rad.config.yaml`:
 
 ```yaml
 database_url: rad://localhost
+generate:
+  - language: go
+    output: generated
+    package: db
 ```
 
 Then start a server:
@@ -84,16 +88,19 @@ Then start a server:
 rad serve
 ```
 
-Apply a schema to a running server and generate a typed client:
+Preview and apply a schema to the running server:
 
 ```sh
-rad migrate
-rad generate -o ./generated --pkg db
+rad schema diff
+rad schema migrate
+rad schema status
 ```
 
-The generated client is intended to be the application-facing API. When the
-schema changes, run the migration and regenerate the client. The Rad CLI owns
-`rad.state/`; application code should not edit its contents.
+Migration writes the accepted schema to `rad.state/` and regenerates configured
+clients by default. `rad schema pull` recovers an accepted schema from a server
+that is ahead of the local project. The generated client is tied to that exact
+accepted schema version and hash and refuses to run against a different server
+schema. Application code should not edit `rad.state/`.
 
 ## Development
 

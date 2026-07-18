@@ -91,7 +91,7 @@ type ExecOptions struct {
 	Catalog CatalogPolicy
 	// ExpectedCatalog, when set by an internal reconciler, prevents a program
 	// planned from a stale catalog snapshot from committing over newer schema.
-	ExpectedCatalog *catalog.Schema
+	ExpectedCatalog *catalog.Revision
 }
 
 // StatementPlan is one statement's query-plan view — the observability artifact
@@ -165,7 +165,7 @@ func validateCatalogPolicy(prog Program, policy CatalogPolicy) error {
 // statement in order against a rollback-only transaction. It deliberately
 // skips data execution and index backfills: checks depending on stored rows
 // belong to the real execution pass.
-func (e *Engine) preflightProgram(ctx context.Context, prog Program, collectPlan bool, expected *catalog.Schema) ([]StatementPlan, error) {
+func (e *Engine) preflightProgram(ctx context.Context, prog Program, collectPlan bool, expected *catalog.Revision) ([]StatementPlan, error) {
 	tx, err := e.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -349,15 +349,23 @@ func (e *Engine) runProgram(ctx context.Context, tx *Tx, prog Program, resultNam
 	return ProgramResult{Result: result, Statements: summary, Plans: plans}, nil
 }
 
-func expectCatalog(ctx context.Context, view kv.KV, expected *catalog.Schema) error {
+func expectCatalog(ctx context.Context, view kv.KV, expected *catalog.Revision) error {
 	if expected == nil {
 		return nil
 	}
-	actual, err := catalog.NewReader(view).Schema(ctx)
+	reader := catalog.NewReader(view)
+	revision, err := reader.Revision(ctx)
 	if err != nil {
 		return err
 	}
-	equal, err := expected.Equal(actual)
+	if revision.Version != expected.Version || revision.Hash != expected.Hash {
+		return fmt.Errorf("exec: catalog changed since program planning: %w", kv.ErrConflict)
+	}
+	actual, err := reader.Schema(ctx)
+	if err != nil {
+		return err
+	}
+	equal, err := expected.Schema.Equal(actual)
 	if err != nil {
 		return err
 	}

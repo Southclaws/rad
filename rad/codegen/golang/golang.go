@@ -34,7 +34,9 @@ var templatesFS embed.FS
 // (which lives on Options, not the Model) so the header can embed it.
 type tmplData struct {
 	*codegen.Model
-	SchemaSource string
+	SchemaSource  string
+	SchemaVersion uint64
+	SchemaHash    string
 }
 
 // Generate emits the typed Go client for the model as one gofmt-ed file.
@@ -45,7 +47,10 @@ func (generator) Generate(m *codegen.Model, opts codegen.Options) ([]codegen.Gen
 	}
 
 	var b bytes.Buffer
-	data := tmplData{Model: m, SchemaSource: string(opts.SchemaSource)}
+	data := tmplData{
+		Model: m, SchemaSource: string(opts.SchemaSource),
+		SchemaVersion: opts.SchemaVersion, SchemaHash: opts.SchemaHash,
+	}
 	if err := tmpl.ExecuteTemplate(&b, "file", data); err != nil {
 		return nil, fmt.Errorf("codegen/golang: execute template (bug): %w", err)
 	}
@@ -54,7 +59,7 @@ func (generator) Generate(m *codegen.Model, opts codegen.Options) ([]codegen.Gen
 	if err != nil {
 		return nil, fmt.Errorf("codegen/golang: generated source does not format (bug): %w\n%s", err, b.Bytes())
 	}
-	return []codegen.GeneratedFile{{Path: opts.Package + ".go", Content: src}}, nil
+	return []codegen.GeneratedFile{{Path: codegen.GoClientFilename, Content: src}}, nil
 }
 
 // funcMap holds the small fragment-rendering helpers the templates call. The

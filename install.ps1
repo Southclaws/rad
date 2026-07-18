@@ -61,5 +61,5 @@ if (($UserPath -split ";") -notcontains $BinDir) {
 Write-Host ""
 Write-Host "Get started:"
 Write-Host "  rad serve                 # start a database (RAD_STORAGE=memory|file|s3)"
-Write-Host "  rad migrate               # uses rad.config.yaml and rad.schema.yaml"
+Write-Host "  rad schema migrate        # uses rad.config.yaml and rad.schema.yaml"
 Write-Host "  rad generate -o ./generated --pkg db"

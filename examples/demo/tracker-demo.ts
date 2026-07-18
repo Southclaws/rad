@@ -3,13 +3,10 @@
 // server up (defaults to rad://localhost:7237):
 //
 //	node examples/demo/tracker-demo.ts
-import { connect, isConflict } from "./generated/tracker.ts";
+import { connect, isConflict } from "./generated/rad-client.generated.ts";
 
 const db = connect(process.env.RAD_URL ?? "rad://localhost:7237");
 await db.ping();
-
-const steps = await db.migrate();
-console.log(`── migrate: ${steps.length} schema steps applied`);
 
 // Accounts (unique username enforced by the database).
 const ada = await db.accounts.create({ username: "ada-ts", password_hash: "…" });

@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Rad is a relational database and generated-client toolchain in Go, built on SlateDB. The product is the developer experience, not the storage engine: `rad.schema.yaml → rad migrate → rad generate → typed application code, never write SQL`. It is an early proof of concept at v0.0.0 with zero users — never add backwards-compatibility shims or frame a change as "legacy" support; just make the change. See `README.md` for scope, `PRODUCT.md` for positioning, and `tasks/` (1-todo / 2-building / 3-done) for planned and in-flight work notes.
+Rad is a relational database and generated-client toolchain in Go, built on SlateDB. The product is the developer experience, not the storage engine: `rad.schema.yaml → rad schema migrate → typed application code, never write SQL`. It is an early proof of concept at v0.0.0 with zero users — never add backwards-compatibility shims or frame a change as "legacy" support; just make the change. See `README.md` for scope, `PRODUCT.md` for positioning, and `tasks/` (1-todo / 2-building / 3-done) for planned and in-flight work notes.
 
 Also read `AGENTS.md`. Its key rule: never delimit a Go file into sections with banner comments — a section wanting a banner is a concern wanting its own file in the same package. Split the file instead, and remove banners you encounter in code you touch.
 

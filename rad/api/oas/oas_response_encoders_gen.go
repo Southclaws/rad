@@ -222,6 +222,19 @@ func encodeGetInfoResponse(response *DatabaseInfo, w http.ResponseWriter, span t
 	return nil
 }
 
+func encodeGetSchemaResponse(response *SchemaState, w http.ResponseWriter, span trace.Span) error {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(200)
+
+	e := new(jx.Encoder)
+	response.Encode(e)
+	if _, err := e.WriteTo(w); err != nil {
+		return errors.Wrap(err, "write")
+	}
+
+	return nil
+}
+
 func encodeIndexCreateResponse(response IndexCreateRes, w http.ResponseWriter, span trace.Span) error {
 	switch response := response.(type) {
 	case *TableInfo:
@@ -308,9 +321,33 @@ func encodeIndexDeleteResponse(response IndexDeleteRes, w http.ResponseWriter, s
 	}
 }
 
-func encodeSchemaMigrateResponse(response SchemaMigrateRes, w http.ResponseWriter, span trace.Span) error {
+func encodeSchemaCompatibilityResponse(response SchemaCompatibilityRes, w http.ResponseWriter, span trace.Span) error {
 	switch response := response.(type) {
-	case *MigrateResult:
+	case *NoContent:
+		w.WriteHeader(204)
+
+		return nil
+
+	case *Problem:
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(422)
+
+		e := new(jx.Encoder)
+		response.Encode(e)
+		if _, err := e.WriteTo(w); err != nil {
+			return errors.Wrap(err, "write")
+		}
+
+		return nil
+
+	default:
+		return errors.Errorf("unexpected response type: %T", response)
+	}
+}
+
+func encodeSchemaDiffResponse(response SchemaDiffRes, w http.ResponseWriter, span trace.Span) error {
+	switch response := response.(type) {
+	case *SchemaDiffResult:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
 
@@ -323,6 +360,49 @@ func encodeSchemaMigrateResponse(response SchemaMigrateRes, w http.ResponseWrite
 		return nil
 
 	case *Problem:
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(422)
+
+		e := new(jx.Encoder)
+		response.Encode(e)
+		if _, err := e.WriteTo(w); err != nil {
+			return errors.Wrap(err, "write")
+		}
+
+		return nil
+
+	default:
+		return errors.Errorf("unexpected response type: %T", response)
+	}
+}
+
+func encodeSchemaMigrateResponse(response SchemaMigrateRes, w http.ResponseWriter, span trace.Span) error {
+	switch response := response.(type) {
+	case *SchemaMigrateResult:
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(200)
+
+		e := new(jx.Encoder)
+		response.Encode(e)
+		if _, err := e.WriteTo(w); err != nil {
+			return errors.Wrap(err, "write")
+		}
+
+		return nil
+
+	case *SchemaMigrateConflict:
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(409)
+
+		e := new(jx.Encoder)
+		response.Encode(e)
+		if _, err := e.WriteTo(w); err != nil {
+			return errors.Wrap(err, "write")
+		}
+
+		return nil
+
+	case *SchemaMigrateUnprocessableEntity:
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(422)
 

@@ -2,7 +2,7 @@
 // client, connected to a Rad server over the wire. This is the proof of the
 // developer experience:
 //
-//	rad.schema.yaml  ->  rad migrate  ->  rad generate  ->  this file
+//	rad.schema.yaml  ->  rad schema migrate  ->  this file
 //
 // Everything below uses examples/demo/generated (typed models, query builders,
 // transactions) speaking rad:// to a server — no SQL, no IR, no keys, and
@@ -23,6 +23,8 @@ import (
 	"time"
 
 	tracker "demo/generated"
+
+	radclient "github.com/Southclaws/rad/rad/client"
 )
 
 func main() {
@@ -46,16 +48,13 @@ func run() error {
 		return err
 	}
 	if err := db.Ping(ctx); err != nil {
-		return fmt.Errorf("no Rad server at %s (start one with `rad serve`): %w", url, err)
+		var apiError *radclient.APIError
+		if errors.As(err, &apiError) {
+			return err
+		}
+		return fmt.Errorf("cannot connect to Rad server at %s (start one with `rad serve`): %w", url, err)
 	}
 	fmt.Printf("connected to %s\n", url)
-
-	// The client carries its schema: migrate the remote database on startup.
-	steps, err := db.Migrate(ctx)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("── migrate: %d schema steps applied\n\n", len(steps))
 
 	// Accounts: username and password signup and login.
 	fmt.Println("── signup & login")
@@ -101,7 +100,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		for _, u := range []tracker.Account{ada, grace, linus} {
+		for _, u := range []tracker.User{ada, grace, linus} {
 			role := "member"
 			if u.ID == ada.ID {
 				role = "owner"
@@ -293,7 +292,7 @@ func run() error {
 	fmt.Printf("   %q done, assignee cleared (nil=%v)\n", fix.Title, fix.AssigneeID == nil)
 
 	// grace still owns tasks and comments reference linus: restrict wins.
-	if _, err := db.Accounts.Delete(ctx, grace.ID); err != nil {
+	if _, err := db.Users.Delete(ctx, grace.ID); err != nil {
 		fmt.Printf("   deleting grace blocked: %v\n", err)
 	}
 
@@ -343,21 +342,21 @@ func hash(password string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func signup(ctx context.Context, db *tracker.Client, username, password string, email *string) (tracker.Account, error) {
-	u, err := db.Accounts.Create(ctx, tracker.AccountCreate{
+func signup(ctx context.Context, db *tracker.Client, username, password string, email *string) (tracker.User, error) {
+	u, err := db.Users.Create(ctx, tracker.UserCreate{
 		Username:     username,
 		PasswordHash: hash(password),
 		Email:        email,
 	})
 	if err != nil {
-		return tracker.Account{}, err
+		return tracker.User{}, err
 	}
 	fmt.Printf("   signed up %s (id %s…)\n", u.Username, u.ID[:8])
 	return u, nil
 }
 
 func login(ctx context.Context, db *tracker.Client, username, password string) (tracker.Session, error) {
-	u, ok, err := db.Accounts.ByUsername(ctx, username)
+	u, ok, err := db.Users.ByUsername(ctx, username)
 	if err != nil {
 		return tracker.Session{}, err
 	}
@@ -370,17 +369,17 @@ func login(ctx context.Context, db *tracker.Client, username, password string) (
 	})
 }
 
-func whoami(ctx context.Context, db *tracker.Client, token string) (tracker.Account, error) {
+func whoami(ctx context.Context, db *tracker.Client, token string) (tracker.User, error) {
 	s, ok, err := db.Sessions.Get(ctx, token)
 	if err != nil {
-		return tracker.Account{}, err
+		return tracker.User{}, err
 	}
 	if !ok || s.ExpiresAt < time.Now().UnixMilli() {
-		return tracker.Account{}, errors.New("session expired")
+		return tracker.User{}, errors.New("session expired")
 	}
-	u, ok, err := db.Accounts.Get(ctx, s.UserID)
+	u, ok, err := db.Users.Get(ctx, s.UserID)
 	if err != nil || !ok {
-		return tracker.Account{}, errors.Join(err, errors.New("user missing"))
+		return tracker.User{}, errors.Join(err, errors.New("user missing"))
 	}
 	return u, nil
 }

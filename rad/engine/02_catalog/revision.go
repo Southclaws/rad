@@ -23,6 +23,7 @@ const (
 type Revision struct {
 	Version   uint64    `json:"version"`
 	CreatedAt time.Time `json:"created_at"`
+	Hash      string    `json:"hash"`
 	Schema    Schema    `json:"schema"`
 }
 
@@ -52,6 +53,11 @@ func (c *Catalog) Revision(ctx context.Context) (Revision, error) {
 	return currentRevision(ctx, c.store)
 }
 
+// Revision reports the latest catalog revision visible through this KV view.
+func (r Reader) Revision(ctx context.Context) (Revision, error) {
+	return currentRevision(ctx, r.view)
+}
+
 // Revisions returns every committed catalog revision in version order.
 func (c *Catalog) Revisions(ctx context.Context) ([]Revision, error) {
 	return revisions(ctx, c.store)
@@ -68,7 +74,12 @@ func currentRevision(ctx context.Context, view kv.KV) (Revision, error) {
 		return Revision{}, err
 	}
 	if !ok {
-		return Revision{Schema: Schema{}}, nil
+		empty := Schema{}
+		hash, err := empty.Hash()
+		if err != nil {
+			return Revision{}, err
+		}
+		return Revision{Hash: hash, Schema: empty}, nil
 	}
 	version, err := strconv.ParseUint(string(raw), 10, 64)
 	if err != nil {
@@ -95,7 +106,12 @@ func bumpRevision(ctx context.Context, view kv.KV) (Revision, error) {
 	if err != nil {
 		return Revision{}, err
 	}
-	next := Revision{Version: current.Version + 1, CreatedAt: time.Now().UTC(), Schema: schema}
+	hash, err := schema.Hash()
+	if err != nil {
+		return Revision{}, reject.Mark(reject.ReasonCatalogDrift,
+			fmt.Errorf("catalog: hash schema revision %d: %w", current.Version+1, err))
+	}
+	next := Revision{Version: current.Version + 1, CreatedAt: time.Now().UTC(), Hash: hash, Schema: schema}
 	raw, err := json.Marshal(next)
 	if err != nil {
 		return Revision{}, reject.Mark(reject.ReasonCatalogDrift,
@@ -125,6 +141,9 @@ func revisions(ctx context.Context, view kv.KV) ([]Revision, error) {
 			return nil, reject.Mark(reject.ReasonCatalogCorrupt,
 				fmt.Errorf("catalog: corrupt schema revision %q: %w", it.Key(), err))
 		}
+		if err := validateRevisionHash(revision); err != nil {
+			return nil, err
+		}
 		out = append(out, revision)
 	}
 	if err := it.Err(); err != nil {
@@ -147,7 +166,23 @@ func readRevision(ctx context.Context, view kv.KV, version uint64) (Revision, bo
 		return Revision{}, false, reject.Fail(reject.ReasonCatalogCorrupt,
 			"catalog: schema revision key %d contains version %d", version, revision.Version)
 	}
+	if err := validateRevisionHash(revision); err != nil {
+		return Revision{}, false, err
+	}
 	return revision, true, nil
+}
+
+func validateRevisionHash(revision Revision) error {
+	hash, err := revision.Schema.Hash()
+	if err != nil {
+		return reject.Mark(reject.ReasonCatalogCorrupt,
+			fmt.Errorf("catalog: hash schema revision %d: %w", revision.Version, err))
+	}
+	if revision.Hash != hash {
+		return reject.Fail(reject.ReasonCatalogCorrupt,
+			"catalog: schema revision %d hash is %q, want %q", revision.Version, revision.Hash, hash)
+	}
+	return nil
 }
 
 func revisionKey(version uint64) string {

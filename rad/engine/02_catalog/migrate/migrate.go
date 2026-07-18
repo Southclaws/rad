@@ -277,6 +277,27 @@ func diffTable(
 		if c.Nullable != dc.Nullable {
 			return tableSteps{}, reject.Inputf("migrate: %s.%s: changing nullability is not supported", name, dc.Name)
 		}
+		if c.Format != dc.Format {
+			return tableSteps{}, reject.Inputf("migrate: %s.%s: changing format is not supported", name, dc.Name)
+		}
+		if !defaultsEqual(c.Default, dc.Default) {
+			return tableSteps{}, reject.Inputf("migrate: %s.%s: changing the default is not supported", name, dc.Name)
+		}
+	}
+	currentOrder := make([]catalog.SchemaID, 0, len(cur.Columns))
+	desiredOrder := make([]catalog.SchemaID, 0, len(d.Def.Columns))
+	for _, column := range cur.Columns {
+		if _, survives := desiredIDs[column.SchemaID]; survives {
+			currentOrder = append(currentOrder, column.SchemaID)
+		}
+	}
+	for _, column := range d.Def.Columns {
+		if _, exists := curColsByID[column.ID]; exists {
+			desiredOrder = append(desiredOrder, column.ID)
+		}
+	}
+	if !slices.Equal(currentOrder, desiredOrder) {
+		return tableSteps{}, reject.Inputf("migrate: %s: changing column order is not supported", name)
 	}
 	for schemaID, column := range curColsByID {
 		if _, exists := desiredIDs[schemaID]; !exists {
@@ -310,7 +331,11 @@ func diffTable(
 	}
 	curIdx := map[string]catalog.Index{}
 	for _, idx := range cur.Indexes {
+		generated := idx.Name == derivedIndexName(cur.Name, idx.Columns, idx.Unique)
 		applyRenames(idx.Columns, out.renames)
+		if generated {
+			idx.Name = derivedIndexName(name, idx.Columns, idx.Unique)
+		}
 		curIdx[sig(idx.Columns, idx.Unique)] = idx
 	}
 	desiredIdx := map[string]catalog.IndexDef{}
@@ -318,7 +343,10 @@ func diffTable(
 		desiredIdx[sig(idx.Columns, idx.Unique)] = idx
 	}
 	for key, di := range desiredIdx {
-		if _, ok := curIdx[key]; !ok {
+		if current, ok := curIdx[key]; ok && current.Name != di.Name {
+			return tableSteps{}, reject.Inputf(
+				"migrate: %s: renaming index %q to %q is not supported", name, current.Name, di.Name)
+		} else if !ok {
 			out.indexCreates = append(out.indexCreates, CreateIndex{Table: name, Def: di})
 		}
 	}
@@ -334,6 +362,21 @@ func diffTable(
 	sortSteps(out.indexCreates)
 	sortSteps(out.columnDeletes)
 	return out, nil
+}
+
+func defaultsEqual(a, b *catalog.Default) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func derivedIndexName(table string, columns []string, unique bool) string {
+	suffix := "idx"
+	if unique {
+		suffix = "uq"
+	}
+	return table + "_" + strings.Join(columns, "_") + "_" + suffix
 }
 
 // applyRenames rewrites names in-place according to RenameColumn steps.
@@ -363,8 +406,8 @@ func compareFKs(
 	currentByPhysicalID map[string]catalog.Table,
 	desiredByName map[string]catalog.SchemaID,
 ) error {
-	canon := func(cols []string, refTable catalog.SchemaID) string {
-		return fmt.Sprintf("%s->%d", strings.Join(cols, ","), refTable)
+	canon := func(name string, cols []string, refTable catalog.SchemaID) string {
+		return fmt.Sprintf("%s:%s->%d", name, strings.Join(cols, ","), refTable)
 	}
 	curSet := map[string]bool{}
 	for _, fk := range cur.ForeignKeys {
@@ -375,8 +418,13 @@ func compareFKs(
 				fk.Name, cur.Name, fk.RefTableID)
 		}
 		cols := slices.Clone(fk.Columns)
+		name := fk.Name
+		generated := len(cols) == 1 && name == derivedForeignKeyName(cur.Name, cols[0])
 		applyRenames(cols, renames)
-		curSet[canon(cols, refTable.SchemaID)] = true
+		if generated {
+			name = derivedForeignKeyName(d.Def.Name, cols[0])
+		}
+		curSet[canon(name, cols, refTable.SchemaID)] = true
 	}
 	desSet := map[string]bool{}
 	for _, fk := range d.Def.ForeignKeys {
@@ -385,7 +433,7 @@ func compareFKs(
 			return reject.Inputf("migrate: foreign key %q on table %q references unknown table %q",
 				fk.Name, d.Def.Name, fk.RefTable)
 		}
-		desSet[canon(fk.Columns, refTable)] = true
+		desSet[canon(fk.Name, fk.Columns, refTable)] = true
 	}
 	if len(curSet) != len(desSet) {
 		return reject.Inputf("migrate: %s: adding or removing foreign keys on an existing table is not supported", d.Def.Name)
@@ -396,6 +444,10 @@ func compareFKs(
 		}
 	}
 	return nil
+}
+
+func derivedForeignKeyName(table, column string) string {
+	return table + "_" + column + "_fk"
 }
 
 // orderCreates topologically sorts new tables by their FK dependencies on

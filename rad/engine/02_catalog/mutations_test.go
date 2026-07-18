@@ -171,7 +171,10 @@ func TestRenameColumnRewritesReferences(t *testing.T) {
 	if _, ok := tbl.Column("kind"); ok {
 		t.Fatal("old column name still present")
 	}
-	idx, _ := tbl.Index("events_kind_idx")
+	idx, ok := tbl.Index("events_category_idx")
+	if !ok {
+		t.Fatal("derived index name was not rewritten")
+	}
 	if idx.Columns[0] != "category" {
 		t.Fatalf("index columns not rewritten: %v", idx.Columns)
 	}
