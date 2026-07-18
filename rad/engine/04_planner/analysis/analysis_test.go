@@ -11,7 +11,20 @@ import (
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	"github.com/Southclaws/rad/rad/engine/03_lir/bound"
 	"github.com/Southclaws/rad/rad/engine/04_planner/analysis"
+	pt "github.com/Southclaws/rad/rad/engine/04_planner/plannertest"
 )
+
+var (
+	bcol         = pt.Column
+	blit         = pt.Literal
+	beq          = pt.Equal
+	band         = pt.And
+	bscan        = pt.Scan
+	bfilter      = pt.Filter
+	forcingQuery = pt.ForcingQuery
+)
+
+func bind(t *testing.T, q lir.Query) *bound.Query { return pt.Bind(t, q) }
 
 // extract binds a many-query over the given root and runs extraction on it.
 func extract(t *testing.T, root lir.Relation) *analysis.ScanConstraints {
