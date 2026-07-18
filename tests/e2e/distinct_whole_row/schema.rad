@@ -2,8 +2,9 @@
 # column: two readings that share a sensor but differ in `ok` stay distinct,
 # while exact-duplicate readings collapse to one.
 tables:
-  - name: readings
+  - id: 1
+    name: readings
     columns:
-      - { name: id,     type: string, pk: true }
-      - { name: sensor, type: string }
-      - { name: ok,     type: bool }
+      - { id: 1, name: id,     type: string, pk: true }
+      - { id: 2, name: sensor, type: string }
+      - { id: 3, name: ok,     type: bool }

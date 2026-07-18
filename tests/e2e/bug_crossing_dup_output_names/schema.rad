@@ -3,7 +3,8 @@
 # body (bind.go:130-136) but NOT for a query root, so the colliding object
 # collapses in JSON, silently dropping the left side's columns.
 tables:
-  - name: items
+  - id: 1
+    name: items
     columns:
-      - { name: id,  type: string, pk: true }
-      - { name: val, type: int64 }
+      - { id: 1, name: id,  type: string, pk: true }
+      - { id: 2, name: val, type: int64 }

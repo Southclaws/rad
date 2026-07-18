@@ -1,9 +1,10 @@
 # e2e/agg_group_by_multi — GROUP BY two columns, one output row per distinct
 # (region, category) pair, ordered by both keys.
 tables:
-  - name: sales
+  - id: 1
+    name: sales
     columns:
-      - { name: id,       type: string, pk: true }
-      - { name: region,   type: string }
-      - { name: category, type: string }
-      - { name: amount,   type: int64 }
+      - { id: 1, name: id,       type: string, pk: true }
+      - { id: 2, name: region,   type: string }
+      - { id: 3, name: category, type: string }
+      - { id: 4, name: amount,   type: int64 }

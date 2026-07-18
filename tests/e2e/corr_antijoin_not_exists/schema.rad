@@ -1,12 +1,14 @@
 # anti-join: filter parents to those with NO children via not(exists(...)).
 # The crossing sits under a NOT inside a filter predicate.
 tables:
-  - name: parents
+  - id: 1
+    name: parents
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
 
-  - name: children
+  - id: 2
+    name: children
     columns:
-      - { name: id,        type: string, pk: true }
-      - { name: parent_id, type: string, nullable: true, ref: parents.id }
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: parent_id, type: string, nullable: true, ref: parents.id }

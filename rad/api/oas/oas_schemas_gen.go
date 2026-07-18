@@ -22,6 +22,80 @@ type ColumnCreateUnprocessableEntity Problem
 
 func (*ColumnCreateUnprocessableEntity) columnCreateRes() {}
 
+// A column definition for a direct catalog create operation.
+// Ref: #/components/schemas/ColumnDef
+type ColumnDef struct {
+	// An optional stable logical identity; direct mode allocates one when omitted.
+	ID   OptInt64 `json:"id"`
+	Name string   `json:"name"`
+	// The column's storage type, one of `text`, `int64`, `float64`, or `bool`.
+	Type     string  `json:"type"`
+	Nullable OptBool `json:"nullable"`
+	// An optional semantic hint such as `uuid` or `unix_ms`.
+	Format  OptString        `json:"format"`
+	Default OptColumnDefault `json:"default"`
+}
+
+// GetID returns the value of ID.
+func (s *ColumnDef) GetID() OptInt64 {
+	return s.ID
+}
+
+// GetName returns the value of Name.
+func (s *ColumnDef) GetName() string {
+	return s.Name
+}
+
+// GetType returns the value of Type.
+func (s *ColumnDef) GetType() string {
+	return s.Type
+}
+
+// GetNullable returns the value of Nullable.
+func (s *ColumnDef) GetNullable() OptBool {
+	return s.Nullable
+}
+
+// GetFormat returns the value of Format.
+func (s *ColumnDef) GetFormat() OptString {
+	return s.Format
+}
+
+// GetDefault returns the value of Default.
+func (s *ColumnDef) GetDefault() OptColumnDefault {
+	return s.Default
+}
+
+// SetID sets the value of ID.
+func (s *ColumnDef) SetID(val OptInt64) {
+	s.ID = val
+}
+
+// SetName sets the value of Name.
+func (s *ColumnDef) SetName(val string) {
+	s.Name = val
+}
+
+// SetType sets the value of Type.
+func (s *ColumnDef) SetType(val string) {
+	s.Type = val
+}
+
+// SetNullable sets the value of Nullable.
+func (s *ColumnDef) SetNullable(val OptBool) {
+	s.Nullable = val
+}
+
+// SetFormat sets the value of Format.
+func (s *ColumnDef) SetFormat(val OptString) {
+	s.Format = val
+}
+
+// SetDefault sets the value of Default.
+func (s *ColumnDef) SetDefault(val OptColumnDefault) {
+	s.Default = val
+}
+
 // A column default, applied when an insert omits the column: either a builtin generator named by
 // `func` (`uuid` on text columns, `now_ms` on int64 columns) or a literal `value` of the column's
 // type. Exactly one of the two is set.
@@ -64,6 +138,8 @@ func (*ColumnDeleteUnprocessableEntity) columnDeleteRes() {}
 // One column of a table, as reported by introspection.
 // Ref: #/components/schemas/ColumnInfo
 type ColumnInfo struct {
+	// The stable logical column identity within its table.
+	ID   int64  `json:"id"`
 	Name string `json:"name"`
 	// The column's storage type, one of `text`, `int64`, `float64`, or `bool`.
 	Type     string  `json:"type"`
@@ -71,6 +147,11 @@ type ColumnInfo struct {
 	// An optional semantic hint such as `uuid` or `unix_ms`.
 	Format  OptString        `json:"format"`
 	Default OptColumnDefault `json:"default"`
+}
+
+// GetID returns the value of ID.
+func (s *ColumnInfo) GetID() int64 {
+	return s.ID
 }
 
 // GetName returns the value of Name.
@@ -96,6 +177,11 @@ func (s *ColumnInfo) GetFormat() OptString {
 // GetDefault returns the value of Default.
 func (s *ColumnInfo) GetDefault() OptColumnDefault {
 	return s.Default
+}
+
+// SetID sets the value of ID.
+func (s *ColumnInfo) SetID(val int64) {
+	s.ID = val
 }
 
 // SetName sets the value of Name.
@@ -510,6 +596,52 @@ func (o OptBool) Or(d bool) bool {
 	return d
 }
 
+// NewOptColumnDef returns new OptColumnDef with value set to v.
+func NewOptColumnDef(v ColumnDef) OptColumnDef {
+	return OptColumnDef{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptColumnDef is optional ColumnDef.
+type OptColumnDef struct {
+	Value ColumnDef
+	Set   bool
+}
+
+// IsSet returns true if OptColumnDef was set.
+func (o OptColumnDef) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptColumnDef) Reset() {
+	var v ColumnDef
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptColumnDef) SetTo(v ColumnDef) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptColumnDef) Get() (v ColumnDef, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptColumnDef) Or(d ColumnDef) ColumnDef {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptColumnDefault returns new OptColumnDefault with value set to v.
 func NewOptColumnDefault(v ColumnDefault) OptColumnDefault {
 	return OptColumnDefault{
@@ -550,52 +682,6 @@ func (o OptColumnDefault) Get() (v ColumnDefault, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptColumnDefault) Or(d ColumnDefault) ColumnDefault {
-	if v, ok := o.Get(); ok {
-		return v
-	}
-	return d
-}
-
-// NewOptColumnInfo returns new OptColumnInfo with value set to v.
-func NewOptColumnInfo(v ColumnInfo) OptColumnInfo {
-	return OptColumnInfo{
-		Value: v,
-		Set:   true,
-	}
-}
-
-// OptColumnInfo is optional ColumnInfo.
-type OptColumnInfo struct {
-	Value ColumnInfo
-	Set   bool
-}
-
-// IsSet returns true if OptColumnInfo was set.
-func (o OptColumnInfo) IsSet() bool { return o.Set }
-
-// Reset unsets value.
-func (o *OptColumnInfo) Reset() {
-	var v ColumnInfo
-	o.Value = v
-	o.Set = false
-}
-
-// SetTo sets value to v.
-func (o *OptColumnInfo) SetTo(v ColumnInfo) {
-	o.Set = true
-	o.Value = v
-}
-
-// Get returns value and boolean that denotes whether value was set.
-func (o OptColumnInfo) Get() (v ColumnInfo, ok bool) {
-	if !o.Set {
-		return v, false
-	}
-	return o.Value, true
-}
-
-// Or returns value if set, or given parameter if does not.
-func (o OptColumnInfo) Or(d ColumnInfo) ColumnInfo {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -734,6 +820,52 @@ func (o OptIndexInfo) Get() (v IndexInfo, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptIndexInfo) Or(d IndexInfo) IndexInfo {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptInt64 returns new OptInt64 with value set to v.
+func NewOptInt64(v int64) OptInt64 {
+	return OptInt64{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptInt64 is optional int64.
+type OptInt64 struct {
+	Value int64
+	Set   bool
+}
+
+// IsSet returns true if OptInt64 was set.
+func (o OptInt64) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptInt64) Reset() {
+	var v int64
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptInt64) SetTo(v int64) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptInt64) Get() (v int64, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptInt64) Or(d int64) int64 {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -1159,16 +1291,23 @@ type TableCreateUnprocessableEntity Problem
 
 func (*TableCreateUnprocessableEntity) tableCreateRes() {}
 
-// A new table's definition: exactly what a `schema.rad` entry expresses, as JSON. Column types are
-// `text`, `int64`, `float64`, or `bool`; the primary key is required and its columns must not be
-// nullable.
+// A new table's definition, mirroring a `schema.rad` entry as JSON. The direct API may omit logical
+// IDs for the catalog to allocate. Column types are `text`, `int64`, `float64`, or `bool`; the primary
+// key is required and its columns must not be nullable.
 // Ref: #/components/schemas/TableDef
 type TableDef struct {
+	// An optional stable logical identity; direct mode allocates one when omitted.
+	ID          OptInt64         `json:"id"`
 	Name        string           `json:"name"`
-	Columns     []ColumnInfo     `json:"columns"`
+	Columns     []ColumnDef      `json:"columns"`
 	PrimaryKey  []string         `json:"primary_key"`
 	Indexes     []IndexInfo      `json:"indexes"`
 	ForeignKeys []ForeignKeyInfo `json:"foreign_keys"`
+}
+
+// GetID returns the value of ID.
+func (s *TableDef) GetID() OptInt64 {
+	return s.ID
 }
 
 // GetName returns the value of Name.
@@ -1177,7 +1316,7 @@ func (s *TableDef) GetName() string {
 }
 
 // GetColumns returns the value of Columns.
-func (s *TableDef) GetColumns() []ColumnInfo {
+func (s *TableDef) GetColumns() []ColumnDef {
 	return s.Columns
 }
 
@@ -1196,13 +1335,18 @@ func (s *TableDef) GetForeignKeys() []ForeignKeyInfo {
 	return s.ForeignKeys
 }
 
+// SetID sets the value of ID.
+func (s *TableDef) SetID(val OptInt64) {
+	s.ID = val
+}
+
 // SetName sets the value of Name.
 func (s *TableDef) SetName(val string) {
 	s.Name = val
 }
 
 // SetColumns sets the value of Columns.
-func (s *TableDef) SetColumns(val []ColumnInfo) {
+func (s *TableDef) SetColumns(val []ColumnDef) {
 	s.Columns = val
 }
 
@@ -1232,12 +1376,19 @@ func (*TableDeleteUnprocessableEntity) tableDeleteRes() {}
 // One table's definition, as reported by introspection.
 // Ref: #/components/schemas/TableInfo
 type TableInfo struct {
+	// The stable logical table identity within this database.
+	ID      int64        `json:"id"`
 	Name    string       `json:"name"`
 	Columns []ColumnInfo `json:"columns"`
 	// The column names that make up the primary key, in order.
 	PrimaryKey  []string         `json:"primary_key"`
 	Indexes     []IndexInfo      `json:"indexes"`
 	ForeignKeys []ForeignKeyInfo `json:"foreign_keys"`
+}
+
+// GetID returns the value of ID.
+func (s *TableInfo) GetID() int64 {
+	return s.ID
 }
 
 // GetName returns the value of Name.
@@ -1263,6 +1414,11 @@ func (s *TableInfo) GetIndexes() []IndexInfo {
 // GetForeignKeys returns the value of ForeignKeys.
 func (s *TableInfo) GetForeignKeys() []ForeignKeyInfo {
 	return s.ForeignKeys
+}
+
+// SetID sets the value of ID.
+func (s *TableInfo) SetID(val int64) {
+	s.ID = val
 }
 
 // SetName sets the value of Name.

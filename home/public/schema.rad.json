@@ -21,18 +21,24 @@
       "type": "string",
       "pattern": "^[a-z_][a-z0-9_]*$"
     },
+    "schema_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
     "table": {
       "type": "object",
       "required": [
+        "id",
         "name",
         "columns"
       ],
       "additionalProperties": false,
       "properties": {
-        "name": {
-          "$ref": "#/$defs/identifier"
+        "id": {
+          "$ref": "#/$defs/schema_id"
         },
-        "renamed_from": {
+        "name": {
           "$ref": "#/$defs/identifier"
         },
         "columns": {
@@ -60,11 +66,15 @@
     "column": {
       "type": "object",
       "required": [
+        "id",
         "name",
         "type"
       ],
       "additionalProperties": false,
       "properties": {
+        "id": {
+          "$ref": "#/$defs/schema_id"
+        },
         "name": {
           "$ref": "#/$defs/identifier"
         },
@@ -103,9 +113,6 @@
             "boolean"
           ],
           "description": "Literal of the column's type, or a generator: uuid(), now_ms()"
-        },
-        "renamed_from": {
-          "$ref": "#/$defs/identifier"
         }
       }
     },

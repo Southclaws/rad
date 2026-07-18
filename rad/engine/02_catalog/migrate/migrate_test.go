@@ -1,5 +1,5 @@
 // These tests document the migration differ: which schema edits produce
-// which steps, how renamed_from hints turn delete+create into renames, how new
+// which steps, how stable IDs distinguish renames from replacements, how new
 // tables are dependency-ordered, and which transformations are refused.
 package migrate_test
 
@@ -66,14 +66,16 @@ func stepStrings(steps []migrate.Step) []string {
 
 const v1 = `
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string, index: true }
-  - name: boards
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string, index: true }
+  - id: 2
+    name: boards
     columns:
-      - { name: id,      type: string, pk: true }
-      - { name: user_id, type: string, ref: users.id }
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: user_id, type: string, ref: users.id }
 `
 
 // An empty database diffs to a create for every table, dependency-ordered:
@@ -98,15 +100,17 @@ func TestNoChanges(t *testing.T) {
 func TestCreateColumnAndIndex(t *testing.T) {
 	steps := diff(t, currentFrom(t, v1), `
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,    type: string, pk: true }
-      - { name: name,  type: string, index: true }
-      - { name: email, type: string, nullable: true, unique: true }
-  - name: boards
+      - { id: 1, name: id,    type: string, pk: true }
+      - { id: 2, name: name,  type: string, index: true }
+      - { id: 3, name: email, type: string, nullable: true, unique: true }
+  - id: 2
+    name: boards
     columns:
-      - { name: id,      type: string, pk: true }
-      - { name: user_id, type: string, ref: users.id, index: true }
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: user_id, type: string, ref: users.id, index: true }
 `)
 	got := stepStrings(steps)
 	want := []string{
@@ -120,60 +124,62 @@ tables:
 	}
 }
 
-// A rename hint converts what would be delete+create into a rename; without the
-// hint the same edit is a delete plus a create.
-func TestColumnRenameHint(t *testing.T) {
+// A stable column ID makes a rename deterministic. The index over the renamed
+// column is structurally unchanged, so it does not need a rebuild.
+func TestColumnRenameByID(t *testing.T) {
 	current := currentFrom(t, v1)
 
-	hinted := diff(t, current, `
+	steps := diff(t, current, `
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,        type: string, pk: true }
-      - { name: full_name, type: string, index: true, renamed_from: name }
-  - name: boards
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: full_name, type: string, index: true }
+  - id: 2
+    name: boards
     columns:
-      - { name: id,      type: string, pk: true }
-      - { name: user_id, type: string, ref: users.id }
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: user_id, type: string, ref: users.id }
 `)
-	got := stepStrings(hinted)
-	// One step only: the index over the renamed column is structurally
-	// unchanged (indexes are compared by shape, not name), so no delete or
-	// backfill happens.
+	got := stepStrings(steps)
 	if len(got) != 1 || got[0] != "rename column users.name -> full_name" {
-		t.Fatalf("hinted rename: %v", got)
-	}
-
-	unhinted := diff(t, current, `
-tables:
-  - name: users
-    columns:
-      - { name: id,        type: string, pk: true }
-      - { name: full_name, type: string, nullable: true, index: true }
-  - name: boards
-    columns:
-      - { name: id,      type: string, pk: true }
-      - { name: user_id, type: string, ref: users.id }
-`)
-	gotU := stepStrings(unhinted)
-	joined := strings.Join(gotU, "; ")
-	if !strings.Contains(joined, "create column users.full_name") || !strings.Contains(joined, "delete column users.name") {
-		t.Fatalf("unhinted rename should be create+delete: %v", gotU)
+		t.Fatalf("rename: %v", got)
 	}
 }
 
-func TestTableRenameHint(t *testing.T) {
+func TestColumnIdentityReplacementRejected(t *testing.T) {
+	_, err := migrate.Diff(currentFrom(t, v1), parse(t, `
+tables:
+  - id: 1
+    name: users
+    columns:
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 3, name: name, type: string, nullable: true, index: true }
+  - id: 2
+    name: boards
+    columns:
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: user_id, type: string, ref: users.id }
+`))
+	if err == nil || !strings.Contains(err.Error(), "changes schema ID 2 -> 3") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestTableRenameByID(t *testing.T) {
 	steps := diff(t, currentFrom(t, v1), `
 tables:
-  - name: people
-    renamed_from: users
+  - id: 1
+    name: people
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string, index: true }
-  - name: boards
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string, index: true }
+  - id: 2
+    name: boards
     columns:
-      - { name: id,      type: string, pk: true }
-      - { name: user_id, type: string, ref: people.id }
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: user_id, type: string, ref: people.id }
 `)
 	got := stepStrings(steps)
 	if len(got) != 1 || got[0] != "rename table users -> people" {
@@ -181,13 +187,45 @@ tables:
 	}
 }
 
+func TestReferencedPrimaryKeyRenameByID(t *testing.T) {
+	current := currentFrom(t, `
+tables:
+  - id: 1
+    name: parents
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+  - id: 2
+    name: children
+    columns:
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: parent_id, type: string, ref: parents.id }
+`)
+	steps := diff(t, current, `
+tables:
+  - id: 1
+    name: parents
+    columns:
+      - { id: 1, name: parent_key, type: string, pk: true }
+  - id: 2
+    name: children
+    columns:
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: parent_id, type: string, ref: parents.parent_key }
+`)
+	got := stepStrings(steps)
+	if len(got) != 1 || got[0] != "rename column parents.id -> parent_key" {
+		t.Fatalf("got %v", got)
+	}
+}
+
 func TestDeleteTable(t *testing.T) {
 	steps := diff(t, currentFrom(t, v1), `
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string, index: true }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string, index: true }
 `)
 	got := stepStrings(steps)
 	if len(got) != 1 || got[0] != "delete table boards" {
@@ -199,10 +237,11 @@ tables:
 func TestDeleteReferencedTableRejected(t *testing.T) {
 	_, err := migrate.Diff(currentFrom(t, v1), parse(t, `
 tables:
-  - name: boards
+  - id: 2
+    name: boards
     columns:
-      - { name: id,      type: string, pk: true }
-      - { name: user_id, type: string, ref: users.id }
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: user_id, type: string, ref: users.id }
 `))
 	if err == nil || !strings.Contains(err.Error(), "references deleted table") {
 		t.Fatalf("got %v", err)
@@ -212,45 +251,51 @@ tables:
 func TestUnsupportedChangesRejected(t *testing.T) {
 	current := currentFrom(t, v1)
 	boards := `
-  - name: boards
+  - id: 2
+    name: boards
     columns:
-      - { name: id,      type: string, pk: true }
-      - { name: user_id, type: string, ref: users.id }
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: user_id, type: string, ref: users.id }
 `
 	cases := []struct {
 		name, desired, wantErr string
 	}{
 		{"type change", `
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: int64, index: true }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: int64, index: true }
 ` + boards, "changing type"},
 		{"nullability change", `
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string, nullable: true, index: true }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string, nullable: true, index: true }
 ` + boards, "changing nullability"},
 		{"pk change", `
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,   type: string }
-      - { name: name, type: string, pk: true, index: true }
+      - { id: 1, name: id,   type: string }
+      - { id: 2, name: name, type: string, pk: true, index: true }
 ` + boards, "primary key"},
 		{"fk change", `
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string, index: true }
-  - name: boards
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string, index: true }
+  - id: 2
+    name: boards
     columns:
-      - { name: id,      type: string, pk: true }
-      - { name: user_id, type: string }
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: user_id, type: string }
 `, "foreign keys"},
 	}
 	for _, tc := range cases {
@@ -268,18 +313,21 @@ tables:
 func TestCreateOrdering(t *testing.T) {
 	steps := diff(t, nil, `
 tables:
-  - name: task_labels
+  - id: 1
+    name: task_labels
     columns:
-      - { name: task_id,  type: string, ref: tasks.id }
-      - { name: label_id, type: string, ref: labels.id }
+      - { id: 1, name: task_id,  type: string, ref: tasks.id }
+      - { id: 2, name: label_id, type: string, ref: labels.id }
     primary_key: [task_id, label_id]
-  - name: tasks
+  - id: 2
+    name: tasks
     columns:
-      - { name: id,        type: string, pk: true }
-      - { name: parent_id, type: string, nullable: true, ref: tasks.id }
-  - name: labels
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: parent_id, type: string, nullable: true, ref: tasks.id }
+  - id: 3
+    name: labels
     columns:
-      - { name: id, type: string, pk: true }
+      - { id: 1, name: id, type: string, pk: true }
 `)
 	got := stepStrings(steps)
 	want := []string{"create table labels", "create table tasks", "create table task_labels"}
@@ -289,14 +337,16 @@ tables:
 
 	_, err := migrate.Diff(nil, parse(t, `
 tables:
-  - name: a
+  - id: 1
+    name: a
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: b_id, type: string, ref: b.id }
-  - name: b
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: b_id, type: string, ref: b.id }
+  - id: 2
+    name: b
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: a_id, type: string, ref: a.id }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: a_id, type: string, ref: a.id }
 `))
 	if err == nil || !strings.Contains(err.Error(), "circular") {
 		t.Fatalf("got %v", err)
@@ -310,20 +360,23 @@ tables:
 func TestDeletesOrderedReferencingTableFirst(t *testing.T) {
 	current := currentFrom(t, `
 tables:
-  - name: accounts
+  - id: 1
+    name: accounts
     columns:
-      - { name: id, type: string, pk: true }
-  - name: zposts
+      - { id: 1, name: id, type: string, pk: true }
+  - id: 2
+    name: zposts
     columns:
-      - { name: id,         type: string, pk: true }
-      - { name: account_id, type: string, ref: accounts.id }
+      - { id: 1, name: id,         type: string, pk: true }
+      - { id: 2, name: account_id, type: string, ref: accounts.id }
 `)
 
 	got := stepStrings(diff(t, current, `
 tables:
-  - name: unrelated
+  - id: 3
+    name: unrelated
     columns:
-      - { name: id, type: string, pk: true }
+      - { id: 1, name: id, type: string, pk: true }
 `))
 
 	want := []string{

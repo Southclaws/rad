@@ -214,15 +214,19 @@ func TestCatalogLifecycleOverTheWire(t *testing.T) {
 	c := testServer(t)
 	ctx := context.Background()
 
-	if _, err := c.TableCreate(ctx, protocol.TableDef{
+	created, err := c.TableCreate(ctx, protocol.TableDef{
 		Name: "notes",
 		Columns: []protocol.ColumnDef{
 			{Name: "id", Type: "int64"},
 			{Name: "body", Type: "text"},
 		},
 		PrimaryKey: []string{"id"},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if created.ID != 1 || len(created.Columns) != 2 || created.Columns[0].ID != 1 || created.Columns[1].ID != 2 {
+		t.Fatalf("allocated schema IDs: %+v", created)
 	}
 	if _, err := c.Create(ctx, "notes", map[string]any{"id": 1, "body": "first"}); err != nil {
 		t.Fatal(err)
@@ -230,7 +234,7 @@ func TestCatalogLifecycleOverTheWire(t *testing.T) {
 
 	// Table rename via update; the old name stops resolving.
 	info, err := c.TableUpdate(ctx, "notes", "memos")
-	if err != nil || info.Name != "memos" {
+	if err != nil || info.Name != "memos" || info.ID != created.ID || info.Columns[1].ID != created.Columns[1].ID {
 		t.Fatalf("info=%+v err=%v", info, err)
 	}
 	if _, err := c.Create(ctx, "notes", map[string]any{"id": 2, "body": "x"}); err == nil {
@@ -249,7 +253,7 @@ func TestCatalogLifecycleOverTheWire(t *testing.T) {
 	info, err = c.ColumnCreate(ctx, "memos", protocol.ColumnDef{
 		Name: "pinned", Type: "bool", Default: &protocol.ColumnDefault{Value: false},
 	})
-	if err != nil || len(info.Columns) != 3 {
+	if err != nil || len(info.Columns) != 3 || info.Columns[2].ID != 3 {
 		t.Fatalf("info=%+v err=%v", info, err)
 	}
 

@@ -149,6 +149,7 @@ type DatabaseInfo struct {
 // indexes and foreign keys reuse the def shapes, with foreign keys naming
 // their referenced table rather than carrying internal IDs.
 type TableInfo struct {
+	ID          uint32          `json:"id"`
 	Name        string          `json:"name"`
 	Columns     []ColumnInfo    `json:"columns"`
 	PrimaryKey  []string        `json:"primary_key"`
@@ -157,6 +158,7 @@ type TableInfo struct {
 }
 
 type ColumnInfo struct {
+	ID       uint32         `json:"id"`
 	Name     string         `json:"name"`
 	Type     string         `json:"type"`
 	Nullable bool           `json:"nullable,omitempty"`
@@ -171,6 +173,7 @@ type ColumnInfo struct {
 
 // TableDef defines a new table for TableCreate.
 type TableDef struct {
+	ID          uint32          `json:"id,omitempty"`
 	Name        string          `json:"name"`
 	Columns     []ColumnDef     `json:"columns"`
 	PrimaryKey  []string        `json:"primary_key"`
@@ -180,6 +183,7 @@ type TableDef struct {
 
 // ColumnDef defines one column. Type is one of text, int64, float64, bool.
 type ColumnDef struct {
+	ID       uint32         `json:"id,omitempty"`
 	Name     string         `json:"name"`
 	Type     string         `json:"type"`
 	Nullable bool           `json:"nullable,omitempty"`

@@ -85,7 +85,7 @@ now rests on the binder.
   union, and codegen is being rethought anyway).
 - Ergonomics via **colocated `build.go`** in `lirwire`/`pirwire` — validating
   constructors returning the generated structs; the shared construct/mutate
-  surface for clients *and* the generative/metamorphic test suite. Regen
+  surface for clients _and_ the generative/metamorphic test suite. Regen
   rewrites only the generated file, never `build.go`.
 - **Delete** the handwritten `protocol.Node`/`Expr`/`Query`/`Program`/`Statement`/
   `Field`/`GroupTerm`/`AggTerm`/`OrderTerm`/`RowsColumn`/`Root`/`Binding` + the

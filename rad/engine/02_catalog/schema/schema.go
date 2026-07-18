@@ -5,18 +5,20 @@
 // Schema (radschema.json) — no bespoke grammar. A schema file looks like:
 //
 //	tables:
-//	  - name: users
+//	  - id: 1
+//	    name: users
 //	    columns:
-//	      - { name: id,         type: string, pk: true, default: uuid() }
-//	      - { name: username,   type: string, unique: true }
-//	      - { name: email,      type: string, nullable: true, format: email }
-//	      - { name: created_at, type: int64, format: unix_ms, default: now_ms() }
+//	      - { id: 1, name: id,         type: string, pk: true, default: uuid() }
+//	      - { id: 2, name: username,   type: string, unique: true }
+//	      - { id: 3, name: email,      type: string, nullable: true, format: email }
+//	      - { id: 4, name: created_at, type: int64, format: unix_ms, default: now_ms() }
 //
-//	  - name: team_members
+//	  - id: 2
+//	    name: team_members
 //	    columns:
-//	      - { name: team_id, type: string, ref: teams.id }
-//	      - { name: user_id, type: string, ref: users.id }
-//	      - { name: role,    type: string, default: member }
+//	      - { id: 1, name: team_id, type: string, ref: teams.id }
+//	      - { id: 2, name: user_id, type: string, ref: users.id }
+//	      - { id: 3, name: role,    type: string, default: member }
 //	    primary_key: [team_id, user_id]
 //	    indexes:
 //	      - { columns: [user_id] }
@@ -27,11 +29,9 @@
 // (single-column shorthands for indexes), ref: table.column (foreign key to
 // the target's primary key), format (uninterpreted metadata like email or
 // unix_ms), default (a literal of the column's type or the generators
-// uuid() / now_ms()), nullable, and renamed_from (a migration hint, also
-// available at table level).
-//
-// Rename hints are not part of the table definition — they exist so the
-// migration differ can distinguish a rename from a drop+add.
+// uuid() / now_ms()), and nullable. Table IDs are unique across the schema;
+// column IDs are unique within their table. IDs are stable logical identity:
+// renaming changes a name while retaining its ID.
 package schema
 
 import (
@@ -68,14 +68,9 @@ type Schema struct {
 	Tables []Table
 }
 
-// Table pairs a catalog definition with migration rename hints.
+// Table contains one catalog definition from the schema source.
 type Table struct {
 	Def catalog.TableDef
-	// RenamedFrom is the table's previous name, when the schema author
-	// renamed it (renamed_from on the table).
-	RenamedFrom string
-	// ColumnRenames maps new column name -> previous column name.
-	ColumnRenames map[string]string
 }
 
 // Table returns the parsed table with the given name.
@@ -88,8 +83,7 @@ func (s *Schema) Table(name string) (Table, bool) {
 	return Table{}, false
 }
 
-// Canonical returns the identity-free catalog schema represented by this
-// parsed source, excluding migration-only rename hints.
+// Canonical returns the canonical catalog schema represented by this source.
 func (s *Schema) Canonical() catalog.Schema {
 	defs := make([]catalog.TableDef, len(s.Tables))
 	for i, table := range s.Tables {
@@ -105,24 +99,24 @@ type fileSchema struct {
 }
 
 type fileTable struct {
-	Name        string       `yaml:"name"`
-	RenamedFrom string       `yaml:"renamed_from"`
-	Columns     []fileColumn `yaml:"columns"`
-	PrimaryKey  []string     `yaml:"primary_key"`
-	Indexes     []fileIndex  `yaml:"indexes"`
+	ID         catalog.SchemaID `yaml:"id"`
+	Name       string           `yaml:"name"`
+	Columns    []fileColumn     `yaml:"columns"`
+	PrimaryKey []string         `yaml:"primary_key"`
+	Indexes    []fileIndex      `yaml:"indexes"`
 }
 
 type fileColumn struct {
-	Name        string `yaml:"name"`
-	Type        string `yaml:"type"`
-	Nullable    bool   `yaml:"nullable"`
-	PK          bool   `yaml:"pk"`
-	Unique      bool   `yaml:"unique"`
-	Index       bool   `yaml:"index"`
-	Ref         string `yaml:"ref"`
-	Format      string `yaml:"format"`
-	Default     any    `yaml:"default"`
-	RenamedFrom string `yaml:"renamed_from"`
+	ID       catalog.SchemaID `yaml:"id"`
+	Name     string           `yaml:"name"`
+	Type     string           `yaml:"type"`
+	Nullable bool             `yaml:"nullable"`
+	PK       bool             `yaml:"pk"`
+	Unique   bool             `yaml:"unique"`
+	Index    bool             `yaml:"index"`
+	Ref      string           `yaml:"ref"`
+	Format   string           `yaml:"format"`
+	Default  any              `yaml:"default"`
 }
 
 type fileIndex struct {
@@ -158,12 +152,17 @@ func parse(filename string, src []byte) (*Schema, error) {
 	}
 
 	s := &Schema{}
-	seen := map[string]bool{}
+	seenNames := map[string]bool{}
+	seenIDs := map[catalog.SchemaID]string{}
 	for _, ft := range file.Tables {
-		if seen[ft.Name] {
+		if seenNames[ft.Name] {
 			return nil, fmt.Errorf("%s: duplicate table %q", filename, ft.Name)
 		}
-		seen[ft.Name] = true
+		if previous, exists := seenIDs[ft.ID]; exists {
+			return nil, fmt.Errorf("%s: tables %q and %q share ID %d", filename, previous, ft.Name, ft.ID)
+		}
+		seenNames[ft.Name] = true
+		seenIDs[ft.ID] = ft.Name
 		tbl, err := buildTable(filename, ft)
 		if err != nil {
 			return nil, err
@@ -175,14 +174,19 @@ func parse(filename string, src []byte) (*Schema, error) {
 
 func buildTable(filename string, ft fileTable) (Table, error) {
 	t := Table{
-		Def:           catalog.TableDef{Name: ft.Name},
-		RenamedFrom:   ft.RenamedFrom,
-		ColumnRenames: map[string]string{},
+		Def: catalog.TableDef{ID: ft.ID, Name: ft.Name},
 	}
 	var pkFromColumns []string
+	seenColumnIDs := map[catalog.SchemaID]string{}
 
 	for _, fc := range ft.Columns {
+		if previous, exists := seenColumnIDs[fc.ID]; exists {
+			return Table{}, fmt.Errorf("%s: columns %q.%q and %q.%q share ID %d",
+				filename, ft.Name, previous, ft.Name, fc.Name, fc.ID)
+		}
+		seenColumnIDs[fc.ID] = fc.Name
 		col := catalog.ColumnDef{
+			ID:       fc.ID,
 			Name:     fc.Name,
 			Nullable: fc.Nullable,
 			Format:   fc.Format,
@@ -225,9 +229,6 @@ func buildTable(filename string, ft fileTable) (Table, error) {
 				Columns:  []string{fc.Name},
 				RefTable: refTable, RefColumns: []string{refCol},
 			})
-		}
-		if fc.RenamedFrom != "" {
-			t.ColumnRenames[fc.Name] = fc.RenamedFrom
 		}
 		t.Def.Columns = append(t.Def.Columns, col)
 	}

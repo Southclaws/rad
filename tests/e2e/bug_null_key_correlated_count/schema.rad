@@ -4,7 +4,8 @@
 # row (count 0) even when the correlated filter matches nothing; the engine's
 # NULL-key short-circuit used to skip the sub-plan and return NULL.
 tables:
-  - name: items
+  - id: 1
+    name: items
     columns:
-      - { name: id,  type: string, pk: true }
-      - { name: ref, type: string, nullable: true }
+      - { id: 1, name: id,  type: string, pk: true }
+      - { id: 2, name: ref, type: string, nullable: true }

@@ -15,7 +15,7 @@ import (
 )
 
 func (s *Server) decodeColumnCreateRequest(r *http.Request) (
-	req OptColumnInfo,
+	req OptColumnDef,
 	rawBody []byte,
 	close func() error,
 	rerr error,
@@ -65,7 +65,7 @@ func (s *Server) decodeColumnCreateRequest(r *http.Request) (
 		rawBody = append(rawBody, buf...)
 		d := jx.DecodeBytes(buf)
 
-		var request OptColumnInfo
+		var request OptColumnDef
 		if err := func() error {
 			request.Reset()
 			if err := request.Decode(d); err != nil {
@@ -82,6 +82,21 @@ func (s *Server) decodeColumnCreateRequest(r *http.Request) (
 				Err:         err,
 			}
 			return req, rawBody, close, err
+		}
+		if err := func() error {
+			if value, ok := request.Get(); ok {
+				if err := func() error {
+					if err := value.Validate(); err != nil {
+						return err
+					}
+					return nil
+				}(); err != nil {
+					return err
+				}
+			}
+			return nil
+		}(); err != nil {
+			return req, rawBody, close, errors.Wrap(err, "validate")
 		}
 		return request, rawBody, close, nil
 	default:

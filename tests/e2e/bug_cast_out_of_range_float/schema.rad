@@ -3,7 +3,8 @@
 # MaxInt64, amd64 wraps to MinInt64) with HTTP 200, instead of a clean
 # execution_failed. See BUG.md.
 tables:
-  - name: nums
+  - id: 1
+    name: nums
     columns:
-      - { name: id, type: string, pk: true }
-      - { name: f,  type: float64 }
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: f,  type: float64 }

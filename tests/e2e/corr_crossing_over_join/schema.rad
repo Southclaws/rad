@@ -2,17 +2,20 @@
 # the parent. scanBelow() finds no single scan under a join, so this is
 # general correlation -> per-row nested fallback.
 tables:
-  - name: parents
+  - id: 1
+    name: parents
     columns:
-      - { name: id, type: string, pk: true }
+      - { id: 1, name: id, type: string, pk: true }
 
-  - name: categories
+  - id: 2
+    name: categories
     columns:
-      - { name: id,    type: string, pk: true }
-      - { name: label, type: string }
+      - { id: 1, name: id,    type: string, pk: true }
+      - { id: 2, name: label, type: string }
 
-  - name: children
+  - id: 3
+    name: children
     columns:
-      - { name: id,        type: string, pk: true }
-      - { name: parent_id, type: string, nullable: true, ref: parents.id }
-      - { name: cat_id,    type: string, nullable: true, ref: categories.id }
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: parent_id, type: string, nullable: true, ref: parents.id }
+      - { id: 3, name: cat_id,    type: string, nullable: true, ref: categories.id }

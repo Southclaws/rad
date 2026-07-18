@@ -2,7 +2,8 @@
 # program's explicit `result` names the MIDDLE (non-final) statement, so the
 # returned value must be that statement's output, not the last statement's.
 tables:
-  - name: items
+  - id: 1
+    name: items
     columns:
-      - { name: id,    type: string, pk: true }
-      - { name: label, type: string }
+      - { id: 1, name: id,    type: string, pk: true }
+      - { id: 2, name: label, type: string }

@@ -23,85 +23,94 @@ export const schemaSource = `# Tracker — a team task-tracking product built on
 #   - a many-to-many relationship (tasks <-> labels)
 
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,            type: string, pk: true, default: uuid(), format: uuid }
-      - { name: username,      type: string, unique: true }
-      - { name: display_name,  type: string, nullable: true }
-      - { name: password_hash, type: string }
-      - { name: email,         type: string, nullable: true, format: email }
-      - { name: created_at,    type: int64, format: unix_ms, default: now_ms() }
+      - { id: 1, name: id,            type: string, pk: true, default: uuid(), format: uuid }
+      - { id: 2, name: username,      type: string, unique: true }
+      - { id: 3, name: display_name,  type: string, nullable: true }
+      - { id: 4, name: password_hash, type: string }
+      - { id: 5, name: email,         type: string, nullable: true, format: email }
+      - { id: 6, name: created_at,    type: int64, format: unix_ms, default: now_ms() }
 
-  - name: sessions
+  - id: 2
+    name: sessions
     columns:
-      - { name: token,      type: string, pk: true, default: uuid(), format: uuid }
-      - { name: user_id,    type: string, ref: users.id, index: true }
-      - { name: created_at, type: int64, format: unix_ms, default: now_ms() }
-      - { name: expires_at, type: int64, format: unix_ms }
+      - { id: 1, name: token,      type: string, pk: true, default: uuid(), format: uuid }
+      - { id: 2, name: user_id,    type: string, ref: users.id, index: true }
+      - { id: 3, name: created_at, type: int64, format: unix_ms, default: now_ms() }
+      - { id: 4, name: expires_at, type: int64, format: unix_ms }
 
-  - name: teams
+  - id: 3
+    name: teams
     columns:
-      - { name: id,         type: string, pk: true, default: uuid(), format: uuid }
-      - { name: name,       type: string, unique: true }
-      - { name: created_at, type: int64, format: unix_ms, default: now_ms() }
+      - { id: 1, name: id,         type: string, pk: true, default: uuid(), format: uuid }
+      - { id: 2, name: name,       type: string, unique: true }
+      - { id: 3, name: created_at, type: int64, format: unix_ms, default: now_ms() }
 
-  - name: team_members
+  - id: 4
+    name: team_members
     columns:
-      - { name: team_id,   type: string, ref: teams.id }
-      - { name: user_id,   type: string, ref: users.id, index: true }
-      - { name: role,      type: string, default: member }
-      - { name: joined_at, type: int64, format: unix_ms, default: now_ms() }
+      - { id: 1, name: team_id,   type: string, ref: teams.id }
+      - { id: 2, name: user_id,   type: string, ref: users.id, index: true }
+      - { id: 3, name: role,      type: string, default: member }
+      - { id: 4, name: joined_at, type: int64, format: unix_ms, default: now_ms() }
     primary_key: [team_id, user_id]
 
-  - name: boards
+  - id: 5
+    name: boards
     columns:
-      - { name: id,         type: string, pk: true, default: uuid(), format: uuid }
-      - { name: team_id,    type: string, ref: teams.id }
-      - { name: name,       type: string }
-      - { name: archived,   type: bool, default: false }
-      - { name: created_at, type: int64, format: unix_ms, default: now_ms() }
+      - { id: 1, name: id,         type: string, pk: true, default: uuid(), format: uuid }
+      - { id: 2, name: team_id,    type: string, ref: teams.id }
+      - { id: 3, name: name,       type: string }
+      - { id: 4, name: archived,   type: bool, default: false }
+      - { id: 5, name: created_at, type: int64, format: unix_ms, default: now_ms() }
     indexes:
       - { columns: [team_id, name], unique: true }
 
-  - name: tasks
+  - id: 6
+    name: tasks
     columns:
-      - { name: id,          type: string, pk: true, default: uuid(), format: uuid }
-      - { name: board_id,    type: string, ref: boards.id }
-      - { name: title,       type: string }
-      - { name: description, type: string, nullable: true }
-      - { name: status,      type: string, default: todo }
-      - { name: priority,    type: int64, default: 2 }
-      - { name: estimate,    type: float64, nullable: true }
-      - { name: assignee_id, type: string, nullable: true, ref: users.id, index: true }
-      - { name: creator_id,  type: string, ref: users.id }
-      - { name: parent_id,   type: string, nullable: true, ref: tasks.id, index: true }
-      - { name: due_at,      type: int64, nullable: true, format: unix_ms }
-      - { name: created_at,  type: int64, format: unix_ms, default: now_ms() }
+      - { id: 1, name: id,          type: string, pk: true, default: uuid(), format: uuid }
+      - { id: 2, name: board_id,    type: string, ref: boards.id }
+      - { id: 3, name: title,       type: string }
+      - { id: 4, name: description, type: string, nullable: true }
+      - { id: 5, name: status,      type: string, default: todo }
+      - { id: 6, name: priority,    type: int64, default: 2 }
+      - { id: 7, name: estimate,    type: float64, nullable: true }
+      - { id: 8, name: assignee_id, type: string, nullable: true, ref: users.id, index: true }
+      - { id: 9, name: creator_id,  type: string, ref: users.id }
+      - { id: 10, name: parent_id,   type: string, nullable: true, ref: tasks.id, index: true }
+      - { id: 11, name: due_at,      type: int64, nullable: true, format: unix_ms }
+      - { id: 12, name: created_at,  type: int64, format: unix_ms, default: now_ms() }
     indexes:
       - { columns: [board_id, status] }
       - { columns: [assignee_id, status] }
 
-  - name: comments
+  - id: 7
+    name: comments
     columns:
-      - { name: id,         type: string, pk: true, default: uuid(), format: uuid }
-      - { name: task_id,    type: string, ref: tasks.id, index: true }
-      - { name: author_id,  type: string, ref: users.id }
-      - { name: body,       type: string }
-      - { name: created_at, type: int64, format: unix_ms, default: now_ms() }
+      - { id: 1, name: id,         type: string, pk: true, default: uuid(), format: uuid }
+      - { id: 2, name: task_id,    type: string, ref: tasks.id, index: true }
+      - { id: 3, name: author_id,  type: string, ref: users.id }
+      - { id: 4, name: body,       type: string }
+      - { id: 5, name: created_at, type: int64, format: unix_ms, default: now_ms() }
 
-  - name: labels
+  - id: 8
+    name: labels
     columns:
-      - { name: id,      type: string, pk: true, default: uuid(), format: uuid }
-      - { name: team_id, type: string, ref: teams.id }
-      - { name: name,    type: string }
-      - { name: hex_color, type: string, default: "#8899aa", renamed_from: color }
+      - { id: 1, name: id,      type: string, pk: true, default: uuid(), format: uuid }
+      - { id: 2, name: team_id, type: string, ref: teams.id }
+      - { id: 3, name: name,    type: string }
+      - { id: 4, name: hex_color, type: string, default: "#8899aa" }
     indexes:
       - { columns: [team_id, name], unique: true }
 
-  - name: task_labels
+  - id: 9
+    name: task_labels
     columns:
-      - { name: task_id,  type: string, ref: tasks.id }
-      - { name: label_id, type: string, ref: labels.id, index: true }
+      - { id: 1, name: task_id,  type: string, ref: tasks.id }
+      - { id: 2, name: label_id, type: string, ref: labels.id, index: true }
     primary_key: [task_id, label_id]
 `;
 

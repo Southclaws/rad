@@ -2,12 +2,14 @@
 # NULL short-circuit does NOT apply here; correctness relies on 3VL in the
 # residual filter: child.value < NULL is UNKNOWN, so nothing matches.
 tables:
-  - name: parents
+  - id: 1
+    name: parents
     columns:
-      - { name: id,        type: string, pk: true }
-      - { name: threshold, type: int64, nullable: true }
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: threshold, type: int64, nullable: true }
 
-  - name: children
+  - id: 2
+    name: children
     columns:
-      - { name: id,    type: string, pk: true }
-      - { name: value, type: int64 }
+      - { id: 1, name: id,    type: string, pk: true }
+      - { id: 2, name: value, type: int64 }

@@ -2,7 +2,8 @@
 # does not exist must be rejected by the binder as an invalid request, with
 # the fine-grained reason unknown_table.
 tables:
-  - name: items
+  - id: 1
+    name: items
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }

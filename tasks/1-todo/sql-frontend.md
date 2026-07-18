@@ -16,12 +16,12 @@ compiler itself working, not settling the surrounding architecture.
 ## Context
 
 Rad has no SQL today: the only query surface is LIR/PIR JSON sent to
-`POST /query` / `POST /execute` (see `rad/protocol/lir.schema.yaml`,
+`POST /execute` (see `rad/protocol/lir.schema.yaml`,
 `pir.schema.yaml`). That is deliberate — LIR is a relation algebra, not a
 SQL-alike, and PIR is the effectful program layer above it
 (`tasks/3-done/data-mutation-and-transaction-protocol.md`).
 
-But SQL familiarity is worth having as a *frontend*, for two reasons:
+But SQL familiarity is worth having as a _frontend_, for two reasons:
 
 1. It's the fastest way for someone to try Rad without learning LIR JSON
    first.
@@ -42,7 +42,7 @@ front of the existing client, not a new capability of the engine.
 
 ## Goals
 
-- Compile a useful, well-defined *subset* of SQL (SQLite dialect, since
+- Compile a useful, well-defined _subset_ of SQL (SQLite dialect, since
   SQLite's grammar is the smallest "real" SQL and the union of syntax most
   embedded/ORM tooling actually emits) to `protocol.Query` (reads) and
   `protocol.Program` (writes).
@@ -51,7 +51,7 @@ front of the existing client, not a new capability of the engine.
   foreign keys) but nothing else from a live server. `Client.Tables(ctx)`
   already returns exactly that shape (`protocol.TableInfo`/`ColumnInfo`,
   `client.go:117`), and `schema.Parse` (`rad/engine/02_catalog/schema/
-  schema.go:126`) parses a local `schema.rad` file into the same
+schema.go:126`) parses a local `schema.rad` file into the same
   information without a connection at all — either is a sufficient input to
   the compiler's binder. Compiling one query touches the network zero
   times beyond that one-time schema fetch.
@@ -98,7 +98,7 @@ front of the existing client, not a new capability of the engine.
 ## Why the mapping is tractable: LIR's shape already mirrors SQL's
 
 This is the load-bearing observation the rest of the plan leans on. SQL's
-*logical* clause evaluation order — `FROM` → `WHERE` → `GROUP BY` →
+_logical_ clause evaluation order — `FROM` → `WHERE` → `GROUP BY` →
 `HAVING` → window → `SELECT` → `DISTINCT` → `ORDER BY` → `LIMIT`/`OFFSET`
 — is already how LIR chains nodes: `scan`/`join` → `filter` → `aggregate`
 → `filter` (on the aggregate's output scope, for `HAVING`) → `project` →
@@ -109,35 +109,35 @@ structure. Scope-qualified columns (`{kind: col, scope, column}`) map
 directly from SQL's `alias.column`, and SQL's subquery forms map close to
 1:1 onto LIR's four crossings:
 
-| SQL construct                                   | LIR construct                              |
-| ------------------------------------------------ | ------------------------------------------- |
-| `FROM t [AS alias]`                              | `scan` (table = `t`, scope = alias)         |
-| `FROM a JOIN b ON ...` / `LEFT JOIN`             | `join` (`inner`/`left`)                     |
-| `WHERE pred`                                     | `filter`                                    |
-| `SELECT expr AS name, ...`                       | `project` (`fields`), `spread` for `t.*`    |
+| SQL construct                                     | LIR construct                               |
+| ------------------------------------------------- | ------------------------------------------- |
+| `FROM t [AS alias]`                               | `scan` (table = `t`, scope = alias)         |
+| `FROM a JOIN b ON ...` / `LEFT JOIN`              | `join` (`inner`/`left`)                     |
+| `WHERE pred`                                      | `filter`                                    |
+| `SELECT expr AS name, ...`                        | `project` (`fields`), `spread` for `t.*`    |
 | `GROUP BY ...` / aggregate functions              | `aggregate` (`groups`/`aggs`)               |
-| `HAVING pred`                                    | `filter` stacked on the aggregate's `scope` |
-| `ORDER BY ...`                                   | `order`                                     |
-| `LIMIT n [OFFSET m]`                             | `slice`                                     |
-| `WITH name AS (...)` (non-recursive)             | `bindings` + `ref`                          |
-| Scalar subquery `(SELECT ...)`                   | `scalar` crossing                           |
-| `EXISTS (SELECT ...)`                            | `exists` crossing                           |
-| Correlated to-one subquery / `LEFT JOIN` unnest  | `first` crossing                           |
-| Correlated to-many nested result                 | `array` crossing                            |
-| `VALUES (...), (...)` / literal `INSERT` rows    | `rows`                                      |
+| `HAVING pred`                                     | `filter` stacked on the aggregate's `scope` |
+| `ORDER BY ...`                                    | `order`                                     |
+| `LIMIT n [OFFSET m]`                              | `slice`                                     |
+| `WITH name AS (...)` (non-recursive)              | `bindings` + `ref`                          |
+| Scalar subquery `(SELECT ...)`                    | `scalar` crossing                           |
+| `EXISTS (SELECT ...)`                             | `exists` crossing                           |
+| Correlated to-one subquery / `LEFT JOIN` unnest   | `first` crossing                            |
+| Correlated to-many nested result                  | `array` crossing                            |
+| `VALUES (...), (...)` / literal `INSERT` rows     | `rows`                                      |
 | `a op b` (`= != < <= > >=`, arithmetic, `AND/OR`) | `binary`                                    |
 | `NOT`, `IS [NOT] NULL`, unary minus               | `unary`                                     |
-| `CAST(x AS type)`                                | `cast`                                      |
-| `COUNT/SUM/AVG/MIN/MAX`                          | `AggTerm.fn`                                |
-| `INSERT INTO t (...) VALUES/SELECT ...`          | PIR `create` statement                      |
-| `UPDATE t SET ... WHERE ...`                     | PIR `update` statement (see below)          |
-| `DELETE FROM t WHERE ...`                        | PIR `delete` statement (see below)          |
+| `CAST(x AS type)`                                 | `cast`                                      |
+| `COUNT/SUM/AVG/MIN/MAX`                           | `AggTerm.fn`                                |
+| `INSERT INTO t (...) VALUES/SELECT ...`           | PIR `create` statement                      |
+| `UPDATE t SET ... WHERE ...`                      | PIR `update` statement (see below)          |
+| `DELETE FROM t WHERE ...`                         | PIR `delete` statement (see below)          |
 
 **`UPDATE`/`DELETE` need one extra step**, because PIR statements don't
-carry a `SET`/predicate pair — they consume a *relation* already shaped to
+carry a `SET`/predicate pair — they consume a _relation_ already shaped to
 the mutation's contract (`pir.schema.yaml`): an `update`'s relation must
 output the full primary key (to identify the row, unassigned) plus every
-assigned column; a `delete`'s relation must output *exactly* the primary
+assigned column; a `delete`'s relation must output _exactly_ the primary
 key. So `UPDATE tasks SET status = 'done' WHERE board_id = 'b1'` compiles
 to `filter(scan tasks, board_id = 'b1')` then a `project` that spreads the
 primary key and adds `status: lit('done')` as a field — the compiler always
@@ -194,7 +194,7 @@ requires them to be meaningful.
 - `SELECT` with: column refs, `t.*`/`*`, literals, `+ - * /`, `CAST`,
   `COUNT/SUM/AVG/MIN/MAX`, aliases (`AS`).
 - `FROM` with one or more tables, `[INNER] JOIN ... ON`, `LEFT [OUTER]
-  JOIN ... ON` — matching LIR's `inner`/`left` exactly. No `RIGHT`/`FULL`/
+JOIN ... ON` — matching LIR's `inner`/`left` exactly. No `RIGHT`/`FULL`/
   `CROSS`/lateral/`NATURAL` joins.
 - `WHERE`: `= != <> < <= > >=`, `AND OR NOT`, `IS [NOT] NULL`,
   parenthesization, literal-list `IN (1, 2, 3)` (lowered to an `OR` chain
@@ -244,7 +244,7 @@ yet, or it's a deliberate correctness/complexity deferral):
 - Multi-statement scripts fused into one atomic `Program`. v1 compiles one
   SQL statement to one `Program`; a later "script mode" could map a
   semicolon-delimited block to one `Statement` per `Program.Statements` in
-  order (a natural fit, since PIR already *is* an ordered list of
+  order (a natural fit, since PIR already _is_ an ordered list of
   statements in one transaction), but that changes what atomicity a script
   gets and deserves its own decision, not a default.
 
@@ -289,16 +289,16 @@ AST meant for external consumption (not an internal-only representation),
 permissive license, and hand-written vs. generated parsing (affects how
 easily we can extend it for anything it doesn't already cover).
 
-| Library                          | SQLite-targeted?               | Parser type                   | Maintenance                                        | AST                                             | License |
-| --------------------------------- | ------------------------------- | ------------------------------ | --------------------------------------------------- | ------------------------------------------------ | ------- |
-| **`rqlite/sql`**                  | Yes — full SQLite grammar bar `ATTACH`/`DETACH` | Hand-written recursive-descent | Active; the exact pinned dependency of rqlite (17.6k★) itself | Comprehensive typed AST (60+ node kinds), `Visitor`/`Walk` built for external use | MIT     |
-| `antlr/grammars-v4` SQLite grammar | Yes — canonical community grammar | ANTLR4-generated               | Grammar actively edited; ready-made Go wrappers around it are dead (`libsql/sqlite-antlr4-parser` explicitly discontinued) | Generic ANTLR parse-tree/context objects — functional, not a curated AST | Grammar MIT, runtime BSD |
-| `vitess.io/vitess/go/vt/sqlparser` | No — MySQL                       | goyacc-generated                | Very active (21.1k★)                                 | Excellent AST, wrong dialect                      | Apache-2.0 |
-| `pingcap/tidb/pkg/parser`         | No — MySQL                       | goyacc-generated                | Very active (40.3k★)                                 | Well-documented AST, wrong dialect                | Apache-2.0 |
-| `cockroachdb/cockroachdb-parser`  | No — Postgres                    | goyacc-generated                | Active, low adoption                                 | Good AST, wrong dialect                           | Apache-2.0 |
-| `auxten/postgresql-parser`        | No — Postgres                    | goyacc-generated                | Moderate                                             | Good AST, wrong dialect                           | Apache-2.0 |
-| `xwb1989/sqlparser`, `blastrain/vitess-sqlparser` | No — MySQL-ish | goyacc-generated       | Abandoned (2022)                                     | Stale                                             | Apache-2.0 |
-| `modernc.org/sqlite`              | Yes, internally — full engine, not a standalone parser | SQLite's own C `parse.c` transpiled to Go via ccgo | Active as a DB driver | Machine-transpiled, not a consumable AST — not extractable | BSD-3 |
+| Library                                           | SQLite-targeted?                                       | Parser type                                        | Maintenance                                                                                                                | AST                                                                               | License                  |
+| ------------------------------------------------- | ------------------------------------------------------ | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | ------------------------ |
+| **`rqlite/sql`**                                  | Yes — full SQLite grammar bar `ATTACH`/`DETACH`        | Hand-written recursive-descent                     | Active; the exact pinned dependency of rqlite (17.6k★) itself                                                              | Comprehensive typed AST (60+ node kinds), `Visitor`/`Walk` built for external use | MIT                      |
+| `antlr/grammars-v4` SQLite grammar                | Yes — canonical community grammar                      | ANTLR4-generated                                   | Grammar actively edited; ready-made Go wrappers around it are dead (`libsql/sqlite-antlr4-parser` explicitly discontinued) | Generic ANTLR parse-tree/context objects — functional, not a curated AST          | Grammar MIT, runtime BSD |
+| `vitess.io/vitess/go/vt/sqlparser`                | No — MySQL                                             | goyacc-generated                                   | Very active (21.1k★)                                                                                                       | Excellent AST, wrong dialect                                                      | Apache-2.0               |
+| `pingcap/tidb/pkg/parser`                         | No — MySQL                                             | goyacc-generated                                   | Very active (40.3k★)                                                                                                       | Well-documented AST, wrong dialect                                                | Apache-2.0               |
+| `cockroachdb/cockroachdb-parser`                  | No — Postgres                                          | goyacc-generated                                   | Active, low adoption                                                                                                       | Good AST, wrong dialect                                                           | Apache-2.0               |
+| `auxten/postgresql-parser`                        | No — Postgres                                          | goyacc-generated                                   | Moderate                                                                                                                   | Good AST, wrong dialect                                                           | Apache-2.0               |
+| `xwb1989/sqlparser`, `blastrain/vitess-sqlparser` | No — MySQL-ish                                         | goyacc-generated                                   | Abandoned (2022)                                                                                                           | Stale                                                                             | Apache-2.0               |
+| `modernc.org/sqlite`                              | Yes, internally — full engine, not a standalone parser | SQLite's own C `parse.c` transpiled to Go via ccgo | Active as a DB driver                                                                                                      | Machine-transpiled, not a consumable AST — not extractable                        | BSD-3                    |
 
 **Decision: vendor `rqlite/sql`**, forking the handful of parser/scanner/AST
 files into an internal package rather than importing it live. It is the
@@ -424,13 +424,13 @@ against PostgreSQL's own regression suite** (~45,000 statements), a
 materially stronger fidelity signal than either Postgres-flavored parser
 already in the comparison table above:
 
-| | `pgplex/pgparser` | `cockroachdb-parser` | `auxten/postgresql-parser` |
-| --- | --- | --- | --- |
-| Basis | goyacc port of real PG `gram.y` | goyacc, CRDB's own dialect | goyacc, CRDB's own dialect |
-| Validated against | PG's own regression suite (99.6%) | CRDB's own tests | CRDB's own tests |
-| Stars / age | 26 / ~5.5 months | 44 / active | 313 / dead since 2022 |
-| License | Apache-2.0 + PostgreSQL License | Apache-2.0 | Apache-2.0 |
-| Production use | none external yet | low | Atlas, Bytebase (current) |
+|                   | `pgplex/pgparser`                 | `cockroachdb-parser`       | `auxten/postgresql-parser` |
+| ----------------- | --------------------------------- | -------------------------- | -------------------------- |
+| Basis             | goyacc port of real PG `gram.y`   | goyacc, CRDB's own dialect | goyacc, CRDB's own dialect |
+| Validated against | PG's own regression suite (99.6%) | CRDB's own tests           | CRDB's own tests           |
+| Stars / age       | 26 / ~5.5 months                  | 44 / active                | 313 / dead since 2022      |
+| License           | Apache-2.0 + PostgreSQL License   | Apache-2.0                 | Apache-2.0                 |
+| Production use    | none external yet                 | low                        | Atlas, Bytebase (current)  |
 
 It's a spinoff of Bytebase's internal tooling (contributors include
 Bytebase's founder), built as a higher-fidelity successor to the
@@ -483,7 +483,7 @@ for Rad's four scalars (`text`/`int8`/`float8`/`bool`) is trivial.
 ### What stays the same either way
 
 The AST-to-IR mapping layer (`rad/sql/bind`, `rad/sql/compile`) is
-transport- and largely dialect-agnostic — it consumes *a* parsed AST and
+transport- and largely dialect-agnostic — it consumes _a_ parsed AST and
 emits `protocol.Query`/`protocol.Program` via `rad/protocol/build.go`
 regardless of whether that AST came from `rqlite/sql` or `pgplex/pgparser`,
 and regardless of whether the SQL text arrived via a bare function call or
@@ -507,7 +507,7 @@ protocol-level investment. Phase 2 is Postgres dialect (`pgplex/pgparser`)
 plus a `psql-wire` frontend, reusing phase 1's `bind`/`compile` layers
 essentially unchanged (see "What stays the same either way" above).
 
-What phase 2 actually *is* — embedded into Rad's own server process, or a
+What phase 2 actually _is_ — embedded into Rad's own server process, or a
 separate standalone service/proxy sitting in front of Rad that speaks
 Postgres wire protocol on one side and Rad's existing client/HTTP API on
 the other — is explicitly undecided, and not worth deciding yet. A

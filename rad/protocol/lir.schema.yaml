@@ -16,7 +16,7 @@ $id: "https://www.radengine.dev/schema/lir.json"
 title: Rad LIR
 description: |
   LIR is Rad's low-level intermediate representation: the relation tree a
-  client sends to `POST /query`, and the tree the engine binds, plans, and
+  client sends to `POST /execute`, and the tree the engine binds, plans, and
   executes. This schema is its normative specification. The type definitions
   and the prose in these descriptions are one artifact and move together.
 
@@ -85,7 +85,6 @@ description: |
   rejected. Literal values travel as raw JSON scalars (see `Value`) and are
   typed by the binder from the context each literal meets.
 $ref: "#/$defs/Query"
-
 $defs:
   # -
   # The query graph
@@ -1003,7 +1002,7 @@ $defs:
       value:
         description: The integer as a canonical decimal string, e.g. "9007199254740993"; absent for a NULL.
         type: string
-        pattern: '^-?(0|[1-9][0-9]*)$'
+        pattern: "^-?(0|[1-9][0-9]*)$"
 
   Float64Value:
     title: Float64Value

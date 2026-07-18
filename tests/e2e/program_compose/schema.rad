@@ -3,12 +3,14 @@
 # (a statement-result binding via `ref`), exercising read-your-writes and a
 # foreign key across statements.
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string }
-  - name: posts
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+  - id: 2
+    name: posts
     columns:
-      - { name: id,      type: string, pk: true }
-      - { name: user_id, type: string, ref: users.id }
-      - { name: title,   type: string }
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: user_id, type: string, ref: users.id }
+      - { id: 3, name: title,   type: string }

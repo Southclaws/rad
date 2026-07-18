@@ -2,13 +2,15 @@
 # a child row still references through a foreign key must fail (restrict
 # semantics; the POC has no cascades).
 tables:
-  - name: teams
+  - id: 1
+    name: teams
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
 
-  - name: boards
+  - id: 2
+    name: boards
     columns:
-      - { name: id,      type: string, pk: true }
-      - { name: team_id, type: string, ref: teams.id }
-      - { name: name,    type: string }
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: team_id, type: string, ref: teams.id }
+      - { id: 3, name: name,    type: string }

@@ -2,7 +2,8 @@
 # greater value. Inner scan is the SAME table as the outer, correlated by an
 # inequality (general correlation, per-row fallback).
 tables:
-  - name: items
+  - id: 1
+    name: items
     columns:
-      - { name: id,    type: string, pk: true }
-      - { name: value, type: int64 }
+      - { id: 1, name: id,    type: string, pk: true }
+      - { id: 2, name: value, type: int64 }

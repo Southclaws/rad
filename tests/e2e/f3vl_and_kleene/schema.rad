@@ -2,8 +2,9 @@
 # is TRUE. NULL operands make a conjunct UNKNOWN; FALSE and UNKNOWN = FALSE,
 # TRUE and UNKNOWN = UNKNOWN, UNKNOWN and UNKNOWN = UNKNOWN — all dropped.
 tables:
-  - name: t
+  - id: 1
+    name: t
     columns:
-      - { name: id, type: string, pk: true }
-      - { name: x,  type: int64, nullable: true }
-      - { name: y,  type: int64, nullable: true }
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: x,  type: int64, nullable: true }
+      - { id: 3, name: y,  type: int64, nullable: true }

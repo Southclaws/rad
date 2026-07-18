@@ -1,12 +1,14 @@
 # a crossing whose relation is a correlated GROUP BY aggregate: each parent
 # embeds an array of {category, count} folded over ITS children only.
 tables:
-  - name: parents
+  - id: 1
+    name: parents
     columns:
-      - { name: id, type: string, pk: true }
+      - { id: 1, name: id, type: string, pk: true }
 
-  - name: children
+  - id: 2
+    name: children
     columns:
-      - { name: id,        type: string, pk: true }
-      - { name: parent_id, type: string, nullable: true, ref: parents.id }
-      - { name: category,  type: string }
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: parent_id, type: string, nullable: true, ref: parents.id }
+      - { id: 3, name: category,  type: string }

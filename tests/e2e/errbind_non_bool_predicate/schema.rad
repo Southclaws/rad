@@ -1,8 +1,9 @@
 # e2e/errbind_non_bool_predicate — a filter whose predicate is a bare int64
 # column is not boolean and must be rejected. Code captured by running.
 tables:
-  - name: widgets
+  - id: 1
+    name: widgets
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string }
-      - { name: qty,  type: int64 }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+      - { id: 3, name: qty,  type: int64 }

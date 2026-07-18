@@ -2,9 +2,10 @@
 # (non-generated) default, to confirm the catalog default is filled in.
 # No uuid()/now_ms() defaults, so every asserted value is deterministic.
 tables:
-  - name: tasks
+  - id: 1
+    name: tasks
     columns:
-      - { name: id,       type: string, pk: true }
-      - { name: title,    type: string }
-      - { name: status,   type: string, default: todo }
-      - { name: priority, type: int64,  default: 2 }
+      - { id: 1, name: id,       type: string, pk: true }
+      - { id: 2, name: title,    type: string }
+      - { id: 3, name: status,   type: string, default: todo }
+      - { id: 4, name: priority, type: int64,  default: 2 }

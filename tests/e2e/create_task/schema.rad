@@ -3,33 +3,37 @@
 # and confirm a program that creates a second task lands correctly.
 
 tables:
-  - name: teams
+  - id: 1
+    name: teams
     columns:
-      - { name: id,         type: string, pk: true, format: uuid }
-      - { name: name,       type: string, unique: true }
+      - { id: 1, name: id,         type: string, pk: true, format: uuid }
+      - { id: 2, name: name,       type: string, unique: true }
 
-  - name: users
+  - id: 2
+    name: users
     columns:
-      - { name: id,       type: string, pk: true, format: uuid }
-      - { name: username, type: string, unique: true }
+      - { id: 1, name: id,       type: string, pk: true, format: uuid }
+      - { id: 2, name: username, type: string, unique: true }
 
-  - name: boards
+  - id: 3
+    name: boards
     columns:
-      - { name: id,       type: string, pk: true, format: uuid }
-      - { name: team_id,  type: string, ref: teams.id }
-      - { name: name,     type: string }
-      - { name: archived, type: bool, default: false }
+      - { id: 1, name: id,       type: string, pk: true, format: uuid }
+      - { id: 2, name: team_id,  type: string, ref: teams.id }
+      - { id: 3, name: name,     type: string }
+      - { id: 4, name: archived, type: bool, default: false }
     indexes:
       - { columns: [team_id, name], unique: true }
 
-  - name: tasks
+  - id: 4
+    name: tasks
     columns:
-      - { name: id,         type: string, pk: true, format: uuid }
-      - { name: board_id,   type: string, ref: boards.id }
-      - { name: title,      type: string }
-      - { name: status,     type: string, default: todo }
-      - { name: priority,   type: int64, default: 2 }
-      - { name: creator_id, type: string, ref: users.id }
-      - { name: created_at, type: int64, format: unix_ms }
+      - { id: 1, name: id,         type: string, pk: true, format: uuid }
+      - { id: 2, name: board_id,   type: string, ref: boards.id }
+      - { id: 3, name: title,      type: string }
+      - { id: 4, name: status,     type: string, default: todo }
+      - { id: 5, name: priority,   type: int64, default: 2 }
+      - { id: 6, name: creator_id, type: string, ref: users.id }
+      - { id: 7, name: created_at, type: int64, format: unix_ms }
     indexes:
       - { columns: [board_id, status] }

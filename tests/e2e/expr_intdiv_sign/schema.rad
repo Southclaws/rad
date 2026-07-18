@@ -1,8 +1,9 @@
 # expr_intdiv_sign — int64 div truncates toward zero for every sign
 # combination (Go's / semantics): 7/2=3, -7/2=-3, 7/-2=-3, -7/-2=3.
 tables:
-  - name: nums
+  - id: 1
+    name: nums
     columns:
-      - { name: id, type: string, pk: true }
-      - { name: a,  type: int64 }
-      - { name: b,  type: int64 }
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: a,  type: int64 }
+      - { id: 3, name: b,  type: int64 }

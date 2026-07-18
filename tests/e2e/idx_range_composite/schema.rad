@@ -1,10 +1,11 @@
 # probe_idx_composite — composite index (a, b): exercises eq-prefix + trailing
 # range, eq-only, leading-range, and a non-prefix range (must ignore index).
 tables:
-  - name: c
+  - id: 1
+    name: c
     columns:
-      - { name: id, type: string, pk: true }
-      - { name: a,  type: int64 }
-      - { name: b,  type: int64 }
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: a,  type: int64 }
+      - { id: 3, name: b,  type: int64 }
     indexes:
       - { columns: [a, b] }

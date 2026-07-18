@@ -6,9 +6,9 @@
 // index backfills) is the frontend's job, keeping this layer free of
 // execution concerns.
 //
-// Renames are recognized only through @renamed_from hints — without a hint,
-// a renamed table or column diffs as a delete plus a create, exactly as SQL
-// migration tools behave.
+// Tables and columns are matched by their stable schema IDs. A name change on
+// a matched identity is a rename, even when other properties change in the
+// same migration.
 //
 // Unsupported transformations (column type or nullability changes, foreign
 // key changes on existing tables) produce errors instead of destructive
@@ -53,49 +53,85 @@ type DeleteTable struct{ Table string }
 func (RenameTable) step()  {}
 func (RenameColumn) step() {}
 func (CreateTable) step()  {}
-func (CreateColumn) step()    {}
-func (CreateIndex) step()     {}
-func (DeleteIndex) step()    {}
-func (DeleteColumn) step()   {}
-func (DeleteTable) step()    {}
+func (CreateColumn) step() {}
+func (CreateIndex) step()  {}
+func (DeleteIndex) step()  {}
+func (DeleteColumn) step() {}
+func (DeleteTable) step()  {}
 
 func (s RenameTable) String() string { return fmt.Sprintf("rename table %s -> %s", s.From, s.To) }
 func (s RenameColumn) String() string {
 	return fmt.Sprintf("rename column %s.%s -> %s", s.Table, s.From, s.To)
 }
-func (s CreateTable) String() string { return fmt.Sprintf("create table %s", s.Def.Name) }
-func (s CreateColumn) String() string   { return fmt.Sprintf("create column %s.%s", s.Table, s.Def.Name) }
-func (s CreateIndex) String() string    { return fmt.Sprintf("create index %s on %s", s.Def.Name, s.Table) }
-func (s DeleteIndex) String() string   { return fmt.Sprintf("delete index %s on %s", s.Index, s.Table) }
-func (s DeleteColumn) String() string  { return fmt.Sprintf("delete column %s.%s", s.Table, s.Column) }
-func (s DeleteTable) String() string   { return fmt.Sprintf("delete table %s", s.Table) }
+func (s CreateTable) String() string  { return fmt.Sprintf("create table %s", s.Def.Name) }
+func (s CreateColumn) String() string { return fmt.Sprintf("create column %s.%s", s.Table, s.Def.Name) }
+func (s CreateIndex) String() string {
+	return fmt.Sprintf("create index %s on %s", s.Def.Name, s.Table)
+}
+func (s DeleteIndex) String() string  { return fmt.Sprintf("delete index %s on %s", s.Index, s.Table) }
+func (s DeleteColumn) String() string { return fmt.Sprintf("delete column %s.%s", s.Table, s.Column) }
+func (s DeleteTable) String() string  { return fmt.Sprintf("delete table %s", s.Table) }
 
 // Diff computes the ordered steps that take current to desired.
 func Diff(current []catalog.Table, desired *schema.Schema) ([]Step, error) {
 	var renames, adds, indexDeletes, indexCreates, columnDeletes, tableDeletes []Step
 
+	curByID := map[catalog.SchemaID]catalog.Table{}
 	curByName := map[string]catalog.Table{}
+	curByPhysicalID := map[string]catalog.Table{}
 	for _, t := range current {
+		if t.SchemaID == 0 || t.SchemaID > catalog.MaxSchemaID {
+			return nil, reject.Fail(reject.ReasonCatalogDrift,
+				"migrate: physical table %q has invalid schema ID %d", t.Name, t.SchemaID)
+		}
+		if previous, exists := curByID[t.SchemaID]; exists {
+			return nil, reject.Fail(reject.ReasonCatalogDrift,
+				"migrate: physical tables %q and %q share schema ID %d", previous.Name, t.Name, t.SchemaID)
+		}
+		curByID[t.SchemaID] = t
 		curByName[t.Name] = t
+		curByPhysicalID[t.ID] = t
 	}
-	desiredNames := map[string]bool{}
+	desiredIDs := map[catalog.SchemaID]string{}
+	desiredNames := map[string]catalog.SchemaID{}
 	for _, d := range desired.Tables {
-		desiredNames[d.Def.Name] = true
+		if d.Def.ID == 0 || d.Def.ID > catalog.MaxSchemaID {
+			return nil, reject.Inputf("migrate: table %q has invalid schema ID %d", d.Def.Name, d.Def.ID)
+		}
+		if previous, exists := desiredIDs[d.Def.ID]; exists {
+			return nil, reject.Inputf("migrate: tables %q and %q share schema ID %d", previous, d.Def.Name, d.Def.ID)
+		}
+		if previous, exists := desiredNames[d.Def.Name]; exists {
+			return nil, reject.Inputf("migrate: tables with schema IDs %d and %d share name %q", previous, d.Def.ID, d.Def.Name)
+		}
+		desiredIDs[d.Def.ID] = d.Def.Name
+		desiredNames[d.Def.Name] = d.Def.ID
 	}
 
-	// Match desired tables to current ones, honoring rename hints.
-	matched := map[string]schema.Table{} // current name -> desired
+	// Match desired tables to current ones by logical identity.
+	matched := map[catalog.SchemaID]schema.Table{}
 	var creates []schema.Table
 	for _, d := range desired.Tables {
-		switch {
-		case hasTable(curByName, d.Def.Name):
-			matched[d.Def.Name] = d
-		case d.RenamedFrom != "" && hasTable(curByName, d.RenamedFrom) && !desiredNames[d.RenamedFrom]:
-			renames = append(renames, RenameTable{From: d.RenamedFrom, To: d.Def.Name})
-			matched[d.RenamedFrom] = d
-		default:
+		cur, exists := curByID[d.Def.ID]
+		if !exists {
+			if occupied, collision := curByName[d.Def.Name]; collision {
+				return nil, reject.Inputf(
+					"migrate: table %q changes schema ID %d -> %d; remove it in one migration before creating the replacement",
+					d.Def.Name, occupied.SchemaID, d.Def.ID)
+			}
 			creates = append(creates, d)
+			continue
 		}
+		matched[d.Def.ID] = d
+		if cur.Name == d.Def.Name {
+			continue
+		}
+		if occupied, collision := curByName[d.Def.Name]; collision && occupied.SchemaID != cur.SchemaID {
+			return nil, reject.Inputf(
+				"migrate: cannot rename table %q to %q because that name belongs to schema ID %d",
+				cur.Name, d.Def.Name, occupied.SchemaID)
+		}
+		renames = append(renames, RenameTable{From: cur.Name, To: d.Def.Name})
 	}
 
 	// Current tables with no desired counterpart get deleted. Deletes are
@@ -105,7 +141,7 @@ func Diff(current []catalog.Table, desired *schema.Schema) ([]Step, error) {
 	deleted := map[string]bool{}
 	var deletedTables []catalog.Table
 	for _, t := range current {
-		if _, ok := matched[t.Name]; !ok {
+		if _, ok := matched[t.SchemaID]; !ok {
 			deleted[t.Name] = true
 			deletedTables = append(deletedTables, t)
 		}
@@ -133,9 +169,12 @@ func Diff(current []catalog.Table, desired *schema.Schema) ([]Step, error) {
 	}
 
 	// Diff matched tables.
-	for curName, d := range matched {
-		cur := curByName[curName]
-		steps, err := diffTable(cur, d)
+	for _, d := range desired.Tables {
+		if _, exists := matched[d.Def.ID]; !exists {
+			continue
+		}
+		cur := curByID[d.Def.ID]
+		steps, err := diffTable(cur, d, curByPhysicalID, desiredNames)
 		if err != nil {
 			return nil, err
 		}
@@ -157,48 +196,78 @@ func Diff(current []catalog.Table, desired *schema.Schema) ([]Step, error) {
 	return out, nil
 }
 
-func hasTable(m map[string]catalog.Table, name string) bool {
-	_, ok := m[name]
-	return ok
-}
-
 type tableSteps struct {
 	renames, adds, indexDeletes, indexCreates, columnDeletes []Step
 }
 
-func diffTable(cur catalog.Table, d schema.Table) (tableSteps, error) {
+func diffTable(
+	cur catalog.Table,
+	d schema.Table,
+	currentByPhysicalID map[string]catalog.Table,
+	desiredByName map[string]catalog.SchemaID,
+) (tableSteps, error) {
 	var out tableSteps
 	name := d.Def.Name
 
-	// Simulate the current table's column names after renames so the rest
-	// of the diff compares like with like.
-	curCols := map[string]catalog.Column{}
+	curColsByID := map[catalog.SchemaID]catalog.Column{}
+	curColsByName := map[string]catalog.Column{}
 	for _, c := range cur.Columns {
-		curCols[c.Name] = c
+		if c.SchemaID == 0 || c.SchemaID > catalog.MaxSchemaID {
+			return tableSteps{}, reject.Fail(reject.ReasonCatalogDrift,
+				"migrate: physical column %q.%q has invalid schema ID %d", cur.Name, c.Name, c.SchemaID)
+		}
+		if previous, exists := curColsByID[c.SchemaID]; exists {
+			return tableSteps{}, reject.Fail(reject.ReasonCatalogDrift,
+				"migrate: physical columns %q.%q and %q.%q share schema ID %d",
+				cur.Name, previous.Name, cur.Name, c.Name, c.SchemaID)
+		}
+		curColsByID[c.SchemaID] = c
+		curColsByName[c.Name] = c
 	}
-	desiredCols := map[string]bool{}
+	desiredIDs := map[catalog.SchemaID]string{}
+	desiredNames := map[string]catalog.SchemaID{}
 	for _, c := range d.Def.Columns {
-		desiredCols[c.Name] = true
+		if c.ID == 0 || c.ID > catalog.MaxSchemaID {
+			return tableSteps{}, reject.Inputf("migrate: column %q.%q has invalid schema ID %d", name, c.Name, c.ID)
+		}
+		if previous, exists := desiredIDs[c.ID]; exists {
+			return tableSteps{}, reject.Inputf(
+				"migrate: columns %q.%q and %q.%q share schema ID %d", name, previous, name, c.Name, c.ID)
+		}
+		if previous, exists := desiredNames[c.Name]; exists {
+			return tableSteps{}, reject.Inputf(
+				"migrate: columns with schema IDs %d and %d on table %q share name %q",
+				previous, c.ID, name, c.Name)
+		}
+		desiredIDs[c.ID] = c.Name
+		desiredNames[c.Name] = c.ID
 	}
 
 	for _, dc := range d.Def.Columns {
-		if _, ok := curCols[dc.Name]; ok {
+		current, exists := curColsByID[dc.ID]
+		if !exists {
+			if occupied, collision := curColsByName[dc.Name]; collision {
+				return tableSteps{}, reject.Inputf(
+					"migrate: column %q.%q changes schema ID %d -> %d; remove it in one migration before creating the replacement",
+					name, dc.Name, occupied.SchemaID, dc.ID)
+			}
+			out.adds = append(out.adds, CreateColumn{Table: name, Def: dc})
 			continue
 		}
-		if old, hinted := d.ColumnRenames[dc.Name]; hinted {
-			if c, ok := curCols[old]; ok && !desiredCols[old] {
-				out.renames = append(out.renames, RenameColumn{Table: name, From: old, To: dc.Name})
-				delete(curCols, old)
-				curCols[dc.Name] = renamedColumn(c, dc.Name)
-				continue
-			}
+		if current.Name == dc.Name {
+			continue
 		}
-		out.adds = append(out.adds, CreateColumn{Table: name, Def: dc})
+		if occupied, collision := curColsByName[dc.Name]; collision && occupied.SchemaID != current.SchemaID {
+			return tableSteps{}, reject.Inputf(
+				"migrate: cannot rename column %q.%q to %q because that name belongs to schema ID %d",
+				name, current.Name, dc.Name, occupied.SchemaID)
+		}
+		out.renames = append(out.renames, RenameColumn{Table: name, From: current.Name, To: dc.Name})
 	}
 
 	// Validate matched columns and collect deletes.
 	for _, dc := range d.Def.Columns {
-		c, ok := curCols[dc.Name]
+		c, ok := curColsByID[dc.ID]
 		if !ok {
 			continue // newly added above
 		}
@@ -209,9 +278,9 @@ func diffTable(cur catalog.Table, d schema.Table) (tableSteps, error) {
 			return tableSteps{}, reject.Inputf("migrate: %s.%s: changing nullability is not supported", name, dc.Name)
 		}
 	}
-	for colName := range curCols {
-		if !desiredCols[colName] {
-			out.columnDeletes = append(out.columnDeletes, DeleteColumn{Table: name, Column: colName})
+	for schemaID, column := range curColsByID {
+		if _, exists := desiredIDs[schemaID]; !exists {
+			out.columnDeletes = append(out.columnDeletes, DeleteColumn{Table: name, Column: column.Name})
 		}
 	}
 
@@ -224,7 +293,7 @@ func diffTable(cur catalog.Table, d schema.Table) (tableSteps, error) {
 	}
 
 	// Foreign keys are immutable on existing tables.
-	if err := compareFKs(cur, d, out.renames); err != nil {
+	if err := compareFKs(cur, d, out.renames, currentByPhysicalID, desiredByName); err != nil {
 		return tableSteps{}, err
 	}
 
@@ -267,11 +336,6 @@ func diffTable(cur catalog.Table, d schema.Table) (tableSteps, error) {
 	return out, nil
 }
 
-func renamedColumn(c catalog.Column, newName string) catalog.Column {
-	c.Name = newName
-	return c
-}
-
 // applyRenames rewrites names in-place according to RenameColumn steps.
 func applyRenames(names []string, renames []Step) {
 	for _, s := range renames {
@@ -287,23 +351,41 @@ func applyRenames(names []string, renames []Step) {
 	}
 }
 
-// compareFKs verifies the desired foreign keys equal the current ones
-// (after column renames). RefTableID must be resolved back to a name by the
-// caller-supplied desired defs, so comparison uses column shapes and
-// reference columns only — sufficient for the POC's FK-to-primary-key rule.
-func compareFKs(cur catalog.Table, d schema.Table, renames []Step) error {
-	canon := func(cols, refCols []string) string {
-		return strings.Join(cols, ",") + "->" + strings.Join(refCols, ",")
+// compareFKs verifies that desired foreign keys retain the same local column
+// shape and referenced table identity. Reference column names are omitted
+// because foreign keys can only target the full primary key; retaining the
+// target table ID therefore also retains the referenced key identity while
+// allowing that key's columns to be renamed.
+func compareFKs(
+	cur catalog.Table,
+	d schema.Table,
+	renames []Step,
+	currentByPhysicalID map[string]catalog.Table,
+	desiredByName map[string]catalog.SchemaID,
+) error {
+	canon := func(cols []string, refTable catalog.SchemaID) string {
+		return fmt.Sprintf("%s->%d", strings.Join(cols, ","), refTable)
 	}
 	curSet := map[string]bool{}
 	for _, fk := range cur.ForeignKeys {
+		refTable, exists := currentByPhysicalID[fk.RefTableID]
+		if !exists {
+			return reject.Fail(reject.ReasonCatalogDrift,
+				"migrate: foreign key %q on table %q references missing physical table ID %q",
+				fk.Name, cur.Name, fk.RefTableID)
+		}
 		cols := slices.Clone(fk.Columns)
 		applyRenames(cols, renames)
-		curSet[canon(cols, fk.RefColumns)] = true
+		curSet[canon(cols, refTable.SchemaID)] = true
 	}
 	desSet := map[string]bool{}
 	for _, fk := range d.Def.ForeignKeys {
-		desSet[canon(fk.Columns, fk.RefColumns)] = true
+		refTable, exists := desiredByName[fk.RefTable]
+		if !exists {
+			return reject.Inputf("migrate: foreign key %q on table %q references unknown table %q",
+				fk.Name, d.Def.Name, fk.RefTable)
+		}
+		desSet[canon(fk.Columns, refTable)] = true
 	}
 	if len(curSet) != len(desSet) {
 		return reject.Inputf("migrate: %s: adding or removing foreign keys on an existing table is not supported", d.Def.Name)

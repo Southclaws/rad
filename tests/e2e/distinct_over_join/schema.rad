@@ -4,11 +4,13 @@
 # appears once regardless of how many posts they wrote, and an author with none
 # is absent.
 tables:
-  - name: authors
+  - id: 1
+    name: authors
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string }
-  - name: posts
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+  - id: 2
+    name: posts
     columns:
-      - { name: id,        type: string, pk: true }
-      - { name: author_id, type: string }
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: author_id, type: string }

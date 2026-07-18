@@ -2,7 +2,8 @@
 # relation names the same primary key twice must fail with
 # mutation_target_ambiguous (the batch cannot resolve one row from two images).
 tables:
-  - name: items
+  - id: 1
+    name: items
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }

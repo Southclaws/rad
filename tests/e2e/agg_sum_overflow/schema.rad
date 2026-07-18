@@ -3,6 +3,7 @@
 # in a `rows` relation (raw-JSON cells preserve int64 precision on the wire),
 # so no table is needed; `dummy` just gives the catalog a table to init.
 tables:
-  - name: dummy
+  - id: 1
+    name: dummy
     columns:
-      - { name: id, type: string, pk: true }
+      - { id: 1, name: id, type: string, pk: true }

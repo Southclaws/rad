@@ -2,10 +2,11 @@
 # at-most-one row, so `first` with NO explicit order must bind and return the
 # single matching row deterministically.
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,    type: string, pk: true }
-      - { name: email, type: string }
-      - { name: name,  type: string }
+      - { id: 1, name: id,    type: string, pk: true }
+      - { id: 2, name: email, type: string }
+      - { id: 3, name: name,  type: string }
     indexes:
       - { columns: [email], unique: true }

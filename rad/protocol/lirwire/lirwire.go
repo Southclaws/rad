@@ -25,7 +25,7 @@ var ScalarTypeValues = []ScalarType{
 }
 
 // LIR is Rad's low-level intermediate representation: the relation tree a
-// client sends to `POST /query`, and the tree the engine binds, plans, and
+// client sends to `POST /execute`, and the tree the engine binds, plans, and
 // executes. This schema is its normative specification. The type definitions
 // and the prose in these descriptions are one artifact and move together.
 //
@@ -199,7 +199,7 @@ func (BoolValue) isValue() {}
 func (BoolValue) ValueType() string { return "bool" }
 
 // LIR is Rad's low-level intermediate representation: the relation tree a
-// client sends to `POST /query`, and the tree the engine binds, plans, and
+// client sends to `POST /execute`, and the tree the engine binds, plans, and
 // executes. This schema is its normative specification. The type definitions
 // and the prose in these descriptions are one artifact and move together.
 //
@@ -504,7 +504,7 @@ type AggTerm struct {
 }
 
 // LIR is Rad's low-level intermediate representation: the relation tree a
-// client sends to `POST /query`, and the tree the engine binds, plans, and
+// client sends to `POST /execute`, and the tree the engine binds, plans, and
 // executes. This schema is its normative specification. The type definitions
 // and the prose in these descriptions are one artifact and move together.
 //
@@ -735,7 +735,7 @@ type RowsColumn struct {
 }
 
 // LIR is Rad's low-level intermediate representation: the relation tree a
-// client sends to `POST /query`, and the tree the engine binds, plans, and
+// client sends to `POST /execute`, and the tree the engine binds, plans, and
 // executes. This schema is its normative specification. The type definitions
 // and the prose in these descriptions are one artifact and move together.
 //

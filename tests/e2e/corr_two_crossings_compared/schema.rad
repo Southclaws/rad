@@ -2,12 +2,14 @@
 # filter(parents, scalar(count A children) > scalar(count B children)).
 # extractExpr must pull BOTH crossings out of the same binary node.
 tables:
-  - name: parents
+  - id: 1
+    name: parents
     columns:
-      - { name: id, type: string, pk: true }
+      - { id: 1, name: id, type: string, pk: true }
 
-  - name: children
+  - id: 2
+    name: children
     columns:
-      - { name: id,        type: string, pk: true }
-      - { name: parent_id, type: string, nullable: true, ref: parents.id }
-      - { name: kind,      type: string }
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: parent_id, type: string, nullable: true, ref: parents.id }
+      - { id: 3, name: kind,      type: string }

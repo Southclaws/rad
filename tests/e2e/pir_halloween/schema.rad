@@ -7,7 +7,8 @@
 # a.n=2 first and then reading it back for b would collapse both to 2 — that
 # is the observable difference this fixture pins down.
 tables:
-  - name: nodes
+  - id: 1
+    name: nodes
     columns:
-      - { name: id, type: string, pk: true }
-      - { name: n,  type: int64 }
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: n,  type: int64 }

@@ -2,12 +2,14 @@
 # by INEQUALITY (child.value < parent.threshold), so it cannot be the batched
 # key path — it must fall back to general per-row nested evaluation.
 tables:
-  - name: parents
+  - id: 1
+    name: parents
     columns:
-      - { name: id,        type: string, pk: true }
-      - { name: threshold, type: int64 }
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: threshold, type: int64 }
 
-  - name: children
+  - id: 2
+    name: children
     columns:
-      - { name: id,    type: string, pk: true }
-      - { name: value, type: int64 }
+      - { id: 1, name: id,    type: string, pk: true }
+      - { id: 2, name: value, type: int64 }

@@ -177,6 +177,11 @@ func (c *Catalog) CreateColumn(ctx context.Context, tableName string, def Column
 // CreateColumn appends a column inside this catalog change.
 func (m *Mutation) CreateColumn(ctx context.Context, tableName string, def ColumnDef) (Table, error) {
 	return m.mutateTable(ctx, tableName, func(view kv.KV, tbl *Table) error {
+		var err error
+		def, err = assignColumnDefinitionID(ctx, view, *tbl, def)
+		if err != nil {
+			return err
+		}
 		if _, exists := tbl.Column(def.Name); exists {
 			return reject.Inputf("catalog: column %q already exists in table %q", def.Name, tableName)
 		}
@@ -196,7 +201,7 @@ func (m *Mutation) CreateColumn(ctx context.Context, tableName string, def Colum
 			return err
 		}
 		tbl.Columns = append(tbl.Columns, Column{
-			ID: id, Name: def.Name, Type: def.Type, Nullable: def.Nullable,
+			ID: id, SchemaID: def.ID, Name: def.Name, Type: def.Type, Nullable: def.Nullable,
 			Format: def.Format, Default: def.Default,
 		})
 		return nil
@@ -264,7 +269,7 @@ func (m *Mutation) RenameColumn(ctx context.Context, tableName, oldName, newName
 		}
 		return tbl, nil
 	}
-	return m.mutateTable(ctx, tableName, func(view kv.KV, tbl *Table) error {
+	renamed, err := m.mutateTable(ctx, tableName, func(view kv.KV, tbl *Table) error {
 		if _, ok := tbl.Column(oldName); !ok {
 			return reject.Inputf("catalog: column %q does not exist in table %q", oldName, tableName)
 		}
@@ -289,9 +294,44 @@ func (m *Mutation) RenameColumn(ctx context.Context, tableName, oldName, newName
 		}
 		for i := range tbl.ForeignKeys {
 			rename(tbl.ForeignKeys[i].Columns)
+			if tbl.ForeignKeys[i].RefTableID == tbl.ID {
+				rename(tbl.ForeignKeys[i].RefColumns)
+			}
 		}
 		return nil
 	})
+	if err != nil {
+		return Table{}, err
+	}
+
+	tables, err := listTables(ctx, m.view)
+	if err != nil {
+		return Table{}, err
+	}
+	for _, table := range tables {
+		if table.ID == renamed.ID {
+			continue
+		}
+		changed := false
+		for i := range table.ForeignKeys {
+			foreignKey := &table.ForeignKeys[i]
+			if foreignKey.RefTableID != renamed.ID {
+				continue
+			}
+			for j, refColumn := range foreignKey.RefColumns {
+				if refColumn == oldName {
+					foreignKey.RefColumns[j] = newName
+					changed = true
+				}
+			}
+		}
+		if changed {
+			if err := saveTable(ctx, m.view, table); err != nil {
+				return Table{}, err
+			}
+		}
+	}
+	return renamed, nil
 }
 
 // createIndexIn records a new index in the catalog against the caller's view

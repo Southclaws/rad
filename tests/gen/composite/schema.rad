@@ -3,18 +3,20 @@
 # primary key, a secondary unique index, a composite primary key, and a
 # foreign key that is part of that composite key and references a non-text key.
 tables:
-  - name: teams
+  - id: 1
+    name: teams
     columns:
-      - { name: id,   type: int64, pk: true }
-      - { name: name, type: string }
+      - { id: 1, name: id,   type: int64, pk: true }
+      - { id: 2, name: name, type: string }
     indexes:
       - { columns: [name], unique: true }
 
-  - name: slots
+  - id: 2
+    name: slots
     columns:
-      - { name: team_id, type: int64, pk: true, ref: teams.id }
-      - { name: idx,     type: int64, pk: true }
-      - { name: label,   type: string, nullable: true }
-      - { name: score,   type: float64, nullable: true }
+      - { id: 1, name: team_id, type: int64, pk: true, ref: teams.id }
+      - { id: 2, name: idx,     type: int64, pk: true }
+      - { id: 3, name: label,   type: string, nullable: true }
+      - { id: 4, name: score,   type: float64, nullable: true }
     indexes:
       - { columns: [label] }

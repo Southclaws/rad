@@ -66,17 +66,19 @@ func ptrExpr(e lirwire.Expr) *lirwire.Expr { return &e }
 
 const testSchema = `
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,   type: string, pk: true, default: uuid() }
-      - { name: name, type: string, unique: true }
-      - { name: age,  type: int64, nullable: true }
-  - name: posts
+      - { id: 1, name: id,   type: string, pk: true, default: uuid() }
+      - { id: 2, name: name, type: string, unique: true }
+      - { id: 3, name: age,  type: int64, nullable: true }
+  - id: 2
+    name: posts
     columns:
-      - { name: id,      type: string, pk: true, default: uuid() }
-      - { name: user_id, type: string, ref: users.id, index: true }
-      - { name: title,   type: string }
-      - { name: score,   type: int64, default: 0 }
+      - { id: 1, name: id,      type: string, pk: true, default: uuid() }
+      - { id: 2, name: user_id, type: string, ref: users.id, index: true }
+      - { id: 3, name: title,   type: string }
+      - { id: 4, name: score,   type: int64, default: 0 }
 `
 
 func testServer(t *testing.T) *radclient.Client {

@@ -4,8 +4,9 @@
 # grandparent, leaves, child counts. Tree: n1 -> {n2, n3}; n2 -> {n4};
 # n3, n4, n5 are leaves; n1 and n5 are roots.
 tables:
-  - name: nodes
+  - id: 1
+    name: nodes
     columns:
-      - { name: id,        type: string, pk: true }
-      - { name: parent_id, type: string, nullable: true, ref: nodes.id }
-      - { name: label,     type: string }
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: parent_id, type: string, nullable: true, ref: nodes.id }
+      - { id: 3, name: label,     type: string }

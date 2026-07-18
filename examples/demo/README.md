@@ -59,7 +59,7 @@ indexes · many-to-many via task_labels.
 ## Schema evolution, demonstrated in git history
 
 The commit "Evolve the Tracker schema" shows the loop against a live,
-populated database: a column add, a rename (via `renamed_from` — no data
-rewrite, rows are keyed by column ID), and a backfilled composite index.
+populated database: a column add, a rename (by retaining its numeric ID — no
+data rewrite, rows are keyed by column ID), and a backfilled composite index.
 Regenerating the client made the app's single use of the renamed field a
 compile error; one line later everything ran.

@@ -3,7 +3,8 @@
 # carry a null kind; distinct collapses them to a single null row alongside the
 # distinct non-null kinds.
 tables:
-  - name: events
+  - id: 1
+    name: events
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: kind, type: string, nullable: true }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: kind, type: string, nullable: true }

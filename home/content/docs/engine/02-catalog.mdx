@@ -223,28 +223,39 @@ depend on nothing above layer 02.
 against the embedded JSON Schema `radschema.json`) into `catalog.TableDef`s.
 It desugars column-level shorthands — `pk`, `unique`/`index` (which derive
 deterministic index names via `indexName`, e.g. `users_email_uq`),
-`ref: table.column` — and separates `renamed_from` hints into
-`schema.Table.RenamedFrom`/`ColumnRenames`, keeping migration hints out of
-the definition proper.
+`ref: table.column` — while retaining the positive numeric table and column
+IDs authored in the file. Table IDs are unique across the schema; column IDs
+are unique within their table. These are stable logical identities, distinct
+from the opaque physical IDs used in data keys.
 
 `migrate` is a pure differ: `Diff(current []catalog.Table, desired
 *schema.Schema) ([]Step, error)` returns an ordered plan (renames, creates in
-FK-dependency order, created columns, index deletes, index creates, column deletes,
-table deletes, referencing-table-first) without touching the store. Renames are recognized only through
-hints — otherwise a rename diffs as delete-plus-create. Indexes are matched
-structurally (post-rename columns + uniqueness), not by name, so a column
-rename never forces a needless delete-and-backfill. Unsupported changes (column
-type or nullability, primary keys, FKs on existing tables) are errors, not
-destructive guesses. Applying the plan is the frontend's job
-(`DB.Migrate` in rad/engine/06_frontend/migrate.go), one step per transaction — the
-plan as a whole is *not* atomic; a failing step aborts mid-plan with prior
-steps committed.
+FK-dependency order, created columns, index deletes, index creates, column
+deletes, table deletes, referencing-table-first) without touching the store.
+It matches tables and columns by logical ID first, then emits a rename when the
+matched name changed; a rename can therefore accompany other edits without
+structural guessing. Indexes are matched structurally (post-rename columns +
+uniqueness), not by name, so a column rename never forces a needless
+delete-and-backfill. Unsupported changes (column type or nullability, primary
+keys, FKs on existing tables) are errors, not destructive guesses.
+
+Applying the plan is the frontend's job (`DB.Migrate` in
+`rad/engine/06_frontend/migrate.go`). In schema mode the entire plan is one
+serializable transaction and becomes one schema revision. In direct mode each
+step is its own catalog mutation and revision. Every revision stores the full
+post-change canonical schema under `/rad/catalog/meta/schema_revision/`; its
+logical IDs make snapshots comparable across renames. Retired logical IDs are
+rejected if they appear in a later create, while omitted IDs on direct catalog
+calls are allocated above every ID seen in current state or history.
 
 ## Invariants downstream layers rely on
 
-- IDs are stable for the life of an object and never reused; all data keys
-  are built from IDs, so any committed `Table` value, however stale, points
-  at real keys.
+- Physical IDs are stable for the life of an object and never reused; all data
+  keys are built from them, so any committed `Table` value, however stale,
+  points at real keys.
+- Logical table IDs are unique across the database history; logical column IDs
+  are unique within their table history. Renames retain them, and canonical
+  schemas never contain zero or duplicate logical IDs.
 - A committed index has entries for every committed row of its table (the
   `CreateIndexIn` + backfill contract).
 - `Table.PrimaryKey` is non-empty and its columns are non-nullable — the

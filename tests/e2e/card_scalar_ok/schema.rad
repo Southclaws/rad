@@ -2,8 +2,9 @@
 # a primary key, a text column, and an int rank so fixtures can exercise
 # exactly_one / scalar / first roots against PK-eq filters and ordered scans.
 tables:
-  - name: widgets
+  - id: 1
+    name: widgets
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string }
-      - { name: rank, type: int64 }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+      - { id: 3, name: rank, type: int64 }

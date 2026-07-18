@@ -2,7 +2,8 @@
 # including for negatives: -7.9 -> -7 (not -8). Complements errbind_cast
 # which only covers the positive direction (7.9 -> 7).
 tables:
-  - name: nums
+  - id: 1
+    name: nums
     columns:
-      - { name: id, type: string, pk: true }
-      - { name: f,  type: float64 }
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: f,  type: float64 }

@@ -91,7 +91,11 @@ export function LIRPipeline() {
     tone?: "hero" | "kv";
   }[] = [
     { label: "generated client", sub: "assembles a query graph" },
-    { label: "POST /query", sub: "the rad:// wire · {nodes, root}", tone: "hero" },
+    {
+      label: "POST /execute",
+      sub: "the rad:// wire · {nodes, root}",
+      tone: "hero",
+    },
     { label: "binder", sub: "names → slots · types · cardinality" },
     { label: "physical planner", sub: "access paths · ordering · attaches" },
     {
@@ -114,7 +118,7 @@ export function LIRPipeline() {
   return (
     <Fig
       viewBox={`0 0 640 ${top + stages.length * (H + GAP)}`}
-      label="A vertical pipeline: the generated client assembles a query graph, which travels over POST /query, through the binder and physical planner, into the executor, down to the KV store over SlateDB, and back up as nested JSON."
+      label="A vertical pipeline: the generated client assembles a query graph, which travels over POST /execute, through the binder and physical planner, into the executor, down to the KV store over SlateDB, and back up as nested JSON."
       caption="One read, top to bottom: the graph is assembled at the client, bound, planned, executed against the KV store, and reassembled as nested JSON."
     >
       {stages.map((s, i) => {
@@ -124,8 +128,8 @@ export function LIRPipeline() {
         const stroke = hero
           ? "var(--green)"
           : kv
-            ? "var(--green-mid)"
-            : "var(--line-2)";
+          ? "var(--green-mid)"
+          : "var(--line-2)";
         return (
           <g key={s.label}>
             {i > 0 && <Down x={cx} y1={y - GAP} y2={y - 4} />}
@@ -183,7 +187,11 @@ export function KeyLayoutDiagram() {
     { t: "{pk_tuple}", w: 110, kind: "enc" },
   ];
   const stroke = (k: Seg["kind"]) =>
-    k === "enc" ? "var(--green-mid)" : k === "id" ? "var(--line-2)" : "var(--line)";
+    k === "enc"
+      ? "var(--green-mid)"
+      : k === "id"
+      ? "var(--line-2)"
+      : "var(--line)";
   const textFill = (k: Seg["kind"]) =>
     k === "enc" ? "var(--green)" : k === "id" ? "var(--ink)" : "var(--muted)";
 
@@ -328,7 +336,13 @@ export function AccessPathDiagram() {
       >
         access selection
       </text>
-      <text x="320" y="60" textAnchor="middle" fontSize="11.5" fill="var(--green-mid)">
+      <text
+        x="320"
+        y="60"
+        textAnchor="middle"
+        fontSize="11.5"
+        fill="var(--green-mid)"
+      >
         per-column domains: eq + ranges
       </text>
       {paths.map((p) => {
@@ -426,8 +440,7 @@ export function IndexScanDiagram() {
             strokeWidth="1.3"
           />
           <text x="60" y={iy(i) + 23} fontSize="11.5" fill="var(--muted)">
-            {"{indexed_tuple}"} ·{" "}
-            <tspan fill="var(--green)">pk{i + 1}</tspan>
+            {"{indexed_tuple}"} · <tspan fill="var(--green)">pk{i + 1}</tspan>
           </text>
           <Arrow x1={242} y1={iy(i) + 18} x2={372} y2={iy(i) + 18} />
           <rect
@@ -445,7 +458,13 @@ export function IndexScanDiagram() {
           </text>
         </g>
       ))}
-      <text x="480" y="40" textAnchor="middle" fontSize="12.5" fill="var(--green-mid)">
+      <text
+        x="480"
+        y="40"
+        textAnchor="middle"
+        fontSize="12.5"
+        fill="var(--green-mid)"
+      >
         N Gets
       </text>
     </Fig>
@@ -467,28 +486,65 @@ export function IncludeTraversalDiagram() {
     >
       {boards.map((b) => (
         <g key={b.id}>
-          <rect x="20" y={b.y} width="120" height="40" rx="5"
-            stroke="var(--line-2)" strokeWidth="1.4" />
-          <text x="80" y={b.y + 19} textAnchor="middle" fontSize="12.5"
-            fontWeight={500} fill="var(--ink)">
+          <rect
+            x="20"
+            y={b.y}
+            width="120"
+            height="40"
+            rx="5"
+            stroke="var(--line-2)"
+            strokeWidth="1.4"
+          />
+          <text
+            x="80"
+            y={b.y + 19}
+            textAnchor="middle"
+            fontSize="12.5"
+            fontWeight={500}
+            fill="var(--ink)"
+          >
             board {b.id}
           </text>
-          <text x="80" y={b.y + 33} textAnchor="middle" fontSize="10.5"
-            fill="var(--faint)">
+          <text
+            x="80"
+            y={b.y + 33}
+            textAnchor="middle"
+            fontSize="10.5"
+            fill="var(--faint)"
+          >
             owner_id = {b.owner}
           </text>
           <Arrow x1={140} y1={b.y + 20} x2={216} y2={116} />
         </g>
       ))}
 
-      <rect x="216" y="66" width="150" height="100" rx="7"
-        stroke="var(--green)" strokeWidth="1.7" fill="var(--green-deep)" />
-      <text x="291" y="106" textAnchor="middle" fontSize="13.5"
-        fontWeight={700} fill="var(--green)">
+      <rect
+        x="216"
+        y="66"
+        width="150"
+        height="100"
+        rx="7"
+        stroke="var(--green)"
+        strokeWidth="1.7"
+        fill="var(--green-deep)"
+      />
+      <text
+        x="291"
+        y="106"
+        textAnchor="middle"
+        fontSize="13.5"
+        fontWeight={700}
+        fill="var(--green)"
+      >
         dedupe keys
       </text>
-      <text x="291" y="126" textAnchor="middle" fontSize="11"
-        fill="var(--green-mid)">
+      <text
+        x="291"
+        y="126"
+        textAnchor="middle"
+        fontSize="11"
+        fill="var(--green-mid)"
+      >
         over the batch
       </text>
 
@@ -502,27 +558,58 @@ export function IncludeTraversalDiagram() {
         tasks: 3 distinct
       </text>
 
-      <rect x="452" y="30" width="186" height="40" rx="5"
-        stroke="var(--line-2)" strokeWidth="1.4" />
+      <rect
+        x="452"
+        y="30"
+        width="186"
+        height="40"
+        rx="5"
+        stroke="var(--line-2)"
+        strokeWidth="1.4"
+      />
       <text x="545" y="49" textAnchor="middle" fontSize="12" fill="var(--ink)">
         PKGet users[ada]
       </text>
-      <text x="545" y="62" textAnchor="middle" fontSize="10"
-        fill="var(--faint)">
+      <text
+        x="545"
+        y="62"
+        textAnchor="middle"
+        fontSize="10"
+        fill="var(--faint)"
+      >
         shared by b1 and b2
       </text>
-      <rect x="452" y="96" width="186" height="40" rx="5"
-        stroke="var(--line-2)" strokeWidth="1.4" />
+      <rect
+        x="452"
+        y="96"
+        width="186"
+        height="40"
+        rx="5"
+        stroke="var(--line-2)"
+        strokeWidth="1.4"
+      />
       <text x="545" y="120" textAnchor="middle" fontSize="12" fill="var(--ink)">
         PKGet users[bob]
       </text>
-      <rect x="452" y="208" width="186" height="60" rx="5"
-        stroke="var(--line-2)" strokeWidth="1.4" />
+      <rect
+        x="452"
+        y="208"
+        width="186"
+        height="60"
+        rx="5"
+        stroke="var(--line-2)"
+        strokeWidth="1.4"
+      />
       <text x="545" y="232" textAnchor="middle" fontSize="12" fill="var(--ink)">
         IndexRangeScan tasks
       </text>
-      <text x="545" y="250" textAnchor="middle" fontSize="10.5"
-        fill="var(--faint)">
+      <text
+        x="545"
+        y="250"
+        textAnchor="middle"
+        fontSize="10.5"
+        fill="var(--faint)"
+      >
         one per distinct board id
       </text>
     </Fig>

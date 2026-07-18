@@ -1,13 +1,15 @@
 # e2e/cross_array_to_many — boards and tasks. Each board embeds an ordered
 # `array(...)` of its tasks (to-many), sorted by task id.
 tables:
-  - name: boards
+  - id: 1
+    name: boards
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
 
-  - name: tasks
+  - id: 2
+    name: tasks
     columns:
-      - { name: id,       type: string, pk: true }
-      - { name: board_id, type: string, nullable: true, ref: boards.id }
-      - { name: title,    type: string }
+      - { id: 1, name: id,       type: string, pk: true }
+      - { id: 2, name: board_id, type: string, nullable: true, ref: boards.id }
+      - { id: 3, name: title,    type: string }

@@ -17,15 +17,15 @@ as an ordinary relation?** Every time the answer is yes, the special node is
 resisted. The IR converges on four primitives — relations, expressions,
 cardinality crossings, projection — and everything else is a consequence:
 
-| SQL spelling | LIR expression |
-| --- | --- |
-| `EXISTS (subquery)` | `exists(rel)` |
-| `JOIN` | `join` — already minimal |
-| `JSON_AGG` / `ARRAY_AGG` | `array(rel)` in a projection field |
-| scalar subquery | `scalar(rel)` |
-| `GROUP BY` | `aggregate` with groups — the same node as a global fold |
-| `HAVING` | `filter(aggregate(...), predicate)` |
-| an ORM's `include` | a correlated relation crossed into a projection field |
+| SQL spelling             | LIR expression                                           |
+| ------------------------ | -------------------------------------------------------- |
+| `EXISTS (subquery)`      | `exists(rel)`                                            |
+| `JOIN`                   | `join` — already minimal                                 |
+| `JSON_AGG` / `ARRAY_AGG` | `array(rel)` in a projection field                       |
+| scalar subquery          | `scalar(rel)`                                            |
+| `GROUP BY`               | `aggregate` with groups — the same node as a global fold |
+| `HAVING`                 | `filter(aggregate(...), predicate)`                      |
+| an ORM's `include`       | a correlated relation crossed into a projection field    |
 
 `IN`, `ANY`, and `ALL` are not generally reducible to `exists`: NULL makes
 those rewrites incorrect. Correlated crossings produce nested values; LIR
@@ -46,27 +46,40 @@ holds the outputs identical.
 
 ## The wire: a relation tree
 
-`POST /query` takes a strict LIR relation tree encoded as nodes keyed by
+`POST /execute` takes a strict LIR relation tree encoded as nodes keyed by
 caller-chosen names plus a root selector. Node references name inline
 definitions: the tree must be acyclic, every non-root node has one consumer,
 and unused or shared definitions are invalid.
 
-LIR is deliberately separate from the HTTP OpenAPI contract. `/query` carries
+LIR is deliberately separate from the HTTP OpenAPI contract. `/execute` carries
 raw JSON; generated tagged unions and runtime validation both come from the
 canonical LIR JSON Schema.
 
 ```json
 {
   "nodes": {
-    "tasks":  { "kind": "scan", "table": "tasks", "scope": "t" },
-    "open":   { "kind": "filter", "input": "tasks",
-                "predicate": { "kind": "binary", "op": "eq",
-                  "left":  { "kind": "col", "scope": "t", "column": "status" },
-                  "right": { "kind": "lit", "value": "open" } } },
-    "sorted": { "kind": "order", "input": "open",
-                "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "priority" },
-                             "desc": true } ] },
-    "page":   { "kind": "slice", "input": "sorted", "limit": 20 }
+    "tasks": { "kind": "scan", "table": "tasks", "scope": "t" },
+    "open": {
+      "kind": "filter",
+      "input": "tasks",
+      "predicate": {
+        "kind": "binary",
+        "op": "eq",
+        "left": { "kind": "col", "scope": "t", "column": "status" },
+        "right": { "kind": "lit", "value": "open" }
+      }
+    },
+    "sorted": {
+      "kind": "order",
+      "input": "open",
+      "terms": [
+        {
+          "expr": { "kind": "col", "scope": "t", "column": "priority" },
+          "desc": true
+        }
+      ]
+    },
+    "page": { "kind": "slice", "input": "sorted", "limit": 20 }
   },
   "root": { "node": "page", "cardinality": "many" }
 }
@@ -153,13 +166,13 @@ scan is `Scan(prefix, PrefixEnd(prefix))`.
 Every value encodes to `[tag byte][payload]`, order-preserving and
 self-delimiting, so tuples concatenate with no separator:
 
-| Type | Tag | Payload | Total |
-| --- | --- | --- | --- |
-| NULL | `0x01` | — | 1 byte |
-| bool | `0x02` | `0x00` / `0x01` | 2 bytes |
-| int64 | `0x03` | big-endian of `u64 XOR 2⁶³` | 9 bytes |
-| float64 | `0x04` | transformed IEEE-754, big-endian | 9 bytes |
-| text | `0x05` | body (`0x00` → `0x00 0xFF`), then `0x00 0x01` | variable |
+| Type    | Tag    | Payload                                       | Total    |
+| ------- | ------ | --------------------------------------------- | -------- |
+| NULL    | `0x01` | —                                             | 1 byte   |
+| bool    | `0x02` | `0x00` / `0x01`                               | 2 bytes  |
+| int64   | `0x03` | big-endian of `u64 XOR 2⁶³`                   | 9 bytes  |
+| float64 | `0x04` | transformed IEEE-754, big-endian              | 9 bytes  |
+| text    | `0x05` | body (`0x00` → `0x00 0xFF`), then `0x00 0x01` | variable |
 
 <KeyLayoutDiagram />
 
@@ -186,7 +199,7 @@ rest of the range:
 
 <IndexScanDiagram />
 
-Ordering is a physical property: an index provides its columns *after* the
+Ordering is a physical property: an index provides its columns _after_ the
 equality prefix, then the primary key, ascending. When that provided order
 satisfies the requirement, the sort disappears — and because the binder's
 tie-breaker matches the index's PK suffix exactly, `order by name limit 1`
@@ -215,7 +228,7 @@ construction, which the conformance suite asserts.
 distinct group (GROUP BY); without, exactly one row (the global fold —
 `count` of nothing is 0, every other fold of nothing is NULL, folds skip
 NULLs, `avg` is always float64). The aggregate may bind an output scope, so
-ordering or filtering *above* the fold addresses its keys and terms like any
+ordering or filtering _above_ the fold addresses its keys and terms like any
 other columns. The generated clients' `CountBy<Column>` methods answer a
 board card's "3 tasks · 2 open · 1 done" in a single round trip.
 
@@ -238,7 +251,7 @@ spelling of something SQL habits get wrong:
   before projecting (projection preserves order), or give the projection a
   `scope` and order by its output columns.
 - **Keep zero-row parents in grouped folds.** `aggregate(orders, group by
-  customer_id)` produces one row per customer *with orders* — a customer
+customer_id)` produces one row per customer _with orders_ — a customer
   with none never forms a group. When absent parents matter (averages,
   dashboards), LEFT-join the parent to the child and count a non-NULL child
   column: the padded rows keep the parent, the NULL-skipping fold gives 0.
@@ -246,9 +259,9 @@ spelling of something SQL habits get wrong:
   both sides collides when column names repeat (`id` almost always).
   Enumerate the fields you want.
 - **Reuse a computed column by labelling; reuse a relation by binding.**
-  To order by a derived value *and* return it inside one pipeline, compute
+  To order by a derived value _and_ return it inside one pipeline, compute
   it once in a labelled projection and order by the projection's column
-  above. To use the same derived *relation* in sibling contexts — a
+  above. To use the same derived _relation_ in sibling contexts — a
   self-join of per-customer stats, one subset both folded and listed —
   name it in `bindings` and reference it (see below); ordinary node
   definitions remain single-consumer.
@@ -266,18 +279,37 @@ two scans of one table observe the same snapshot:
 ```json
 {
   "nodes": {
-    "o":    { "kind": "scan", "table": "orders", "scope": "o" },
-    "per":  { "kind": "aggregate", "input": "o", "scope": "e",
-              "groups": [ { "expr": { "kind": "col", "scope": "o", "column": "customer_id" } } ],
-              "aggs":   [ { "fn": "count", "as": "n" } ] },
-    "a":    { "kind": "ref", "binding": "expensive", "scope": "a" },
-    "b":    { "kind": "ref", "binding": "expensive", "scope": "b" },
-    "j":    { "kind": "join", "left": "a", "right": "b", "join": "inner",
-              "on": { "kind": "binary", "op": "eq",
-                "left":  { "kind": "col", "scope": "a", "column": "customer_id" },
-                "right": { "kind": "col", "scope": "b", "column": "customer_id" } } },
-    "sorted": { "kind": "order", "input": "j",
-                "terms": [ { "expr": { "kind": "col", "scope": "a", "column": "customer_id" } } ] }
+    "o": { "kind": "scan", "table": "orders", "scope": "o" },
+    "per": {
+      "kind": "aggregate",
+      "input": "o",
+      "scope": "e",
+      "groups": [
+        { "expr": { "kind": "col", "scope": "o", "column": "customer_id" } }
+      ],
+      "aggs": [{ "fn": "count", "as": "n" }]
+    },
+    "a": { "kind": "ref", "binding": "expensive", "scope": "a" },
+    "b": { "kind": "ref", "binding": "expensive", "scope": "b" },
+    "j": {
+      "kind": "join",
+      "left": "a",
+      "right": "b",
+      "join": "inner",
+      "on": {
+        "kind": "binary",
+        "op": "eq",
+        "left": { "kind": "col", "scope": "a", "column": "customer_id" },
+        "right": { "kind": "col", "scope": "b", "column": "customer_id" }
+      }
+    },
+    "sorted": {
+      "kind": "order",
+      "input": "j",
+      "terms": [
+        { "expr": { "kind": "col", "scope": "a", "column": "customer_id" } }
+      ]
+    }
   },
   "bindings": { "expensive": { "node": "per" } },
   "root": { "node": "sorted", "cardinality": "many" }
@@ -285,7 +317,7 @@ two scans of one table observe the same snapshot:
 ```
 
 Commitment matters most when the body is declared-arbitrary: `bindings`
-over an orderless `slice` resolves the choice *once*, so a self-join of
+over an orderless `slice` resolves the choice _once_, so a self-join of
 "any hundred events" is genuinely a self-join. Writing a subtree twice
 remains two independent draws — reference for one choice, duplicate for
 two. Bindings are closed (no reaching out to enclosing scopes), expose

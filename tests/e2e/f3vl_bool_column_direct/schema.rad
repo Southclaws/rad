@@ -3,7 +3,8 @@
 # both `flag` and `not(flag)` drop the NULL row (UNKNOWN, and not UNKNOWN =
 # UNKNOWN) — the two do not partition the table.
 tables:
-  - name: t
+  - id: 1
+    name: t
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: flag, type: bool, nullable: true }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: flag, type: bool, nullable: true }

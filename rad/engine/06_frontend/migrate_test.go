@@ -16,38 +16,43 @@ import (
 
 const trackerV1 = `
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,   type: string, pk: true, default: uuid() }
-      - { name: name, type: string }
-  - name: tasks
+      - { id: 1, name: id,   type: string, pk: true, default: uuid() }
+      - { id: 2, name: name, type: string }
+  - id: 2
+    name: tasks
     columns:
-      - { name: id,      type: string, pk: true, default: uuid() }
-      - { name: user_id, type: string, ref: users.id }
-      - { name: title,   type: string }
-      - { name: done,    type: bool, default: false }
+      - { id: 1, name: id,      type: string, pk: true, default: uuid() }
+      - { id: 2, name: user_id, type: string, ref: users.id }
+      - { id: 3, name: title,   type: string }
+      - { id: 4, name: done,    type: bool, default: false }
 `
 
 const trackerV2 = `
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,       type: string, pk: true, default: uuid() }
-      - { name: username, type: string, renamed_from: name }
-      - { name: email,    type: string, nullable: true }
-  - name: tasks
+      - { id: 1, name: id,       type: string, pk: true, default: uuid() }
+      - { id: 2, name: username, type: string }
+      - { id: 3, name: email,    type: string, nullable: true }
+  - id: 2
+    name: tasks
     columns:
-      - { name: id,      type: string, pk: true, default: uuid() }
-      - { name: user_id, type: string, ref: users.id }
-      - { name: title,   type: string }
-      - { name: done,    type: bool, default: false }
+      - { id: 1, name: id,      type: string, pk: true, default: uuid() }
+      - { id: 2, name: user_id, type: string, ref: users.id }
+      - { id: 3, name: title,   type: string }
+      - { id: 4, name: done,    type: bool, default: false }
     indexes:
       - { columns: [user_id, done] }
-  - name: comments
+  - id: 3
+    name: comments
     columns:
-      - { name: id,      type: string, pk: true, default: uuid() }
-      - { name: task_id, type: string, ref: tasks.id, index: true }
-      - { name: body,    type: string }
+      - { id: 1, name: id,      type: string, pk: true, default: uuid() }
+      - { id: 2, name: task_id, type: string, ref: tasks.id, index: true }
+      - { id: 3, name: body,    type: string }
 `
 
 func migrateTo(t *testing.T, db *frontend.DB, ctx context.Context, src string) []string {
@@ -194,17 +199,19 @@ func TestUniqueBackfillRejectsDuplicates(t *testing.T) {
 
 	uniqueName := `
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,   type: string, pk: true, default: uuid() }
-      - { name: name, type: string, unique: true }
-      - { name: note, type: string, nullable: true }
-  - name: tasks
+      - { id: 1, name: id,   type: string, pk: true, default: uuid() }
+      - { id: 2, name: name, type: string, unique: true }
+      - { id: 3, name: note, type: string, nullable: true }
+  - id: 2
+    name: tasks
     columns:
-      - { name: id,      type: string, pk: true, default: uuid() }
-      - { name: user_id, type: string, ref: users.id }
-      - { name: title,   type: string }
-      - { name: done,    type: bool, default: false }
+      - { id: 1, name: id,      type: string, pk: true, default: uuid() }
+      - { id: 2, name: user_id, type: string, ref: users.id }
+      - { id: 3, name: title,   type: string }
+      - { id: 4, name: done,    type: bool, default: false }
 `
 	_, err := db.MigrateFile(ctx, "schema.rad", []byte(uniqueName))
 	if err == nil {

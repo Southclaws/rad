@@ -1,3 +1,1 @@
-# ogen code generation config for the Rad HTTP protocol. LIR is intentionally
-# not imported here: /query carries raw JSON validated against lir.schema.json.
 parser: {}

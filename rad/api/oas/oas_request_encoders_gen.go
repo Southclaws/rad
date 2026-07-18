@@ -11,7 +11,7 @@ import (
 )
 
 func encodeColumnCreateRequest(
-	req OptColumnInfo,
+	req OptColumnDef,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"

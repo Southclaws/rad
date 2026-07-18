@@ -3,11 +3,13 @@
 # (parent) slot, not on the child. Every sibling must see the same count with
 # no cross-parent leakage.
 tables:
-  - name: parents
+  - id: 1
+    name: parents
     columns:
-      - { name: id, type: string, pk: true }
+      - { id: 1, name: id, type: string, pk: true }
 
-  - name: children
+  - id: 2
+    name: children
     columns:
-      - { name: id,        type: string, pk: true }
-      - { name: parent_id, type: string, nullable: true, ref: parents.id }
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: parent_id, type: string, nullable: true, ref: parents.id }

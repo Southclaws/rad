@@ -46,22 +46,26 @@ func TestInfoReportsOneVersionPerSchemaMigration(t *testing.T) {
 	ctx := context.Background()
 	v1 := `
 tables:
-  - name: notes
+  - id: 1
+    name: notes
     columns:
-      - { name: id, type: int64, pk: true }
-  - name: tags
+      - { id: 1, name: id, type: int64, pk: true }
+  - id: 2
+    name: tags
     columns:
-      - { name: id, type: int64, pk: true }
+      - { id: 1, name: id, type: int64, pk: true }
 `
 	v2 := `
 tables:
-  - name: notes
+  - id: 1
+    name: notes
     columns:
-      - { name: id, type: int64, pk: true }
-      - { name: body, type: string, nullable: true }
-  - name: tags
+      - { id: 1, name: id, type: int64, pk: true }
+      - { id: 2, name: body, type: string, nullable: true }
+  - id: 2
+    name: tags
     columns:
-      - { name: id, type: int64, pk: true }
+      - { id: 1, name: id, type: int64, pk: true }
     indexes:
       - { columns: [id] }
 `

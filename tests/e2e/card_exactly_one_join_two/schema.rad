@@ -1,11 +1,13 @@
 # probe: cross product and non-equi joins over two small tables.
 tables:
-  - name: lefts
+  - id: 1
+    name: lefts
     columns:
-      - { name: lid, type: string, pk: true }
-      - { name: a,   type: int64 }
+      - { id: 1, name: lid, type: string, pk: true }
+      - { id: 2, name: a,   type: int64 }
 
-  - name: rights
+  - id: 2
+    name: rights
     columns:
-      - { name: rid, type: string, pk: true }
-      - { name: b,   type: int64 }
+      - { id: 1, name: rid, type: string, pk: true }
+      - { id: 2, name: b,   type: int64 }

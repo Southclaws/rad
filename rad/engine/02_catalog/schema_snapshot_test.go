@@ -44,11 +44,11 @@ func TestCanonicalSchemaRebuildsCatalogWithoutPhysicalIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(schema.Tables) != 2 || schema.Tables[0].Name != "orders" || schema.Tables[1].Name != "users" {
+	if len(schema.Tables) != 2 || schema.Tables[0].Name != "users" || schema.Tables[1].Name != "orders" {
 		t.Fatalf("canonical table order = %+v", schema.Tables)
 	}
-	if schema.Tables[0].ForeignKeys[0].RefTable != "users" {
-		t.Fatalf("foreign key did not resolve to a table name: %+v", schema.Tables[0].ForeignKeys)
+	if schema.Tables[1].ForeignKeys[0].RefTable != "users" {
+		t.Fatalf("foreign key did not resolve to a table name: %+v", schema.Tables[1].ForeignKeys)
 	}
 	raw, err := schema.CanonicalJSON()
 	if err != nil {
@@ -71,12 +71,17 @@ func TestCanonicalSchemaRebuildsCatalogWithoutPhysicalIDs(t *testing.T) {
 }
 
 func TestCanonicalSchemaJSONShape(t *testing.T) {
-	schema := catalog.SchemaFromDefinitions([]catalog.TableDef{usersDef()})
+	definition := usersDef()
+	definition.ID = 7
+	for i := range definition.Columns {
+		definition.Columns[i].ID = catalog.SchemaID(i + 1)
+	}
+	schema := catalog.SchemaFromDefinitions([]catalog.TableDef{definition})
 	raw, err := schema.CanonicalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"tables":[{"name":"users","columns":[{"name":"id","type":"int64"},{"name":"name","type":"text"},{"name":"age","type":"int64","nullable":true}],"primary_key":["id"],"indexes":[{"name":"users_name_idx","columns":["name"]}]}]}`
+	want := `{"tables":[{"id":7,"name":"users","columns":[{"id":1,"name":"id","type":"int64"},{"id":2,"name":"name","type":"text"},{"id":3,"name":"age","type":"int64","nullable":true}],"primary_key":["id"],"indexes":[{"name":"users_name_idx","columns":["name"]}]}]}`
 	if string(raw) != want {
 		t.Fatalf("canonical JSON:\n got %s\nwant %s", raw, want)
 	}
@@ -102,7 +107,7 @@ func TestValidateCurrentSchemaDetectsPhysicalDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	physical.Columns = append(physical.Columns, catalog.Column{
-		ID: "c-untracked", Name: "untracked", Type: catalog.TypeText, Nullable: true,
+		ID: "c-untracked", SchemaID: 99, Name: "untracked", Type: catalog.TypeText, Nullable: true,
 	})
 	raw, err = json.Marshal(physical)
 	if err != nil {
@@ -124,8 +129,8 @@ func TestValidateCurrentSchemaDetectsPhysicalDrift(t *testing.T) {
 
 func TestBuildSchemaRejectsDanglingPhysicalReference(t *testing.T) {
 	_, err := catalog.BuildSchema([]catalog.Table{{
-		ID: "t1", Name: "orders",
-		Columns:    []catalog.Column{{ID: "c1", Name: "id", Type: catalog.TypeInt64}},
+		ID: "t1", SchemaID: 1, Name: "orders",
+		Columns:    []catalog.Column{{ID: "c1", SchemaID: 1, Name: "id", Type: catalog.TypeInt64}},
 		PrimaryKey: []string{"id"},
 		ForeignKeys: []catalog.ForeignKey{{
 			ID: "fk2", Name: "orders_user_fk", Columns: []string{"id"},

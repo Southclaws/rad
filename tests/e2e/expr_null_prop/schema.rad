@@ -1,8 +1,9 @@
 # expr_null_prop — arithmetic NULL propagation flowing through project,
 # order (NULLs sort first ascending) and filter (3VL: UNKNOWN dropped).
 tables:
-  - name: nums
+  - id: 1
+    name: nums
     columns:
-      - { name: id, type: string, pk: true }
-      - { name: a,  type: int64, nullable: true }
-      - { name: b,  type: int64, nullable: true }
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: a,  type: int64, nullable: true }
+      - { id: 3, name: b,  type: int64, nullable: true }

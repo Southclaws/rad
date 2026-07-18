@@ -2,8 +2,9 @@
 # (kept), UNKNOWN or TRUE = TRUE (kept), FALSE or FALSE = FALSE (dropped),
 # FALSE or UNKNOWN = UNKNOWN (dropped), UNKNOWN or UNKNOWN = UNKNOWN (dropped).
 tables:
-  - name: t
+  - id: 1
+    name: t
     columns:
-      - { name: id, type: string, pk: true }
-      - { name: x,  type: int64, nullable: true }
-      - { name: y,  type: int64, nullable: true }
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: x,  type: int64, nullable: true }
+      - { id: 3, name: y,  type: int64, nullable: true }

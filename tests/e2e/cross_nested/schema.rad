@@ -2,19 +2,22 @@
 # `array(...)` of its tasks, and each task in turn embeds a `first(...)` of its
 # own creator (a user), proving crossings recurse.
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
 
-  - name: boards
+  - id: 2
+    name: boards
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
 
-  - name: tasks
+  - id: 3
+    name: tasks
     columns:
-      - { name: id,         type: string, pk: true }
-      - { name: board_id,   type: string, nullable: true, ref: boards.id }
-      - { name: creator_id, type: string, nullable: true, ref: users.id }
-      - { name: title,      type: string }
+      - { id: 1, name: id,         type: string, pk: true }
+      - { id: 2, name: board_id,   type: string, nullable: true, ref: boards.id }
+      - { id: 3, name: creator_id, type: string, nullable: true, ref: users.id }
+      - { id: 4, name: title,      type: string }

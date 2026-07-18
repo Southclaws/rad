@@ -2,9 +2,10 @@
 # endpoints, and prefix boundaries ("app" < "apple") that stress the
 # self-delimiting string encoding + PrefixEnd.
 tables:
-  - name: t
+  - id: 1
+    name: t
     columns:
-      - { name: id, type: string, pk: true }
-      - { name: s,  type: string }
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: s,  type: string }
     indexes:
       - { columns: [s] }

@@ -1,6 +1,6 @@
 # Catalog revisions
 
-Status: implemented — 2026-07-17.
+Status: implemented — 2026-07-18.
 
 Every committed catalog change produces a new schema version. The mechanism
 is independent of migration source: a directly managed database has the same
@@ -24,12 +24,21 @@ revision history as a schema-managed database.
 
 ## Canonical schema
 
-`catalog.Schema` is the identity-free durable schema shape. It reuses the
-catalog's table, column, index, foreign-key, type, and default definitions;
-physical table/column/index/foreign-key IDs are not part of schema history.
-Tables, indexes, and foreign keys have deterministic name ordering, while
-column and key-column order is preserved because it is part of the declared
-shape. Migration-only rename hints are excluded.
+`catalog.Schema` is the durable logical schema shape. It reuses the catalog's
+table, column, index, foreign-key, type, and default definitions. Stable,
+human-authored table and column IDs are part of schema history; opaque physical
+table/column/index/foreign-key IDs are not. Tables have deterministic identity
+ordering, indexes and foreign keys have deterministic name ordering, and column
+and key-column order is preserved because it is part of the declared shape.
+
+Table IDs are positive integers unique across the database schema. Column IDs
+are positive integers unique within their table, making a column identity the
+pair `(table ID, column ID)`. IDs are immutable, have no ordering semantics,
+and are never reused within a database's revision history. Direct catalog
+operations allocate monotonically increasing IDs when callers omit them;
+`schema.rad` requires authors to provide them. Renames retain the same ID and
+may be combined with other structural edits in one migration, so the old
+`renamed_from` hint is no longer part of the format.
 
 The same shape is built from parsed `schema.rad` definitions and reconstructed
 from physical catalog metadata. Revision creation always uses the latter: it

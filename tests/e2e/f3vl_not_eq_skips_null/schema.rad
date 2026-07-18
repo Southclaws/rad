@@ -2,7 +2,8 @@
 # match rows where x is NULL. eq against NULL is UNKNOWN, and not(UNKNOWN) is
 # UNKNOWN, which filter drops.
 tables:
-  - name: t
+  - id: 1
+    name: t
     columns:
-      - { name: id, type: string, pk: true }
-      - { name: x,  type: int64, nullable: true }
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: x,  type: int64, nullable: true }

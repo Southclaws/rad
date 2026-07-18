@@ -21,7 +21,7 @@ var _ Handler = UnimplementedHandler{}
 // database this operation is always rejected.
 //
 // POST /tables/{table}/columns
-func (UnimplementedHandler) ColumnCreate(ctx context.Context, req OptColumnInfo, params ColumnCreateParams) (r ColumnCreateRes, _ error) {
+func (UnimplementedHandler) ColumnCreate(ctx context.Context, req OptColumnDef, params ColumnCreateParams) (r ColumnCreateRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -129,8 +129,8 @@ func (UnimplementedHandler) IndexDelete(ctx context.Context, params IndexDeleteP
 // applied, in order.
 //
 // Migration is idempotent. Submitting a schema that already matches the database applies nothing and
-// returns an empty step list. Renames are driven by `renamed_from` hints in the schema so that
-// renaming a column or table does not delete and recreate it.
+// returns an empty step list. Stable numeric table and column IDs identify renames, so names and other
+// properties can change together without deleting and recreating stored data.
 //
 // A schema that fails to parse or validate, or that requests an unsupported change (such as altering a
 // column's type), is rejected with an `invalid` problem. On a schema-managed database the whole plan
@@ -145,8 +145,9 @@ func (UnimplementedHandler) SchemaMigrate(ctx context.Context, req OptMigratePro
 // TableCreate implements TableCreate operation.
 //
 // Define a new table in one call: columns, primary key, and optionally indexes and foreign keys,
-// exactly as a `schema.rad` entry would. IDs are assigned by the catalog and the whole definition
-// commits atomically — a rejected definition leaves nothing behind, including the name.
+// exactly as a `schema.rad` entry would. Stable schema IDs may be supplied or are assigned by the
+// catalog, and the whole definition commits atomically — a rejected definition leaves nothing
+// behind, including the name.
 //
 // Foreign keys may reference existing tables or the table being created (self-references), and must
 // target the referenced table's full primary key. A definition that fails validation — duplicate or

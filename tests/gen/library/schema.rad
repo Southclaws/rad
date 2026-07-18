@@ -4,21 +4,23 @@
 # bind-valid queries against it, and the differential holds the engine's chosen
 # plan equal to the reference interpreter.
 tables:
-  - name: authors
+  - id: 1
+    name: authors
     columns:
-      - { name: id,     type: string, pk: true }
-      - { name: name,   type: string }
-      - { name: rating, type: int64, nullable: true }
-      - { name: active, type: bool }
+      - { id: 1, name: id,     type: string, pk: true }
+      - { id: 2, name: name,   type: string }
+      - { id: 3, name: rating, type: int64, nullable: true }
+      - { id: 4, name: active, type: bool }
     indexes:
       - { columns: [rating] }
 
-  - name: books
+  - id: 2
+    name: books
     columns:
-      - { name: id,        type: string, pk: true }
-      - { name: title,     type: string }
-      - { name: pages,     type: int64 }
-      - { name: price,     type: float64, nullable: true }
-      - { name: author_id, type: string, nullable: true, ref: authors.id }
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: title,     type: string }
+      - { id: 3, name: pages,     type: int64 }
+      - { id: 4, name: price,     type: float64, nullable: true }
+      - { id: 5, name: author_id, type: string, nullable: true, ref: authors.id }
     indexes:
       - { columns: [pages] }

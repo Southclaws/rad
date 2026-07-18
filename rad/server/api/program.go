@@ -6,7 +6,7 @@ package api
 // into the engine's unbound IR with the existing graphQuery, and the whole
 // program runs as one atomic transaction. A decode/validation failure is a
 // 400; a bind or execution failure is a 422 (or 409 for a serializable race),
-// classified by the engine's typed errors exactly as /query is.
+// classified by the engine's typed errors exactly as /execute is.
 
 import (
 	"context"

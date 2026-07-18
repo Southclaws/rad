@@ -1,5 +1,6 @@
 tables:
-  - name: items
+  - id: 1
+    name: items
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: code, type: string, nullable: true, unique: true }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: code, type: string, nullable: true, unique: true }

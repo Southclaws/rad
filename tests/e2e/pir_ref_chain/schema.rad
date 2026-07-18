@@ -3,17 +3,20 @@
 # into its own foreign key via a `ref` binding + `project`. Extends the
 # program_compose pattern to a longer backward-only reference chain.
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string }
-  - name: posts
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+  - id: 2
+    name: posts
     columns:
-      - { name: id,      type: string, pk: true }
-      - { name: user_id, type: string, ref: users.id }
-      - { name: title,   type: string }
-  - name: comments
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: user_id, type: string, ref: users.id }
+      - { id: 3, name: title,   type: string }
+  - id: 3
+    name: comments
     columns:
-      - { name: id,      type: string, pk: true }
-      - { name: post_id, type: string, ref: posts.id }
-      - { name: body,    type: string }
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: post_id, type: string, ref: posts.id }
+      - { id: 3, name: body,    type: string }

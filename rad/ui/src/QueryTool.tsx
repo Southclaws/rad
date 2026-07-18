@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { publicAPI, type ExecuteResponse } from './api'
+import { publicAPI, queryProgram, type ExecuteResponse } from './api'
 
 // The query tool runs a LIR query or a PIR program through POST /execute,
 // always asking for the query plan. The response shape maps cleanly to tabs:
@@ -25,7 +25,7 @@ export function QueryTool() {
       program =
         parsed && typeof parsed === 'object' && 'statements' in parsed
           ? parsed
-          : { statements: [{ name: 'query', kind: 'query', relation: parsed }] }
+          : queryProgram(parsed)
     } catch (e) {
       setError(`Invalid JSON: ${String(e)}`)
       setRes(null)

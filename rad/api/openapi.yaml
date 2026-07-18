@@ -105,8 +105,9 @@ paths:
       summary: Create a table.
       description: |
         Define a new table in one call: columns, primary key, and optionally
-        indexes and foreign keys, exactly as a `schema.rad` entry would. IDs
-        are assigned by the catalog and the whole definition commits
+        indexes and foreign keys, exactly as a `schema.rad` entry would. Stable
+        schema IDs may be supplied or are assigned by the catalog, and the
+        whole definition commits
         atomically — a rejected definition leaves nothing behind, including
         the name.
 
@@ -274,9 +275,9 @@ paths:
         order.
 
         Migration is idempotent. Submitting a schema that already matches the
-        database applies nothing and returns an empty step list. Renames are
-        driven by `renamed_from` hints in the schema so that renaming a column
-        or table does not delete and recreate it.
+        database applies nothing and returns an empty step list. Stable numeric
+        table and column IDs identify renames, so names and other properties can
+        change together without deleting and recreating stored data.
 
         A schema that fails to parse or validate, or that requests an
         unsupported change (such as altering a column's type), is rejected with
@@ -396,7 +397,7 @@ components:
     ColumnCreate:
       content:
         application/json:
-          schema: { $ref: "#/components/schemas/ColumnInfo" }
+          schema: { $ref: "#/components/schemas/ColumnDef" }
 
     ColumnUpdate:
       content:
@@ -538,8 +539,38 @@ components:
     ColumnInfo:
       description: One column of a table, as reported by introspection.
       type: object
+      required: [id, name, type]
+      properties:
+        id:
+          description: The stable logical column identity within its table.
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 2147483647
+        name:
+          type: string
+        type:
+          description: The column's storage type, one of `text`, `int64`, `float64`, or `bool`.
+          type: string
+        nullable:
+          type: boolean
+        format:
+          description: An optional semantic hint such as `uuid` or `unix_ms`.
+          type: string
+        default:
+          $ref: "#/components/schemas/ColumnDefault"
+
+    ColumnDef:
+      description: A column definition for a direct catalog create operation.
+      type: object
       required: [name, type]
       properties:
+        id:
+          description: An optional stable logical identity; direct mode allocates one when omitted.
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 2147483647
         name:
           type: string
         type:
@@ -594,8 +625,14 @@ components:
     TableInfo:
       description: One table's definition, as reported by introspection.
       type: object
-      required: [name, columns, primary_key]
+      required: [id, name, columns, primary_key]
       properties:
+        id:
+          description: The stable logical table identity within this database.
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 2147483647
         name:
           type: string
         columns:
@@ -615,18 +652,24 @@ components:
 
     TableDef:
       description: |
-        A new table's definition: exactly what a `schema.rad` entry
-        expresses, as JSON. Column types are `text`, `int64`, `float64`, or
-        `bool`; the primary key is required and its columns must not be
-        nullable.
+        A new table's definition, mirroring a `schema.rad` entry as JSON. The
+        direct API may omit logical IDs for the catalog to allocate. Column
+        types are `text`, `int64`, `float64`, or `bool`; the primary key is
+        required and its columns must not be nullable.
       type: object
       required: [name, columns, primary_key]
       properties:
+        id:
+          description: An optional stable logical identity; direct mode allocates one when omitted.
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 2147483647
         name:
           type: string
         columns:
           type: array
-          items: { $ref: "#/components/schemas/ColumnInfo" }
+          items: { $ref: "#/components/schemas/ColumnDef" }
         primary_key:
           type: array
           items:

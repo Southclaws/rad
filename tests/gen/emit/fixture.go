@@ -174,13 +174,14 @@ func seedGroups(spec *generative.Catalog, data map[string][]lir.Row) []map[strin
 func SchemaRAD(spec *generative.Catalog) string {
 	var b strings.Builder
 	b.WriteString("tables:\n")
-	for _, t := range spec.Tables {
-		fmt.Fprintf(&b, "  - name: %s\n", t.Name)
+	for tableIndex, t := range spec.Tables {
+		fmt.Fprintf(&b, "  - id: %d\n", tableIndex+1)
+		fmt.Fprintf(&b, "    name: %s\n", t.Name)
 		b.WriteString("    columns:\n")
 		pk := nameSet(t.PrimaryKey)
 		refs := fkRefs(t)
-		for _, c := range t.Columns {
-			fmt.Fprintf(&b, "      - { name: %s, type: %s", c.Name, radType(c.Type))
+		for columnIndex, c := range t.Columns {
+			fmt.Fprintf(&b, "      - { id: %d, name: %s, type: %s", columnIndex+1, c.Name, radType(c.Type))
 			if len(t.PrimaryKey) == 1 && pk[c.Name] {
 				b.WriteString(", pk: true")
 			}

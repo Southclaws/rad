@@ -3,16 +3,18 @@
 # showing off Rad's unflattened results. created_at is an int64 unix timestamp
 # (Rad has no datetime type yet).
 tables:
-  - name: users
+  - id: 1
+    name: users
     columns:
-      - { name: id,   type: int64, pk: true }
-      - { name: name, type: string }
+      - { id: 1, name: id,   type: int64, pk: true }
+      - { id: 2, name: name, type: string }
 
-  - name: posts
+  - id: 2
+    name: posts
     columns:
-      - { name: id,         type: int64, pk: true }
-      - { name: user_id,    type: int64, ref: users.id }
-      - { name: title,      type: string }
-      - { name: created_at, type: int64 }
+      - { id: 1, name: id,         type: int64, pk: true }
+      - { id: 2, name: user_id,    type: int64, ref: users.id }
+      - { id: 3, name: title,      type: string }
+      - { id: 4, name: created_at, type: int64 }
     indexes:
       - { columns: [user_id] }

@@ -103,7 +103,7 @@ func (c *Client) TableUpdate(ctx context.Context, table, name string) (protocol.
 // carry a literal default, since existing rows need a value.
 func (c *Client) ColumnCreate(ctx context.Context, table string, col protocol.ColumnDef) (protocol.TableInfo, error) {
 	res, err := c.oas.ColumnCreate(ctx,
-		oas.NewOptColumnInfo(api.ColumnToOAS(protocol.ColumnInfo(col))),
+		oas.NewOptColumnDef(api.ColumnDefToOAS(col)),
 		oas.ColumnCreateParams{Table: table})
 	if err != nil {
 		return protocol.TableInfo{}, transportError(err)

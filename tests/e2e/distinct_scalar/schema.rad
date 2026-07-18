@@ -2,7 +2,8 @@
 # a category off many products, distinct collapses the duplicates, and an
 # explicit order above it makes the deduped set deterministic.
 tables:
-  - name: products
+  - id: 1
+    name: products
     columns:
-      - { name: id,       type: string, pk: true }
-      - { name: category, type: string }
+      - { id: 1, name: id,       type: string, pk: true }
+      - { id: 2, name: category, type: string }

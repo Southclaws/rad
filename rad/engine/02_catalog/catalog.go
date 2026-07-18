@@ -19,6 +19,7 @@ import (
 
 type Table struct {
 	ID          string       `json:"id"`
+	SchemaID    SchemaID     `json:"schema_id"`
 	Name        string       `json:"name"`
 	Columns     []Column     `json:"columns"`
 	PrimaryKey  []string     `json:"primary_key"`
@@ -27,10 +28,11 @@ type Table struct {
 }
 
 type Column struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Type     Type   `json:"type"`
-	Nullable bool   `json:"nullable"`
+	ID       string   `json:"id"`
+	SchemaID SchemaID `json:"schema_id"`
+	Name     string   `json:"name"`
+	Type     Type     `json:"type"`
+	Nullable bool     `json:"nullable"`
 	// Format is optional semantic metadata (e.g. "email", "uuid",
 	// "unix_ms"). The database does not interpret it; codegen and tooling
 	// may.
@@ -72,9 +74,11 @@ func (t *Table) Index(name string) (Index, bool) {
 	return Index{}, false
 }
 
-// Definition inputs for CreateTable; IDs are assigned by the catalog.
+// Definition inputs for CreateTable. Schema IDs are stable logical identities;
+// direct catalog calls may leave them zero for the catalog to allocate.
 
 type TableDef struct {
+	ID          SchemaID        `json:"id"`
 	Name        string          `json:"name"`
 	Columns     []ColumnDef     `json:"columns"`
 	PrimaryKey  []string        `json:"primary_key"`
@@ -83,6 +87,7 @@ type TableDef struct {
 }
 
 type ColumnDef struct {
+	ID       SchemaID `json:"id"`
 	Name     string   `json:"name"`
 	Type     Type     `json:"type"`
 	Nullable bool     `json:"nullable,omitempty"`
@@ -245,6 +250,10 @@ func (m *Mutation) CreateTable(ctx context.Context, def TableDef) (Table, error)
 }
 
 func createTable(ctx context.Context, view kv.KV, def TableDef) (Table, error) {
+	def, err := assignTableDefinitionIDs(ctx, view, def)
+	if err != nil {
+		return Table{}, err
+	}
 	if def.Name == "" {
 		return Table{}, reject.Inputf("catalog: table name is required")
 	}
@@ -255,8 +264,7 @@ func createTable(ctx context.Context, view kv.KV, def TableDef) (Table, error) {
 		return Table{}, reject.Inputf("catalog: table %q already exists", def.Name)
 	}
 
-	tbl := Table{Name: def.Name}
-	var err error
+	tbl := Table{SchemaID: def.ID, Name: def.Name}
 	tbl.ID, err = nextID(ctx, view, "t")
 	if err != nil {
 		return Table{}, err
@@ -281,7 +289,7 @@ func createTable(ctx context.Context, view kv.KV, def TableDef) (Table, error) {
 			return Table{}, err
 		}
 		tbl.Columns = append(tbl.Columns, Column{
-			ID: id, Name: cd.Name, Type: cd.Type, Nullable: cd.Nullable,
+			ID: id, SchemaID: cd.ID, Name: cd.Name, Type: cd.Type, Nullable: cd.Nullable,
 			Format: cd.Format, Default: cd.Default,
 		})
 	}

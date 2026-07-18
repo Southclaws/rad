@@ -1,5 +1,6 @@
 tables:
-  - name: nums
+  - id: 1
+    name: nums
     columns:
-      - { name: id, type: string, pk: true }
-      - { name: n,  type: int64, nullable: true, index: true }
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: n,  type: int64, nullable: true, index: true }

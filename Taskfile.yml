@@ -63,7 +63,6 @@ tasks:
         trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
         until curl -s -m 1 -o /dev/null http://127.0.0.1:7237/health; do sleep 0.3; done
         (cd examples/demo && go run .)
-        open http://127.0.0.1:7238 || true
         wait $SERVER_PID
 
   test:
@@ -169,6 +168,13 @@ tasks:
       - go build -o bin/rad ./cmd/rad
       - cd examples/demo && go build -o ../../bin/tracker-demo .
       - otool -L bin/tracker-demo
+
+  install:
+    desc: Go-install the mostly-static binary
+    env:
+      CGO_LDFLAGS: "{{.STATIC_LDFLAGS}}"
+    cmds:
+      - go install ./cmd/rad
 
   clean:
     desc: Remove demo data, built binaries, and the cargo target dir

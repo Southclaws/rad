@@ -24,12 +24,13 @@ func parse(t *testing.T, src string) *schema.Schema {
 func TestColumnsTypesAndNullability(t *testing.T) {
 	s := parse(t, `
 tables:
-  - name: things
+  - id: 1
+    name: things
     columns:
-      - { name: id,    type: string, pk: true }
-      - { name: count, type: int64 }
-      - { name: score, type: float64, nullable: true }
-      - { name: done,  type: bool }
+      - { id: 1, name: id,    type: string, pk: true }
+      - { id: 2, name: count, type: int64 }
+      - { id: 3, name: score, type: float64, nullable: true }
+      - { id: 4, name: done,  type: bool }
 `)
 	tbl := s.Tables[0].Def
 	if tbl.Name != "things" || len(tbl.Columns) != 4 {
@@ -62,14 +63,16 @@ tables:
 func TestPrimaryKeys(t *testing.T) {
 	s := parse(t, `
 tables:
-  - name: pairs
+  - id: 1
+    name: pairs
     columns:
-      - { name: a, type: string, pk: true }
-      - { name: b, type: string, pk: true }
-  - name: triples
+      - { id: 1, name: a, type: string, pk: true }
+      - { id: 2, name: b, type: string, pk: true }
+  - id: 2
+    name: triples
     columns:
-      - { name: x, type: string }
-      - { name: y, type: string }
+      - { id: 1, name: x, type: string }
+      - { id: 2, name: y, type: string }
     primary_key: [x, y]
 `)
 	if pk := s.Tables[0].Def.PrimaryKey; len(pk) != 2 || pk[0] != "a" || pk[1] != "b" {
@@ -81,9 +84,10 @@ tables:
 
 	_, err := schema.Parse("test.rad", []byte(`
 tables:
-  - name: bad
+  - id: 1
+    name: bad
     columns:
-      - { name: a, type: string, pk: true }
+      - { id: 1, name: a, type: string, pk: true }
     primary_key: [a]
 `))
 	if err == nil || !strings.Contains(err.Error(), "both column-level") {
@@ -96,12 +100,13 @@ tables:
 func TestIndexes(t *testing.T) {
 	s := parse(t, `
 tables:
-  - name: posts
+  - id: 1
+    name: posts
     columns:
-      - { name: id,     type: string, pk: true }
-      - { name: slug,   type: string, unique: true }
-      - { name: author, type: string, index: true }
-      - { name: region, type: string }
+      - { id: 1, name: id,     type: string, pk: true }
+      - { id: 2, name: slug,   type: string, unique: true }
+      - { id: 3, name: author, type: string, index: true }
+      - { id: 4, name: region, type: string }
     indexes:
       - { columns: [region, author] }
       - { columns: [region, slug], unique: true }
@@ -128,10 +133,11 @@ tables:
 func TestForeignKeys(t *testing.T) {
 	s := parse(t, `
 tables:
-  - name: orders
+  - id: 1
+    name: orders
     columns:
-      - { name: id,      type: string, pk: true }
-      - { name: user_id, type: string, ref: users.id }
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: user_id, type: string, ref: users.id }
 `)
 	fks := s.Tables[0].Def.ForeignKeys
 	if len(fks) != 1 {
@@ -148,15 +154,16 @@ tables:
 func TestFormatsAndDefaults(t *testing.T) {
 	s := parse(t, `
 tables:
-  - name: all_defaults
+  - id: 1
+    name: all_defaults
     columns:
-      - { name: id,       type: string, pk: true, default: uuid(), format: uuid }
-      - { name: email,    type: string, nullable: true, format: email }
-      - { name: status,   type: string, default: open }
-      - { name: attempts, type: int64, default: 3 }
-      - { name: ratio,    type: float64, default: 0.5 }
-      - { name: done,     type: bool, default: false }
-      - { name: at,       type: int64, format: unix_ms, default: now_ms() }
+      - { id: 1, name: id,       type: string, pk: true, default: uuid(), format: uuid }
+      - { id: 2, name: email,    type: string, nullable: true, format: email }
+      - { id: 3, name: status,   type: string, default: open }
+      - { id: 4, name: attempts, type: int64, default: 3 }
+      - { id: 5, name: ratio,    type: float64, default: 0.5 }
+      - { id: 6, name: done,     type: bool, default: false }
+      - { id: 7, name: at,       type: int64, format: unix_ms, default: now_ms() }
 `)
 	byName := map[string]catalog.ColumnDef{}
 	for _, c := range s.Tables[0].Def.Columns {
@@ -186,48 +193,48 @@ tables:
 	}
 }
 
-// Rename hints ride alongside the definition for the migration differ.
-func TestRenameHints(t *testing.T) {
+func TestSchemaIDs(t *testing.T) {
 	s := parse(t, `
 tables:
-  - name: people
-    renamed_from: users
+  - id: 1
+    name: people
     columns:
-      - { name: id,        type: string, pk: true }
-      - { name: full_name, type: string, renamed_from: name }
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: full_name, type: string }
 `)
 	tbl := s.Tables[0]
-	if tbl.RenamedFrom != "users" {
-		t.Errorf("table rename hint = %q", tbl.RenamedFrom)
+	if tbl.Def.ID != 1 {
+		t.Errorf("table ID = %d", tbl.Def.ID)
 	}
-	if tbl.ColumnRenames["full_name"] != "name" {
-		t.Errorf("column renames = %v", tbl.ColumnRenames)
+	if tbl.Def.Columns[1].ID != 2 {
+		t.Errorf("column ID = %d", tbl.Def.Columns[1].ID)
 	}
 }
 
-func TestCanonicalSchemaExcludesMigrationHints(t *testing.T) {
+func TestCanonicalSchemaIncludesLogicalIDs(t *testing.T) {
 	s := parse(t, `
 tables:
-  - name: zed
-    renamed_from: old_zed
+  - id: 1
+    name: zed
     columns:
-      - { name: id, type: string, pk: true }
-      - { name: title, type: string, renamed_from: name }
-  - name: alpha
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: title, type: string }
+  - id: 2
+    name: alpha
     columns:
-      - { name: id, type: int64, pk: true }
+      - { id: 1, name: id, type: int64, pk: true }
 `)
 
 	canonical := s.Canonical()
-	if len(canonical.Tables) != 2 || canonical.Tables[0].Name != "alpha" || canonical.Tables[1].Name != "zed" {
+	if len(canonical.Tables) != 2 || canonical.Tables[0].Name != "zed" || canonical.Tables[1].Name != "alpha" {
 		t.Fatalf("canonical tables = %+v", canonical.Tables)
 	}
 	raw, err := canonical.CanonicalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "renamed_from") || strings.Contains(string(raw), "old_zed") {
-		t.Fatalf("canonical schema retained migration hints: %s", raw)
+	if !strings.Contains(string(raw), `"id":1`) || !strings.Contains(string(raw), `"id":2`) {
+		t.Fatalf("canonical schema omitted logical IDs: %s", raw)
 	}
 }
 
@@ -239,37 +246,73 @@ func TestParseErrors(t *testing.T) {
 	}{
 		{"unknown type", `
 tables:
-  - name: t
+  - id: 1
+    name: t
     columns: [{ name: a, type: uuid, pk: true }]
 `, "jsonschema"},
 		{"unknown attribute", `
 tables:
-  - name: t
+  - id: 1
+    name: t
     columns: [{ name: a, type: string, wat: true }]
 `, "jsonschema"},
 		{"bad ref shape", `
 tables:
-  - name: t
+  - id: 1
+    name: t
     columns: [{ name: a, type: string, ref: users }]
 `, "jsonschema"},
 		{"bad identifier", `
 tables:
-  - name: T-1
+  - id: 1
+    name: T-1
     columns: [{ name: a, type: string }]
 `, "jsonschema"},
 		{"not yaml", "table users {}", "jsonschema"},
 		{"duplicate table", `
 tables:
-  - name: t
-    columns: [{ name: a, type: string, pk: true }]
-  - name: t
-    columns: [{ name: a, type: string, pk: true }]
+  - id: 1
+    name: t
+    columns: [{ id: 1, name: a, type: string, pk: true }]
+  - id: 2
+    name: t
+    columns: [{ id: 1, name: a, type: string, pk: true }]
 `, "duplicate table"},
 		{"typed default mismatch", `
 tables:
-  - name: t
-    columns: [{ name: a, type: int64, default: nope }]
+  - id: 1
+    name: t
+    columns: [{ id: 1, name: a, type: int64, default: nope }]
 `, "string default on int64"},
+		{"missing table id", `
+tables:
+  - name: t
+    columns: [{ id: 1, name: a, type: string, pk: true }]
+`, "jsonschema"},
+		{"duplicate table id", `
+tables:
+  - id: 1
+    name: a
+    columns: [{ id: 1, name: id, type: string, pk: true }]
+  - id: 1
+    name: b
+    columns: [{ id: 1, name: id, type: string, pk: true }]
+`, "share ID 1"},
+		{"duplicate column id", `
+tables:
+  - id: 1
+    name: t
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 1, name: title, type: string }
+`, "share ID 1"},
+		{"rename hint removed", `
+tables:
+  - id: 1
+    name: t
+    renamed_from: old_t
+    columns: [{ id: 1, name: id, type: string, pk: true }]
+`, "jsonschema"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

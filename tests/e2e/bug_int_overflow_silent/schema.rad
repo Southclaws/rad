@@ -2,8 +2,9 @@
 # complement) to MinInt64 and returns HTTP 200 with the wrong value, instead
 # of a clean execution_failed. See BUG.md.
 tables:
-  - name: nums
+  - id: 1
+    name: nums
     columns:
-      - { name: id, type: string, pk: true }
-      - { name: a,  type: int64 }
-      - { name: b,  type: int64 }
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: a,  type: int64 }
+      - { id: 3, name: b,  type: int64 }

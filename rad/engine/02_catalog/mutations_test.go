@@ -181,6 +181,44 @@ func TestRenameColumnRewritesReferences(t *testing.T) {
 	}
 }
 
+func TestRenameColumnRewritesReferencingTables(t *testing.T) {
+	cat, _, ctx := newCatalog(t)
+	if _, err := cat.CreateTable(ctx, catalog.TableDef{
+		Name: "parents",
+		Columns: []catalog.ColumnDef{
+			{Name: "id", Type: catalog.TypeInt64},
+		},
+		PrimaryKey: []string{"id"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.CreateTable(ctx, catalog.TableDef{
+		Name: "children",
+		Columns: []catalog.ColumnDef{
+			{Name: "id", Type: catalog.TypeInt64},
+			{Name: "parent_id", Type: catalog.TypeInt64},
+		},
+		PrimaryKey: []string{"id"},
+		ForeignKeys: []catalog.ForeignKeyDef{{
+			Name: "children_parent_fk", Columns: []string{"parent_id"},
+			RefTable: "parents", RefColumns: []string{"id"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := cat.RenameColumn(ctx, "parents", "id", "parent_key"); err != nil {
+		t.Fatal(err)
+	}
+	children, ok, err := cat.GetTable(ctx, "children")
+	if err != nil || !ok {
+		t.Fatalf("children: ok=%v err=%v", ok, err)
+	}
+	if got := children.ForeignKeys[0].RefColumns; len(got) != 1 || got[0] != "parent_key" {
+		t.Fatalf("referenced columns not rewritten: %v", got)
+	}
+}
+
 func TestAddDeleteIndex(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
 	if _, err := cat.CreateTable(ctx, usersDef()); err != nil {

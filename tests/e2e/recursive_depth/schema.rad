@@ -3,8 +3,9 @@
 # step. union all over a finite tree terminates; the result is ordered by
 # (depth, id).
 tables:
-  - name: people
+  - id: 1
+    name: people
     columns:
-      - { name: id, type: string, pk: true }
-      - { name: name, type: string }
-      - { name: referrer_id, type: string, nullable: true }
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: name, type: string }
+      - { id: 3, name: referrer_id, type: string, nullable: true }

@@ -1,13 +1,15 @@
 # e2e/cross_scalar_count — each board embeds a `scalar(...)` correlated
 # aggregate: the count of its tasks (one output column, global fold).
 tables:
-  - name: boards
+  - id: 1
+    name: boards
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
 
-  - name: tasks
+  - id: 2
+    name: tasks
     columns:
-      - { name: id,       type: string, pk: true }
-      - { name: board_id, type: string, nullable: true, ref: boards.id }
-      - { name: title,    type: string }
+      - { id: 1, name: id,       type: string, pk: true }
+      - { id: 2, name: board_id, type: string, nullable: true, ref: boards.id }
+      - { id: 3, name: title,    type: string }

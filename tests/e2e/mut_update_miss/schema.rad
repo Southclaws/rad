@@ -1,7 +1,8 @@
 # e2e/mut_update_miss — a negative fixture: updating a primary key that does
 # not exist must fail the whole program with mutation_target_not_found.
 tables:
-  - name: items
+  - id: 1
+    name: items
     columns:
-      - { name: id,   type: string, pk: true }
-      - { name: name, type: string }
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }

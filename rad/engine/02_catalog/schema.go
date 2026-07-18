@@ -12,9 +12,10 @@ import (
 	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
-// Schema is the canonical, identity-free description of a Rad catalog. It is
-// the durable schema shape used by revision history and rebuilt from physical
-// catalog metadata when checking for drift. An empty schema marshals as {}.
+// Schema is the canonical logical description of a Rad catalog. It includes
+// stable schema identities but excludes opaque physical catalog IDs. It is the
+// durable shape used by revision history and rebuilt from physical metadata
+// when checking for drift. An empty schema marshals as {}.
 type Schema struct {
 	Tables []TableDef `json:"tables,omitempty"`
 }
@@ -37,9 +38,9 @@ func (s Schema) Equal(other Schema) (bool, error) {
 	return bytes.Equal(a, b), nil
 }
 
-// SchemaFromDefinitions canonicalizes logical table definitions. Table,
-// index, and foreign-key order is name-based; column and key-column order is
-// retained because it is part of the schema's declared shape.
+// SchemaFromDefinitions canonicalizes logical table definitions. Table order
+// is identity-based; index and foreign-key order is name-based. Column and
+// key-column order is retained because it is part of the declared shape.
 func SchemaFromDefinitions(defs []TableDef) Schema {
 	tables := make([]TableDef, len(defs))
 	for i, def := range defs {
@@ -48,6 +49,12 @@ func SchemaFromDefinitions(defs []TableDef) Schema {
 		slices.SortFunc(tables[i].ForeignKeys, compareForeignKeyDefs)
 	}
 	slices.SortFunc(tables, func(a, b TableDef) int {
+		if a.ID < b.ID {
+			return -1
+		}
+		if a.ID > b.ID {
+			return 1
+		}
 		return strings.Compare(a.Name, b.Name)
 	})
 	return Schema{Tables: tables}
@@ -81,10 +88,12 @@ func compareForeignKeyDefs(a, b ForeignKeyDef) int {
 }
 
 // BuildSchema reconstructs a canonical schema from physical catalog tables,
-// removing internal IDs and resolving foreign-key table IDs back to names.
+// retaining logical schema IDs, removing opaque physical IDs, and resolving
+// foreign-key table IDs back to names.
 func BuildSchema(tables []Table) (Schema, error) {
 	nameByID := make(map[string]string, len(tables))
 	seenNames := make(map[string]bool, len(tables))
+	seenSchemaIDs := make(map[SchemaID]string, len(tables))
 	for _, table := range tables {
 		if previous, exists := nameByID[table.ID]; exists {
 			return Schema{}, reject.Fail(reject.ReasonCatalogDrift,
@@ -94,24 +103,46 @@ func BuildSchema(tables []Table) (Schema, error) {
 			return Schema{}, reject.Fail(reject.ReasonCatalogDrift,
 				"catalog: duplicate physical table name %q", table.Name)
 		}
+		if table.SchemaID == 0 || table.SchemaID > MaxSchemaID {
+			return Schema{}, reject.Fail(reject.ReasonCatalogDrift,
+				"catalog: physical table %q has invalid schema ID %d", table.Name, table.SchemaID)
+		}
+		if previous, exists := seenSchemaIDs[table.SchemaID]; exists {
+			return Schema{}, reject.Fail(reject.ReasonCatalogDrift,
+				"catalog: tables %q and %q share schema ID %d", previous, table.Name, table.SchemaID)
+		}
 		nameByID[table.ID] = table.Name
 		seenNames[table.Name] = true
+		seenSchemaIDs[table.SchemaID] = table.Name
 	}
 
 	defs := make([]TableDef, 0, len(tables))
 	for _, table := range tables {
 		def := TableDef{
+			ID:         table.SchemaID,
 			Name:       table.Name,
 			PrimaryKey: slices.Clone(table.PrimaryKey),
 		}
+		seenColumnIDs := make(map[SchemaID]string, len(table.Columns))
 		for _, column := range table.Columns {
+			if column.SchemaID == 0 || column.SchemaID > MaxSchemaID {
+				return Schema{}, reject.Fail(reject.ReasonCatalogDrift,
+					"catalog: physical column %q.%q has invalid schema ID %d",
+					table.Name, column.Name, column.SchemaID)
+			}
+			if previous, exists := seenColumnIDs[column.SchemaID]; exists {
+				return Schema{}, reject.Fail(reject.ReasonCatalogDrift,
+					"catalog: columns %q.%q and %q.%q share schema ID %d",
+					table.Name, previous, table.Name, column.Name, column.SchemaID)
+			}
+			seenColumnIDs[column.SchemaID] = column.Name
 			var defaultValue *Default
 			if column.Default != nil {
 				copy := *column.Default
 				defaultValue = &copy
 			}
 			def.Columns = append(def.Columns, ColumnDef{
-				Name: column.Name, Type: column.Type, Nullable: column.Nullable,
+				ID: column.SchemaID, Name: column.Name, Type: column.Type, Nullable: column.Nullable,
 				Format: column.Format, Default: defaultValue,
 			})
 		}
@@ -181,6 +212,7 @@ func schemaIn(ctx context.Context, view kv.KV) (Schema, error) {
 
 func cloneTableDef(def TableDef) TableDef {
 	out := TableDef{
+		ID:          def.ID,
 		Name:        def.Name,
 		PrimaryKey:  slices.Clone(def.PrimaryKey),
 		Indexes:     make([]IndexDef, len(def.Indexes)),
