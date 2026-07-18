@@ -4,12 +4,12 @@ import (
 	"context"
 	"testing"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	"github.com/Southclaws/rad/rad/protocol"
 )
 
 func TestInfoReportsDirectSchemaVersion(t *testing.T) {
-	c := testServerInMode(t, catalog.ModeDirect)
+	c := testServerInMode(t, model.ModeDirect)
 	ctx := context.Background()
 
 	info, err := c.Info(ctx)
@@ -42,7 +42,7 @@ func TestInfoReportsDirectSchemaVersion(t *testing.T) {
 }
 
 func TestInfoReportsOneVersionPerSchemaMigration(t *testing.T) {
-	c := testServerInMode(t, catalog.ModeSchema)
+	c := testServerInMode(t, model.ModeSchema)
 	ctx := context.Background()
 	v1 := `
 tables:

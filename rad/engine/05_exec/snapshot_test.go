@@ -8,7 +8,7 @@ package exec
 import (
 	"testing"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 )
 
@@ -33,8 +33,8 @@ func TestConcurrentSchemaChangeConflictsWithOpenTxn(t *testing.T) {
 	}
 
 	// A schema change on the same table commits while the transaction is open.
-	if _, err := eng.Catalog().CreateColumn(ctx, "users", catalog.ColumnDef{
-		Name: "bio", Type: catalog.TypeText, Nullable: true,
+	if _, err := eng.Catalog().CreateColumn(ctx, "users", model.ColumnDef{
+		Name: "bio", Type: model.TypeText, Nullable: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -62,8 +62,8 @@ func TestConcurrentSchemaChangeOnOtherTableDoesNotConflict(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := eng.Catalog().CreateColumn(ctx, "users", catalog.ColumnDef{
-		Name: "bio", Type: catalog.TypeText, Nullable: true,
+	if _, err := eng.Catalog().CreateColumn(ctx, "users", model.ColumnDef{
+		Name: "bio", Type: model.TypeText, Nullable: true,
 	}); err != nil {
 		t.Fatal(err)
 	}

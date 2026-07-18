@@ -14,9 +14,13 @@ import (
 	"errors"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
-	keyenc "github.com/Southclaws/rad/rad/engine/01_kv/keyenc"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/change"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/store"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
+	"github.com/Southclaws/rad/rad/engine/05_exec/mutate"
+	"github.com/Southclaws/rad/rad/engine/05_exec/rowstore"
 	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
@@ -99,9 +103,9 @@ func (e *Engine) Txn(ctx context.Context, fn func(tx *Tx) error) error {
 // CatalogTxn runs a group of catalog operations and their associated data
 // work as one serializable transaction and records one catalog revision when
 // the group changes the schema.
-func (e *Engine) CatalogTxn(ctx context.Context, fn func(tx *Tx, change *catalog.Mutation) error) error {
+func (e *Engine) CatalogTxn(ctx context.Context, fn func(tx *Tx, change *change.Mutation) error) error {
 	return e.Txn(ctx, func(tx *Tx) error {
-		_, err := catalog.MutateIn(ctx, tx.txn, func(change *catalog.Mutation) error {
+		_, err := change.Apply(ctx, tx.txn, func(change *change.Mutation) error {
 			return fn(tx, change)
 		})
 		return err
@@ -135,41 +139,15 @@ func (e *Engine) Catalog() *catalog.Catalog { return e.cat }
 // tableIn resolves a table through the statement's KV view, so schema
 // resolution shares the snapshot of the data reads and writes that follow —
 // and, inside a serializable transaction, joins its read set.
-func tableIn(ctx context.Context, view kv.KV, name string) (catalog.Table, error) {
-	tbl, ok, err := catalog.NewReader(view).GetTable(ctx, name)
+func tableIn(ctx context.Context, view kv.KV, name string) (model.Table, error) {
+	tbl, ok, err := store.New(view).GetTable(ctx, name)
 	if err != nil {
-		return catalog.Table{}, err
+		return model.Table{}, err
 	}
 	if !ok {
-		return catalog.Table{}, reject.Inputf("exec: table %q does not exist", name)
+		return model.Table{}, reject.Inputf("exec: table %q does not exist", name)
 	}
 	return tbl, nil
-}
-
-// normalizeRow validates row against the table definition and returns a copy
-// with every column present (absent nullable columns become explicit NULLs).
-func normalizeRow(tbl catalog.Table, row lir.Row) (lir.Row, error) {
-	for name := range row {
-		if _, ok := tbl.Column(name); !ok {
-			return nil, reject.Inputf("exec: table %q has no column %q", tbl.Name, name)
-		}
-	}
-	out := make(lir.Row, len(tbl.Columns))
-	for _, col := range tbl.Columns {
-		v, ok := row[col.Name]
-		if !ok || v.Null {
-			if !col.Nullable {
-				return nil, reject.Inputf("exec: column %q is not nullable", col.Name)
-			}
-			out[col.Name] = lir.Null(col.Type)
-			continue
-		}
-		if v.Type != col.Type {
-			return nil, reject.Inputf("exec: column %q expects %s, got %s", col.Name, col.Type, v.Type)
-		}
-		out[col.Name] = v
-	}
-	return out, nil
 }
 
 // Insert adds one row in its own transaction. For multi-row atomicity use
@@ -208,32 +186,7 @@ func (e *Engine) insert(ctx context.Context, view kv.KV, table string, row lir.R
 	if err != nil {
 		return nil, err
 	}
-	stored, err := prepareRow(tbl, row)
-	if err != nil {
-		return nil, err
-	}
-
-	pkTuple, err := encodeRowTuple(stored, tbl.PrimaryKey)
-	if err != nil {
-		return nil, err
-	}
-	if _, ok, err := view.Get(ctx, DataKey(tbl.ID, pkTuple)); err != nil {
-		return nil, err
-	} else if ok {
-		return nil, reject.Inputf("exec: duplicate primary key in table %q", table)
-	}
-
-	if err := checkForeignKeys(ctx, view, tbl, stored); err != nil {
-		return nil, err
-	}
-	if err := checkUniqueIndexes(ctx, view, tbl, stored, pkTuple); err != nil {
-		return nil, err
-	}
-
-	if err := writeRow(ctx, view, tbl, stored, pkTuple); err != nil {
-		return nil, err
-	}
-	return stored, nil
+	return mutate.CreateOne(ctx, view, tbl, row)
 }
 
 // GetByPrimaryKey fetches one row by its primary key values. key must contain
@@ -256,8 +209,8 @@ func getByPrimaryKey(ctx context.Context, view kv.KV, table string, key lir.Row)
 	if err != nil {
 		return nil, false, err
 	}
-	row, _, err := loadByPK(ctx, view, tbl, key)
-	return row, row != nil, err
+	row, _, ok, err := rowstore.Get(ctx, view, tbl, key)
+	return row, ok, err
 }
 
 // RowIterator streams rows from a scan.
@@ -266,24 +219,6 @@ type RowIterator interface {
 	Next() (lir.Row, bool, error)
 	Close() error
 }
-
-type kvRowIterator struct {
-	it  kv.Iterator
-	tbl catalog.Table
-}
-
-func (r *kvRowIterator) Next() (lir.Row, bool, error) {
-	if !r.it.Next() {
-		return nil, false, r.it.Err()
-	}
-	row, err := UnmarshalRow(r.tbl, r.it.Value())
-	if err != nil {
-		return nil, false, err
-	}
-	return row, true, nil
-}
-
-func (r *kvRowIterator) Close() error { return r.it.Close() }
 
 // ScanTable streams every row of the table in primary key order, from a
 // snapshot held until the iterator is closed.
@@ -297,7 +232,7 @@ func (e *Engine) ScanTable(ctx context.Context, table string) (RowIterator, erro
 		txn.Rollback()
 		return nil, err
 	}
-	it, err := scanTable(ctx, txn, tbl)
+	it, err := rowstore.ScanTable(ctx, txn, tbl)
 	if err != nil {
 		txn.Rollback()
 		return nil, err
@@ -327,14 +262,5 @@ func (tx *Tx) ScanTable(ctx context.Context, table string) (RowIterator, error) 
 	if err != nil {
 		return nil, err
 	}
-	return scanTable(ctx, tx.txn, tbl)
-}
-
-func scanTable(ctx context.Context, view kv.KV, tbl catalog.Table) (RowIterator, error) {
-	prefix := DataPrefix(tbl.ID)
-	it, err := view.Scan(ctx, prefix, keyenc.PrefixEnd(prefix))
-	if err != nil {
-		return nil, err
-	}
-	return &kvRowIterator{it: it, tbl: tbl}, nil
+	return rowstore.ScanTable(ctx, tx.txn, tbl)
 }

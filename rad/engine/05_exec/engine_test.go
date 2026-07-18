@@ -6,7 +6,8 @@ import (
 	"testing"
 
 	"github.com/Southclaws/rad/rad/engine/01_kv/kvslate"
-	"github.com/Southclaws/rad/rad/engine/02_catalog"
+	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 )
 
@@ -21,15 +22,15 @@ func setup(t *testing.T) (*Engine, context.Context) {
 	cat := catalog.New(store)
 	eng := New(store, cat)
 
-	_, err = cat.CreateTable(ctx, catalog.TableDef{
+	_, err = cat.CreateTable(ctx, model.TableDef{
 		Name: "users",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "name", Type: catalog.TypeText},
-			{Name: "age", Type: catalog.TypeInt64, Nullable: true},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "name", Type: model.TypeText},
+			{Name: "age", Type: model.TypeInt64, Nullable: true},
 		},
 		PrimaryKey: []string{"id"},
-		Indexes: []catalog.IndexDef{
+		Indexes: []model.IndexDef{
 			{Name: "users_name_idx", Columns: []string{"name"}},
 		},
 	})
@@ -37,18 +38,18 @@ func setup(t *testing.T) (*Engine, context.Context) {
 		t.Fatal(err)
 	}
 
-	_, err = cat.CreateTable(ctx, catalog.TableDef{
+	_, err = cat.CreateTable(ctx, model.TableDef{
 		Name: "orders",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "user_id", Type: catalog.TypeInt64},
-			{Name: "total", Type: catalog.TypeFloat64, Nullable: true},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "user_id", Type: model.TypeInt64},
+			{Name: "total", Type: model.TypeFloat64, Nullable: true},
 		},
 		PrimaryKey: []string{"id"},
-		Indexes: []catalog.IndexDef{
+		Indexes: []model.IndexDef{
 			{Name: "orders_user_id_idx", Columns: []string{"user_id"}},
 		},
-		ForeignKeys: []catalog.ForeignKeyDef{
+		ForeignKeys: []model.ForeignKeyDef{
 			{Name: "orders_user_fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}},
 		},
 	})
@@ -125,12 +126,12 @@ func TestDuplicatePrimaryKeyRejected(t *testing.T) {
 
 func TestCompositePrimaryKey(t *testing.T) {
 	eng, ctx := setup(t)
-	_, err := eng.Catalog().CreateTable(ctx, catalog.TableDef{
+	_, err := eng.Catalog().CreateTable(ctx, model.TableDef{
 		Name: "line_items",
-		Columns: []catalog.ColumnDef{
-			{Name: "order_id", Type: catalog.TypeInt64},
-			{Name: "line_no", Type: catalog.TypeInt64},
-			{Name: "sku", Type: catalog.TypeText},
+		Columns: []model.ColumnDef{
+			{Name: "order_id", Type: model.TypeInt64},
+			{Name: "line_no", Type: model.TypeInt64},
+			{Name: "sku", Type: model.TypeText},
 		},
 		PrimaryKey: []string{"order_id", "line_no"},
 	})
@@ -192,14 +193,14 @@ func TestSecondaryIndexScan(t *testing.T) {
 
 func TestUniqueIndexRejection(t *testing.T) {
 	eng, ctx := setup(t)
-	_, err := eng.Catalog().CreateTable(ctx, catalog.TableDef{
+	_, err := eng.Catalog().CreateTable(ctx, model.TableDef{
 		Name: "accounts",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "email", Type: catalog.TypeText},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "email", Type: model.TypeText},
 		},
 		PrimaryKey: []string{"id"},
-		Indexes: []catalog.IndexDef{
+		Indexes: []model.IndexDef{
 			{Name: "accounts_email_uq", Columns: []string{"email"}, Unique: true},
 		},
 	})
@@ -304,14 +305,14 @@ func TestTxnConcurrentDuplicatePKConflict(t *testing.T) {
 // the phantom case that requires SerializableSnapshot.
 func TestTxnConcurrentUniqueInsertConflict(t *testing.T) {
 	eng, ctx := setup(t)
-	_, err := eng.Catalog().CreateTable(ctx, catalog.TableDef{
+	_, err := eng.Catalog().CreateTable(ctx, model.TableDef{
 		Name: "accounts",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "email", Type: catalog.TypeText},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "email", Type: model.TypeText},
 		},
 		PrimaryKey: []string{"id"},
-		Indexes: []catalog.IndexDef{
+		Indexes: []model.IndexDef{
 			{Name: "accounts_email_uq", Columns: []string{"email"}, Unique: true},
 		},
 	})
@@ -359,14 +360,14 @@ func TestForeignKeys(t *testing.T) {
 
 	// NULL fk value skips the check (user_id is non-nullable here, so use a
 	// dedicated table).
-	_, err = eng.Catalog().CreateTable(ctx, catalog.TableDef{
+	_, err = eng.Catalog().CreateTable(ctx, model.TableDef{
 		Name: "notes",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "user_id", Type: catalog.TypeInt64, Nullable: true},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "user_id", Type: model.TypeInt64, Nullable: true},
 		},
 		PrimaryKey: []string{"id"},
-		ForeignKeys: []catalog.ForeignKeyDef{
+		ForeignKeys: []model.ForeignKeyDef{
 			{Name: "notes_user_fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}},
 		},
 	})

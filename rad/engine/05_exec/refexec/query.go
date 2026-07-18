@@ -4,7 +4,7 @@ import (
 	"context"
 
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
-	planner "github.com/Southclaws/rad/rad/engine/04_planner"
+	binder "github.com/Southclaws/rad/rad/engine/04_planner/bind"
 )
 
 // InterpretQuery binds an unbound query and interprets it — the whole oracle in
@@ -13,8 +13,8 @@ import (
 // stored rows enter through the injected scan, so this still touches no storage
 // itself. A bind error surfaces as-is, letting a caller tell an un-bindable
 // query apart from a genuine runtime divergence.
-func InterpretQuery(ctx context.Context, cat planner.Catalog, scan ScanFunc, q lir.Query) (lir.Datum, error) {
-	bq, err := planner.Bind(ctx, cat, q)
+func InterpretQuery(ctx context.Context, cat binder.Catalog, scan ScanFunc, q lir.Query) (lir.Datum, error) {
+	bq, err := binder.Bind(ctx, cat, q)
 	if err != nil {
 		return lir.Datum{}, err
 	}

@@ -3,21 +3,21 @@ package bound
 import (
 	"testing"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 )
 
 // tasksTable is a hand-built catalog table for law tests: no store needed.
-func tasksTable() catalog.Table {
-	return catalog.Table{
+func tasksTable() model.Table {
+	return model.Table{
 		ID:   "t1",
 		Name: "tasks",
-		Columns: []catalog.Column{
-			{ID: "c1", Name: "id", Type: catalog.TypeText},
-			{ID: "c2", Name: "board_id", Type: catalog.TypeText},
-			{ID: "c3", Name: "status", Type: catalog.TypeText},
-			{ID: "c4", Name: "priority", Type: catalog.TypeInt64},
-			{ID: "c5", Name: "assignee_id", Type: catalog.TypeText, Nullable: true},
+		Columns: []model.Column{
+			{ID: "c1", Name: "id", Type: model.TypeText},
+			{ID: "c2", Name: "board_id", Type: model.TypeText},
+			{ID: "c3", Name: "status", Type: model.TypeText},
+			{ID: "c4", Name: "priority", Type: model.TypeInt64},
+			{ID: "c5", Name: "assignee_id", Type: model.TypeText, Nullable: true},
 		},
 		PrimaryKey: []string{"id"},
 	}
@@ -160,9 +160,9 @@ func TestAggregateLaws(t *testing.T) {
 
 func TestJoinLaws(t *testing.T) {
 	l := scanTasks()
-	r := NewScan(catalog.Table{
+	r := NewScan(model.Table{
 		ID: "t2", Name: "users",
-		Columns:    []catalog.Column{{ID: "c6", Name: "id", Type: catalog.TypeText}},
+		Columns:    []model.Column{{ID: "c6", Name: "id", Type: model.TypeText}},
 		PrimaryKey: []string{"id"},
 	}, "u", []lir.SlotID{50})
 

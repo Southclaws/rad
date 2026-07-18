@@ -19,6 +19,7 @@ import (
 	"github.com/Southclaws/rad/rad/api"
 	"github.com/Southclaws/rad/rad/api/oas"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
 	"github.com/Southclaws/rad/rad/protocol"
 )
@@ -31,12 +32,12 @@ type dbAPI struct {
 	// mode is read once at construction: the catalog management mode is set
 	// when the database is initialised and never changes, so caching it
 	// keeps the gate on the imperative catalog operations free.
-	mode catalog.Mode
+	mode model.Mode
 }
 
 var _ oas.Handler = (*dbAPI)(nil)
 
-func newDBAPI(db *frontend.DB, cat *catalog.Catalog, mode catalog.Mode, location string) *dbAPI {
+func newDBAPI(db *frontend.DB, cat *catalog.Catalog, mode model.Mode, location string) *dbAPI {
 	return &dbAPI{db: db, cat: cat, mode: mode, location: location}
 }
 

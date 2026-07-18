@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	"github.com/Southclaws/rad/rad/engine/02_catalog/schema"
 )
 
@@ -38,13 +38,13 @@ tables:
 	}
 	want := []struct {
 		name     string
-		typ      catalog.Type
+		typ      model.Type
 		nullable bool
 	}{
-		{"id", catalog.TypeText, false},
-		{"count", catalog.TypeInt64, false},
-		{"score", catalog.TypeFloat64, true},
-		{"done", catalog.TypeBool, false},
+		{"id", model.TypeText, false},
+		{"count", model.TypeInt64, false},
+		{"score", model.TypeFloat64, true},
+		{"done", model.TypeBool, false},
 	}
 	for i, w := range want {
 		c := tbl.Columns[i]
@@ -112,7 +112,7 @@ tables:
       - { columns: [region, slug], unique: true }
 `)
 	idx := s.Tables[0].Def.Indexes
-	want := []catalog.IndexDef{
+	want := []model.IndexDef{
 		{Name: "posts_slug_uq", Columns: []string{"slug"}, Unique: true},
 		{Name: "posts_author_idx", Columns: []string{"author"}},
 		{Name: "posts_region_author_idx", Columns: []string{"region", "author"}},
@@ -165,12 +165,12 @@ tables:
       - { id: 6, name: done,     type: bool, default: false }
       - { id: 7, name: at,       type: int64, format: unix_ms, default: now_ms() }
 `)
-	byName := map[string]catalog.ColumnDef{}
+	byName := map[string]model.ColumnDef{}
 	for _, c := range s.Tables[0].Def.Columns {
 		byName[c.Name] = c
 	}
 
-	if byName["id"].Default.Func != catalog.DefaultUUID || byName["id"].Format != "uuid" {
+	if byName["id"].Default.Func != model.DefaultUUID || byName["id"].Format != "uuid" {
 		t.Errorf("id: %+v", byName["id"])
 	}
 	if byName["email"].Format != "email" {
@@ -188,7 +188,7 @@ tables:
 	if d := byName["done"].Default; d.Bool != false || d.Func != "" {
 		t.Errorf("done: %+v", d)
 	}
-	if byName["at"].Default.Func != catalog.DefaultNowMS {
+	if byName["at"].Default.Func != model.DefaultNowMS {
 		t.Errorf("at: %+v", byName["at"].Default)
 	}
 }

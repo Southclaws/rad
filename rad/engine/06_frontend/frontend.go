@@ -12,6 +12,7 @@ import (
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	exec "github.com/Southclaws/rad/rad/engine/05_exec"
+	execprogram "github.com/Southclaws/rad/rad/engine/05_exec/program"
 )
 
 // DB is a handle to a Rad database. A Rad instance is exactly one database
@@ -36,7 +37,7 @@ func (db *DB) Catalog() *catalog.Catalog { return db.cat }
 // ExecuteProgram runs a PIR program as one atomic transaction and returns the
 // declared result statement's datum, a per-statement summary, and — per opts —
 // the per-statement query-plan views and/or a dry-run (plan-only) outcome.
-func (db *DB) ExecuteProgram(ctx context.Context, prog exec.Program, opts exec.ExecOptions) (exec.ProgramResult, error) {
+func (db *DB) ExecuteProgram(ctx context.Context, prog execprogram.Program, opts execprogram.Options) (execprogram.Result, error) {
 	return db.eng.ExecuteProgram(ctx, prog, opts)
 }
 

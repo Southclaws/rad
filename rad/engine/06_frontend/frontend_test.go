@@ -12,9 +12,10 @@ import (
 	"fmt"
 	"testing"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
+	"github.com/Southclaws/rad/rad/engine/06_frontend/resultjson"
 )
 
 // newDB initializes a fresh database with the canonical users/orders schema
@@ -24,28 +25,28 @@ func newDB(t *testing.T) (*frontend.DB, context.Context) {
 	ctx := context.Background()
 	db := frontend.Open(memStore(t))
 
-	if _, err := db.CreateTable(ctx, catalog.TableDef{
+	if _, err := db.CreateTable(ctx, model.TableDef{
 		Name: "users",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "name", Type: catalog.TypeText},
-			{Name: "age", Type: catalog.TypeInt64, Nullable: true},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "name", Type: model.TypeText},
+			{Name: "age", Type: model.TypeInt64, Nullable: true},
 		},
 		PrimaryKey: []string{"id"},
-		Indexes:    []catalog.IndexDef{{Name: "users_name_idx", Columns: []string{"name"}}},
+		Indexes:    []model.IndexDef{{Name: "users_name_idx", Columns: []string{"name"}}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.CreateTable(ctx, catalog.TableDef{
+	if _, err := db.CreateTable(ctx, model.TableDef{
 		Name: "orders",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "user_id", Type: catalog.TypeInt64},
-			{Name: "total", Type: catalog.TypeFloat64, Nullable: true},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "user_id", Type: model.TypeInt64},
+			{Name: "total", Type: model.TypeFloat64, Nullable: true},
 		},
 		PrimaryKey:  []string{"id"},
-		Indexes:     []catalog.IndexDef{{Name: "orders_user_id_idx", Columns: []string{"user_id"}}},
-		ForeignKeys: []catalog.ForeignKeyDef{{Name: "orders_user_fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}}},
+		Indexes:     []model.IndexDef{{Name: "orders_user_id_idx", Columns: []string{"user_id"}}},
+		ForeignKeys: []model.ForeignKeyDef{{Name: "orders_user_fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -81,9 +82,9 @@ func TestOpen(t *testing.T) {
 	}
 
 	// A second handle over the same store sees the same catalog.
-	if _, err := db.CreateTable(ctx, catalog.TableDef{
+	if _, err := db.CreateTable(ctx, model.TableDef{
 		Name:       "things",
-		Columns:    []catalog.ColumnDef{{Name: "id", Type: catalog.TypeInt64}},
+		Columns:    []model.ColumnDef{{Name: "id", Type: model.TypeInt64}},
 		PrimaryKey: []string{"id"},
 	}); err != nil {
 		t.Fatal(err)
@@ -276,7 +277,7 @@ func TestTxnExecute(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if got := frontend.DatumJSON(d); got != int64(4) { // 3 seeded + own uncommitted write
+		if got := resultjson.Datum(d); got != int64(4) { // 3 seeded + own uncommitted write
 			t.Errorf("tx count = %v, want 4", got)
 		}
 		return nil

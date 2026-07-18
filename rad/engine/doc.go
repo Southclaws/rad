@@ -1,29 +1,23 @@
-// Package engine is Rad's core relational database engine over an
-// ordered key-value store (SlateDB), CockroachDB-style.
+// Package engine is Rad's core relational database engine.
 //
-// Layer architecture — dependencies only flow downward:
+// Layer architecture: yes the numbers are a little odd.
 //
-//	01_kv       storage: KV + transaction primitives, key encoding,
-//	            SlateDB adapter
-//	            <- may not import anything above
-//	02_catalog  schema: tables, columns, indexes, constraints
-//	            <- imports 01
-//	03_lir      the relation-graph query IR: values, types, unbound and
-//	            bound relations/expressions, three-valued logic, result
-//	            datums; storage-free, index-free, strategy-free
-//	            <- imports 02 only for the shared type vocabulary
-//	04_planner  bound LIR -> physical plan: binding, analyses, access
-//	            paths, correlation classification
-//	            <- imports 02 + 03
-//	05_exec     physical plan -> KV operations: scans, index lookups,
-//	            joins, constraint-checked writes, transactions
-//	            <- imports 01 + 02 + 03 + 04
-//	06_frontend public query interface; future SQL/GraphQL/ORM codecs
-//	            lower into the IR here
-//	            <- imports 01 + 02 + 03 + 05
+//	01_kv       storage layer, key-value store and key encodings.
 //
-// Types are shared upward (a layer may use types defined below it), never
-// outward or downward. The directory names carry ordering numbers because Go
-// package names cannot start with a digit; the declared package names are
-// kv, catalog, lir, planner, exec, and frontend.
+//	02_catalog  catalog façade, with model, store, change, schema,
+//	            migrate, and naming
+//
+//	03_lir      relation-graph values and nodes, with bound, eval,
+//	            format, and inspect
+//
+//	04_planner  binding, analysis, physical nodes, plan construction,
+//	            program binding, and explain output
+//
+//	05_exec     transaction façade, with codec, rowstore, query, mutate,
+//	            program, differential, generative, and refexec
+//
+//	06_frontend application façade, with catalog api, migration, and
+//	            result modelling
+//
+// Symbols are shared upward, never downward.
 package engine

@@ -14,8 +14,11 @@ import (
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
 	kvslate "github.com/Southclaws/rad/rad/engine/01_kv/kvslate"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	planner "github.com/Southclaws/rad/rad/engine/04_planner"
+	binder "github.com/Southclaws/rad/rad/engine/04_planner/bind"
+	"github.com/Southclaws/rad/rad/engine/04_planner/explain"
 )
 
 func TestBlogDump(t *testing.T) {
@@ -31,28 +34,28 @@ func TestBlogDump(t *testing.T) {
 	logged := loggingStore{TransactionalKV: store, ops: &ops, on: &on}
 
 	cat := catalog.New(logged)
-	mk := func(def catalog.TableDef) {
+	mk := func(def model.TableDef) {
 		if _, err := cat.CreateTable(ctx, def); err != nil {
 			t.Fatal(err)
 		}
 	}
-	mk(catalog.TableDef{
+	mk(model.TableDef{
 		Name: "users", PrimaryKey: []string{"id"},
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "name", Type: catalog.TypeText},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "name", Type: model.TypeText},
 		},
 	})
-	mk(catalog.TableDef{
+	mk(model.TableDef{
 		Name: "posts", PrimaryKey: []string{"id"},
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "user_id", Type: catalog.TypeInt64},
-			{Name: "title", Type: catalog.TypeText},
-			{Name: "created_at", Type: catalog.TypeInt64},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "user_id", Type: model.TypeInt64},
+			{Name: "title", Type: model.TypeText},
+			{Name: "created_at", Type: model.TypeInt64},
 		},
-		Indexes:     []catalog.IndexDef{{Name: "posts_user_id_idx", Columns: []string{"user_id"}}},
-		ForeignKeys: []catalog.ForeignKeyDef{{Name: "posts_user_fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}}},
+		Indexes:     []model.IndexDef{{Name: "posts_user_id_idx", Columns: []string{"user_id"}}},
+		ForeignKeys: []model.ForeignKeyDef{{Name: "posts_user_fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}}},
 	})
 
 	eng := New(logged, cat)
@@ -87,11 +90,11 @@ func TestBlogDump(t *testing.T) {
 	q := lir.Query{Card: lir.CardMany, Root: lir.Order{Input: out, Terms: []lir.OrderTerm{{Expr: qcol("r", "id")}}}}
 
 	// Physical plan (post bind + planning).
-	bq, err := planner.Bind(ctx, cat, q)
+	bq, err := binder.Bind(ctx, cat, q)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("\n===== PHYSICAL PLAN =====\n%s", planner.PrintPlan(planner.PlanQuery(bq)))
+	t.Logf("\n===== PHYSICAL PLAN =====\n%s", explain.PrintPlan(planner.PlanQuery(bq)))
 
 	// Execute, logging the data-plane KV traffic.
 	on = true

@@ -16,6 +16,7 @@ import (
 	radclient "github.com/Southclaws/rad/rad/client"
 	"github.com/Southclaws/rad/rad/engine/01_kv/kvslate"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
 	"github.com/Southclaws/rad/rad/protocol"
 	"github.com/Southclaws/rad/rad/protocol/lirwire"
@@ -23,7 +24,7 @@ import (
 
 // testServerInMode is testServer with the catalog mode stamped before the
 // handler is built, the way serve boots a real database.
-func testServerInMode(t *testing.T, mode catalog.Mode) *radclient.Client {
+func testServerInMode(t *testing.T, mode model.Mode) *radclient.Client {
 	t.Helper()
 	store, err := kvslate.Open("test-"+t.Name(), "memory:///")
 	if err != nil {
@@ -391,7 +392,7 @@ func TestCatalogDeleteGuards(t *testing.T) {
 // A schema-managed database rejects every imperative catalog operation with
 // one uniform invalid problem, while migration and reads stay open.
 func TestSchemaManagedModeGatesCatalogOps(t *testing.T) {
-	c := testServerInMode(t, catalog.ModeSchema)
+	c := testServerInMode(t, model.ModeSchema)
 	ctx := context.Background()
 
 	if mode, err := c.Mode(ctx); err != nil || mode != "schema" {
@@ -439,7 +440,7 @@ func TestSchemaManagedModeGatesCatalogOps(t *testing.T) {
 // A direct-mode database reports its mode and accepts both channels: the
 // imperative operations and the rad.schema.yaml reconciler.
 func TestDirectModeAcceptsBothChannels(t *testing.T) {
-	c := testServerInMode(t, catalog.ModeDirect)
+	c := testServerInMode(t, model.ModeDirect)
 	ctx := context.Background()
 
 	if mode, err := c.Mode(ctx); err != nil || mode != "direct" {

@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	"github.com/Southclaws/rad/rad/engine/02_catalog/schema"
 	"github.com/Southclaws/rad/rad/protocol"
 )
@@ -28,7 +28,7 @@ type Lock struct {
 type Accepted struct {
 	Lock   Lock
 	Source []byte
-	Schema catalog.Schema
+	Schema model.Schema
 }
 
 type DivergenceError struct {
@@ -210,10 +210,10 @@ func (s Store) BackupDesired(filename string, now time.Time) (string, error) {
 	return path, nil
 }
 
-func ParseSnapshot(filename string, source []byte) (catalog.Schema, string, error) {
+func ParseSnapshot(filename string, source []byte) (model.Schema, string, error) {
 	parsed, err := schema.Parse(filename, source)
 	if err != nil {
-		return catalog.Schema{}, "", err
+		return model.Schema{}, "", err
 	}
 	canonical := parsed.Canonical()
 	hash, err := canonical.Hash()
@@ -236,60 +236,60 @@ func (s Store) resolveSnapshot(relative string) (string, error) {
 	return filepath.Join(s.Root, clean), nil
 }
 
-func canonicalSchema(document protocol.SchemaDocument) (catalog.Schema, error) {
-	definitions := make([]catalog.TableDef, len(document.Tables))
+func canonicalSchema(document protocol.SchemaDocument) (model.Schema, error) {
+	definitions := make([]model.TableDef, len(document.Tables))
 	for i, table := range document.Tables {
-		definition := catalog.TableDef{
-			ID: catalog.SchemaID(table.ID), Name: table.Name, PrimaryKey: table.PrimaryKey,
+		definition := model.TableDef{
+			ID: model.SchemaID(table.ID), Name: table.Name, PrimaryKey: table.PrimaryKey,
 		}
 		for _, column := range table.Columns {
 			defaultValue, err := canonicalDefault(column)
 			if err != nil {
-				return catalog.Schema{}, err
+				return model.Schema{}, err
 			}
-			definition.Columns = append(definition.Columns, catalog.ColumnDef{
-				ID: catalog.SchemaID(column.ID), Name: column.Name, Type: catalog.Type(column.Type),
+			definition.Columns = append(definition.Columns, model.ColumnDef{
+				ID: model.SchemaID(column.ID), Name: column.Name, Type: model.Type(column.Type),
 				Nullable: column.Nullable, Format: column.Format, Default: defaultValue,
 			})
 		}
 		for _, index := range table.Indexes {
-			definition.Indexes = append(definition.Indexes, catalog.IndexDef{
+			definition.Indexes = append(definition.Indexes, model.IndexDef{
 				Name: index.Name, Columns: index.Columns, Unique: index.Unique,
 			})
 		}
 		for _, foreignKey := range table.ForeignKeys {
-			definition.ForeignKeys = append(definition.ForeignKeys, catalog.ForeignKeyDef{
+			definition.ForeignKeys = append(definition.ForeignKeys, model.ForeignKeyDef{
 				Name: foreignKey.Name, Columns: foreignKey.Columns,
 				RefTable: foreignKey.RefTable, RefColumns: foreignKey.RefColumns,
 			})
 		}
 		definitions[i] = definition
 	}
-	return catalog.SchemaFromDefinitions(definitions), nil
+	return model.SchemaFromDefinitions(definitions), nil
 }
 
-func canonicalDefault(column protocol.ColumnDef) (*catalog.Default, error) {
+func canonicalDefault(column protocol.ColumnDef) (*model.Default, error) {
 	if column.Default == nil {
 		return nil, nil
 	}
 	if column.Default.Func != "" {
-		return &catalog.Default{Func: catalog.DefaultFunc(column.Default.Func)}, nil
+		return &model.Default{Func: model.DefaultFunc(column.Default.Func)}, nil
 	}
 	value := column.Default.Value
-	switch catalog.Type(column.Type) {
-	case catalog.TypeText:
+	switch model.Type(column.Type) {
+	case model.TypeText:
 		text, ok := value.(string)
 		if !ok {
 			return nil, fmt.Errorf("schema state: column %s default is %T, want string", column.Name, value)
 		}
-		return &catalog.Default{Text: text}, nil
-	case catalog.TypeBool:
+		return &model.Default{Text: text}, nil
+	case model.TypeBool:
 		boolean, ok := value.(bool)
 		if !ok {
 			return nil, fmt.Errorf("schema state: column %s default is %T, want bool", column.Name, value)
 		}
-		return &catalog.Default{Bool: boolean}, nil
-	case catalog.TypeInt64:
+		return &model.Default{Bool: boolean}, nil
+	case model.TypeInt64:
 		var number json.Number
 		switch typed := value.(type) {
 		case json.Number:
@@ -303,14 +303,14 @@ func canonicalDefault(column protocol.ColumnDef) (*catalog.Default, error) {
 		if err != nil {
 			return nil, fmt.Errorf("schema state: column %s integer default: %w", column.Name, err)
 		}
-		return &catalog.Default{Int64: integer}, nil
-	case catalog.TypeFloat64:
+		return &model.Default{Int64: integer}, nil
+	case model.TypeFloat64:
 		number := json.Number(fmt.Sprint(value))
 		floating, err := number.Float64()
 		if err != nil {
 			return nil, fmt.Errorf("schema state: column %s float default: %w", column.Name, err)
 		}
-		return &catalog.Default{Float64: floating}, nil
+		return &model.Default{Float64: floating}, nil
 	default:
 		return nil, fmt.Errorf("schema state: column %s has unsupported type %q", column.Name, column.Type)
 	}

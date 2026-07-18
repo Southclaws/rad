@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 )
 
 func TestDirectCatalogAllocatesLogicalSchemaIDs(t *testing.T) {
@@ -17,7 +17,7 @@ func TestDirectCatalogAllocatesLogicalSchemaIDs(t *testing.T) {
 		t.Fatalf("table schema ID = %d, want 1", table.SchemaID)
 	}
 	for i, column := range table.Columns {
-		want := catalog.SchemaID(i + 1)
+		want := model.SchemaID(i + 1)
 		if column.SchemaID != want {
 			t.Fatalf("column %q schema ID = %d, want %d", column.Name, column.SchemaID, want)
 		}
@@ -76,14 +76,14 @@ func TestColumnSchemaIDsAreNeverReusedWithinTable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := cat.CreateColumn(ctx, "users", catalog.ColumnDef{
-		ID: retired, Name: "replacement", Type: catalog.TypeText, Nullable: true,
+	if _, err := cat.CreateColumn(ctx, "users", model.ColumnDef{
+		ID: retired, Name: "replacement", Type: model.TypeText, Nullable: true,
 	}); err == nil || !strings.Contains(err.Error(), "has already been used") {
 		t.Fatalf("reused retired column ID: %v", err)
 	}
 
-	updated, err := cat.CreateColumn(ctx, "users", catalog.ColumnDef{
-		Name: "replacement", Type: catalog.TypeText, Nullable: true,
+	updated, err := cat.CreateColumn(ctx, "users", model.ColumnDef{
+		Name: "replacement", Type: model.TypeText, Nullable: true,
 	})
 	if err != nil {
 		t.Fatal(err)

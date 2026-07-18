@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"strings"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	"github.com/Southclaws/rad/rad/engine/02_catalog/schema"
 )
 
@@ -38,7 +38,7 @@ type Table struct {
 type Col struct {
 	Name     string
 	Field    string // exported field name (Go)
-	Type     catalog.Type
+	Type     model.Type
 	GoType   string // base Go type (string, int64, float64, bool)
 	Nullable bool
 	HasDef   bool
@@ -111,7 +111,7 @@ func Build(pkg string, sch *schema.Schema) (*Model, error) {
 	// table has toward each parent, to disambiguate reverse names.
 	type fkRef struct {
 		child, parent *Table
-		fk            catalog.ForeignKeyDef
+		fk            model.ForeignKeyDef
 	}
 	var refs []fkRef
 	fkCount := map[[2]string]int{}
@@ -168,15 +168,15 @@ func Build(pkg string, sch *schema.Schema) (*Model, error) {
 }
 
 // GoType maps a catalog scalar type to its base Go type.
-func GoType(t catalog.Type) string {
+func GoType(t model.Type) string {
 	switch t {
-	case catalog.TypeText:
+	case model.TypeText:
 		return "string"
-	case catalog.TypeInt64:
+	case model.TypeInt64:
 		return "int64"
-	case catalog.TypeFloat64:
+	case model.TypeFloat64:
 		return "float64"
-	case catalog.TypeBool:
+	case model.TypeBool:
 		return "bool"
 	}
 	return "any"

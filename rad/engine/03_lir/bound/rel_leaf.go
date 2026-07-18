@@ -1,17 +1,17 @@
 package bound
 
 import (
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 )
 
 type Scan struct {
 	laws
-	Table catalog.Table
+	Table model.Table
 	Scope string
 }
 
-func NewScan(table catalog.Table, scope string, slots []lir.SlotID) *Scan {
+func NewScan(table model.Table, scope string, slots []lir.SlotID) *Scan {
 	fields := make([]lir.Field, len(table.Columns))
 	for i, column := range table.Columns {
 		fields[i] = lir.Field{

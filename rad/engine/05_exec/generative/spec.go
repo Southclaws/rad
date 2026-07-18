@@ -16,14 +16,15 @@ package generative
 import (
 	"fmt"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 	"pgregory.net/rapid"
+
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 )
 
 // Column is one column: a name, a scalar type, and whether it admits nulls.
 type Column struct {
 	Name     string
-	Type     catalog.Type
+	Type     model.Type
 	Nullable bool
 }
 
@@ -56,7 +57,7 @@ type Catalog struct {
 }
 
 // scalarTypes are the column types the generator draws from.
-var scalarTypes = []catalog.Type{catalog.TypeText, catalog.TypeInt64, catalog.TypeFloat64, catalog.TypeBool}
+var scalarTypes = []model.Type{model.TypeText, model.TypeInt64, model.TypeFloat64, model.TypeBool}
 
 // col returns the named column of t, if present.
 func (t Table) col(name string) (Column, bool) {
@@ -70,7 +71,7 @@ func (t Table) col(name string) (Column, bool) {
 
 // colType returns the scalar type of the named column (text if absent, which
 // never happens for a name the caller took from the table).
-func (t Table) colType(name string) catalog.Type {
+func (t Table) colType(name string) model.Type {
 	c, _ := t.col(name)
 	return c.Type
 }
@@ -120,7 +121,7 @@ func SynthCatalogWith(t *rapid.T, cfg SynthConfig) *Catalog {
 	cat := &Catalog{}
 	for i := 0; i < n; i++ {
 		tbl := Table{Name: fmt.Sprintf("t%d", i), PrimaryKey: []string{"id"}}
-		tbl.Columns = append(tbl.Columns, Column{Name: "id", Type: catalog.TypeText})
+		tbl.Columns = append(tbl.Columns, Column{Name: "id", Type: model.TypeText})
 		extra := rapid.IntRange(cfg.MinValueCols, cfg.MaxValueCols).Draw(t, "value_cols")
 		for j := 0; j < extra; j++ {
 			tbl.Columns = append(tbl.Columns, Column{
@@ -131,7 +132,7 @@ func SynthCatalogWith(t *rapid.T, cfg SynthConfig) *Catalog {
 		}
 		if i > 0 && rapid.Bool().Draw(t, "has_fk") {
 			parent := rapid.SampledFrom(cat.Tables).Draw(t, "fk_parent")
-			tbl.Columns = append(tbl.Columns, Column{Name: "fk", Type: catalog.TypeText, Nullable: true})
+			tbl.Columns = append(tbl.Columns, Column{Name: "fk", Type: model.TypeText, Nullable: true})
 			tbl.FKs = append(tbl.FKs, FK{Cols: []string{"fk"}, Parent: parent.Name, ParentCols: []string{"id"}})
 		}
 		if extra > 0 && rapid.Bool().Draw(t, "has_index") {

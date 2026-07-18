@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 )
 
@@ -50,7 +50,7 @@ func TestUpdateValidation(t *testing.T) {
 	if _, _, err := eng.Update(ctx, "users", lir.Row{"id": lir.Int64(1)}, lir.Row{"name": lir.Int64(3)}); err == nil {
 		t.Error("type mismatch accepted")
 	}
-	if _, _, err := eng.Update(ctx, "users", lir.Row{"id": lir.Int64(1)}, lir.Row{"name": lir.Null(catalog.TypeText)}); err == nil {
+	if _, _, err := eng.Update(ctx, "users", lir.Row{"id": lir.Int64(1)}, lir.Row{"name": lir.Null(model.TypeText)}); err == nil {
 		t.Error("NULL into non-nullable column accepted")
 	}
 	// Updating a missing row is found=false, not an error.
@@ -79,14 +79,14 @@ func TestUpdateForeignKeyAndUniqueChecks(t *testing.T) {
 	}
 
 	// Unique index checks fire on update too.
-	if _, err := eng.Catalog().CreateTable(ctx, catalog.TableDef{
+	if _, err := eng.Catalog().CreateTable(ctx, model.TableDef{
 		Name: "handles",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "handle", Type: catalog.TypeText},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "handle", Type: model.TypeText},
 		},
 		PrimaryKey: []string{"id"},
-		Indexes:    []catalog.IndexDef{{Name: "handles_uq", Columns: []string{"handle"}, Unique: true}},
+		Indexes:    []model.IndexDef{{Name: "handles_uq", Columns: []string{"handle"}, Unique: true}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -153,14 +153,14 @@ func TestDeleteRestrict(t *testing.T) {
 // task with children must be restricted while a leaf task is deletable.
 func TestDeleteRestrictSelfReferential(t *testing.T) {
 	eng, ctx := setup(t)
-	if _, err := eng.Catalog().CreateTable(ctx, catalog.TableDef{
+	if _, err := eng.Catalog().CreateTable(ctx, model.TableDef{
 		Name: "nodes",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "parent_id", Type: catalog.TypeInt64, Nullable: true},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "parent_id", Type: model.TypeInt64, Nullable: true},
 		},
 		PrimaryKey:  []string{"id"},
-		ForeignKeys: []catalog.ForeignKeyDef{{Name: "nodes_parent_fk", Columns: []string{"parent_id"}, RefTable: "nodes", RefColumns: []string{"id"}}},
+		ForeignKeys: []model.ForeignKeyDef{{Name: "nodes_parent_fk", Columns: []string{"parent_id"}, RefTable: "nodes", RefColumns: []string{"id"}}},
 	}); err != nil {
 		t.Fatal(err)
 	}

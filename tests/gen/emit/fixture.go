@@ -15,11 +15,12 @@ import (
 	"strings"
 
 	kvslate "github.com/Southclaws/rad/rad/engine/01_kv/kvslate"
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	generative "github.com/Southclaws/rad/rad/engine/05_exec/generative"
 	refexec "github.com/Southclaws/rad/rad/engine/05_exec/refexec"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
+	"github.com/Southclaws/rad/rad/engine/06_frontend/resultjson"
 	protocol "github.com/Southclaws/rad/rad/protocol"
 	pirwire "github.com/Southclaws/rad/rad/protocol/pirwire"
 	api "github.com/Southclaws/rad/rad/server/api"
@@ -93,7 +94,7 @@ func Fixture(ctx context.Context, dir string, c Case) (string, error) {
 	_ = json.Unmarshal(prog, &progAny)
 	test, err := json.MarshalIndent(map[string]any{
 		"program": progAny,
-		"result":  frontend.DatumJSON(oracleVal),
+		"result":  resultjson.Datum(oracleVal),
 	}, "", "  ")
 	if err != nil {
 		return "", err
@@ -137,7 +138,7 @@ func reproduce(ctx context.Context, c Case) (engine, oracle lir.Datum, err error
 			}
 		}
 	}
-	scan := func(_ context.Context, t catalog.Table) ([]lir.Row, error) { return c.Data[t.Name], nil }
+	scan := func(_ context.Context, t model.Table) ([]lir.Row, error) { return c.Data[t.Name], nil }
 
 	engine, err = db.Execute(ctx, c.Query)
 	if err != nil {
@@ -161,7 +162,7 @@ func seedGroups(spec *generative.Catalog, data map[string][]lir.Row) []map[strin
 		}
 		jsonRows := make([]map[string]any, len(rows))
 		for i, r := range rows {
-			jsonRows[i] = frontend.RowJSON(r)
+			jsonRows[i] = resultjson.Row(r)
 		}
 		groups = append(groups, map[string]any{"table": tbl.Name, "rows": jsonRows})
 	}
@@ -221,13 +222,13 @@ func fkRefs(t generative.Table) map[string]string {
 	return refs
 }
 
-func radType(t catalog.Type) string {
+func radType(t model.Type) string {
 	switch t {
-	case catalog.TypeText:
+	case model.TypeText:
 		return "string"
-	case catalog.TypeInt64:
+	case model.TypeInt64:
 		return "int64"
-	case catalog.TypeFloat64:
+	case model.TypeFloat64:
 		return "float64"
 	default:
 		return "bool"
@@ -243,8 +244,8 @@ func nameSet(cols []string) map[string]bool {
 }
 
 func bugMD(c Case, engine, oracle lir.Datum) string {
-	eng, _ := json.MarshalIndent(frontend.DatumJSON(engine), "", "  ")
-	orc, _ := json.MarshalIndent(frontend.DatumJSON(oracle), "", "  ")
+	eng, _ := json.MarshalIndent(resultjson.Datum(engine), "", "  ")
+	orc, _ := json.MarshalIndent(resultjson.Datum(oracle), "", "  ")
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Generated regression: %s\n\n", c.Mode)
 	fmt.Fprintf(&b, "The generative differential found a divergence and shrank it to this case.\n\n")

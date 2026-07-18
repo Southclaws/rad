@@ -4,30 +4,30 @@ import (
 	"bytes"
 	"encoding/json"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	"github.com/Southclaws/rad/rad/protocol"
 	"github.com/Southclaws/rad/rad/protocol/pirwire"
 )
 
-func schemaID(id pirwire.SchemaID) catalog.SchemaID {
-	return catalog.SchemaID(id)
+func schemaID(id pirwire.SchemaID) model.SchemaID {
+	return model.SchemaID(id)
 }
 
-func optionalSchemaID(id *pirwire.SchemaID) catalog.SchemaID {
+func optionalSchemaID(id *pirwire.SchemaID) model.SchemaID {
 	if id == nil {
 		return 0
 	}
 	return schemaID(*id)
 }
 
-func pirTableDef(in pirwire.TableDefinition) (catalog.TableDef, error) {
-	out := catalog.TableDef{
+func pirTableDef(in pirwire.TableDefinition) (model.TableDef, error) {
+	out := model.TableDef{
 		ID: optionalSchemaID(in.ID), Name: in.Name, PrimaryKey: in.PrimaryKey,
 	}
 	for _, column := range in.Columns {
 		definition, err := pirColumnDef(column)
 		if err != nil {
-			return catalog.TableDef{}, err
+			return model.TableDef{}, err
 		}
 		out.Columns = append(out.Columns, definition)
 	}
@@ -35,7 +35,7 @@ func pirTableDef(in pirwire.TableDefinition) (catalog.TableDef, error) {
 		out.Indexes = append(out.Indexes, pirIndexDef(index))
 	}
 	for _, foreignKey := range in.ForeignKeys {
-		out.ForeignKeys = append(out.ForeignKeys, catalog.ForeignKeyDef{
+		out.ForeignKeys = append(out.ForeignKeys, model.ForeignKeyDef{
 			Name: foreignKey.Name, Columns: foreignKey.Columns,
 			RefTable: foreignKey.RefTable, RefColumns: foreignKey.RefColumns,
 		})
@@ -43,9 +43,9 @@ func pirTableDef(in pirwire.TableDefinition) (catalog.TableDef, error) {
 	return out, nil
 }
 
-func pirColumnDef(in pirwire.ColumnDefinition) (catalog.ColumnDef, error) {
-	out := catalog.ColumnDef{
-		ID: optionalSchemaID(in.ID), Name: in.Name, Type: catalog.Type(in.Type),
+func pirColumnDef(in pirwire.ColumnDefinition) (model.ColumnDef, error) {
+	out := model.ColumnDef{
+		ID: optionalSchemaID(in.ID), Name: in.Name, Type: model.Type(in.Type),
 	}
 	if in.Nullable != nil {
 		out.Nullable = *in.Nullable
@@ -55,13 +55,13 @@ func pirColumnDef(in pirwire.ColumnDefinition) (catalog.ColumnDef, error) {
 	}
 	defaultValue, err := pirDefault(in.Name, out.Type, in.Default)
 	if err != nil {
-		return catalog.ColumnDef{}, err
+		return model.ColumnDef{}, err
 	}
 	out.Default = defaultValue
 	return out, nil
 }
 
-func pirDefault(name string, typ catalog.Type, in *pirwire.ColumnDefault) (*catalog.Default, error) {
+func pirDefault(name string, typ model.Type, in *pirwire.ColumnDefault) (*model.Default, error) {
 	if in == nil || in.ColumnDefaultUnion == nil {
 		return nil, nil
 	}
@@ -81,8 +81,8 @@ func pirDefault(name string, typ catalog.Type, in *pirwire.ColumnDefault) (*cata
 	}
 }
 
-func pirIndexDef(in pirwire.IndexDefinition) catalog.IndexDef {
-	out := catalog.IndexDef{Name: in.Name, Columns: in.Columns}
+func pirIndexDef(in pirwire.IndexDefinition) model.IndexDef {
+	out := model.IndexDef{Name: in.Name, Columns: in.Columns}
 	if in.Unique != nil {
 		out.Unique = *in.Unique
 	}

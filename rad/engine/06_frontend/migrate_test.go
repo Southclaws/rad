@@ -8,10 +8,11 @@ import (
 	"context"
 	"testing"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	radschema "github.com/Southclaws/rad/rad/engine/02_catalog/schema"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
+	"github.com/Southclaws/rad/rad/engine/06_frontend/resultjson"
 )
 
 const trackerV1 = `
@@ -71,7 +72,7 @@ func migrateTo(t *testing.T, db *frontend.DB, ctx context.Context, src string) [
 func TestMigrationWorkflow(t *testing.T) {
 	ctx := context.Background()
 	db := frontend.Open(memStore(t))
-	if _, err := db.Catalog().InitMode(ctx, catalog.ModeSchema); err != nil {
+	if _, err := db.Catalog().InitMode(ctx, model.ModeSchema); err != nil {
 		t.Fatal(err)
 	}
 
@@ -130,18 +131,20 @@ func TestMigrationWorkflow(t *testing.T) {
 	d, err := db.Execute(ctx, lir.Query{Card: lir.CardMany, Root: lir.Order{
 		Input: lir.Filter{
 			Input: lir.Scan{Table: "tasks", Scope: "t"},
-			Pred: lir.Binary{Op: lir.OpEq,
-				L: lir.Column{Scope: "t", Name: "user_id"},
-				R: lir.Literal{Raw: "u1"}},
+			Pred: lir.Binary{
+				Op: lir.OpEq,
+				L:  lir.Column{Scope: "t", Name: "user_id"},
+				R:  lir.Literal{Raw: "u1"},
+			},
 		},
 		Terms: []lir.OrderTerm{{Expr: lir.Column{Scope: "t", Name: "id"}}},
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, _ := frontend.DatumJSON(d).([]any)
+	rows, _ := resultjson.Datum(d).([]any)
 	if len(rows) != 1 || rows[0].(map[string]any)["title"] != "ship v0" {
-		t.Fatalf("backfilled index scan: %v", frontend.DatumJSON(d))
+		t.Fatalf("backfilled index scan: %v", resultjson.Datum(d))
 	}
 
 	// The new table works.
@@ -186,7 +189,7 @@ func assertRevisionSchema(t *testing.T, db *frontend.DB, ctx context.Context, so
 func TestUniqueBackfillRejectsDuplicates(t *testing.T) {
 	ctx := context.Background()
 	db := frontend.Open(memStore(t))
-	if _, err := db.Catalog().InitMode(ctx, catalog.ModeSchema); err != nil {
+	if _, err := db.Catalog().InitMode(ctx, model.ModeSchema); err != nil {
 		t.Fatal(err)
 	}
 	migrateTo(t, db, ctx, trackerV1)
@@ -267,7 +270,7 @@ tables:
 func TestDestructiveMigrationRequiresExplicitAcceptance(t *testing.T) {
 	ctx := context.Background()
 	db := frontend.Open(memStore(t))
-	if _, err := db.Catalog().InitMode(ctx, catalog.ModeSchema); err != nil {
+	if _, err := db.Catalog().InitMode(ctx, model.ModeSchema); err != nil {
 		t.Fatal(err)
 	}
 	migrateTo(t, db, ctx, trackerV1)

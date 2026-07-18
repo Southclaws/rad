@@ -3,7 +3,7 @@ package schema_test
 import (
 	"testing"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	"github.com/Southclaws/rad/rad/engine/02_catalog/schema"
 )
 
@@ -64,7 +64,7 @@ tables:
 	}
 }
 
-func parseCanonical(t *testing.T, source string) catalog.Schema {
+func parseCanonical(t *testing.T, source string) model.Schema {
 	t.Helper()
 	parsed, err := schema.Parse("rad.schema.yaml", []byte(source))
 	if err != nil {

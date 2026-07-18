@@ -4,8 +4,8 @@ import (
 	"context"
 
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
-	refexec "github.com/Southclaws/rad/rad/engine/05_exec/refexec"
 )
 
 // Subject is the system a differential runs against: something that executes a
@@ -23,4 +23,4 @@ type Subject interface {
 // the rows it loaded, so the oracle reads data independently of the engine's
 // own read path — a storage round-trip bug then surfaces as a divergence rather
 // than hiding in both sides.
-type ScanFunc = refexec.ScanFunc
+type ScanFunc func(ctx context.Context, table model.Table) ([]lir.Row, error)

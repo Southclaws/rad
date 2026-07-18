@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/Southclaws/rad/rad/engine/01_kv"
+	kv "github.com/Southclaws/rad/rad/engine/01_kv"
 	"github.com/Southclaws/rad/rad/engine/01_kv/keyenc"
-	"github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 )
 
 type devtool struct {
@@ -41,7 +41,7 @@ func limitParam(r *http.Request) int {
 }
 
 // tables loads all table definitions by scanning the catalog namespace.
-func (s *devtool) tables(ctx context.Context) ([]catalog.Table, error) {
+func (s *devtool) tables(ctx context.Context) ([]model.Table, error) {
 	prefix := []byte("/rad/catalog/table/")
 	it, err := s.store.Scan(ctx, prefix, keyenc.PrefixEnd(prefix))
 	if err != nil {
@@ -49,9 +49,9 @@ func (s *devtool) tables(ctx context.Context) ([]catalog.Table, error) {
 	}
 	defer it.Close()
 
-	tables := []catalog.Table{}
+	tables := []model.Table{}
 	for it.Next() {
-		var t catalog.Table
+		var t model.Table
 		if err := json.Unmarshal(it.Value(), &t); err != nil {
 			return nil, fmt.Errorf("corrupt catalog entry %q: %w", it.Key(), err)
 		}

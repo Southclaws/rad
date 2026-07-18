@@ -14,7 +14,7 @@ import (
 
 	"github.com/Southclaws/rad/cmd/rad/config"
 	"github.com/Southclaws/rad/rad/codegen"
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	"github.com/Southclaws/rad/rad/protocol"
 	projectstate "github.com/Southclaws/rad/rad/state"
 )
@@ -122,12 +122,12 @@ func schemaCLIProject(t *testing.T, serverURL, desired string) (string, string) 
 
 func commandSchemaState(t *testing.T, version uint64, table string) protocol.SchemaState {
 	t.Helper()
-	definition := catalog.TableDef{
+	definition := model.TableDef{
 		ID: 1, Name: table,
-		Columns:    []catalog.ColumnDef{{ID: 1, Name: "id", Type: catalog.TypeText}},
+		Columns:    []model.ColumnDef{{ID: 1, Name: "id", Type: model.TypeText}},
 		PrimaryKey: []string{"id"},
 	}
-	hash, err := catalog.SchemaFromDefinitions([]catalog.TableDef{definition}).Hash()
+	hash, err := model.SchemaFromDefinitions([]model.TableDef{definition}).Hash()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -42,7 +42,7 @@ import (
 	yaml "github.com/goccy/go-yaml"
 	"github.com/google/jsonschema-go/jsonschema"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	"github.com/Southclaws/rad/rad/engine/02_catalog/naming"
 	"github.com/Southclaws/rad/rad/engine/reject"
 )
@@ -70,7 +70,7 @@ type Schema struct {
 
 // Table contains one catalog definition from the schema source.
 type Table struct {
-	Def catalog.TableDef
+	Def model.TableDef
 }
 
 // Table returns the parsed table with the given name.
@@ -84,12 +84,12 @@ func (s *Schema) Table(name string) (Table, bool) {
 }
 
 // Canonical returns the canonical catalog schema represented by this source.
-func (s *Schema) Canonical() catalog.Schema {
-	defs := make([]catalog.TableDef, len(s.Tables))
+func (s *Schema) Canonical() model.Schema {
+	defs := make([]model.TableDef, len(s.Tables))
 	for i, table := range s.Tables {
 		defs[i] = table.Def
 	}
-	return catalog.SchemaFromDefinitions(defs)
+	return model.SchemaFromDefinitions(defs)
 }
 
 // File-shape structs for the typed second decode (after JSON Schema
@@ -99,7 +99,7 @@ type fileSchema struct {
 }
 
 type fileTable struct {
-	ID          catalog.SchemaID `yaml:"id"`
+	ID          model.SchemaID   `yaml:"id"`
 	Name        string           `yaml:"name"`
 	Columns     []fileColumn     `yaml:"columns"`
 	PrimaryKey  []string         `yaml:"primary_key"`
@@ -108,16 +108,16 @@ type fileTable struct {
 }
 
 type fileColumn struct {
-	ID       catalog.SchemaID `yaml:"id"`
-	Name     string           `yaml:"name"`
-	Type     string           `yaml:"type"`
-	Nullable bool             `yaml:"nullable"`
-	PK       bool             `yaml:"pk"`
-	Unique   bool             `yaml:"unique"`
-	Index    bool             `yaml:"index"`
-	Ref      string           `yaml:"ref"`
-	Format   string           `yaml:"format"`
-	Default  any              `yaml:"default"`
+	ID       model.SchemaID `yaml:"id"`
+	Name     string         `yaml:"name"`
+	Type     string         `yaml:"type"`
+	Nullable bool           `yaml:"nullable"`
+	PK       bool           `yaml:"pk"`
+	Unique   bool           `yaml:"unique"`
+	Index    bool           `yaml:"index"`
+	Ref      string         `yaml:"ref"`
+	Format   string         `yaml:"format"`
+	Default  any            `yaml:"default"`
 }
 
 type fileIndex struct {
@@ -162,7 +162,7 @@ func parse(filename string, src []byte) (*Schema, error) {
 
 	s := &Schema{}
 	seenNames := map[string]bool{}
-	seenIDs := map[catalog.SchemaID]string{}
+	seenIDs := map[model.SchemaID]string{}
 	for _, ft := range file.Tables {
 		if seenNames[ft.Name] {
 			return nil, fmt.Errorf("%s: duplicate table %q", filename, ft.Name)
@@ -183,10 +183,10 @@ func parse(filename string, src []byte) (*Schema, error) {
 
 func buildTable(filename string, ft fileTable) (Table, error) {
 	t := Table{
-		Def: catalog.TableDef{ID: ft.ID, Name: ft.Name},
+		Def: model.TableDef{ID: ft.ID, Name: ft.Name},
 	}
 	var pkFromColumns []string
-	seenColumnIDs := map[catalog.SchemaID]string{}
+	seenColumnIDs := map[model.SchemaID]string{}
 
 	for _, fc := range ft.Columns {
 		if previous, exists := seenColumnIDs[fc.ID]; exists {
@@ -194,7 +194,7 @@ func buildTable(filename string, ft fileTable) (Table, error) {
 				filename, ft.Name, previous, ft.Name, fc.Name, fc.ID)
 		}
 		seenColumnIDs[fc.ID] = fc.Name
-		col := catalog.ColumnDef{
+		col := model.ColumnDef{
 			ID:       fc.ID,
 			Name:     fc.Name,
 			Nullable: fc.Nullable,
@@ -202,13 +202,13 @@ func buildTable(filename string, ft fileTable) (Table, error) {
 		}
 		switch fc.Type {
 		case "string":
-			col.Type = catalog.TypeText
+			col.Type = model.TypeText
 		case "int64":
-			col.Type = catalog.TypeInt64
+			col.Type = model.TypeInt64
 		case "float64":
-			col.Type = catalog.TypeFloat64
+			col.Type = model.TypeFloat64
 		case "bool":
-			col.Type = catalog.TypeBool
+			col.Type = model.TypeBool
 		}
 
 		if fc.Default != nil {
@@ -222,18 +222,18 @@ func buildTable(filename string, ft fileTable) (Table, error) {
 			pkFromColumns = append(pkFromColumns, fc.Name)
 		}
 		if fc.Unique {
-			t.Def.Indexes = append(t.Def.Indexes, catalog.IndexDef{
+			t.Def.Indexes = append(t.Def.Indexes, model.IndexDef{
 				Name: naming.Index(ft.Name, []string{fc.Name}, true), Columns: []string{fc.Name}, Unique: true,
 			})
 		}
 		if fc.Index {
-			t.Def.Indexes = append(t.Def.Indexes, catalog.IndexDef{
+			t.Def.Indexes = append(t.Def.Indexes, model.IndexDef{
 				Name: naming.Index(ft.Name, []string{fc.Name}, false), Columns: []string{fc.Name},
 			})
 		}
 		if fc.Ref != "" {
 			refTable, refCol, _ := cutRef(fc.Ref)
-			t.Def.ForeignKeys = append(t.Def.ForeignKeys, catalog.ForeignKeyDef{
+			t.Def.ForeignKeys = append(t.Def.ForeignKeys, model.ForeignKeyDef{
 				Name:     naming.ForeignKey(ft.Name, fc.Name),
 				Columns:  []string{fc.Name},
 				RefTable: refTable, RefColumns: []string{refCol},
@@ -255,12 +255,12 @@ func buildTable(filename string, ft fileTable) (Table, error) {
 		if name == "" {
 			name = naming.Index(ft.Name, fi.Columns, fi.Unique)
 		}
-		t.Def.Indexes = append(t.Def.Indexes, catalog.IndexDef{
+		t.Def.Indexes = append(t.Def.Indexes, model.IndexDef{
 			Name: name, Columns: fi.Columns, Unique: fi.Unique,
 		})
 	}
 	for _, fk := range ft.ForeignKeys {
-		t.Def.ForeignKeys = append(t.Def.ForeignKeys, catalog.ForeignKeyDef{
+		t.Def.ForeignKeys = append(t.Def.ForeignKeys, model.ForeignKeyDef{
 			Name: fk.Name, Columns: fk.Columns, RefTable: fk.RefTable, RefColumns: fk.RefColumns,
 		})
 	}
@@ -270,40 +270,40 @@ func buildTable(filename string, ft fileTable) (Table, error) {
 // parseDefault interprets a YAML default value for a column of type typ.
 // Strings may be the generators uuid() / now_ms(); everything else is a
 // literal that must match the column type.
-func parseDefault(raw any, typ catalog.Type) (*catalog.Default, error) {
+func parseDefault(raw any, typ model.Type) (*model.Default, error) {
 	// Integers first: the YAML decoder yields them as uint64/int64, so match on
 	// value rather than a single Go type.
 	if n, ok := asInt64(raw); ok {
-		if typ == catalog.TypeFloat64 {
-			return &catalog.Default{Float64: float64(n)}, nil
+		if typ == model.TypeFloat64 {
+			return &model.Default{Float64: float64(n)}, nil
 		}
-		if typ != catalog.TypeInt64 {
+		if typ != model.TypeInt64 {
 			return nil, fmt.Errorf("integer default on %s column", typ)
 		}
-		return &catalog.Default{Int64: n}, nil
+		return &model.Default{Int64: n}, nil
 	}
 	switch v := raw.(type) {
 	case string:
 		switch v {
 		case "uuid()":
-			return &catalog.Default{Func: catalog.DefaultUUID}, nil
+			return &model.Default{Func: model.DefaultUUID}, nil
 		case "now_ms()":
-			return &catalog.Default{Func: catalog.DefaultNowMS}, nil
+			return &model.Default{Func: model.DefaultNowMS}, nil
 		}
-		if typ != catalog.TypeText {
+		if typ != model.TypeText {
 			return nil, fmt.Errorf("string default on %s column", typ)
 		}
-		return &catalog.Default{Text: v}, nil
+		return &model.Default{Text: v}, nil
 	case bool:
-		if typ != catalog.TypeBool {
+		if typ != model.TypeBool {
 			return nil, fmt.Errorf("bool default on %s column", typ)
 		}
-		return &catalog.Default{Bool: v}, nil
+		return &model.Default{Bool: v}, nil
 	case float64:
-		if typ != catalog.TypeFloat64 {
+		if typ != model.TypeFloat64 {
 			return nil, fmt.Errorf("float default on %s column", typ)
 		}
-		return &catalog.Default{Float64: v}, nil
+		return &model.Default{Float64: v}, nil
 	default:
 		return nil, fmt.Errorf("cannot use %T as a default", raw)
 	}

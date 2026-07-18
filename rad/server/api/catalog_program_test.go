@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"testing"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	"github.com/Southclaws/rad/rad/protocol/lirwire"
 	"github.com/Southclaws/rad/rad/protocol/pirwire"
 )
 
 func TestExecuteCatalogProgramCreatesSchemaThenUsesIt(t *testing.T) {
-	c := testServerInMode(t, catalog.ModeDirect)
+	c := testServerInMode(t, model.ModeDirect)
 	ctx := context.Background()
 	tableID, columnID := pirwire.SchemaID(1), pirwire.SchemaID(1)
 
@@ -43,7 +43,7 @@ func TestExecuteCatalogProgramCreatesSchemaThenUsesIt(t *testing.T) {
 }
 
 func TestExecuteCatalogProgramUsesOneRevisionPerDirectStatement(t *testing.T) {
-	c := testServerInMode(t, catalog.ModeDirect)
+	c := testServerInMode(t, model.ModeDirect)
 	ctx := context.Background()
 	tableID, idColumn, bodyColumn := pirwire.SchemaID(7), pirwire.SchemaID(1), pirwire.SchemaID(2)
 
@@ -70,7 +70,7 @@ func TestExecuteCatalogProgramUsesOneRevisionPerDirectStatement(t *testing.T) {
 }
 
 func TestExecuteCatalogProgramRenameIsVisibleToLaterQuery(t *testing.T) {
-	c := testServerInMode(t, catalog.ModeDirect)
+	c := testServerInMode(t, model.ModeDirect)
 	ctx := context.Background()
 	tableID, columnID := pirwire.SchemaID(1), pirwire.SchemaID(1)
 	if _, err := c.Execute(ctx, pirwire.Prog("", pirwire.CreateTable("create", pirwire.TableDefinition{
@@ -97,7 +97,7 @@ func TestExecuteCatalogProgramRenameIsVisibleToLaterQuery(t *testing.T) {
 }
 
 func TestExecuteCatalogProgramRollsBackSchemaAndRevision(t *testing.T) {
-	c := testServerInMode(t, catalog.ModeDirect)
+	c := testServerInMode(t, model.ModeDirect)
 	ctx := context.Background()
 	tableID, columnID := pirwire.SchemaID(1), pirwire.SchemaID(1)
 
@@ -120,7 +120,7 @@ func TestExecuteCatalogProgramRollsBackSchemaAndRevision(t *testing.T) {
 }
 
 func TestExecuteCatalogIndexBackfillSeesEarlierProgramWrites(t *testing.T) {
-	c := testServerInMode(t, catalog.ModeDirect)
+	c := testServerInMode(t, model.ModeDirect)
 	ctx := context.Background()
 	tableID, idColumn, valueColumn := pirwire.SchemaID(1), pirwire.SchemaID(1), pirwire.SchemaID(2)
 	if _, err := c.Execute(ctx, pirwire.Prog("", pirwire.CreateTable("schema", pirwire.TableDefinition{

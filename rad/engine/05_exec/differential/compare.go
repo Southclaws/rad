@@ -3,7 +3,7 @@ package differential
 import (
 	"encoding/json"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 )
 
@@ -53,13 +53,13 @@ func jsonish(d lir.Datum) any {
 	case lir.DatumScalar:
 		v := d.Scalar
 		switch v.Type {
-		case catalog.TypeText:
+		case model.TypeText:
 			return v.Text
-		case catalog.TypeInt64:
+		case model.TypeInt64:
 			return v.Int64
-		case catalog.TypeFloat64:
+		case model.TypeFloat64:
 			return v.Float64
-		case catalog.TypeBool:
+		case model.TypeBool:
 			return v.Bool
 		}
 		return v

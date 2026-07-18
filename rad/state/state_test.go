@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	"github.com/Southclaws/rad/rad/protocol"
 	projectstate "github.com/Southclaws/rad/rad/state"
 )
@@ -102,9 +102,9 @@ func schemaState(t *testing.T, version uint64, tableName string) protocol.Schema
 		PrimaryKey: []string{"id"},
 	}}}
 	state := protocol.SchemaState{SchemaVersion: version, Schema: document}
-	hash, err := catalog.SchemaFromDefinitions([]catalog.TableDef{{
+	hash, err := model.SchemaFromDefinitions([]model.TableDef{{
 		ID: 1, Name: tableName,
-		Columns:    []catalog.ColumnDef{{ID: 1, Name: "id", Type: catalog.TypeText}},
+		Columns:    []model.ColumnDef{{ID: 1, Name: "id", Type: model.TypeText}},
 		PrimaryKey: []string{"id"},
 	}}).Hash()
 	if err != nil {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 )
 
 // A database that was never initialised through InitMode — embedded engines,
@@ -19,8 +19,8 @@ func TestModeDefaultsToDirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode != catalog.ModeDirect {
-		t.Errorf("unstamped database mode = %q, want %q", mode, catalog.ModeDirect)
+	if mode != model.ModeDirect {
+		t.Errorf("unstamped database mode = %q, want %q", mode, model.ModeDirect)
 	}
 }
 
@@ -33,16 +33,16 @@ func TestInitModeStampsDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode != catalog.ModeDirect {
-		t.Errorf("InitMode(\"\") = %q, want %q", mode, catalog.ModeDirect)
+	if mode != model.ModeDirect {
+		t.Errorf("InitMode(\"\") = %q, want %q", mode, model.ModeDirect)
 	}
 
 	again, err := cat.InitMode(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again != catalog.ModeDirect {
-		t.Errorf("second InitMode(\"\") = %q, want %q", again, catalog.ModeDirect)
+	if again != model.ModeDirect {
+		t.Errorf("second InitMode(\"\") = %q, want %q", again, model.ModeDirect)
 	}
 }
 
@@ -50,23 +50,23 @@ func TestInitModeStampsDefault(t *testing.T) {
 func TestInitModeStampsRequested(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
 
-	mode, err := cat.InitMode(ctx, catalog.ModeSchema)
+	mode, err := cat.InitMode(ctx, model.ModeSchema)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode != catalog.ModeSchema {
+	if mode != model.ModeSchema {
 		t.Fatalf("InitMode(schema) = %q, want schema", mode)
 	}
 
 	// Reads and preference-free boots see the stored mode.
-	if got, err := cat.Mode(ctx); err != nil || got != catalog.ModeSchema {
+	if got, err := cat.Mode(ctx); err != nil || got != model.ModeSchema {
 		t.Errorf("Mode() = %q, %v; want schema", got, err)
 	}
-	if got, err := cat.InitMode(ctx, ""); err != nil || got != catalog.ModeSchema {
+	if got, err := cat.InitMode(ctx, ""); err != nil || got != model.ModeSchema {
 		t.Errorf("InitMode(\"\") after stamp = %q, %v; want schema", got, err)
 	}
 	// Re-requesting the stored mode is a no-op, not an error.
-	if got, err := cat.InitMode(ctx, catalog.ModeSchema); err != nil || got != catalog.ModeSchema {
+	if got, err := cat.InitMode(ctx, model.ModeSchema); err != nil || got != model.ModeSchema {
 		t.Errorf("InitMode(schema) after stamp = %q, %v; want schema", got, err)
 	}
 }
@@ -78,10 +78,10 @@ func TestInitModeStampsRequested(t *testing.T) {
 func TestInitModeMismatchFails(t *testing.T) {
 	cases := []struct {
 		name             string
-		stamped, request catalog.Mode
+		stamped, request model.Mode
 	}{
-		{"schema database asked to be direct", catalog.ModeSchema, catalog.ModeDirect},
-		{"direct database asked to be schema", catalog.ModeDirect, catalog.ModeSchema},
+		{"schema database asked to be direct", model.ModeSchema, model.ModeDirect},
+		{"direct database asked to be schema", model.ModeDirect, model.ModeSchema},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -108,12 +108,12 @@ func TestInitModeMismatchFails(t *testing.T) {
 
 func TestParseMode(t *testing.T) {
 	for _, valid := range []string{"direct", "schema"} {
-		if _, err := catalog.ParseMode(valid); err != nil {
+		if _, err := model.ParseMode(valid); err != nil {
 			t.Errorf("ParseMode(%q) failed: %v", valid, err)
 		}
 	}
 	for _, invalid := range []string{"", "Direct", "managed", "yes"} {
-		if _, err := catalog.ParseMode(invalid); err == nil {
+		if _, err := model.ParseMode(invalid); err == nil {
 			t.Errorf("ParseMode(%q) should fail", invalid)
 		}
 	}

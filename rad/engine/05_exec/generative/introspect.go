@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"slices"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 )
 
 // Introspect converts a migrated catalog into a generator spec, covering any
@@ -12,7 +12,7 @@ import (
 // non-unique indexes, and foreign keys over arbitrary columns. Tables come in
 // catalog (creation) order, so foreign keys reference earlier tables and data
 // can be generated in order.
-func Introspect(tables []catalog.Table) *Catalog {
+func Introspect(tables []model.Table) *Catalog {
 	nameByID := make(map[string]string, len(tables))
 	for _, t := range tables {
 		nameByID[t.ID] = t.Name
@@ -50,21 +50,21 @@ func Introspect(tables []catalog.Table) *Catalog {
 // each foreign key references an earlier table — ready for CreateTable. It is
 // the inverse of what a migrated schema yields, letting a synthetic spec build
 // a database without a schema file.
-func TableDefs(spec *Catalog) []catalog.TableDef {
-	defs := make([]catalog.TableDef, 0, len(spec.Tables))
+func TableDefs(spec *Catalog) []model.TableDef {
+	defs := make([]model.TableDef, 0, len(spec.Tables))
 	for _, t := range spec.Tables {
-		def := catalog.TableDef{Name: t.Name, PrimaryKey: t.PrimaryKey}
+		def := model.TableDef{Name: t.Name, PrimaryKey: t.PrimaryKey}
 		for _, c := range t.Columns {
-			def.Columns = append(def.Columns, catalog.ColumnDef{Name: c.Name, Type: c.Type, Nullable: c.Nullable})
+			def.Columns = append(def.Columns, model.ColumnDef{Name: c.Name, Type: c.Type, Nullable: c.Nullable})
 		}
 		for i, u := range t.Uniques {
-			def.Indexes = append(def.Indexes, catalog.IndexDef{Name: fmt.Sprintf("%s_u%d", t.Name, i), Columns: u, Unique: true})
+			def.Indexes = append(def.Indexes, model.IndexDef{Name: fmt.Sprintf("%s_u%d", t.Name, i), Columns: u, Unique: true})
 		}
 		for i, idx := range t.Indexes {
-			def.Indexes = append(def.Indexes, catalog.IndexDef{Name: fmt.Sprintf("%s_i%d", t.Name, i), Columns: idx})
+			def.Indexes = append(def.Indexes, model.IndexDef{Name: fmt.Sprintf("%s_i%d", t.Name, i), Columns: idx})
 		}
 		for i, fk := range t.FKs {
-			def.ForeignKeys = append(def.ForeignKeys, catalog.ForeignKeyDef{
+			def.ForeignKeys = append(def.ForeignKeys, model.ForeignKeyDef{
 				Name: fmt.Sprintf("%s_fk%d", t.Name, i), Columns: fk.Cols,
 				RefTable: fk.Parent, RefColumns: fk.ParentCols,
 			})

@@ -12,18 +12,18 @@ import (
 
 	"github.com/Southclaws/rad/rad/api"
 	"github.com/Southclaws/rad/rad/api/oas"
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	"github.com/Southclaws/rad/rad/protocol"
 )
 
 func (a *dbAPI) TableCreate(ctx context.Context, req oas.OptTableDef) (oas.TableCreateRes, error) {
-	if a.mode == catalog.ModeSchema {
+	if a.mode == model.ModeSchema {
 		p := schemaManagedProblem()
 		return (*oas.TableCreateUnprocessableEntity)(&p), nil
 	}
 	def, err := catTableDef(api.TableDefFromOAS(req.Or(oas.TableDef{})))
 	if err == nil {
-		var tbl catalog.Table
+		var tbl model.Table
 		if tbl, err = a.db.CreateTable(ctx, def); err == nil {
 			return a.tableOAS(ctx, tbl)
 		}
@@ -38,7 +38,7 @@ func (a *dbAPI) TableCreate(ctx context.Context, req oas.OptTableDef) (oas.Table
 }
 
 func (a *dbAPI) TableDelete(ctx context.Context, params oas.TableDeleteParams) (oas.TableDeleteRes, error) {
-	if a.mode == catalog.ModeSchema {
+	if a.mode == model.ModeSchema {
 		p := schemaManagedProblem()
 		return (*oas.TableDeleteUnprocessableEntity)(&p), nil
 	}
@@ -56,7 +56,7 @@ func (a *dbAPI) TableDelete(ctx context.Context, params oas.TableDeleteParams) (
 }
 
 func (a *dbAPI) TableUpdate(ctx context.Context, req oas.OptTableUpdateProps, params oas.TableUpdateParams) (oas.TableUpdateRes, error) {
-	if a.mode == catalog.ModeSchema {
+	if a.mode == model.ModeSchema {
 		p := schemaManagedProblem()
 		return (*oas.TableUpdateUnprocessableEntity)(&p), nil
 	}
@@ -83,13 +83,13 @@ func (a *dbAPI) TableUpdate(ctx context.Context, req oas.OptTableUpdateProps, pa
 }
 
 func (a *dbAPI) ColumnCreate(ctx context.Context, req oas.OptColumnDef, params oas.ColumnCreateParams) (oas.ColumnCreateRes, error) {
-	if a.mode == catalog.ModeSchema {
+	if a.mode == model.ModeSchema {
 		p := schemaManagedProblem()
 		return (*oas.ColumnCreateUnprocessableEntity)(&p), nil
 	}
 	def, err := catColumnDef(api.ColumnDefFromOAS(req.Or(oas.ColumnDef{})))
 	if err == nil {
-		var tbl catalog.Table
+		var tbl model.Table
 		if tbl, err = a.db.CreateColumn(ctx, params.Table, def); err == nil {
 			return a.tableOAS(ctx, tbl)
 		}
@@ -104,7 +104,7 @@ func (a *dbAPI) ColumnCreate(ctx context.Context, req oas.OptColumnDef, params o
 }
 
 func (a *dbAPI) ColumnDelete(ctx context.Context, params oas.ColumnDeleteParams) (oas.ColumnDeleteRes, error) {
-	if a.mode == catalog.ModeSchema {
+	if a.mode == model.ModeSchema {
 		p := schemaManagedProblem()
 		return (*oas.ColumnDeleteUnprocessableEntity)(&p), nil
 	}
@@ -122,7 +122,7 @@ func (a *dbAPI) ColumnDelete(ctx context.Context, params oas.ColumnDeleteParams)
 }
 
 func (a *dbAPI) ColumnUpdate(ctx context.Context, req oas.OptColumnUpdateProps, params oas.ColumnUpdateParams) (oas.ColumnUpdateRes, error) {
-	if a.mode == catalog.ModeSchema {
+	if a.mode == model.ModeSchema {
 		p := schemaManagedProblem()
 		return (*oas.ColumnUpdateUnprocessableEntity)(&p), nil
 	}
@@ -140,12 +140,12 @@ func (a *dbAPI) ColumnUpdate(ctx context.Context, req oas.OptColumnUpdateProps, 
 }
 
 func (a *dbAPI) IndexCreate(ctx context.Context, req oas.OptIndexInfo, params oas.IndexCreateParams) (oas.IndexCreateRes, error) {
-	if a.mode == catalog.ModeSchema {
+	if a.mode == model.ModeSchema {
 		p := schemaManagedProblem()
 		return (*oas.IndexCreateUnprocessableEntity)(&p), nil
 	}
 	idx := api.IndexFromOAS(req.Or(oas.IndexInfo{}))
-	err := a.db.CreateIndex(ctx, params.Table, catalog.IndexDef{Name: idx.Name, Columns: idx.Columns, Unique: idx.Unique})
+	err := a.db.CreateIndex(ctx, params.Table, model.IndexDef{Name: idx.Name, Columns: idx.Columns, Unique: idx.Unique})
 	if err == nil {
 		tbl, ok, gerr := a.cat.GetTable(ctx, params.Table)
 		if gerr != nil {
@@ -167,7 +167,7 @@ func (a *dbAPI) IndexCreate(ctx context.Context, req oas.OptIndexInfo, params oa
 }
 
 func (a *dbAPI) IndexDelete(ctx context.Context, params oas.IndexDeleteParams) (oas.IndexDeleteRes, error) {
-	if a.mode == catalog.ModeSchema {
+	if a.mode == model.ModeSchema {
 		p := schemaManagedProblem()
 		return (*oas.IndexDeleteUnprocessableEntity)(&p), nil
 	}

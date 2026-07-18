@@ -5,9 +5,10 @@ import (
 	"math"
 	"strings"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
-	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	"pgregory.net/rapid"
+
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
+	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 )
 
 // GenerateData produces random rows for every table in spec, keyed by table
@@ -112,11 +113,11 @@ func genRow(t *rapid.T, tbl Table, out map[string][]lir.Row, i int) (lir.Row, bo
 // small type like bool, would collide almost immediately).
 func pkValue(c Column, i int) lir.Value {
 	switch c.Type {
-	case catalog.TypeText:
+	case model.TypeText:
 		return lir.Text(fmt.Sprintf("k%d", i))
-	case catalog.TypeInt64:
+	case model.TypeInt64:
 		return lir.Int64(int64(i))
-	case catalog.TypeFloat64:
+	case model.TypeFloat64:
 		return lir.Float64(float64(i))
 	default:
 		return lir.Bool(i%2 == 0)
@@ -131,11 +132,11 @@ func genValue(t *rapid.T, c Column) lir.Value {
 		return lir.Null(c.Type)
 	}
 	switch c.Type {
-	case catalog.TypeText:
+	case model.TypeText:
 		return lir.Text(rapid.SampledFrom([]string{"a", "b", "c", ""}).Draw(t, "text"))
-	case catalog.TypeInt64:
+	case model.TypeInt64:
 		return lir.Int64(rapid.SampledFrom([]int64{math.MinInt64, -2, -1, 0, 1, 2, 100, math.MaxInt64}).Draw(t, "int64"))
-	case catalog.TypeFloat64:
+	case model.TypeFloat64:
 		return lir.Float64(rapid.SampledFrom([]float64{-1.5, 0, 1.5, 2.5}).Draw(t, "float64"))
 	default:
 		return lir.Bool(rapid.Bool().Draw(t, "bool"))

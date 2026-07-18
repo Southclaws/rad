@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
-	"github.com/Southclaws/rad/rad/engine/03_lir/bound"
+	lireval "github.com/Southclaws/rad/rad/engine/03_lir/eval"
 )
 
 // TestOracleRowSetIdentity pins full-row identity: NULL == NULL, identity spans
@@ -20,14 +20,14 @@ import (
 // NULL.
 func TestOracleRowSetIdentity(t *testing.T) {
 	s := newOracleRowSet([]lir.Field{{Slot: 0}, {Slot: 1}})
-	row := func(a, b lir.Datum) bound.Env { return bound.Env{0: a, 1: b} }
+	row := func(a, b lir.Datum) lireval.Env { return lireval.Env{0: a, 1: b} }
 	txt := func(x string) lir.Datum { return lir.ScalarDatum(lir.Text(x)) }
 	i64 := func(x int64) lir.Datum { return lir.ScalarDatum(lir.Int64(x)) }
 	null := lir.NullDatum()
 
 	for _, c := range []struct {
 		name string
-		row  bound.Env
+		row  lireval.Env
 		want bool // add reports "newly seen"?
 	}{
 		{"first row", row(txt("x"), i64(1)), true},
@@ -48,7 +48,7 @@ func TestOracleRowSetIdentity(t *testing.T) {
 // render alike, because identity is typed.
 func TestOracleRowSetKinds(t *testing.T) {
 	s := newOracleRowSet([]lir.Field{{Slot: 0}})
-	one := func(d lir.Datum) bound.Env { return bound.Env{0: d} }
+	one := func(d lir.Datum) lireval.Env { return lireval.Env{0: d} }
 	for i, d := range []lir.Datum{
 		lir.ScalarDatum(lir.Text("1")),
 		lir.ScalarDatum(lir.Int64(1)),
@@ -67,7 +67,7 @@ func TestOracleRowSetKinds(t *testing.T) {
 // two would only differ on distinct NaN payloads.)
 func TestOracleRowSetFloatBits(t *testing.T) {
 	s := newOracleRowSet([]lir.Field{{Slot: 0}})
-	f := func(v float64) bound.Env { return bound.Env{0: lir.ScalarDatum(lir.Float64(v))} }
+	f := func(v float64) lireval.Env { return lireval.Env{0: lir.ScalarDatum(lir.Float64(v))} }
 	if !s.add(f(0)) {
 		t.Fatal("first +0.0 should be new")
 	}
@@ -88,7 +88,7 @@ func TestMakeProjectionByName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	row := bound.Env{7: lir.ScalarDatum(lir.Text("a")), 3: lir.ScalarDatum(lir.Int64(2))}
+	row := lireval.Env{7: lir.ScalarDatum(lir.Text("a")), 3: lir.ScalarDatum(lir.Int64(2))}
 	out, err := project(row, pairs)
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +111,7 @@ func TestProjectionInvariantsErrorLoudly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := project(bound.Env{}, pairs); err == nil {
+	if _, err := project(lireval.Env{}, pairs); err == nil {
 		t.Error("project should error on a row missing an expected source slot")
 	}
 }

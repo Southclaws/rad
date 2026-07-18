@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 )
 
 // Value is a typed SQL-ish scalar — the runtime datum of the IR. Exactly one
@@ -16,23 +16,23 @@ import (
 // column-ID-keyed maps of these values (05_exec rowcodec), so the field tags
 // must never change.
 type Value struct {
-	Type    catalog.Type `json:"type"`
-	Text    string       `json:"text,omitempty"`
-	Int64   int64        `json:"int64,omitempty"`
-	Float64 float64      `json:"float64,omitempty"`
-	Bool    bool         `json:"bool,omitempty"`
-	Null    bool         `json:"null,omitempty"`
+	Type    model.Type `json:"type"`
+	Text    string     `json:"text,omitempty"`
+	Int64   int64      `json:"int64,omitempty"`
+	Float64 float64    `json:"float64,omitempty"`
+	Bool    bool       `json:"bool,omitempty"`
+	Null    bool       `json:"null,omitempty"`
 }
 
 // Row maps column names (or alias-qualified names during query execution,
 // e.g. "u.id") to values.
 type Row map[string]Value
 
-func Text(s string) Value       { return Value{Type: catalog.TypeText, Text: s} }
-func Int64(i int64) Value       { return Value{Type: catalog.TypeInt64, Int64: i} }
-func Float64(f float64) Value   { return Value{Type: catalog.TypeFloat64, Float64: f} }
-func Bool(b bool) Value         { return Value{Type: catalog.TypeBool, Bool: b} }
-func Null(t catalog.Type) Value { return Value{Type: t, Null: true} }
+func Text(s string) Value     { return Value{Type: model.TypeText, Text: s} }
+func Int64(i int64) Value     { return Value{Type: model.TypeInt64, Int64: i} }
+func Float64(f float64) Value { return Value{Type: model.TypeFloat64, Float64: f} }
+func Bool(b bool) Value       { return Value{Type: model.TypeBool, Bool: b} }
+func Null(t model.Type) Value { return Value{Type: t, Null: true} }
 
 // AppendIdentity appends the type-tagged scalar representation used for
 // full-row set identity.
@@ -42,13 +42,13 @@ func (v Value) AppendIdentity(dst []byte) []byte {
 	}
 	dst = fmt.Appendf(dst, "|%s:", v.Type)
 	switch v.Type {
-	case catalog.TypeText:
+	case model.TypeText:
 		return fmt.Appendf(dst, "%d:%s", len(v.Text), v.Text)
-	case catalog.TypeInt64:
+	case model.TypeInt64:
 		return fmt.Appendf(dst, "%d", v.Int64)
-	case catalog.TypeFloat64:
+	case model.TypeFloat64:
 		return fmt.Appendf(dst, "%v", v.Float64)
-	case catalog.TypeBool:
+	case model.TypeBool:
 		return fmt.Appendf(dst, "%t", v.Bool)
 	}
 	return dst
@@ -66,13 +66,13 @@ func (v Value) Equal(o Value) bool {
 		return false
 	}
 	switch v.Type {
-	case catalog.TypeText:
+	case model.TypeText:
 		return v.Text == o.Text
-	case catalog.TypeInt64:
+	case model.TypeInt64:
 		return v.Int64 == o.Int64
-	case catalog.TypeFloat64:
+	case model.TypeFloat64:
 		return v.Float64 == o.Float64
-	case catalog.TypeBool:
+	case model.TypeBool:
 		return v.Bool == o.Bool
 	}
 	return false
@@ -94,13 +94,13 @@ func (v Value) Compare(o Value) (int, error) {
 		return 0, fmt.Errorf("lir: cannot compare %s with %s", v.Type, o.Type)
 	}
 	switch v.Type {
-	case catalog.TypeText:
+	case model.TypeText:
 		return strings.Compare(v.Text, o.Text), nil
-	case catalog.TypeInt64:
+	case model.TypeInt64:
 		return cmp.Compare(v.Int64, o.Int64), nil
-	case catalog.TypeFloat64:
+	case model.TypeFloat64:
 		return cmp.Compare(v.Float64, o.Float64), nil
-	case catalog.TypeBool:
+	case model.TypeBool:
 		switch {
 		case v.Bool == o.Bool:
 			return 0, nil
@@ -118,13 +118,13 @@ func (v Value) String() string {
 		return "NULL"
 	}
 	switch v.Type {
-	case catalog.TypeText:
+	case model.TypeText:
 		return fmt.Sprintf("%q", v.Text)
-	case catalog.TypeInt64:
+	case model.TypeInt64:
 		return fmt.Sprintf("%d", v.Int64)
-	case catalog.TypeFloat64:
+	case model.TypeFloat64:
 		return fmt.Sprintf("%g", v.Float64)
-	case catalog.TypeBool:
+	case model.TypeBool:
 		return fmt.Sprintf("%t", v.Bool)
 	}
 	return fmt.Sprintf("<%s?>", v.Type)

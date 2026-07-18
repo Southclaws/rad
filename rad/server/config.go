@@ -56,10 +56,10 @@ func LoadConfig() Config {
 		Storage:     envOr("RAD_STORAGE", "file"),
 		DataDir:     envOr("RAD_DATA_DIR", "data"),
 		CatalogMode: os.Getenv("RAD_CATALOG_MODE"),
-		S3Bucket:   os.Getenv("RAD_S3_BUCKET"),
-		S3Prefix:   envOr("RAD_S3_PREFIX", "rad"),
-		S3Region:   os.Getenv("RAD_S3_REGION"),
-		S3Endpoint: os.Getenv("RAD_S3_ENDPOINT"),
+		S3Bucket:    os.Getenv("RAD_S3_BUCKET"),
+		S3Prefix:    envOr("RAD_S3_PREFIX", "rad"),
+		S3Region:    os.Getenv("RAD_S3_REGION"),
+		S3Endpoint:  os.Getenv("RAD_S3_ENDPOINT"),
 	}
 }
 

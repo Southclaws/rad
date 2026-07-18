@@ -3,9 +3,9 @@ package refexec
 import (
 	"math"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
-	"github.com/Southclaws/rad/rad/engine/03_lir/bound"
+	lireval "github.com/Southclaws/rad/rad/engine/03_lir/eval"
 )
 
 // oracleRowSet is refexec's own definition of canonical full-row identity,
@@ -30,7 +30,7 @@ type oracleRow []oracleCell
 // representation.
 type oracleCell struct {
 	null  bool
-	typ   catalog.Type
+	typ   model.Type
 	text  string
 	int64 int64
 	float uint64
@@ -43,7 +43,7 @@ func newOracleRowSet(fields []lir.Field) *oracleRowSet {
 
 // canon decodes a row's identity fields into an oracleRow. A field whose slot
 // is absent decodes as NULL, matching how a missing datum reads elsewhere.
-func (s *oracleRowSet) canon(env bound.Env) oracleRow {
+func (s *oracleRowSet) canon(env lireval.Env) oracleRow {
 	row := make(oracleRow, len(s.fields))
 	for i, f := range s.fields {
 		d, ok := env[f.Slot]
@@ -54,13 +54,13 @@ func (s *oracleRowSet) canon(env bound.Env) oracleRow {
 		v := d.Scalar
 		c := oracleCell{typ: v.Type}
 		switch v.Type {
-		case catalog.TypeText:
+		case model.TypeText:
 			c.text = v.Text
-		case catalog.TypeInt64:
+		case model.TypeInt64:
 			c.int64 = v.Int64
-		case catalog.TypeFloat64:
+		case model.TypeFloat64:
 			c.float = math.Float64bits(v.Float64)
-		case catalog.TypeBool:
+		case model.TypeBool:
 			c.boolv = v.Bool
 		}
 		row[i] = c
@@ -72,7 +72,7 @@ func (s *oracleRowSet) canon(env bound.Env) oracleRow {
 // only buckets candidates for comparison; equal is the authority, so a weak or
 // even wrong hash could at worst split equal rows across buckets and make the
 // oracle over-count — a loud differential mismatch, never a silent false match.
-func (s *oracleRowSet) add(env bound.Env) bool {
+func (s *oracleRowSet) add(env lireval.Env) bool {
 	cand := s.canon(env)
 	h := cand.hash()
 	for _, seen := range s.buckets[h] {
@@ -105,19 +105,19 @@ func (r oracleRow) hash() uint64 {
 			continue
 		}
 		switch c.typ {
-		case catalog.TypeText:
+		case model.TypeText:
 			mix(1)
 			mixU64(uint64(len(c.text)))
 			for i := 0; i < len(c.text); i++ {
 				mix(c.text[i])
 			}
-		case catalog.TypeInt64:
+		case model.TypeInt64:
 			mix(2)
 			mixU64(uint64(c.int64))
-		case catalog.TypeFloat64:
+		case model.TypeFloat64:
 			mix(3)
 			mixU64(c.float)
-		case catalog.TypeBool:
+		case model.TypeBool:
 			mix(4)
 			if c.boolv {
 				mix(1)
@@ -146,19 +146,19 @@ func (r oracleRow) equal(o oracleRow) bool {
 			return false
 		}
 		switch a.typ {
-		case catalog.TypeText:
+		case model.TypeText:
 			if a.text != b.text {
 				return false
 			}
-		case catalog.TypeInt64:
+		case model.TypeInt64:
 			if a.int64 != b.int64 {
 				return false
 			}
-		case catalog.TypeFloat64:
+		case model.TypeFloat64:
 			if a.float != b.float {
 				return false
 			}
-		case catalog.TypeBool:
+		case model.TypeBool:
 			if a.boolv != b.boolv {
 				return false
 			}

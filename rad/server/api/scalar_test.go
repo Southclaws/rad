@@ -11,9 +11,9 @@ import (
 func ptrStr(s string) *string { return &s }
 
 func TestDecodeScalar(t *testing.T) {
-	big := "9223372036854775807"  // max int64
+	big := "9223372036854775807"    // max int64
 	small := "-9223372036854775808" // min int64
-	over := "9223372036854775808"  // max int64 + 1
+	over := "9223372036854775808"   // max int64 + 1
 
 	cases := []struct {
 		name   string
@@ -123,4 +123,3 @@ func TestDecodeValue(t *testing.T) {
 		t.Fatal("empty Value should be rejected")
 	}
 }
-

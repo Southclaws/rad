@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
@@ -51,7 +52,7 @@ func TestCorruptRevisionUsesCatalogRejectReason(t *testing.T) {
 
 func TestDirectChangesRecordIndividualRevisions(t *testing.T) {
 	cat, store, ctx := newCatalog(t)
-	if _, err := cat.InitMode(ctx, catalog.ModeDirect); err != nil {
+	if _, err := cat.InitMode(ctx, model.ModeDirect); err != nil {
 		t.Fatal(err)
 	}
 	assertVersion := func(want uint64) {
@@ -76,7 +77,7 @@ func TestDirectChangesRecordIndividualRevisions(t *testing.T) {
 	if err := cat.ValidateCurrentSchema(ctx); err != nil {
 		t.Fatalf("validate v1: %v", err)
 	}
-	if _, err := cat.CreateColumn(ctx, "users", catalog.ColumnDef{Name: "bio", Type: catalog.TypeText, Nullable: true}); err != nil {
+	if _, err := cat.CreateColumn(ctx, "users", model.ColumnDef{Name: "bio", Type: model.TypeText, Nullable: true}); err != nil {
 		t.Fatal(err)
 	}
 	assertVersion(2)
@@ -95,7 +96,7 @@ func TestDirectChangesRecordIndividualRevisions(t *testing.T) {
 	if err := cat.RenameTable(ctx, "people", "people"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cat.CreateColumn(ctx, "people", catalog.ColumnDef{Name: "bio", Type: catalog.TypeText, Nullable: true}); err == nil {
+	if _, err := cat.CreateColumn(ctx, "people", model.ColumnDef{Name: "bio", Type: model.TypeText, Nullable: true}); err == nil {
 		t.Fatal("duplicate column should fail")
 	}
 	assertVersion(3)
@@ -126,7 +127,7 @@ func TestDirectChangesRecordIndividualRevisions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var decoded catalog.Revision
+		var decoded model.Revision
 		if err := json.Unmarshal(raw, &decoded); err != nil {
 			t.Fatal(err)
 		}

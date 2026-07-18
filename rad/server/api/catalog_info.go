@@ -5,13 +5,13 @@ import (
 
 	"github.com/Southclaws/rad/rad/api"
 	"github.com/Southclaws/rad/rad/api/oas"
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	"github.com/Southclaws/rad/rad/protocol"
 )
 
 // defaultInfo renders a column default for introspection; the column's type
 // selects which literal field carries the value.
-func defaultInfo(column catalog.Column) *protocol.ColumnDefault {
+func defaultInfo(column model.Column) *protocol.ColumnDefault {
 	defaultValue := column.Default
 	if defaultValue == nil {
 		return nil
@@ -21,13 +21,13 @@ func defaultInfo(column catalog.Column) *protocol.ColumnDefault {
 	}
 	out := &protocol.ColumnDefault{}
 	switch column.Type {
-	case catalog.TypeText:
+	case model.TypeText:
 		out.Value = defaultValue.Text
-	case catalog.TypeInt64:
+	case model.TypeInt64:
 		out.Value = defaultValue.Int64
-	case catalog.TypeFloat64:
+	case model.TypeFloat64:
 		out.Value = defaultValue.Float64
-	case catalog.TypeBool:
+	case model.TypeBool:
 		out.Value = defaultValue.Bool
 	}
 	return out
@@ -35,7 +35,7 @@ func defaultInfo(column catalog.Column) *protocol.ColumnDefault {
 
 // tableInfo renders one table for introspection, resolving foreign-key
 // physical table IDs back to names.
-func (a *dbAPI) tableInfo(ctx context.Context, table catalog.Table) (protocol.TableInfo, error) {
+func (a *dbAPI) tableInfo(ctx context.Context, table model.Table) (protocol.TableInfo, error) {
 	info := protocol.TableInfo{
 		ID: uint32(table.SchemaID), Name: table.Name, PrimaryKey: table.PrimaryKey,
 	}
@@ -71,7 +71,7 @@ func (a *dbAPI) tableInfo(ctx context.Context, table catalog.Table) (protocol.Ta
 	return info, nil
 }
 
-func (a *dbAPI) tableOAS(ctx context.Context, table catalog.Table) (*oas.TableInfo, error) {
+func (a *dbAPI) tableOAS(ctx context.Context, table model.Table) (*oas.TableInfo, error) {
 	info, err := a.tableInfo(ctx, table)
 	if err != nil {
 		return nil, err
@@ -80,7 +80,7 @@ func (a *dbAPI) tableOAS(ctx context.Context, table catalog.Table) (*oas.TableIn
 	return &out, nil
 }
 
-func schemaDocument(canonical catalog.Schema) oas.SchemaDocument {
+func schemaDocument(canonical model.Schema) oas.SchemaDocument {
 	tables := make([]oas.TableDef, len(canonical.Tables))
 	for i, table := range canonical.Tables {
 		definition := protocol.TableDef{
@@ -90,7 +90,7 @@ func schemaDocument(canonical catalog.Schema) oas.SchemaDocument {
 			definition.Columns = append(definition.Columns, protocol.ColumnDef{
 				ID: uint32(column.ID), Name: column.Name, Type: string(column.Type),
 				Nullable: column.Nullable, Format: column.Format,
-				Default: defaultInfo(catalog.Column{Type: column.Type, Default: column.Default}),
+				Default: defaultInfo(model.Column{Type: column.Type, Default: column.Default}),
 			})
 		}
 		for _, index := range table.Indexes {

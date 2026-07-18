@@ -39,15 +39,16 @@ import (
 	"math/big"
 	"slices"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	"github.com/Southclaws/rad/rad/engine/03_lir/bound"
+	lireval "github.com/Southclaws/rad/rad/engine/03_lir/eval"
 	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
 // ScanFunc yields all stored rows of a table, materialised, from the caller's
 // snapshot. The caller supplies it; refexec never reads storage itself.
-type ScanFunc func(ctx context.Context, tbl catalog.Table) ([]lir.Row, error)
+type ScanFunc func(ctx context.Context, tbl model.Table) ([]lir.Row, error)
 
 // Interpret evaluates an already-bound query the dumbest correct way and
 // returns the same lir.Datum shape the real engine produces. Binding is shared
@@ -55,18 +56,18 @@ type ScanFunc func(ctx context.Context, tbl catalog.Table) ([]lir.Row, error)
 // allocation, not the interesting semantics. The split is after binding: this
 // is the oracle for planner + physical plan + execution.
 func Interpret(ctx context.Context, scan ScanFunc, q *bound.Query) (lir.Datum, error) {
-	in := &interp{ctx: ctx, scan: scan, next: q.Slots, bindings: map[string][]bound.Env{}, frontier: map[string][]bound.Env{}}
+	in := &interp{ctx: ctx, scan: scan, next: q.Slots, bindings: map[string][]lireval.Env{}, frontier: map[string][]lireval.Env{}}
 
 	// Commit-once, exactly like the engine: each binding evaluates once, in
 	// dependency order, and every ref observes that one committed value. A
 	// recursive binding commits its fixpoint instead of a single evaluation.
 	for _, bnd := range q.Bindings {
-		var committed []bound.Env
+		var committed []lireval.Env
 		var err error
 		if bnd.Recursive {
 			committed, err = in.fixpoint(bnd)
 		} else {
-			committed, err = in.rel(bnd.Root, bound.Env{})
+			committed, err = in.rel(bnd.Root, lireval.Env{})
 		}
 		if err != nil {
 			return lir.Datum{}, err
@@ -74,7 +75,7 @@ func Interpret(ctx context.Context, scan ScanFunc, q *bound.Query) (lir.Datum, e
 		in.bindings[bnd.Name] = committed
 	}
 
-	rows, err := in.rel(q.Root, bound.Env{})
+	rows, err := in.rel(q.Root, lireval.Env{})
 	if err != nil {
 		return lir.Datum{}, err
 	}
@@ -112,16 +113,16 @@ type interp struct {
 	ctx      context.Context
 	scan     ScanFunc
 	next     lir.SlotID // scratch slots for crossing substitution
-	bindings map[string][]bound.Env
+	bindings map[string][]lireval.Env
 	// frontier holds the current working table of each in-progress recursive
 	// binding, read by its step's recursive_ref.
-	frontier map[string][]bound.Env
+	frontier map[string][]lireval.Env
 }
 
 // newFrame starts a frame seeded from the outer environment — a correlated
 // sub-relation sees its enclosing rows' slots exactly like its own.
-func newFrame(outer bound.Env) bound.Env {
-	f := make(bound.Env, len(outer)+8)
+func newFrame(outer lireval.Env) lireval.Env {
+	f := make(lireval.Env, len(outer)+8)
 	for k, v := range outer {
 		f[k] = v
 	}
@@ -129,8 +130,8 @@ func newFrame(outer bound.Env) bound.Env {
 }
 
 // mergeFrames unions two frames; slots are disjoint by construction.
-func mergeFrames(l, r bound.Env) bound.Env {
-	out := make(bound.Env, len(l)+len(r))
+func mergeFrames(l, r lireval.Env) lireval.Env {
+	out := make(lireval.Env, len(l)+len(r))
 	for k, v := range l {
 		out[k] = v
 	}
@@ -143,7 +144,7 @@ func mergeFrames(l, r bound.Env) bound.Env {
 // frameToObject renders a frame as an object datum in the row type's field
 // order; a missing slot is NULL. This must match the engine's rendering
 // exactly, or the differential would fire on shape, not semantics.
-func frameToObject(out lir.RowType, f bound.Env) lir.Datum {
+func frameToObject(out lir.RowType, f lireval.Env) lir.Datum {
 	fields := make([]lir.ObjectField, len(out.Fields))
 	for i, fld := range out.Fields {
 		d, ok := f[fld.Slot]
@@ -188,8 +189,8 @@ func makeProjection(canon, source []lir.Field) ([]slotProjection, error) {
 // project rebuilds a row on the canonical slots. A missing source slot is a
 // broken invariant, never silently dropped, so a "missing" cell can never
 // masquerade as a NULL in a downstream identity test.
-func project(row bound.Env, pairs []slotProjection) (bound.Env, error) {
-	out := make(bound.Env, len(pairs))
+func project(row lireval.Env, pairs []slotProjection) (lireval.Env, error) {
+	out := make(lireval.Env, len(pairs))
 	for _, p := range pairs {
 		d, ok := row[p.src]
 		if !ok {
@@ -207,7 +208,7 @@ func project(row bound.Env, pairs []slotProjection) (bound.Env, error) {
 // and extend the result, until the frontier is empty. Rows are projected onto
 // the binding's canonical slots so every occurrence — the outer ref and the
 // step's recursive_ref — reads them the same way.
-func (in *interp) fixpoint(bnd *bound.Binding) ([]bound.Env, error) {
+func (in *interp) fixpoint(bnd *bound.Binding) ([]lireval.Env, error) {
 	canon := bnd.Root.Output().Fields
 	anchorProj, err := makeProjection(canon, canon)
 	if err != nil {
@@ -222,7 +223,7 @@ func (in *interp) fixpoint(bnd *bound.Binding) ([]bound.Env, error) {
 	if bnd.Accumulation == lir.AccumulateNew {
 		seen = newOracleRowSet(canon)
 	}
-	admit := func(row bound.Env) (bound.Env, bool) {
+	admit := func(row lireval.Env) (lireval.Env, bool) {
 		if seen == nil {
 			return row, true
 		}
@@ -248,11 +249,11 @@ func (in *interp) fixpoint(bnd *bound.Binding) ([]bound.Env, error) {
 		return reject.Fail(reject.ReasonRecursionLimit, "refexec: recursive binding %q produced more than %d rows", bnd.Name, maxRecursionRows)
 	}
 
-	anchorRows, err := in.rel(bnd.Root, bound.Env{})
+	anchorRows, err := in.rel(bnd.Root, lireval.Env{})
 	if err != nil {
 		return nil, err
 	}
-	var result, frontier []bound.Env
+	var result, frontier []lireval.Env
 	for _, row := range anchorRows {
 		c, err := project(row, anchorProj)
 		if err != nil {
@@ -272,11 +273,11 @@ func (in *interp) fixpoint(bnd *bound.Binding) ([]bound.Env, error) {
 			return nil, reject.Fail(reject.ReasonRecursionLimit, "refexec: recursive binding %q did not terminate within %d iterations", bnd.Name, maxRecursionIterations)
 		}
 		in.frontier[bnd.Name] = frontier
-		produced, err := in.rel(bnd.Step, bound.Env{})
+		produced, err := in.rel(bnd.Step, lireval.Env{})
 		if err != nil {
 			return nil, err
 		}
-		var next []bound.Env
+		var next []lireval.Env
 		for _, row := range produced {
 			c, err := project(row, stepProj)
 			if err != nil {
@@ -295,14 +296,14 @@ func (in *interp) fixpoint(bnd *bound.Binding) ([]bound.Env, error) {
 	return result, nil
 }
 
-func (in *interp) rel(r bound.Relation, outer bound.Env) ([]bound.Env, error) {
+func (in *interp) rel(r bound.Relation, outer lireval.Env) ([]lireval.Env, error) {
 	switch n := r.(type) {
 	case *bound.Ref:
 		src, ok := in.bindings[n.Binding]
 		if !ok {
 			return nil, fmt.Errorf("refexec: binding %q not committed", n.Binding)
 		}
-		out := make([]bound.Env, len(src))
+		out := make([]lireval.Env, len(src))
 		for i, row := range src {
 			env := newFrame(outer)
 			for j, fld := range n.Output().Fields {
@@ -319,7 +320,7 @@ func (in *interp) rel(r bound.Relation, outer bound.Env) ([]bound.Env, error) {
 		if !ok {
 			return nil, fmt.Errorf("refexec: frontier for %q not available", n.Binding)
 		}
-		out := make([]bound.Env, len(src))
+		out := make([]lireval.Env, len(src))
 		for i, row := range src {
 			env := newFrame(outer)
 			for j, fld := range n.Output().Fields {
@@ -337,7 +338,7 @@ func (in *interp) rel(r bound.Relation, outer bound.Env) ([]bound.Env, error) {
 			return nil, err
 		}
 		seen := newOracleRowSet(n.Output().Fields)
-		var deduped []bound.Env
+		var deduped []lireval.Env
 		for _, row := range rows {
 			if seen.add(row) {
 				deduped = append(deduped, row)
@@ -346,7 +347,7 @@ func (in *interp) rel(r bound.Relation, outer bound.Env) ([]bound.Env, error) {
 		return deduped, nil
 
 	case *bound.Rows:
-		out := make([]bound.Env, len(n.Vals))
+		out := make([]lireval.Env, len(n.Vals))
 		for i, cells := range n.Vals {
 			env := newFrame(outer)
 			for j, f := range n.Output().Fields {
@@ -361,7 +362,7 @@ func (in *interp) rel(r bound.Relation, outer bound.Env) ([]bound.Env, error) {
 		if err != nil {
 			return nil, err
 		}
-		out := make([]bound.Env, 0, len(rows))
+		out := make([]lireval.Env, 0, len(rows))
 		for _, row := range rows {
 			env := newFrame(outer)
 			for _, f := range n.Output().Fields {
@@ -376,7 +377,7 @@ func (in *interp) rel(r bound.Relation, outer bound.Env) ([]bound.Env, error) {
 		if err != nil {
 			return nil, err
 		}
-		var out []bound.Env
+		var out []lireval.Env
 		for _, env := range rows {
 			tb, err := in.pred(n.Pred, env)
 			if err != nil {
@@ -393,7 +394,7 @@ func (in *interp) rel(r bound.Relation, outer bound.Env) ([]bound.Env, error) {
 		if err != nil {
 			return nil, err
 		}
-		out := make([]bound.Env, len(rows))
+		out := make([]lireval.Env, len(rows))
 		for i, env := range rows {
 			proj := newFrame(outer)
 			for _, f := range n.Fields {
@@ -416,7 +417,7 @@ func (in *interp) rel(r bound.Relation, outer bound.Env) ([]bound.Env, error) {
 		if err != nil {
 			return nil, err
 		}
-		var out []bound.Env
+		var out []lireval.Env
 		for _, l := range left {
 			matched := false
 			for _, rgt := range right {
@@ -431,7 +432,7 @@ func (in *interp) rel(r bound.Relation, outer bound.Env) ([]bound.Env, error) {
 				}
 			}
 			if !matched && n.Kind == lir.LeftJoin {
-				padded := mergeFrames(l, bound.Env{})
+				padded := mergeFrames(l, lireval.Env{})
 				for _, f := range n.R.Output().Fields {
 					padded[f.Slot] = lir.NullDatum()
 				}
@@ -474,7 +475,7 @@ func (in *interp) rel(r bound.Relation, outer bound.Env) ([]bound.Env, error) {
 // order sorts rows by the terms with a stable sort over explicit Value
 // comparison; NULLs sort first ascending, last descending (Value.Compare's
 // convention), inverted with the term.
-func (in *interp) order(n *bound.Order, rows []bound.Env) ([]bound.Env, error) {
+func (in *interp) order(n *bound.Order, rows []lireval.Env) ([]lireval.Env, error) {
 	keys := make([][]lir.Value, len(rows))
 	for i, env := range rows {
 		keys[i] = make([]lir.Value, len(n.Terms))
@@ -513,7 +514,7 @@ func (in *interp) order(n *bound.Order, rows []bound.Env) ([]bound.Env, error) {
 	if sortErr != nil {
 		return nil, sortErr
 	}
-	out := make([]bound.Env, len(rows))
+	out := make([]lireval.Env, len(rows))
 	for i, j := range idx {
 		out[i] = rows[j]
 	}
@@ -524,7 +525,7 @@ func (in *interp) order(n *bound.Order, rows []bound.Env) ([]bound.Env, error) {
 // vector in first-seen order (linear bucketing, NULL == NULL for grouping),
 // folds skipping NULLs, count 0 and everything else NULL over the empty set,
 // avg always float64.
-func (in *interp) fold(n *bound.Aggregate, rows []bound.Env, outer bound.Env) ([]bound.Env, error) {
+func (in *interp) fold(n *bound.Aggregate, rows []lireval.Env, outer lireval.Env) ([]lireval.Env, error) {
 	type group struct {
 		gv   []lir.Value   // the group key
 		vals [][]lir.Value // non-NULL arg values per term
@@ -584,7 +585,7 @@ func (in *interp) fold(n *bound.Aggregate, rows []bound.Env, outer bound.Env) ([
 		groups = append(groups, &group{vals: make([][]lir.Value, len(n.Terms)), nums: make([]int64, len(n.Terms))})
 	}
 
-	var out []bound.Env
+	var out []lireval.Env
 	for _, grp := range groups {
 		env := newFrame(outer)
 		for i, g := range n.Groups {
@@ -639,7 +640,7 @@ func fold1(t bound.AggTerm, vals []lir.Value, rows int64) (lir.Value, error) {
 		sumI := new(big.Int) // exact total; int64 overflow is a data error, not a wrap
 		var sumF float64
 		for _, v := range vals {
-			if v.Type == catalog.TypeInt64 {
+			if v.Type == model.TypeInt64 {
 				sumI.Add(sumI, big.NewInt(v.Int64))
 				sumF += float64(v.Int64)
 			} else {
@@ -673,29 +674,29 @@ func fold1(t bound.AggTerm, vals []lir.Value, rows int64) (lir.Value, error) {
 }
 
 // pred evaluates a predicate after substituting crossings per row.
-func (in *interp) pred(e bound.Expr, env bound.Env) (lir.TriBool, error) {
+func (in *interp) pred(e bound.Expr, env lireval.Env) (lir.TriBool, error) {
 	scratch := newFrame(env)
 	e2, err := in.substitute(e, scratch)
 	if err != nil {
 		return lir.TriUnknown, err
 	}
-	return bound.EvalPred(e2, scratch)
+	return lireval.EvalPred(e2, scratch)
 }
 
 // evalDatum evaluates any expression after substituting crossings per row.
-func (in *interp) evalDatum(e bound.Expr, env bound.Env) (lir.Datum, error) {
+func (in *interp) evalDatum(e bound.Expr, env lireval.Env) (lir.Datum, error) {
 	scratch := newFrame(env)
 	e2, err := in.substitute(e, scratch)
 	if err != nil {
 		return lir.Datum{}, err
 	}
-	return bound.EvalDatum(e2, scratch)
+	return lireval.EvalDatum(e2, scratch)
 }
 
 // substitute replaces every crossing with a scratch slot holding its per-row,
 // fully nested evaluation — the naive semantics the engine's extraction and
 // attach machinery must preserve.
-func (in *interp) substitute(e bound.Expr, env bound.Env) (bound.Expr, error) {
+func (in *interp) substitute(e bound.Expr, env lireval.Env) (bound.Expr, error) {
 	switch x := e.(type) {
 	case bound.Exists:
 		rows, err := in.rel(x.Rel, env)
@@ -761,7 +762,7 @@ func (in *interp) substitute(e bound.Expr, env bound.Env) (bound.Expr, error) {
 	return e, nil
 }
 
-func (in *interp) scratch(env bound.Env, e bound.Expr, d lir.Datum) bound.Expr {
+func (in *interp) scratch(env lireval.Env, e bound.Expr, d lir.Datum) bound.Expr {
 	slot := in.next
 	in.next++
 	env[slot] = d

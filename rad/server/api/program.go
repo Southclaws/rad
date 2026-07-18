@@ -15,9 +15,9 @@ import (
 
 	"github.com/Southclaws/rad/rad/api"
 	"github.com/Southclaws/rad/rad/api/oas"
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
-	exec "github.com/Southclaws/rad/rad/engine/05_exec"
-	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
+	execprogram "github.com/Southclaws/rad/rad/engine/05_exec/program"
+	"github.com/Southclaws/rad/rad/engine/06_frontend/resultjson"
 	"github.com/Southclaws/rad/rad/protocol"
 	"github.com/Southclaws/rad/rad/protocol/lirwire"
 	"github.com/Southclaws/rad/rad/protocol/pirwire"
@@ -35,14 +35,14 @@ func (a *dbAPI) Execute(ctx context.Context, req oas.Program, params oas.Execute
 	// plans but executes nothing.
 	showPlan := params.ShowPlan.Or(false)
 	dryRun := params.DryRun.Or(false)
-	opts := exec.ExecOptions{
+	opts := execprogram.Options{
 		DryRun: dryRun, CollectPlan: showPlan,
 		Catalog: a.executeCatalogPolicy(),
 	}
 
 	ep, err := programToEngine(prog)
 	if err == nil {
-		var res exec.ProgramResult
+		var res execprogram.Result
 		if res, err = a.db.ExecuteProgram(ctx, ep, opts); err == nil {
 			return programResult(res, showPlan, dryRun)
 		}
@@ -64,11 +64,11 @@ func (a *dbAPI) Execute(ctx context.Context, req oas.Program, params oas.Execute
 // product decision about which ordinary HTTP callers receive catalog
 // authority. PIR itself carries no authority. For now this preserves the
 // existing mode behaviour while the execution mechanism settles.
-func (a *dbAPI) executeCatalogPolicy() exec.CatalogPolicy {
-	if a.mode == catalog.ModeDirect {
-		return exec.CatalogRevisionPerStatement
+func (a *dbAPI) executeCatalogPolicy() execprogram.CatalogPolicy {
+	if a.mode == model.ModeDirect {
+		return execprogram.CatalogRevisionPerStatement
 	}
-	return exec.CatalogForbidden
+	return execprogram.CatalogForbidden
 }
 
 // programToEngine lowers each generated wire variant into the engine's PIR
@@ -76,67 +76,67 @@ func (a *dbAPI) executeCatalogPolicy() exec.CatalogPolicy {
 // catalog definitions map into the canonical catalog types. Backward-only
 // references, namespace collisions, and result selection are enforced by the
 // binder.
-func programToEngine(p pirwire.Program) (exec.Program, error) {
-	stmts := make([]exec.ProgramStatement, len(p.Statements))
+func programToEngine(p pirwire.Program) (execprogram.Program, error) {
+	stmts := make([]execprogram.Statement, len(p.Statements))
 	for i, s := range p.Statements {
 		stmt, err := statementToEngine(s)
 		if err != nil {
-			return exec.Program{}, err
+			return execprogram.Program{}, err
 		}
 		stmts[i] = stmt
 	}
-	return exec.Program{Statements: stmts, Result: optString(p.Result)}, nil
+	return execprogram.Program{Statements: stmts, Result: optString(p.Result)}, nil
 }
 
-func statementToEngine(s pirwire.Statement) (exec.ProgramStatement, error) {
+func statementToEngine(s pirwire.Statement) (execprogram.Statement, error) {
 	switch x := s.StatementUnion.(type) {
 	case *pirwire.QueryStatement:
-		return relationalStatement(x.Name, exec.StmtQuery, "", x.Relation)
+		return relationalStatement(x.Name, execprogram.Query, "", x.Relation)
 	case *pirwire.CreateStatement:
-		return relationalStatement(x.Name, exec.StmtCreate, x.Table, x.Relation)
+		return relationalStatement(x.Name, execprogram.Create, x.Table, x.Relation)
 	case *pirwire.UpdateStatement:
-		return relationalStatement(x.Name, exec.StmtUpdate, x.Table, x.Relation)
+		return relationalStatement(x.Name, execprogram.Update, x.Table, x.Relation)
 	case *pirwire.DeleteStatement:
-		return relationalStatement(x.Name, exec.StmtDelete, x.Table, x.Relation)
+		return relationalStatement(x.Name, execprogram.Delete, x.Table, x.Relation)
 	case *pirwire.CreateTableStatement:
 		def, err := pirTableDef(x.Table)
 		if err != nil {
-			return exec.ProgramStatement{}, fmt.Errorf("statement %q: %w", x.Name, err)
+			return execprogram.Statement{}, fmt.Errorf("statement %q: %w", x.Name, err)
 		}
-		return exec.ProgramStatement{Name: x.Name, Kind: exec.StmtCreateTable, TableDef: def}, nil
+		return execprogram.Statement{Name: x.Name, Kind: execprogram.CreateTable, TableDef: def}, nil
 	case *pirwire.RenameTableStatement:
-		return exec.ProgramStatement{Name: x.Name, Kind: exec.StmtRenameTable, TableID: schemaID(x.TableID), To: x.To}, nil
+		return execprogram.Statement{Name: x.Name, Kind: execprogram.RenameTable, TableID: schemaID(x.TableID), To: x.To}, nil
 	case *pirwire.DeleteTableStatement:
-		return exec.ProgramStatement{Name: x.Name, Kind: exec.StmtDeleteTable, TableID: schemaID(x.TableID)}, nil
+		return execprogram.Statement{Name: x.Name, Kind: execprogram.DeleteTable, TableID: schemaID(x.TableID)}, nil
 	case *pirwire.CreateColumnStatement:
 		def, err := pirColumnDef(x.Column)
 		if err != nil {
-			return exec.ProgramStatement{}, fmt.Errorf("statement %q: %w", x.Name, err)
+			return execprogram.Statement{}, fmt.Errorf("statement %q: %w", x.Name, err)
 		}
-		return exec.ProgramStatement{Name: x.Name, Kind: exec.StmtCreateColumn, TableID: schemaID(x.TableID), Column: def}, nil
+		return execprogram.Statement{Name: x.Name, Kind: execprogram.CreateColumn, TableID: schemaID(x.TableID), Column: def}, nil
 	case *pirwire.RenameColumnStatement:
-		return exec.ProgramStatement{Name: x.Name, Kind: exec.StmtRenameColumn, TableID: schemaID(x.TableID), ColumnID: schemaID(x.ColumnID), To: x.To}, nil
+		return execprogram.Statement{Name: x.Name, Kind: execprogram.RenameColumn, TableID: schemaID(x.TableID), ColumnID: schemaID(x.ColumnID), To: x.To}, nil
 	case *pirwire.DeleteColumnStatement:
-		return exec.ProgramStatement{Name: x.Name, Kind: exec.StmtDeleteColumn, TableID: schemaID(x.TableID), ColumnID: schemaID(x.ColumnID)}, nil
+		return execprogram.Statement{Name: x.Name, Kind: execprogram.DeleteColumn, TableID: schemaID(x.TableID), ColumnID: schemaID(x.ColumnID)}, nil
 	case *pirwire.CreateIndexStatement:
-		return exec.ProgramStatement{Name: x.Name, Kind: exec.StmtCreateIndex, TableID: schemaID(x.TableID), Index: pirIndexDef(x.Index)}, nil
+		return execprogram.Statement{Name: x.Name, Kind: execprogram.CreateIndex, TableID: schemaID(x.TableID), Index: pirIndexDef(x.Index)}, nil
 	case *pirwire.DeleteIndexStatement:
-		return exec.ProgramStatement{Name: x.Name, Kind: exec.StmtDeleteIndex, TableID: schemaID(x.TableID), IndexName: x.Index}, nil
+		return execprogram.Statement{Name: x.Name, Kind: execprogram.DeleteIndex, TableID: schemaID(x.TableID), IndexName: x.Index}, nil
 	default:
-		return exec.ProgramStatement{}, wireErrf("unknown PIR statement variant %T", s.StatementUnion)
+		return execprogram.Statement{}, wireErrf("unknown PIR statement variant %T", s.StatementUnion)
 	}
 }
 
-func relationalStatement(name string, kind exec.StatementKind, table string, raw []byte) (exec.ProgramStatement, error) {
+func relationalStatement(name string, kind execprogram.Kind, table string, raw []byte) (execprogram.Statement, error) {
 	var wire lirwire.Query
 	if err := json.Unmarshal(raw, &wire); err != nil {
-		return exec.ProgramStatement{}, fmt.Errorf("statement %q: decode relation: %w", name, err)
+		return execprogram.Statement{}, fmt.Errorf("statement %q: decode relation: %w", name, err)
 	}
 	relation, err := lowerQuery(wire)
 	if err != nil {
-		return exec.ProgramStatement{}, fmt.Errorf("statement %q: %w", name, err)
+		return execprogram.Statement{}, fmt.Errorf("statement %q: %w", name, err)
 	}
-	return exec.ProgramStatement{Name: name, Kind: kind, Table: table, Rel: relation}, nil
+	return execprogram.Statement{Name: name, Kind: kind, Table: table, Rel: relation}, nil
 }
 
 // programResult shapes a program outcome into the wire response: the result
@@ -144,10 +144,10 @@ func relationalStatement(name string, kind exec.StatementKind, table string, raw
 // the per-statement query plan as free-form JSON under `plan`. The `plan` field
 // is always emitted valid (JSON null when absent), since the response type
 // carries it unconditionally.
-func programResult(res exec.ProgramResult, showPlan, dryRun bool) (oas.ExecuteRes, error) {
+func programResult(res execprogram.Result, showPlan, dryRun bool) (oas.ExecuteRes, error) {
 	result := []byte("null") // dry-run executes nothing, so there is no result
 	if !dryRun {
-		raw, err := json.Marshal(frontend.DatumJSON(res.Result))
+		raw, err := json.Marshal(resultjson.Datum(res.Result))
 		if err != nil {
 			return nil, fmt.Errorf("encode result datum: %w", err)
 		}
@@ -172,7 +172,7 @@ func programResult(res exec.ProgramResult, showPlan, dryRun bool) (oas.ExecuteRe
 // planEnvelope renders the per-statement query plans as free-form JSON: each
 // statement's structured PlanView plus a rendered text form. Its shape is
 // transport metadata, deliberately not part of the OpenAPI or IR contract.
-func planEnvelope(plans []exec.StatementPlan) map[string]any {
+func planEnvelope(plans []execprogram.StatementPlan) map[string]any {
 	stmts := make([]map[string]any, len(plans))
 	for i, p := range plans {
 		stmts[i] = map[string]any{"name": p.Name, "view": p.View, "text": p.View.String()}

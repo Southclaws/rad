@@ -10,13 +10,12 @@ package exec
 import (
 	"context"
 
-	"github.com/Southclaws/rad/rad/engine/reject"
-
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/store"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
-	"github.com/Southclaws/rad/rad/engine/03_lir/bound"
 	planner "github.com/Southclaws/rad/rad/engine/04_planner"
+	binder "github.com/Southclaws/rad/rad/engine/04_planner/bind"
+	"github.com/Southclaws/rad/rad/engine/05_exec/query"
 )
 
 // Execute runs an unbound query against a snapshot of committed state.
@@ -48,7 +47,7 @@ func (e *Engine) ExecuteNested(ctx context.Context, q lir.Query) (lir.Datum, err
 
 // executeSnapshot gives an autocommit read one statement-scoped snapshot;
 // read-only, so it is discarded rather than committed.
-func (e *Engine) executeSnapshot(ctx context.Context, q lir.Query, forceNested bool, planOpts ...planner.PlanOpt) (lir.Datum, error) {
+func (e *Engine) executeSnapshot(ctx context.Context, q lir.Query, forceNested bool, planOpts ...planner.Option) (lir.Datum, error) {
 	txn, err := e.store.Begin(ctx, kv.Snapshot)
 	if err != nil {
 		return lir.Datum{}, err
@@ -57,65 +56,14 @@ func (e *Engine) executeSnapshot(ctx context.Context, q lir.Query, forceNested b
 	return e.execute(ctx, txn, q, forceNested, planOpts...)
 }
 
-func (e *Engine) execute(ctx context.Context, view kv.KV, q lir.Query, forceNested bool, planOpts ...planner.PlanOpt) (lir.Datum, error) {
-	bq, err := planner.Bind(ctx, catalog.NewReader(view), q)
+func (e *Engine) execute(ctx context.Context, view kv.KV, q lir.Query, forceNested bool, planOpts ...planner.Option) (lir.Datum, error) {
+	bq, err := binder.Bind(ctx, store.New(view), q)
 	if err != nil {
 		return lir.Datum{}, err
 	}
 	pp := planner.PlanQuery(bq, planOpts...)
 
-	ex := newExecutor(view, e.recur)
-	ex.forceNested = forceNested
-	if err := ex.commit(ctx, pp.Bindings); err != nil {
-		return lir.Datum{}, err
-	}
-	op, err := ex.build(ctx, pp.Root, bound.Env{})
-	if err != nil {
-		return lir.Datum{}, err
-	}
-	defer op.Close()
-
-	switch pp.Card {
-	case lir.CardFirst:
-		f, ok, err := op.Next(ctx)
-		if err != nil {
-			return lir.Datum{}, err
-		}
-		if !ok {
-			return lir.NullDatum(), nil
-		}
-		return frameToObject(pp.Out, f), nil
-
-	case lir.CardExactlyOne:
-		f, ok, err := op.Next(ctx)
-		if err != nil {
-			return lir.Datum{}, err
-		}
-		if !ok {
-			return lir.Datum{}, reject.Runtimef("exec: expected exactly one row, got none")
-		}
-		if _, more, err := op.Next(ctx); err != nil {
-			return lir.Datum{}, err
-		} else if more {
-			return lir.Datum{}, reject.Runtimef("exec: expected exactly one row, got more")
-		}
-		return frameToObject(pp.Out, f), nil
-
-	case lir.CardScalar:
-		f, ok, err := op.Next(ctx)
-		if err != nil {
-			return lir.Datum{}, err
-		}
-		if !ok {
-			return lir.NullDatum(), nil
-		}
-		return frameScalar(pp.Out, f), nil
-
-	default: // many
-		frames, err := drainOp(ctx, op)
-		if err != nil {
-			return lir.Datum{}, err
-		}
-		return framesToArray(pp.Out, frames), nil
-	}
+	runner := query.New(view, query.Limits{MaxIterations: e.recur.MaxIterations, MaxRows: e.recur.MaxRows})
+	runner.SetForceNested(forceNested)
+	return runner.Execute(ctx, pp)
 }

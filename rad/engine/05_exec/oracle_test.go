@@ -13,10 +13,11 @@ import (
 	"reflect"
 	"testing"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
-	planner "github.com/Southclaws/rad/rad/engine/04_planner"
+	binder "github.com/Southclaws/rad/rad/engine/04_planner/bind"
 	"github.com/Southclaws/rad/rad/engine/05_exec/refexec"
+	"github.com/Southclaws/rad/rad/engine/05_exec/rowstore"
 )
 
 func TestReferenceInterpreter(t *testing.T) {
@@ -71,12 +72,12 @@ func TestReferenceInterpreter(t *testing.T) {
 // bound query with the reference interpreter, feeding it stored rows through a
 // scan closure so the interpreter itself touches no storage.
 func interpQuery(ctx context.Context, e *Engine, q lir.Query) (lir.Datum, error) {
-	bq, err := planner.Bind(ctx, e.cat, q)
+	bq, err := binder.Bind(ctx, e.cat, q)
 	if err != nil {
 		return lir.Datum{}, err
 	}
-	scan := func(ctx context.Context, tbl catalog.Table) ([]lir.Row, error) {
-		it, err := scanTable(ctx, e.store, tbl)
+	scan := func(ctx context.Context, tbl model.Table) ([]lir.Row, error) {
+		it, err := rowstore.ScanTable(ctx, e.store, tbl)
 		if err != nil {
 			return nil, err
 		}

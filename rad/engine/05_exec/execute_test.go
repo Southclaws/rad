@@ -17,6 +17,7 @@ import (
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
 	"github.com/Southclaws/rad/rad/engine/01_kv/kvslate"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 )
 
@@ -87,63 +88,63 @@ func lirSetup(t *testing.T) (*Engine, context.Context, *int, *int) {
 	counted := countingStore{TransactionalKV: store, gets: gets, scans: scans}
 
 	cat := catalog.New(counted)
-	mk := func(def catalog.TableDef) {
+	mk := func(def model.TableDef) {
 		t.Helper()
 		if _, err := cat.CreateTable(ctx, def); err != nil {
 			t.Fatal(err)
 		}
 	}
-	mk(catalog.TableDef{
+	mk(model.TableDef{
 		Name: "users",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeText},
-			{Name: "name", Type: catalog.TypeText},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeText},
+			{Name: "name", Type: model.TypeText},
 		},
 		PrimaryKey: []string{"id"},
-		Indexes:    []catalog.IndexDef{{Name: "users_name_uq", Columns: []string{"name"}, Unique: true}},
+		Indexes:    []model.IndexDef{{Name: "users_name_uq", Columns: []string{"name"}, Unique: true}},
 	})
-	mk(catalog.TableDef{
+	mk(model.TableDef{
 		Name: "boards",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeText},
-			{Name: "name", Type: catalog.TypeText},
-			{Name: "owner_id", Type: catalog.TypeText},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeText},
+			{Name: "name", Type: model.TypeText},
+			{Name: "owner_id", Type: model.TypeText},
 		},
 		PrimaryKey: []string{"id"},
-		ForeignKeys: []catalog.ForeignKeyDef{
+		ForeignKeys: []model.ForeignKeyDef{
 			{Name: "boards_owner_fk", Columns: []string{"owner_id"}, RefTable: "users", RefColumns: []string{"id"}},
 		},
 	})
-	mk(catalog.TableDef{
+	mk(model.TableDef{
 		Name: "tasks",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeText},
-			{Name: "board_id", Type: catalog.TypeText},
-			{Name: "title", Type: catalog.TypeText},
-			{Name: "status", Type: catalog.TypeText},
-			{Name: "priority", Type: catalog.TypeInt64},
-			{Name: "estimate", Type: catalog.TypeFloat64, Nullable: true},
-			{Name: "assignee_id", Type: catalog.TypeText, Nullable: true},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeText},
+			{Name: "board_id", Type: model.TypeText},
+			{Name: "title", Type: model.TypeText},
+			{Name: "status", Type: model.TypeText},
+			{Name: "priority", Type: model.TypeInt64},
+			{Name: "estimate", Type: model.TypeFloat64, Nullable: true},
+			{Name: "assignee_id", Type: model.TypeText, Nullable: true},
 		},
 		PrimaryKey: []string{"id"},
-		Indexes: []catalog.IndexDef{
+		Indexes: []model.IndexDef{
 			{Name: "tasks_board_status_idx", Columns: []string{"board_id", "status"}},
 		},
-		ForeignKeys: []catalog.ForeignKeyDef{
+		ForeignKeys: []model.ForeignKeyDef{
 			{Name: "tasks_board_fk", Columns: []string{"board_id"}, RefTable: "boards", RefColumns: []string{"id"}},
 			{Name: "tasks_assignee_fk", Columns: []string{"assignee_id"}, RefTable: "users", RefColumns: []string{"id"}},
 		},
 	})
-	mk(catalog.TableDef{
+	mk(model.TableDef{
 		Name: "comments",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeText},
-			{Name: "task_id", Type: catalog.TypeText},
-			{Name: "body", Type: catalog.TypeText},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeText},
+			{Name: "task_id", Type: model.TypeText},
+			{Name: "body", Type: model.TypeText},
 		},
 		PrimaryKey: []string{"id"},
-		Indexes:    []catalog.IndexDef{{Name: "comments_task_idx", Columns: []string{"task_id"}}},
-		ForeignKeys: []catalog.ForeignKeyDef{
+		Indexes:    []model.IndexDef{{Name: "comments_task_idx", Columns: []string{"task_id"}}},
+		ForeignKeys: []model.ForeignKeyDef{
 			{Name: "comments_task_fk", Columns: []string{"task_id"}, RefTable: "tasks", RefColumns: []string{"id"}},
 		},
 	})
@@ -212,13 +213,13 @@ func jsonish(d lir.Datum) any {
 	case lir.DatumScalar:
 		v := d.Scalar
 		switch v.Type {
-		case catalog.TypeText:
+		case model.TypeText:
 			return v.Text
-		case catalog.TypeInt64:
+		case model.TypeInt64:
 			return v.Int64
-		case catalog.TypeFloat64:
+		case model.TypeFloat64:
 			return v.Float64
-		case catalog.TypeBool:
+		case model.TypeBool:
 			return v.Bool
 		}
 		return v
@@ -390,11 +391,11 @@ func TestExecuteInsideTransaction(t *testing.T) {
 func TestUniqueIndexNullsDistinct(t *testing.T) {
 	eng, ctx, _, _ := lirSetup(t)
 
-	if _, err := eng.Catalog().CreateTable(ctx, catalog.TableDef{
+	if _, err := eng.Catalog().CreateTable(ctx, model.TableDef{
 		Name: "invites",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeText},
-			{Name: "email", Type: catalog.TypeText, Nullable: true},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeText},
+			{Name: "email", Type: model.TypeText, Nullable: true},
 		},
 		PrimaryKey: []string{"id"},
 	}); err != nil {
@@ -408,7 +409,7 @@ func TestUniqueIndexNullsDistinct(t *testing.T) {
 		}
 	}
 	// Backfilling the unique index over the NULL pair succeeds.
-	if err := eng.CreateIndexWithBackfill(ctx, "invites", catalog.IndexDef{
+	if err := eng.CreateIndexWithBackfill(ctx, "invites", model.IndexDef{
 		Name: "invites_email_uq", Columns: []string{"email"}, Unique: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -430,7 +431,7 @@ func TestUniqueIndexNullsDistinct(t *testing.T) {
 	if _, _, err := eng.Update(ctx, "invites", lir.Row{"id": lir.Text("i1")}, lir.Row{"email": lir.Text("a@b.co")}); err == nil {
 		t.Fatal("update into a taken unique value accepted")
 	}
-	if _, _, err := eng.Update(ctx, "invites", lir.Row{"id": lir.Text("i4")}, lir.Row{"email": lir.Null(catalog.TypeText)}); err != nil {
+	if _, _, err := eng.Update(ctx, "invites", lir.Row{"id": lir.Text("i4")}, lir.Row{"email": lir.Null(model.TypeText)}); err != nil {
 		t.Fatal(err)
 	}
 }

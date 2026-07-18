@@ -11,6 +11,7 @@ import (
 
 	"github.com/Southclaws/rad/rad/engine/01_kv/kvslate"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	"github.com/Southclaws/rad/rad/engine/reject"
 )
@@ -55,11 +56,11 @@ func TestRecursionCapConfigurable(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	cat := catalog.New(store)
-	if _, err := cat.CreateTable(ctx, catalog.TableDef{
+	if _, err := cat.CreateTable(ctx, model.TableDef{
 		Name:       "edges",
-		Columns:    []catalog.ColumnDef{{Name: "src", Type: catalog.TypeText}, {Name: "dst", Type: catalog.TypeText}},
+		Columns:    []model.ColumnDef{{Name: "src", Type: model.TypeText}, {Name: "dst", Type: model.TypeText}},
 		PrimaryKey: []string{"src", "dst"},
-		Indexes:    []catalog.IndexDef{{Name: "edges_src_idx", Columns: []string{"src"}}},
+		Indexes:    []model.IndexDef{{Name: "edges_src_idx", Columns: []string{"src"}}},
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -14,7 +14,7 @@ import (
 	"fmt"
 
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
-	planner "github.com/Southclaws/rad/rad/engine/04_planner"
+	binder "github.com/Southclaws/rad/rad/engine/04_planner/bind"
 	refexec "github.com/Southclaws/rad/rad/engine/05_exec/refexec"
 )
 
@@ -32,13 +32,13 @@ import (
 func ThreeWay(ctx context.Context, s Subject, scan ScanFunc, q lir.Query, ordered bool) error {
 	chosen, errC := s.Execute(ctx, q)
 	forced, errF := s.ExecuteForced(ctx, q)
-	oracle, errO := refexec.InterpretQuery(ctx, s.Catalog(), scan, q)
+	oracle, errO := refexec.InterpretQuery(ctx, s.Catalog(), refexec.ScanFunc(scan), q)
 
 	if (errC != nil) != (errO != nil) || (errC != nil) != (errF != nil) {
 		return fmt.Errorf("error split: chosen=%v forced=%v oracle=%v\nquery:\n%#v", errC, errF, errO, q)
 	}
 	if errC != nil {
-		if _, berr := planner.Bind(ctx, s.Catalog(), q); berr != nil {
+		if _, berr := binder.Bind(ctx, s.Catalog(), q); berr != nil {
 			return fmt.Errorf("query does not bind: %w\nquery:\n%#v", berr, q)
 		}
 		return nil

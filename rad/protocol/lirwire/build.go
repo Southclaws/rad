@@ -110,6 +110,7 @@ func Recursive(anchor, step, accumulation string) Binding {
 // -
 
 func Lit(value Value) Expr { return Expr{&LiteralExpr{Kind: "lit", Value: value}} }
+
 func Col(scope, column string) Expr {
 	return Expr{&ColumnExpr{Kind: "col", Scope: scope, Column: column}}
 }
@@ -118,10 +119,10 @@ func Binary(op string, l, r Expr) Expr {
 	return Expr{&BinaryExpr{Kind: "binary", Op: op, Left: l, Right: r}}
 }
 func Cast(e Expr, to ScalarType) Expr { return Expr{&CastExpr{Kind: "cast", Expr: e, To: to}} }
-func Exists(node string) Expr     { return Expr{&CrossingExprExists{Kind: "exists", Node: node}} }
-func First(node string) Expr      { return Expr{&CrossingExprFirst{Kind: "first", Node: node}} }
-func Scalar(node string) Expr     { return Expr{&CrossingExprScalar{Kind: "scalar", Node: node}} }
-func Array(node string) Expr      { return Expr{&CrossingExprArray{Kind: "array", Node: node}} }
+func Exists(node string) Expr         { return Expr{&CrossingExprExists{Kind: "exists", Node: node}} }
+func First(node string) Expr          { return Expr{&CrossingExprFirst{Kind: "first", Node: node}} }
+func Scalar(node string) Expr         { return Expr{&CrossingExprScalar{Kind: "scalar", Node: node}} }
+func Array(node string) Expr          { return Expr{&CrossingExprArray{Kind: "array", Node: node}} }
 
 // AndAll left-folds predicates into a binary and-chain: the zero Expr for
 // none (a nil union, which marshals to JSON null), the predicate itself for

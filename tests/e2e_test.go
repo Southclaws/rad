@@ -12,6 +12,7 @@ import (
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
 	"github.com/Southclaws/rad/rad/engine/01_kv/kvslate"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	exec "github.com/Southclaws/rad/rad/engine/05_exec"
 )
@@ -35,27 +36,27 @@ func TestRelationalStackOverBothBackends(t *testing.T) {
 			cat := catalog.New(store)
 			eng := exec.New(store, cat)
 
-			if _, err := cat.CreateTable(ctx, catalog.TableDef{
+			if _, err := cat.CreateTable(ctx, model.TableDef{
 				Name: "users",
-				Columns: []catalog.ColumnDef{
-					{Name: "id", Type: catalog.TypeInt64},
-					{Name: "name", Type: catalog.TypeText},
+				Columns: []model.ColumnDef{
+					{Name: "id", Type: model.TypeInt64},
+					{Name: "name", Type: model.TypeText},
 				},
 				PrimaryKey: []string{"id"},
-				Indexes:    []catalog.IndexDef{{Name: "users_name_idx", Columns: []string{"name"}}},
+				Indexes:    []model.IndexDef{{Name: "users_name_idx", Columns: []string{"name"}}},
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := cat.CreateTable(ctx, catalog.TableDef{
+			if _, err := cat.CreateTable(ctx, model.TableDef{
 				Name: "orders",
-				Columns: []catalog.ColumnDef{
-					{Name: "id", Type: catalog.TypeInt64},
-					{Name: "user_id", Type: catalog.TypeInt64},
-					{Name: "total", Type: catalog.TypeFloat64, Nullable: true},
+				Columns: []model.ColumnDef{
+					{Name: "id", Type: model.TypeInt64},
+					{Name: "user_id", Type: model.TypeInt64},
+					{Name: "total", Type: model.TypeFloat64, Nullable: true},
 				},
 				PrimaryKey:  []string{"id"},
-				Indexes:     []catalog.IndexDef{{Name: "orders_user_id_idx", Columns: []string{"user_id"}}},
-				ForeignKeys: []catalog.ForeignKeyDef{{Name: "orders_user_fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}}},
+				Indexes:     []model.IndexDef{{Name: "orders_user_id_idx", Columns: []string{"user_id"}}},
+				ForeignKeys: []model.ForeignKeyDef{{Name: "orders_user_fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}}},
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -89,9 +90,10 @@ func TestRelationalStackOverBothBackends(t *testing.T) {
 						Left:  lir.Scan{Table: "users", Scope: "u"},
 						Right: lir.Scan{Table: "orders", Scope: "o"},
 						Kind:  lir.InnerJoin,
-						On: lir.Binary{Op: lir.OpEq,
-							L: lir.Column{Scope: "u", Name: "id"},
-							R: lir.Column{Scope: "o", Name: "user_id"},
+						On: lir.Binary{
+							Op: lir.OpEq,
+							L:  lir.Column{Scope: "u", Name: "id"},
+							R:  lir.Column{Scope: "o", Name: "user_id"},
 						},
 					},
 					Terms: []lir.OrderTerm{{Expr: lir.Column{Scope: "o", Name: "id"}}},
@@ -128,25 +130,25 @@ func TestTransactionsOverBothBackends(t *testing.T) {
 			cat := catalog.New(store)
 			eng := exec.New(store, cat)
 
-			if _, err := cat.CreateTable(ctx, catalog.TableDef{
+			if _, err := cat.CreateTable(ctx, model.TableDef{
 				Name: "users",
-				Columns: []catalog.ColumnDef{
-					{Name: "id", Type: catalog.TypeInt64},
-					{Name: "name", Type: catalog.TypeText},
+				Columns: []model.ColumnDef{
+					{Name: "id", Type: model.TypeInt64},
+					{Name: "name", Type: model.TypeText},
 				},
 				PrimaryKey: []string{"id"},
-				Indexes:    []catalog.IndexDef{{Name: "users_name_uq", Columns: []string{"name"}, Unique: true}},
+				Indexes:    []model.IndexDef{{Name: "users_name_uq", Columns: []string{"name"}, Unique: true}},
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := cat.CreateTable(ctx, catalog.TableDef{
+			if _, err := cat.CreateTable(ctx, model.TableDef{
 				Name: "orders",
-				Columns: []catalog.ColumnDef{
-					{Name: "id", Type: catalog.TypeInt64},
-					{Name: "user_id", Type: catalog.TypeInt64},
+				Columns: []model.ColumnDef{
+					{Name: "id", Type: model.TypeInt64},
+					{Name: "user_id", Type: model.TypeInt64},
 				},
 				PrimaryKey:  []string{"id"},
-				ForeignKeys: []catalog.ForeignKeyDef{{Name: "orders_user_fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}}},
+				ForeignKeys: []model.ForeignKeyDef{{Name: "orders_user_fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}}},
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -183,11 +185,13 @@ func TestTransactionsOverBothBackends(t *testing.T) {
 				if err := eng.Insert(ctx, "users", lir.Row{"id": lir.Int64(3), "name": lir.Text("Carol")}); err != nil {
 					return err
 				}
-				d, err := tx.Execute(ctx, lir.Query{Card: lir.CardMany,
+				d, err := tx.Execute(ctx, lir.Query{
+					Card: lir.CardMany,
 					Root: lir.Order{
 						Input: lir.Scan{Table: "users", Scope: "u"},
 						Terms: []lir.OrderTerm{{Expr: lir.Column{Scope: "u", Name: "id"}}},
-					}})
+					},
+				})
 				if err != nil {
 					return err
 				}

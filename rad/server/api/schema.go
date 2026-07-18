@@ -9,10 +9,10 @@ import (
 
 	"github.com/Southclaws/rad/rad/api"
 	"github.com/Southclaws/rad/rad/api/oas"
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 	"github.com/Southclaws/rad/rad/engine/02_catalog/migrate"
-	exec "github.com/Southclaws/rad/rad/engine/05_exec"
-	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
+	execprogram "github.com/Southclaws/rad/rad/engine/05_exec/program"
+	"github.com/Southclaws/rad/rad/engine/06_frontend/migration"
 	"github.com/Southclaws/rad/rad/engine/reject"
 	"github.com/Southclaws/rad/rad/protocol"
 	"github.com/Southclaws/rad/rad/protocol/pirwire"
@@ -81,7 +81,7 @@ func (a *dbAPI) SchemaMigrate(ctx context.Context, req oas.OptSchemaMigrateReque
 			"schema changed since preflight: expected version %d (%s), found version %d (%s)",
 			request.CurrentVersion, request.CurrentHash, current.Version, current.Hash)
 	}
-	var plan frontend.MigrationPlan
+	var plan migration.MigrationPlan
 	if err == nil {
 		plan, err = a.db.PlanMigrationFile(ctx, "rad.schema.yaml", []byte(request.Schema))
 	}
@@ -90,7 +90,7 @@ func (a *dbAPI) SchemaMigrate(ctx context.Context, req oas.OptSchemaMigrateReque
 			"schema changed during preflight: expected version %d (%s), found version %d (%s)",
 			request.CurrentVersion, request.CurrentHash, plan.Current.Version, plan.Current.Hash)
 	}
-	var result frontend.MigrationResult
+	var result migration.MigrationResult
 	if err == nil {
 		result, err = a.db.ApplyMigrationPlan(ctx, plan, request.AcceptDataLoss.Or(false))
 	}
@@ -210,7 +210,7 @@ func migrationStepKind(step migrate.Step) string {
 	}
 }
 
-func schemaFindings(findings []frontend.SchemaFinding) []oas.SchemaFinding {
+func schemaFindings(findings []migration.SchemaFinding) []oas.SchemaFinding {
 	out := make([]oas.SchemaFinding, len(findings))
 	for i, finding := range findings {
 		value := oas.SchemaFinding{Kind: finding.Kind, Summary: finding.Summary}
@@ -228,7 +228,7 @@ func schemaFindings(findings []frontend.SchemaFinding) []oas.SchemaFinding {
 	return out
 }
 
-func migrationProgramWire(program exec.Program) (pirwire.Program, error) {
+func migrationProgramWire(program execprogram.Program) (pirwire.Program, error) {
 	statements := make([]pirwire.Statement, len(program.Statements))
 	for i, statement := range program.Statements {
 		wire, err := catalogStatementWire(statement)
@@ -240,44 +240,44 @@ func migrationProgramWire(program exec.Program) (pirwire.Program, error) {
 	return pirwire.Prog("", statements...), nil
 }
 
-func catalogStatementWire(statement exec.ProgramStatement) (pirwire.Statement, error) {
+func catalogStatementWire(statement execprogram.Statement) (pirwire.Statement, error) {
 	switch statement.Kind {
-	case exec.StmtCreateTable:
+	case execprogram.CreateTable:
 		definition, err := tableDefinitionWire(statement.TableDef)
 		if err != nil {
 			return pirwire.Statement{}, err
 		}
 		return pirwire.CreateTable(statement.Name, definition), nil
-	case exec.StmtRenameTable:
+	case execprogram.RenameTable:
 		return pirwire.RenameTable(statement.Name, pirwire.SchemaID(statement.TableID), statement.To), nil
-	case exec.StmtDeleteTable:
+	case execprogram.DeleteTable:
 		return pirwire.DeleteTable(statement.Name, pirwire.SchemaID(statement.TableID)), nil
-	case exec.StmtCreateColumn:
+	case execprogram.CreateColumn:
 		definition, err := columnDefinitionWire(statement.Column)
 		if err != nil {
 			return pirwire.Statement{}, err
 		}
 		return pirwire.CreateColumn(statement.Name, pirwire.SchemaID(statement.TableID), definition), nil
-	case exec.StmtRenameColumn:
+	case execprogram.RenameColumn:
 		return pirwire.RenameColumn(
 			statement.Name, pirwire.SchemaID(statement.TableID), pirwire.SchemaID(statement.ColumnID), statement.To,
 		), nil
-	case exec.StmtDeleteColumn:
+	case execprogram.DeleteColumn:
 		return pirwire.DeleteColumn(
 			statement.Name, pirwire.SchemaID(statement.TableID), pirwire.SchemaID(statement.ColumnID),
 		), nil
-	case exec.StmtCreateIndex:
+	case execprogram.CreateIndex:
 		return pirwire.CreateIndex(statement.Name, pirwire.SchemaID(statement.TableID), pirwire.IndexDefinition{
 			Name: statement.Index.Name, Columns: statement.Index.Columns, Unique: boolPointer(statement.Index.Unique),
 		}), nil
-	case exec.StmtDeleteIndex:
+	case execprogram.DeleteIndex:
 		return pirwire.DeleteIndex(statement.Name, pirwire.SchemaID(statement.TableID), statement.IndexName), nil
 	default:
 		return pirwire.Statement{}, fmt.Errorf("schema diff: unexpected statement kind %q", statement.Kind)
 	}
 }
 
-func tableDefinitionWire(definition catalog.TableDef) (pirwire.TableDefinition, error) {
+func tableDefinitionWire(definition model.TableDef) (pirwire.TableDefinition, error) {
 	id := pirwire.SchemaID(definition.ID)
 	out := pirwire.TableDefinition{ID: &id, Name: definition.Name, PrimaryKey: definition.PrimaryKey}
 	for _, column := range definition.Columns {
@@ -301,7 +301,7 @@ func tableDefinitionWire(definition catalog.TableDef) (pirwire.TableDefinition, 
 	return out, nil
 }
 
-func columnDefinitionWire(definition catalog.ColumnDef) (pirwire.ColumnDefinition, error) {
+func columnDefinitionWire(definition model.ColumnDef) (pirwire.ColumnDefinition, error) {
 	id := pirwire.SchemaID(definition.ID)
 	out := pirwire.ColumnDefinition{
 		ID: &id, Name: definition.Name, Type: pirwire.ColumnType(definition.Type),
@@ -316,7 +316,7 @@ func columnDefinitionWire(definition catalog.ColumnDef) (pirwire.ColumnDefinitio
 				Kind: "generator", Func: string(definition.Default.Func),
 			}}
 		} else {
-			value := defaultInfo(catalog.Column{Type: definition.Type, Default: definition.Default}).Value
+			value := defaultInfo(model.Column{Type: definition.Type, Default: definition.Default}).Value
 			raw, err := json.Marshal(value)
 			if err != nil {
 				return pirwire.ColumnDefinition{}, err

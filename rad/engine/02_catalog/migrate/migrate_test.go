@@ -5,6 +5,7 @@ package migrate_test
 
 import (
 	"context"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	"strings"
 	"testing"
 
@@ -16,7 +17,7 @@ import (
 
 // currentFrom materializes a schema source into a real catalog and returns
 // its tables — the differ always runs against actual catalog state.
-func currentFrom(t *testing.T, src string) []catalog.Table {
+func currentFrom(t *testing.T, src string) []model.Table {
 	t.Helper()
 	ctx := context.Background()
 	store, err := kvslate.Open("test-"+t.Name(), "memory:///")
@@ -47,7 +48,7 @@ func parse(t *testing.T, src string) *schema.Schema {
 	return s
 }
 
-func diff(t *testing.T, current []catalog.Table, desiredSrc string) []migrate.Step {
+func diff(t *testing.T, current []model.Table, desiredSrc string) []migrate.Step {
 	t.Helper()
 	steps, err := migrate.Diff(current, parse(t, desiredSrc))
 	if err != nil {

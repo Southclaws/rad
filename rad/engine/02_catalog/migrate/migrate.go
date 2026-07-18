@@ -20,7 +20,7 @@ import (
 	"slices"
 	"strings"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	"github.com/Southclaws/rad/rad/engine/02_catalog/naming"
 	"github.com/Southclaws/rad/rad/engine/02_catalog/schema"
 	"github.com/Southclaws/rad/rad/engine/reject"
@@ -38,16 +38,16 @@ type Step interface {
 type (
 	RenameTable  struct{ From, To string }
 	RenameColumn struct{ Table, From, To string }
-	CreateTable  struct{ Def catalog.TableDef }
+	CreateTable  struct{ Def model.TableDef }
 	CreateColumn struct {
 		Table string
-		Def   catalog.ColumnDef
+		Def   model.ColumnDef
 	}
 )
 
 type CreateIndex struct {
 	Table string
-	Def   catalog.IndexDef
+	Def   model.IndexDef
 }
 type (
 	DeleteIndex  struct{ Table, Index string }
@@ -78,14 +78,14 @@ func (s DeleteColumn) String() string { return fmt.Sprintf("delete column %s.%s"
 func (s DeleteTable) String() string  { return fmt.Sprintf("delete table %s", s.Table) }
 
 // Diff computes the ordered steps that take current to desired.
-func Diff(current []catalog.Table, desired *schema.Schema) ([]Step, error) {
+func Diff(current []model.Table, desired *schema.Schema) ([]Step, error) {
 	var renames, adds, indexDeletes, indexCreates, columnDeletes, tableDeletes []Step
 
-	curByID := map[catalog.SchemaID]catalog.Table{}
-	curByName := map[string]catalog.Table{}
-	curByPhysicalID := map[string]catalog.Table{}
+	curByID := map[model.SchemaID]model.Table{}
+	curByName := map[string]model.Table{}
+	curByPhysicalID := map[string]model.Table{}
 	for _, t := range current {
-		if t.SchemaID == 0 || t.SchemaID > catalog.MaxSchemaID {
+		if t.SchemaID == 0 || t.SchemaID > model.MaxSchemaID {
 			return nil, reject.Fail(reject.ReasonCatalogDrift,
 				"migrate: physical table %q has invalid schema ID %d", t.Name, t.SchemaID)
 		}
@@ -97,10 +97,10 @@ func Diff(current []catalog.Table, desired *schema.Schema) ([]Step, error) {
 		curByName[t.Name] = t
 		curByPhysicalID[t.ID] = t
 	}
-	desiredIDs := map[catalog.SchemaID]string{}
-	desiredNames := map[string]catalog.SchemaID{}
+	desiredIDs := map[model.SchemaID]string{}
+	desiredNames := map[string]model.SchemaID{}
 	for _, d := range desired.Tables {
-		if d.Def.ID == 0 || d.Def.ID > catalog.MaxSchemaID {
+		if d.Def.ID == 0 || d.Def.ID > model.MaxSchemaID {
 			return nil, reject.Inputf("migrate: table %q has invalid schema ID %d", d.Def.Name, d.Def.ID)
 		}
 		if previous, exists := desiredIDs[d.Def.ID]; exists {
@@ -114,7 +114,7 @@ func Diff(current []catalog.Table, desired *schema.Schema) ([]Step, error) {
 	}
 
 	// Match desired tables to current ones by logical identity.
-	matched := map[catalog.SchemaID]schema.Table{}
+	matched := map[model.SchemaID]schema.Table{}
 	var creates []schema.Table
 	for _, d := range desired.Tables {
 		cur, exists := curByID[d.Def.ID]
@@ -144,7 +144,7 @@ func Diff(current []catalog.Table, desired *schema.Schema) ([]Step, error) {
 	// another table still points at through a foreign key, so children must
 	// go before their parents.
 	deleted := map[string]bool{}
-	var deletedTables []catalog.Table
+	var deletedTables []model.Table
 	for _, t := range current {
 		if _, ok := matched[t.SchemaID]; !ok {
 			deleted[t.Name] = true
@@ -206,18 +206,18 @@ type tableSteps struct {
 }
 
 func diffTable(
-	cur catalog.Table,
+	cur model.Table,
 	d schema.Table,
-	currentByPhysicalID map[string]catalog.Table,
-	desiredByName map[string]catalog.SchemaID,
+	currentByPhysicalID map[string]model.Table,
+	desiredByName map[string]model.SchemaID,
 ) (tableSteps, error) {
 	var out tableSteps
 	name := d.Def.Name
 
-	curColsByID := map[catalog.SchemaID]catalog.Column{}
-	curColsByName := map[string]catalog.Column{}
+	curColsByID := map[model.SchemaID]model.Column{}
+	curColsByName := map[string]model.Column{}
 	for _, c := range cur.Columns {
-		if c.SchemaID == 0 || c.SchemaID > catalog.MaxSchemaID {
+		if c.SchemaID == 0 || c.SchemaID > model.MaxSchemaID {
 			return tableSteps{}, reject.Fail(reject.ReasonCatalogDrift,
 				"migrate: physical column %q.%q has invalid schema ID %d", cur.Name, c.Name, c.SchemaID)
 		}
@@ -229,10 +229,10 @@ func diffTable(
 		curColsByID[c.SchemaID] = c
 		curColsByName[c.Name] = c
 	}
-	desiredIDs := map[catalog.SchemaID]string{}
-	desiredNames := map[string]catalog.SchemaID{}
+	desiredIDs := map[model.SchemaID]string{}
+	desiredNames := map[string]model.SchemaID{}
 	for _, c := range d.Def.Columns {
-		if c.ID == 0 || c.ID > catalog.MaxSchemaID {
+		if c.ID == 0 || c.ID > model.MaxSchemaID {
 			return tableSteps{}, reject.Inputf("migrate: column %q.%q has invalid schema ID %d", name, c.Name, c.ID)
 		}
 		if previous, exists := desiredIDs[c.ID]; exists {
@@ -290,8 +290,8 @@ func diffTable(
 			return tableSteps{}, reject.Inputf("migrate: %s.%s: changing the default is not supported", name, dc.Name)
 		}
 	}
-	currentOrder := make([]catalog.SchemaID, 0, len(cur.Columns))
-	desiredOrder := make([]catalog.SchemaID, 0, len(d.Def.Columns))
+	currentOrder := make([]model.SchemaID, 0, len(cur.Columns))
+	desiredOrder := make([]model.SchemaID, 0, len(d.Def.Columns))
 	for _, column := range cur.Columns {
 		if _, survives := desiredIDs[column.SchemaID]; survives {
 			currentOrder = append(currentOrder, column.SchemaID)
@@ -335,7 +335,7 @@ func diffTable(
 		}
 		return strings.Join(cols, ",") + u
 	}
-	curIdx := map[string]catalog.Index{}
+	curIdx := map[string]model.Index{}
 	for _, idx := range cur.Indexes {
 		generated := idx.Name == naming.Index(cur.Name, idx.Columns, idx.Unique)
 		applyRenames(idx.Columns, out.renames)
@@ -344,7 +344,7 @@ func diffTable(
 		}
 		curIdx[sig(idx.Columns, idx.Unique)] = idx
 	}
-	desiredIdx := map[string]catalog.IndexDef{}
+	desiredIdx := map[string]model.IndexDef{}
 	for _, idx := range d.Def.Indexes {
 		desiredIdx[sig(idx.Columns, idx.Unique)] = idx
 	}
@@ -391,13 +391,13 @@ func applyRenames(names []string, renames []Step) {
 // target table ID therefore also retains the referenced key identity while
 // allowing that key's columns to be renamed.
 func compareFKs(
-	cur catalog.Table,
+	cur model.Table,
 	d schema.Table,
 	renames []Step,
-	currentByPhysicalID map[string]catalog.Table,
-	desiredByName map[string]catalog.SchemaID,
+	currentByPhysicalID map[string]model.Table,
+	desiredByName map[string]model.SchemaID,
 ) error {
-	canon := func(name string, cols []string, refTable catalog.SchemaID) string {
+	canon := func(name string, cols []string, refTable model.SchemaID) string {
 		return fmt.Sprintf("%s:%s->%d", name, strings.Join(cols, ","), refTable)
 	}
 	curSet := map[string]bool{}
@@ -492,7 +492,7 @@ func orderCreates(creates []schema.Table) ([]schema.Table, error) {
 // added to existing tables and creation rejects cycles, so only
 // self-references can exist among a delete set; they don't constrain order.
 // Input arrives name-sorted (ListTables), which keeps the result stable.
-func orderDeletes(tables []catalog.Table) []catalog.Table {
+func orderDeletes(tables []model.Table) []model.Table {
 	byID := map[string]string{} // table ID -> name, delete set only
 	for _, t := range tables {
 		byID[t.ID] = t.Name
@@ -510,7 +510,7 @@ func orderDeletes(tables []catalog.Table) []catalog.Table {
 		}
 	}
 
-	var ordered []catalog.Table
+	var ordered []model.Table
 	done := map[string]bool{}
 	for len(ordered) < len(tables) {
 		progressed := false

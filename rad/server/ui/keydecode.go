@@ -8,19 +8,19 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
-	exec "github.com/Southclaws/rad/rad/engine/05_exec"
+	"github.com/Southclaws/rad/rad/engine/05_exec/codec"
 )
 
 // keyDecoder renders raw keys and values human-readably, resolving table and
 // index IDs to names via a catalog snapshot taken per request.
 type keyDecoder struct {
-	tables map[string]catalog.Table // by table ID
+	tables map[string]model.Table // by table ID
 }
 
 func (s *devtool) newKeyDecoder(ctx context.Context) *keyDecoder {
-	dec := &keyDecoder{tables: map[string]catalog.Table{}}
+	dec := &keyDecoder{tables: map[string]model.Table{}}
 	tables, err := s.tables(ctx)
 	if err != nil {
 		return dec // degrade to unlabeled decoding
@@ -109,7 +109,7 @@ func (d *keyDecoder) renderIndexTuple(tableID, indexID string, buf []byte) strin
 	if !ok {
 		return renderTuple(buf)
 	}
-	var idx *catalog.Index
+	var idx *model.Index
 	for i := range t.Indexes {
 		if t.Indexes[i].ID == indexID {
 			idx = &t.Indexes[i]
@@ -123,7 +123,7 @@ func (d *keyDecoder) renderIndexTuple(tableID, indexID string, buf []byte) strin
 	var indexed []lir.Value
 	rest := buf
 	for range idx.Columns {
-		v, n, err := exec.DecodeValue(rest)
+		v, n, err := codec.DecodeValue(rest)
 		if err != nil {
 			return renderTuple(buf)
 		}
@@ -138,8 +138,8 @@ func (d *keyDecoder) renderIndexTuple(tableID, indexID string, buf []byte) strin
 
 // renderRow renders a stored row (column-ID keyed JSON) with column names,
 // in table-definition order.
-func renderRow(tbl catalog.Table, raw []byte) (string, error) {
-	row, err := exec.UnmarshalRow(tbl, raw)
+func renderRow(tbl model.Table, raw []byte) (string, error) {
+	row, err := codec.UnmarshalRow(tbl, raw)
 	if err != nil {
 		return "", err
 	}
@@ -159,7 +159,7 @@ func renderTuple(buf []byte) string {
 	if len(buf) == 0 {
 		return "()"
 	}
-	vals, err := exec.DecodeTuple(buf)
+	vals, err := codec.DecodeTuple(buf)
 	if err != nil {
 		return printable(buf)
 	}

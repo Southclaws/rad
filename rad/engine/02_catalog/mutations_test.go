@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 )
 
 func TestRenameTableKeepsIdentity(t *testing.T) {
@@ -66,12 +66,12 @@ func TestCreateColumnRules(t *testing.T) {
 	}
 
 	// Nullable: fine. Literal default: fine.
-	tbl, err := cat.CreateColumn(ctx, "users", catalog.ColumnDef{Name: "bio", Type: catalog.TypeText, Nullable: true})
+	tbl, err := cat.CreateColumn(ctx, "users", model.ColumnDef{Name: "bio", Type: model.TypeText, Nullable: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	tbl, err = cat.CreateColumn(ctx, "users", catalog.ColumnDef{
-		Name: "active", Type: catalog.TypeBool, Default: &catalog.Default{Bool: true},
+	tbl, err = cat.CreateColumn(ctx, "users", model.ColumnDef{
+		Name: "active", Type: model.TypeBool, Default: &model.Default{Bool: true},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -87,19 +87,19 @@ func TestCreateColumnRules(t *testing.T) {
 	}
 
 	// Non-nullable without a default: existing rows would have no value.
-	_, err = cat.CreateColumn(ctx, "users", catalog.ColumnDef{Name: "req", Type: catalog.TypeText})
+	_, err = cat.CreateColumn(ctx, "users", model.ColumnDef{Name: "req", Type: model.TypeText})
 	if err == nil || !strings.Contains(err.Error(), "nullable or have a literal default") {
 		t.Fatalf("got %v", err)
 	}
 	// Generator defaults would fabricate different values on every read.
-	_, err = cat.CreateColumn(ctx, "users", catalog.ColumnDef{
-		Name: "gen", Type: catalog.TypeText, Default: &catalog.Default{Func: catalog.DefaultUUID},
+	_, err = cat.CreateColumn(ctx, "users", model.ColumnDef{
+		Name: "gen", Type: model.TypeText, Default: &model.Default{Func: model.DefaultUUID},
 	})
 	if err == nil {
 		t.Fatal("generator default on added column accepted")
 	}
 	// Duplicates rejected.
-	if _, err := cat.CreateColumn(ctx, "users", catalog.ColumnDef{Name: "bio", Type: catalog.TypeText, Nullable: true}); err == nil {
+	if _, err := cat.CreateColumn(ctx, "users", model.ColumnDef{Name: "bio", Type: model.TypeText, Nullable: true}); err == nil {
 		t.Fatal("duplicate column accepted")
 	}
 }
@@ -109,14 +109,14 @@ func TestDeleteColumnGuards(t *testing.T) {
 	if _, err := cat.CreateTable(ctx, usersDef()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cat.CreateTable(ctx, catalog.TableDef{
+	if _, err := cat.CreateTable(ctx, model.TableDef{
 		Name: "orders",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "user_id", Type: catalog.TypeInt64},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "user_id", Type: model.TypeInt64},
 		},
 		PrimaryKey:  []string{"id"},
-		ForeignKeys: []catalog.ForeignKeyDef{{Name: "fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}}},
+		ForeignKeys: []model.ForeignKeyDef{{Name: "fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -145,14 +145,14 @@ func TestDeleteColumnGuards(t *testing.T) {
 // while the column keeps its ID (and therefore its stored data).
 func TestRenameColumnRewritesReferences(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
-	if _, err := cat.CreateTable(ctx, catalog.TableDef{
+	if _, err := cat.CreateTable(ctx, model.TableDef{
 		Name: "events",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "kind", Type: catalog.TypeText},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "kind", Type: model.TypeText},
 		},
 		PrimaryKey: []string{"id"},
-		Indexes:    []catalog.IndexDef{{Name: "events_kind_idx", Columns: []string{"kind"}}},
+		Indexes:    []model.IndexDef{{Name: "events_kind_idx", Columns: []string{"kind"}}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -186,23 +186,23 @@ func TestRenameColumnRewritesReferences(t *testing.T) {
 
 func TestRenameColumnRewritesReferencingTables(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
-	if _, err := cat.CreateTable(ctx, catalog.TableDef{
+	if _, err := cat.CreateTable(ctx, model.TableDef{
 		Name: "parents",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
 		},
 		PrimaryKey: []string{"id"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cat.CreateTable(ctx, catalog.TableDef{
+	if _, err := cat.CreateTable(ctx, model.TableDef{
 		Name: "children",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "parent_id", Type: catalog.TypeInt64},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "parent_id", Type: model.TypeInt64},
 		},
 		PrimaryKey: []string{"id"},
-		ForeignKeys: []catalog.ForeignKeyDef{{
+		ForeignKeys: []model.ForeignKeyDef{{
 			Name: "children_parent_fk", Columns: []string{"parent_id"},
 			RefTable: "parents", RefColumns: []string{"id"},
 		}},
@@ -228,7 +228,7 @@ func TestAddDeleteIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := cat.CreateIndex(ctx, "users", catalog.IndexDef{Name: "users_age_idx", Columns: []string{"age"}})
+	idx, err := cat.CreateIndex(ctx, "users", model.IndexDef{Name: "users_age_idx", Columns: []string{"age"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,10 +240,10 @@ func TestAddDeleteIndex(t *testing.T) {
 		t.Fatal("index not persisted")
 	}
 
-	if _, err := cat.CreateIndex(ctx, "users", catalog.IndexDef{Name: "users_age_idx", Columns: []string{"age"}}); err == nil {
+	if _, err := cat.CreateIndex(ctx, "users", model.IndexDef{Name: "users_age_idx", Columns: []string{"age"}}); err == nil {
 		t.Fatal("duplicate index accepted")
 	}
-	if _, err := cat.CreateIndex(ctx, "users", catalog.IndexDef{Name: "bad", Columns: []string{"ghost"}}); err == nil {
+	if _, err := cat.CreateIndex(ctx, "users", model.IndexDef{Name: "bad", Columns: []string{"ghost"}}); err == nil {
 		t.Fatal("index on unknown column accepted")
 	}
 
@@ -264,14 +264,14 @@ func TestDeleteTableReferencedByForeignKey(t *testing.T) {
 	if _, err := cat.CreateTable(ctx, usersDef()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cat.CreateTable(ctx, catalog.TableDef{
+	if _, err := cat.CreateTable(ctx, model.TableDef{
 		Name: "boards",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "owner_id", Type: catalog.TypeInt64},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "owner_id", Type: model.TypeInt64},
 		},
 		PrimaryKey: []string{"id"},
-		ForeignKeys: []catalog.ForeignKeyDef{
+		ForeignKeys: []model.ForeignKeyDef{
 			{Name: "boards_owner_fk", Columns: []string{"owner_id"}, RefTable: "users", RefColumns: []string{"id"}},
 		},
 	}); err != nil {
@@ -301,14 +301,14 @@ func TestDeleteTableReferencedByForeignKey(t *testing.T) {
 // A self-referential foreign key dies with its own table.
 func TestDeleteTableWithSelfReference(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
-	if _, err := cat.CreateTable(ctx, catalog.TableDef{
+	if _, err := cat.CreateTable(ctx, model.TableDef{
 		Name: "employees",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "manager_id", Type: catalog.TypeInt64, Nullable: true},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "manager_id", Type: model.TypeInt64, Nullable: true},
 		},
 		PrimaryKey: []string{"id"},
-		ForeignKeys: []catalog.ForeignKeyDef{
+		ForeignKeys: []model.ForeignKeyDef{
 			{Name: "employees_manager_fk", Columns: []string{"manager_id"}, RefTable: "employees", RefColumns: []string{"id"}},
 		},
 	}); err != nil {

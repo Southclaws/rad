@@ -11,7 +11,6 @@ import (
 
 	"github.com/Southclaws/rad/rad/api"
 	"github.com/Southclaws/rad/rad/api/oas"
-	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
 	"github.com/Southclaws/rad/rad/engine/reject"
 	"github.com/Southclaws/rad/rad/protocol"
@@ -71,11 +70,4 @@ func problemErrorHandler(ctx context.Context, w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", api.ProblemContentType)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(protocol.NewProblem(protocol.CodeInvalid, status, err.Error()))
-}
-
-func rowJSON(row lir.Row) protocol.Record {
-	if row == nil {
-		return nil
-	}
-	return frontend.RowJSON(row)
 }

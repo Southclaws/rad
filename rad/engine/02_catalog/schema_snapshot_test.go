@@ -4,35 +4,35 @@ import (
 	"encoding/json"
 	"testing"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
 func TestCanonicalSchemaRebuildsCatalogWithoutPhysicalIDs(t *testing.T) {
 	cat, _, ctx := newCatalog(t)
-	users, err := cat.CreateTable(ctx, catalog.TableDef{
+	users, err := cat.CreateTable(ctx, model.TableDef{
 		Name: "users",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeText, Default: &catalog.Default{Func: catalog.DefaultUUID}},
-			{Name: "email", Type: catalog.TypeText, Format: "email"},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeText, Default: &model.Default{Func: model.DefaultUUID}},
+			{Name: "email", Type: model.TypeText, Format: "email"},
 		},
 		PrimaryKey: []string{"id"},
-		Indexes: []catalog.IndexDef{
+		Indexes: []model.IndexDef{
 			{Name: "users_email_unique", Columns: []string{"email"}, Unique: true},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	orders, err := cat.CreateTable(ctx, catalog.TableDef{
+	orders, err := cat.CreateTable(ctx, model.TableDef{
 		Name: "orders",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "user_id", Type: catalog.TypeText},
-			{Name: "paid", Type: catalog.TypeBool, Default: &catalog.Default{Bool: false}},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "user_id", Type: model.TypeText},
+			{Name: "paid", Type: model.TypeBool, Default: &model.Default{Bool: false}},
 		},
 		PrimaryKey: []string{"id"},
-		ForeignKeys: []catalog.ForeignKeyDef{
+		ForeignKeys: []model.ForeignKeyDef{
 			{Name: "orders_user_fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}},
 		},
 	})
@@ -74,9 +74,9 @@ func TestCanonicalSchemaJSONShape(t *testing.T) {
 	definition := usersDef()
 	definition.ID = 7
 	for i := range definition.Columns {
-		definition.Columns[i].ID = catalog.SchemaID(i + 1)
+		definition.Columns[i].ID = model.SchemaID(i + 1)
 	}
-	schema := catalog.SchemaFromDefinitions([]catalog.TableDef{definition})
+	schema := model.SchemaFromDefinitions([]model.TableDef{definition})
 	raw, err := schema.CanonicalJSON()
 	if err != nil {
 		t.Fatal(err)
@@ -102,12 +102,12 @@ func TestValidateCurrentSchemaDetectsPhysicalDrift(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("read physical table: ok=%v err=%v", ok, err)
 	}
-	var physical catalog.Table
+	var physical model.Table
 	if err := json.Unmarshal(raw, &physical); err != nil {
 		t.Fatal(err)
 	}
-	physical.Columns = append(physical.Columns, catalog.Column{
-		ID: "c-untracked", SchemaID: 99, Name: "untracked", Type: catalog.TypeText, Nullable: true,
+	physical.Columns = append(physical.Columns, model.Column{
+		ID: "c-untracked", SchemaID: 99, Name: "untracked", Type: model.TypeText, Nullable: true,
 	})
 	raw, err = json.Marshal(physical)
 	if err != nil {
@@ -128,11 +128,11 @@ func TestValidateCurrentSchemaDetectsPhysicalDrift(t *testing.T) {
 }
 
 func TestBuildSchemaRejectsDanglingPhysicalReference(t *testing.T) {
-	_, err := catalog.BuildSchema([]catalog.Table{{
+	_, err := model.BuildSchema([]model.Table{{
 		ID: "t1", SchemaID: 1, Name: "orders",
-		Columns:    []catalog.Column{{ID: "c1", SchemaID: 1, Name: "id", Type: catalog.TypeInt64}},
+		Columns:    []model.Column{{ID: "c1", SchemaID: 1, Name: "id", Type: model.TypeInt64}},
 		PrimaryKey: []string{"id"},
-		ForeignKeys: []catalog.ForeignKey{{
+		ForeignKeys: []model.ForeignKey{{
 			ID: "fk2", Name: "orders_user_fk", Columns: []string{"id"},
 			RefTableID: "missing", RefColumns: []string{"id"},
 		}},

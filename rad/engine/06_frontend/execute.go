@@ -8,10 +8,9 @@ package frontend
 
 import (
 	"context"
-	"encoding/json"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
+	"github.com/Southclaws/rad/rad/engine/06_frontend/resultjson"
 )
 
 // Execute runs a query against committed state.
@@ -37,63 +36,5 @@ func (db *DB) ExecuteJSON(ctx context.Context, q lir.Query) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return DatumJSON(d), nil
-}
-
-// DatumJSON renders a result tree as JSON-ready values: objects become
-// maps (an absent to-one relation is a PRESENT key with a nil value),
-// arrays become slices (empty, never nil), scalars become native Go values,
-// NULL becomes nil.
-func DatumJSON(d lir.Datum) any {
-	switch d.Kind {
-	case lir.DatumScalar:
-		return plainScalar(d.Scalar)
-	case lir.DatumObject:
-		m := make(map[string]any, len(d.Fields))
-		for _, f := range d.Fields {
-			m[f.Name] = DatumJSON(f.Datum)
-		}
-		return m
-	case lir.DatumArray:
-		out := make([]any, len(d.Elems))
-		for i, e := range d.Elems {
-			out[i] = DatumJSON(e)
-		}
-		return out
-	default: // null
-		return nil
-	}
-}
-
-// RowJSON renders one stored row as a JSON-ready map — the shape mutation
-// responses carry.
-func RowJSON(row lir.Row) map[string]any {
-	m := make(map[string]any, len(row))
-	for name, v := range row {
-		m[name] = plainScalar(v)
-	}
-	return m
-}
-
-// MarshalDatum renders a result as indented JSON with deterministic key
-// order.
-func MarshalDatum(d lir.Datum) ([]byte, error) {
-	return json.MarshalIndent(DatumJSON(d), "", "  ")
-}
-
-func plainScalar(v lir.Value) any {
-	if v.Null {
-		return nil
-	}
-	switch v.Type {
-	case catalog.TypeText:
-		return v.Text
-	case catalog.TypeInt64:
-		return v.Int64
-	case catalog.TypeFloat64:
-		return v.Float64
-	case catalog.TypeBool:
-		return v.Bool
-	}
-	return nil
+	return resultjson.Datum(d), nil
 }

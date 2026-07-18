@@ -6,10 +6,11 @@ package exec
 
 import (
 	"context"
-	"github.com/Southclaws/rad/rad/engine/reject"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
+	"github.com/Southclaws/rad/rad/engine/05_exec/rowstore"
+	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
 // ScanIndex returns the base rows whose indexed values match prefix, which
@@ -41,7 +42,7 @@ func (e *Engine) ScanIndex(ctx context.Context, table, index string, prefix lir.
 		return nil, reject.Inputf("exec: index scan prefix must cover a leading subset of index %q columns %v", idx.Name, idx.Columns)
 	}
 
-	it, err := scanIndexRange(ctx, txn, tbl, idx, eqVals, nil)
+	it, err := rowstore.ScanIndexRange(ctx, txn, tbl, idx, eqVals, nil)
 	if err != nil {
 		return nil, err
 	}

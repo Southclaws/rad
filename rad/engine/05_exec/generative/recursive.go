@@ -17,9 +17,10 @@ package generative
 import (
 	"fmt"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
-	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	"pgregory.net/rapid"
+
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
+	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 )
 
 // GraphCatalog is the fixed schema the recursive generator traverses: a
@@ -30,10 +31,10 @@ func GraphCatalog() *Catalog {
 	return &Catalog{Tables: []Table{{
 		Name: "edges",
 		Columns: []Column{
-			{Name: "src", Type: catalog.TypeText},
-			{Name: "dst", Type: catalog.TypeText},
-			{Name: "w", Type: catalog.TypeInt64},
-			{Name: "note", Type: catalog.TypeText, Nullable: true},
+			{Name: "src", Type: model.TypeText},
+			{Name: "dst", Type: model.TypeText},
+			{Name: "w", Type: model.TypeInt64},
+			{Name: "note", Type: model.TypeText, Nullable: true},
 		},
 		PrimaryKey: []string{"src", "dst"},
 		Indexes:    [][]string{{"src"}},
@@ -110,7 +111,7 @@ func genNote(rt *rapid.T) *string {
 func GraphData(g Graph) map[string][]lir.Row {
 	rows := make([]lir.Row, len(g.Edges))
 	for i, e := range g.Edges {
-		note := lir.Null(catalog.TypeText)
+		note := lir.Null(model.TypeText)
 		if e.Note != nil {
 			note = lir.Text(*e.Note)
 		}
@@ -124,7 +125,7 @@ func GraphData(g Graph) map[string][]lir.Row {
 // frontier (scope "p") and the joined edge (scope "e").
 type stateCol struct {
 	name     string
-	typ      catalog.Type
+	typ      model.Type
 	nullable bool
 	initial  any
 	step     func() lir.Expr
@@ -132,21 +133,27 @@ type stateCol struct {
 
 var (
 	// depth: a hop counter — parent.depth + 1.
-	depthCol = stateCol{name: "depth", typ: catalog.TypeInt64, initial: int64(0),
-		step: func() lir.Expr { return lir.Binary{Op: lir.OpAdd, L: qcol("p", "depth"), R: qlit(int64(1))} }}
+	depthCol = stateCol{
+		name: "depth", typ: model.TypeInt64, initial: int64(0),
+		step: func() lir.Expr { return lir.Binary{Op: lir.OpAdd, L: qcol("p", "depth"), R: qlit(int64(1))} },
+	}
 	// cost: an accumulated edge weight — parent.cost + edge.w.
-	costCol = stateCol{name: "cost", typ: catalog.TypeInt64, initial: int64(0),
-		step: func() lir.Expr { return lir.Binary{Op: lir.OpAdd, L: qcol("p", "cost"), R: qcol("e", "w")} }}
+	costCol = stateCol{
+		name: "cost", typ: model.TypeInt64, initial: int64(0),
+		step: func() lir.Expr { return lir.Binary{Op: lir.OpAdd, L: qcol("p", "cost"), R: qcol("e", "w")} },
+	}
 	// tag / tag2: a nullable text carried from the reaching edge's note,
 	// initialised NULL — exercises nullability reconciliation and NULL identity.
-	tagCol  = stateCol{name: "tag", typ: catalog.TypeText, nullable: true, step: func() lir.Expr { return qcol("e", "note") }}
-	tag2Col = stateCol{name: "tag2", typ: catalog.TypeText, nullable: true, step: func() lir.Expr { return qcol("e", "note") }}
+	tagCol  = stateCol{name: "tag", typ: model.TypeText, nullable: true, step: func() lir.Expr { return qcol("e", "note") }}
+	tag2Col = stateCol{name: "tag2", typ: model.TypeText, nullable: true, step: func() lir.Expr { return qcol("e", "note") }}
 	// flag: a boolean that flips each hop — not(parent.flag).
-	flagCol = stateCol{name: "flag", typ: catalog.TypeBool, initial: true,
-		step: func() lir.Expr { return lir.Unary{Op: lir.OpNot, X: qcol("p", "flag")} }}
+	flagCol = stateCol{
+		name: "flag", typ: model.TypeBool, initial: true,
+		step: func() lir.Expr { return lir.Unary{Op: lir.OpNot, X: qcol("p", "flag")} },
+	}
 	// num: a nullable int carried from the reaching edge's weight, initialised
 	// NULL — a nullable int alongside a nullable text stresses the signature.
-	numCol = stateCol{name: "num", typ: catalog.TypeInt64, nullable: true, step: func() lir.Expr { return qcol("e", "w") }}
+	numCol = stateCol{name: "num", typ: model.TypeInt64, nullable: true, step: func() lir.Expr { return qcol("e", "w") }}
 )
 
 // stateShapes are the recursive-state signatures the generator draws from (id

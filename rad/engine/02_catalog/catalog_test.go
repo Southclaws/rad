@@ -10,20 +10,21 @@ import (
 
 	"github.com/Southclaws/rad/rad/engine/01_kv/kvslate"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 )
 
 // usersDef is a representative table definition exercising every feature:
 // typed columns, nullability, a primary key, and a secondary index.
-func usersDef() catalog.TableDef {
-	return catalog.TableDef{
+func usersDef() model.TableDef {
+	return model.TableDef{
 		Name: "users",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "name", Type: catalog.TypeText},
-			{Name: "age", Type: catalog.TypeInt64, Nullable: true},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "name", Type: model.TypeText},
+			{Name: "age", Type: model.TypeInt64, Nullable: true},
 		},
 		PrimaryKey: []string{"id"},
-		Indexes:    []catalog.IndexDef{{Name: "users_name_idx", Columns: []string{"name"}}},
+		Indexes:    []model.IndexDef{{Name: "users_name_idx", Columns: []string{"name"}}},
 	}
 }
 
@@ -113,7 +114,7 @@ func TestTableAccessors(t *testing.T) {
 	}
 
 	col, ok := tbl.Column("age")
-	if !ok || col.Type != catalog.TypeInt64 || !col.Nullable {
+	if !ok || col.Type != model.TypeInt64 || !col.Nullable {
 		t.Fatalf("Column(age) = %+v ok=%v", col, ok)
 	}
 	if _, ok := tbl.Column("nope"); ok {
@@ -139,14 +140,14 @@ func TestCreateTableForeignKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	orders, err := cat.CreateTable(ctx, catalog.TableDef{
+	orders, err := cat.CreateTable(ctx, model.TableDef{
 		Name: "orders",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeInt64},
-			{Name: "user_id", Type: catalog.TypeInt64},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeInt64},
+			{Name: "user_id", Type: model.TypeInt64},
 		},
 		PrimaryKey:  []string{"id"},
-		ForeignKeys: []catalog.ForeignKeyDef{{Name: "orders_user_fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}}},
+		ForeignKeys: []model.ForeignKeyDef{{Name: "orders_user_fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -183,76 +184,86 @@ func TestPersistenceAcrossInstances(t *testing.T) {
 func TestCreateTableValidation(t *testing.T) {
 	cases := []struct {
 		name    string
-		def     catalog.TableDef
+		def     model.TableDef
 		wantErr string
 	}{
 		{
 			name:    "table name required",
-			def:     catalog.TableDef{Columns: []catalog.ColumnDef{{Name: "id", Type: catalog.TypeInt64}}, PrimaryKey: []string{"id"}},
+			def:     model.TableDef{Columns: []model.ColumnDef{{Name: "id", Type: model.TypeInt64}}, PrimaryKey: []string{"id"}},
 			wantErr: "name is required",
 		},
 		{
 			name: "duplicate column",
-			def: catalog.TableDef{Name: "x", Columns: []catalog.ColumnDef{
-				{Name: "id", Type: catalog.TypeInt64}, {Name: "id", Type: catalog.TypeText},
+			def: model.TableDef{Name: "x", Columns: []model.ColumnDef{
+				{Name: "id", Type: model.TypeInt64}, {Name: "id", Type: model.TypeText},
 			}, PrimaryKey: []string{"id"}},
 			wantErr: "duplicate column",
 		},
 		{
 			name:    "unsupported column type",
-			def:     catalog.TableDef{Name: "x", Columns: []catalog.ColumnDef{{Name: "id", Type: "uuid"}}, PrimaryKey: []string{"id"}},
+			def:     model.TableDef{Name: "x", Columns: []model.ColumnDef{{Name: "id", Type: "uuid"}}, PrimaryKey: []string{"id"}},
 			wantErr: "unsupported type",
 		},
 		{
 			name:    "primary key required",
-			def:     catalog.TableDef{Name: "x", Columns: []catalog.ColumnDef{{Name: "id", Type: catalog.TypeInt64}}},
+			def:     model.TableDef{Name: "x", Columns: []model.ColumnDef{{Name: "id", Type: model.TypeInt64}}},
 			wantErr: "needs a primary key",
 		},
 		{
 			name:    "primary key column must exist",
-			def:     catalog.TableDef{Name: "x", Columns: []catalog.ColumnDef{{Name: "id", Type: catalog.TypeInt64}}, PrimaryKey: []string{"nope"}},
+			def:     model.TableDef{Name: "x", Columns: []model.ColumnDef{{Name: "id", Type: model.TypeInt64}}, PrimaryKey: []string{"nope"}},
 			wantErr: "does not exist",
 		},
 		{
 			name: "primary key column must not be nullable",
-			def: catalog.TableDef{Name: "x", Columns: []catalog.ColumnDef{
-				{Name: "id", Type: catalog.TypeInt64, Nullable: true},
+			def: model.TableDef{Name: "x", Columns: []model.ColumnDef{
+				{Name: "id", Type: model.TypeInt64, Nullable: true},
 			}, PrimaryKey: []string{"id"}},
 			wantErr: "must not be nullable",
 		},
 		{
 			name: "index needs columns",
-			def: catalog.TableDef{Name: "x", Columns: []catalog.ColumnDef{{Name: "id", Type: catalog.TypeInt64}},
-				PrimaryKey: []string{"id"}, Indexes: []catalog.IndexDef{{Name: "empty"}}},
+			def: model.TableDef{
+				Name: "x", Columns: []model.ColumnDef{{Name: "id", Type: model.TypeInt64}},
+				PrimaryKey: []string{"id"}, Indexes: []model.IndexDef{{Name: "empty"}},
+			},
 			wantErr: "no columns",
 		},
 		{
 			name: "index column must exist",
-			def: catalog.TableDef{Name: "x", Columns: []catalog.ColumnDef{{Name: "id", Type: catalog.TypeInt64}},
-				PrimaryKey: []string{"id"}, Indexes: []catalog.IndexDef{{Name: "bad", Columns: []string{"nope"}}}},
+			def: model.TableDef{
+				Name: "x", Columns: []model.ColumnDef{{Name: "id", Type: model.TypeInt64}},
+				PrimaryKey: []string{"id"}, Indexes: []model.IndexDef{{Name: "bad", Columns: []string{"nope"}}},
+			},
 			wantErr: "unknown column",
 		},
 		{
 			name: "fk referenced table must exist",
-			def: catalog.TableDef{Name: "x", Columns: []catalog.ColumnDef{{Name: "id", Type: catalog.TypeInt64}},
+			def: model.TableDef{
+				Name: "x", Columns: []model.ColumnDef{{Name: "id", Type: model.TypeInt64}},
 				PrimaryKey:  []string{"id"},
-				ForeignKeys: []catalog.ForeignKeyDef{{Name: "fk", Columns: []string{"id"}, RefTable: "ghost", RefColumns: []string{"id"}}}},
+				ForeignKeys: []model.ForeignKeyDef{{Name: "fk", Columns: []string{"id"}, RefTable: "ghost", RefColumns: []string{"id"}}},
+			},
 			wantErr: "unknown table",
 		},
 		{
 			name: "fk must reference the full primary key",
-			def: catalog.TableDef{Name: "x", Columns: []catalog.ColumnDef{{Name: "id", Type: catalog.TypeInt64}},
+			def: model.TableDef{
+				Name: "x", Columns: []model.ColumnDef{{Name: "id", Type: model.TypeInt64}},
 				PrimaryKey:  []string{"id"},
-				ForeignKeys: []catalog.ForeignKeyDef{{Name: "fk", Columns: []string{"id"}, RefTable: "users", RefColumns: []string{"name"}}}},
+				ForeignKeys: []model.ForeignKeyDef{{Name: "fk", Columns: []string{"id"}, RefTable: "users", RefColumns: []string{"name"}}},
+			},
 			wantErr: "primary key",
 		},
 		{
 			name: "fk column types must match",
-			def: catalog.TableDef{Name: "x", Columns: []catalog.ColumnDef{
-				{Name: "id", Type: catalog.TypeInt64}, {Name: "user_id", Type: catalog.TypeText},
-			},
+			def: model.TableDef{
+				Name: "x", Columns: []model.ColumnDef{
+					{Name: "id", Type: model.TypeInt64}, {Name: "user_id", Type: model.TypeText},
+				},
 				PrimaryKey:  []string{"id"},
-				ForeignKeys: []catalog.ForeignKeyDef{{Name: "fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}}}},
+				ForeignKeys: []model.ForeignKeyDef{{Name: "fk", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}}},
+			},
 			wantErr: "type mismatch",
 		},
 	}

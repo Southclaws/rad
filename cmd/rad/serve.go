@@ -10,7 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Southclaws/rad/rad/engine/02_catalog"
+	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
 	"github.com/Southclaws/rad/rad/server"
 )
@@ -44,10 +45,10 @@ func serveCmd() *cobra.Command {
 			// initialised. An explicit request is validated up front;
 			// on an existing database a mismatch with the stored mode is
 			// a startup error, never a silent override.
-			var requested catalog.Mode
+			var requested model.Mode
 			if cfg.CatalogMode != "" {
 				var err error
-				requested, err = catalog.ParseMode(cfg.CatalogMode)
+				requested, err = model.ParseMode(cfg.CatalogMode)
 				if err != nil {
 					return err
 				}

@@ -25,11 +25,12 @@ import (
 	"testing"
 
 	kvslate "github.com/Southclaws/rad/rad/engine/01_kv/kvslate"
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	differential "github.com/Southclaws/rad/rad/engine/05_exec/differential"
 	generative "github.com/Southclaws/rad/rad/engine/05_exec/generative"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
+	"github.com/Southclaws/rad/rad/engine/06_frontend/resultjson"
 	emit "github.com/Southclaws/rad/tests/gen/emit"
 	"pgregory.net/rapid"
 )
@@ -133,7 +134,7 @@ func dumpResult(ctx context.Context, db *frontend.DB, q lir.Query) any {
 	if err != nil {
 		return map[string]string{"error": err.Error()}
 	}
-	return frontend.DatumJSON(res)
+	return resultjson.Datum(res)
 }
 
 // capture holds the latest failing case and, when RAD_GEN_EMIT is set, writes
@@ -194,7 +195,7 @@ func introspectSchema(t *testing.T, ctx context.Context, path string, src []byte
 // scanOf feeds the reference interpreter the rows the runner inserted, keyed by
 // table.
 func scanOf(data map[string][]lir.Row) differential.ScanFunc {
-	return func(_ context.Context, tbl catalog.Table) ([]lir.Row, error) {
+	return func(_ context.Context, tbl model.Table) ([]lir.Row, error) {
 		return data[tbl.Name], nil
 	}
 }

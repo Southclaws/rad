@@ -8,25 +8,25 @@ import (
 	"testing"
 	"time"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 )
 
 func setupWithDefaults(t *testing.T) (*Engine, string) {
 	t.Helper()
 	eng, ctx := setup(t)
-	_, err := eng.Catalog().CreateTable(ctx, catalog.TableDef{
+	_, err := eng.Catalog().CreateTable(ctx, model.TableDef{
 		Name: "tickets",
-		Columns: []catalog.ColumnDef{
-			{Name: "id", Type: catalog.TypeText, Format: "uuid", Default: &catalog.Default{Func: catalog.DefaultUUID}},
-			{Name: "title", Type: catalog.TypeText},
-			{Name: "status", Type: catalog.TypeText, Default: &catalog.Default{Text: "open"}},
-			{Name: "priority", Type: catalog.TypeInt64, Default: &catalog.Default{Int64: 2}},
-			{Name: "done", Type: catalog.TypeBool, Default: &catalog.Default{Bool: false}},
-			{Name: "created_at", Type: catalog.TypeInt64, Format: "unix_ms", Default: &catalog.Default{Func: catalog.DefaultNowMS}},
+		Columns: []model.ColumnDef{
+			{Name: "id", Type: model.TypeText, Format: "uuid", Default: &model.Default{Func: model.DefaultUUID}},
+			{Name: "title", Type: model.TypeText},
+			{Name: "status", Type: model.TypeText, Default: &model.Default{Text: "open"}},
+			{Name: "priority", Type: model.TypeInt64, Default: &model.Default{Int64: 2}},
+			{Name: "done", Type: model.TypeBool, Default: &model.Default{Bool: false}},
+			{Name: "created_at", Type: model.TypeInt64, Format: "unix_ms", Default: &model.Default{Func: model.DefaultNowMS}},
 		},
 		PrimaryKey: []string{"id"},
-		Indexes:    []catalog.IndexDef{{Name: "tickets_done_idx", Columns: []string{"done"}}},
+		Indexes:    []model.IndexDef{{Name: "tickets_done_idx", Columns: []string{"done"}}},
 	})
 	if err != nil {
 		t.Fatal(err)

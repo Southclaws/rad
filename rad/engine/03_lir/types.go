@@ -3,7 +3,7 @@ package lir
 import (
 	"fmt"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 )
 
 // SlotID names one output attribute of a bound relation. The binder assigns
@@ -13,21 +13,21 @@ import (
 // The zero value marks "unassigned" (unbound IR carries names, not slots).
 type SlotID int32
 
-// Kind classifies a static type. The four scalar kinds mirror catalog.Type;
+// Kind classifies a static type. The four scalar kinds mirror model.Type;
 // Row and Array exist for nested values produced by cardinality crossings.
 type Kind string
 
 const (
-	KindText    Kind = Kind(catalog.TypeText)
-	KindInt64   Kind = Kind(catalog.TypeInt64)
-	KindFloat64 Kind = Kind(catalog.TypeFloat64)
-	KindBool    Kind = Kind(catalog.TypeBool)
+	KindText    Kind = Kind(model.TypeText)
+	KindInt64   Kind = Kind(model.TypeInt64)
+	KindFloat64 Kind = Kind(model.TypeFloat64)
+	KindBool    Kind = Kind(model.TypeBool)
 	KindRow     Kind = "row"
 	KindArray   Kind = "array"
 )
 
 // KindOf lifts a catalog column type into a type kind.
-func KindOf(t catalog.Type) Kind { return Kind(t) }
+func KindOf(t model.Type) Kind { return Kind(t) }
 
 // Scalar reports whether k is one of the four storable scalar kinds.
 func (k Kind) Scalar() bool {
@@ -40,7 +40,7 @@ func (k Kind) Scalar() bool {
 
 // CatalogType maps a scalar kind back to its catalog type. It is only
 // meaningful when k.Scalar() is true.
-func (k Kind) CatalogType() catalog.Type { return catalog.Type(k) }
+func (k Kind) CatalogType() model.Type { return model.Type(k) }
 
 // Numeric reports whether k participates in arithmetic.
 func (k Kind) Numeric() bool { return k == KindInt64 || k == KindFloat64 }
@@ -66,7 +66,7 @@ func (t Type) String() string {
 }
 
 // ScalarType builds a scalar Type from a catalog column type.
-func ScalarType(t catalog.Type, nullable bool) Type {
+func ScalarType(t model.Type, nullable bool) Type {
 	return Type{Kind: KindOf(t), Nullable: nullable}
 }
 

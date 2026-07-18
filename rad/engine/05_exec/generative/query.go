@@ -4,15 +4,16 @@ import (
 	"fmt"
 	"math"
 
-	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
-	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	"pgregory.net/rapid"
+
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
+	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 )
 
 // orderable are the scalar types that carry a usable ordering for ORDER BY and
 // group keys (bool is excluded from generated orderings, though Value.Compare
 // does totally order it).
-var orderable = []catalog.Type{catalog.TypeText, catalog.TypeInt64, catalog.TypeFloat64}
+var orderable = []model.Type{model.TypeText, model.TypeInt64, model.TypeFloat64}
 
 // genScope is one visible output scope: a label, its typed columns, and the
 // column names forming a unique key within it (empty when none is known). The
@@ -67,7 +68,7 @@ func (g *Generator) coin() bool        { return rapid.Bool().Draw(g.t, "coin") }
 
 // pick draws one element of s (which must be non-empty), shrinking toward the
 // first. shuffled draws a permutation of s.
-func pick[E any](g *Generator, s []E) E     { return rapid.SampledFrom(s).Draw(g.t, "pick") }
+func pick[E any](g *Generator, s []E) E       { return rapid.SampledFrom(s).Draw(g.t, "pick") }
 func shuffled[E any](g *Generator, s []E) []E { return rapid.Permutation(s).Draw(g.t, "perm") }
 
 // genBody generates the shared core: a few closed bindings, a relation tree,
@@ -275,11 +276,11 @@ func (g *Generator) genCorrelatedSub(outer []genScope) (lir.Relation, []genScope
 // column of the same type — what makes the crossing correlated.
 func (g *Generator) correlate(sub, outer []genScope) lir.Expr {
 	for _, typ := range shuffled(g, scalarTypes) {
-		sc, ss, sok := g.pickCol(sub, []catalog.Type{typ})
-		oc, os, ook := g.pickCol(outer, []catalog.Type{typ})
+		sc, ss, sok := g.pickCol(sub, []model.Type{typ})
+		oc, os, ook := g.pickCol(outer, []model.Type{typ})
 		if sok && ook {
 			op := lir.OpEq
-			if typ != catalog.TypeBool && g.chance(3) {
+			if typ != model.TypeBool && g.chance(3) {
 				op = pick(g, []lir.BinaryOp{lir.OpLt, lir.OpGt})
 			}
 			return lir.Binary{Op: op, L: qcol(ss, sc.Name), R: qcol(os, oc.Name)}
@@ -351,11 +352,11 @@ func (g *Generator) genProject(fuel int) (lir.Relation, []genScope) {
 	}
 	// Occasionally add a computed int64 field to exercise projection of a
 	// non-column expression.
-	if c, s, ok := g.pickCol(scopes, []catalog.Type{catalog.TypeInt64}); ok && g.chance(2) {
+	if c, s, ok := g.pickCol(scopes, []model.Type{model.TypeInt64}); ok && g.chance(2) {
 		name := g.field()
 		expr := lir.Binary{Op: lir.OpAdd, L: qcol(s, c.Name), R: qlit(1)}
 		fields = append(fields, lir.ProjField{As: name, Expr: expr})
-		cols = append(cols, Column{Name: name, Type: catalog.TypeInt64, Nullable: c.Nullable})
+		cols = append(cols, Column{Name: name, Type: model.TypeInt64, Nullable: c.Nullable})
 	}
 	return lir.Project{Input: child, Scope: scope, Fields: fields}, []genScope{{name: scope, cols: cols}}
 }
@@ -387,15 +388,15 @@ func (g *Generator) genAggregate(fuel int) (lir.Relation, []genScope) {
 	var terms []lir.AggTerm
 	countName := g.field()
 	terms = append(terms, lir.AggTerm{Fn: lir.AggCount, As: countName})
-	cols = append(cols, Column{Name: countName, Type: catalog.TypeInt64})
+	cols = append(cols, Column{Name: countName, Type: model.TypeInt64})
 	// An optional numeric fold.
-	if c, s, ok := g.pickCol(scopes, []catalog.Type{catalog.TypeInt64, catalog.TypeFloat64}); ok && g.chance(2) {
+	if c, s, ok := g.pickCol(scopes, []model.Type{model.TypeInt64, model.TypeFloat64}); ok && g.chance(2) {
 		fn := pick(g, []lir.AggFn{lir.AggSum, lir.AggMin, lir.AggMax, lir.AggAvg})
 		name := g.field()
 		terms = append(terms, lir.AggTerm{Fn: fn, Arg: qcol(s, c.Name), As: name})
 		typ := c.Type
 		if fn == lir.AggAvg {
-			typ = catalog.TypeFloat64
+			typ = model.TypeFloat64
 		}
 		cols = append(cols, Column{Name: name, Type: typ, Nullable: true})
 	}
@@ -432,7 +433,7 @@ func (g *Generator) genAtom(scopes []genScope) lir.Expr {
 		return qlit(true)
 	}
 	col := qcol(s, c.Name)
-	if c.Type == catalog.TypeBool {
+	if c.Type == model.TypeBool {
 		switch g.intn(3) {
 		case 0:
 			return col
@@ -453,8 +454,8 @@ func (g *Generator) genAtom(scopes []genScope) lir.Expr {
 // a constant true (cross product) when the sides share no comparable type.
 func (g *Generator) genJoinOn(ls, rs []genScope) lir.Expr {
 	for _, typ := range shuffled(g, orderable) {
-		lc, lsc, lok := g.pickCol(ls, []catalog.Type{typ})
-		rc, rsc, rok := g.pickCol(rs, []catalog.Type{typ})
+		lc, lsc, lok := g.pickCol(ls, []model.Type{typ})
+		rc, rsc, rok := g.pickCol(rs, []model.Type{typ})
 		if lok && rok {
 			return qeq(qcol(lsc, lc.Name), qcol(rsc, rc.Name))
 		}
@@ -463,7 +464,7 @@ func (g *Generator) genJoinOn(ls, rs []genScope) lir.Expr {
 }
 
 // pickCol returns a random column (and its scope) whose type is in want.
-func (g *Generator) pickCol(scopes []genScope, want []catalog.Type) (Column, string, bool) {
+func (g *Generator) pickCol(scopes []genScope, want []model.Type) (Column, string, bool) {
 	type hit struct {
 		c Column
 		s string
@@ -489,13 +490,13 @@ func (g *Generator) anyCol(scopes []genScope) (Column, string, bool) {
 	return g.pickCol(scopes, scalarTypes)
 }
 
-func (g *Generator) literal(typ catalog.Type) any {
+func (g *Generator) literal(typ model.Type) any {
 	switch typ {
-	case catalog.TypeText:
+	case model.TypeText:
 		return pick(g, []string{"a", "b", "c", ""})
-	case catalog.TypeInt64:
+	case model.TypeInt64:
 		return pick(g, []int{math.MinInt64, -1, 0, 1, 2, 100, math.MaxInt64})
-	case catalog.TypeFloat64:
+	case model.TypeFloat64:
 		return pick(g, []float64{-1.5, 0, 1.5, 2.5})
 	default:
 		return g.coin()

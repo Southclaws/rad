@@ -40,6 +40,7 @@ import (
 	radclient "github.com/Southclaws/rad/rad/client"
 	"github.com/Southclaws/rad/rad/engine/01_kv/kvslate"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
 	"github.com/Southclaws/rad/rad/protocol"
 	"github.com/Southclaws/rad/rad/protocol/lirwire"
@@ -93,30 +94,30 @@ func New(t *testing.T) *DB {
 
 // Column definition sugar. Columns are non-nullable unless wrapped in Null.
 
-func Text(name string) catalog.ColumnDef {
-	return catalog.ColumnDef{Name: name, Type: catalog.TypeText}
+func Text(name string) model.ColumnDef {
+	return model.ColumnDef{Name: name, Type: model.TypeText}
 }
 
-func Int64(name string) catalog.ColumnDef {
-	return catalog.ColumnDef{Name: name, Type: catalog.TypeInt64}
+func Int64(name string) model.ColumnDef {
+	return model.ColumnDef{Name: name, Type: model.TypeInt64}
 }
 
-func Float64(name string) catalog.ColumnDef {
-	return catalog.ColumnDef{Name: name, Type: catalog.TypeFloat64}
+func Float64(name string) model.ColumnDef {
+	return model.ColumnDef{Name: name, Type: model.TypeFloat64}
 }
 
-func Bool(name string) catalog.ColumnDef {
-	return catalog.ColumnDef{Name: name, Type: catalog.TypeBool}
+func Bool(name string) model.ColumnDef {
+	return model.ColumnDef{Name: name, Type: model.TypeBool}
 }
 
 // Null makes a column definition nullable.
-func Null(cd catalog.ColumnDef) catalog.ColumnDef {
+func Null(cd model.ColumnDef) model.ColumnDef {
 	cd.Nullable = true
 	return cd
 }
 
 // CreateTable applies a raw table definition directly to the catalog.
-func (d *DB) CreateTable(def catalog.TableDef) {
+func (d *DB) CreateTable(def model.TableDef) {
 	d.T.Helper()
 	if _, err := d.Cat.CreateTable(d.ctx, def); err != nil {
 		d.T.Fatalf("harness: create table %q: %v", def.Name, err)
@@ -125,14 +126,14 @@ func (d *DB) CreateTable(def catalog.TableDef) {
 
 // Table starts a fluent table definition. The primary key defaults to an
 // "id" column when one exists and PK is not called.
-func (d *DB) Table(name string, cols ...catalog.ColumnDef) *TableBuilder {
-	return &TableBuilder{d: d, def: catalog.TableDef{Name: name, Columns: cols}}
+func (d *DB) Table(name string, cols ...model.ColumnDef) *TableBuilder {
+	return &TableBuilder{d: d, def: model.TableDef{Name: name, Columns: cols}}
 }
 
 // TableBuilder accumulates a table definition; Create applies it.
 type TableBuilder struct {
 	d   *DB
-	def catalog.TableDef
+	def model.TableDef
 }
 
 func (tb *TableBuilder) PK(cols ...string) *TableBuilder {
@@ -141,24 +142,24 @@ func (tb *TableBuilder) PK(cols ...string) *TableBuilder {
 }
 
 func (tb *TableBuilder) Index(name string, cols ...string) *TableBuilder {
-	tb.def.Indexes = append(tb.def.Indexes, catalog.IndexDef{Name: name, Columns: cols})
+	tb.def.Indexes = append(tb.def.Indexes, model.IndexDef{Name: name, Columns: cols})
 	return tb
 }
 
 func (tb *TableBuilder) Unique(name string, cols ...string) *TableBuilder {
-	tb.def.Indexes = append(tb.def.Indexes, catalog.IndexDef{Name: name, Columns: cols, Unique: true})
+	tb.def.Indexes = append(tb.def.Indexes, model.IndexDef{Name: name, Columns: cols, Unique: true})
 	return tb
 }
 
 // FK declares a single-column foreign key — the overwhelmingly common case;
 // use AddFK for composite keys.
 func (tb *TableBuilder) FK(name, col, refTable, refCol string) *TableBuilder {
-	return tb.AddFK(catalog.ForeignKeyDef{
+	return tb.AddFK(model.ForeignKeyDef{
 		Name: name, Columns: []string{col}, RefTable: refTable, RefColumns: []string{refCol},
 	})
 }
 
-func (tb *TableBuilder) AddFK(def catalog.ForeignKeyDef) *TableBuilder {
+func (tb *TableBuilder) AddFK(def model.ForeignKeyDef) *TableBuilder {
 	tb.def.ForeignKeys = append(tb.def.ForeignKeys, def)
 	return tb
 }
