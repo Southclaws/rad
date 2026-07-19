@@ -79,6 +79,49 @@ type Join struct {
 	On          Expr
 }
 
+// Concatenate is the n-ary bag concatenation: every row of every input with
+// its multiplicity preserved, no deduplication. Inputs must have positionally
+// compatible output shapes (same arity, and per position the same column
+// name and scalar kind; nullability widens by OR). The output exposes those
+// columns under Scope, like a scan; input scopes are not visible above it.
+// The output has no inherent order.
+type Concatenate struct {
+	Scope  string
+	Inputs []Relation
+}
+
+// SetQuantifier is the ALL/DISTINCT choice of a binary set operation:
+// QuantifierAll keeps multiplicities, QuantifierDistinct collapses each
+// output row to one occurrence by canonical full-row identity.
+type SetQuantifier string
+
+const (
+	QuantifierAll      SetQuantifier = "all"
+	QuantifierDistinct SetQuantifier = "distinct"
+)
+
+// Intersect is the bag intersection of Left and Right by canonical full-row
+// identity: min of the two multiplicities under QuantifierAll, one
+// occurrence per common row under QuantifierDistinct. Inputs follow
+// Concatenate's positional-compatibility rule; output rows are drawn from
+// Left, exposed under Scope. The output has no inherent order.
+type Intersect struct {
+	Scope       string
+	Left, Right Relation
+	Quantifier  SetQuantifier
+}
+
+// Except is the bag difference Left minus Right by canonical full-row
+// identity: max(m−n, 0) occurrences under QuantifierAll, one occurrence per
+// distinct Left row absent from Right under QuantifierDistinct. Inputs
+// follow Concatenate's positional-compatibility rule; output rows are drawn
+// from Left, exposed under Scope. The output has no inherent order.
+type Except struct {
+	Scope       string
+	Left, Right Relation
+	Quantifier  SetQuantifier
+}
+
 // AggFn enumerates the aggregate folds.
 type AggFn string
 
@@ -196,6 +239,9 @@ func (Rows) rel()         {}
 func (Filter) rel()       {}
 func (Project) rel()      {}
 func (Join) rel()         {}
+func (Concatenate) rel()  {}
+func (Intersect) rel()    {}
+func (Except) rel()       {}
 func (Aggregate) rel()    {}
 func (Order) rel()        {}
 func (Slice) rel()        {}

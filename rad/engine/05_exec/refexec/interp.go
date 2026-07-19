@@ -441,6 +441,61 @@ func (in *interp) rel(r bound.Relation, outer lireval.Env) ([]lireval.Env, error
 		}
 		return out, nil
 
+	case *bound.Concatenate:
+		var all []lireval.Env
+		for _, input := range n.Ins {
+			rows, err := in.rel(input, outer)
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range rows {
+				all = append(all, remapOntoOutput(n.Output().Fields, input.Output().Fields, row, outer))
+			}
+		}
+		return all, nil
+
+	case *bound.Intersect:
+		left, right, err := in.setOperationSides(n.L, n.R, outer)
+		if err != nil {
+			return nil, err
+		}
+		distinct := n.Quantifier == lir.QuantifierDistinct
+		emitted := newOracleRowSet(n.L.Output().Fields)
+		var out []lireval.Env
+		for _, row := range left {
+			decoded := decodeOracleRow(n.L.Output().Fields, row)
+			if distinct {
+				if !right.contains(decoded) || !emitted.add(row) {
+					continue
+				}
+			} else if !right.take(decoded) {
+				continue
+			}
+			out = append(out, remapOntoOutput(n.Output().Fields, n.L.Output().Fields, row, outer))
+		}
+		return out, nil
+
+	case *bound.Except:
+		left, right, err := in.setOperationSides(n.L, n.R, outer)
+		if err != nil {
+			return nil, err
+		}
+		distinct := n.Quantifier == lir.QuantifierDistinct
+		emitted := newOracleRowSet(n.L.Output().Fields)
+		var out []lireval.Env
+		for _, row := range left {
+			decoded := decodeOracleRow(n.L.Output().Fields, row)
+			if distinct {
+				if right.contains(decoded) || !emitted.add(row) {
+					continue
+				}
+			} else if right.take(decoded) {
+				continue
+			}
+			out = append(out, remapOntoOutput(n.Output().Fields, n.L.Output().Fields, row, outer))
+		}
+		return out, nil
+
 	case *bound.Order:
 		rows, err := in.rel(n.In, outer)
 		if err != nil {
@@ -470,6 +525,37 @@ func (in *interp) rel(r bound.Relation, outer lireval.Env) ([]lireval.Env, error
 		return in.fold(n, rows, outer)
 	}
 	return nil, fmt.Errorf("refexec: unknown relation %T", r)
+}
+
+// setOperationSides materialises both sides of a binary set operation: the
+// left rows as-is, the right rows decoded into the oracle's own multiset.
+func (in *interp) setOperationSides(l, r bound.Relation, outer lireval.Env) ([]lireval.Env, *oracleRowMultiset, error) {
+	left, err := in.rel(l, outer)
+	if err != nil {
+		return nil, nil, err
+	}
+	rows, err := in.rel(r, outer)
+	if err != nil {
+		return nil, nil, err
+	}
+	right := newOracleRowMultiset()
+	for _, row := range rows {
+		right.add(decodeOracleRow(r.Output().Fields, row))
+	}
+	return left, right, nil
+}
+
+// remapOntoOutput rebuilds a source row on the output slots, field k of the
+// source feeding field k of the output. A missing source slot stays missing,
+// which renders as NULL.
+func remapOntoOutput(out, src []lir.Field, row lireval.Env, outer lireval.Env) lireval.Env {
+	env := newFrame(outer)
+	for k, fld := range out {
+		if d, has := row[src[k].Slot]; has {
+			env[fld.Slot] = d
+		}
+	}
+	return env
 }
 
 // order sorts rows by the terms with a stable sort over explicit Value

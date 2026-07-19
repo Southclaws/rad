@@ -78,6 +78,16 @@ func (w *raiser) rel(r lir.Relation) string {
 		node = lirwire.Project(w.rel(x.Input), x.Scope, x.Spread, fields)
 	case lir.Join:
 		node = lirwire.Join(w.rel(x.Left), w.rel(x.Right), string(x.Kind), w.expr(x.On))
+	case lir.Concatenate:
+		inputs := make([]string, len(x.Inputs))
+		for i, in := range x.Inputs {
+			inputs[i] = w.rel(in)
+		}
+		node = lirwire.Concatenate(x.Scope, inputs...)
+	case lir.Intersect:
+		node = lirwire.Intersect(x.Scope, w.rel(x.Left), w.rel(x.Right), string(x.Quantifier))
+	case lir.Except:
+		node = lirwire.Except(x.Scope, w.rel(x.Left), w.rel(x.Right), string(x.Quantifier))
 	case lir.Aggregate:
 		groups := make([]lirwire.GroupTerm, len(x.Groups))
 		for i, g := range x.Groups {

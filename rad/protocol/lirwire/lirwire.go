@@ -848,6 +848,12 @@ func (w *Node) UnmarshalJSON(data []byte) error {
 		v = &ProjectNode{}
 	case "join":
 		v = &JoinNode{}
+	case "concatenate":
+		v = &ConcatenateNode{}
+	case "intersect":
+		v = &IntersectNode{}
+	case "except":
+		v = &ExceptNode{}
 	case "aggregate":
 		v = &AggregateNode{}
 	case "order":
@@ -1023,6 +1029,120 @@ func (JoinNode) isNode() {}
 
 func (JoinNode) NodeType() string { return "join" }
 
+// Concatenate two or more input relations into one bag: the output
+// contains every row of every input with its multiplicity preserved and
+// performs no deduplication (SQL `UNION ALL`). A set union is the
+// composition `distinct` over `concatenate`, under `distinct`'s
+// canonical full-row identity.
+//
+// Inputs must have positionally compatible output shapes: the same number
+// of columns and, at each position, the same column name and scalar kind.
+// Nullability is widened positionally: an output column is nullable when
+// the corresponding column of any input is nullable.
+//
+// The output carries those shared column names under `scope`, exactly as
+// a scan exposes its columns under its scope. Input scopes do not remain
+// visible above the concatenation.
+//
+// A concatenation imposes no logical order. Input declaration order and
+// any ordering carried by an input have no observable effect on the
+// output. An implementation may process or emit inputs in any order. The
+// declaration order is structural only and has no relational or
+// observable meaning. An observable ordered result requires an explicit
+// `order` above the concatenation.
+type ConcatenateNode struct {
+	// The ids of the input relations. At least two; n-ary by design,
+	// since concatenation is associative.
+	//
+	Inputs []string `json:"inputs"`
+	Kind   string   `json:"kind"`
+	// The label the output columns are bound to. Must be unique across
+	// the query, under the same rules as a scan's scope.
+	//
+	Scope string `json:"scope"`
+}
+
+func (ConcatenateNode) isNode() {}
+
+func (ConcatenateNode) NodeType() string { return "concatenate" }
+
+// The bag intersection of `left` and `right` (SQL `INTERSECT`): the rows
+// common to both inputs, matched by canonical full-row identity — the
+// `distinct` operator's identity, where typed NULLs equal one another.
+// With `quantifier: all`, a row occurring m times in `left` and n times
+// in `right` occurs min(m, n) times in the output; with `quantifier:
+// distinct`, each common row occurs exactly once.
+//
+// The inputs must be positionally compatible under `concatenate`'s rule:
+// the same number of columns and, at each position, the same column name
+// and scalar kind. Every output row is drawn from `left`, so the output
+// columns carry `left`'s types and nullability, exposed under `scope`
+// exactly as a scan exposes its columns. Input scopes are not visible
+// above the node.
+//
+// The two sides are independent relations: neither may reference a scope
+// bound by the other, exactly as a join's sides may not. The output has
+// no inherent order; an observable ordered result requires an explicit
+// `order` above it.
+type IntersectNode struct {
+	Kind string `json:"kind"`
+	// The id of the left input relation.
+	Left string `json:"left"`
+	// The set quantifier: `all` keeps matched multiplicities (min of the
+	// two sides); `distinct` emits each common row once.
+	//
+	Quantifier string `json:"quantifier"`
+	// The id of the right input relation.
+	Right string `json:"right"`
+	// The label the output columns are bound to. Must be unique across
+	// the query, under the same rules as a scan's scope.
+	//
+	Scope string `json:"scope"`
+}
+
+func (IntersectNode) isNode() {}
+
+func (IntersectNode) NodeType() string { return "intersect" }
+
+// The bag difference `left` minus `right` (SQL `EXCEPT`): the rows of
+// `left` with `right`'s occurrences removed, matched by canonical
+// full-row identity — the `distinct` operator's identity, where typed
+// NULLs equal one another. With `quantifier: all`, a row occurring m
+// times in `left` and n times in `right` occurs max(m − n, 0) times in
+// the output; with `quantifier: distinct`, each distinct `left` row
+// occurs exactly once when it does not occur in `right` at all.
+//
+// The inputs must be positionally compatible under `concatenate`'s rule:
+// the same number of columns and, at each position, the same column name
+// and scalar kind. Every output row is drawn from `left`, so the output
+// columns carry `left`'s types and nullability, exposed under `scope`
+// exactly as a scan exposes its columns. Input scopes are not visible
+// above the node.
+//
+// The two sides are independent relations: neither may reference a scope
+// bound by the other, exactly as a join's sides may not. The output has
+// no inherent order; an observable ordered result requires an explicit
+// `order` above it.
+type ExceptNode struct {
+	Kind string `json:"kind"`
+	// The id of the left input relation.
+	Left string `json:"left"`
+	// The set quantifier: `all` subtracts occurrence counts; `distinct`
+	// emits each distinct `left` row absent from `right` once.
+	//
+	Quantifier string `json:"quantifier"`
+	// The id of the right input relation, whose occurrences are subtracted from `left`.
+	Right string `json:"right"`
+	// The label the output columns are bound to. Must be unique across
+	// the query, under the same rules as a scan's scope.
+	//
+	Scope string `json:"scope"`
+}
+
+func (ExceptNode) isNode() {}
+
+func (ExceptNode) NodeType() string { return "except" }
+
 // Fold the rows of `input` into groups. With `groups`, it is GROUP BY: one
 // output row per distinct combination of the group expressions. With no
 // `groups`, it is the global fold: exactly one output row over the whole
@@ -1184,8 +1304,8 @@ type Root struct {
 // A complete query: the relation forest plus its root selector.
 //
 // `nodes` is a flat map from caller-chosen id to relation node. Edges are
-// the string ids a node names in its `input`, `left`, `right`, or a
-// crossing's `node`. This encoding carries no sharing among ordinary
+// the string ids a node names in its `input`, `inputs`, `left`, `right`,
+// or a crossing's `node`. This encoding carries no sharing among ordinary
 // nodes: an id names exactly one inline definition, referenced by exactly
 // one consumer. The document is a finite forest — one tree rooted at
 // `root.node` plus one tree per binding root — and cyclic, dangling,

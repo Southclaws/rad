@@ -61,6 +61,19 @@ func printRel(b *strings.Builder, rel bound.Relation, depth int) {
 		fmt.Fprintf(b, "%sJoin %s on %s%s\n", pad, n.Kind, printExpr(n.On), suffix(n))
 		printRel(b, n.L, depth+1)
 		printRel(b, n.R, depth+1)
+	case *bound.Concatenate:
+		fmt.Fprintf(b, "%sConcatenate (%s) %s%s\n", pad, n.Scope, rowType(n.Output()), suffix(n))
+		for _, in := range n.Ins {
+			printRel(b, in, depth+1)
+		}
+	case *bound.Intersect:
+		fmt.Fprintf(b, "%sIntersect %s (%s) %s%s\n", pad, n.Quantifier, n.Scope, rowType(n.Output()), suffix(n))
+		printRel(b, n.L, depth+1)
+		printRel(b, n.R, depth+1)
+	case *bound.Except:
+		fmt.Fprintf(b, "%sExcept %s (%s) %s%s\n", pad, n.Quantifier, n.Scope, rowType(n.Output()), suffix(n))
+		printRel(b, n.L, depth+1)
+		printRel(b, n.R, depth+1)
 	case *bound.Aggregate:
 		fmt.Fprintf(b, "%sAggregate%s\n", pad, suffix(n))
 		for _, g := range n.Groups {

@@ -193,6 +193,27 @@ func (pl *planner) plan(rel bound.Relation, req []bound.OrderTerm) physical.Phys
 		// The binder rejects crossings in join conditions, so On is pure.
 		return &physical.NestedLoopJoinExec{L: pl.plan(n.L, nil), R: pl.plan(n.R, nil), Kind: n.Kind, On: n.On, ROut: n.R.Output()}
 
+	case *bound.Concatenate:
+		ins := make([]physical.PhysNode, len(n.Ins))
+		inOuts := make([]lir.RowType, len(n.Ins))
+		for i, in := range n.Ins {
+			ins[i] = pl.plan(in, nil)
+			inOuts[i] = in.Output()
+		}
+		return &physical.ConcatenateExec{Ins: ins, InOuts: inOuts, Out: n.Output()}
+
+	case *bound.Intersect:
+		return &physical.IntersectExec{
+			L: pl.plan(n.L, nil), R: pl.plan(n.R, nil),
+			Quantifier: n.Quantifier, LOut: n.L.Output(), ROut: n.R.Output(), Out: n.Output(),
+		}
+
+	case *bound.Except:
+		return &physical.ExceptExec{
+			L: pl.plan(n.L, nil), R: pl.plan(n.R, nil),
+			Quantifier: n.Quantifier, LOut: n.L.Output(), ROut: n.R.Output(), Out: n.Output(),
+		}
+
 	case *bound.Ref:
 		return &physical.RefExec{Binding: n.Binding, Out: n.Output(), Canon: n.Canon}
 

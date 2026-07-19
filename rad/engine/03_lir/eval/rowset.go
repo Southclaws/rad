@@ -30,9 +30,17 @@ func (s *CanonicalRowSet) Add(row Env) bool {
 // Contains reports whether an identical row has already been added.
 func (s *CanonicalRowSet) Contains(row Env) bool { return s.seen[s.key(row)] }
 
-func (s *CanonicalRowSet) key(row Env) string {
+func (s *CanonicalRowSet) key(row Env) string { return CanonicalRowKey(s.fields, row) }
+
+// CanonicalRowKey renders a row's canonical full-row identity over the given
+// fields' slots, in order: the identity distinct, recursive accumulation, and
+// the bag set operations share. The key is value-based, so rows from two
+// positionally compatible relations — different slots, same column shape —
+// produce comparable keys, which is what lets intersect and except probe one
+// side's multiset with the other side's rows.
+func CanonicalRowKey(fields []lir.Field, row Env) string {
 	var key []byte
-	for _, f := range s.fields {
+	for _, f := range fields {
 		d, ok := row[f.Slot]
 		if !ok || d.Kind == lir.DatumNull {
 			key = append(key, "|N"...)

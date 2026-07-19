@@ -217,6 +217,36 @@
       ],
       "type": "object"
     },
+    "ConcatenateNode": {
+      "additionalProperties": false,
+      "description": "Concatenate two or more input relations into one bag: the output\ncontains every row of every input with its multiplicity preserved and\nperforms no deduplication (SQL `UNION ALL`). A set union is the\ncomposition `distinct` over `concatenate`, under `distinct`'s\ncanonical full-row identity.\n\nInputs must have positionally compatible output shapes: the same number\nof columns and, at each position, the same column name and scalar kind.\nNullability is widened positionally: an output column is nullable when\nthe corresponding column of any input is nullable.\n\nThe output carries those shared column names under `scope`, exactly as\na scan exposes its columns under its scope. Input scopes do not remain\nvisible above the concatenation.\n\nA concatenation imposes no logical order. Input declaration order and\nany ordering carried by an input have no observable effect on the\noutput. An implementation may process or emit inputs in any order. The\ndeclaration order is structural only and has no relational or\nobservable meaning. An observable ordered result requires an explicit\n`order` above the concatenation.\n",
+      "properties": {
+        "inputs": {
+          "description": "The ids of the input relations. At least two; n-ary by design,\nsince concatenation is associative.\n",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 2,
+          "type": "array"
+        },
+        "kind": {
+          "const": "concatenate",
+          "type": "string"
+        },
+        "scope": {
+          "description": "The label the output columns are bound to. Must be unique across\nthe query, under the same rules as a scan's scope.\n",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "inputs",
+        "scope"
+      ],
+      "type": "object"
+    },
     "CrossingExprArray": {
       "additionalProperties": false,
       "description": "Every row of the relation `node` as a nested array, in the relation's\norder. Empty when the relation has no rows, never null. Renders a to-many\nrelationship. The relation may be correlated with the enclosing row.\n",
@@ -335,6 +365,47 @@
       "required": [
         "kind",
         "input"
+      ],
+      "type": "object"
+    },
+    "ExceptNode": {
+      "additionalProperties": false,
+      "description": "The bag difference `left` minus `right` (SQL `EXCEPT`): the rows of\n`left` with `right`'s occurrences removed, matched by canonical\nfull-row identity — the `distinct` operator's identity, where typed\nNULLs equal one another. With `quantifier: all`, a row occurring m\ntimes in `left` and n times in `right` occurs max(m − n, 0) times in\nthe output; with `quantifier: distinct`, each distinct `left` row\noccurs exactly once when it does not occur in `right` at all.\n\nThe inputs must be positionally compatible under `concatenate`'s rule:\nthe same number of columns and, at each position, the same column name\nand scalar kind. Every output row is drawn from `left`, so the output\ncolumns carry `left`'s types and nullability, exposed under `scope`\nexactly as a scan exposes its columns. Input scopes are not visible\nabove the node.\n\nThe two sides are independent relations: neither may reference a scope\nbound by the other, exactly as a join's sides may not. The output has\nno inherent order; an observable ordered result requires an explicit\n`order` above it.\n",
+      "properties": {
+        "kind": {
+          "const": "except",
+          "type": "string"
+        },
+        "left": {
+          "description": "The id of the left input relation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "quantifier": {
+          "description": "The set quantifier: `all` subtracts occurrence counts; `distinct`\nemits each distinct `left` row absent from `right` once.\n",
+          "enum": [
+            "all",
+            "distinct"
+          ],
+          "type": "string"
+        },
+        "right": {
+          "description": "The id of the right input relation, whose occurrences are subtracted from `left`.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "scope": {
+          "description": "The label the output columns are bound to. Must be unique across\nthe query, under the same rules as a scan's scope.\n",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "left",
+        "right",
+        "quantifier",
+        "scope"
       ],
       "type": "object"
     },
@@ -476,6 +547,47 @@
       "title": "Int64Value",
       "type": "object"
     },
+    "IntersectNode": {
+      "additionalProperties": false,
+      "description": "The bag intersection of `left` and `right` (SQL `INTERSECT`): the rows\ncommon to both inputs, matched by canonical full-row identity — the\n`distinct` operator's identity, where typed NULLs equal one another.\nWith `quantifier: all`, a row occurring m times in `left` and n times\nin `right` occurs min(m, n) times in the output; with `quantifier:\ndistinct`, each common row occurs exactly once.\n\nThe inputs must be positionally compatible under `concatenate`'s rule:\nthe same number of columns and, at each position, the same column name\nand scalar kind. Every output row is drawn from `left`, so the output\ncolumns carry `left`'s types and nullability, exposed under `scope`\nexactly as a scan exposes its columns. Input scopes are not visible\nabove the node.\n\nThe two sides are independent relations: neither may reference a scope\nbound by the other, exactly as a join's sides may not. The output has\nno inherent order; an observable ordered result requires an explicit\n`order` above it.\n",
+      "properties": {
+        "kind": {
+          "const": "intersect",
+          "type": "string"
+        },
+        "left": {
+          "description": "The id of the left input relation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "quantifier": {
+          "description": "The set quantifier: `all` keeps matched multiplicities (min of the\ntwo sides); `distinct` emits each common row once.\n",
+          "enum": [
+            "all",
+            "distinct"
+          ],
+          "type": "string"
+        },
+        "right": {
+          "description": "The id of the right input relation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "scope": {
+          "description": "The label the output columns are bound to. Must be unique across\nthe query, under the same rules as a scan's scope.\n",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "left",
+        "right",
+        "quantifier",
+        "scope"
+      ],
+      "type": "object"
+    },
     "JoinNode": {
       "additionalProperties": false,
       "description": "Combine `left` and `right` into a relation whose rows carry the\nattributes of both sides, keeping pairs for which `on` is `TRUE` under\nthree-valued logic.\n\n- `inner` — only matched pairs.\n- `left` — every left row at least once; the right attributes are NULL\n  when no right row matches.\n\nThe two sides are independent relations: neither may reference a scope\nbound by the other (a dependent join is rejected at bind time), and `on`\nmay not contain a crossing. Correlated nesting is expressed with a\ncrossing in a projection field, not with a join. `semi` and `anti` are\nreserved and not accepted.\n",
@@ -552,6 +664,15 @@
         },
         {
           "$ref": "#/$defs/JoinNode"
+        },
+        {
+          "$ref": "#/$defs/ConcatenateNode"
+        },
+        {
+          "$ref": "#/$defs/IntersectNode"
+        },
+        {
+          "$ref": "#/$defs/ExceptNode"
         },
         {
           "$ref": "#/$defs/AggregateNode"
@@ -679,7 +800,7 @@
     },
     "Query": {
       "additionalProperties": false,
-      "description": "A complete query: the relation forest plus its root selector.\n\n`nodes` is a flat map from caller-chosen id to relation node. Edges are\nthe string ids a node names in its `input`, `left`, `right`, or a\ncrossing's `node`. This encoding carries no sharing among ordinary\nnodes: an id names exactly one inline definition, referenced by exactly\none consumer. The document is a finite forest — one tree rooted at\n`root.node` plus one tree per binding root — and cyclic, dangling,\nshared, or unreachable definitions are rejected before binding.\n\n`bindings` is the one deliberate sharing construct. A binding names\nand denotes a derived relation as a first-class relational value —\nthe name is syntax, the denotation is semantics: one statement-local\ncommitted value, observed by every `ref` node under its own fresh\nscope, exactly as two scans of one table observe the same snapshot.\nBinding names, node ids, and scope labels are three separate\nnamespaces.\n",
+      "description": "A complete query: the relation forest plus its root selector.\n\n`nodes` is a flat map from caller-chosen id to relation node. Edges are\nthe string ids a node names in its `input`, `inputs`, `left`, `right`,\nor a crossing's `node`. This encoding carries no sharing among ordinary\nnodes: an id names exactly one inline definition, referenced by exactly\none consumer. The document is a finite forest — one tree rooted at\n`root.node` plus one tree per binding root — and cyclic, dangling,\nshared, or unreachable definitions are rejected before binding.\n\n`bindings` is the one deliberate sharing construct. A binding names\nand denotes a derived relation as a first-class relational value —\nthe name is syntax, the denotation is semantics: one statement-local\ncommitted value, observed by every `ref` node under its own fresh\nscope, exactly as two scans of one table observe the same snapshot.\nBinding names, node ids, and scope labels are three separate\nnamespaces.\n",
       "properties": {
         "bindings": {
           "additionalProperties": {

@@ -1,0 +1,11 @@
+# e2e/concatenate_union_all — concatenate is bag concatenation: a row
+# produced by both inputs keeps its multiplicity (SQL UNION ALL). Ada is on
+# team eng AND is a senior, so she appears twice in the concatenated result.
+tables:
+  - id: 1
+    name: people
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+      - { id: 3, name: team, type: string }
+      - { id: 4, name: age,  type: int64 }

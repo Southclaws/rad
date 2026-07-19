@@ -235,6 +235,42 @@ type NestedLoopJoinExec struct {
 	ROut lir.RowType
 }
 
+// ConcatenateExec streams its inputs one after another, remapping each
+// input's output slots onto Out positionally. InOuts is each input's row
+// type, parallel to Ins. Emission order across inputs is not observable — a
+// concatenation has no logical order.
+type ConcatenateExec struct {
+	Ins    []PhysNode
+	InOuts []lir.RowType
+	Out    lir.RowType
+}
+
+// IntersectExec keeps left rows matched by remaining right occurrences,
+// blocking on the right side: it drains R into a canonical multiset, then
+// streams L, remapping kept rows onto Out positionally. Under the all
+// quantifier each match consumes one right occurrence (min multiplicity);
+// under distinct each identity is emitted once. LOut and ROut are the input
+// row types for identity and remapping.
+type IntersectExec struct {
+	L, R       PhysNode
+	Quantifier lir.SetQuantifier
+	LOut, ROut lir.RowType
+	Out        lir.RowType
+}
+
+// ExceptExec keeps left rows that survive subtracting right occurrences,
+// blocking on the right side, remapping kept rows onto Out positionally.
+// Under the all quantifier each right occurrence cancels one left
+// occurrence (max(m−n, 0)); under distinct a left identity is emitted once
+// unless it occurs in R at all. LOut and ROut are the input row types for
+// identity and remapping.
+type ExceptExec struct {
+	L, R       PhysNode
+	Quantifier lir.SetQuantifier
+	LOut, ROut lir.RowType
+	Out        lir.RowType
+}
+
 // AggregateExec folds its input: one row per distinct group, or exactly one
 // row with no groups.
 type AggregateExec struct {
@@ -253,6 +289,9 @@ func (*ProjectExec) phys()        {}
 func (*SortExec) phys()           {}
 func (*SliceExec) phys()          {}
 func (*NestedLoopJoinExec) phys() {}
+func (*ConcatenateExec) phys()    {}
+func (*IntersectExec) phys()      {}
+func (*ExceptExec) phys()         {}
 func (*RefExec) phys()            {}
 func (*RecursiveRefExec) phys()   {}
 func (*DistinctExec) phys()       {}

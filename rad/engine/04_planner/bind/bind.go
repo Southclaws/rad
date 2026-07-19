@@ -258,6 +258,15 @@ func (b *binder) bindRel(r lir.Relation) (bound.Relation, error) {
 	case lir.Join:
 		return b.bindJoin(n)
 
+	case lir.Concatenate:
+		return b.bindConcatenate(n)
+
+	case lir.Intersect:
+		return b.bindIntersect(n)
+
+	case lir.Except:
+		return b.bindExcept(n)
+
 	case lir.Aggregate:
 		return b.bindAggregate(n)
 

@@ -22,6 +22,12 @@ func physChildren(n physical.PhysNode) []physical.PhysNode {
 		return []physical.PhysNode{x.Input}
 	case *physical.NestedLoopJoinExec:
 		return []physical.PhysNode{x.L, x.R}
+	case *physical.ConcatenateExec:
+		return x.Ins
+	case *physical.IntersectExec:
+		return []physical.PhysNode{x.L, x.R}
+	case *physical.ExceptExec:
+		return []physical.PhysNode{x.L, x.R}
 	case *physical.DistinctExec:
 		return []physical.PhysNode{x.Input}
 	case *physical.AggregateExec:

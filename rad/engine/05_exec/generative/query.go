@@ -293,7 +293,7 @@ func (g *Generator) genRel(fuel int) (lir.Relation, []genScope) {
 	if fuel <= 0 || g.chance(3) {
 		return g.genScan()
 	}
-	switch g.intn(5) {
+	switch g.intn(6) {
 	case 0:
 		return g.genFilter(fuel)
 	case 1:
@@ -302,9 +302,70 @@ func (g *Generator) genRel(fuel int) (lir.Relation, []genScope) {
 		return g.genOrder(fuel)
 	case 3:
 		return g.genJoin(fuel)
+	case 4:
+		return g.genSetOperation(fuel)
 	default:
 		return g.genAggregate(fuel)
 	}
+}
+
+// genSetOperation builds one of the set-operation family over positionally
+// compatible inputs: the left subtree flattens to a unique-named shape, and
+// each further input is an independent subtree projected onto that shape.
+// The operation's output is its own scope; input scopes close beneath it.
+func (g *Generator) genSetOperation(fuel int) (lir.Relation, []genScope) {
+	left, ls := g.genRel(fuel - 1)
+	flatL, outL := g.flattenScopes(left, ls)
+	right, rCols := g.genAligned(outL, fuel)
+	scope := g.fresh()
+
+	switch g.intn(3) {
+	case 0:
+		inputs := []lir.Relation{flatL, right}
+		nullable := make([]bool, len(outL.cols))
+		for k := range outL.cols {
+			nullable[k] = outL.cols[k].Nullable || rCols[k].Nullable
+		}
+		if g.chance(3) { // sometimes a third input, exercising the n-ary form
+			extra, eCols := g.genAligned(outL, fuel)
+			inputs = append(inputs, extra)
+			for k := range nullable {
+				nullable[k] = nullable[k] || eCols[k].Nullable
+			}
+		}
+		cols := make([]Column, len(outL.cols))
+		for k, c := range outL.cols {
+			cols[k] = Column{Name: c.Name, Type: c.Type, Nullable: nullable[k]}
+		}
+		return lir.Concatenate{Scope: scope, Inputs: inputs}, []genScope{{name: scope, cols: cols}}
+	case 1:
+		q := pick(g, []lir.SetQuantifier{lir.QuantifierAll, lir.QuantifierDistinct})
+		return lir.Intersect{Scope: scope, Left: flatL, Right: right, Quantifier: q}, []genScope{{name: scope, cols: outL.cols}}
+	default:
+		q := pick(g, []lir.SetQuantifier{lir.QuantifierAll, lir.QuantifierDistinct})
+		return lir.Except{Scope: scope, Left: flatL, Right: right, Quantifier: q}, []genScope{{name: scope, cols: outL.cols}}
+	}
+}
+
+// genAligned builds an independent subtree projected onto the target shape:
+// the same column names in the same positions with the same scalar kinds,
+// drawing same-typed columns where the subtree offers them and typed
+// literals where it does not.
+func (g *Generator) genAligned(target genScope, fuel int) (lir.Relation, []Column) {
+	child, scopes := g.genRel(fuel - 1)
+	ps := g.fresh()
+	fields := make([]lir.ProjField, len(target.cols))
+	cols := make([]Column, len(target.cols))
+	for k, tc := range target.cols {
+		if c, s, ok := g.pickCol(scopes, []model.Type{tc.Type}); ok {
+			fields[k] = lir.ProjField{As: tc.Name, Expr: qcol(s, c.Name)}
+			cols[k] = Column{Name: tc.Name, Type: tc.Type, Nullable: c.Nullable}
+			continue
+		}
+		fields[k] = lir.ProjField{As: tc.Name, Expr: qlit(g.literal(tc.Type))}
+		cols[k] = Column{Name: tc.Name, Type: tc.Type}
+	}
+	return lir.Project{Input: child, Scope: ps, Fields: fields}, cols
 }
 
 func (g *Generator) genScan() (lir.Relation, []genScope) {

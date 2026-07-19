@@ -1,0 +1,15 @@
+# e2e/intersect_quantifiers — bag intersection by canonical full-row
+# identity. Projected onto v, bag_a is [1,1,2,2,3] and bag_b is [1,1,1,2,4]:
+# intersect all keeps min multiplicities ([1,1,2]); intersect distinct emits
+# each common row once ([1,2]).
+tables:
+  - id: 1
+    name: bag_a
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: v,  type: int64 }
+  - id: 2
+    name: bag_b
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: v,  type: int64 }

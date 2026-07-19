@@ -49,6 +49,24 @@ func Join(left, right, join string, on Expr) Node {
 	return Node{&JoinNode{Kind: "join", Left: left, Right: right, Join: join, On: on}}
 }
 
+// Concatenate builds the n-ary bag concatenation: every row of every input
+// with multiplicity preserved, exposed under scope.
+func Concatenate(scope string, inputs ...string) Node {
+	return Node{&ConcatenateNode{Kind: "concatenate", Inputs: inputs, Scope: scope}}
+}
+
+// Intersect builds the bag intersection of left and right under the given
+// set quantifier ("all" | "distinct"), exposed under scope.
+func Intersect(scope, left, right, quantifier string) Node {
+	return Node{&IntersectNode{Kind: "intersect", Left: left, Right: right, Quantifier: quantifier, Scope: scope}}
+}
+
+// Except builds the bag difference left minus right under the given set
+// quantifier ("all" | "distinct"), exposed under scope.
+func Except(scope, left, right, quantifier string) Node {
+	return Node{&ExceptNode{Kind: "except", Left: left, Right: right, Quantifier: quantifier, Scope: scope}}
+}
+
 // Aggregate builds a fold. An empty scope means no output label.
 func Aggregate(input, scope string, groups []GroupTerm, aggs []AggTerm) Node {
 	n := &AggregateNode{Kind: "aggregate", Input: input, Groups: groups, Aggs: aggs}

@@ -21,6 +21,12 @@ func lirRelationChildren(r lir.Relation) lirNodeChildren {
 		return lirNodeChildren{relations: []lir.Relation{n.Input}, expressions: expressions}
 	case lir.Join:
 		return lirNodeChildren{relations: []lir.Relation{n.Left, n.Right}, expressions: []lir.Expr{n.On}}
+	case lir.Concatenate:
+		return lirNodeChildren{relations: n.Inputs}
+	case lir.Intersect:
+		return lirNodeChildren{relations: []lir.Relation{n.Left, n.Right}}
+	case lir.Except:
+		return lirNodeChildren{relations: []lir.Relation{n.Left, n.Right}}
 	case lir.Aggregate:
 		expressions := make([]lir.Expr, 0, len(n.Groups)+len(n.Terms))
 		for _, group := range n.Groups {

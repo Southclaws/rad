@@ -40,6 +40,7 @@ func TestGeneratorCoverage(t *testing.T) {
 	mustHit := []string{
 		"scan", "filter", "project", "order",
 		"join_inner", "join_left", "aggregate", "group_by", "global_aggregate",
+		"concatenate", "intersect", "except",
 		"exists", "first", "scalar", "array",
 		"arithmetic", "is_null", "and_or", "not",
 		"crossing", "correlated_aggregate", "crossing_over_join", "ref_binding",

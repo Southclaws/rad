@@ -43,6 +43,19 @@ func walkRelFeat(r lir.Relation, f map[string]bool, inCross bool) {
 		walkExprFeat(n.On, f, inCross)
 		walkRelFeat(n.Left, f, inCross)
 		walkRelFeat(n.Right, f, inCross)
+	case lir.Concatenate:
+		f["concatenate"] = true
+		for _, in := range n.Inputs {
+			walkRelFeat(in, f, inCross)
+		}
+	case lir.Intersect:
+		f["intersect"] = true
+		walkRelFeat(n.Left, f, inCross)
+		walkRelFeat(n.Right, f, inCross)
+	case lir.Except:
+		f["except"] = true
+		walkRelFeat(n.Left, f, inCross)
+		walkRelFeat(n.Right, f, inCross)
 	case lir.Order:
 		f["order"] = true
 		for _, t := range n.Terms {
@@ -139,6 +152,16 @@ func relContains(r lir.Relation, pred func(lir.Relation) bool) bool {
 	case lir.Aggregate:
 		return relContains(n.Input, pred)
 	case lir.Join:
+		return relContains(n.Left, pred) || relContains(n.Right, pred)
+	case lir.Concatenate:
+		for _, in := range n.Inputs {
+			if relContains(in, pred) {
+				return true
+			}
+		}
+	case lir.Intersect:
+		return relContains(n.Left, pred) || relContains(n.Right, pred)
+	case lir.Except:
 		return relContains(n.Left, pred) || relContains(n.Right, pred)
 	}
 	return false

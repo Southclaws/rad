@@ -20,15 +20,20 @@ import (
 
 // kindDefs maps a wire `kind` to its named variant in the schema's $defs.
 var kindDefs = map[string]string{
-	"scan":      "ScanNode",
-	"rows":      "RowsNode",
-	"filter":    "FilterNode",
-	"project":   "ProjectNode",
-	"join":      "JoinNode",
-	"aggregate": "AggregateNode",
-	"order":     "OrderNode",
-	"slice":     "SliceNode",
-	"ref":       "RefNode",
+	"scan":          "ScanNode",
+	"rows":          "RowsNode",
+	"filter":        "FilterNode",
+	"project":       "ProjectNode",
+	"join":          "JoinNode",
+	"concatenate":   "ConcatenateNode",
+	"intersect":     "IntersectNode",
+	"except":        "ExceptNode",
+	"aggregate":     "AggregateNode",
+	"order":         "OrderNode",
+	"slice":         "SliceNode",
+	"ref":           "RefNode",
+	"recursive_ref": "RecursiveRefNode",
+	"distinct":      "DistinctNode",
 
 	"lit":    "LiteralExpr",
 	"col":    "ColumnExpr",
@@ -43,7 +48,9 @@ var kindDefs = map[string]string{
 
 var nodeKinds = map[string]bool{
 	"scan": true, "rows": true, "filter": true, "project": true, "join": true,
+	"concatenate": true, "intersect": true, "except": true,
 	"aggregate": true, "order": true, "slice": true, "ref": true,
+	"recursive_ref": true, "distinct": true,
 }
 
 // resolveBindingDef compiles the Binding definition standalone, for naming

@@ -169,6 +169,22 @@ func viewNode(n physical.PhysNode) *PlanNodeView {
 			Op: "Aggregate", Detail: strings.Join(parts, ", "),
 			Children: []*PlanNodeView{viewNode(x.Input)},
 		}
+	case *physical.ConcatenateExec:
+		children := make([]*PlanNodeView, len(x.Ins))
+		for i, in := range x.Ins {
+			children[i] = viewNode(in)
+		}
+		return &PlanNodeView{Op: "Concatenate", Children: children}
+	case *physical.IntersectExec:
+		return &PlanNodeView{
+			Op: "Intersect", Detail: string(x.Quantifier),
+			Children: []*PlanNodeView{viewNode(x.L), viewNode(x.R)},
+		}
+	case *physical.ExceptExec:
+		return &PlanNodeView{
+			Op: "Except", Detail: string(x.Quantifier),
+			Children: []*PlanNodeView{viewNode(x.L), viewNode(x.R)},
+		}
 	case *physical.DistinctExec:
 		return &PlanNodeView{Op: "Distinct", Children: []*PlanNodeView{viewNode(x.Input)}}
 	default:

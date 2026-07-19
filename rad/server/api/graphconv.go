@@ -152,6 +152,39 @@ func (g *graphConv) rel(name string) (lir.Relation, error) {
 		}
 		return lir.Join{Left: l, Right: r, Kind: lir.JoinKind(x.Join), On: on}, nil
 
+	case *lirwire.ConcatenateNode:
+		inputs := make([]lir.Relation, len(x.Inputs))
+		for i, ref := range x.Inputs {
+			in, err := g.rel(ref)
+			if err != nil {
+				return nil, err
+			}
+			inputs[i] = in
+		}
+		return lir.Concatenate{Scope: x.Scope, Inputs: inputs}, nil
+
+	case *lirwire.IntersectNode:
+		l, err := g.rel(x.Left)
+		if err != nil {
+			return nil, err
+		}
+		r, err := g.rel(x.Right)
+		if err != nil {
+			return nil, err
+		}
+		return lir.Intersect{Scope: x.Scope, Left: l, Right: r, Quantifier: lir.SetQuantifier(x.Quantifier)}, nil
+
+	case *lirwire.ExceptNode:
+		l, err := g.rel(x.Left)
+		if err != nil {
+			return nil, err
+		}
+		r, err := g.rel(x.Right)
+		if err != nil {
+			return nil, err
+		}
+		return lir.Except{Scope: x.Scope, Left: l, Right: r, Quantifier: lir.SetQuantifier(x.Quantifier)}, nil
+
 	case *lirwire.AggregateNode:
 		in, err := g.rel(x.Input)
 		if err != nil {

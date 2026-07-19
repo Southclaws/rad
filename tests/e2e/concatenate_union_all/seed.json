@@ -1,0 +1,7 @@
+[
+  { "table": "people", "rows": [
+    { "id": "p1", "name": "Ada", "team": "eng", "age": 30 },
+    { "id": "p2", "name": "Bob", "team": "ops", "age": 40 },
+    { "id": "p3", "name": "Cyn", "team": "eng", "age": 25 }
+  ] }
+]

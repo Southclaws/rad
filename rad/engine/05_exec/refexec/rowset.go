@@ -43,9 +43,12 @@ func newOracleRowSet(fields []lir.Field) *oracleRowSet {
 
 // canon decodes a row's identity fields into an oracleRow. A field whose slot
 // is absent decodes as NULL, matching how a missing datum reads elsewhere.
-func (s *oracleRowSet) canon(env lireval.Env) oracleRow {
-	row := make(oracleRow, len(s.fields))
-	for i, f := range s.fields {
+func (s *oracleRowSet) canon(env lireval.Env) oracleRow { return decodeOracleRow(s.fields, env) }
+
+// decodeOracleRow decodes a row's identity over the given fields, in order.
+func decodeOracleRow(fields []lir.Field, env lireval.Env) oracleRow {
+	row := make(oracleRow, len(fields))
+	for i, f := range fields {
 		d, ok := env[f.Slot]
 		if !ok || d.Kind == lir.DatumNull {
 			row[i] = oracleCell{null: true}
@@ -66,6 +69,59 @@ func (s *oracleRowSet) canon(env lireval.Env) oracleRow {
 		row[i] = c
 	}
 	return row
+}
+
+// oracleRowMultiset counts row occurrences under the oracle's own identity,
+// for the bag set operations. Like oracleRowSet it shares no code with the
+// production primitives; probing accepts an already-decoded oracleRow, so
+// one side's rows (decoded over its own fields) test against the other
+// side's occurrences — identity is cell values in position, never slots.
+type oracleRowMultiset struct {
+	buckets map[uint64][]*oracleRowCount
+}
+
+type oracleRowCount struct {
+	row   oracleRow
+	count int
+}
+
+func newOracleRowMultiset() *oracleRowMultiset {
+	return &oracleRowMultiset{buckets: map[uint64][]*oracleRowCount{}}
+}
+
+func (m *oracleRowMultiset) find(row oracleRow) *oracleRowCount {
+	for _, entry := range m.buckets[row.hash()] {
+		if entry.row.equal(row) {
+			return entry
+		}
+	}
+	return nil
+}
+
+// add records one occurrence of row.
+func (m *oracleRowMultiset) add(row oracleRow) {
+	if entry := m.find(row); entry != nil {
+		entry.count++
+		return
+	}
+	h := row.hash()
+	m.buckets[h] = append(m.buckets[h], &oracleRowCount{row: row, count: 1})
+}
+
+// take consumes one remaining occurrence of row, reporting whether it did.
+func (m *oracleRowMultiset) take(row oracleRow) bool {
+	entry := m.find(row)
+	if entry == nil || entry.count == 0 {
+		return false
+	}
+	entry.count--
+	return true
+}
+
+// contains reports whether at least one occurrence of row remains.
+func (m *oracleRowMultiset) contains(row oracleRow) bool {
+	entry := m.find(row)
+	return entry != nil && entry.count > 0
 }
 
 // add records env's identity and reports whether it was newly seen. The hash

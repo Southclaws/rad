@@ -1,0 +1,15 @@
+# e2e/except_quantifiers — bag difference by canonical full-row identity.
+# Projected onto v, bag_a is [1,1,2,2,3] and bag_b is [1,1,1,2,4]: except
+# all subtracts occurrence counts ([2,3]); except distinct removes every
+# row that occurs in bag_b at all ([3]).
+tables:
+  - id: 1
+    name: bag_a
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: v,  type: int64 }
+  - id: 2
+    name: bag_b
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: v,  type: int64 }

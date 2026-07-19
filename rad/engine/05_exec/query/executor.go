@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
+	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	lireval "github.com/Southclaws/rad/rad/engine/03_lir/eval"
 	planner "github.com/Southclaws/rad/rad/engine/04_planner/physical"
 	"github.com/Southclaws/rad/rad/engine/05_exec/rowstore"
@@ -126,6 +127,47 @@ func (ex *Executor) build(ctx context.Context, node planner.PhysNode, outer lire
 			return nil, err
 		}
 		return &nljOp{l: left, r: right, kind: n.Kind, on: n.On, rOut: n.ROut}, nil
+	case *planner.ConcatenateExec:
+		ins := make([]operator, len(n.Ins))
+		for i, child := range n.Ins {
+			in, err := ex.build(ctx, child, outer)
+			if err != nil {
+				for _, built := range ins[:i] {
+					built.Close()
+				}
+				return nil, err
+			}
+			ins[i] = in
+		}
+		return &concatenateOp{ins: ins, inOuts: n.InOuts, out: n.Out, outer: outer}, nil
+	case *planner.IntersectExec:
+		left, err := ex.build(ctx, n.L, outer)
+		if err != nil {
+			return nil, err
+		}
+		right, err := ex.build(ctx, n.R, outer)
+		if err != nil {
+			left.Close()
+			return nil, err
+		}
+		return &setOperationOp{
+			l: left, r: right, distinct: n.Quantifier == lir.QuantifierDistinct,
+			lOut: n.LOut, rOut: n.ROut, out: n.Out, outer: outer,
+		}, nil
+	case *planner.ExceptExec:
+		left, err := ex.build(ctx, n.L, outer)
+		if err != nil {
+			return nil, err
+		}
+		right, err := ex.build(ctx, n.R, outer)
+		if err != nil {
+			left.Close()
+			return nil, err
+		}
+		return &setOperationOp{
+			l: left, r: right, subtract: true, distinct: n.Quantifier == lir.QuantifierDistinct,
+			lOut: n.LOut, rOut: n.ROut, out: n.Out, outer: outer,
+		}, nil
 	case *planner.RefExec:
 		if frames, ok := ex.bindings[n.Binding]; ok {
 			return &refOp{n: n, frames: frames, outer: outer}, nil

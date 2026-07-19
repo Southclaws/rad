@@ -1,0 +1,49 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "intersect_all",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "sa": { "kind": "scan", "table": "bag_a", "scope": "sa" },
+            "pa": { "kind": "project", "input": "sa",
+              "fields": [ { "as": "v", "expr": { "kind": "col", "scope": "sa", "column": "v" } } ] },
+            "sb": { "kind": "scan", "table": "bag_b", "scope": "sb" },
+            "pb": { "kind": "project", "input": "sb",
+              "fields": [ { "as": "v", "expr": { "kind": "col", "scope": "sb", "column": "v" } } ] },
+            "u":   { "kind": "intersect", "left": "pa", "right": "pb", "quantifier": "all", "scope": "u" },
+            "ord": { "kind": "order", "input": "u",
+              "terms": [ { "expr": { "kind": "col", "scope": "u", "column": "v" } } ] }
+          },
+          "root": { "node": "ord", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "v": 1 },
+    { "v": 1 },
+    { "v": 2 }
+  ],
+  "assertions": [
+    {
+      "name": "intersect_distinct",
+      "query": {
+        "nodes": {
+          "sa": { "kind": "scan", "table": "bag_a", "scope": "sa" },
+          "pa": { "kind": "project", "input": "sa",
+            "fields": [ { "as": "v", "expr": { "kind": "col", "scope": "sa", "column": "v" } } ] },
+          "sb": { "kind": "scan", "table": "bag_b", "scope": "sb" },
+          "pb": { "kind": "project", "input": "sb",
+            "fields": [ { "as": "v", "expr": { "kind": "col", "scope": "sb", "column": "v" } } ] },
+          "u":   { "kind": "intersect", "left": "pa", "right": "pb", "quantifier": "distinct", "scope": "u" },
+          "ord": { "kind": "order", "input": "u",
+            "terms": [ { "expr": { "kind": "col", "scope": "u", "column": "v" } } ] }
+        },
+        "root": { "node": "ord", "cardinality": "many" }
+      },
+      "expect": [ { "v": 1 }, { "v": 2 } ]
+    }
+  ]
+}

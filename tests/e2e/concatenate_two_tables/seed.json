@@ -1,0 +1,11 @@
+[
+  { "table": "books", "rows": [
+    { "id": "b1", "title": "Dune", "pages": 412 },
+    { "id": "b2", "title": "Hyperion", "pages": 482 },
+    { "id": "b3", "title": "Ubik", "pages": 224 }
+  ] },
+  { "table": "movies", "rows": [
+    { "id": "m1", "title": "Alien", "minutes": 117 },
+    { "id": "m2", "title": "Blade Runner", "minutes": 117 }
+  ] }
+]

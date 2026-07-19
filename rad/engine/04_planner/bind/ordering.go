@@ -50,6 +50,16 @@ func uniqueKeyFields(rel bound.Relation) []lir.Field {
 		return uniqueKeyFields(rel.In)
 	case *bound.Distinct:
 		return rel.Output().Fields
+	case *bound.Intersect:
+		// Under the distinct quantifier every output row is unique, so the
+		// whole row is a key — the same law as Distinct.
+		if rel.Quantifier == lir.QuantifierDistinct {
+			return rel.Output().Fields
+		}
+	case *bound.Except:
+		if rel.Quantifier == lir.QuantifierDistinct {
+			return rel.Output().Fields
+		}
 	case *bound.Project:
 		key := uniqueKeyFields(rel.In)
 		if key == nil {

@@ -128,7 +128,7 @@ func checkRecursiveStep(name string, relation lir.Relation, forbidden bool, coun
 			return reject.Inputf("planner: recursive_ref names a different binding %q — mutual recursion is not supported", node.Binding)
 		}
 		if forbidden {
-			return reject.Inputf("planner: recursive_ref appears in a non-monotone position (under an aggregate, slice, the nullable side of a left join, or a crossing) — the step must be monotone in the frontier")
+			return reject.Inputf("planner: recursive_ref appears in a non-monotone position (under an aggregate, slice, the nullable side of a left join, the right side of an except, or a crossing) — the step must be monotone in the frontier")
 		}
 		*count += 1
 		return nil
@@ -147,6 +147,14 @@ func checkRecursiveStep(name string, relation lir.Relation, forbidden bool, coun
 			return err
 		}
 		return checkRecursiveStepExpr(name, node.On)
+	case lir.Except:
+		// A growing frontier on the right side shrinks the difference —
+		// anti-monotone — while the left side grows it. Concatenate and
+		// intersect are monotone in every input and take the default walk.
+		if err := checkRecursiveStep(name, node.Left, forbidden, count); err != nil {
+			return err
+		}
+		return checkRecursiveStep(name, node.Right, true, count)
 	case lir.Aggregate:
 		if err := checkRecursiveStep(name, node.Input, true, count); err != nil {
 			return err
