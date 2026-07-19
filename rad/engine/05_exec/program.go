@@ -24,8 +24,8 @@ import (
 	"github.com/Southclaws/rad/rad/engine/02_catalog/store"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	lireval "github.com/Southclaws/rad/rad/engine/03_lir/eval"
+	"github.com/Southclaws/rad/rad/engine/04_planner/bind"
 	"github.com/Southclaws/rad/rad/engine/04_planner/explain"
-	plannerprogram "github.com/Southclaws/rad/rad/engine/04_planner/program"
 	"github.com/Southclaws/rad/rad/engine/05_exec/mutate"
 	execprogram "github.com/Southclaws/rad/rad/engine/05_exec/program"
 	"github.com/Southclaws/rad/rad/engine/05_exec/query"
@@ -104,7 +104,7 @@ func (e *Engine) preflightProgram(ctx context.Context, prog execprogram.Program,
 			relNames = append(relNames, stmt.Name)
 		}
 	}
-	binder, err := plannerprogram.NewBinder(ctx, store.New(tx.txn), relNames)
+	binder, err := bind.NewProgramBinder(ctx, store.New(tx.txn), relNames)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +117,7 @@ func (e *Engine) preflightProgram(ctx context.Context, prog execprogram.Program,
 				}
 				continue
 			}
-			bound, err := binder.Bind(plannerprogram.Statement{
+			bound, err := binder.Bind(bind.ProgramStmt{
 				Name: stmt.Name, Rel: stmt.Rel,
 				Mutation: stmt.Kind != execprogram.Query, Table: stmt.Table,
 			})
@@ -187,7 +187,7 @@ func (e *Engine) runProgram(ctx context.Context, tx *Tx, prog execprogram.Progra
 			relNames = append(relNames, stmt.Name)
 		}
 	}
-	binder, err := plannerprogram.NewBinder(ctx, store.New(tx.txn), relNames)
+	binder, err := bind.NewProgramBinder(ctx, store.New(tx.txn), relNames)
 	if err != nil {
 		return execprogram.Result{}, err
 	}
@@ -219,7 +219,7 @@ func (e *Engine) runProgram(ctx context.Context, tx *Tx, prog execprogram.Progra
 				continue
 			}
 
-			bs, err := binder.Bind(plannerprogram.Statement{
+			bs, err := binder.Bind(bind.ProgramStmt{
 				Name: stmt.Name, Rel: stmt.Rel,
 				Mutation: stmt.Kind != execprogram.Query, Table: stmt.Table,
 			})
@@ -303,7 +303,7 @@ func expectCatalog(ctx context.Context, view kv.KV, expected *model.Revision) er
 // frames keyed by the statement's result schema. A query returns the
 // relation's rows; a mutation evaluates its input relation, applies it as one
 // set, and returns the affected rows (created, post-image, or pre-image).
-func (e *Engine) runStatement(ctx context.Context, view kv.KV, stmt execprogram.Statement, bs plannerprogram.BoundStatement, program map[string][]lireval.Env) ([]lireval.Env, error) {
+func (e *Engine) runStatement(ctx context.Context, view kv.KV, stmt execprogram.Statement, bs bind.BoundStatement, program map[string][]lireval.Env) ([]lireval.Env, error) {
 	ex := query.New(view, query.Limits{MaxIterations: e.recur.MaxIterations, MaxRows: e.recur.MaxRows})
 	seeded := map[string][]lireval.Env{}
 	maps.Copy(seeded, program)

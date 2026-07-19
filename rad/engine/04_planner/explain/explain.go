@@ -14,8 +14,8 @@ import (
 	"strings"
 
 	lirformat "github.com/Southclaws/rad/rad/engine/03_lir/format"
-	. "github.com/Southclaws/rad/rad/engine/04_planner/analysis"
-	. "github.com/Southclaws/rad/rad/engine/04_planner/physical"
+	"github.com/Southclaws/rad/rad/engine/04_planner/analysis"
+	"github.com/Southclaws/rad/rad/engine/04_planner/physical"
 )
 
 type PlanView struct {
@@ -37,10 +37,10 @@ type PlanBindingView struct {
 // PlanNodeView is one physical operator: its kind, a human summary of its
 // distinguishing attributes, the access decision (on scan nodes), and inputs.
 type PlanNodeView struct {
-	Op       string            `json:"op"`
-	Detail   string            `json:"detail,omitempty"`
-	Access   []AccessCandidate `json:"access,omitempty"`
-	Children []*PlanNodeView   `json:"children,omitempty"`
+	Op       string                     `json:"op"`
+	Detail   string                     `json:"detail,omitempty"`
+	Access   []physical.AccessCandidate `json:"access,omitempty"`
+	Children []*PlanNodeView            `json:"children,omitempty"`
 
 	renderLines  []string
 	renderAttach []planAttachRender
@@ -53,7 +53,7 @@ type planAttachRender struct {
 }
 
 // NewPlanView converts a physical plan into its view artifact.
-func NewPlanView(p *PhysPlan) *PlanView {
+func NewPlanView(p *physical.PhysPlan) *PlanView {
 	v := &PlanView{Cardinality: string(p.Card), Root: viewNode(p.Root)}
 	for _, bp := range p.Bindings {
 		binding := PlanBindingView{
@@ -72,18 +72,18 @@ func NewPlanView(p *PhysPlan) *PlanView {
 	return v
 }
 
-func viewNode(n PhysNode) *PlanNodeView {
+func viewNode(n physical.PhysNode) *PlanNodeView {
 	switch x := n.(type) {
-	case *PKGetExec:
+	case *physical.PKGetExec:
 		return &PlanNodeView{
 			Op: "PKGet", Access: cands(x.Access),
 			Detail: fmt.Sprintf("%s [%s]", x.Scan.Table.Name, keyEqs(x.Scan.Table.PrimaryKey, x.Key)),
 		}
-	case *TableScanExec:
+	case *physical.TableScanExec:
 		return &PlanNodeView{Op: "TableScan", Detail: x.Scan.Table.Name, Access: cands(x.Access)}
-	case *RowsExec:
+	case *physical.RowsExec:
 		return &PlanNodeView{Op: "Rows", Detail: fmt.Sprintf("×%d (%s)", len(x.Rows.Vals), x.Rows.Scope)}
-	case *IndexRangeScanExec:
+	case *physical.IndexRangeScanExec:
 		d := fmt.Sprintf("%s %s", x.Scan.Table.Name, x.Index.Name)
 		var parts []string
 		if len(x.EqPrefix) > 0 {
@@ -96,13 +96,13 @@ func viewNode(n PhysNode) *PlanNodeView {
 			d += " [" + strings.Join(parts, ", ") + "]"
 		}
 		return &PlanNodeView{Op: "IndexRangeScan", Detail: d, Access: cands(x.Access)}
-	case *FilterExec:
+	case *physical.FilterExec:
 		return &PlanNodeView{Op: "Filter", Detail: lirformat.PrintExpr(x.Pred), Children: []*PlanNodeView{viewNode(x.Input)}}
-	case *RefExec:
+	case *physical.RefExec:
 		return &PlanNodeView{Op: "Ref", Detail: x.Binding}
-	case *RecursiveRefExec:
+	case *physical.RecursiveRefExec:
 		return &PlanNodeView{Op: "RecursiveRef", Detail: x.Binding}
-	case *AttachExec:
+	case *physical.AttachExec:
 		view := &PlanNodeView{Op: "Attach"}
 		for _, a := range x.Specs {
 			header := fmt.Sprintf("#%d = %s %s%s", a.Slot, a.Kind, a.Corr.Kind, corrKeys(a.Corr))
@@ -115,7 +115,7 @@ func viewNode(n PhysNode) *PlanNodeView {
 		view.renderInput = viewNode(x.Input)
 		view.Children = append(view.Children, view.renderInput)
 		return view
-	case *ProjectExec:
+	case *physical.ProjectExec:
 		fields := make([]string, len(x.Fields))
 		renderLines := make([]string, len(x.Fields))
 		for i, f := range x.Fields {
@@ -126,7 +126,7 @@ func viewNode(n PhysNode) *PlanNodeView {
 			Op: "Project", Detail: strings.Join(fields, ", "),
 			Children: []*PlanNodeView{viewNode(x.Input)}, renderLines: renderLines,
 		}
-	case *SortExec:
+	case *physical.SortExec:
 		terms := make([]string, len(x.Terms))
 		for i, t := range x.Terms {
 			dir := "asc"
@@ -139,7 +139,7 @@ func viewNode(n PhysNode) *PlanNodeView {
 			Op: "Sort", Detail: strings.Join(terms, ", "),
 			Children: []*PlanNodeView{viewNode(x.Input)},
 		}
-	case *SliceExec:
+	case *physical.SliceExec:
 		lim := "∞"
 		if x.Limit != nil {
 			lim = fmt.Sprint(*x.Limit)
@@ -148,12 +148,12 @@ func viewNode(n PhysNode) *PlanNodeView {
 			Op: "Slice", Detail: fmt.Sprintf("offset=%d limit=%s", x.Offset, lim),
 			Children: []*PlanNodeView{viewNode(x.Input)},
 		}
-	case *NestedLoopJoinExec:
+	case *physical.NestedLoopJoinExec:
 		return &PlanNodeView{
 			Op: "NestedLoopJoin", Detail: fmt.Sprintf("%s on %s", x.Kind, lirformat.PrintExpr(x.On)),
 			Children: []*PlanNodeView{viewNode(x.L), viewNode(x.R)},
 		}
-	case *AggregateExec:
+	case *physical.AggregateExec:
 		var parts []string
 		for _, g := range x.Groups {
 			parts = append(parts, fmt.Sprintf("group %s#%d=%s", g.Name, g.Slot, lirformat.PrintExpr(g.Expr)))
@@ -169,14 +169,14 @@ func viewNode(n PhysNode) *PlanNodeView {
 			Op: "Aggregate", Detail: strings.Join(parts, ", "),
 			Children: []*PlanNodeView{viewNode(x.Input)},
 		}
-	case *DistinctExec:
+	case *physical.DistinctExec:
 		return &PlanNodeView{Op: "Distinct", Children: []*PlanNodeView{viewNode(x.Input)}}
 	default:
 		panic(fmt.Sprintf("planner: unknown physical node %T", n))
 	}
 }
 
-func cands(a *AccessDecision) []AccessCandidate {
+func cands(a *physical.AccessDecision) []physical.AccessCandidate {
 	if a == nil {
 		return nil
 	}
@@ -192,7 +192,7 @@ func detailSuffix(s string) string {
 
 // PrintPlan renders a physical plan as a deterministic indented tree for
 // golden tests and diagnostics.
-func PrintPlan(p *PhysPlan) string {
+func PrintPlan(p *physical.PhysPlan) string {
 	return NewPlanView(p).render(false)
 }
 
@@ -266,13 +266,13 @@ func writeNode(b *strings.Builder, n *PlanNodeView, depth int, showAccess bool) 
 	}
 }
 
-func accessLine(cands []AccessCandidate) string {
+func accessLine(cands []physical.AccessCandidate) string {
 	if len(cands) == 0 {
 		return ""
 	}
 	// Suppress when a plain TableScan won and no alternative scored anything:
 	// the planner had no real choice, so the line would be noise.
-	var winner AccessCandidate
+	var winner physical.AccessCandidate
 	best := false
 	for _, c := range cands {
 		if c.Chosen {
@@ -300,7 +300,7 @@ func accessLine(cands []AccessCandidate) string {
 	return strings.Join(parts, " · ")
 }
 
-func keyEqs(cols []string, vals []ConstVal) string {
+func keyEqs(cols []string, vals []analysis.ConstVal) string {
 	parts := make([]string, len(vals))
 	for i, v := range vals {
 		parts[i] = cols[i] + " = " + constStr(v)
@@ -308,14 +308,14 @@ func keyEqs(cols []string, vals []ConstVal) string {
 	return strings.Join(parts, ", ")
 }
 
-func constStr(v ConstVal) string {
+func constStr(v analysis.ConstVal) string {
 	if v.Lit != nil {
 		return v.Lit.String()
 	}
 	return fmt.Sprintf("@%d", *v.Outer)
 }
 
-func rangeStr(r *RangeSpec) string {
+func rangeStr(r *physical.RangeSpec) string {
 	var parts []string
 	if r.Lo != nil {
 		op := ">"
@@ -334,7 +334,7 @@ func rangeStr(r *RangeSpec) string {
 	return strings.Join(parts, ", ")
 }
 
-func corrKeys(c Correlation) string {
+func corrKeys(c analysis.Correlation) string {
 	if len(c.Keys) == 0 {
 		return ""
 	}

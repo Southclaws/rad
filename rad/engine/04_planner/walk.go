@@ -1,37 +1,37 @@
 package planner
 
-import . "github.com/Southclaws/rad/rad/engine/04_planner/physical"
+import "github.com/Southclaws/rad/rad/engine/04_planner/physical"
 
-func physChildren(n PhysNode) []PhysNode {
+func physChildren(n physical.PhysNode) []physical.PhysNode {
 	switch x := n.(type) {
-	case *PKGetExec, *TableScanExec, *RowsExec, *IndexRangeScanExec, *RefExec, *RecursiveRefExec:
+	case *physical.PKGetExec, *physical.TableScanExec, *physical.RowsExec, *physical.IndexRangeScanExec, *physical.RefExec, *physical.RecursiveRefExec:
 		return nil
-	case *FilterExec:
-		return []PhysNode{x.Input}
-	case *AttachExec:
-		children := make([]PhysNode, 0, len(x.Specs)+1)
+	case *physical.FilterExec:
+		return []physical.PhysNode{x.Input}
+	case *physical.AttachExec:
+		children := make([]physical.PhysNode, 0, len(x.Specs)+1)
 		for _, spec := range x.Specs {
 			children = append(children, spec.Plan)
 		}
 		return append(children, x.Input)
-	case *ProjectExec:
-		return []PhysNode{x.Input}
-	case *SortExec:
-		return []PhysNode{x.Input}
-	case *SliceExec:
-		return []PhysNode{x.Input}
-	case *NestedLoopJoinExec:
-		return []PhysNode{x.L, x.R}
-	case *DistinctExec:
-		return []PhysNode{x.Input}
-	case *AggregateExec:
-		return []PhysNode{x.Input}
+	case *physical.ProjectExec:
+		return []physical.PhysNode{x.Input}
+	case *physical.SortExec:
+		return []physical.PhysNode{x.Input}
+	case *physical.SliceExec:
+		return []physical.PhysNode{x.Input}
+	case *physical.NestedLoopJoinExec:
+		return []physical.PhysNode{x.L, x.R}
+	case *physical.DistinctExec:
+		return []physical.PhysNode{x.Input}
+	case *physical.AggregateExec:
+		return []physical.PhysNode{x.Input}
 	default:
 		panic("planner: unknown physical node")
 	}
 }
 
-func walkPhys(n PhysNode, visit func(PhysNode)) {
+func walkPhys(n physical.PhysNode, visit func(physical.PhysNode)) {
 	visit(n)
 	for _, child := range physChildren(n) {
 		walkPhys(child, visit)

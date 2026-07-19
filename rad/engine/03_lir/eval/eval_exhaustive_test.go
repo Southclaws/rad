@@ -21,13 +21,13 @@ import (
 
 	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
-	. "github.com/Southclaws/rad/rad/engine/03_lir/bound"
+	"github.com/Southclaws/rad/rad/engine/03_lir/bound"
 	"github.com/Southclaws/rad/rad/engine/reject"
 )
 
 // triExpr maps a tri-bool to a boolean expression carrying it: TRUE/FALSE as
 // bool literals, UNKNOWN as a typed NULL bool.
-func triExpr(t lir.TriBool) Expr {
+func triExpr(t lir.TriBool) bound.Expr {
 	switch t {
 	case lir.TriTrue:
 		return lit(lir.Bool(true))
@@ -56,7 +56,7 @@ func TestK3TruthTablesExplicit(t *testing.T) {
 		{U, U, U},
 	}
 	for _, c := range and {
-		if got := pred(t, NewBinary(lir.OpAnd, triExpr(c.a), triExpr(c.b)), nil); got != c.want {
+		if got := pred(t, bound.NewBinary(lir.OpAnd, triExpr(c.a), triExpr(c.b)), nil); got != c.want {
 			t.Errorf("%v AND %v = %v, want %v", c.a, c.b, got, c.want)
 		}
 	}
@@ -73,14 +73,14 @@ func TestK3TruthTablesExplicit(t *testing.T) {
 		{U, U, U},
 	}
 	for _, c := range or {
-		if got := pred(t, NewBinary(lir.OpOr, triExpr(c.a), triExpr(c.b)), nil); got != c.want {
+		if got := pred(t, bound.NewBinary(lir.OpOr, triExpr(c.a), triExpr(c.b)), nil); got != c.want {
 			t.Errorf("%v OR %v = %v, want %v", c.a, c.b, got, c.want)
 		}
 	}
 
 	not := []struct{ a, want lir.TriBool }{{T, F}, {F, T}, {U, U}}
 	for _, c := range not {
-		if got := pred(t, NewUnary(lir.OpNot, triExpr(c.a)), nil); got != c.want {
+		if got := pred(t, bound.NewUnary(lir.OpNot, triExpr(c.a)), nil); got != c.want {
 			t.Errorf("NOT %v = %v, want %v", c.a, got, c.want)
 		}
 	}
@@ -122,7 +122,7 @@ func TestComparisonMatrix(t *testing.T) {
 		for _, b := range ints {
 			cmp := cmpInt(a, b)
 			for _, op := range orderedOps {
-				got := pred(t, NewBinary(op, lit(lir.Int64(a)), lit(lir.Int64(b))), nil)
+				got := pred(t, bound.NewBinary(op, lit(lir.Int64(a)), lit(lir.Int64(b))), nil)
 				if want := expectCmp(op, cmp); got != want {
 					t.Errorf("int64 %d %s %d = %v, want %v", a, op, b, got, want)
 				}
@@ -135,7 +135,7 @@ func TestComparisonMatrix(t *testing.T) {
 		for _, b := range floats {
 			cmp := cmpFloat(a, b)
 			for _, op := range orderedOps {
-				got := pred(t, NewBinary(op, lit(lir.Float64(a)), lit(lir.Float64(b))), nil)
+				got := pred(t, bound.NewBinary(op, lit(lir.Float64(a)), lit(lir.Float64(b))), nil)
 				if want := expectCmp(op, cmp); got != want {
 					t.Errorf("float64 %v %s %v = %v, want %v", a, op, b, got, want)
 				}
@@ -148,7 +148,7 @@ func TestComparisonMatrix(t *testing.T) {
 		for _, b := range texts {
 			cmp := cmpStr(a, b)
 			for _, op := range orderedOps {
-				got := pred(t, NewBinary(op, lit(lir.Text(a)), lit(lir.Text(b))), nil)
+				got := pred(t, bound.NewBinary(op, lit(lir.Text(a)), lit(lir.Text(b))), nil)
 				if want := expectCmp(op, cmp); got != want {
 					t.Errorf("text %q %s %q = %v, want %v", a, op, b, got, want)
 				}
@@ -160,10 +160,10 @@ func TestComparisonMatrix(t *testing.T) {
 	// side or the operator.
 	nullI := lit(lir.Null(model.TypeInt64))
 	for _, op := range orderedOps {
-		if got := pred(t, NewBinary(op, lit(lir.Int64(1)), nullI), nil); got != lir.TriUnknown {
+		if got := pred(t, bound.NewBinary(op, lit(lir.Int64(1)), nullI), nil); got != lir.TriUnknown {
 			t.Errorf("1 %s NULL = %v, want UNKNOWN", op, got)
 		}
-		if got := pred(t, NewBinary(op, nullI, lit(lir.Int64(1))), nil); got != lir.TriUnknown {
+		if got := pred(t, bound.NewBinary(op, nullI, lit(lir.Int64(1))), nil); got != lir.TriUnknown {
 			t.Errorf("NULL %s 1 = %v, want UNKNOWN", op, got)
 		}
 	}
@@ -178,7 +178,7 @@ func TestIntArithmeticExhaustive(t *testing.T) {
 
 	for _, a := range vals {
 		// negate
-		got, err := Eval(NewUnary(lir.OpNegate, lit(lir.Int64(a))), nil)
+		got, err := Eval(bound.NewUnary(lir.OpNegate, lit(lir.Int64(a))), nil)
 		if a == math.MinInt64 {
 			requireOverflow(t, err, "negate", a, 0)
 		} else if err != nil || got != lir.Int64(-a) {
@@ -199,7 +199,7 @@ func TestIntArithmeticExhaustive(t *testing.T) {
 // error; anything representable must match exactly.
 func checkInt(t *testing.T, op lir.BinaryOp, a, b int64) {
 	t.Helper()
-	got, err := Eval(NewBinary(op, lit(lir.Int64(a)), lit(lir.Int64(b))), nil)
+	got, err := Eval(bound.NewBinary(op, lit(lir.Int64(a)), lit(lir.Int64(b))), nil)
 
 	if op == lir.OpDiv && b == 0 {
 		if err == nil {
@@ -251,7 +251,7 @@ func TestFloatArithmetic(t *testing.T) {
 		{lir.OpDiv, 1.0, 0.0, 0, true},
 	}
 	for _, c := range cases {
-		got, err := Eval(NewBinary(c.op, lit(lir.Float64(c.a)), lit(lir.Float64(c.b))), nil)
+		got, err := Eval(bound.NewBinary(c.op, lit(lir.Float64(c.a)), lit(lir.Float64(c.b))), nil)
 		if c.divByArg {
 			if err == nil || !reject.IsRuntime(err) {
 				t.Errorf("%v / 0.0 = %v, %v, want execution_failed", c.a, got, err)
@@ -264,7 +264,7 @@ func TestFloatArithmetic(t *testing.T) {
 	}
 
 	// Mixed int/float promotes to float64.
-	if got, _ := Eval(NewBinary(lir.OpMul, lit(lir.Int64(2)), lit(lir.Float64(1.5))), nil); got != lir.Float64(3) {
+	if got, _ := Eval(bound.NewBinary(lir.OpMul, lit(lir.Int64(2)), lit(lir.Float64(1.5))), nil); got != lir.Float64(3) {
 		t.Errorf("2 * 1.5 = %v, want 3.0 (float)", got)
 	}
 }
@@ -273,21 +273,21 @@ func TestFloatArithmetic(t *testing.T) {
 // for every arithmetic op and both operand positions, int and float.
 func TestNullPropagationArithmetic(t *testing.T) {
 	for _, op := range []lir.BinaryOp{lir.OpAdd, lir.OpSub, lir.OpMul, lir.OpDiv} {
-		gi, _ := Eval(NewBinary(op, lit(lir.Int64(1)), lit(lir.Null(model.TypeInt64))), nil)
+		gi, _ := Eval(bound.NewBinary(op, lit(lir.Int64(1)), lit(lir.Null(model.TypeInt64))), nil)
 		if !gi.Null || gi.Type != model.TypeInt64 {
 			t.Errorf("1 %s NULL(int) = %v, want typed NULL int64", op, gi)
 		}
-		gi, _ = Eval(NewBinary(op, lit(lir.Null(model.TypeInt64)), lit(lir.Int64(1))), nil)
+		gi, _ = Eval(bound.NewBinary(op, lit(lir.Null(model.TypeInt64)), lit(lir.Int64(1))), nil)
 		if !gi.Null {
 			t.Errorf("NULL(int) %s 1 = %v, want NULL", op, gi)
 		}
-		gf, _ := Eval(NewBinary(op, lit(lir.Float64(1)), lit(lir.Null(model.TypeFloat64))), nil)
+		gf, _ := Eval(bound.NewBinary(op, lit(lir.Float64(1)), lit(lir.Null(model.TypeFloat64))), nil)
 		if !gf.Null || gf.Type != model.TypeFloat64 {
 			t.Errorf("1.0 %s NULL(float) = %v, want typed NULL float64", op, gf)
 		}
 	}
 	// negate(NULL) is NULL.
-	if g, _ := Eval(NewUnary(lir.OpNegate, lit(lir.Null(model.TypeInt64))), nil); !g.Null {
+	if g, _ := Eval(bound.NewUnary(lir.OpNegate, lit(lir.Null(model.TypeInt64))), nil); !g.Null {
 		t.Errorf("negate NULL = %v, want NULL", g)
 	}
 }
@@ -312,7 +312,7 @@ func TestCastFloatToIntExhaustive(t *testing.T) {
 		{9.0e18, 9000000000000000000}, // in range (< 2^63 ≈ 9.223e18)
 	}
 	for _, c := range trunc {
-		got, err := Eval(NewCast(lit(lir.Float64(c.f)), lir.KindInt64), nil)
+		got, err := Eval(bound.NewCast(lit(lir.Float64(c.f)), lir.KindInt64), nil)
 		if err != nil || got != lir.Int64(c.want) {
 			t.Errorf("cast %v to int64 = %v, %v, want %d", c.f, got, err, c.want)
 		}
@@ -326,7 +326,7 @@ func TestCastFloatToIntExhaustive(t *testing.T) {
 		float64(math.MaxInt64), // 2^63, exclusive upper bound — not representable
 	}
 	for _, f := range outOfRange {
-		got, err := Eval(NewCast(lit(lir.Float64(f)), lir.KindInt64), nil)
+		got, err := Eval(bound.NewCast(lit(lir.Float64(f)), lir.KindInt64), nil)
 		if err == nil {
 			t.Errorf("cast %v to int64 = %v, want out-of-range error", f, got)
 		} else if !reject.IsRuntime(err) {
@@ -335,7 +335,7 @@ func TestCastFloatToIntExhaustive(t *testing.T) {
 	}
 
 	// MinInt64 is exactly representable as float64 and must round-trip.
-	if got, err := Eval(NewCast(lit(lir.Float64(float64(math.MinInt64))), lir.KindInt64), nil); err != nil || got != lir.Int64(math.MinInt64) {
+	if got, err := Eval(bound.NewCast(lit(lir.Float64(float64(math.MinInt64))), lir.KindInt64), nil); err != nil || got != lir.Int64(math.MinInt64) {
 		t.Errorf("cast MinInt64.0 to int64 = %v, %v, want MinInt64", got, err)
 	}
 }
