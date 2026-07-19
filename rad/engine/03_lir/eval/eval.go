@@ -205,6 +205,9 @@ func Eval(e bound.Expr, env Env) (lir.Value, error) {
 	case bound.Cast:
 		return evalCast(x, env)
 
+	case bound.Branch:
+		return evalBranch(x, env)
+
 	case bound.Exists, bound.First, bound.Scalar, bound.Array:
 		return lir.Value{}, fmt.Errorf("exec: unextracted crossing %T reached evaluation", e)
 	}
@@ -317,6 +320,24 @@ func asFloat(v lir.Value) float64 {
 		return float64(v.Int64)
 	}
 	return v.Float64
+}
+
+// evalBranch walks the arms in order under K3: the first predicate that is
+// TriTrue selects its result; FALSE and UNKNOWN fall through; Else is the
+// result when no arm matches. Nothing else is evaluated — an error in an
+// unselected result expression is unobservable by contract, so this must
+// never evaluate an arm it did not select.
+func evalBranch(b bound.Branch, env Env) (lir.Value, error) {
+	for _, arm := range b.Arms {
+		t, err := EvalPred(arm.When, env)
+		if err != nil {
+			return lir.Value{}, err
+		}
+		if t == lir.TriTrue {
+			return Eval(arm.Then, env)
+		}
+	}
+	return Eval(b.Else, env)
 }
 
 func evalCast(c bound.Cast, env Env) (lir.Value, error) {

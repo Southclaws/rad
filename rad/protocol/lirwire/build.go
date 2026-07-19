@@ -137,7 +137,18 @@ func Binary(op string, l, r Expr) Expr {
 	return Expr{&BinaryExpr{Kind: "binary", Op: op, Left: l, Right: r}}
 }
 func Cast(e Expr, to ScalarType) Expr { return Expr{&CastExpr{Kind: "cast", Expr: e, To: to}} }
-func Exists(node string) Expr         { return Expr{&CrossingExprExists{Kind: "exists", Node: node}} }
+
+// Branch builds the ordered lazy branching expression: arms are tested in
+// document order, the first TRUE predicate selects its result, and elseExpr
+// is the result when none match.
+func Branch(arms []BranchArm, elseExpr Expr) Expr {
+	return Expr{&BranchExpr{Kind: "branch", Branches: arms, Else: elseExpr}}
+}
+
+// Arm builds one branch arm: when TRUE, the branch produces then.
+func Arm(when, then Expr) BranchArm { return BranchArm{When: when, Then: then} }
+
+func Exists(node string) Expr { return Expr{&CrossingExprExists{Kind: "exists", Node: node}} }
 func First(node string) Expr          { return Expr{&CrossingExprFirst{Kind: "first", Node: node}} }
 func Scalar(node string) Expr         { return Expr{&CrossingExprScalar{Kind: "scalar", Node: node}} }
 func Array(node string) Expr          { return Expr{&CrossingExprArray{Kind: "array", Node: node}} }

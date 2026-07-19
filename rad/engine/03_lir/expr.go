@@ -73,8 +73,25 @@ type Cast struct {
 	To Kind
 }
 
+// BranchArm is one arm of a Branch: a boolean predicate and the result
+// selected when it is the first predicate to evaluate to TRUE.
+type BranchArm struct {
+	When, Then Expr
+}
+
+// Branch is ordered, lazy branching: arms are tested in order, the first
+// TRUE predicate selects its result, FALSE and UNKNOWN predicates fall
+// through, and Else is the result when no arm matches. Unselected result
+// expressions are never evaluated — the laziness is contract, not
+// optimization, so an error in a never-selected arm is unobservable.
+type Branch struct {
+	Arms []BranchArm
+	Else Expr
+}
+
 func (Literal) expr() {}
 func (Column) expr()  {}
 func (Unary) expr()   {}
 func (Binary) expr()  {}
 func (Cast) expr()    {}
+func (Branch) expr()  {}

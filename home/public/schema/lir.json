@@ -159,6 +159,53 @@
       "title": "BoolValue",
       "type": "object"
     },
+    "BranchArm": {
+      "additionalProperties": false,
+      "description": "One arm of a `branch`: a boolean predicate and the result the branch\nproduces when this is the first predicate to evaluate to TRUE.\n",
+      "properties": {
+        "then": {
+          "$ref": "#/$defs/Expr",
+          "description": "The arm's result expression."
+        },
+        "when": {
+          "$ref": "#/$defs/Expr",
+          "description": "The arm's boolean predicate."
+        }
+      },
+      "required": [
+        "when",
+        "then"
+      ],
+      "type": "object"
+    },
+    "BranchExpr": {
+      "additionalProperties": false,
+      "description": "Ordered, lazy branching. Evaluate branch predicates in document order.\nThe result is the `then` expression belonging to the first predicate\nthat evaluates to TRUE. Predicates evaluating to FALSE or UNKNOWN do\nnot match. If none match, evaluate and return `else`. Unselected result\nexpressions are not evaluated — the laziness is contract, not\noptimization: a division by zero in an arm that is never selected does\nnot raise.\n\n`else` is required. LIR has typed NULLs only, so there is no\nimplicit-NULL default; a frontend that permits an omitted else inserts\na correctly typed NULL itself.\n\nTyping: every `when` must be boolean (nullable is fine — an UNKNOWN\npredicate falls through). Every `then` and the `else` must have the\nsame scalar kind, with no implicit widening; a frontend inserts\nexplicit casts. The result is that kind, nullable when any `then` or\nthe `else` is. A branch subtree may not contain a crossing (`exists` /\n`first` / `scalar` / `array`) anywhere — in a `when`, a `then`, or the\n`else`: the executor attaches crossings per row before expression\nevaluation, which would evaluate crossings in never-selected arms, so\nthey are rejected at bind time.\n",
+      "properties": {
+        "branches": {
+          "description": "The arms, tested in document order.",
+          "items": {
+            "$ref": "#/$defs/BranchArm"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "else": {
+          "$ref": "#/$defs/Expr",
+          "description": "The result when no predicate matches."
+        },
+        "kind": {
+          "const": "branch",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "branches",
+        "else"
+      ],
+      "type": "object"
+    },
     "CastExpr": {
       "additionalProperties": false,
       "description": "Convert `expr` to the scalar type `to`. The conversion is explicit; the\nresult is nullable exactly when the operand is.\n",
@@ -426,6 +473,9 @@
         },
         {
           "$ref": "#/$defs/CastExpr"
+        },
+        {
+          "$ref": "#/$defs/BranchExpr"
         },
         {
           "$ref": "#/$defs/CrossingExprExists"

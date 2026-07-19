@@ -40,6 +40,7 @@ var kindDefs = map[string]string{
 	"unary":  "UnaryExpr",
 	"binary": "BinaryExpr",
 	"cast":   "CastExpr",
+	"branch": "BranchExpr",
 	"exists": "CrossingExprExists",
 	"first":  "CrossingExprFirst",
 	"scalar": "CrossingExprScalar",

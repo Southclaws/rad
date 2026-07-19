@@ -42,6 +42,12 @@ func walkExpr(expr bound.Expr, visit func(bound.Expr), visitRel func(bound.Relat
 		walkExpr(expr.R, visit, visitRel)
 	case bound.Cast:
 		walkExpr(expr.X, visit, visitRel)
+	case bound.Branch:
+		for _, arm := range expr.Arms {
+			walkExpr(arm.When, visit, visitRel)
+			walkExpr(arm.Then, visit, visitRel)
+		}
+		walkExpr(expr.Else, visit, visitRel)
 	case bound.Exists:
 		if visitRel != nil {
 			visitRel(expr.Rel)

@@ -2,6 +2,7 @@ package bind
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 
 	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
@@ -75,6 +76,9 @@ func (b *binder) bindExpr(e lir.Expr) (bound.Expr, error) {
 			return nil, reject.Inputf("planner: cannot cast %s to %s", from, x.To)
 		}
 		return bound.NewCast(sub, x.To), nil
+
+	case lir.Branch:
+		return b.bindBranch(x)
 
 	case lir.Exists:
 		rel, err := b.bindSubRel(x.Rel)
@@ -213,6 +217,96 @@ func (b *binder) bindBinary(x lir.Binary) (bound.Expr, error) {
 	default:
 		return nil, reject.Inputf("planner: unknown binary operator %q", x.Op)
 	}
+}
+
+// bindBranch binds ordered lazy branching. Every when must be boolean;
+// every then and the else must share one scalar kind — no implicit
+// widening, a frontend inserts explicit casts. The whole subtree must be
+// crossing-free: the executor attaches crossings eagerly per row before
+// expression evaluation, which would evaluate a crossing in an arm the
+// branch never selects and make its errors observable, violating the
+// laziness contract.
+func (b *binder) bindBranch(x lir.Branch) (bound.Expr, error) {
+	if len(x.Arms) == 0 {
+		return nil, reject.Inputf("planner: branch needs at least one arm")
+	}
+	if x.Else == nil {
+		return nil, reject.Inputf("planner: branch needs an else — LIR has no implicit NULL default; supply a typed NULL explicitly")
+	}
+	for i, arm := range x.Arms {
+		if err := rejectBranchCrossings(arm.When, fmt.Sprintf("arm %d's when", i+1)); err != nil {
+			return nil, err
+		}
+		if err := rejectBranchCrossings(arm.Then, fmt.Sprintf("arm %d's then", i+1)); err != nil {
+			return nil, err
+		}
+	}
+	if err := rejectBranchCrossings(x.Else, "the else"); err != nil {
+		return nil, err
+	}
+
+	arms := make([]bound.BranchArm, len(x.Arms))
+	var kind lir.Kind
+	for i, arm := range x.Arms {
+		when, err := b.bindExpr(arm.When)
+		if err != nil {
+			return nil, err
+		}
+		if when.Type().Kind != lir.KindBool {
+			return nil, reject.Inputf("planner: branch arm %d when must be boolean, got %s", i+1, when.Type())
+		}
+		then, err := b.bindExpr(arm.Then)
+		if err != nil {
+			return nil, err
+		}
+		tk := then.Type().Kind
+		if !tk.Scalar() {
+			return nil, reject.Inputf("planner: branch arm %d result must be a scalar, got %s", i+1, then.Type())
+		}
+		if i == 0 {
+			kind = tk
+		} else if tk != kind {
+			return nil, reject.Inputf("planner: branch arm %d result is %s but arm 1 result is %s — every arm and the else must share one scalar kind; cast the arm explicitly", i+1, tk, kind)
+		}
+		arms[i] = bound.BranchArm{When: when, Then: then}
+	}
+	els, err := b.bindExpr(x.Else)
+	if err != nil {
+		return nil, err
+	}
+	if !els.Type().Kind.Scalar() {
+		return nil, reject.Inputf("planner: branch else must be a scalar, got %s", els.Type())
+	}
+	if els.Type().Kind != kind {
+		return nil, reject.Inputf("planner: branch else is %s but arm 1 result is %s — every arm and the else must share one scalar kind; cast it explicitly", els.Type().Kind, kind)
+	}
+	return bound.NewBranch(arms, els), nil
+}
+
+// rejectBranchCrossings walks one branch component for crossings, which are
+// illegal anywhere under a branch: the executor attaches every crossing
+// eagerly per row before expression evaluation, so a crossing in an arm the
+// branch never selects would still run.
+func rejectBranchCrossings(e lir.Expr, where string) error {
+	var kind string
+	switch e.(type) {
+	case lir.Exists:
+		kind = "exists"
+	case lir.First:
+		kind = "first"
+	case lir.Scalar:
+		kind = "scalar"
+	case lir.Array:
+		kind = "array"
+	default:
+		for _, child := range lirExpressionChildren(e).expressions {
+			if err := rejectBranchCrossings(child, where); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return reject.Inputf("planner: branch cannot contain a crossing (%s in %s) — crossings evaluate per row before the branch selects an arm, so one in a never-selected arm would still run", kind, where)
 }
 
 // bindOperands binds a comparison or arithmetic pair. When exactly one side

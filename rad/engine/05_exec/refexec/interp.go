@@ -17,9 +17,9 @@
 //     depends on no storage implementation — the harness can feed it a pure
 //     in-memory table map or the rows a real store returned.
 //   - The one deliberate sharing is scalar expression evaluation
-//     (bound.EvalPred / bound.EvalDatum): 3VL, arithmetic, and casts. That is
-//     acceptable only because those scalar semantics are pinned independently
-//     by enumerated truth-table/edge-value tests.
+//     (bound.EvalPred / bound.EvalDatum): 3VL, arithmetic, casts, and branch
+//     selection. That is acceptable only because those scalar semantics are
+//     pinned independently by enumerated truth-table/edge-value tests.
 //
 // Design law: if a line in here is clever, it is wrong. Slow is fine; obvious
 // is the point. But refexec is no longer trivially small — it carries recursion
@@ -844,6 +844,12 @@ func (in *interp) substitute(e bound.Expr, env lireval.Env) (bound.Expr, error) 
 			return nil, err
 		}
 		return bound.NewCast(sub, x.To), nil
+	case bound.Branch:
+		// A branch subtree is crossing-free (the binder rejects crossings
+		// under a branch, precisely so nothing pre-evaluates an arm that is
+		// never selected), so there is nothing to substitute; the evaluator
+		// walks the arms lazily.
+		return e, nil
 	}
 	return e, nil
 }

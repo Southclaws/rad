@@ -96,3 +96,38 @@ func NewCast(x Expr, to lir.Kind) Cast {
 
 func (c Cast) Type() lir.Type     { return c.t }
 func (c Cast) FreeSlots() SlotSet { return c.X.FreeSlots() }
+
+// BranchArm pairs a boolean predicate with the result selected when it is
+// the first predicate to evaluate to TRUE.
+type BranchArm struct {
+	When, Then Expr
+}
+
+// Branch is ordered, lazy branching. The binder guarantees every arm result
+// and Else share one scalar kind and that the whole subtree is crossing-free,
+// so evaluation is a pure in-order predicate walk that touches nothing beyond
+// the selected result.
+type Branch struct {
+	Arms []BranchArm
+	Else Expr
+	t    lir.Type
+}
+
+// NewBranch takes the result kind from Else; nullability is the union over
+// every arm result and Else, since any of them may be the one produced.
+func NewBranch(arms []BranchArm, els Expr) Branch {
+	t := els.Type()
+	for _, a := range arms {
+		t.Nullable = t.Nullable || a.Then.Type().Nullable
+	}
+	return Branch{Arms: arms, Else: els, t: t}
+}
+
+func (b Branch) Type() lir.Type { return b.t }
+func (b Branch) FreeSlots() SlotSet {
+	s := b.Else.FreeSlots()
+	for _, a := range b.Arms {
+		s = s.Union(a.When.FreeSlots()).Union(a.Then.FreeSlots())
+	}
+	return s
+}

@@ -267,6 +267,11 @@ func (pl *planner) extractExpr(e bound.Expr) (bound.Expr, []*physical.AttachSpec
 			return e, nil
 		}
 		return bound.NewCast(sub, x.To), specs
+	case bound.Branch:
+		// The binder rejects crossings anywhere under a branch, eager
+		// per-row attachment would evaluate crossings in never-selected
+		// arms, breaking the laziness contract: so there is nothing to extract.
+		return e, nil
 	}
 	return e, nil
 }

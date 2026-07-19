@@ -108,6 +108,13 @@ func walkExprFeat(e lir.Expr, f map[string]bool, inCross bool) {
 	case lir.Cast:
 		f["cast"] = true
 		walkExprFeat(x.X, f, inCross)
+	case lir.Branch:
+		f["branch"] = true
+		for _, arm := range x.Arms {
+			walkExprFeat(arm.When, f, inCross)
+			walkExprFeat(arm.Then, f, inCross)
+		}
+		walkExprFeat(x.Else, f, inCross)
 	case lir.Exists:
 		crossFeat(x.Rel, f, "exists", inCross)
 	case lir.First:

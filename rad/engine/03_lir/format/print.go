@@ -140,6 +140,14 @@ func printExpr(e bound.Expr) string {
 		return fmt.Sprintf("%s(%s, %s)", x.Op, printExpr(x.L), printExpr(x.R))
 	case bound.Cast:
 		return fmt.Sprintf("cast(%s as %s)", printExpr(x.X), x.To)
+	case bound.Branch:
+		var b strings.Builder
+		b.WriteString("branch(")
+		for _, arm := range x.Arms {
+			fmt.Fprintf(&b, "%s → %s, ", printExpr(arm.When), printExpr(arm.Then))
+		}
+		fmt.Fprintf(&b, "else %s)", printExpr(x.Else))
+		return b.String()
 	case bound.Exists:
 		return "exists(" + subrel(x.Rel) + ")"
 	case bound.First:

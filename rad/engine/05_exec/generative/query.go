@@ -415,7 +415,21 @@ func (g *Generator) genProject(fuel int) (lir.Relation, []genScope) {
 	// non-column expression.
 	if c, s, ok := g.pickCol(scopes, []model.Type{model.TypeInt64}); ok && g.chance(2) {
 		name := g.field()
-		expr := lir.Binary{Op: lir.OpAdd, L: qcol(s, c.Name), R: qlit(1)}
+		expr := lir.Expr(lir.Binary{Op: lir.OpAdd, L: qcol(s, c.Name), R: qlit(1)})
+		// Sometimes wrap the computation in a branch classifying on the same
+		// column — ordered lazy branching through a projection. Branch
+		// subtrees must stay crossing-free, so the predicate is a plain
+		// comparison; a NULL column makes the predicate UNKNOWN, exercising
+		// fall-through to the else.
+		if g.coin() {
+			expr = lir.Branch{
+				Arms: []lir.BranchArm{{
+					When: lir.Binary{Op: lir.OpGt, L: qcol(s, c.Name), R: qlit(0)},
+					Then: expr,
+				}},
+				Else: qlit(int64(-1)),
+			}
+		}
 		fields = append(fields, lir.ProjField{As: name, Expr: expr})
 		cols = append(cols, Column{Name: name, Type: model.TypeInt64, Nullable: c.Nullable})
 	}

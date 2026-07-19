@@ -65,6 +65,13 @@ func lirExpressionChildren(e lir.Expr) lirNodeChildren {
 		return lirNodeChildren{expressions: []lir.Expr{x.L, x.R}}
 	case lir.Cast:
 		return lirNodeChildren{expressions: []lir.Expr{x.X}}
+	case lir.Branch:
+		expressions := make([]lir.Expr, 0, 2*len(x.Arms)+1)
+		for _, arm := range x.Arms {
+			expressions = append(expressions, arm.When, arm.Then)
+		}
+		expressions = append(expressions, x.Else)
+		return lirNodeChildren{expressions: expressions}
 	case lir.Exists:
 		return lirNodeChildren{relations: []lir.Relation{x.Rel}}
 	case lir.First:

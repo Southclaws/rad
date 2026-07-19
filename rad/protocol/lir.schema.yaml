@@ -813,6 +813,7 @@ $defs:
       - { $ref: "#/$defs/UnaryExpr" }
       - { $ref: "#/$defs/BinaryExpr" }
       - { $ref: "#/$defs/CastExpr" }
+      - { $ref: "#/$defs/BranchExpr" }
       - { $ref: "#/$defs/CrossingExprExists" }
       - { $ref: "#/$defs/CrossingExprFirst" }
       - { $ref: "#/$defs/CrossingExprScalar" }
@@ -919,6 +920,58 @@ $defs:
       to:
         description: The target scalar type.
         $ref: "#/$defs/ScalarType"
+
+  BranchExpr:
+    description: |
+      Ordered, lazy branching. Evaluate branch predicates in document order.
+      The result is the `then` expression belonging to the first predicate
+      that evaluates to TRUE. Predicates evaluating to FALSE or UNKNOWN do
+      not match. If none match, evaluate and return `else`. Unselected result
+      expressions are not evaluated — the laziness is contract, not
+      optimization: a division by zero in an arm that is never selected does
+      not raise.
+
+      `else` is required. LIR has typed NULLs only, so there is no
+      implicit-NULL default; a frontend that permits an omitted else inserts
+      a correctly typed NULL itself.
+
+      Typing: every `when` must be boolean (nullable is fine — an UNKNOWN
+      predicate falls through). Every `then` and the `else` must have the
+      same scalar kind, with no implicit widening; a frontend inserts
+      explicit casts. The result is that kind, nullable when any `then` or
+      the `else` is. A branch subtree may not contain a crossing (`exists` /
+      `first` / `scalar` / `array`) anywhere — in a `when`, a `then`, or the
+      `else`: the executor attaches crossings per row before expression
+      evaluation, which would evaluate crossings in never-selected arms, so
+      they are rejected at bind time.
+    type: object
+    additionalProperties: false
+    required: [kind, branches, else]
+    properties:
+      kind: { type: string, const: branch }
+      branches:
+        description: The arms, tested in document order.
+        type: array
+        minItems: 1
+        items: { $ref: "#/$defs/BranchArm" }
+      else:
+        description: The result when no predicate matches.
+        $ref: "#/$defs/Expr"
+
+  BranchArm:
+    description: |
+      One arm of a `branch`: a boolean predicate and the result the branch
+      produces when this is the first predicate to evaluate to TRUE.
+    type: object
+    additionalProperties: false
+    required: [when, then]
+    properties:
+      when:
+        description: The arm's boolean predicate.
+        $ref: "#/$defs/Expr"
+      then:
+        description: The arm's result expression.
+        $ref: "#/$defs/Expr"
 
   # Crossings are the only boundary from a relation into an expression. Each
   # declares how a stream of rows becomes exactly one datum.

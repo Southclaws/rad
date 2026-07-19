@@ -6,6 +6,15 @@ import (
 	"fmt"
 )
 
+// One arm of a `branch`: a boolean predicate and the result the branch
+// produces when this is the first predicate to evaluate to TRUE.
+type BranchArm struct {
+	// The arm's result expression.
+	Then Expr `json:"then"`
+	// The arm's boolean predicate.
+	When Expr `json:"when"`
+}
+
 // The logical type of a scalar value: `text`, `int64`, `float64`, or
 // `bool`.
 type ScalarType string
@@ -312,6 +321,8 @@ func (w *Expr) UnmarshalJSON(data []byte) error {
 		v = &BinaryExpr{}
 	case "cast":
 		v = &CastExpr{}
+	case "branch":
+		v = &BranchExpr{}
 	case "exists":
 		v = &CrossingExprExists{}
 	case "first":
@@ -419,6 +430,39 @@ type CastExpr struct {
 func (CastExpr) isExpr() {}
 
 func (CastExpr) ExprType() string { return "cast" }
+
+// Ordered, lazy branching. Evaluate branch predicates in document order.
+// The result is the `then` expression belonging to the first predicate
+// that evaluates to TRUE. Predicates evaluating to FALSE or UNKNOWN do
+// not match. If none match, evaluate and return `else`. Unselected result
+// expressions are not evaluated — the laziness is contract, not
+// optimization: a division by zero in an arm that is never selected does
+// not raise.
+//
+// `else` is required. LIR has typed NULLs only, so there is no
+// implicit-NULL default; a frontend that permits an omitted else inserts
+// a correctly typed NULL itself.
+//
+// Typing: every `when` must be boolean (nullable is fine — an UNKNOWN
+// predicate falls through). Every `then` and the `else` must have the
+// same scalar kind, with no implicit widening; a frontend inserts
+// explicit casts. The result is that kind, nullable when any `then` or
+// the `else` is. A branch subtree may not contain a crossing (`exists` /
+// `first` / `scalar` / `array`) anywhere — in a `when`, a `then`, or the
+// `else`: the executor attaches crossings per row before expression
+// evaluation, which would evaluate crossings in never-selected arms, so
+// they are rejected at bind time.
+type BranchExpr struct {
+	// The arms, tested in document order.
+	Branches []BranchArm `json:"branches"`
+	// The result when no predicate matches.
+	Else Expr   `json:"else"`
+	Kind string `json:"kind"`
+}
+
+func (BranchExpr) isExpr() {}
+
+func (BranchExpr) ExprType() string { return "branch" }
 
 // `EXISTS`: a boolean that is `TRUE` when the relation `node` produces at
 // least one row and `FALSE` otherwise. Never NULL. The relation may be

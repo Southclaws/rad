@@ -1,0 +1,31 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "open_tickets",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "tickets", "scope": "t" },
+            "f": { "kind": "filter", "input": "t", "predicate": { "kind": "branch",
+              "branches": [
+                { "when": { "kind": "binary", "op": "eq",
+                    "left":  { "kind": "col", "scope": "t", "column": "status" },
+                    "right": { "kind": "lit", "value": { "type": "text", "value": "open" } } },
+                  "then": { "kind": "lit", "value": { "type": "bool", "value": true } } }
+              ],
+              "else": { "kind": "lit", "value": { "type": "bool", "value": false } } } },
+            "o": { "kind": "order", "input": "f", "terms": [
+              { "expr": { "kind": "col", "scope": "t", "column": "id" } }
+            ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "k1", "status": "open" },
+    { "id": "k4", "status": "open" }
+  ]
+}

@@ -1,0 +1,8 @@
+[
+  { "table": "tasks", "rows": [
+    { "id": "t1", "estimate": 10 },
+    { "id": "t2", "estimate": 2 },
+    { "id": "t3" },
+    { "id": "t4", "estimate": 5 }
+  ] }
+]
