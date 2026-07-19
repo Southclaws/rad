@@ -145,6 +145,12 @@ func (w *raiser) expr(e lir.Expr) lirwire.Expr {
 		return lirwire.Binary(string(x.Op), w.expr(x.L), w.expr(x.R))
 	case lir.Cast:
 		return lirwire.Cast(w.expr(x.X), lirwire.ScalarType(string(x.To)))
+	case lir.Branch:
+		arms := make([]lirwire.BranchArm, len(x.Arms))
+		for i, a := range x.Arms {
+			arms[i] = lirwire.Arm(w.expr(a.When), w.expr(a.Then))
+		}
+		return lirwire.Branch(arms, w.expr(x.Else))
 	case lir.Exists:
 		return lirwire.Exists(w.rel(x.Rel))
 	case lir.First:

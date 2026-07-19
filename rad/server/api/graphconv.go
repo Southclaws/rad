@@ -333,6 +333,34 @@ func (g *graphConv) expr(e lirwire.Expr) (lir.Expr, error) {
 		}
 		return lir.Cast{X: sub, To: lir.Kind(x.To)}, nil
 
+	case *lirwire.BranchExpr:
+		if len(x.Branches) == 0 {
+			return nil, wireErrf("branch needs at least one arm")
+		}
+		arms := make([]lir.BranchArm, len(x.Branches))
+		for i, arm := range x.Branches {
+			when, err := g.expr(arm.When)
+			if err != nil {
+				return nil, err
+			}
+			then, err := g.expr(arm.Then)
+			if err != nil {
+				return nil, err
+			}
+			if when == nil || then == nil {
+				return nil, wireErrf("branch arm %d needs a when and a then", i+1)
+			}
+			arms[i] = lir.BranchArm{When: when, Then: then}
+		}
+		els, err := g.expr(x.Else)
+		if err != nil {
+			return nil, err
+		}
+		if els == nil {
+			return nil, wireErrf("branch needs an else")
+		}
+		return lir.Branch{Arms: arms, Else: els}, nil
+
 	case *lirwire.CrossingExprExists:
 		rel, err := g.rel(x.Node)
 		if err != nil {

@@ -71,11 +71,14 @@ func (a *dbAPI) executeCatalogPolicy() execprogram.CatalogPolicy {
 	return execprogram.CatalogForbidden
 }
 
-// programToEngine lowers each generated wire variant into the engine's PIR
-// statement. Relational payloads are decoded from their opaque LIR bytes;
-// catalog definitions map into the canonical catalog types. Backward-only
-// references, namespace collisions, and result selection are enforced by the
-// binder.
+// ProgramToEngine lowers a validated wire program into engine form. It is
+// the same conversion /execute performs, exported for in-process frontends
+// (the Postgres wire listener) that produce wire programs without HTTP.
+func ProgramToEngine(p pirwire.Program) (execprogram.Program, error) {
+	return programToEngine(p)
+}
+
+// TODO: remove this:
 func programToEngine(p pirwire.Program) (execprogram.Program, error) {
 	stmts := make([]execprogram.Statement, len(p.Statements))
 	for i, s := range p.Statements {
