@@ -37,10 +37,11 @@ main() {
 
 	asset="rad-$os-$arch.tar.gz"
 	if [ -n "${RAD_VERSION:-}" ]; then
-		url="https://github.com/$repo/releases/download/${RAD_VERSION}/$asset"
+		base="https://github.com/$repo/releases/download/${RAD_VERSION}"
 	else
-		url="https://github.com/$repo/releases/latest/download/$asset"
+		base="https://github.com/$repo/releases/latest/download"
 	fi
+	url="$base/$asset"
 
 	echo "Downloading $url"
 	mkdir -p "$bin_dir"
@@ -48,23 +49,59 @@ main() {
 	trap 'rm -rf "$tmp"' EXIT
 
 	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL "$url" -o "$tmp/$asset"
+		dl() { curl -fsSL "$1" -o "$2"; }
 	elif command -v wget >/dev/null 2>&1; then
-		wget -qO "$tmp/$asset" "$url"
+		dl() { wget -qO "$2" "$1"; }
 	else
 		echo "error: need curl or wget" >&2
 		exit 1
 	fi
 
-	tar -xzf "$tmp/$asset" -C "$tmp"
-	mv "$tmp/rad" "$bin_dir/rad"
-	chmod +x "$bin_dir/rad"
+	dl "$url" "$tmp/$asset"
 
-	# macOS: the binary is unsigned (no Apple developer certificate); clear
-	# the quarantine flag if one was applied so Gatekeeper doesn't block it.
-	if [ "$os" = "darwin" ]; then
-		xattr -d com.apple.quarantine "$bin_dir/rad" 2>/dev/null || true
+	# Verify the download against the release's published checksums before
+	# trusting its contents. SHA256SUMS is `sha256sum` output: "<hash>  <file>".
+	dl "$base/SHA256SUMS" "$tmp/SHA256SUMS"
+	expected="$(awk -v a="$asset" '$2 == a { print $1 }' "$tmp/SHA256SUMS")"
+	if [ -z "$expected" ]; then
+		echo "error: SHA256SUMS has no entry for $asset" >&2
+		exit 1
 	fi
+	if command -v sha256sum >/dev/null 2>&1; then
+		actual="$(sha256sum "$tmp/$asset" | awk '{ print $1 }')"
+	elif command -v shasum >/dev/null 2>&1; then
+		actual="$(shasum -a 256 "$tmp/$asset" | awk '{ print $1 }')"
+	else
+		echo "error: need sha256sum or shasum to verify the download" >&2
+		exit 1
+	fi
+	if [ "$expected" != "$actual" ]; then
+		echo "error: checksum mismatch for $asset" >&2
+		echo "  expected $expected" >&2
+		echo "  actual   $actual" >&2
+		exit 1
+	fi
+
+	tar -xzf "$tmp/$asset" -C "$tmp"
+	if [ ! -f "$tmp/rad" ]; then
+		echo "error: release archive does not contain rad" >&2
+		exit 1
+	fi
+	chmod +x "$tmp/rad"
+
+	# macOS: the binary is unsigned (no Apple developer certificate); clear the
+	# quarantine flag so Gatekeeper doesn't block the validation run below.
+	if [ "$os" = "darwin" ]; then
+		xattr -d com.apple.quarantine "$tmp/rad" 2>/dev/null || true
+	fi
+
+	# Validate the downloaded binary before replacing a working installation.
+	if ! "$tmp/rad" --version >/dev/null 2>&1; then
+		echo "error: downloaded rad failed its version check" >&2
+		exit 1
+	fi
+
+	mv "$tmp/rad" "$bin_dir/rad"
 
 	echo ""
 	echo "rad was installed to $bin_dir/rad"

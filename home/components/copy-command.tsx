@@ -52,7 +52,7 @@ const COMMANDS: Record<OS, { label: string; command: string; prompt: string }> =
   windows: {
     label: "Windows",
     command:
-      'powershell -ExecutionPolicy Bypass -c "irm https://radengine.dev/install.ps1 | iex"',
+      'powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://radengine.dev/install.ps1 | iex"',
     prompt: ">",
   },
   mac: {
