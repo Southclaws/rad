@@ -1,14 +1,13 @@
 import { Artifacts } from "@/components/artifacts";
 import { Backronym } from "@/components/backronym";
 import { BootTerminal } from "@/components/boot-terminal";
-import { CopyCommand } from "@/components/copy-command";
+import { InstallCommand } from "@/components/copy-command";
 import { GitHubMark, ArrowUpRight } from "@/components/icons";
 import { RelationGlyph } from "@/components/relation-glyph";
 import { Reveal } from "@/components/reveal";
 import { SiteNav } from "@/components/site-nav";
 
 const GITHUB = "https://github.com/Southclaws/rad";
-const INSTALL = "curl -fsSL https://radengine.dev/install.sh | sh";
 
 const LOOP: {
   n: string;
@@ -139,7 +138,7 @@ export default function Home() {
                     True OLTP backed by durable object storage.
                   </span>
                 </p>
-                <CopyCommand command={INSTALL} />
+                <InstallCommand />
                 <div className="hero__cta">
                   <a className="btn btn--primary" href="/docs">
                     Read the docs <ArrowUpRight />
@@ -255,7 +254,7 @@ export default function Home() {
                 Grab the binary for Windows, macOS or Linux. This includes the
                 database server itself and the CLI developer tools.
               </p>
-              <CopyCommand command={INSTALL} />
+              <InstallCommand />
               <div className="hero__cta" style={{ justifyContent: "center" }}>
                 <a className="btn btn--primary" href="/docs">
                   Documentation <ArrowUpRight />
