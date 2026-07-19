@@ -7,7 +7,10 @@ require (
 	github.com/go-faster/jx v1.2.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/google/jsonschema-go v0.4.3
+	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jeroenrinzema/psql-wire v0.19.0
 	github.com/ogen-go/ogen v1.22.0
+	github.com/pgplex/pgparser v0.2.0
 	github.com/spf13/cobra v1.10.2
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/metric v1.44.0
@@ -26,6 +29,9 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
@@ -41,3 +47,5 @@ require (
 	golang.org/x/text v0.38.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
+
+replace github.com/pgplex/pgparser => ./third_party/pgparser

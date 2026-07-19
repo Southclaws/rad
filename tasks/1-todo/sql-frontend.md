@@ -1,17 +1,14 @@
 # ADR: a SQL frontend that compiles to LIR+PIR
 
-Status: proposed, not scheduled — a proof-of-concept/prototype, no code
-yet, and nothing here is set in stone. Rough sequencing (2026-07-14):
-**phase 1**, SQLite dialect via vendored `rqlite/sql`, a client-side
-text-compile POC proving the AST→IR mapping layer; **phase 2**, Postgres
-dialect via `pgplex/pgparser` plus a real `psql-wire`-based wire-protocol
-frontend, so unmodified Postgres clients/ORMs/test suites can hit Rad
-directly. See "Alternative: Postgres dialect and wire protocol" for the
-phase-2 research. How phase 2 is actually deployed — embedded in Rad's own
-server, or a standalone layer/service in front of it translating wire
-protocol to Rad's existing API — is deliberately undecided; this is
-experimental, and what matters right now is getting the SQL→IR
-compiler itself working, not settling the surrounding architecture.
+Status: IN PROGRESS (2026-07-19) — building phase 2 directly, skipping the
+phase-1 SQLite dialect entirely. The MVP under construction:
+`rad serve --postgres=0.0.0.0:5432` boots a `psql-wire` listener inside
+Rad's own server process; a compiler package (`rad/sql`) lowers PostgreSQL
+statements (parsed with `pgplex/pgparser`) into PIR programs over LIR
+relations; validation target is running Storyden's full test suite
+(`../storyden`, ent + pgx) with `DATABASE_URL` pointed at Rad. See
+"Implementation findings (2026-07-19)" at the bottom for everything
+learned during build — that section is the cold-resume reference.
 
 ## Context
 
@@ -548,6 +545,323 @@ right now.
   queries (not just our own hand-picked POC-scope examples) to find its
   actual edge cases before building the mapping layer on top of an
   unproven assumption.
+
+## Implementation findings (2026-07-19)
+
+Everything below was established during the build. If work pauses, resume
+from here.
+
+### Decisions taken
+
+- **Straight to phase 2.** No SQLite dialect, no `rqlite/sql`. Parser is
+  `pgplex/pgparser` v0.2.0; wire server is `jeroenrinzema/psql-wire`
+  v0.19.0 (handles extended query protocol, statement/portal caches,
+  pgtype-based text+binary encoding — confirmed sufficient by API review).
+- **Embedded, not a proxy**: a third listener inside `rad serve`, behind
+  `--postgres=<addr>`. Constructed in `cmd/rad/serve.go` next to the data
+  and admin listeners (same `errCh` goroutine pattern), handed the same
+  `*frontend.DB`.
+- **Compile target is the wire protocol types** (`lirwire`/`pirwire`), not
+  engine types: the compiler stays a pure protocol-level client the same
+  as any generated client, reusable client-side; the server executes via
+  the same wire→engine conversion `/execute` uses (`programToEngine` in
+  `rad/server/api/program.go`, needs exporting or a thin wrapper).
+- **Packages**: `rad/sql` = Postgres-AST → `pirwire.Program` compiler
+  (schema-aware binder + lowering); `rad/server/pgwire` = psql-wire
+  session layer (param decode, result encode, tags, SQLSTATE mapping,
+  pg_catalog stubs).
+- **Prepare/Execute split**: `Prepare(schema, stmt)` lowers once with nil
+  args to bind names, infer parameter types from context (comparisons,
+  INSERT targets, casts, LIMIT), and compute result columns for
+  Describe; Execute re-lowers with decoded arg values inlined as typed
+  `lit`s (LIR has no param node). LIMIT/OFFSET params need the actual
+  value at compile time (slice takes ints, not exprs) — another reason
+  for re-lowering per Execute.
+
+### pgparser: vendored with a one-line patch
+
+`third_party/pgparser` + `replace` in root go.mod (see its PATCHES.md).
+Upstream v0.2.0 AND master (v0.2.1-0.20260703091758) drop `$N` parameter
+numbers: `parser/parse.go`'s lexer→goyacc adapter only sets `lval.ival`
+for `ICONST`, so every ParamRef parses as `Number: 0`, and ParamRef
+`Location` is hardcoded -1 so positions are unrecoverable. Patch =
+`case ICONST, PARAM:`. Upstream the fix, then delete the vendor copy.
+Everything else checked parses correctly: ON CONFLICT, WITH RECURSIVE,
+BEGIN/COMMIT, SET/SHOW, ILIKE, IN lists, NULLS LAST, ALTER TABLE.
+
+### Engine/protocol facts the compiler leans on (verified in code)
+
+- **LIR has recursion and distinct now** (post-ADR): bindings can be
+  `{kind: recursive, anchor, step, accumulation: all|new}` with one
+  `recursive_ref` in the step (linear recursion only, monotone step —
+  no aggregate/slice/left-join-nullable-side/crossing over the frontier);
+  `distinct` node dedups complete rows (NULLs equal). `WITH RECURSIVE x
+  AS (anchor UNION ALL step)` → accumulation `all`; `UNION` → `new`.
+- **PIR already has the full catalog family**: `create_table`,
+  `rename_table`, `delete_table`, `create_column`, `rename_column`,
+  `delete_column`, `create_index`, `delete_index`. SQL DDL needs zero
+  protocol changes. Existing objects are addressed by stable numeric
+  SchemaID (resolve via introspection `TableInfo.ID`); new definitions
+  omit IDs in direct mode (server allocates). Catalog authority is the
+  executor's `CatalogPolicy`: direct mode → `RevisionPerStatement`,
+  schema mode → `CatalogForbidden` (mirror `executeCatalogPolicy()`).
+- **Four scalars only** (`text`,`int64`,`float64`,`bool`) + free-form
+  per-column `format` metadata + defaults `uuid()`/`now_ms()` (literal
+  defaults otherwise).
+- **Binder strictness that shapes lowering**: comparisons require
+  identical scalar kinds (no int/float widening — insert explicit
+  `cast`); arithmetic widens; `and`/`or` strictly binary (left-fold);
+  bare NULL literals need a typed context; join is `inner`/`left` only,
+  arbitrary boolean `on` but no crossings inside `on` and no
+  left↔right correlation; only group keys + agg outputs visible above an
+  aggregate; `count` has no DISTINCT; root `many` requires an explicit
+  `order` node somewhere below the root (order-below-project counts —
+  synthesize order by scan PK / group keys / output scalars when SQL has
+  no ORDER BY); positive `offset` requires ordered input; `first`/`array`
+  crossings need order or ≤1-row proof; `scalar` crossing needs
+  single-column statically-≤1-row (aggregates qualify).
+- **Mutation contracts**: `update` relation outputs full PK (identifies,
+  not assigned) + ≥1 assigned non-PK column; `delete` outputs exactly the
+  PK; both reject a target identified twice; zero input rows = fine
+  (UPDATE 0). `create` maps columns by name, omitted → schema default.
+  Statement results: create→created rows, update→post-image, delete→
+  pre-image (bags, unordered) — this is RETURNING. Statements see all
+  effects of prior statements in the same program (basis of the upsert
+  lowering below).
+- **Response/result path**: `POST /execute` body = raw program JSON;
+  result datum shaped by root cardinality; errors are problem+json with
+  `code` + fine-grained `reason` (`rad/engine/reject/reject.go` is the
+  reason vocabulary → map to SQLSTATEs in pgwire: unique
+  `constraint_violation`→23505, `serializable_conflict`→40001, etc.).
+
+### Postgres → Rad type bridge
+
+| PG type (DDL + params) | rad scalar | format | result OID |
+|---|---|---|---|
+| varchar/text/char/name | text | — | 25 |
+| bigint/integer/smallint | int64 | — | 20 |
+| boolean | bool | — | 16 |
+| double precision/real/numeric | float64 | — | 701 |
+| timestamptz / timestamp | int64 (unix **micro**seconds) | `timestamptz` / `timestamp` | 1184 / 1114 |
+| jsonb / json | text (raw JSON passthrough) | `jsonb` / `json` | 3802 / 114 |
+| bytea | text (`\x` hex passthrough) | `bytea` | 17 |
+| uuid | text | `uuid` | 2950 |
+
+Microseconds (not now_ms's milliseconds) because PG timestamps are µs and
+ent round-trips values; consequence: `DEFAULT CURRENT_TIMESTAMP`/`now()`
+in DDL is accepted-and-dropped (ent fills time defaults client-side).
+pgwire converts wire param bytes → typed `lirwire.Value` by inferred
+(scalar, format), and result datums → pgtype values by column
+(scalar, format).
+
+### Storyden compatibility surface (surveyed ../storyden)
+
+ent v0.14.6 + pgx v5 stdlib (extended protocol, statement cache), Atlas
+v0.37.0 migration via `client.Schema.Create` on every test-app start
+(126 integration-test call sites; CI pre-runs `cmd/migrate`). Suite:
+`go test -p 4 ./...`, one shared Postgres DB, no truncation between
+tests, real BEGIN/COMMIT/ROLLBACK (no savepoints). Types in DDL: varchar
+(xid PKs, enums-as-varchar), timestamptz (~110), jsonb (35), bool,
+bigint, double precision — no uuid/bytea/numeric/arrays/native enums.
+
+**Migration introspection is the gate**: Atlas inspects
+pg_catalog/information_schema before diffing. Strategy: stub, don't
+implement — pattern-match the bounded Atlas query set in pgwire:
+- `SELECT current_setting('server_version_num'), ...` → `("170000","heap",NULL)`
+- ent's `SHOW server_version_num` → `170000`
+- schemas query (`nspname AS schema_name`) → one row `("public", NULL)`
+- tables/columns/indexes/fks/checks/enums/sequences queries → **empty**
+  (inspection always sees an empty DB → Atlas re-emits full CREATE DDL
+  every Schema.Create → make DDL idempotent: CREATE TABLE/INDEX for an
+  existing identical object no-ops, duplicate-create races swallowed)
+- `ALTER TABLE ADD CONSTRAINT FOREIGN KEY` → accept-and-ignore (Atlas
+  adds FKs in a second phase; Rad FKs are create-time-only and RESTRICT
+  — no FKs at all beats spurious restrict errors; cascade-delete tests
+  will fail, counted as a gap)
+
+**Runtime SQL that maps**: CRUD, RETURNING, IN lists (→ OR-chain),
+IN (subquery) (→ exists crossing; NOT IN K3 caveat accepted), LEFT
+JOIN + GROUP BY + count/min/max, DISTINCT (whole-row), ORDER/LIMIT/
+OFFSET, col-to-col comparisons, the recursive node-tree CTE (UNION →
+accumulation `new`, `cast($n as text)` fine), `SELECT 1` pings,
+non-recursive CTEs (→ derived bindings).
+
+**ON CONFLICT lowering** (used everywhere in Storyden):
+- `DO NOTHING`: `create` over `filter(rows, NOT exists(target row))`;
+  statement result = actually-created rows = PG's RETURNING semantics.
+- `DO UPDATE`: three statements in one program — update-where-exists
+  (join rows×target on conflict key → project PK+assignments),
+  create-where-missing, then a `query` reading the conflict keys from
+  post-state for RETURNING (later statements see prior effects).
+
+**Known-unmappable (will fail, gap-analysis fodder)**: ILIKE/LIKE
+(ContainsFold search paths), jsonb `@>` containment (RBAC permission
+checks in account reads!), jsonb `||`/`jsonb_set` updates, `CASE` +
+`cast(x AS numeric/timestamp/boolean)` (child-property sort), plain
+`UNION ALL` of two selects (no LIR set-op node — child_sort.go),
+window functions (none used). Transactions are wire-level no-ops
+(autocommit per statement; ROLLBACK lies) — acceptable for the suite's
+happy paths, rollback-dependent tests will leak state.
+
+### Session-layer glue (pgwire)
+
+- `version()`, `current_schema()`, `current_database()`,
+  `current_setting(...)` → canned scalar answers at the frontend.
+- `SET`/`RESET` → "SET" tag no-op; `SHOW server_version[_num]` → canned;
+  `BEGIN/COMMIT/ROLLBACK` → tag-only no-ops.
+- Empty query → EmptyQueryResponse (psql-wire handles).
+- Multi-statement simple-protocol strings: pgparser returns a list; map
+  to one PreparedStatement each.
+- Command tags: `SELECT n`/`INSERT 0 n`/`UPDATE n`/`DELETE n` from
+  statement `affected`.
+- Concurrency: engine serializable conflicts surface as SQLSTATE 40001;
+  pgx/ent do not retry — expect some flakes under `-p 4`.
+
+### Build order / state (2026-07-19 end of first day)
+
+1. ~~recon + design~~ 2. ~~vendor+patch pgparser~~ 3. ~~rad/sql compiler
+(SELECT/mutations/RETURNING/ON CONFLICT/DDL/CTEs/recursion)~~
+4. ~~rad/server/pgwire~~ 5. ~~serve --postgres~~ 6. ~~pgx smoke test
+(rad/server/pgwire/pgwire_test.go — all green)~~ 7. Storyden: IN PROGRESS.
+
+Storyden status: ent/Atlas migration fully green (inspection stubs +
+idempotent DDL work); `tests/account/**` 11/13 packages green including
+all auth flows, upserts, concurrency race tests (statement-level conflict
+retry in pgwire makes single-statement programs behave like READ
+COMMITTED); settings/register/mailqueue service packages green. Second
+vendored pgparser patch: bare column labels for NAME_P/TYPE_P in
+target_el (gram.y + goyacc regen; upstream rejects `min(x) name`).
+
+LANDED since the first sweep (all engine work `task test` green):
+- LIR set-operation family: `concatenate` (variadic bag concat, fresh
+  scope, positionally compatible shapes) + binary `intersect`/`except`
+  with `quantifier: all|distinct`; UNION DISTINCT = distinct(concatenate).
+  Frontend lowers UNION [ALL] trees with positional name alignment and
+  int64→float64 widening projections. This alone took the whole
+  library/nodes tree green (the nodeProperties UNION ALL runs on every
+  node fetch).
+- LIR `branch` expression per the decided design (lazy, K3 first-TRUE,
+  required else, crossings rejected v1). Frontend lowers searched CASE,
+  discriminant CASE, COALESCE, NULLIF with two-pass arm-type unification.
+  232 CASE-blocked queries → 3 remaining (see below).
+- Frontend/pgwire fixes en route: group-key output-name uniquification
+  (GROUP BY a.id, b.id), inline self-FKs stripped like ALTER FKs (no FKs
+  at all — Rad is RESTRICT-only, tooling expects CASCADE/SET NULL),
+  conflict retry 50×/40ms-cap quadratic backoff, single-query programs
+  routed through frontend.DB.Execute (snapshot read path, no
+  serializable-conflict exposure — fixed read-heavy endpoints losing
+  races against write churn), typed-nil guard in referencesName, LIKE
+  escape handling (`\_` etc. still pending — only bare prefix patterns
+  lower today).
+
+FULL-SUITE RESULT (2026-07-19, `go test -p 4 ./...`, CI-identical):
+**129 of 139 test packages pass (93%)**. The 10 failing: account/list,
+account/role, admin, datagraph, library/properties, oauth, profile,
+robot/mcp, thread, thread/search — every one classified below except
+robot/mcp and the thread link_aggregation subtest (unchased).
+
+Remaining failure classes (whole-suite sweep):
+- ILIKE / contains-fold (≈6 query shapes; thread/search, datagraph
+  keyword search, admin account list). LIKE-like semantics need a real
+  design pass (pattern language, case folding, collation posture — the
+  concat/branch treatment) before any further lowering work; the frontend
+  currently lowers only bare literal-prefix LIKE to byte-lexical ranges
+  and rejects everything else, deliberately frozen there.
+- text→numeric/timestamp/boolean runtime casts (3 queries, all the
+  child-property sort in node_querier child_sort.go / sortedByPropertyValue
+  — `cast(p.value as numeric)` over a text column). Needs a parsing-cast
+  decision in the engine.
+- Wire transactions are no-ops: the account/role rollback tests
+  (RollsBackOnCacheWriteFailure et al) sabotage a Tx and assert rollback;
+  autocommit-per-statement cannot express that.
+- Individual semantic stragglers to chase: TestThreads/link_aggregation
+  (link upsert path returns nil where a row is expected),
+  TestResourceProfileReferencesIncludeRoles/link_get_related_profiles.
+- jsonb `@>`/`jsonb_set` (RBAC permission checks) never surfaced in any
+  log — evidently not on the exercised paths.
+
+### Next primitive: `branch` expression — DESIGN DECIDED (2026-07-19)
+
+213 blocked queries want SQL CASE. The LIR primitive is `branch`: an
+ordered, lazy branching expression in the Expr union. It computes one
+datum, is pure, and changes no cardinality or row shape. Implement after
+the concat/set-op engine work lands (both rewrite the generated wire
+layer). Decided contract:
+
+    { "kind": "branch",
+      "branches": [ { "when": <Expr:boolean>, "then": <Expr> }, ... ],
+      "else": <Expr> }               # REQUIRED — see below
+
+Wire schema: `branches` minItems 1, each arm `{when, then}` (both
+required, additionalProperties false); `else` required.
+
+Normative semantics (the laziness sentence is load-bearing):
+
+> Evaluate branch predicates in document order. The result is the `then`
+> expression belonging to the first predicate that evaluates to TRUE.
+> Predicates evaluating to FALSE or UNKNOWN do not match. If none match,
+> evaluate and return `else`. Unselected result expressions are not
+> evaluated.
+
+Laziness matters even though expressions are pure: arms may contain
+crossings, and the interpreter must not eagerly run every crossing in
+every arm.
+
+- `else` is REQUIRED on the wire: LIR has typed NULLs only, so an
+  implicit SQL-style NULL default would need a special typing rule.
+  Frontends accept an omitted ELSE and insert a correctly typed NULL
+  after their own type resolution.
+- Result typing: every `then` and `else` unify to one scalar type;
+  nullability is the union of all reachable arms (conservative binder;
+  a later optimizer may refine). v1 restricts results to scalars — no
+  row/array (first/array-crossing) arm results.
+- Error contract: predicates evaluate only until one matches; only the
+  selected result evaluates; optimizers may REMOVE never-evaluated
+  expressions but may never evaluate one earlier than semantics demand,
+  and may reorder predicates only when equivalence includes error
+  behavior. `branch(true → 1, else 1/0)` folds to 1 and must not fail
+  while folding. (PG's unreachable-arm folding bug is the cautionary
+  tale.)
+- No discriminant/switch form in public LIR: `CASE x WHEN v …` lowers to
+  branch over eq(x, v). Evaluate-once and jump-table dispatch are
+  bound/physical-IR concerns (a post-bind pass can recover
+  `switch_once(x, {…})` from an eq-chain); the wire format stays tiny.
+- K3 subtlety for future optimizer work: "did not match" is is_not_true,
+  not K3 `not` — `branch(p → true, else false)` simplifies to
+  is_true(p), never plain p. Total boolean normalizers (is_true et al)
+  can live in the bound IR without entering the public grammar.
+- Optimizer opportunities unlocked (all future, none v1): constant
+  folding + dead-arm removal respecting reachability;
+  predicate-context propagation into arms; nullability refinement
+  (else-arm of an is-null guard knows the column is non-null);
+  identical-result collapse; conditional-aggregate recovery
+  (SUM(CASE WHEN p THEN x ELSE 0 END) → filtered aggregate term —
+  motivates filter on AggTerm someday); vectorized selection-mask
+  execution; expression-index matching.
+
+Frontend sugar lowering to it: searched CASE, discriminant CASE,
+COALESCE(a, b, …) → branch over is_not_null, NULLIF(a, b) → branch on
+eq. count(CASE WHEN p THEN 1 END)-style idioms work with no aggregate
+changes.
+
+Implementation hazards (the two that matter):
+
+- **K3 match discipline.** Arm selection is strictly TriTrue — the same
+  test Filter applies — never Go-boolean truthiness of a possibly-NULL
+  bool. A NULL `when` is UNKNOWN and falls through; it is not an error
+  and not a match. The eval path must go through the tri-valued
+  machinery (03_lir/tribool, eval's predicate path), not Value.Bool.
+- **Eager crossing attachment violates laziness.** The executor
+  classifies and attaches correlated crossings per row before expression
+  evaluation (04_planner/analysis/correlate.go, 05_exec/query/attach.go)
+  — a crossing under a never-selected arm would still execute, and that
+  is error-observable (cardinality violations, runtime errors inside the
+  sub-relation), not merely wasted work. v1 therefore REJECTS crossings
+  anywhere under a branch (bind-time, clear reason) rather than silently
+  violating the contract; lift the restriction when attachment learns
+  per-arm laziness. The scalar tree-walk evaluator is naturally lazy for
+  ordinary subexpressions (1/0 in an unselected arm must not and will
+  not fail).
 
 ## Related
 

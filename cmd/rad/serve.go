@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log"
+	"log/slog"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	frontend "github.com/Southclaws/rad/rad/engine/06_frontend"
 	"github.com/Southclaws/rad/rad/server"
+	"github.com/Southclaws/rad/rad/server/pgwire"
 )
 
 // serveCmd runs the Rad server on two ports: the database API clients connect
@@ -22,7 +25,7 @@ import (
 // environment (RAD_STORAGE et al; see server.Config), with flags overriding.
 func serveCmd() *cobra.Command {
 	cfg := server.LoadConfig()
-	var addr, storage, dataDir, catalogMode string
+	var addr, storage, dataDir, catalogMode, postgres string
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the Rad database server (API + devtool UI)",
@@ -80,11 +83,26 @@ func serveCmd() *cobra.Command {
 			dataSrv := server.NewHTTPServer(cfg.Addr, dataHandler)
 			adminSrv := server.NewHTTPServer(adminAddr, adminHandler)
 
+			if postgres == "" {
+				postgres = os.Getenv("RAD_POSTGRES")
+			}
+			var pgSrv *pgwire.Server
+			if postgres != "" {
+				pgLog := slog.Default()
+				if os.Getenv("RAD_LOG") == "debug" {
+					pgLog = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+				}
+				pgSrv, err = pgwire.New(db, cat, mode, pgLog)
+				if err != nil {
+					return err
+				}
+			}
+
 			// Graceful shutdown on SIGINT/SIGTERM.
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
-			errCh := make(chan error, 2)
+			errCh := make(chan error, 3)
 			go func() {
 				log.Printf("rad %s serving on %s (storage: %s @ %s, catalog: %s)", version, cfg.Addr, cfg.Storage, location, mode)
 				errCh <- dataSrv.ListenAndServe()
@@ -93,6 +111,12 @@ func serveCmd() *cobra.Command {
 				log.Printf("admin UI on %s", adminAddr)
 				errCh <- adminSrv.ListenAndServe()
 			}()
+			if pgSrv != nil {
+				go func() {
+					log.Printf("postgres wire protocol on %s", postgres)
+					errCh <- pgSrv.ListenAndServe(postgres)
+				}()
+			}
 
 			select {
 			case err := <-errCh:
@@ -103,6 +127,11 @@ func serveCmd() *cobra.Command {
 				defer cancel()
 				dataErr := dataSrv.Shutdown(shutdownCtx)
 				adminErr := adminSrv.Shutdown(shutdownCtx)
+				if pgSrv != nil {
+					if err := pgSrv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+						return err
+					}
+				}
 				if dataErr != nil && !errors.Is(dataErr, context.DeadlineExceeded) {
 					return dataErr
 				}
@@ -117,5 +146,6 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&storage, "storage", "", "storage backend: memory, file, s3 (default RAD_STORAGE or file)")
 	cmd.Flags().StringVarP(&dataDir, "db", "d", "", "file storage directory (default RAD_DATA_DIR or data)")
 	cmd.Flags().StringVar(&catalogMode, "catalog-mode", "", "catalog management mode for a fresh database: direct or schema (default RAD_CATALOG_MODE or direct; set once, immutable)")
+	cmd.Flags().StringVar(&postgres, "postgres", "", "also serve the PostgreSQL wire protocol on this address, e.g. 0.0.0.0:5432 (default RAD_POSTGRES)")
 	return cmd
 }
