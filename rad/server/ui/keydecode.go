@@ -136,7 +136,7 @@ func (d *keyDecoder) renderIndexTuple(tableID, indexID string, buf []byte) strin
 	return renderValues(indexed) + "+" + renderTuple(rest)
 }
 
-// renderRow renders a stored row (column-ID keyed JSON) with column names,
+// renderRow renders a stored row (column-ID keyed binary) with column names,
 // in table-definition order.
 func renderRow(tbl model.Table, raw []byte) (string, error) {
 	row, err := codec.UnmarshalRow(tbl, raw)

@@ -11,10 +11,6 @@ import (
 // Value is a typed SQL-ish scalar — the runtime datum of the IR. Exactly one
 // of the payload fields is meaningful, selected by Type; Null overrides the
 // payload.
-//
-// The JSON encoding of this struct is a STORAGE CONTRACT: rows persist as
-// column-ID-keyed maps of these values (05_exec rowcodec), so the field tags
-// must never change.
 type Value struct {
 	Type    model.Type `json:"type"`
 	Text    string     `json:"text,omitempty"`
