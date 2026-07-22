@@ -1,0 +1,15 @@
+[
+  { "table": "samples", "rows": [
+    { "id": "ascii-lower",       "value": "foo" },
+    { "id": "ascii-upper",       "value": "FOO" },
+    { "id": "kelvin-ascii",      "value": "K" },
+    { "id": "kelvin-sign",       "value": "K" },
+    { "id": "accent-lower",      "value": "é" },
+    { "id": "accent-upper",      "value": "É" },
+    { "id": "accent-decomposed", "value": "e\u0301" },
+    { "id": "nul-lower",         "value": "a\u0000b" },
+    { "id": "nul-upper",         "value": "A\u0000B" },
+    { "id": "empty",             "value": "" },
+    { "id": "null" }
+  ] }
+]

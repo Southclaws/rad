@@ -345,8 +345,7 @@ func evalBranch(b bound.Branch, env Env) (lir.Value, error) {
 
 // evalTextMatch matches the value against the compiled pattern. A NULL value
 // is UNKNOWN (a null bool); a non-null value always matches to a total
-// TRUE/FALSE. Literals compare byte-exact — the pattern carries no
-// equivalence of its own.
+// TRUE/FALSE. The compiled pattern owns the literal comparison semantics.
 func evalTextMatch(m bound.TextMatch, env Env) (lir.Value, error) {
 	v, err := Eval(m.Value, env)
 	if err != nil {

@@ -993,12 +993,22 @@ $defs:
       compiled once. `value` is the only operand that varies per row, and NULL
       enters only through it.
 
-      `text_match` answers only whether the text matches the pattern; it
-      carries no case, accent, or collation knob. Literal spans compare under
-      the engine's ordinary text equality, which is byte-exact today.
-      Case-insensitivity is a comparison semantic shared by `=`, ordering,
-      grouping, and matching alike, resolved once elsewhere — never a flag on
-      this node.
+      `comparison` controls only how literal spans compare with corresponding
+      input text. `exact`, the default, requires identical UTF-8 bytes.
+      `unicode_simple_fold` interprets both spans as UTF-8 and compares their
+      Unicode code points under Unicode simple case folding, with the same
+      equality relation as Go's `strings.EqualFold`. Simple folding is
+      one-code-point-to-one-code-point, deterministic, and locale-independent.
+      It performs no Unicode normalization, accent folding, transliteration,
+      multi-code-point full folding, or linguistic collation. In particular,
+      "Straße" does not match "STRASSE", "é" does not match "e", and composed
+      and decomposed forms remain distinct.
+
+      This setting is deliberately narrower than a database collation. A
+      future cross-cutting collation design may govern equality, ordering,
+      grouping, uniqueness, and matching together; `unicode_simple_fold`
+      remains the precisely defined compatibility comparison provided by this
+      expression.
 
       This is deliberately the SQL `LIKE` wildcard set structurally
       represented, not a general pattern algebra: no alternation, repetition of
@@ -1013,6 +1023,12 @@ $defs:
       value:
         description: The text expression matched against the pattern.
         $ref: "#/$defs/Expr"
+      comparison:
+        description: |
+          How literal pattern spans compare with input text. Omission is
+          equivalent to `exact`.
+        $ref: "#/$defs/TextComparison"
+        default: exact
       parts:
         description: |
           The pattern, as an ordered list of literal spans and wildcards.
@@ -1022,6 +1038,14 @@ $defs:
         type: array
         minItems: 1
         items: { $ref: "#/$defs/TextMatchExprPart" }
+
+  TextComparison:
+    title: TextComparison
+    description: |
+      The equality relation used for literal spans in a `text_match`: exact
+      UTF-8 bytes or locale-independent Unicode simple case folding.
+    type: string
+    enum: [exact, unicode_simple_fold]
 
   TextMatchExprPart:
     title: TextMatchExprPart
@@ -1037,16 +1061,17 @@ $defs:
   LiteralTextMatchPart:
     title: LiteralTextMatchPart
     description: |
-      A literal span the pattern must match verbatim at this position. Never
-      empty; adjacent literal parts are equivalent to one concatenated literal,
-      and a producer should emit the concatenated form.
+      A literal span the pattern must match at this position under the enclosing
+      `text_match.comparison` rule. Never empty; adjacent literal parts are
+      equivalent to one concatenated literal, and a producer should emit the
+      concatenated form.
     type: object
     additionalProperties: false
     required: [kind, value]
     properties:
       kind: { type: string, const: literal }
       value:
-        description: The literal text, matched byte for byte.
+        description: The literal text to compare with the corresponding input span.
         type: string
         minLength: 1
 

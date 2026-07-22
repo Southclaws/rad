@@ -1,10 +1,10 @@
 package planner
 
 // text_match semantics end to end: an anchored glob over text, boolean under
-// K3. Prefix / suffix / infix / exact / multi-gap / all-wildcard shapes, byte-
-// exact literals (no case folding), and NULL value → UNKNOWN dropping a row
-// from a filter. Rejection: a non-text value. Expectations are hand-derived
-// from the shop fixture in fixtures_test.go.
+// K3. Prefix / suffix / infix / exact / multi-gap / all-wildcard shapes,
+// byte-exact and Unicode-simple-fold literals, and NULL value → UNKNOWN
+// dropping a row from a filter. Rejection: a non-text value. Expectations are
+// hand-derived from the shop fixture in fixtures_test.go.
 
 import (
 	"testing"
@@ -15,9 +15,13 @@ import (
 // idsWhere filters `table` by a text_match over `column` and returns the ids
 // in order — the shared shape for every match test below.
 func idsWhere(table, scope, column string, parts ...lirwire.TextMatchExprPart) lirwire.Query {
+	return idsWhereCompared(table, scope, column, lirwire.TextComparisonExact, parts...)
+}
+
+func idsWhereCompared(table, scope, column string, comparison lirwire.TextComparison, parts ...lirwire.TextMatchExprPart) lirwire.Query {
 	return q(map[string]lirwire.Node{
 		"t": lirwire.Scan(table, scope),
-		"f": lirwire.Filter("t", lirwire.TextMatch(lirwire.Col(scope, column), parts...)),
+		"f": lirwire.Filter("t", lirwire.TextMatchWithComparison(lirwire.Col(scope, column), comparison, parts...)),
 		"o": lirwire.Order("f", []lirwire.OrderTerm{{Expr: lirwire.Col(scope, "id")}}),
 		"out": lirwire.Project("o", "", nil, []lirwire.Field{
 			{As: "id", Expr: lirwire.Col(scope, "id")},
@@ -72,8 +76,8 @@ func TestTextMatchAllWildcard(t *testing.T) {
 
 func TestTextMatchByteExactCase(t *testing.T) {
 	t.Parallel()
-	// 'GOLD' is byte-exact: the lowercase-stored 'gold' tiers never match, so
-	// every row projects false. No case folding lives on this node.
+	// Exact is the default: the lowercase-stored 'gold' tiers never match the
+	// uppercase literal, so every row projects false.
 	shop(t).Query(q(map[string]lirwire.Node{
 		"c": lirwire.Scan("customers", "c"),
 		"o": lirwire.Order("c", []lirwire.OrderTerm{{Expr: lirwire.Col("c", "id")}}),
@@ -84,6 +88,15 @@ func TestTextMatchByteExactCase(t *testing.T) {
 	}, "out", "many")).Equals(`[
 		{"id":"c1","m":false},{"id":"c2","m":false},{"id":"c3","m":false},
 		{"id":"c4","m":false},{"id":"c5","m":false}]`)
+}
+
+func TestTextMatchUnicodeSimpleFoldCase(t *testing.T) {
+	t.Parallel()
+	// The uppercase literal matches the lowercase stored tiers only when the
+	// LIR explicitly asks for locale-independent Unicode simple folding.
+	shop(t).Query(idsWhereCompared(
+		"customers", "c", "tier", lirwire.TextComparisonUnicodeSimpleFold, lit("GOLD"),
+	)).Equals(`[{"id":"c1"},{"id":"c3"}]`)
 }
 
 func TestTextMatchNullValueDropsRow(t *testing.T) {

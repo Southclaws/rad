@@ -63,6 +63,14 @@ func TestWireQueryRoundTrip(t *testing.T) {
 			Input: lir.Scan{Table: "t", Scope: "t"},
 			Pred:  lir.Binary{Op: lir.OpGt, L: col("t", "n"), R: lir.Literal{Raw: int64(1)}},
 		}, col("t", "id")),
+		"text_match": order(lir.Filter{
+			Input: lir.Scan{Table: "t", Scope: "t"},
+			Pred: lir.TextMatch{
+				Value:      col("t", "id"),
+				Parts:      []lir.TextMatchPart{lir.LiteralPart{Value: "T"}, lir.AnyManyPart{}},
+				Comparison: lir.TextComparisonUnicodeSimpleFold,
+			},
+		}, col("t", "id")),
 		"join": order(lir.Project{
 			Input: lir.Join{
 				Left: lir.Scan{Table: "u", Scope: "u"}, Right: lir.Scan{Table: "t", Scope: "t"},

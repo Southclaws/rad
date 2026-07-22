@@ -717,14 +717,14 @@
     },
     "LiteralTextMatchPart": {
       "additionalProperties": false,
-      "description": "A literal span the pattern must match verbatim at this position. Never\nempty; adjacent literal parts are equivalent to one concatenated literal,\nand a producer should emit the concatenated form.\n",
+      "description": "A literal span the pattern must match at this position under the enclosing\n`text_match.comparison` rule. Never empty; adjacent literal parts are\nequivalent to one concatenated literal, and a producer should emit the\nconcatenated form.\n",
       "properties": {
         "kind": {
           "const": "literal",
           "type": "string"
         },
         "value": {
-          "description": "The literal text, matched byte for byte.",
+          "description": "The literal text to compare with the corresponding input span.",
           "minLength": 1,
           "type": "string"
         }
@@ -1172,10 +1172,24 @@
       ],
       "type": "object"
     },
+    "TextComparison": {
+      "description": "The equality relation used for literal spans in a `text_match`: exact\nUTF-8 bytes or locale-independent Unicode simple case folding.\n",
+      "enum": [
+        "exact",
+        "unicode_simple_fold"
+      ],
+      "title": "TextComparison",
+      "type": "string"
+    },
     "TextMatchExpr": {
       "additionalProperties": false,
-      "description": "Test whether `value` matches an anchored pattern built from an ordered\nlist of `parts`. The result is boolean under three-valued logic: a NULL\n`value` yields UNKNOWN, otherwise a total TRUE or FALSE. `value` must be\ntext.\n\nThe match is fully anchored: the concatenation of the parts must consume\nthe whole of `value`, not merely occur within it. `[literal \"foo\"]`\nmatches only \"foo\"; a leading or trailing `any_many` is what admits a\nprefix, suffix, or infix. An `any_many` matches zero or more characters\n(SQL `%`), so `[any_many]` alone matches every non-NULL value including\nthe empty string.\n\nThe pattern is a bind-time constant: literal spans carry strings and\nwildcards are structural, so no part is an expression and the matcher is\ncompiled once. `value` is the only operand that varies per row, and NULL\nenters only through it.\n\n`text_match` answers only whether the text matches the pattern; it\ncarries no case, accent, or collation knob. Literal spans compare under\nthe engine's ordinary text equality, which is byte-exact today.\nCase-insensitivity is a comparison semantic shared by `=`, ordering,\ngrouping, and matching alike, resolved once elsewhere — never a flag on\nthis node.\n\nThis is deliberately the SQL `LIKE` wildcard set structurally\nrepresented, not a general pattern algebra: no alternation, repetition of\nsub-patterns, character classes, or backreferences. A richer text-search\nfacility would be a separate expression, never a wider `parts`\nvocabulary.\n",
+      "description": "Test whether `value` matches an anchored pattern built from an ordered\nlist of `parts`. The result is boolean under three-valued logic: a NULL\n`value` yields UNKNOWN, otherwise a total TRUE or FALSE. `value` must be\ntext.\n\nThe match is fully anchored: the concatenation of the parts must consume\nthe whole of `value`, not merely occur within it. `[literal \"foo\"]`\nmatches only \"foo\"; a leading or trailing `any_many` is what admits a\nprefix, suffix, or infix. An `any_many` matches zero or more characters\n(SQL `%`), so `[any_many]` alone matches every non-NULL value including\nthe empty string.\n\nThe pattern is a bind-time constant: literal spans carry strings and\nwildcards are structural, so no part is an expression and the matcher is\ncompiled once. `value` is the only operand that varies per row, and NULL\nenters only through it.\n\n`comparison` controls only how literal spans compare with corresponding\ninput text. `exact`, the default, requires identical UTF-8 bytes.\n`unicode_simple_fold` interprets both spans as UTF-8 and compares their\nUnicode code points under Unicode simple case folding, with the same\nequality relation as Go's `strings.EqualFold`. Simple folding is\none-code-point-to-one-code-point, deterministic, and locale-independent.\nIt performs no Unicode normalization, accent folding, transliteration,\nmulti-code-point full folding, or linguistic collation. In particular,\n\"Straße\" does not match \"STRASSE\", \"é\" does not match \"e\", and composed\nand decomposed forms remain distinct.\n\nThis setting is deliberately narrower than a database collation. A\nfuture cross-cutting collation design may govern equality, ordering,\ngrouping, uniqueness, and matching together; `unicode_simple_fold`\nremains the precisely defined compatibility comparison provided by this\nexpression.\n\nThis is deliberately the SQL `LIKE` wildcard set structurally\nrepresented, not a general pattern algebra: no alternation, repetition of\nsub-patterns, character classes, or backreferences. A richer text-search\nfacility would be a separate expression, never a wider `parts`\nvocabulary.\n",
       "properties": {
+        "comparison": {
+          "$ref": "#/$defs/TextComparison",
+          "default": "exact",
+          "description": "How literal pattern spans compare with input text. Omission is\nequivalent to `exact`.\n"
+        },
         "kind": {
           "const": "text_match",
           "type": "string"

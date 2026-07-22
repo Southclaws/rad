@@ -94,8 +94,8 @@ type Branch struct {
 // expressions.
 type TextMatchPart interface{ textMatchPart() }
 
-// LiteralPart is a literal span matched verbatim (under the engine's ordinary
-// text equality). Never empty.
+// LiteralPart is a literal span matched under its enclosing TextMatch's
+// comparison rule. Never empty.
 type LiteralPart struct{ Value string }
 
 // AnyManyPart matches zero or more characters (SQL `%`).
@@ -104,13 +104,22 @@ type AnyManyPart struct{}
 func (LiteralPart) textMatchPart() {}
 func (AnyManyPart) textMatchPart() {}
 
-// TextMatch tests Value against an anchored pattern of Parts. It answers only
-// whether the text matches; literal spans compare under the engine's ordinary
-// text equality, with no case/collation knob of its own. Value is the only
-// per-row operand; a NULL Value makes the result UNKNOWN.
+// TextComparison defines how literal spans in a TextMatch compare with input.
+// It is deliberately narrower than a collation: it affects only this matcher.
+type TextComparison string
+
+const (
+	TextComparisonExact             TextComparison = "exact"
+	TextComparisonUnicodeSimpleFold TextComparison = "unicode_simple_fold"
+)
+
+// TextMatch tests Value against an anchored pattern of Parts. Comparison
+// governs only literal spans; Value is the only per-row operand, and a NULL
+// Value makes the result UNKNOWN.
 type TextMatch struct {
-	Value Expr
-	Parts []TextMatchPart
+	Value      Expr
+	Parts      []TextMatchPart
+	Comparison TextComparison
 }
 
 func (Literal) expr()   {}

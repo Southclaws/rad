@@ -1,0 +1,128 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "omitted_comparison_is_exact",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "samples", "scope": "t" },
+            "f": { "kind": "filter", "input": "t", "predicate": {
+              "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+              "parts": [ { "kind": "literal", "value": "foo" } ]
+            } },
+            "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [ { "id": "ascii-lower", "value": "foo" } ],
+  "assertions": [
+    {
+      "name": "explicit exact is identical to the omitted default",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "exact", "parts": [ { "kind": "literal", "value": "foo" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "ascii-lower", "value": "foo" } ]
+    },
+    {
+      "name": "simple fold is opt-in and observably different from exact",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "foo" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "ascii-lower", "value": "foo" },
+        { "id": "ascii-upper", "value": "FOO" }
+      ]
+    },
+    {
+      "name": "exact comparison distinguishes Kelvin sign from ASCII K",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "exact", "parts": [ { "kind": "literal", "value": "K" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "kelvin-ascii", "value": "K" } ]
+    },
+    {
+      "name": "exact comparison distinguishes composed case variants and decomposed spelling",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "exact", "parts": [ { "kind": "literal", "value": "é" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "accent-lower", "value": "é" } ]
+    },
+    {
+      "name": "exact comparison treats embedded NUL as an ordinary byte",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "exact", "parts": [ { "kind": "literal", "value": "a\u0000b" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "nul-lower", "value": "a\u0000b" } ]
+    },
+    {
+      "name": "all-wildcard exact matching includes empty but NULL remains UNKNOWN",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "exact", "parts": [ { "kind": "any_many" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "accent-decomposed", "value": "e\u0301" },
+        { "id": "accent-lower", "value": "é" },
+        { "id": "accent-upper", "value": "É" },
+        { "id": "ascii-lower", "value": "foo" },
+        { "id": "ascii-upper", "value": "FOO" },
+        { "id": "empty", "value": "" },
+        { "id": "kelvin-ascii", "value": "K" },
+        { "id": "kelvin-sign", "value": "K" },
+        { "id": "nul-lower", "value": "a\u0000b" },
+        { "id": "nul-upper", "value": "A\u0000B" }
+      ]
+    }
+  ]
+}

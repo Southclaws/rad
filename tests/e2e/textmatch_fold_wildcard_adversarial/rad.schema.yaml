@@ -1,0 +1,7 @@
+# Anchoring, zero-width gaps, overlapping literals, and hostile repeated text.
+tables:
+  - id: 1
+    name: samples
+    columns:
+      - { id: 1, name: id,    type: string, pk: true }
+      - { id: 2, name: value, type: string, nullable: true }

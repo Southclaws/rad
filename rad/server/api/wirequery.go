@@ -161,7 +161,7 @@ func (w *raiser) expr(e lir.Expr) lirwire.Expr {
 				parts[i] = lirwire.AnyManyPart()
 			}
 		}
-		return lirwire.TextMatch(w.expr(x.Value), parts...)
+		return lirwire.TextMatchWithComparison(w.expr(x.Value), lirwire.TextComparison(x.Comparison), parts...)
 	case lir.Exists:
 		return lirwire.Exists(w.rel(x.Rel))
 	case lir.First:

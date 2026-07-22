@@ -1,0 +1,183 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "all_non_null_including_empty",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "samples", "scope": "t" },
+            "f": { "kind": "filter", "input": "t", "predicate": {
+              "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+              "comparison": "unicode_simple_fold", "parts": [ { "kind": "any_many" } ]
+            } },
+            "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "adjacent-gaps", "value": "preFOOpost" },
+    { "id": "adjacent-parts", "value": "FoObAr" },
+    { "id": "composed-lower", "value": "éclair" },
+    { "id": "composed-upper", "value": "ÉCLAIR" },
+    { "id": "decomposed-lower", "value": "e\u0301clair" },
+    { "id": "emoji-extra", "value": "xGO🚀y" },
+    { "id": "emoji-lower", "value": "go🚀" },
+    { "id": "emoji-upper", "value": "GO🚀" },
+    { "id": "empty", "value": "" },
+    { "id": "nul-exact-case", "value": "a\u0000b" },
+    { "id": "nul-extra", "value": "xa\u0000by" },
+    { "id": "nul-folded-case", "value": "A\u0000B" }
+  ],
+  "assertions": [
+    {
+      "name": "a NULL input projects UNKNOWN for both wildcard and literal patterns",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "n": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "binary", "op": "eq",
+            "left": { "kind": "col", "scope": "t", "column": "id" },
+            "right": { "kind": "lit", "value": { "type": "text", "value": "null" } }
+          } },
+          "p": { "kind": "project", "input": "n", "fields": [
+            { "as": "all", "expr": {
+              "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+              "comparison": "unicode_simple_fold", "parts": [ { "kind": "any_many" } ]
+            } },
+            { "as": "literal", "expr": {
+              "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+              "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "x" } ]
+            } }
+          ] }
+        },
+        "root": { "node": "p", "cardinality": "exactly_one" }
+      },
+      "expect": { "all": null, "literal": null }
+    },
+    {
+      "name": "an embedded NUL is an ordinary rune and surrounding ASCII still folds",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "a\u0000b" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "nul-exact-case", "value": "a\u0000b" },
+        { "id": "nul-folded-case", "value": "A\u0000B" }
+      ]
+    },
+    {
+      "name": "wildcards can surround a literal containing NUL without truncation",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "any_many" }, { "kind": "literal", "value": "a\u0000b" }, { "kind": "any_many" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "nul-exact-case", "value": "a\u0000b" },
+        { "id": "nul-extra", "value": "xa\u0000by" },
+        { "id": "nul-folded-case", "value": "A\u0000B" }
+      ]
+    },
+    {
+      "name": "uncased supplementary emoji stays intact beside folded ASCII",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "go🚀" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "emoji-lower", "value": "go🚀" },
+        { "id": "emoji-upper", "value": "GO🚀" }
+      ]
+    },
+    {
+      "name": "prefix folding does not normalize decomposed accents",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "literal", "value": "é" }, { "kind": "any_many" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "composed-lower", "value": "éclair" },
+        { "id": "composed-upper", "value": "ÉCLAIR" }
+      ]
+    },
+    {
+      "name": "adjacent literal parts coalesce without changing fold semantics",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "literal", "value": "f" },
+              { "kind": "literal", "value": "O" },
+              { "kind": "literal", "value": "o" },
+              { "kind": "literal", "value": "B" },
+              { "kind": "literal", "value": "a" },
+              { "kind": "literal", "value": "R" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "adjacent-parts", "value": "FoObAr" } ]
+    },
+    {
+      "name": "adjacent any_many parts collapse and retain both unanchored ends",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "any_many" }, { "kind": "any_many" },
+              { "kind": "literal", "value": "foo" },
+              { "kind": "any_many" }, { "kind": "any_many" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "adjacent-gaps", "value": "preFOOpost" },
+        { "id": "adjacent-parts", "value": "FoObAr" }
+      ]
+    }
+  ]
+}

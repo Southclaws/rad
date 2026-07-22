@@ -1,37 +1,37 @@
 # Structured text matching (`text_match`)
 
-Add structured text matching to LIR so a SQL frontend can lower `LIKE`
-patterns — without embedding SQL pattern syntax into the IR, and without
-committing to Unicode or text-equivalence semantics yet. (`ILIKE` follows
-later: case-insensitivity is a comparison semantic handled separately, not
-part of this node — see §1.)
+Add structured text matching to LIR so a SQL frontend can lower `LIKE` and
+`ILIKE` patterns without embedding SQL pattern syntax into the IR. Matching
+offers byte-exact literals and one deliberately narrow case-insensitive form:
+Unicode simple case folding.
 
 ## Scope of this pass
 
-**This branch (`main`): the LIR schema contract, engine machinery,
-reference executor, and generative/oracle coverage.** The SQL frontend
-lowering (§3) lives on the SQL-frontend branch and is deferred — noted here
-so the shape it lowers into is fixed first.
+**This pass: the LIR schema contract, engine machinery, reference executor,
+and generative/oracle coverage.** The SQL frontend lowering (§3) lives on a
+separate branch and is deferred — noted here so the shape it lowers into is
+fixed first.
 
-Non-goals, explicit: regex, alternation, character classes, collations,
-specialized indexes, Unicode case folding, and the `_` single-character
-wildcard (deferred — see §1). Leave `TODO` comments wherever the design is
-intentionally incomplete.
+Non-goals, explicit: regex, alternation, character classes, linguistic
+collations, normalization, accent folding, full Unicode folding, specialized
+indexes, and the `_` single-character wildcard. Leave `TODO` comments wherever
+the design is intentionally incomplete.
 
 ## 1. The `text_match` expression
 
 `text_match` answers exactly one question: **does this text match this
-structured pattern?** It does *not* answer *under which text-equivalence
-relation are literals compared* — that is a comparison semantic, not a
-pattern semantic, and it belongs to whatever equivalence the engine applies
-to text generally (`=`, ordering, grouping, uniqueness), not to this node.
-Baking a `case` (or accent, or collation) flag onto matching would create a
-parallel case-insensitivity mechanism separate from case-insensitive
-equality/ordering/grouping/indexes — the exact abstraction leak Rad avoids
-elsewhere. So `text_match` carries no equivalence knob: its literals compare
-under the engine's ordinary text equality, which is byte-exact today. When
-Rad grows a text-equivalence/collation concept, matching inherits it the
-same way comparison does, with no change to this node.
+structured pattern under this literal comparison rule?** `comparison` is not
+a general collation. It has exactly two stable meanings:
+
+- `exact` (the default): literal spans require identical UTF-8 bytes.
+- `unicode_simple_fold`: corresponding Unicode code points compare under
+  Unicode simple case folding, equivalent to Go's `strings.EqualFold`.
+
+The latter is deterministic and locale-independent. It performs no Unicode
+normalization, accent folding, transliteration, multi-code-point full folding,
+or linguistic collation. A future cross-cutting collation design can govern
+equality, ordering, grouping, uniqueness, matching, and indexes together
+without changing what `unicode_simple_fold` means here.
 
 `value` is matched against an anchored pattern built from an ordered list of
 `parts`. The pattern is a **bind-time constant**: literal spans carry
@@ -61,13 +61,12 @@ Semantics:
 - `any_many` matches zero or more characters (SQL `%`), so an all-wildcard
   pattern `[any_many]` matches every non-NULL value including the empty
   string.
-- Literal spans compare under the engine's ordinary text equality
-  (byte-exact today — see the scope note above); the node has no
-  equivalence knob of its own.
+- Literal spans compare under `comparison`; omitting it means `exact`.
 
-Because only `literal` and `any_many` exist this pass, the matcher operates
-on bytes; the "one character = byte / code point / grapheme" question does
-not arise until `any_one` (`_`) is added.
+The exact matcher operates on bytes. The simple-fold matcher operates on code
+points because Unicode simple folding maps one code point to one code point.
+The "one character = byte / code point / grapheme" wildcard question still
+does not arise until `any_one` (`_`) is added.
 
 Schema (add `TextMatchExpr` to the `Expr` union; new `$defs`):
 
@@ -76,10 +75,7 @@ TextMatchExpr:
   # kind: text_match
   # value: <text Expr>
   # parts: [TextMatchExprPart]   (minItems 1)
-  # No case / equivalence field: literal comparison follows the engine's
-  # general text equality (byte-exact today). Case/accent/collation
-  # insensitivity is a comparison semantic solved once for =/order/group/
-  # match together, never a knob on this node.
+  # comparison: exact | unicode_simple_fold  (default exact)
   # TODO: this is deliberately the SQL LIKE wildcard set, structurally
   # represented — not a general pattern algebra. No alternation, repetition
   # of sub-patterns, character classes, or backreferences. A richer text
@@ -103,8 +99,9 @@ pattern (`LIKE ''`) is the frontend's job to lower to equality, not a
 
 ## 2. Engine + reference execution
 
-- **Binder**: check `value` is text, `parts` is well-formed and non-empty,
-  result is boolean; compile the constant pattern once.
+- **Binder**: check `value` is text, `parts` is well-formed and non-empty, and
+  `comparison` is known; compile the constant pattern once. Exact literals
+  remain strings; simple-fold literals compile to rune slices.
 - **Evaluator**: the standard `%`-glob matcher — anchor the first and last
   literal spans, match interior spans in order across the `%` gaps. K3:
   NULL `value` → UNKNOWN, otherwise total. A bool-typed result flows through
@@ -119,10 +116,9 @@ pattern (`LIKE ''`) is the frontend's job to lower to equality, not a
   mixes) with a `mustHit` floor, so the engine-vs-refexec differential
   exercises it end to end.
 
-TODO comments to leave: per-row allocation and a compiled/cached matcher;
-`any_one`; and — as a separate cross-cutting design, not this node — a
-text-equivalence/collation concept that case-insensitive matching,
-equality, ordering, and grouping all draw on together.
+TODO comments to leave: eliminate the simple-fold path's per-row `[]rune`
+allocation; `any_one`; folded indexes/planner support; and a separate
+cross-cutting text-equivalence/collation design.
 
 ## 3. SQL frontend lowering — DEFERRED (SQL-frontend branch)
 
@@ -131,12 +127,15 @@ Not implemented on `main`. Recorded so the target shape is fixed:
 - Tokenize a `LIKE`/`ILIKE` string into literal runs and wildcards → `parts`.
 - Escaped `%` / `_` become ordinary characters inside a `literal` part;
   wildcards `%`/`_` never reach LIR.
-- A pattern with no unescaped wildcard lowers to equality, not `text_match`.
+- A `LIKE` pattern with no unescaped wildcard may lower to byte-exact equality;
+  an `ILIKE` pattern still lowers to `text_match` because ordinary equality
+  does not have simple-fold semantics.
 - An unescaped `_` returns an unsupported-feature error until `any_one`
   lands.
-- `LIKE` lowers to `text_match` directly. `ILIKE` is unsupported until the
-  text-equivalence/collation design lands — same deferral bucket as `_` —
-  because case-insensitivity is not a property of the match node.
+- `LIKE` lowers to `text_match` with the default `exact` comparison. `ILIKE`
+  lowers to `text_match` with `comparison: unicode_simple_fold`. This is an
+  explicit compatibility approximation, not exact reproduction of
+  locale-sensitive PostgreSQL behavior.
 
 TODO: the eventual target is lowering into this structured representation,
 never embedding SQL pattern syntax into LIR.
@@ -145,11 +144,10 @@ never embedding SQL pattern syntax into LIR.
 
 Every `text_match` executes as an ordinary scan + filter this pass.
 
-TODO (deferred): recognize `[literal L, any_many]` as a prefix range scan
-(byte-lexical bound `L <= value < L++`, valid because matching is byte-exact
-today); reverse indexes for suffix; trigram indexes for infix; residual
-predicate validation; composite-index prefix planning. Do not delay the
-feature for index support.
+TODO (deferred): recognize exact `[literal L, any_many]` as a prefix range
+scan; folded indexes for `unicode_simple_fold`; reverse indexes for suffix;
+trigram/TF-IDF indexes for broader search; residual predicate validation; and
+composite-index prefix planning. Do not delay the feature for index support.
 
 ## 5. Tests
 
@@ -158,8 +156,10 @@ Engine-side (in scope) — binder + reference executor + differential:
 - prefix `[lit, %]`, suffix `[%, lit]`, infix `[%, lit, %]`,
   equality-shaped `[lit]`, and multi-gap `[lit, %, lit, %, lit]` — match and
   miss for each;
-- case-sensitivity of literals (matching is byte-exact: `Foo` does not match
-  pattern `[literal "foo"]`);
+- exact case-sensitivity (`Foo` does not match `foo`) and explicit simple-fold
+  matching (`FOO` matches `foo`);
+- no full-fold expansion (`Straße` does not match `STRASSE`), accent folding,
+  normalization, or Turkish-locale special casing;
 - NULL `value` → UNKNOWN;
 - all-wildcard `[%]` matches every non-NULL value including empty;
 - empty `value` against a non-empty pattern;
@@ -171,5 +171,5 @@ Frontend lowering tests are deferred with §3.
 
 Once the relevant Storyden tests pass (on the frontend branch, later): do not
 broaden the implementation; leave the TODOs in place; record any unsupported
-PostgreSQL patterns encountered; defer Unicode semantics, `any_one`, and
-indexing to their own design passes.
+PostgreSQL patterns encountered; defer broader Unicode/collation semantics,
+`any_one`, and indexing to their own design passes.

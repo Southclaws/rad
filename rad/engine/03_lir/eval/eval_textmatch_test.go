@@ -1,9 +1,10 @@
 package eval
 
 // text_match evaluation, pinned enumeratively: a NULL value is UNKNOWN,
-// literals compare byte-exact, and a boolean result flows through both Eval
-// (as a bool Value) and EvalPred (as a TriBool). The reference interpreter
-// shares this evaluator, so these tests are what make that sharing safe.
+// literal comparison follows the compiled mode, and a boolean result flows
+// through both Eval (as a bool Value) and EvalPred (as a TriBool). The
+// reference interpreter shares this evaluator, so these tests make that
+// sharing safe.
 
 import (
 	"testing"
@@ -15,11 +16,29 @@ import (
 
 func pat(t *testing.T, parts ...lir.TextMatchPart) bound.TextPattern {
 	t.Helper()
-	p, err := bound.CompileTextPattern(parts)
+	p, err := bound.CompileTextPattern(parts, lir.TextComparisonExact)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return p
+}
+
+func TestTextMatchUnicodeSimpleFold(t *testing.T) {
+	p, err := bound.CompileTextPattern(
+		[]lir.TextMatchPart{lir.LiteralPart{Value: "foo"}},
+		lir.TextComparisonUnicodeSimpleFold,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := bound.NewTextMatch(lit(lir.Text("FOO")), p)
+	v, err := Eval(m, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Null || !v.Bool {
+		t.Fatalf(`"FOO" must match literal "foo" under Unicode simple folding, got %v`, v)
+	}
 }
 
 func TestTextMatchNullValueIsUnknown(t *testing.T) {

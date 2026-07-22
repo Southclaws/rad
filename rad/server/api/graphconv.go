@@ -383,7 +383,11 @@ func (g *graphConv) expr(e lirwire.Expr) (lir.Expr, error) {
 				return nil, wireErrf("text_match part %d has an unknown kind", i+1)
 			}
 		}
-		return lir.TextMatch{Value: value, Parts: parts}, nil
+		comparison := lir.TextComparisonExact
+		if x.Comparison != nil {
+			comparison = lir.TextComparison(*x.Comparison)
+		}
+		return lir.TextMatch{Value: value, Parts: parts, Comparison: comparison}, nil
 
 	case *lirwire.CrossingExprExists:
 		rel, err := g.rel(x.Node)

@@ -327,7 +327,7 @@ func (b *binder) bindTextMatch(x lir.TextMatch) (bound.Expr, error) {
 	if value.Type().Kind != lir.KindText {
 		return nil, reject.Inputf("planner: text_match value must be text, got %s", value.Type())
 	}
-	pattern, err := bound.CompileTextPattern(x.Parts)
+	pattern, err := bound.CompileTextPattern(x.Parts, x.Comparison)
 	if err != nil {
 		return nil, reject.Inputf("planner: %v", err)
 	}

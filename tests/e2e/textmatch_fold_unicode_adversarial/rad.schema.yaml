@@ -1,0 +1,7 @@
+# Unicode simple-fold equivalence classes and deliberately unsupported forms.
+tables:
+  - id: 1
+    name: samples
+    columns:
+      - { id: 1, name: id,    type: string, pk: true }
+      - { id: 2, name: value, type: string, nullable: true }

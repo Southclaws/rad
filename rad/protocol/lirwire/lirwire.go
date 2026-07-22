@@ -33,6 +33,20 @@ var ScalarTypeValues = []ScalarType{
 	ScalarTypeBool,
 }
 
+// The equality relation used for literal spans in a `text_match`: exact
+// UTF-8 bytes or locale-independent Unicode simple case folding.
+type TextComparison string
+
+const (
+	TextComparisonExact             TextComparison = "exact"
+	TextComparisonUnicodeSimpleFold TextComparison = "unicode_simple_fold"
+)
+
+var TextComparisonValues = []TextComparison{
+	TextComparisonExact,
+	TextComparisonUnicodeSimpleFold,
+}
+
 // LIR is Rad's low-level intermediate representation: the relation tree a
 // client sends to `POST /execute`, and the tree the engine binds, plans, and
 // executes. This schema is its normative specification. The type definitions
@@ -153,12 +167,13 @@ func (w *TextMatchExprPart) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// A literal span the pattern must match verbatim at this position. Never
-// empty; adjacent literal parts are equivalent to one concatenated literal,
-// and a producer should emit the concatenated form.
+// A literal span the pattern must match at this position under the enclosing
+// `text_match.comparison` rule. Never empty; adjacent literal parts are
+// equivalent to one concatenated literal, and a producer should emit the
+// concatenated form.
 type LiteralTextMatchPart struct {
 	Kind string `json:"kind"`
-	// The literal text, matched byte for byte.
+	// The literal text to compare with the corresponding input span.
 	Value string `json:"value"`
 }
 
@@ -627,12 +642,22 @@ func (BranchExpr) ExprType() string { return "branch" }
 // compiled once. `value` is the only operand that varies per row, and NULL
 // enters only through it.
 //
-// `text_match` answers only whether the text matches the pattern; it
-// carries no case, accent, or collation knob. Literal spans compare under
-// the engine's ordinary text equality, which is byte-exact today.
-// Case-insensitivity is a comparison semantic shared by `=`, ordering,
-// grouping, and matching alike, resolved once elsewhere — never a flag on
-// this node.
+// `comparison` controls only how literal spans compare with corresponding
+// input text. `exact`, the default, requires identical UTF-8 bytes.
+// `unicode_simple_fold` interprets both spans as UTF-8 and compares their
+// Unicode code points under Unicode simple case folding, with the same
+// equality relation as Go's `strings.EqualFold`. Simple folding is
+// one-code-point-to-one-code-point, deterministic, and locale-independent.
+// It performs no Unicode normalization, accent folding, transliteration,
+// multi-code-point full folding, or linguistic collation. In particular,
+// "Straße" does not match "STRASSE", "é" does not match "e", and composed
+// and decomposed forms remain distinct.
+//
+// This setting is deliberately narrower than a database collation. A
+// future cross-cutting collation design may govern equality, ordering,
+// grouping, uniqueness, and matching together; `unicode_simple_fold`
+// remains the precisely defined compatibility comparison provided by this
+// expression.
 //
 // This is deliberately the SQL `LIKE` wildcard set structurally
 // represented, not a general pattern algebra: no alternation, repetition of
@@ -640,7 +665,11 @@ func (BranchExpr) ExprType() string { return "branch" }
 // facility would be a separate expression, never a wider `parts`
 // vocabulary.
 type TextMatchExpr struct {
-	Kind string `json:"kind"`
+	// How literal pattern spans compare with input text. Omission is
+	// equivalent to `exact`.
+	//
+	Comparison *TextComparison `json:"comparison,omitempty"`
+	Kind       string          `json:"kind"`
 	// The pattern, as an ordered list of literal spans and wildcards.
 	// Producers should emit a canonical list — adjacent literals coalesced,
 	// adjacent `any_many` collapsed — but the matcher accepts any
