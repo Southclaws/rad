@@ -10,6 +10,7 @@ import (
 
 	kv "github.com/Southclaws/rad/rad/engine/01_kv"
 	catalog "github.com/Southclaws/rad/rad/engine/02_catalog"
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	exec "github.com/Southclaws/rad/rad/engine/05_exec"
 	execprogram "github.com/Southclaws/rad/rad/engine/05_exec/program"
@@ -39,6 +40,12 @@ func (db *DB) Catalog() *catalog.Catalog { return db.cat }
 // the per-statement query-plan views and/or a dry-run (plan-only) outcome.
 func (db *DB) ExecuteProgram(ctx context.Context, prog execprogram.Program, opts execprogram.Options) (execprogram.Result, error) {
 	return db.eng.ExecuteProgram(ctx, prog, opts)
+}
+
+// ExecuteProgram runs one PIR program inside an existing transaction without
+// committing it. If execution fails, the transaction owner must roll back.
+func (tx *Tx) ExecuteProgram(ctx context.Context, prog execprogram.Program, opts execprogram.Options) (execprogram.Result, error) {
+	return tx.tx.ExecuteProgram(ctx, prog, opts)
 }
 
 // Insert adds one row atomically (the row and its index entries commit
@@ -124,6 +131,11 @@ func (tx *Tx) Commit(ctx context.Context) error { return tx.tx.Commit(ctx) }
 
 // Rollback discards the transaction; safe after Commit.
 func (tx *Tx) Rollback() error { return tx.tx.Rollback() }
+
+// CatalogSnapshot reads schema metadata from the transaction's own view.
+func (tx *Tx) CatalogSnapshot(ctx context.Context) (model.Revision, []model.Table, error) {
+	return tx.tx.CatalogSnapshot(ctx)
+}
 
 // IsConflict reports whether err is a transaction conflict that can be
 // resolved by retrying the whole Txn.

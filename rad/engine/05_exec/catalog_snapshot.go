@@ -17,6 +17,12 @@ func (e *Engine) CatalogSnapshot(ctx context.Context) (model.Revision, []model.T
 		return model.Revision{}, nil, err
 	}
 	defer tx.Rollback()
+	return tx.CatalogSnapshot(ctx)
+}
+
+// CatalogSnapshot reads the catalog through an existing transaction, including
+// catalog changes made by earlier programs in that transaction.
+func (tx *Tx) CatalogSnapshot(ctx context.Context) (model.Revision, []model.Table, error) {
 	reader := store.New(tx.txn)
 	revision, err := reader.Revision(ctx)
 	if err != nil {

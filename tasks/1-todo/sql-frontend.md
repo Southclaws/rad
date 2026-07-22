@@ -82,10 +82,12 @@ schema.go:126`) parses a local `rad.schema.yaml` file into the same
   something SQL-speaking in front of Rad, likely as its own separate
   layer rather than Rad's server itself — but even that's not decided; it's
   a prototype, not a product commitment.
-- **Not transaction/session SQL.** No `BEGIN`/`COMMIT`/`SAVEPOINT`, no
-  `PRAGMA`, no `SET`. PIR's atomicity model (a whole `Program` is the
-  transaction) has no SQL-session equivalent to map onto, and session
-  state isn't part of "a query compiles to IR."
+- **Transaction/session state is not IR.** The SQL compiler emits transport
+  metadata for `BEGIN`/`COMMIT`/`ROLLBACK`; pgwire owns the state and executes
+  each enclosed PIR program through one frontend transaction handle.
+  Savepoints and most mutable `SET` state remain out of scope. This keeps the
+  invariant that a query compiles to transport-independent IR without making
+  a PIR `Program` double as a connection session.
 - **Not recursive CTEs.** Tracked separately
   (`tasks/1-todo/recursive-queries.md`) because LIR has no recursion
   operator yet (`schema-flexibility.md`'s `recursive`/`recursive_ref`
@@ -700,23 +702,45 @@ containment (RBAC permission checks in account reads!), jsonb
 `||`/`jsonb_set` updates, `CASE` +
 `cast(x AS numeric/timestamp/boolean)` (child-property sort), plain
 `UNION ALL` of two selects (no LIR set-op node — child_sort.go),
-window functions (none used). Transactions are wire-level no-ops
-(autocommit per statement; ROLLBACK lies) — acceptable for the suite's
-happy paths, rollback-dependent tests will leak state.
+window functions (none used).
+
+**Transaction architecture (2026-07-22):** transaction lifetime belongs to
+the frontend session, not either IR. Each PostgreSQL connection owns a small
+state machine and, between `BEGIN` and `COMMIT`/`ROLLBACK`, one
+`frontend.Tx` backed by one Slate transaction. Every enclosed SQL statement
+still compiles to an ordinary, independently valid PIR program and executes
+through that handle. This preserves statement results and read-your-writes
+without adding a session/transaction identifier to PIR or LIR. Transactional
+DDL reads the same transaction's catalog view; disconnect and server shutdown
+roll back; a statement error puts the session in PostgreSQL's failed
+transaction state until rollback.
+
+Slate currently supplies a stable serializable snapshot, so Rad truthfully
+advertises `default_transaction_isolation=serializable`. Whole-transaction
+commit conflicts surface as SQLSTATE `40001`; the server must not retry an
+individual statement or serialize all writers to conceal them. PostgreSQL
+`READ COMMITTED`, read-only/deferrable transactions, savepoints, and `AND
+CHAIN` are rejected rather than accepted with different semantics. This is
+the intended MVCC seam: add isolation options/implementations behind
+`frontend.Tx` later while leaving SQL lowering, PIR, and LIR unchanged.
 
 ### Session-layer glue (pgwire)
 
 - `version()`, `current_schema()`, `current_database()`,
   `current_setting(...)` → canned scalar answers at the frontend.
-- `SET`/`RESET` → "SET" tag no-op; `SHOW server_version[_num]` → canned;
-  `BEGIN/COMMIT/ROLLBACK` → tag-only no-ops.
+- Ordinary `SET`/`RESET` → "SET" tag no-op; transaction settings accept only
+  the serializable/read-write/non-deferrable semantics Rad provides and
+  reject the rest; `SHOW server_version[_num]` → canned.
+- `BEGIN/COMMIT/ROLLBACK` drive the connection-owned `frontend.Tx`; control
+  is SQL transport metadata and never produces a PIR program.
 - Empty query → EmptyQueryResponse (psql-wire handles).
 - Multi-statement simple-protocol strings: pgparser returns a list; map
   to one PreparedStatement each.
 - Command tags: `SELECT n`/`INSERT 0 n`/`UPDATE n`/`DELETE n` from
   statement `affected`.
-- Concurrency: engine serializable conflicts surface as SQLSTATE 40001;
-  pgx/ent do not retry — expect some flakes under `-p 4`.
+- Concurrency: engine serializable conflicts surface as SQLSTATE 40001. This
+  is deterministic isolation behaviour, not a flaky statement failure; a
+  client may retry the complete transaction from fresh reads.
 
 ### Build order / state (2026-07-19 end of first day)
 
@@ -764,10 +788,18 @@ The 4 failing packages are account/role, library/properties, oauth, and
 robot/mcp. All former LIKE/ILIKE consumers now pass, including
 account/list, admin, datagraph, and thread/search.
 
+That baseline predates real explicit transactions. Focused account/role
+testing confirms both cache-failure rollback cases now pass. A concurrent
+full-suite probe also exposed expected Slate serializable commit conflicts in
+Storyden code written for PostgreSQL's default READ COMMITTED isolation; do
+not treat hiding those `40001`s with a pgwire-only global lock as progress.
+Establish a new package baseline after the MVCC/isolation work above, or run
+the current suite with whole-transaction retry where the application can do
+so safely.
+
 Remaining failure classes (whole-suite sweep):
-- account/role: wire transactions are no-ops, so
-  `TestRoleAssignmentRollsBackOnCacheWriteFailure` cannot roll back its
-  mutation; the deleted-role cache refresh case also remains stale.
+- account/role: both rollback-on-cache-failure tests now pass with real wire
+  transactions; the deleted-role cache refresh case remains stale.
 - library/properties: three child-property sorting cases fail frontend
   CASE result-type inference (`cannot determine CASE result type`).
 - oauth: member client creation attempts to write NULL to non-nullable
@@ -809,10 +841,39 @@ Rad server after each compatibility change.
      emit no DDL. Duplicate-DDL idempotence can remain defensive behaviour,
      but migration correctness must no longer depend on it.
 
-2. **Close the four remaining Storyden package failures.**
-   - account/role: implement real pgwire transaction state so BEGIN/COMMIT/
-     ROLLBACK control one atomic engine transaction; then chase the separate
-     deleted-role cache invalidation case.
+2. **Finish PostgreSQL transaction compatibility at the session boundary.**
+   Keep transaction identity out of PIR/LIR and extend `frontend.Tx` as Rad's
+   MVCC work lands.
+   - Add a frontend transaction-options API and map PostgreSQL isolation
+     requests deliberately. Implement true statement-snapshot `READ
+     COMMITTED` only when the storage/MVCC layer can preserve one atomic write
+     set across refreshed statement snapshots; do not emulate it with a
+     process-global writer mutex or by replaying already-observed programs.
+   - Investigate a read-only fast path separately. If Slate guarantees that a
+     stable snapshot transaction which performs no writes cannot be aborted by
+     concurrent commits, `BEGIN READ ONLY` may use the lighter snapshot path
+     without weakening observable semantics. Confirm Slate's exact read-set,
+     validation, and snapshot-lifetime behaviour with concurrency tests before
+     accepting or advertising the mode; until then, keep rejecting it.
+   - Add savepoints by exposing nested write-set checkpoints on the
+     transaction handle. They remain session control metadata, not PIR
+     statements.
+   - Teach the wire layer to emit accurate `ReadyForQuery` status bytes (`I`,
+     `T`, and `E`). psql-wire currently always emits idle, so this likely
+     needs an upstream status callback or a small maintained patch.
+   - Support `SET TRANSACTION`, access mode, deferrability, `AND CHAIN`, and
+     cancellation only as their engine counterparts become real; keep
+     rejecting unsupported combinations rather than silently weakening them.
+   - Define the cross-transport concurrency contract. HTTP/program execution
+     can race pgwire transactions against the same store, so any future lock
+     manager or distributed transaction coordinator belongs below both
+     frontends, never solely inside the PostgreSQL server.
+   - Add isolation litmus tests (non-repeatable read, phantom, write skew,
+     write/write conflict), disconnect/cancellation cleanup, and concurrent
+     pgwire/HTTP transaction tests before changing the advertised default.
+
+3. **Close the remaining Storyden package failures.**
+   - account/role: chase the separate deleted-role cache invalidation case.
    - library/properties: fix CASE result-type inference for the
      child-property sorting expressions, including text-to-numeric/time/bool
      parsing casts where the selected sort type requires them.
@@ -821,13 +882,13 @@ Rad server after each compatibility change.
    - robot/mcp: then resolve path fallback, bearer-protected discovery,
      dependent OAuth deletion, and refresh-token behaviour.
 
-3. **Finish the LIKE compatibility edges without changing existing
+4. **Finish the LIKE compatibility edges without changing existing
    `text_match` semantics.** Add a one-rune wildcard LIR part before lowering
    unescaped `_`; keep row-dependent patterns rejected until LIR has a
    pattern expression or an explicitly compiled dynamic matcher. Locale,
    normalization, full folding, and index selection remain later work.
 
-4. **Make the Storyden run reproducible.** Add a Rad task/script that starts
+5. **Make the Storyden run reproducible.** Add a Rad task/script that starts
    a fresh memory-backed pgwire server, runs
    `DATABASE_URL=postgresql://... go test -count=1 -p 4 ./...` in Storyden,
    records the package pass count, and always tears the server down. Use the

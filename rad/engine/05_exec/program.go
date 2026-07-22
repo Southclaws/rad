@@ -68,6 +68,29 @@ func (e *Engine) ExecuteProgram(ctx context.Context, prog execprogram.Program, o
 	return out, nil
 }
 
+// ExecuteProgram runs one PIR program inside an already-open transaction.
+// It does not commit: preceding programs' writes remain visible, and the
+// caller decides whether the complete transaction commits or rolls back.
+//
+// Unlike Engine.ExecuteProgram, this path cannot preflight in a separate
+// rollback-only transaction without losing the caller's uncommitted catalog
+// and data view. A program error therefore requires the owner to roll back the
+// enclosing transaction before reusing it. SQL drivers enforce that rule as
+// PostgreSQL's failed-transaction state.
+func (tx *Tx) ExecuteProgram(ctx context.Context, prog execprogram.Program, opts execprogram.Options) (execprogram.Result, error) {
+	if opts.DryRun {
+		return execprogram.Result{}, reject.Inputf("exec: dry-run is not supported inside an explicit transaction")
+	}
+	resultName, err := resultStatement(prog)
+	if err != nil {
+		return execprogram.Result{}, err
+	}
+	if err := validateCatalogPolicy(prog, opts.Catalog); err != nil {
+		return execprogram.Result{}, err
+	}
+	return tx.e.runProgram(ctx, tx, prog, resultName, opts)
+}
+
 func validateCatalogPolicy(prog execprogram.Program, policy execprogram.CatalogPolicy) error {
 	switch policy {
 	case execprogram.CatalogForbidden:

@@ -46,13 +46,16 @@ func New(db *frontend.DB, cat *catalog.Catalog, mode model.Mode, log *slog.Logge
 	}
 	srv, err := wire.NewServer(s.parse,
 		wire.Version("17.0"),
+		wire.SessionMiddleware(newSession),
+		wire.CloseConn(closeSession),
 		wire.GlobalParameters(wire.Parameters{
-			"server_version":              "17.0",
-			"server_encoding":             "UTF8",
-			"client_encoding":             "UTF8",
-			"standard_conforming_strings": "on",
-			"integer_datetimes":           "on",
-			"TimeZone":                    "UTC",
+			"server_version":                "17.0",
+			"default_transaction_isolation": "serializable",
+			"server_encoding":               "UTF8",
+			"client_encoding":               "UTF8",
+			"standard_conforming_strings":   "on",
+			"integer_datetimes":             "on",
+			"TimeZone":                      "UTC",
 		}),
 		wire.Logger(log),
 	)
@@ -81,6 +84,7 @@ func (s *Server) parse(ctx context.Context, query string) (wire.PreparedStatemen
 	}
 	stmts, err := sql.Parse(query)
 	if err != nil {
+		s.markFailed(ctx)
 		return nil, psqlerr.WithCode(err, codes.SyntaxErrorOrAccessRuleViolation)
 	}
 	if len(stmts) == 0 {
@@ -93,12 +97,14 @@ func (s *Server) parse(ctx context.Context, query string) (wire.PreparedStatemen
 	}
 	schema, err := s.snapshot(ctx)
 	if err != nil {
+		s.markFailed(ctx)
 		return nil, sqlstate(err)
 	}
 	prepared := make([]*wire.PreparedStatement, 0, len(stmts))
 	for _, stmt := range stmts {
 		p, err := sql.Prepare(schema, stmt)
 		if err != nil {
+			s.markFailed(ctx)
 			s.log.Debug("pgwire prepare failed", "query", truncate(query, 200), "error", err)
 			return nil, sqlstate(err)
 		}
@@ -110,7 +116,18 @@ func (s *Server) parse(ctx context.Context, query string) (wire.PreparedStatemen
 // snapshot reads the catalog into the compiler's schema form. Rebuilt per
 // Parse so DDL is immediately visible; catalog reads are memory-cheap.
 func (s *Server) snapshot(ctx context.Context) (*sql.Schema, error) {
-	tables, err := s.cat.ListTables(ctx)
+	var tables []model.Table
+	state := transactionFrom(ctx)
+	if state != nil {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+	}
+	var err error
+	if state != nil && state.tx != nil {
+		_, tables, err = state.tx.CatalogSnapshot(ctx)
+	} else {
+		tables, err = s.cat.ListTables(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -146,15 +163,31 @@ func (s *Server) snapshot(ctx context.Context) (*sql.Schema, error) {
 
 func (s *Server) statement(p *sql.Prepared) *wire.PreparedStatement {
 	handler := func(ctx context.Context, writer wire.DataWriter, params []wire.Parameter) error {
+		state := transactionFrom(ctx)
+		if state == nil {
+			return sqlstate(fmt.Errorf("pgwire: connection has no transaction state"))
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+
 		args, err := decodeArgs(p.Params, params)
 		if err != nil {
+			s.failLocked(state)
 			return sqlstate(err)
 		}
 		compiled, err := p.Compile(args)
 		if err != nil {
+			s.failLocked(state)
 			return sqlstate(err)
 		}
-		return s.execute(ctx, writer, compiled)
+		if state.failed && compiled.Transaction != sql.TransactionCommit && compiled.Transaction != sql.TransactionRollback {
+			return psqlerr.WithCode(fmt.Errorf("current transaction is aborted, commands ignored until end of transaction block"), codes.InFailedSQLTransaction)
+		}
+		err = s.executeLocked(ctx, state, writer, compiled)
+		if err != nil {
+			s.failLocked(state)
+		}
+		return err
 	}
 	return wire.NewStatement(handler,
 		wire.WithColumns(wireColumns(p.Columns)),
@@ -162,7 +195,10 @@ func (s *Server) statement(p *sql.Prepared) *wire.PreparedStatement {
 	)
 }
 
-func (s *Server) execute(ctx context.Context, writer wire.DataWriter, c *sql.Compiled) error {
+func (s *Server) executeLocked(ctx context.Context, state *sessionTransaction, writer wire.DataWriter, c *sql.Compiled) error {
+	if c.Transaction != sql.TransactionNone {
+		return s.executeTransactionLocked(ctx, state, writer, c.Transaction)
+	}
 	if c.Static != nil {
 		for _, row := range c.Static {
 			if err := writer.Row(row); err != nil {
@@ -180,7 +216,9 @@ func (s *Server) execute(ctx context.Context, writer wire.DataWriter, c *sql.Com
 		return sqlstate(err)
 	}
 	var res execprogram.Result
-	if len(engineProg.Statements) == 1 && engineProg.Statements[0].Kind == execprogram.Query {
+	if state.tx != nil {
+		res, err = state.tx.ExecuteProgram(ctx, engineProg, execprogram.Options{Catalog: s.policy})
+	} else if len(engineProg.Statements) == 1 && engineProg.Statements[0].Kind == execprogram.Query {
 		// A pure read runs against committed state on the dedicated read
 		// path: no write intents, no serializable-conflict exposure.
 		datum, err := s.db.Execute(ctx, engineProg.Statements[0].Rel)
@@ -235,6 +273,71 @@ func (s *Server) execute(ctx context.Context, writer wire.DataWriter, c *sql.Com
 		}
 	}
 	return writer.Complete(commandTag(c, res, written))
+}
+
+func (s *Server) executeTransactionLocked(ctx context.Context, state *sessionTransaction, writer wire.DataWriter, control sql.TransactionControl) error {
+	switch control {
+	case sql.TransactionBegin:
+		if state.tx == nil {
+			tx, err := s.db.Begin(ctx)
+			if err != nil {
+				return sqlstate(err)
+			}
+			state.tx = tx
+		}
+		state.failed = false
+		return writer.Complete("BEGIN")
+	case sql.TransactionCommit:
+		if state.tx == nil {
+			state.failed = false
+			return writer.Complete("COMMIT")
+		}
+		if state.failed {
+			err := state.tx.Rollback()
+			state.tx = nil
+			state.failed = false
+			if err != nil {
+				return sqlstate(err)
+			}
+			return writer.Complete("ROLLBACK")
+		}
+		err := state.tx.Commit(ctx)
+		state.tx = nil
+		state.failed = false
+		if err != nil {
+			return sqlstate(err)
+		}
+		return writer.Complete("COMMIT")
+	case sql.TransactionRollback:
+		if state.tx != nil {
+			err := state.tx.Rollback()
+			state.tx = nil
+			state.failed = false
+			if err != nil {
+				return sqlstate(err)
+			}
+		}
+		state.failed = false
+		return writer.Complete("ROLLBACK")
+	default:
+		return sqlstate(fmt.Errorf("pgwire: unknown transaction control %d", control))
+	}
+}
+
+func (s *Server) markFailed(ctx context.Context) {
+	state := transactionFrom(ctx)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	s.failLocked(state)
+}
+
+func (s *Server) failLocked(state *sessionTransaction) {
+	if state.tx != nil {
+		state.failed = true
+	}
 }
 
 // commandTag renders the CommandComplete tag: row-returning statements

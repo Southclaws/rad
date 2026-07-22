@@ -31,18 +31,31 @@ type Prepared struct {
 	static  *Compiled
 }
 
+// TransactionControl identifies SQL transaction boundaries. It is transport
+// metadata, not PIR: a wire session owns the explicit transaction while each
+// enclosed SQL statement remains an ordinary PIR program.
+type TransactionControl uint8
+
+const (
+	TransactionNone TransactionControl = iota
+	TransactionBegin
+	TransactionCommit
+	TransactionRollback
+)
+
 // Compiled is one executable statement: a PIR program plus everything the
-// wire layer needs to render its outcome. A nil Program is a no-op (BEGIN,
-// SET, already-satisfied DDL); Static short-circuits execution with canned
-// rows (SHOW).
+// wire layer needs to render its outcome. A nil Program is a wire-level
+// control/no-op (transactions, SET, already-satisfied DDL); Static
+// short-circuits execution with canned rows (SHOW).
 type Compiled struct {
-	Program  *pirwire.Program
-	Columns  []ResultColumn
-	Card     string
-	Tag      string
-	TagStmts []string
-	Static   [][]any
-	DDL      bool
+	Program     *pirwire.Program
+	Columns     []ResultColumn
+	Card        string
+	Tag         string
+	TagStmts    []string
+	Static      [][]any
+	DDL         bool
+	Transaction TransactionControl
 }
 
 // Parse splits SQL text into statements.
@@ -96,15 +109,16 @@ type program struct {
 	tracker *paramTracker
 	args    []lirwire.Value
 
-	statements []pirwire.Statement
-	result     string
-	columns    []ResultColumn
-	card       string
-	tag        string
-	tagStmts   []string
-	static     [][]any
-	noop       bool
-	ddl        bool
+	statements  []pirwire.Statement
+	result      string
+	columns     []ResultColumn
+	card        string
+	tag         string
+	tagStmts    []string
+	static      [][]any
+	noop        bool
+	ddl         bool
+	transaction TransactionControl
 }
 
 func (p *program) newRelCC() *cc {
@@ -148,10 +162,9 @@ func compileStmt(schema *Schema, stmt nodes.Node, tracker *paramTracker, args []
 	case *nodes.TruncateStmt:
 		err = p.lowerTruncate(v)
 	case *nodes.TransactionStmt:
-		p.lowerTransaction(v)
+		err = p.lowerTransaction(v)
 	case *nodes.VariableSetStmt:
-		p.tag = "SET"
-		p.noop = true
+		err = p.lowerVariableSet(v)
 	case *nodes.VariableShowStmt:
 		p.lowerShow(v)
 	default:
@@ -162,12 +175,13 @@ func compileStmt(schema *Schema, stmt nodes.Node, tracker *paramTracker, args []
 	}
 
 	out := &Compiled{
-		Columns:  p.columns,
-		Card:     p.card,
-		Tag:      p.tag,
-		TagStmts: p.tagStmts,
-		Static:   p.static,
-		DDL:      p.ddl,
+		Columns:     p.columns,
+		Card:        p.card,
+		Tag:         p.tag,
+		TagStmts:    p.tagStmts,
+		Static:      p.static,
+		DDL:         p.ddl,
+		Transaction: p.transaction,
 	}
 	if len(p.statements) > 0 {
 		prog := pirwire.Prog(p.result, p.statements...)
@@ -212,43 +226,19 @@ func (p *program) lowerSelectStmt(sel *nodes.SelectStmt) error {
 	return nil
 }
 
-func (p *program) lowerTransaction(ts *nodes.TransactionStmt) {
-	// Transaction control is a wire-level fiction: every statement commits
-	// its own atomic program, so these succeed without doing anything.
-	// ROLLBACK therefore cannot undo prior statements — a known and accepted
-	// divergence for this frontend.
-	switch ts.Kind {
-	case nodes.TRANS_STMT_BEGIN, nodes.TRANS_STMT_START:
-		p.tag = "BEGIN"
-	case nodes.TRANS_STMT_COMMIT:
-		p.tag = "COMMIT"
-	case nodes.TRANS_STMT_ROLLBACK:
-		p.tag = "ROLLBACK"
-	case nodes.TRANS_STMT_SAVEPOINT:
-		p.tag = "SAVEPOINT"
-	case nodes.TRANS_STMT_RELEASE:
-		p.tag = "RELEASE"
-	case nodes.TRANS_STMT_ROLLBACK_TO:
-		p.tag = "ROLLBACK"
-	default:
-		p.tag = "COMMIT"
-	}
-	p.noop = true
-}
-
 // showValues answers the SHOW variables clients and migration tooling probe.
 var showValues = map[string]string{
-	"server_version":              "17.0",
-	"server_version_num":          "170000",
-	"transaction_isolation":       "serializable",
+	"server_version":                "17.0",
+	"server_version_num":            "170000",
+	"transaction_isolation":         "serializable",
 	"default_transaction_isolation": "serializable",
-	"standard_conforming_strings": "on",
-	"client_encoding":             "UTF8",
-	"server_encoding":             "UTF8",
-	"integer_datetimes":           "on",
-	"timezone":                    "UTC",
-	"is_superuser":                "on",
-	"search_path":                 "public",
+	"standard_conforming_strings":   "on",
+	"client_encoding":               "UTF8",
+	"server_encoding":               "UTF8",
+	"integer_datetimes":             "on",
+	"timezone":                      "UTC",
+	"is_superuser":                  "on",
+	"search_path":                   "public",
 }
 
 func (p *program) lowerShow(vs *nodes.VariableShowStmt) {
