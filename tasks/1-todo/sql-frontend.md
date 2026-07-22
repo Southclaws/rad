@@ -217,7 +217,7 @@ JOIN ... ON` — matching LIR's `inner`/`left` exactly. No `RIGHT`/`FULL`/
 yet, or it's a deliberate correctness/complexity deferral):
 
 - `CASE`/`COALESCE`/`NULLIF`, scalar function calls beyond `CAST`, string
-  functions, `LIKE`/`GLOB`/`REGEXP`, `||` concatenation — LIR's `Expr`
+  functions, `GLOB`/`REGEXP`, `||` concatenation — LIR's `Expr`
   union has no function-call or `case` variant yet
   (`next-steps.md`: "Parameters, CASE, COALESCE, function calls... missing
   expression capabilities").
@@ -665,8 +665,9 @@ tests, real BEGIN/COMMIT/ROLLBACK (no savepoints). Types in DDL: varchar
 bigint, double precision — no uuid/bytea/numeric/arrays/native enums.
 
 **Migration introspection is the gate**: Atlas inspects
-pg_catalog/information_schema before diffing. Strategy: stub, don't
-implement — pattern-match the bounded Atlas query set in pgwire:
+pg_catalog/information_schema before diffing. The current MVP
+pattern-matches the bounded Atlas query set in pgwire and mostly returns
+blank relations:
 - `SELECT current_setting('server_version_num'), ...` → `("170000","heap",NULL)`
 - ent's `SHOW server_version_num` → `170000`
 - schemas query (`nspname AS schema_name`) → one row `("public", NULL)`
@@ -694,9 +695,9 @@ non-recursive CTEs (→ derived bindings).
   create-where-missing, then a `query` reading the conflict keys from
   post-state for RETURNING (later statements see prior effects).
 
-**Known-unmappable (will fail, gap-analysis fodder)**: ILIKE/LIKE
-(ContainsFold search paths), jsonb `@>` containment (RBAC permission
-checks in account reads!), jsonb `||`/`jsonb_set` updates, `CASE` +
+**Known-unmappable (will fail, gap-analysis fodder)**: jsonb `@>`
+containment (RBAC permission checks in account reads!), jsonb
+`||`/`jsonb_set` updates, `CASE` +
 `cast(x AS numeric/timestamp/boolean)` (child-property sort), plain
 `UNION ALL` of two selects (no LIR set-op node — child_sort.go),
 window functions (none used). Transactions are wire-level no-ops
@@ -750,35 +751,89 @@ LANDED since the first sweep (all engine work `task test` green):
   conflict retry 50×/40ms-cap quadratic backoff, single-query programs
   routed through frontend.DB.Execute (snapshot read path, no
   serializable-conflict exposure — fixed read-heavy endpoints losing
-  races against write churn), typed-nil guard in referencesName, LIKE
-  escape handling (`\_` etc. still pending — only bare prefix patterns
-  lower today).
+  races against write churn), typed-nil guard in referencesName.
+- LIKE/ILIKE lower to LIR `text_match`: `%` becomes `any_many`, literal
+  spans use `exact` for LIKE and `unicode_simple_fold` for ILIKE, NOT
+  preserves K3 with a unary `not`, and PostgreSQL default/custom/empty
+  `ESCAPE` forms are decoded. `_` remains rejected until `text_match`
+  gains a one-rune wildcard part.
 
-FULL-SUITE RESULT (2026-07-19, `go test -p 4 ./...`, CI-identical):
-**129 of 139 test packages pass (93%)**. The 10 failing: account/list,
-account/role, admin, datagraph, library/properties, oauth, profile,
-robot/mcp, thread, thread/search — every one classified below except
-robot/mcp and the thread link_aggregation subtest (unchased).
+FULL-SUITE RESULT (2026-07-21, `go test -count=1 -p 4 ./...` against a
+clean in-memory Rad server): **135 of 139 test packages pass (97%)**.
+The 4 failing packages are account/role, library/properties, oauth, and
+robot/mcp. All former LIKE/ILIKE consumers now pass, including
+account/list, admin, datagraph, and thread/search.
 
 Remaining failure classes (whole-suite sweep):
-- ILIKE / contains-fold (≈6 query shapes; thread/search, datagraph
-  keyword search, admin account list). LIKE-like semantics need a real
-  design pass (pattern language, case folding, collation posture — the
-  concat/branch treatment) before any further lowering work; the frontend
-  currently lowers only bare literal-prefix LIKE to byte-lexical ranges
-  and rejects everything else, deliberately frozen there.
-- text→numeric/timestamp/boolean runtime casts (3 queries, all the
-  child-property sort in node_querier child_sort.go / sortedByPropertyValue
-  — `cast(p.value as numeric)` over a text column). Needs a parsing-cast
-  decision in the engine.
-- Wire transactions are no-ops: the account/role rollback tests
-  (RollsBackOnCacheWriteFailure et al) sabotage a Tx and assert rollback;
-  autocommit-per-statement cannot express that.
-- Individual semantic stragglers to chase: TestThreads/link_aggregation
-  (link upsert path returns nil where a row is expected),
-  TestResourceProfileReferencesIncludeRoles/link_get_related_profiles.
+- account/role: wire transactions are no-ops, so
+  `TestRoleAssignmentRollsBackOnCacheWriteFailure` cannot roll back its
+  mutation; the deleted-role cache refresh case also remains stale.
+- library/properties: three child-property sorting cases fail frontend
+  CASE result-type inference (`cannot determine CASE result type`).
+- oauth: member client creation attempts to write NULL to non-nullable
+  `redirect_uris`; cleanup also leaves an expected row missing.
+- robot/mcp: path fallback, bearer-protected tool discovery, dependent
+  OAuth cleanup, and refresh-token behaviour remain semantic stragglers.
 - jsonb `@>`/`jsonb_set` (RBAC permission checks) never surfaced in any
   log — evidently not on the exercised paths.
+
+### Next steps from the 135/139 baseline
+
+Do these in order; rerun the full Storyden suite from a clean in-memory
+Rad server after each compatibility change.
+
+1. **Replace blank Ent/Atlas introspection with catalog-backed results.**
+   Keep this as bounded PostgreSQL compatibility in `rad/server/pgwire`,
+   not a general implementation of PostgreSQL system catalogs.
+   - Capture the exact ent v0.14.6 / Atlas v0.37.0 inspection queries as
+     fixtures, including their extended-protocol parameters and expected
+     column OIDs. Match named query shapes rather than the current catch-all
+     `pg_catalog`/`information_schema` substring branch.
+   - Read `catalog.Catalog.ListTables` for every inspection execution and
+     project Rad's single logical catalog as database `rad`, schema `public`.
+     Database and schema predicates are compatibility inputs only; they do
+     not introduce hierarchy into Rad.
+   - Return real table, column, primary-key, secondary-index, unique-index,
+     and foreign-key rows. Preserve column/index ordering and expose the SQL
+     type name/OID, nullability, defaults, and uniqueness Atlas needs to
+     produce a stable diff.
+   - Return empty rows only for catalog families Rad genuinely does not have
+     yet (enums, sequences, and check constraints), with an explicit fixture
+     and comment for each one. Remove the generic "all other catalog reads
+     are empty" fallback so new Ent queries fail loudly instead of silently
+     lying.
+   - Add pgwire integration tests that create a representative catalog,
+     execute every captured inspection query, and verify rows, parameter
+     binding, result column names, and OIDs. The acceptance test is running
+     `Schema.Create` twice: the second run must see the installed schema and
+     emit no DDL. Duplicate-DDL idempotence can remain defensive behaviour,
+     but migration correctness must no longer depend on it.
+
+2. **Close the four remaining Storyden package failures.**
+   - account/role: implement real pgwire transaction state so BEGIN/COMMIT/
+     ROLLBACK control one atomic engine transaction; then chase the separate
+     deleted-role cache invalidation case.
+   - library/properties: fix CASE result-type inference for the
+     child-property sorting expressions, including text-to-numeric/time/bool
+     parsing casts where the selected sort type requires them.
+   - oauth: fix the `redirect_uris` NULL/non-null mapping and cleanup query
+     semantics before treating the MCP failures as independent.
+   - robot/mcp: then resolve path fallback, bearer-protected discovery,
+     dependent OAuth deletion, and refresh-token behaviour.
+
+3. **Finish the LIKE compatibility edges without changing existing
+   `text_match` semantics.** Add a one-rune wildcard LIR part before lowering
+   unescaped `_`; keep row-dependent patterns rejected until LIR has a
+   pattern expression or an explicitly compiled dynamic matcher. Locale,
+   normalization, full folding, and index selection remain later work.
+
+4. **Make the Storyden run reproducible.** Add a Rad task/script that starts
+   a fresh memory-backed pgwire server, runs
+   `DATABASE_URL=postgresql://... go test -count=1 -p 4 ./...` in Storyden,
+   records the package pass count, and always tears the server down. Use the
+   `postgresql://` spelling because Storyden recognizes only that form as a
+   shared database; `postgres://` makes its harness assume per-database
+   isolation that Rad intentionally does not provide.
 
 ### Next primitive: `branch` expression — DESIGN DECIDED (2026-07-19)
 

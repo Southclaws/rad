@@ -6,8 +6,8 @@ import (
 )
 
 // UnsupportedError marks SQL that parses but falls outside the compilable
-// subset — either LIR has no target construct (LIKE, CASE, set operations,
-// jsonb operators) or the frontend deliberately rejects the operation. The
+// subset — either LIR has no target construct (SIMILAR TO, jsonb operators)
+// or the frontend deliberately rejects the operation. The
 // wire layer maps it to SQLSTATE 0A000 (feature_not_supported), keeping it
 // distinguishable from genuinely malformed queries.
 type UnsupportedError struct {

@@ -253,7 +253,7 @@ func (c *cc) lowerAExpr(e *env, a *nodes.A_Expr) (lirwire.Expr, exprType, error)
 	case nodes.AEXPR_LIKE:
 		return c.lowerLike(e, a)
 	case nodes.AEXPR_ILIKE:
-		return lirwire.Expr{}, exprType{}, unsupportedf("ILIKE")
+		return c.lowerLike(e, a)
 	case nodes.AEXPR_SIMILAR:
 		return lirwire.Expr{}, exprType{}, unsupportedf("SIMILAR TO")
 	case nodes.AEXPR_DISTINCT, nodes.AEXPR_NOT_DISTINCT:
@@ -411,84 +411,6 @@ func (c *cc) lowerInList(e *env, a *nodes.A_Expr) (lirwire.Expr, exprType, error
 		out = lirwire.Unary("not", out)
 	}
 	return out, exprType{scalar: lirwire.ScalarTypeBool, nullable: lt.nullable}, nil
-}
-
-// lowerLike lowers the LIKE patterns expressible over byte-lexical text
-// comparison: a pattern with no wildcards is equality, and a
-// trailing-%-only prefix pattern is a half-open range. Anything else (%
-// elsewhere, _, ILIKE) has no LIR encoding and is rejected.
-func (c *cc) lowerLike(e *env, a *nodes.A_Expr) (lirwire.Expr, exprType, error) {
-	name, err := operatorName(a.Name)
-	if err != nil {
-		return lirwire.Expr{}, exprType{}, err
-	}
-	negated := name == "!~~"
-	textT := exprType{scalar: lirwire.ScalarTypeText}
-	le, lt, err := c.lowerExpr(e, a.Lexpr, &textT)
-	if err != nil {
-		return lirwire.Expr{}, exprType{}, err
-	}
-	if lt.scalar != lirwire.ScalarTypeText {
-		return lirwire.Expr{}, exprType{}, unsupportedf("LIKE on %s", lt.scalar)
-	}
-	pe, _, err := c.lowerExpr(e, a.Rexpr, &textT)
-	if err != nil {
-		return lirwire.Expr{}, exprType{}, err
-	}
-	pattern, known := textValueOf(pe)
-	if !known {
-		if c.args == nil {
-			// Prepare-time pass with the parameter value not yet bound:
-			// shape does not matter, only binding and types do.
-			pattern = ""
-		} else {
-			return lirwire.Expr{}, exprType{}, unsupportedf("non-constant LIKE pattern")
-		}
-	}
-	var out lirwire.Expr
-	switch {
-	case !strings.ContainsAny(pattern, "%_"):
-		out = lirwire.Binary("eq", le, lirwire.Lit(lirwire.Text(pattern)))
-	case strings.HasSuffix(pattern, "%") && !strings.ContainsAny(pattern[:len(pattern)-1], "%_"):
-		prefix := pattern[:len(pattern)-1]
-		out = lirwire.Binary("gte", le, lirwire.Lit(lirwire.Text(prefix)))
-		if hi, bounded := prefixUpperBound(prefix); bounded {
-			out = lirwire.Binary("and", out, lirwire.Binary("lt", le, lirwire.Lit(lirwire.Text(hi))))
-		}
-	default:
-		return lirwire.Expr{}, exprType{}, unsupportedf("LIKE pattern %q", pattern)
-	}
-	if negated {
-		out = lirwire.Unary("not", out)
-	}
-	return out, exprType{scalar: lirwire.ScalarTypeBool, nullable: lt.nullable}, nil
-}
-
-// textValueOf extracts a non-null text literal's value.
-func textValueOf(e lirwire.Expr) (string, bool) {
-	lit, ok := e.ExprUnion.(*lirwire.LiteralExpr)
-	if !ok {
-		return "", false
-	}
-	tv, ok := lit.Value.ValueUnion.(*lirwire.TextValue)
-	if !ok || tv.Value == nil {
-		return "", false
-	}
-	return *tv.Value, true
-}
-
-// prefixUpperBound returns the smallest string greater than every string
-// with the given prefix, under byte-lexical order. An all-0xFF prefix has
-// no upper bound.
-func prefixUpperBound(prefix string) (string, bool) {
-	b := []byte(prefix)
-	for i := len(b) - 1; i >= 0; i-- {
-		if b[i] < 0xff {
-			b[i]++
-			return string(b[:i+1]), true
-		}
-	}
-	return "", false
 }
 
 func (c *cc) lowerBetween(e *env, a *nodes.A_Expr) (lirwire.Expr, exprType, error) {
