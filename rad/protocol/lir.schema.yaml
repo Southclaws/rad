@@ -814,6 +814,7 @@ $defs:
       - { $ref: "#/$defs/BinaryExpr" }
       - { $ref: "#/$defs/CastExpr" }
       - { $ref: "#/$defs/BranchExpr" }
+      - { $ref: "#/$defs/TextMatchExpr" }
       - { $ref: "#/$defs/CrossingExprExists" }
       - { $ref: "#/$defs/CrossingExprFirst" }
       - { $ref: "#/$defs/CrossingExprScalar" }
@@ -972,6 +973,94 @@ $defs:
       then:
         description: The arm's result expression.
         $ref: "#/$defs/Expr"
+
+  TextMatchExpr:
+    description: |
+      Test whether `value` matches an anchored pattern built from an ordered
+      list of `parts`. The result is boolean under three-valued logic: a NULL
+      `value` yields UNKNOWN, otherwise a total TRUE or FALSE. `value` must be
+      text.
+
+      The match is fully anchored: the concatenation of the parts must consume
+      the whole of `value`, not merely occur within it. `[literal "foo"]`
+      matches only "foo"; a leading or trailing `any_many` is what admits a
+      prefix, suffix, or infix. An `any_many` matches zero or more characters
+      (SQL `%`), so `[any_many]` alone matches every non-NULL value including
+      the empty string.
+
+      The pattern is a bind-time constant: literal spans carry strings and
+      wildcards are structural, so no part is an expression and the matcher is
+      compiled once. `value` is the only operand that varies per row, and NULL
+      enters only through it.
+
+      `text_match` answers only whether the text matches the pattern; it
+      carries no case, accent, or collation knob. Literal spans compare under
+      the engine's ordinary text equality, which is byte-exact today.
+      Case-insensitivity is a comparison semantic shared by `=`, ordering,
+      grouping, and matching alike, resolved once elsewhere — never a flag on
+      this node.
+
+      This is deliberately the SQL `LIKE` wildcard set structurally
+      represented, not a general pattern algebra: no alternation, repetition of
+      sub-patterns, character classes, or backreferences. A richer text-search
+      facility would be a separate expression, never a wider `parts`
+      vocabulary.
+    type: object
+    additionalProperties: false
+    required: [kind, value, parts]
+    properties:
+      kind: { type: string, const: text_match }
+      value:
+        description: The text expression matched against the pattern.
+        $ref: "#/$defs/Expr"
+      parts:
+        description: |
+          The pattern, as an ordered list of literal spans and wildcards.
+          Producers should emit a canonical list — adjacent literals coalesced,
+          adjacent `any_many` collapsed — but the matcher accepts any
+          well-formed list.
+        type: array
+        minItems: 1
+        items: { $ref: "#/$defs/TextMatchExprPart" }
+
+  TextMatchExprPart:
+    title: TextMatchExprPart
+    description: |
+      One element of a text-match pattern: a literal span or a wildcard, a
+      closed tagged union selected by `kind`. The vocabulary is deliberately
+      small; a single-character wildcard (`any_one`, SQL `_`) is a future
+      addition this union admits without a breaking change.
+    oneOf:
+      - { $ref: "#/$defs/LiteralTextMatchPart" }
+      - { $ref: "#/$defs/AnyManyTextMatchPart" }
+
+  LiteralTextMatchPart:
+    title: LiteralTextMatchPart
+    description: |
+      A literal span the pattern must match verbatim at this position. Never
+      empty; adjacent literal parts are equivalent to one concatenated literal,
+      and a producer should emit the concatenated form.
+    type: object
+    additionalProperties: false
+    required: [kind, value]
+    properties:
+      kind: { type: string, const: literal }
+      value:
+        description: The literal text, matched byte for byte.
+        type: string
+        minLength: 1
+
+  AnyManyTextMatchPart:
+    title: AnyManyTextMatchPart
+    description: |
+      A wildcard matching zero or more characters (SQL `%`). Adjacent
+      `any_many` parts are equivalent to one; a producer should emit the
+      collapsed form.
+    type: object
+    additionalProperties: false
+    required: [kind]
+    properties:
+      kind: { type: string, const: any_many }
 
   # Crossings are the only boundary from a relation into an expression. Each
   # declares how a stream of rows becomes exactly one datum.

@@ -361,6 +361,30 @@ func (g *graphConv) expr(e lirwire.Expr) (lir.Expr, error) {
 		}
 		return lir.Branch{Arms: arms, Else: els}, nil
 
+	case *lirwire.TextMatchExpr:
+		value, err := g.expr(x.Value)
+		if err != nil {
+			return nil, err
+		}
+		if value == nil {
+			return nil, wireErrf("text_match needs a value")
+		}
+		if len(x.Parts) == 0 {
+			return nil, wireErrf("text_match needs at least one pattern part")
+		}
+		parts := make([]lir.TextMatchPart, len(x.Parts))
+		for i, part := range x.Parts {
+			switch p := part.TextMatchExprPartUnion.(type) {
+			case *lirwire.LiteralTextMatchPart:
+				parts[i] = lir.LiteralPart{Value: p.Value}
+			case *lirwire.AnyManyTextMatchPart:
+				parts[i] = lir.AnyManyPart{}
+			default:
+				return nil, wireErrf("text_match part %d has an unknown kind", i+1)
+			}
+		}
+		return lir.TextMatch{Value: value, Parts: parts}, nil
+
 	case *lirwire.CrossingExprExists:
 		rel, err := g.rel(x.Node)
 		if err != nil {

@@ -72,6 +72,8 @@ func lirExpressionChildren(e lir.Expr) lirNodeChildren {
 		}
 		expressions = append(expressions, x.Else)
 		return lirNodeChildren{expressions: expressions}
+	case lir.TextMatch:
+		return lirNodeChildren{expressions: []lir.Expr{x.Value}}
 	case lir.Exists:
 		return lirNodeChildren{relations: []lir.Relation{x.Rel}}
 	case lir.First:

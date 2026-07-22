@@ -1,0 +1,9 @@
+# textmatch_filter — a prefix text_match as a filter predicate. The match is
+# anchored, so "docs/src/x" (which merely contains "src/") does not survive,
+# and a NULL name is UNKNOWN and drops like any non-TRUE row.
+tables:
+  - id: 1
+    name: files
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string, nullable: true }

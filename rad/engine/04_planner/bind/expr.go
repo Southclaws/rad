@@ -80,6 +80,9 @@ func (b *binder) bindExpr(e lir.Expr) (bound.Expr, error) {
 	case lir.Branch:
 		return b.bindBranch(x)
 
+	case lir.TextMatch:
+		return b.bindTextMatch(x)
+
 	case lir.Exists:
 		rel, err := b.bindSubRel(x.Rel)
 		if err != nil {
@@ -307,6 +310,28 @@ func rejectBranchCrossings(e lir.Expr, where string) error {
 		return nil
 	}
 	return reject.Inputf("planner: branch cannot contain a crossing (%s in %s) — crossings evaluate per row before the branch selects an arm, so one in a never-selected arm would still run", kind, where)
+}
+
+// bindTextMatch binds an anchored text match. `value` must be text; the
+// pattern is a bind-time constant, compiled once here. Unlike a branch,
+// `value` is an ordinary expression that may contain a crossing — the parts
+// carry no expressions, so nothing else needs traversal.
+func (b *binder) bindTextMatch(x lir.TextMatch) (bound.Expr, error) {
+	if x.Value == nil {
+		return nil, reject.Inputf("planner: text_match needs a value")
+	}
+	value, err := b.bindExpr(x.Value)
+	if err != nil {
+		return nil, err
+	}
+	if value.Type().Kind != lir.KindText {
+		return nil, reject.Inputf("planner: text_match value must be text, got %s", value.Type())
+	}
+	pattern, err := bound.CompileTextPattern(x.Parts)
+	if err != nil {
+		return nil, reject.Inputf("planner: %v", err)
+	}
+	return bound.NewTextMatch(value, pattern), nil
 }
 
 // bindOperands binds a comparison or arithmetic pair. When exactly one side

@@ -208,6 +208,9 @@ func Eval(e bound.Expr, env Env) (lir.Value, error) {
 	case bound.Branch:
 		return evalBranch(x, env)
 
+	case bound.TextMatch:
+		return evalTextMatch(x, env)
+
 	case bound.Exists, bound.First, bound.Scalar, bound.Array:
 		return lir.Value{}, fmt.Errorf("exec: unextracted crossing %T reached evaluation", e)
 	}
@@ -338,6 +341,21 @@ func evalBranch(b bound.Branch, env Env) (lir.Value, error) {
 		}
 	}
 	return Eval(b.Else, env)
+}
+
+// evalTextMatch matches the value against the compiled pattern. A NULL value
+// is UNKNOWN (a null bool); a non-null value always matches to a total
+// TRUE/FALSE. Literals compare byte-exact — the pattern carries no
+// equivalence of its own.
+func evalTextMatch(m bound.TextMatch, env Env) (lir.Value, error) {
+	v, err := Eval(m.Value, env)
+	if err != nil {
+		return lir.Value{}, err
+	}
+	if v.Null {
+		return lir.Null(model.TypeBool), nil
+	}
+	return lir.Bool(m.Pattern.Match(v.Text)), nil
 }
 
 func evalCast(c bound.Cast, env Env) (lir.Value, error) {

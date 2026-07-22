@@ -89,9 +89,34 @@ type Branch struct {
 	Else Expr
 }
 
-func (Literal) expr() {}
-func (Column) expr()  {}
-func (Unary) expr()   {}
-func (Binary) expr()  {}
-func (Cast) expr()    {}
-func (Branch) expr()  {}
+// TextMatchPart is one element of a text_match pattern: a literal span or a
+// wildcard. The pattern is a bind-time constant, so parts carry data, never
+// expressions.
+type TextMatchPart interface{ textMatchPart() }
+
+// LiteralPart is a literal span matched verbatim (under the engine's ordinary
+// text equality). Never empty.
+type LiteralPart struct{ Value string }
+
+// AnyManyPart matches zero or more characters (SQL `%`).
+type AnyManyPart struct{}
+
+func (LiteralPart) textMatchPart() {}
+func (AnyManyPart) textMatchPart() {}
+
+// TextMatch tests Value against an anchored pattern of Parts. It answers only
+// whether the text matches; literal spans compare under the engine's ordinary
+// text equality, with no case/collation knob of its own. Value is the only
+// per-row operand; a NULL Value makes the result UNKNOWN.
+type TextMatch struct {
+	Value Expr
+	Parts []TextMatchPart
+}
+
+func (Literal) expr()   {}
+func (Column) expr()    {}
+func (Unary) expr()     {}
+func (Binary) expr()    {}
+func (Cast) expr()      {}
+func (Branch) expr()    {}
+func (TextMatch) expr() {}

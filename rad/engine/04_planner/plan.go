@@ -272,6 +272,13 @@ func (pl *planner) extractExpr(e bound.Expr) (bound.Expr, []*physical.AttachSpec
 		// per-row attachment would evaluate crossings in never-selected
 		// arms, breaking the laziness contract: so there is nothing to extract.
 		return e, nil
+	case bound.TextMatch:
+		// The pattern is constant; only the value can hold a crossing.
+		sub, specs := pl.extractExpr(x.Value)
+		if len(specs) == 0 {
+			return e, nil
+		}
+		return bound.NewTextMatch(sub, x.Pattern), specs
 	}
 	return e, nil
 }

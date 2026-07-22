@@ -102,6 +102,150 @@ var ScalarTypeValues = []ScalarType{
 // fields belonging to another variant, and missing required fields are
 // rejected. Literal values travel as raw JSON scalars (see `Value`) and are
 // typed by the binder from the context each literal meets.
+type TextMatchExprPartUnion interface {
+	TextMatchExprPartType() string
+	isTextMatchExprPart()
+}
+
+type TextMatchExprPart struct {
+	TextMatchExprPartUnion
+}
+
+func (w TextMatchExprPart) MarshalJSON() ([]byte, error) {
+	if w.TextMatchExprPartUnion == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(w.TextMatchExprPartUnion)
+}
+
+func (w *TextMatchExprPart) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if bytes.Equal(data, []byte("null")) {
+		w.TextMatchExprPartUnion = nil
+		return nil
+	}
+
+	var peek struct {
+		Type string `json:"kind"`
+	}
+	if err := json.Unmarshal(data, &peek); err != nil {
+		return fmt.Errorf("TextMatchExprPart: invalid JSON: %w", err)
+	}
+	if peek.Type == "" {
+		return fmt.Errorf("TextMatchExprPart: missing discriminator field %q", "kind")
+	}
+
+	var v TextMatchExprPartUnion
+	switch peek.Type {
+	case "literal":
+		v = &LiteralTextMatchPart{}
+	case "any_many":
+		v = &AnyManyTextMatchPart{}
+	default:
+		return fmt.Errorf("TextMatchExprPart: unknown type %q", peek.Type)
+	}
+
+	if err := json.Unmarshal(data, v); err != nil {
+		return fmt.Errorf("TextMatchExprPart: invalid %q payload: %w", peek.Type, err)
+	}
+
+	w.TextMatchExprPartUnion = v
+	return nil
+}
+
+// A literal span the pattern must match verbatim at this position. Never
+// empty; adjacent literal parts are equivalent to one concatenated literal,
+// and a producer should emit the concatenated form.
+type LiteralTextMatchPart struct {
+	Kind string `json:"kind"`
+	// The literal text, matched byte for byte.
+	Value string `json:"value"`
+}
+
+func (LiteralTextMatchPart) isTextMatchExprPart() {}
+
+func (LiteralTextMatchPart) TextMatchExprPartType() string { return "literal" }
+
+// A wildcard matching zero or more characters (SQL `%`). Adjacent
+// `any_many` parts are equivalent to one; a producer should emit the
+// collapsed form.
+type AnyManyTextMatchPart struct {
+	Kind string `json:"kind"`
+}
+
+func (AnyManyTextMatchPart) isTextMatchExprPart() {}
+
+func (AnyManyTextMatchPart) TextMatchExprPartType() string { return "any_many" }
+
+// LIR is Rad's low-level intermediate representation: the relation tree a
+// client sends to `POST /execute`, and the tree the engine binds, plans, and
+// executes. This schema is its normative specification. The type definitions
+// and the prose in these descriptions are one artifact and move together.
+//
+// LIR is an internal contract with no external compatibility promise yet; it
+// may change while the design is hardened. It is deliberately unstable, but at
+// any moment it is exactly what this document says.
+//
+// # Model
+//
+// LIR has exactly two categories, and no third "shape" category: shaping is
+// projection, and nesting lives in the value model.
+//
+//   - A **relation** is a possibly empty, possibly many stream of structurally
+//     typed rows. Relation operators consume relations and produce relations.
+//   - An **expression** computes exactly one typed *datum* (null, a scalar, a
+//     row, or an array) in some scope. An expression may consume a relation only
+//     through an explicit *crossing* that declares how a stream of rows becomes
+//     one datum.
+//
+// **Relational closure** is a law, not an aspiration: the output of every
+// relation operator is itself an ordinary relation whose every attribute is
+// addressable by later operators. A `filter` above an `aggregate` references a
+// fold's output exactly as it would reference a scanned column.
+//
+// **Correlation** is a derived property, not an operator. A sub-relation that
+// references a scope bound by an enclosing relation is correlated, and is
+// evaluated with that enclosing row in scope. Correlation is a semantic
+// relationship only: the planner may satisfy it per row, by batching, or by a
+// join, as long as the result is identical. A relation becomes a datum only at
+// a crossing or the root, never merely by being correlated.
+//
+// Relations have **bag** semantics: an operator changes multiplicity only when
+// that is its job. `aggregate` folds each group to one row, and `distinct`
+// converts an input bag into the corresponding set of complete rows; every
+// other operator preserves multiplicity.
+//
+// # Determinism
+//
+// A key-value scan's encounter order is physical, never logical, and the
+// engine's access-path choice must never change results. Wherever a stream of
+// rows becomes observable, its order must be explicit. Root `many` results and
+// `array` crossings require an `order`; root and crossing `first` permit either
+// an `order` or a proof of at most one row. A positive `slice.offset` also
+// requires an ordered input. An unordered `limit` is permitted only until a
+// later observable boundary imposes its own ordering requirement. `distinct`
+// likewise imposes no logical ordering — an observable ordered distinct result
+// requires an explicit `order` above it, and an ordered input confers none.
+//
+// # NULL and three-valued logic
+//
+// Predicates evaluate in Kleene three-valued logic (K3): `TRUE`, `FALSE`, or
+// `UNKNOWN`. Any comparison with a NULL operand is `UNKNOWN`. `filter` and a
+// join's `on` keep only rows that evaluate to `TRUE`, never `UNKNOWN`, so
+// `not (x = 1)` does not match rows where `x` is NULL; `is_null` is the only
+// test that matches a NULL. NULLs are distinct under unique indexes.
+//
+// # The wire
+//
+// A query is a flat map of caller-chosen node ids plus a root selector. Every
+// definition is inline; a node id is a plain reference carrying no sharing,
+// memoisation, or materialisation identity. The graph must be acyclic, every
+// node must be reachable from the root and have exactly one consumer, and
+// dangling or shared references are rejected before binding. Nodes and
+// expressions are closed `oneOf` unions selected by `kind`; unknown fields,
+// fields belonging to another variant, and missing required fields are
+// rejected. Literal values travel as raw JSON scalars (see `Value`) and are
+// typed by the binder from the context each literal meets.
 type ValueUnion interface {
 	ValueType() string
 	isValue()
@@ -323,6 +467,8 @@ func (w *Expr) UnmarshalJSON(data []byte) error {
 		v = &CastExpr{}
 	case "branch":
 		v = &BranchExpr{}
+	case "text_match":
+		v = &TextMatchExpr{}
 	case "exists":
 		v = &CrossingExprExists{}
 	case "first":
@@ -463,6 +609,51 @@ type BranchExpr struct {
 func (BranchExpr) isExpr() {}
 
 func (BranchExpr) ExprType() string { return "branch" }
+
+// Test whether `value` matches an anchored pattern built from an ordered
+// list of `parts`. The result is boolean under three-valued logic: a NULL
+// `value` yields UNKNOWN, otherwise a total TRUE or FALSE. `value` must be
+// text.
+//
+// The match is fully anchored: the concatenation of the parts must consume
+// the whole of `value`, not merely occur within it. `[literal "foo"]`
+// matches only "foo"; a leading or trailing `any_many` is what admits a
+// prefix, suffix, or infix. An `any_many` matches zero or more characters
+// (SQL `%`), so `[any_many]` alone matches every non-NULL value including
+// the empty string.
+//
+// The pattern is a bind-time constant: literal spans carry strings and
+// wildcards are structural, so no part is an expression and the matcher is
+// compiled once. `value` is the only operand that varies per row, and NULL
+// enters only through it.
+//
+// `text_match` answers only whether the text matches the pattern; it
+// carries no case, accent, or collation knob. Literal spans compare under
+// the engine's ordinary text equality, which is byte-exact today.
+// Case-insensitivity is a comparison semantic shared by `=`, ordering,
+// grouping, and matching alike, resolved once elsewhere — never a flag on
+// this node.
+//
+// This is deliberately the SQL `LIKE` wildcard set structurally
+// represented, not a general pattern algebra: no alternation, repetition of
+// sub-patterns, character classes, or backreferences. A richer text-search
+// facility would be a separate expression, never a wider `parts`
+// vocabulary.
+type TextMatchExpr struct {
+	Kind string `json:"kind"`
+	// The pattern, as an ordered list of literal spans and wildcards.
+	// Producers should emit a canonical list — adjacent literals coalesced,
+	// adjacent `any_many` collapsed — but the matcher accepts any
+	// well-formed list.
+	//
+	Parts []TextMatchExprPart `json:"parts"`
+	// The text expression matched against the pattern.
+	Value Expr `json:"value"`
+}
+
+func (TextMatchExpr) isExpr() {}
+
+func (TextMatchExpr) ExprType() string { return "text_match" }
 
 // `EXISTS`: a boolean that is `TRUE` when the relation `node` produces at
 // least one row and `FALSE` otherwise. Never NULL. The relation may be

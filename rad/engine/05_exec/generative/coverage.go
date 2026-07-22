@@ -115,6 +115,9 @@ func walkExprFeat(e lir.Expr, f map[string]bool, inCross bool) {
 			walkExprFeat(arm.Then, f, inCross)
 		}
 		walkExprFeat(x.Else, f, inCross)
+	case lir.TextMatch:
+		f["text_match"] = true
+		walkExprFeat(x.Value, f, inCross)
 	case lir.Exists:
 		crossFeat(x.Rel, f, "exists", inCross)
 	case lir.First:

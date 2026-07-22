@@ -1,0 +1,9 @@
+# textmatch_project — a suffix text_match projected as a boolean flag. A NULL
+# name makes the match UNKNOWN, which renders as a null flag, distinct from a
+# present false.
+tables:
+  - id: 1
+    name: docs
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string, nullable: true }

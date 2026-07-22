@@ -131,3 +131,21 @@ func (b Branch) FreeSlots() SlotSet {
 	}
 	return s
 }
+
+// TextMatch tests Value against a compiled anchored Pattern. The binder
+// guarantees Value is text and compiles the constant parts into Pattern once.
+type TextMatch struct {
+	Value    Expr
+	Pattern  TextPattern
+	nullable bool
+}
+
+// NewTextMatch builds the bound match. The result is boolean, nullable exactly
+// when Value is: a non-null value always matches to a total TRUE/FALSE, so
+// NULL is the only source of UNKNOWN.
+func NewTextMatch(value Expr, pattern TextPattern) TextMatch {
+	return TextMatch{Value: value, Pattern: pattern, nullable: value.Type().Nullable}
+}
+
+func (m TextMatch) Type() lir.Type     { return lir.Type{Kind: lir.KindBool, Nullable: m.nullable} }
+func (m TextMatch) FreeSlots() SlotSet { return m.Value.FreeSlots() }

@@ -17,9 +17,10 @@
 //     depends on no storage implementation — the harness can feed it a pure
 //     in-memory table map or the rows a real store returned.
 //   - The one deliberate sharing is scalar expression evaluation
-//     (bound.EvalPred / bound.EvalDatum): 3VL, arithmetic, casts, and branch
-//     selection. That is acceptable only because those scalar semantics are
-//     pinned independently by enumerated truth-table/edge-value tests.
+//     (bound.EvalPred / bound.EvalDatum): 3VL, arithmetic, casts, branch
+//     selection, and text-pattern matching. That is acceptable only because
+//     those scalar semantics are pinned independently by enumerated
+//     truth-table/edge-value tests.
 //
 // Design law: if a line in here is clever, it is wrong. Slow is fine; obvious
 // is the point. But refexec is no longer trivially small — it carries recursion
@@ -850,6 +851,13 @@ func (in *interp) substitute(e bound.Expr, env lireval.Env) (bound.Expr, error) 
 		// never selected), so there is nothing to substitute; the evaluator
 		// walks the arms lazily.
 		return e, nil
+	case bound.TextMatch:
+		// The pattern is constant; only the value can carry a crossing.
+		sub, err := in.substitute(x.Value, env)
+		if err != nil {
+			return nil, err
+		}
+		return bound.NewTextMatch(sub, x.Pattern), nil
 	}
 	return e, nil
 }

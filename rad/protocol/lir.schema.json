@@ -85,6 +85,21 @@
       ],
       "type": "object"
     },
+    "AnyManyTextMatchPart": {
+      "additionalProperties": false,
+      "description": "A wildcard matching zero or more characters (SQL `%`). Adjacent\n`any_many` parts are equivalent to one; a producer should emit the\ncollapsed form.\n",
+      "properties": {
+        "kind": {
+          "const": "any_many",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "AnyManyTextMatchPart",
+      "type": "object"
+    },
     "BinaryExpr": {
       "additionalProperties": false,
       "description": "Apply a binary operator to `left` and `right`.\n\n- Comparisons `eq ne lt lte gt gte` yield a boolean under three-valued\n  logic: any NULL operand makes the result `UNKNOWN`.\n- Logical `and` / `or` follow Kleene logic (`F and x = F`, `T or x = T`,\n  otherwise `UNKNOWN`). They are strictly binary; a client left-folds a\n  longer chain into nested `and`/`or`.\n- Arithmetic `add sub mul div` operate on numeric operands and propagate\n  NULL. They are part of the grammar and are evaluated, though the\n  generated clients do not yet emit them.\n",
@@ -478,6 +493,9 @@
           "$ref": "#/$defs/BranchExpr"
         },
         {
+          "$ref": "#/$defs/TextMatchExpr"
+        },
+        {
           "$ref": "#/$defs/CrossingExprExists"
         },
         {
@@ -695,6 +713,27 @@
         "kind",
         "value"
       ],
+      "type": "object"
+    },
+    "LiteralTextMatchPart": {
+      "additionalProperties": false,
+      "description": "A literal span the pattern must match verbatim at this position. Never\nempty; adjacent literal parts are equivalent to one concatenated literal,\nand a producer should emit the concatenated form.\n",
+      "properties": {
+        "kind": {
+          "const": "literal",
+          "type": "string"
+        },
+        "value": {
+          "description": "The literal text, matched byte for byte.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "title": "LiteralTextMatchPart",
       "type": "object"
     },
     "Node": {
@@ -1132,6 +1171,46 @@
         "input"
       ],
       "type": "object"
+    },
+    "TextMatchExpr": {
+      "additionalProperties": false,
+      "description": "Test whether `value` matches an anchored pattern built from an ordered\nlist of `parts`. The result is boolean under three-valued logic: a NULL\n`value` yields UNKNOWN, otherwise a total TRUE or FALSE. `value` must be\ntext.\n\nThe match is fully anchored: the concatenation of the parts must consume\nthe whole of `value`, not merely occur within it. `[literal \"foo\"]`\nmatches only \"foo\"; a leading or trailing `any_many` is what admits a\nprefix, suffix, or infix. An `any_many` matches zero or more characters\n(SQL `%`), so `[any_many]` alone matches every non-NULL value including\nthe empty string.\n\nThe pattern is a bind-time constant: literal spans carry strings and\nwildcards are structural, so no part is an expression and the matcher is\ncompiled once. `value` is the only operand that varies per row, and NULL\nenters only through it.\n\n`text_match` answers only whether the text matches the pattern; it\ncarries no case, accent, or collation knob. Literal spans compare under\nthe engine's ordinary text equality, which is byte-exact today.\nCase-insensitivity is a comparison semantic shared by `=`, ordering,\ngrouping, and matching alike, resolved once elsewhere — never a flag on\nthis node.\n\nThis is deliberately the SQL `LIKE` wildcard set structurally\nrepresented, not a general pattern algebra: no alternation, repetition of\nsub-patterns, character classes, or backreferences. A richer text-search\nfacility would be a separate expression, never a wider `parts`\nvocabulary.\n",
+      "properties": {
+        "kind": {
+          "const": "text_match",
+          "type": "string"
+        },
+        "parts": {
+          "description": "The pattern, as an ordered list of literal spans and wildcards.\nProducers should emit a canonical list — adjacent literals coalesced,\nadjacent `any_many` collapsed — but the matcher accepts any\nwell-formed list.\n",
+          "items": {
+            "$ref": "#/$defs/TextMatchExprPart"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "value": {
+          "$ref": "#/$defs/Expr",
+          "description": "The text expression matched against the pattern."
+        }
+      },
+      "required": [
+        "kind",
+        "value",
+        "parts"
+      ],
+      "type": "object"
+    },
+    "TextMatchExprPart": {
+      "description": "One element of a text-match pattern: a literal span or a wildcard, a\nclosed tagged union selected by `kind`. The vocabulary is deliberately\nsmall; a single-character wildcard (`any_one`, SQL `_`) is a future\naddition this union admits without a breaking change.\n",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/LiteralTextMatchPart"
+        },
+        {
+          "$ref": "#/$defs/AnyManyTextMatchPart"
+        }
+      ],
+      "title": "TextMatchExprPart"
     },
     "TextValue": {
       "additionalProperties": false,

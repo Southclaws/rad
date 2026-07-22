@@ -151,6 +151,17 @@ func (w *raiser) expr(e lir.Expr) lirwire.Expr {
 			arms[i] = lirwire.Arm(w.expr(a.When), w.expr(a.Then))
 		}
 		return lirwire.Branch(arms, w.expr(x.Else))
+	case lir.TextMatch:
+		parts := make([]lirwire.TextMatchExprPart, len(x.Parts))
+		for i, part := range x.Parts {
+			switch p := part.(type) {
+			case lir.LiteralPart:
+				parts[i] = lirwire.LiteralPart(p.Value)
+			case lir.AnyManyPart:
+				parts[i] = lirwire.AnyManyPart()
+			}
+		}
+		return lirwire.TextMatch(w.expr(x.Value), parts...)
 	case lir.Exists:
 		return lirwire.Exists(w.rel(x.Rel))
 	case lir.First:

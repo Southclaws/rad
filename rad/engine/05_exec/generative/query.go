@@ -433,7 +433,36 @@ func (g *Generator) genProject(fuel int) (lir.Relation, []genScope) {
 		fields = append(fields, lir.ProjField{As: name, Expr: expr})
 		cols = append(cols, Column{Name: name, Type: model.TypeInt64, Nullable: c.Nullable})
 	}
+	// Occasionally add a text_match boolean field over a text column,
+	// exercising the anchored glob matcher through a projection. The pattern
+	// is a small constant with a literal from the text data alphabet, so some
+	// values match; the differential only needs engine and refexec to agree.
+	if c, s, ok := g.pickCol(scopes, []model.Type{model.TypeText}); ok && g.chance(2) {
+		name := g.field()
+		fields = append(fields, lir.ProjField{As: name, Expr: lir.TextMatch{Value: qcol(s, c.Name), Parts: g.textPattern()}})
+		cols = append(cols, Column{Name: name, Type: model.TypeBool, Nullable: c.Nullable})
+	}
 	return lir.Project{Input: child, Scope: scope, Fields: fields}, []genScope{{name: scope, cols: cols}}
+}
+
+// textPattern builds a small constant text_match pattern in one of the
+// anchored shapes, with a literal drawn from the text data alphabet so some
+// generated values match.
+func (g *Generator) textPattern() []lir.TextMatchPart {
+	lit := lir.LiteralPart{Value: pick(g, []string{"a", "b", "c"})}
+	anyMany := lir.AnyManyPart{}
+	switch g.intn(5) {
+	case 0:
+		return []lir.TextMatchPart{anyMany}
+	case 1:
+		return []lir.TextMatchPart{lit, anyMany}
+	case 2:
+		return []lir.TextMatchPart{anyMany, lit}
+	case 3:
+		return []lir.TextMatchPart{anyMany, lit, anyMany}
+	default:
+		return []lir.TextMatchPart{lit}
+	}
 }
 
 func (g *Generator) genJoin(fuel int) (lir.Relation, []genScope) {

@@ -148,6 +148,23 @@ func Branch(arms []BranchArm, elseExpr Expr) Expr {
 // Arm builds one branch arm: when TRUE, the branch produces then.
 func Arm(when, then Expr) BranchArm { return BranchArm{When: when, Then: then} }
 
+// TextMatch builds the anchored text-match expression: value is tested
+// against the pattern built from parts. It carries no equivalence knob;
+// literal spans compare under the engine's ordinary text equality.
+func TextMatch(value Expr, parts ...TextMatchExprPart) Expr {
+	return Expr{&TextMatchExpr{Kind: "text_match", Value: value, Parts: parts}}
+}
+
+// LiteralPart builds a literal span of a text-match pattern, matched verbatim.
+func LiteralPart(s string) TextMatchExprPart {
+	return TextMatchExprPart{&LiteralTextMatchPart{Kind: "literal", Value: s}}
+}
+
+// AnyManyPart builds the `%` wildcard: zero or more characters.
+func AnyManyPart() TextMatchExprPart {
+	return TextMatchExprPart{&AnyManyTextMatchPart{Kind: "any_many"}}
+}
+
 func Exists(node string) Expr { return Expr{&CrossingExprExists{Kind: "exists", Node: node}} }
 func First(node string) Expr          { return Expr{&CrossingExprFirst{Kind: "first", Node: node}} }
 func Scalar(node string) Expr         { return Expr{&CrossingExprScalar{Kind: "scalar", Node: node}} }

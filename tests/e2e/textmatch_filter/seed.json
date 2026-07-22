@@ -1,0 +1,9 @@
+[
+  { "table": "files", "rows": [
+    { "id": "f1", "name": "src/main.go" },
+    { "id": "f2", "name": "README.md" },
+    { "id": "f3", "name": "src/util.go" },
+    { "id": "f4" },
+    { "id": "f5", "name": "docs/src/x" }
+  ] }
+]

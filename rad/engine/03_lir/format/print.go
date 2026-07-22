@@ -148,6 +148,8 @@ func printExpr(e bound.Expr) string {
 		}
 		fmt.Fprintf(&b, "else %s)", printExpr(x.Else))
 		return b.String()
+	case bound.TextMatch:
+		return fmt.Sprintf("text_match(%s, %s)", printExpr(x.Value), x.Pattern)
 	case bound.Exists:
 		return "exists(" + subrel(x.Rel) + ")"
 	case bound.First:

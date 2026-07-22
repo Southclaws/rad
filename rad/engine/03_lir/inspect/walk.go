@@ -48,6 +48,8 @@ func walkExpr(expr bound.Expr, visit func(bound.Expr), visitRel func(bound.Relat
 			walkExpr(arm.Then, visit, visitRel)
 		}
 		walkExpr(expr.Else, visit, visitRel)
+	case bound.TextMatch:
+		walkExpr(expr.Value, visit, visitRel)
 	case bound.Exists:
 		if visitRel != nil {
 			visitRel(expr.Rel)
