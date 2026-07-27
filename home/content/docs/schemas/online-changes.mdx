@@ -1,0 +1,155 @@
+---
+title: Online schema changes
+description: How Rad turns expensive schema changes into durable, resumable work.
+---
+
+An index build or column conversion should not hold one transaction open for
+the length of a table scan. Rad commits the intent quickly, performs bounded
+work in the background, then publishes the result in another short
+transaction.
+
+This is durable convergence. The database can restart halfway through and
+continue from its recorded work. The desired schema becomes current only after
+every required transition publishes successfully.
+
+## The three phases
+
+```text
+short start transaction
+  -> bounded background batches
+  -> short validation and publication transaction
+```
+
+The start transaction records the logical request, the transition state, its
+prerequisites, and any obligations foreground writers must follow. A worker
+then scans or backfills in bounded SlateDB transactions. Each batch commits its
+physical changes and checkpoint together.
+
+Final publication checks the completed representation and makes it bindable
+atomically. A building index is invisible to the planner. A replacement column
+does not become the logical column until its new physical values are ready.
+
+Rad does not keep one historical Slate snapshot open for the entire scan.
+Workers install foreground obligations first, scan through ordinary bounded
+transactions, catch up captured changes where the protocol requires it, then
+validate and publish. Recorded data positions are opaque provenance, not
+handles for reopening an old snapshot.
+
+## Current transition kinds
+
+| Kind | Background work | Foreground obligation | Publication |
+| --- | --- | --- | --- |
+| `index_build` | Scan rows and create index entries | Append ordered mutation deltas | Catch up, validate uniqueness when needed, mark index ready |
+| `column_replacement` | Convert old physical cells into a new representation | Dual-write converted values | Swap the logical column to the new physical representation |
+| `constraint_validation` | Scan historical rows for violations | Enforce the constraint on new writes | Mark the constraint valid |
+
+Unique index builds also maintain durable claims and a violation set. A
+duplicate found in the base table or concurrent traffic prevents publication.
+`NULL` values remain distinct for unique-index purposes.
+
+Column replacement uses the strict conversion rules in
+[Schemas in Rad](/docs/schemas#strict-column-conversions). A foreground write that
+cannot be converted is rejected rather than leaving the two representations
+out of step.
+
+Constraint validation currently covers tightening a nullable column to
+not-null. New writes obey the proposed rule while the worker checks historical
+rows.
+
+## Prerequisite graphs
+
+Related transitions form a durable acyclic graph. Dependent work starts in
+`waiting` and installs no foreground obligation until every prerequisite is
+`ready`.
+
+For example, changing a column representation and then building an index over
+it is ordered as:
+
+```text
+replace users.score
+  -> publish the new physical column
+  -> activate index build against that representation
+```
+
+Waiting requests refer to stable logical IDs. Activation resolves those IDs
+against the then-current physical catalog, so a compatible rename or earlier
+replacement does not leave the dependent transition pointing at stale storage.
+If a prerequisite fails, is cancelled, or disappears, the waiting transition
+fails rather than improvising another plan.
+
+## Write protocols
+
+Every table has an immutable, generation-qualified write protocol. It lists
+the complete work each mutation must perform:
+
+- maintain ready indexes;
+- append deltas for active index builds;
+- dual-write replacement columns;
+- enforce active constraints;
+- observe an optional finalization gate.
+
+A writer binds one protocol generation. If another catalog transaction changes
+those obligations before it commits, SlateDB's serializable conflict detection
+forces the writer to retry from a fresh transaction. Rad does not retry an
+arbitrary PIR program on the server because it cannot assume that replay is
+safe for every caller.
+
+## Finalization gates
+
+Unique indexes, column replacements, and constraint validation need a brief
+write gate while they run their last checks and publish. The gate is stored in
+the affected table's write protocol and is never held during the base scan.
+
+Writers already admitted under the previous protocol either commit before the
+gate or conflict. New writes to the affected table receive the retryable
+`schema_transition_finalizing` error. Unrelated tables continue normally.
+Non-unique indexes can publish without the unique-validation gate.
+
+An index delta backlog can also reject writes to its table with
+`schema_transition_backpressure`. The administrative projection reports
+`degraded` before the hard limit and `write_gated` at it. These limits are
+engine policy today; there is no public tuning surface yet.
+
+## Retries and recovery
+
+Normal engines run a process-local scheduler. It rotates across durable
+transitions and cleanup work, performing at most a bounded batch for each
+selected job in a round. Expected transaction conflicts, retention waits, and
+backpressure are retried with backoff. Repeated unexpected worker errors are
+quarantined and exposed through diagnostics instead of being spun in a hot
+loop.
+
+Worker ownership uses an epoch. A restarted or superseded worker may finish
+local computation, but its old epoch prevents another checkpoint from
+committing. SlateDB currently permits one Rad writer process per database, so
+the epoch protects restart and stale in-process work rather than coordinating a
+distributed fleet.
+
+Repeating the same desired-schema migration recovers matching in-progress work
+instead of creating duplicates. This is how the CLI recovers after a lost HTTP
+response or an interrupted wait.
+
+## Automatic cleanup
+
+Deletion and replacement are logical first. New plans stop binding the retired
+object, while its bytes remain available until reclamation proves they are no
+longer retained.
+
+Reclamation is another durable, bounded job. It can remove table rows, deleted
+column cells, index entries, retired definitions and write protocols, and
+transition working data. Each batch rechecks the exact target and any matching
+retention pins before deleting or rewriting storage.
+
+The retention substrate can represent catalog definitions, data snapshots,
+transition diagnostics, and physical artifacts. Persistent prepared plans,
+replicas, CDC, and retained snapshot readers do not create production pins yet.
+An opaque data-snapshot pin is therefore conservative and blocks every physical
+reclamation kind.
+
+Users do not run `VACUUM` or arrange a cron job. Catalog-history compaction is
+also automatic and separate from physical safety: deleting an old audit
+revision does not make a current definition unbindable and does not authorise
+reclamation.
+
+Use [Monitor schema work](/docs/schemas/monitor) when a migration is taking long enough to
+be interesting.

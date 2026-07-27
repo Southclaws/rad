@@ -1,0 +1,30 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "truncations",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "p": { "kind": "project", "input": "t", "scope": "p", "fields": [
+              { "as": "id", "expr": { "kind": "col", "scope": "t", "column": "id" } },
+              { "as": "n", "expr": { "kind": "cast", "to": "int64",
+                "expr": { "kind": "col", "scope": "t", "column": "f" } } }
+            ] },
+            "o": { "kind": "order", "input": "p", "terms": [
+              { "expr": { "kind": "col", "scope": "p", "column": "id" } }
+            ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "r1", "n": -7 },
+    { "id": "r2", "n": 0 },
+    { "id": "r3", "n": 2 },
+    { "id": "r4", "n": -2 }
+  ]
+}

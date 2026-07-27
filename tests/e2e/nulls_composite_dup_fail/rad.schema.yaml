@@ -1,0 +1,9 @@
+tables:
+  - id: 1
+    name: pairs
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: a,  type: string }
+      - { id: 3, name: b,  type: string, nullable: true }
+    indexes:
+      - { columns: [a, b], unique: true }

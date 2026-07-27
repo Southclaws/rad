@@ -1,0 +1,74 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "t", "scope": "t" },
+            "nulls": {
+              "kind": "filter",
+              "input": "t",
+              "predicate": {
+                "kind": "unary",
+                "op": "is_null",
+                "expr": { "kind": "col", "scope": "t", "column": "x" }
+              }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "nulls",
+              "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "r2", "x": null },
+    { "id": "r4", "x": null }
+  ],
+  "assertions": [
+    {
+      "name": "is_not_null returns exactly the non-NULL rows",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "present": {
+            "kind": "filter",
+            "input": "t",
+            "predicate": {
+              "kind": "unary",
+              "op": "is_not_null",
+              "expr": { "kind": "col", "scope": "t", "column": "x" }
+            }
+          },
+          "sorted": {
+            "kind": "order",
+            "input": "present",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ]
+          }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "r1", "x": 1 },
+        { "id": "r3", "x": 3 }
+      ]
+    },
+    {
+      "name": "the two halves partition all four rows",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "n": { "kind": "aggregate", "input": "t", "scope": "g", "aggs": [ { "fn": "count", "as": "n" } ] }
+        },
+        "root": { "node": "n", "cardinality": "scalar" }
+      },
+      "expect": 4
+    }
+  ]
+}

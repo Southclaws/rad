@@ -1,0 +1,40 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "classify",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "tasks", "scope": "t" },
+            "p": { "kind": "project", "input": "t", "scope": "p", "fields": [
+              { "as": "id", "expr": { "kind": "col", "scope": "t", "column": "id" } },
+              { "as": "size", "expr": { "kind": "branch",
+                "branches": [
+                  { "when": { "kind": "binary", "op": "gt",
+                      "left":  { "kind": "col", "scope": "t", "column": "estimate" },
+                      "right": { "kind": "lit", "value": { "type": "int64", "value": "5" } } },
+                    "then": { "kind": "lit", "value": { "type": "text", "value": "big" } } },
+                  { "when": { "kind": "binary", "op": "gt",
+                      "left":  { "kind": "col", "scope": "t", "column": "estimate" },
+                      "right": { "kind": "lit", "value": { "type": "int64", "value": "0" } } },
+                    "then": { "kind": "lit", "value": { "type": "text", "value": "small" } } }
+                ],
+                "else": { "kind": "lit", "value": { "type": "text", "value": "unsized" } } } }
+            ] },
+            "o": { "kind": "order", "input": "p", "terms": [
+              { "expr": { "kind": "col", "scope": "p", "column": "id" } }
+            ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "t1", "size": "big" },
+    { "id": "t2", "size": "small" },
+    { "id": "t3", "size": "unsized" },
+    { "id": "t4", "size": "small" }
+  ]
+}

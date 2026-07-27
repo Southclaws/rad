@@ -1,0 +1,8 @@
+[
+  { "table": "docs", "rows": [
+    { "id": "d1", "name": "a.md" },
+    { "id": "d2", "name": "b.go" },
+    { "id": "d3" },
+    { "id": "d4", "name": "c.md" }
+  ] }
+]

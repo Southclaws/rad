@@ -1,0 +1,13 @@
+[
+  { "table": "authors", "rows": [
+    { "id": "a1", "name": "Ann" },
+    { "id": "a2", "name": "Bo" },
+    { "id": "a3", "name": "Cy" }
+  ] },
+  { "table": "posts", "rows": [
+    { "id": "t1", "author_id": "a1" },
+    { "id": "t2", "author_id": "a1" },
+    { "id": "t3", "author_id": "a1" },
+    { "id": "t4", "author_id": "a2" }
+  ] }
+]

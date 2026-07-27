@@ -1,0 +1,38 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "empty_rows_leftjoin",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "lefts": { "kind": "scan", "table": "lefts", "scope": "l" },
+            "z": {
+              "kind": "rows",
+              "scope": "z",
+              "columns": [ { "name": "v", "type": "int64", "nullable": true } ],
+              "rows": []
+            },
+            "joined": {
+              "kind": "join",
+              "left": "lefts",
+              "right": "z",
+              "join": "left",
+              "on": { "kind": "lit", "value": { "type": "bool", "value": true } }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "joined",
+              "terms": [ { "expr": { "kind": "col", "scope": "l", "column": "lid" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "lid": "l1", "a": 1, "v": null },
+    { "lid": "l2", "a": 5, "v": null }
+  ]
+}

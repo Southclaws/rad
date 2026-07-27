@@ -1,0 +1,9 @@
+[
+  { "table": "events", "rows": [
+    { "id": "e1", "kind": "click" },
+    { "id": "e2", "kind": null },
+    { "id": "e3", "kind": "click" },
+    { "id": "e4", "kind": "view" },
+    { "id": "e5", "kind": null }
+  ] }
+]

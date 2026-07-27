@@ -1,0 +1,35 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "md_flags",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "docs", "scope": "t" },
+            "o": { "kind": "order", "input": "t", "terms": [
+              { "expr": { "kind": "col", "scope": "t", "column": "id" } }
+            ] },
+            "out": { "kind": "project", "input": "o", "fields": [
+              { "as": "id", "expr": { "kind": "col", "scope": "t", "column": "id" } },
+              { "as": "m", "expr": {
+                "kind": "text_match",
+                "value": { "kind": "col", "scope": "t", "column": "name" },
+                "parts": [
+                  { "kind": "any_many" },
+                  { "kind": "literal", "value": ".md" }
+                ] } }
+            ] }
+          },
+          "root": { "node": "out", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "d1", "m": true },
+    { "id": "d2", "m": false },
+    { "id": "d3", "m": null },
+    { "id": "d4", "m": true }
+  ]
+}

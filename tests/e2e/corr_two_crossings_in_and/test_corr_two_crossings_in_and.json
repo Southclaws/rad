@@ -1,0 +1,63 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "busy_parents",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "parents": { "kind": "scan", "table": "parents", "scope": "p" },
+            "kids_e": { "kind": "scan", "table": "children", "scope": "ce" },
+            "kids_c": { "kind": "scan", "table": "children", "scope": "cc" },
+            "mine_e": {
+              "kind": "filter",
+              "input": "kids_e",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "ce", "column": "parent_id" },
+                "right": { "kind": "col", "scope": "p", "column": "id" }
+              }
+            },
+            "mine_c": {
+              "kind": "filter",
+              "input": "kids_c",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "cc", "column": "parent_id" },
+                "right": { "kind": "col", "scope": "p", "column": "id" }
+              }
+            },
+            "counted": {
+              "kind": "aggregate",
+              "input": "mine_c",
+              "scope": "a",
+              "aggs": [ { "fn": "count", "as": "n" } ]
+            },
+            "busy": {
+              "kind": "filter",
+              "input": "parents",
+              "predicate": {
+                "kind": "binary", "op": "and",
+                "left": { "kind": "exists", "node": "mine_e" },
+                "right": {
+                  "kind": "binary", "op": "gt",
+                  "left": { "kind": "scalar", "node": "counted" },
+                  "right": { "kind": "lit", "value": { "type": "int64", "value": "1" } }
+                }
+              }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "busy",
+              "terms": [ { "expr": { "kind": "col", "scope": "p", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "p1", "name": "two" }
+  ]
+}

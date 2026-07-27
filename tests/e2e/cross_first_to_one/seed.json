@@ -1,0 +1,16 @@
+[
+  {
+    "table": "boards",
+    "rows": [
+      { "id": "board-1", "name": "Launch" },
+      { "id": "board-2", "name": "Backlog" }
+    ]
+  },
+  {
+    "table": "tasks",
+    "rows": [
+      { "id": "task-1", "board_id": "board-1", "title": "Draft spec" },
+      { "id": "task-2", "board_id": "board-2", "title": "Triage bugs" }
+    ]
+  }
+]

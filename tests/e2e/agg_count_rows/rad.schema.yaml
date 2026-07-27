@@ -1,0 +1,6 @@
+# e2e/agg_count_rows — global count with no arg over N rows yields N.
+tables:
+  - id: 1
+    name: events
+    columns:
+      - { id: 1, name: id, type: string, pk: true }

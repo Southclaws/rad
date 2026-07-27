@@ -1,0 +1,120 @@
+---
+title: Monitor schema work
+description: List, inspect, filter, and cancel durable schema transitions over HTTP.
+---
+
+Use the administrative transition endpoints to find out what an online schema
+change is doing. These reads do not claim a worker or advance the job.
+
+The examples assume Rad's database API is reachable at `http://127.0.0.1:7237`.
+Adjust the
+address to match your deployment.
+
+## List all transitions
+
+```console
+$ curl --fail --silent --show-error \
+    http://127.0.0.1:7237/schema/transitions | jq
+```
+
+The response contains one coherent snapshot, including terminal records kept
+for diagnostics:
+
+```json
+{
+  "transitions": [
+    {
+      "kind": "transition",
+      "transition_id": "tr42",
+      "object_id": "ix41",
+      "transition_kind": "index_build",
+      "state": "catching_up",
+      "generation": 9,
+      "prerequisites": [],
+      "retained_work_state": "normal",
+      "rows_scanned": 18400,
+      "applied_delta": 317,
+      "delta_lag": 12
+    }
+  ]
+}
+```
+
+Progress fields are advisory snapshots. Use `state` and the terminal outcome
+as the durable contract. A later response may jump because another bounded
+batch committed between polls.
+
+## Filter the list
+
+Filter by one kind:
+
+```console
+$ curl --fail --silent --show-error \
+    'http://127.0.0.1:7237/schema/transitions?kind=column_replacement' | jq
+```
+
+Or by one state:
+
+```console
+$ curl --fail --silent --show-error \
+    'http://127.0.0.1:7237/schema/transitions?state=failed' | jq
+```
+
+Valid kinds and states are listed in the
+[Schema transition reference](/docs/schemas/transitions). The endpoint accepts one `kind`
+and one `state`; use both query parameters to intersect them.
+
+## Inspect one transition
+
+```console
+$ curl --fail --silent --show-error \
+    http://127.0.0.1:7237/schema/transitions/tr42 | jq
+```
+
+An unknown ID returns `404`. `last_error`, when present, is the terminal or
+most recent worker diagnostic. Preserve it when reporting a failed migration;
+"it didn't work" has never improved a post-mortem.
+
+## Interpret retained-work pressure
+
+| Value | Meaning | Operator response |
+| --- | --- | --- |
+| `normal` | No reported retained-work pressure | Keep polling at your normal interval |
+| `degraded` | An index delta backlog crossed its soft limit | Check write volume and whether worker progress is advancing |
+| `write_gated` | The hard backlog limit is rejecting writes to the affected table | Treat write failures as retryable and investigate the stalled worker |
+
+Terminal transitions report `normal`. The field is advisory and is chiefly
+meaningful for an index build's retained delta stream.
+
+## Cancel active work
+
+Cancel a transition only when you intend to abandon the requested schema
+change:
+
+```console
+$ curl --fail --silent --show-error \
+    -X POST \
+    http://127.0.0.1:7237/schema/transitions/tr42/cancel | jq
+```
+
+Cancellation is one short administrative transaction. It invalidates worker
+ownership, removes foreground write obligations, releases an owned
+finalization gate, and schedules partial artifacts for automatic cleanup.
+
+The outcomes are:
+
+| Condition | HTTP result | Meaning |
+| --- | --- | --- |
+| Active or waiting | `200` | Transition becomes `cancelled` |
+| Already cancelled | `200` | Idempotent; current record is returned |
+| Unknown ID | `404` | No transition has that identity |
+| Cancellation loses a race with publication | `409` | Re-read the transition; one outcome won atomically |
+| Already ready or failed | `422` | The terminal work cannot be cancelled |
+
+Delete a ready logical object through the normal schema workflow. Failed work
+needs its reported data or schema problem fixed; physical leftovers are queued
+for cleanup automatically.
+
+There is no SSE stream or transition-monitoring CLI command yet. Poll the GET
+endpoint with a sensible delay. A 100 ms loop will mostly measure your
+enthusiasm.

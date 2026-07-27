@@ -1,0 +1,9 @@
+# e2e/agg_group_by_single — GROUP BY one column, one output row per distinct
+# key with a per-group count, ordered by the group key.
+tables:
+  - id: 1
+    name: sales
+    columns:
+      - { id: 1, name: id,     type: string, pk: true }
+      - { id: 2, name: region, type: string }
+      - { id: 3, name: amount, type: int64 }

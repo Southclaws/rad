@@ -1,0 +1,26 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "categories",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "pr":   { "kind": "scan", "table": "products", "scope": "pr" },
+            "proj": { "kind": "project", "input": "pr", "scope": "p",
+              "fields": [ { "as": "category", "expr": { "kind": "col", "scope": "pr", "column": "category" } } ] },
+            "dist": { "kind": "distinct", "input": "proj" },
+            "ord":  { "kind": "order", "input": "dist",
+              "terms": [ { "expr": { "kind": "col", "scope": "p", "column": "category" } } ] }
+          },
+          "root": { "node": "ord", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "category": "books" },
+    { "category": "gear" },
+    { "category": "paper" }
+  ]
+}

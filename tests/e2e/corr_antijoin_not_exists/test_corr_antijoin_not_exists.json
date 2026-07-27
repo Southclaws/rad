@@ -1,0 +1,42 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "childless_parents",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "parents": { "kind": "scan", "table": "parents", "scope": "p" },
+            "children": { "kind": "scan", "table": "children", "scope": "c" },
+            "mine": {
+              "kind": "filter",
+              "input": "children",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "c", "column": "parent_id" },
+                "right": { "kind": "col", "scope": "p", "column": "id" }
+              }
+            },
+            "childless": {
+              "kind": "filter",
+              "input": "parents",
+              "predicate": {
+                "kind": "unary", "op": "not",
+                "expr": { "kind": "exists", "node": "mine" }
+              }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "childless",
+              "terms": [ { "expr": { "kind": "col", "scope": "p", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "p2", "name": "none" }
+  ]
+}

@@ -1,0 +1,8 @@
+[
+  { "table": "notes", "rows": [
+    { "id": "n1", "body": "alpha" },
+    { "id": "n2", "body": null },
+    { "id": "n3", "body": "beta" },
+    { "id": "n4", "body": null }
+  ] }
+]

@@ -1,0 +1,12 @@
+# e2e/pir_boundary_violation — the failure counterpart to
+# pir_boundary_constraint. A single create batch inserts two rows with the
+# SAME unique `slot`. Apply-all-then-validate writes both rows, then the
+# statement-boundary uniqueness check fires and the whole program fails
+# atomically. Unlike a transient mid-statement collision, this state is still
+# inconsistent AT the boundary, so it must be rejected.
+tables:
+  - id: 1
+    name: seats
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: slot, type: int64, unique: true }

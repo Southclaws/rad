@@ -1,0 +1,180 @@
+---
+title: Manage a schema
+description: Compare, apply, verify, and recover a rad.schema.yaml schema with the Rad CLI.
+---
+
+By the end of this tutorial, your local schema, the server's accepted schema,
+and any generated client will agree on one version and hash.
+
+## Before you begin
+
+You need a running Rad server in schema-managed mode and the `rad` binary on
+your `PATH`. In the project directory, create `rad.config.yaml`:
+
+```yaml
+database_url: rad://127.0.0.1:7237
+generate:
+  - language: go
+    output: generated
+    package: db
+```
+
+Create `rad.schema.yaml`:
+
+```yaml
+tables:
+  - id: 1
+    name: users
+    columns:
+      - { id: 1, name: id, type: string, pk: true, default: uuid() }
+      - { id: 2, name: handle, type: string, unique: true }
+      - { id: 3, name: joined_at, type: int64, format: unix_ms, default: now_ms() }
+```
+
+The commands below use `rad.config.yaml` and `rad.schema.yaml` by default. Pass
+`--config` or `--file` when your project uses different paths.
+
+## 1. Check the four copies
+
+Run:
+
+```console
+$ rad schema status
+```
+
+On a new project, local accepted state may be unavailable and the desired file
+will contain unapplied changes. The command reports the server version and
+hash, the local accepted snapshot, the desired diff count, and generated-client
+state separately. That separation is useful when only one copy wandered off.
+
+## 2. Review the plan
+
+```console
+$ rad schema diff
+Schema changes
+  - create table users
+```
+
+`diff` is read-only and point-in-time. It reports proposed changes, destructive
+findings under `Data loss`, and changes that cannot currently be applied under
+`Cannot apply`.
+
+For tooling, request JSON:
+
+```console
+$ rad schema diff --format json
+```
+
+The returned program is advisory. Apply replans transactionally against the
+current catalog, so transition IDs from an accepted migration are authoritative.
+
+## 3. Apply and wait
+
+```console
+$ rad schema migrate
+Applying schema changes...
+Waiting for 1 online schema transition(s)...
+Schema version 1 committed.
+Snapshot written:
+  rad.state/changelog/00000001.rad.schema.yaml
+Lockfile updated:
+  rad.state/schema.lock.json
+```
+
+The waiting line appears only when the target needs online work. The CLI waits
+for convergence before updating local accepted state and generating configured
+clients. If the change is immediate, it goes straight to the committed line.
+
+If a diff reports permanent deletion, the command asks for confirmation. In a
+non-interactive deployment, review the diff first, then use:
+
+```console
+$ rad schema migrate --accept-data-loss
+```
+
+`--accept-data-loss` permits only findings explicitly classified as
+destructive. It cannot bypass a blocking finding. Use `--no-generate` when
+client generation belongs to a separate build step.
+
+## 4. Verify
+
+```console
+$ rad schema status
+Server
+  version: 1
+  hash:    sha256:...
+
+Local accepted schema
+  version: 1
+  hash:    sha256:...
+
+Local schema
+  changes: 0
+
+Generated client
+  version: 1
+  hash:    sha256:...
+
+Status: synchronized
+```
+
+The exact hash depends on your schema. The useful result is `changes: 0`, the
+same version and hash everywhere, and `Status: synchronized`.
+
+## Make another change
+
+Keep stable IDs when renaming. This edit renames the logical column and adds a
+nullable column:
+
+```yaml
+tables:
+  - id: 1
+    name: users
+    columns:
+      - { id: 1, name: id, type: string, pk: true, default: uuid() }
+      - { id: 2, name: username, type: string, unique: true }
+      - { id: 3, name: joined_at, type: int64, format: unix_ms, default: now_ms() }
+      - { id: 4, name: bio, type: string, nullable: true }
+```
+
+Run `rad schema diff`, review it, then run `rad schema migrate` again.
+
+## Recover local state from the server
+
+Use `pull` when the server is correct but the local snapshot or lockfile is
+missing:
+
+```console
+$ rad schema pull
+Pulled schema version 2.
+Updated:
+  rad.schema.yaml
+  rad.state/schema.lock.json
+  rad.state/changelog/00000002.rad.schema.yaml
+```
+
+If `rad.schema.yaml` contains local changes, `pull` refuses to overwrite it.
+Inspect or commit those edits first. If you deliberately want the server copy,
+run:
+
+```console
+$ rad schema pull --force
+```
+
+Rad backs up the local schema before replacing it. `pull --no-generate` skips
+configured client generation.
+
+## Common failures
+
+| Message or status | What it means | What to do |
+| --- | --- | --- |
+| `schema history diverged` | The same version has a different hash locally and remotely | Stop and inspect both histories; do not force a migration over it |
+| `server is ahead of local accepted state` | Another migration committed | Run `rad schema pull`, then reapply your desired edit |
+| `rad.schema.yaml contains unapplied changes` | Desired state differs from the server | Run `rad schema diff` and migrate when satisfied |
+| `Migration cannot be applied` | Existing data or unsupported dependencies block the target | Fix the reported rows or choose a supported schema change |
+| Conflict while applying | The catalog changed after the diff | Run `rad schema diff` again and retry from the new current version |
+| Transition fails while waiting | Background validation or conversion reached a terminal failure | Inspect it with the administrative API, correct the data or target, then plan again |
+| Client generation fails after commit | The database and accepted local state are already updated | Fix the generator error and run `rad generate` |
+
+For the mechanics behind the waiting step, continue to
+[Online schema changes](/docs/schemas/online-changes).

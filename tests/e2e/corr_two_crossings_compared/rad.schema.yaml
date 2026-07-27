@@ -1,0 +1,15 @@
+# two correlated crossings inside ONE comparison:
+# filter(parents, scalar(count A children) > scalar(count B children)).
+# extractExpr must pull BOTH crossings out of the same binary node.
+tables:
+  - id: 1
+    name: parents
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+
+  - id: 2
+    name: children
+    columns:
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: parent_id, type: string, nullable: true, ref: parents.id }
+      - { id: 3, name: kind,      type: string }

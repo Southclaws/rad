@@ -1,0 +1,294 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "anchored_literal",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "samples", "scope": "t" },
+            "f": { "kind": "filter", "input": "t", "predicate": {
+              "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+              "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "foo" } ]
+            } },
+            "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "foo-lower", "value": "foo" },
+    { "id": "foo-upper", "value": "FOO" }
+  ],
+  "assertions": [
+    {
+      "name": "leading anchor survives case folding",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "literal", "value": "foo" }, { "kind": "any_many" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "foo-bar-gap", "value": "foo---BAR" },
+        { "id": "foo-bar-tight", "value": "FOObar" },
+        { "id": "foo-bar-trailing", "value": "foobarx" },
+        { "id": "foo-lower", "value": "foo" },
+        { "id": "foo-prefix", "value": "FOOx" },
+        { "id": "foo-upper", "value": "FOO" }
+      ]
+    },
+    {
+      "name": "trailing anchor survives case folding",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "any_many" }, { "kind": "literal", "value": "foo" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "foo-lower", "value": "foo" },
+        { "id": "foo-suffix", "value": "xfoo" },
+        { "id": "foo-upper", "value": "FOO" }
+      ]
+    },
+    {
+      "name": "leading and trailing gaps admit infix matches but not NULL",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "any_many" }, { "kind": "literal", "value": "foo" }, { "kind": "any_many" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "foo-bar-gap", "value": "foo---BAR" },
+        { "id": "foo-bar-leading", "value": "xfoobar" },
+        { "id": "foo-bar-tight", "value": "FOObar" },
+        { "id": "foo-bar-trailing", "value": "foobarx" },
+        { "id": "foo-contained", "value": "xFoOy" },
+        { "id": "foo-lower", "value": "foo" },
+        { "id": "foo-prefix", "value": "FOOx" },
+        { "id": "foo-suffix", "value": "xfoo" },
+        { "id": "foo-upper", "value": "FOO" }
+      ]
+    },
+    {
+      "name": "multiple gaps may consume zero or many runes while both ends stay anchored",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "literal", "value": "foo" },
+              { "kind": "any_many" },
+              { "kind": "literal", "value": "bar" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "foo-bar-gap", "value": "foo---BAR" },
+        { "id": "foo-bar-tight", "value": "FOObar" }
+      ]
+    },
+    {
+      "name": "two literal a spans cannot reuse the same input rune",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "any_many" }, { "kind": "literal", "value": "a" },
+              { "kind": "any_many" }, { "kind": "literal", "value": "a" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "double-a-spaced", "value": "a---A" },
+        { "id": "double-a-two", "value": "AA" }
+      ]
+    },
+    {
+      "name": "ordered segments cannot overlap a shared b rune",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "any_many" }, { "kind": "literal", "value": "ab" },
+              { "kind": "any_many" }, { "kind": "literal", "value": "bc" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "overlap-abbc", "value": "abbc" },
+        { "id": "overlap-abxbc", "value": "abXbc" }
+      ]
+    },
+    {
+      "name": "leftmost interior matching remains complete with repeated candidates",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "any_many" }, { "kind": "literal", "value": "ab" },
+              { "kind": "any_many" }, { "kind": "literal", "value": "ab" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "ordered-abaab", "value": "abaab" },
+        { "id": "ordered-abab", "value": "abab" }
+      ]
+    },
+    {
+      "name": "several non-ASCII segments must appear in order across rune-sized gaps",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "any_many" }, { "kind": "literal", "value": "k" },
+              { "kind": "any_many" }, { "kind": "literal", "value": "σ" },
+              { "kind": "any_many" }, { "kind": "literal", "value": "straße" },
+              { "kind": "any_many" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "unicode-gaps", "value": "startK---Σ---STRAẞEend" } ]
+    },
+    {
+      "name": "prefix anchoring consumes the input rune width not the ASCII pattern byte width",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "literal", "value": "k" }, { "kind": "any_many" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "width-prefix-kelvin", "value": "Ktail" } ]
+    },
+    {
+      "name": "suffix anchoring consumes the input rune width not the ASCII pattern byte width",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "any_many" }, { "kind": "literal", "value": "k" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "width-suffix-kelvin", "value": "headK" } ]
+    },
+    {
+      "name": "prefix anchoring handles one-rune sharp-s folds with unequal UTF-8 widths",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "literal", "value": "straße" }, { "kind": "any_many" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "width-prefix-sharp", "value": "STRAẞEtail" } ]
+    },
+    {
+      "name": "suffix anchoring handles one-rune sharp-s folds with unequal UTF-8 widths",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "any_many" }, { "kind": "literal", "value": "straße" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "width-suffix-sharp", "value": "headSTRAẞE" } ]
+    },
+    {
+      "name": "many repeated candidates and zero-width gaps still reach the anchored suffix",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [
+              { "kind": "any_many" }, { "kind": "literal", "value": "a" },
+              { "kind": "any_many" }, { "kind": "literal", "value": "A" },
+              { "kind": "any_many" }, { "kind": "literal", "value": "a" },
+              { "kind": "any_many" }, { "kind": "literal", "value": "A" },
+              { "kind": "any_many" }, { "kind": "literal", "value": "a" },
+              { "kind": "any_many" }, { "kind": "literal", "value": "b" }
+            ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "stress-many-a", "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaB" } ]
+    }
+  ]
+}

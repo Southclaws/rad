@@ -1,0 +1,16 @@
+# e2e/cross_null_fk — a to-one `first(...)` where the foreign key is NULL must
+# render JSON null (the NULL-key comparison is UNKNOWN, so the correlated
+# filter yields no rows and `first` collapses to null), not error.
+tables:
+  - id: 1
+    name: boards
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+
+  - id: 2
+    name: tasks
+    columns:
+      - { id: 1, name: id,       type: string, pk: true }
+      - { id: 2, name: board_id, type: string, nullable: true, ref: boards.id }
+      - { id: 3, name: title,    type: string }

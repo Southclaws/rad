@@ -1,0 +1,49 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "join_of_agg",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "owners": { "kind": "scan", "table": "owners", "scope": "o" },
+            "pets": { "kind": "scan", "table": "pets", "scope": "p" },
+            "counts": {
+              "kind": "aggregate",
+              "input": "pets",
+              "scope": "ag",
+              "groups": [
+                { "as": "owner_id", "expr": { "kind": "col", "scope": "p", "column": "owner_id" } }
+              ],
+              "aggs": [
+                { "fn": "count", "as": "cnt" }
+              ]
+            },
+            "joined": {
+              "kind": "join",
+              "left": "owners",
+              "right": "counts",
+              "join": "left",
+              "on": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "o", "column": "oid" },
+                "right": { "kind": "col", "scope": "ag", "column": "owner_id" }
+              }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "joined",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "oid" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "oid": "o1", "oname": "Ann", "owner_id": "o1", "cnt": 2 },
+    { "oid": "o2", "oname": "Bo", "owner_id": null, "cnt": null },
+    { "oid": "o3", "oname": "Cy", "owner_id": "o3", "cnt": 1 }
+  ]
+}

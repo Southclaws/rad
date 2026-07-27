@@ -1,0 +1,12 @@
+# e2e/self_* — the canonical adjacency-list tree. A single table with a
+# nullable self-FK (parent_id ref nodes.id). Exercises finite self-joins and
+# self-correlated crossings (NOT recursive CTEs): parent/child, siblings,
+# grandparent, leaves, child counts. Tree: n1 -> {n2, n3}; n2 -> {n4};
+# n3, n4, n5 are leaves; n1 and n5 are roots.
+tables:
+  - id: 1
+    name: nodes
+    columns:
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: parent_id, type: string, nullable: true, ref: nodes.id }
+      - { id: 3, name: label,     type: string }

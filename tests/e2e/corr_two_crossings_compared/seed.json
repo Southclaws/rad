@@ -1,0 +1,21 @@
+[
+  {
+    "table": "parents",
+    "rows": [
+      { "id": "p1" },
+      { "id": "p2" },
+      { "id": "p3" }
+    ]
+  },
+  {
+    "table": "children",
+    "rows": [
+      { "id": "c1", "parent_id": "p1", "kind": "A" },
+      { "id": "c2", "parent_id": "p1", "kind": "A" },
+      { "id": "c3", "parent_id": "p1", "kind": "B" },
+      { "id": "c4", "parent_id": "p2", "kind": "A" },
+      { "id": "c5", "parent_id": "p2", "kind": "B" },
+      { "id": "c6", "parent_id": "p3", "kind": "B" }
+    ]
+  }
+]

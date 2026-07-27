@@ -1,0 +1,39 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "swap_slots",
+        "kind": "update",
+        "table": "seats",
+        "relation": {
+          "nodes": {
+            "s": { "kind": "scan", "table": "seats", "scope": "s" },
+            "o": { "kind": "scan", "table": "seats", "scope": "o" },
+            "j": { "kind": "join", "left": "s", "right": "o", "join": "inner",
+              "on": { "kind": "binary", "op": "ne",
+                "left": { "kind": "col", "scope": "s", "column": "id" },
+                "right": { "kind": "col", "scope": "o", "column": "id" } } },
+            "p": { "kind": "project", "input": "j", "fields": [
+              { "as": "id",   "expr": { "kind": "col", "scope": "s", "column": "id" } },
+              { "as": "slot", "expr": { "kind": "col", "scope": "o", "column": "slot" } }
+            ] }
+          },
+          "root": { "node": "p", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "name": "the unique slots were swapped despite the momentary mid-statement collision",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "seats", "scope": "t" },
+          "o": { "kind": "order", "input": "t", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "a", "slot": 2 }, { "id": "b", "slot": 1 } ]
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "t", "scope": "t" },
+            "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "gt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "15" } } } },
+            "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ] }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [ { "id": "e", "n": 20 }, { "id": "c", "n": 30 } ],
+  "assertions": [
+    {
+      "name": "n < 25 excludes NULLs (NULL index entries sort first but 3VL drops them)",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "25" } } } },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [ { "id": "a", "n": 10 }, { "id": "e", "n": 20 } ]
+    },
+    {
+      "name": "closed range n>=20 AND n<=30 excludes NULLs",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": {
+            "kind": "filter", "input": "t",
+            "predicate": {
+              "kind": "binary", "op": "and",
+              "left": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "20" } } },
+              "right": { "kind": "binary", "op": "lte", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "30" } } }
+            }
+          },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [ { "id": "e", "n": 20 }, { "id": "c", "n": 30 } ]
+    },
+    {
+      "name": "is_null finds exactly the NULL rows",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "unary", "op": "is_null", "expr": { "kind": "col", "scope": "t", "column": "n" } } },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [ { "id": "b", "n": null }, { "id": "d", "n": null } ]
+    }
+  ]
+}

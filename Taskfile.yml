@@ -1,0 +1,274 @@
+# Build/test/upgrade automation for rad.
+#
+# The SlateDB Go binding (slatedb.io/slatedb-go) is cgo-based and links
+# against the native slatedb_uniffi library, built from the pinned checkout
+# in third_party/slatedb. go.mod is the single source of truth for the
+# version: the checkout tag and native build are derived from it.
+#
+#   task slatedb:setup            clone + build native lib (fresh machine)
+#   task test                     go test ./... (dynamic linking, fast)
+#   task demo                     run the demo (dynamic linking)
+#   task build                    mostly-static single binary -> bin/rad-demo
+#   task slatedb:upgrade VERSION=v0.15.0
+#
+# Linking modes:
+#   dynamic  lib/libslatedb_uniffi.dylib, resolved at runtime via rpath.
+#            Used for tests/dev where link speed matters.
+#   static   lib/static/libslatedb_uniffi.a linked into the binary. The .a
+#            lives in its own directory because ld prefers a .dylib when both
+#            are in the same -L directory. Only system frameworks remain
+#            dynamically linked (macOS has no static libSystem).
+
+version: "3"
+
+vars:
+  # Binding version from go.mod, e.g. "v0.14.1".
+  SLATEDB_VERSION:
+    sh: go list -m slatedb.io/slatedb-go | cut -d' ' -f2
+  # Matching tag in the slatedb repo, e.g. "bindings/go/v0.14.1".
+  SLATEDB_TAG: bindings/go/{{.SLATEDB_VERSION}}
+  SLATEDB_REPO: https://github.com/slatedb/slatedb
+  SLATEDB_SRC: "{{.ROOT_DIR}}/third_party/slatedb"
+  LIB_DIR: "{{.ROOT_DIR}}/lib"
+  TARGET: "{{.SLATEDB_SRC}}/target/release"
+
+  # Dynamic linking flags (tests, dev). Only the library search path lives in
+  # CGO_LDFLAGS: the Go linker threads CGO_LDFLAGS onto every cgo package's
+  # link fragment, and a link pulls in several (the SlateDB binding plus
+  # stdlib net/crypto), so anything here is emitted once per package. A
+  # duplicate -L is silent, but ld64 warns "duplicate -rpath ... ignored" — so
+  # the runtime rpath goes through the Go linker's -extldflags instead, which
+  # is applied exactly once at the final link. DYN_RPATH must accompany every
+  # go build/run/test of a dynamically linked binary.
+  DYN_LDFLAGS: "-L{{.LIB_DIR}}"
+  DYN_RPATH: "-ldflags=-extldflags=-Wl,-rpath,{{.LIB_DIR}}"
+  # Static linking flags. STATIC_SYS_LIBS is what `rustc --print
+  # native-static-libs` reports for slatedb-uniffi on macOS; re-check it
+  # after an upgrade (task slatedb:build prints it).
+  STATIC_SYS_LIBS: "-lobjc -framework IOKit -framework CoreFoundation -framework Security -liconv -lSystem -lc -lm"
+  # -Wl,-w silences ~800 harmless ld warnings: duplicate system libs and an
+  # SDK minor-version mismatch between the Rust objects and Go's link target.
+  STATIC_LDFLAGS: "-L{{.LIB_DIR}}/static {{.STATIC_SYS_LIBS}} -Wl,-w"
+
+tasks:
+  default:
+    silent: true
+    cmds:
+      - task --list-all
+
+  up:
+    desc: "One-command demo: fresh server, run the Tracker app, keep serving (UI on :7237)"
+    deps: [ui:build]
+    env:
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
+    cmds:
+      - rm -rf examples/demo/data
+      - mkdir -p bin
+      - go build {{.DYN_RPATH}} -o bin/rad ./cmd/rad
+      - |
+        RAD_STORAGE=file RAD_DATA_DIR=examples/demo/data ./bin/rad serve &
+        SERVER_PID=$!
+        trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+        until curl -s -m 1 -o /dev/null http://127.0.0.1:7237/health; do sleep 0.3; done
+        ./bin/rad schema migrate --config examples/demo/rad.config.yaml --no-generate
+        (cd examples/demo && go run .)
+        wait $SERVER_PID
+
+  test:
+    desc: Run all tests + build the demo app (dynamic linking)
+    env:
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
+      # Keep the generative differential light in the full-suite run; a deeper
+      # soak is `task test:generative` or RAPID_CHECKS=N. Non-rapid packages
+      # ignore this variable.
+      RAPID_CHECKS: "20"
+    cmds:
+      - go test {{.DYN_RPATH}} ./... {{.CLI_ARGS}}
+      - cd examples/demo && go build {{.DYN_RPATH}} -o /dev/null .
+
+  test:planner:
+    desc: Run only the planner battle-test corpus (tight loop; pass -- -run X to filter)
+    env:
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
+    cmds:
+      - go test {{.DYN_RPATH}} ./tests/planner/ -count=1 {{.CLI_ARGS}}
+
+  test:generative:
+    desc: "Run the generative differential (synthetic + schema-directed); depth via -rapid.checks=N or RAPID_CHECKS=N"
+    env:
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
+      # Dump every generated case to tests/gen/runs/generated.jsonl (gitignored)
+      # for inspection; the test's working dir is the package dir.
+      RAD_GEN_DUMP: "runs"
+    cmds:
+      # -v so the per-scenario counts and the grand total surface.
+      - go test {{.DYN_RPATH}} ./tests/gen/ -count=1 -v {{.CLI_ARGS}}
+
+  vet:
+    desc: Go vet all packages
+    env:
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
+    cmds:
+      - go vet ./...
+
+  demo:
+    desc: "Run the Tracker demo: fresh Rad server + the app over rad://"
+    env:
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
+    cmds:
+      - rm -rf examples/demo/data
+      - mkdir -p bin
+      - go build {{.DYN_RPATH}} -o bin/rad ./cmd/rad
+      - |
+        RAD_STORAGE=file RAD_DATA_DIR=examples/demo/data ./bin/rad serve > /tmp/rad-demo-serve.log 2>&1 &
+        SERVER_PID=$!
+        trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+        until curl -s -m 1 -o /dev/null http://127.0.0.1:7237/health; do sleep 0.3; done
+        ./bin/rad schema migrate --config examples/demo/rad.config.yaml --no-generate
+        cd examples/demo && go run .
+
+  generate:
+    desc: Regenerate the demo's typed clients (Go + TypeScript)
+    env:
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
+    cmds:
+      - go run {{.DYN_RPATH}} ./cmd/rad generate -f examples/demo/rad.schema.yaml -o examples/demo/generated --pkg tracker
+      - go run {{.DYN_RPATH}} ./cmd/rad generate -f examples/demo/rad.schema.yaml -o examples/demo/generated --pkg tracker --lang ts
+
+  protocol:generate:
+    desc: Regenerate LIR and PIR wire types, OpenAPI transport, and the public schemas
+    cmds:
+      # lir.schema.yaml and pir.schema.yaml are the sources of truth; schemagen
+      # writes the .json artifacts and publishes the website copies.
+      - go generate ./rad/protocol
+      # schemancer.yaml maps the `format: raw` scalars/payloads to
+      # json.RawMessage — LIR literals and PIR statement relations alike — so
+      # they stay raw bytes with full int64 precision.
+      - schemancer rad/protocol/lir.schema.json golang rad/protocol/lirwire --package lirwire --optional-style pointer --config rad/protocol/schemancer.yaml
+      - schemancer rad/protocol/pir.schema.json golang rad/protocol/pirwire --package pirwire --optional-style pointer --config rad/protocol/schemancer.yaml
+      - go generate ./rad/api
+
+  demo:ts:
+    desc: "Run the TypeScript demo: fresh Rad server + node app over rad://"
+    env:
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
+    cmds:
+      - mkdir -p bin
+      - go build {{.DYN_RPATH}} -o bin/rad ./cmd/rad
+      - |
+        RAD_STORAGE=memory ./bin/rad serve > /tmp/rad-ts-serve.log 2>&1 &
+        SERVER_PID=$!
+        trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+        until curl -s -m 1 -o /dev/null http://127.0.0.1:7237/health; do sleep 0.3; done
+        ./bin/rad schema migrate --config examples/demo/rad.config.yaml --no-generate
+        node examples/demo/tracker-demo.ts
+
+  migrate:
+    desc: Apply examples/demo/rad.schema.yaml to the running Rad server
+    env:
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
+    cmds:
+      - go run {{.DYN_RPATH}} ./cmd/rad schema migrate --config examples/demo/rad.config.yaml --no-generate
+
+  build:
+    desc: Build mostly-static binaries (SlateDB linked in) -> bin/
+    env:
+      CGO_LDFLAGS: "{{.STATIC_LDFLAGS}}"
+    cmds:
+      - mkdir -p bin
+      - go build {{.DYN_RPATH}} -o bin/rad ./cmd/rad
+      - cd examples/demo && go build -o ../../bin/tracker-demo .
+      - otool -L bin/tracker-demo
+
+  install:
+    desc: Go-install the mostly-static binary
+    env:
+      CGO_LDFLAGS: "{{.STATIC_LDFLAGS}}"
+    cmds:
+      - go install ./cmd/rad
+
+  clean:
+    desc: Remove demo data, built binaries, and the cargo target dir
+    cmds:
+      - rm -rf data examples/demo/data bin '{{.SLATEDB_SRC}}/target'
+
+  ui:install:
+    desc: Install UI dependencies
+    dir: rad/ui
+    status:
+      - test -d node_modules
+    cmds:
+      - npm install
+
+  ui:build:
+    desc: Build the SPA into rad/server/ui/dist (embedded by go:embed)
+    dir: rad/ui
+    deps: [ui:install]
+    cmds:
+      - npm run build
+
+  ui:dev:
+    desc: Vite dev server with API proxy (run `task serve` in another shell)
+    dir: rad/ui
+    deps: [ui:install]
+    cmds:
+      - npm run dev
+
+  serve:
+    desc: Build the UI and run the Rad server (wire API on :7237, admin UI on :7238)
+    deps: [ui:build]
+    env:
+      CGO_LDFLAGS: "{{.DYN_LDFLAGS}}"
+    cmds:
+      - go run {{.DYN_RPATH}} ./cmd/rad serve {{.CLI_ARGS}}
+
+  docker:build:
+    desc: Build the Rad server image (tag rad)
+    cmds:
+      - docker build --build-arg 'SLATEDB_TAG={{.SLATEDB_TAG}}' -t rad .
+
+  docker:run:
+    desc: Run the Rad server container on :7237 (in-memory storage)
+    cmds:
+      - docker run --rm -p 7237:7237 -e RAD_STORAGE=memory rad
+
+  slatedb:setup:
+    desc: Clone and build the native SlateDB library (fresh machine bootstrap)
+    cmds:
+      - task: slatedb:clone
+      - task: slatedb:build
+
+  slatedb:clone:
+    desc: Clone the slatedb repo at the tag matching go.mod
+    status:
+      - test -d '{{.SLATEDB_SRC}}/.git'
+    cmds:
+      - git clone --depth 1 --branch '{{.SLATEDB_TAG}}' '{{.SLATEDB_REPO}}' '{{.SLATEDB_SRC}}'
+
+  slatedb:build:
+    desc: Build libslatedb_uniffi (.dylib for dynamic use, .a for static builds)
+    cmds:
+      # --print native-static-libs makes rustc report the system libs a
+      # static link needs; keep vars.STATIC_SYS_LIBS in sync with it.
+      - cargo rustc --release -p slatedb-uniffi --manifest-path '{{.SLATEDB_SRC}}/Cargo.toml' -- --print native-static-libs
+      - mkdir -p '{{.LIB_DIR}}/static'
+      - cp '{{.TARGET}}/libslatedb_uniffi.a' '{{.LIB_DIR}}/static/'
+      - cp '{{.TARGET}}/libslatedb_uniffi.dylib' '{{.LIB_DIR}}/'
+      # Cargo stamps the dylib with an absolute install name inside target/;
+      # rewrite to @rpath so binaries resolve it via -Wl,-rpath.
+      - install_name_tool -id @rpath/libslatedb_uniffi.dylib '{{.LIB_DIR}}/libslatedb_uniffi.dylib'
+      - codesign -f -s - '{{.LIB_DIR}}/libslatedb_uniffi.dylib'
+
+  slatedb:upgrade:
+    desc: "Upgrade SlateDB: task slatedb:upgrade VERSION=v0.15.0"
+    requires:
+      vars: [VERSION]
+    cmds:
+      - go get slatedb.io/slatedb-go@{{.VERSION}}
+      - go mod tidy
+      - git -C '{{.SLATEDB_SRC}}' fetch --depth 1 origin tag 'bindings/go/{{.VERSION}}'
+      - git -C '{{.SLATEDB_SRC}}' checkout 'bindings/go/{{.VERSION}}'
+      # Rebuild with a task invocation so SLATEDB_VERSION is re-derived from
+      # the updated go.mod.
+      - task slatedb:build
+      - task test

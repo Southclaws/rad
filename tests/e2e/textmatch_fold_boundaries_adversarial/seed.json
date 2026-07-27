@@ -1,0 +1,17 @@
+[
+  { "table": "samples", "rows": [
+    { "id": "null" },
+    { "id": "empty",              "value": "" },
+    { "id": "nul-exact-case",     "value": "a\u0000b" },
+    { "id": "nul-folded-case",    "value": "A\u0000B" },
+    { "id": "nul-extra",          "value": "xa\u0000by" },
+    { "id": "emoji-lower",        "value": "go🚀" },
+    { "id": "emoji-upper",        "value": "GO🚀" },
+    { "id": "emoji-extra",        "value": "xGO🚀y" },
+    { "id": "composed-lower",     "value": "éclair" },
+    { "id": "composed-upper",     "value": "ÉCLAIR" },
+    { "id": "decomposed-lower",   "value": "e\u0301clair" },
+    { "id": "adjacent-parts",     "value": "FoObAr" },
+    { "id": "adjacent-gaps",      "value": "preFOOpost" }
+  ] }
+]

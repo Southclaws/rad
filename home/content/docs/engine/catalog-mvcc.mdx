@@ -1,0 +1,183 @@
+---
+title: Catalog MVCC
+description: How Rad keeps bound work valid across compatible catalog changes and reclaims retired storage safely.
+---
+
+Catalog MVCC lets a data transaction keep using the exact schema meaning it
+bound while compatible catalog work continues. Rad does not abort merely
+because a global schema version changed. It asks whether the transaction's
+actual dependencies are still valid.
+
+This page is for engine maintainers. Application developers should start with
+[Online schema changes](/docs/schemas/online-changes).
+
+## Logical and physical identity
+
+A table or column has a stable logical Schema ID. Renaming changes its label,
+not its identity. A physical ID names stored bytes and is never reused.
+
+Column replacement shows why both matter:
+
+```text
+logical column 7: users.score
+  old physical column c18: text
+  new physical column c31: int64
+```
+
+The public schema still has column `7`. During transition, old and new physical
+cells coexist. Publication switches the logical definition atomically, and
+reclamation removes `c18` only after retention permits it.
+
+## The counters answer different questions
+
+| Counter or identity | Question answered |
+| --- | --- |
+| Canonical schema revision | Which complete logical schema publication is this? |
+| Schema ID | Is this the same logical table or column after rename? |
+| Physical ID | Which stored representation is this? |
+| Definition generation | Which immutable physical object definition did binding use? |
+| Existence generation | Does this physical table lifetime still exist? |
+| Column value generation | Do these bytes decode with the same value semantics? |
+| Index access generation | Is this selected physical access path still valid? |
+| Write-protocol generation | Must a writer perform the same obligations? |
+| Transition generation | Is this transition state and progress record current? |
+| Owner epoch | May this worker still checkpoint or publish? |
+
+A canonical revision is useful for history, hashes, migration compare-and-swap,
+and inspection. It is too broad for ordinary transaction compatibility. A
+rename can advance the revision and table definition while leaving existence,
+column-value, index-access, and write-protocol fences compatible.
+
+## Pin, bind, admit, execute
+
+```text
+pin one coherent immutable catalog snapshot
+  -> bind names to stable identities
+  -> choose access paths
+  -> collect an exact typed dependency manifest
+  -> begin the SlateDB data transaction
+  -> admit every dependency fence
+  -> execute with pinned definitions and write protocols
+  -> commit through SlateDB serializability
+```
+
+Catalog pinning and data-snapshot creation are separate operations. Admission
+inside the data transaction closes that gap. The admitted fence reads then stay
+in SlateDB's serializable read set, closing the gap from admission to commit.
+
+Rad owns binding, compatibility, and publication semantics. SlateDB owns
+version visibility and commit conflict detection. Rad does not build another
+row-version store above it.
+
+## Dependency manifests
+
+A plan records only semantics it will use:
+
+- physical table existence;
+- value generations for columns it decodes or uses as keys;
+- the access generation of the index it selected;
+- the complete write-protocol generation for a mutation target.
+
+Dependency analysis runs after access-path selection. Unchosen indexes do not
+invalidate a plan. Projection-aware decoding means an unobserved column is not
+a value dependency, while `count(*)` can scan a table without decoding any
+column values.
+
+This produces semantic conflict rules:
+
+| Concurrent catalog change | Already-bound work |
+| --- | --- |
+| Rename its table or column | Continue through stable identity |
+| Add an unobserved nullable column | Continue |
+| Change an unrelated table | Continue |
+| Delete a column it decodes | Conflict |
+| Replace a column it decodes | Conflict |
+| Delete the physical index selected by its plan | Conflict |
+| Change its table's write obligations | Writer conflicts and retries with the new protocol |
+
+An executing plan never falls back to a mutable current table head. It uses the
+generation-qualified definitions fixed during binding.
+
+## Catalog changes inside PIR
+
+PIR is the transactional engine boundary for ordered statements. A program can
+perform catalog work and then use its result before commit. After a catalog
+statement, the executor refreshes later binding through the transaction-visible
+catalog. Programs without catalog work continue to use the immutable pin.
+
+The reader workflow does not expose raw transition-start PIR. Desired-schema
+migration lowers accepted work through this boundary. Listing, inspecting, and
+cancelling transitions remain administrative HTTP operations because they are
+job control, not application statement composition.
+
+## Write protocols
+
+A table write protocol is one immutable generation containing every foreground
+obligation:
+
+- ready-index maintenance;
+- online-index delta sinks;
+- replacement-column dual writes;
+- active constraint checks;
+- an optional finalization gate.
+
+Writers bind the entire protocol instead of consulting mutable transition
+records while executing. Starting or finishing compatible work publishes a new
+generation. An old writer either commits before that publication or conflicts.
+
+The gate is a short publication tool. It is stored in the protocol, limited to
+one owner per affected table, and acquired across multi-table sets in stable
+physical-ID order. It is not held during a long scan.
+
+## Durable workers and epochs
+
+A transition has durable lifecycle state and bounded checkpoints. Claiming work
+advances its owner epoch. Every batch, checkpoint, gate acquisition, and
+publication reads that epoch, so a stale owner cannot commit after takeover.
+
+The local scheduler is deliberately replaceable policy around durable state.
+Fair rotation, batch sizes, item budgets, and backoff affect resource use, not
+the meaning of a transition. SlateDB currently limits a database to one Rad
+writer process, so distributed leases are not required for current correctness.
+
+## Retention and reclamation
+
+Logical deletion and physical deletion have different linearization points:
+
+```text
+publish logical retirement and semantic fence
+  -> queue typed reclamation
+  -> wait behind exact resource pins
+  -> delete or rewrite bounded physical batches
+  -> compact terminal detail when safe
+```
+
+Retention pins name exact catalog definitions, opaque data snapshots,
+transition diagnostics or deltas, and physical artifacts. Horizon reporting is
+resource-specific, not one global oldest-generation number.
+
+The substrate is ahead of its consumers. No production persistent prepared
+plan, replica, CDC stream, or long-lived snapshot reader currently creates
+these pins. The KV API also cannot reopen an old SlateDB snapshot or express
+cross-restart storage retention. An opaque data-snapshot pin therefore blocks
+all physical reclamation conservatively.
+
+Each reclamation batch verifies that its target remains retired, checks pins,
+applies a bounded amount of physical work, and commits its cursor with those
+changes. Physical IDs are never reused, so delayed bytes cannot be mistaken for
+a newly created object.
+
+Catalog-history compaction is a separate proof. Removing old canonical
+revision records does not remove current definition heads, alter bindability,
+or establish a physical safe horizon.
+
+## Current limits
+
+- There is no public long-lived snapshot or retention-pin workflow.
+- Persistent prepared-plan, replica, and CDC consumers are not integrated.
+- Rad does not perform arbitrary server-side PIR retry.
+- Data positions are provenance tokens, not historical snapshot handles.
+- Deterministic engine yield hooks cover selected boundaries, not the host
+  scheduler or full storage-fault simulation.
+- The PostgreSQL adapter is an experiment and does not define Rad's transaction
+  or catalog model.

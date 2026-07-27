@@ -1,0 +1,14 @@
+# sum() over parents whose argument is a correlated scalar(count of children):
+# the crossing is an aggregate argument, evaluated per input row then folded.
+tables:
+  - id: 1
+    name: parents
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+
+  - id: 2
+    name: children
+    columns:
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: parent_id, type: string, nullable: true, ref: parents.id }

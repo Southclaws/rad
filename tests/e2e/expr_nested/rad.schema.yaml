@@ -1,0 +1,11 @@
+# expr_nested — nested compound arithmetic (a add b) mul (c sub d)
+# in a projection field, exercising recursive Eval and int64 sign handling.
+tables:
+  - id: 1
+    name: nums
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: a,  type: int64 }
+      - { id: 3, name: b,  type: int64 }
+      - { id: 4, name: c,  type: int64 }
+      - { id: 5, name: d,  type: int64 }

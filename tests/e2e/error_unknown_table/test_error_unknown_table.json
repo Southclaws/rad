@@ -1,0 +1,19 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": { "g": { "kind": "scan", "table": "ghosts", "scope": "g" } },
+          "root": { "node": "g", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "error": {
+    "code": "invalid",
+    "reason": "unknown_table",
+    "contains": "unknown table"
+  }
+}

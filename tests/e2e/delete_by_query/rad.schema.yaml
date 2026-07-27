@@ -1,0 +1,8 @@
+# e2e/delete_by_query — a query-driven delete: the delete statement's input
+# is a scan/filter/project selecting which rows to remove by primary key.
+tables:
+  - id: 1
+    name: items
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: keep, type: bool }

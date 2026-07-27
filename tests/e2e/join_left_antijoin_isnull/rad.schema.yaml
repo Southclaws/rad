@@ -1,0 +1,14 @@
+# probe: left join fan-out (one left row -> many right), zero (NULL pad), one.
+tables:
+  - id: 1
+    name: owners
+    columns:
+      - { id: 1, name: oid,  type: string, pk: true }
+      - { id: 2, name: oname, type: string }
+
+  - id: 2
+    name: pets
+    columns:
+      - { id: 1, name: pid,      type: string, pk: true }
+      - { id: 2, name: owner_id, type: string, nullable: true, ref: owners.oid }
+      - { id: 3, name: pname,    type: string }

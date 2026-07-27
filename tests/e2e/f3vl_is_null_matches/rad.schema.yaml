@@ -1,0 +1,9 @@
+# e2e/f3vl_is_null_matches — is_null / is_not_null are total tests (never
+# UNKNOWN). is_null matches exactly the NULL rows, is_not_null exactly the
+# non-NULL rows, and together they partition the table.
+tables:
+  - id: 1
+    name: t
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: x,  type: int64, nullable: true }

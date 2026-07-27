@@ -1,0 +1,95 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "t", "scope": "t" },
+            "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "gt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "-100" } } } },
+            "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ] }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [ { "id": "zero", "n": 0 }, { "id": "one", "n": 1 }, { "id": "max", "n": 50 } ],
+  "assertions": [
+    {
+      "name": "gt 50 one past max is empty",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "gt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "50" } } } },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": []
+    },
+    {
+      "name": "gte 50 exact endpoint keeps max",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "50" } } } },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [ { "id": "max", "n": 50 } ]
+    },
+    {
+      "name": "gte -100 includes the negative endpoint (sign-flip encoding)",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "-100" } } } },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [ { "id": "neg", "n": -100 }, { "id": "zero", "n": 0 }, { "id": "one", "n": 1 }, { "id": "max", "n": 50 } ]
+    },
+    {
+      "name": "single-row range gte 0 AND lte 0",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": {
+            "kind": "filter", "input": "t",
+            "predicate": {
+              "kind": "binary", "op": "and",
+              "left": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "0" } } },
+              "right": { "kind": "binary", "op": "lte", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "0" } } }
+            }
+          },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [ { "id": "zero", "n": 0 } ]
+    },
+    {
+      "name": "range spanning sign boundary gt -100 AND lt 1",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": {
+            "kind": "filter", "input": "t",
+            "predicate": {
+              "kind": "binary", "op": "and",
+              "left": { "kind": "binary", "op": "gt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "-100" } } },
+              "right": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "n" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "1" } } }
+            }
+          },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [ { "id": "zero", "n": 0 } ]
+    }
+  ]
+}

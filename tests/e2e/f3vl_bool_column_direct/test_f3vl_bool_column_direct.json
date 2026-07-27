@@ -1,0 +1,58 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "t", "scope": "t" },
+            "kept": {
+              "kind": "filter",
+              "input": "t",
+              "predicate": { "kind": "col", "scope": "t", "column": "flag" }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "kept",
+              "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "r1", "flag": true },
+    { "id": "r3", "flag": true }
+  ],
+  "assertions": [
+    {
+      "name": "not(flag) keeps only the FALSE row, dropping TRUE and NULL",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": {
+            "kind": "filter",
+            "input": "t",
+            "predicate": {
+              "kind": "unary",
+              "op": "not",
+              "expr": { "kind": "col", "scope": "t", "column": "flag" }
+            }
+          },
+          "sorted": {
+            "kind": "order",
+            "input": "kept",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ]
+          }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "r2", "flag": false }
+      ]
+    }
+  ]
+}

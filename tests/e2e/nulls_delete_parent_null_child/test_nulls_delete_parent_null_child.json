@@ -1,0 +1,44 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "del",
+        "kind": "delete",
+        "table": "parents",
+        "relation": {
+          "nodes": { "r": { "kind": "rows", "scope": "r",
+            "columns": [ { "name": "id", "type": "text" } ],
+            "rows": [ ["p1"] ] } },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [ { "id": "p1" } ],
+  "assertions": [
+    {
+      "name": "parent deleted: a NULL FK child does not reference it (2VL Equal), so restrict does not fire",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "parents", "scope": "t" },
+          "o": { "kind": "order", "input": "t",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": []
+    },
+    {
+      "name": "the NULL-FK child survives untouched",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "children", "scope": "t" },
+          "o": { "kind": "order", "input": "t",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "c1", "parent_id": null } ]
+    }
+  ]
+}

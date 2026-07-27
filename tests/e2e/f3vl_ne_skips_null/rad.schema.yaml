@@ -1,0 +1,9 @@
+# e2e/f3vl_ne_skips_null — one table with a nullable int column, to prove a
+# `ne` (x != v) filter drops NULL rows: a comparison with NULL is UNKNOWN,
+# and filter keeps only TRUE.
+tables:
+  - id: 1
+    name: t
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: x,  type: int64, nullable: true }

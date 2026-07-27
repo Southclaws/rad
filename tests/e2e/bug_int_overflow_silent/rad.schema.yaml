@@ -1,0 +1,10 @@
+# bug_int_overflow_silent — int64 `add` at MaxInt64 silently wraps (two's
+# complement) to MinInt64 and returns HTTP 200 with the wrong value, instead
+# of a clean execution_failed. See BUG.md.
+tables:
+  - id: 1
+    name: nums
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: a,  type: int64 }
+      - { id: 3, name: b,  type: int64 }

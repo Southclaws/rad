@@ -1,0 +1,13 @@
+[
+  {"actor":"writer","point":"catalog_pinned","occurrence":1},
+  {"actor":"writer","point":"snapshot_begun","occurrence":1},
+  {"actor":"writer","point":"binding_resolved","entity":"scheduled_items","occurrence":1},
+  {"actor":"writer","point":"dependency_fences_admitted","entity":"scheduled_items","occurrence":1},
+  {"actor":"writer","point":"commit_ready","occurrence":1},
+  {"actor":"renamer","point":"catalog_pinned","occurrence":1},
+  {"actor":"renamer","point":"snapshot_begun","occurrence":1},
+  {"actor":"renamer","point":"catalog_publication_prepared","occurrence":1},
+  {"actor":"renamer","point":"commit_ready","occurrence":1},
+  {"actor":"renamer","point":"transaction_committed","occurrence":1},
+  {"actor":"writer","point":"transaction_committed","occurrence":1}
+]

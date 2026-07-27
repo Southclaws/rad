@@ -1,0 +1,9 @@
+# e2e/agg_sum_overflow — an int64 sum whose true total exceeds int64 fails
+# cleanly (execution_failed), rather than silently wrapping. The values live
+# in a `rows` relation (raw-JSON cells preserve int64 precision on the wire),
+# so no table is needed; `dummy` just gives the catalog a table to init.
+tables:
+  - id: 1
+    name: dummy
+    columns:
+      - { id: 1, name: id, type: string, pk: true }

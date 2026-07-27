@@ -1,0 +1,52 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "insert_task",
+        "kind": "create",
+        "table": "tasks",
+        "relation": {
+          "nodes": {
+            "r": {
+              "kind": "rows",
+              "scope": "r",
+              "columns": [
+                { "name": "id", "type": "text" },
+                { "name": "title", "type": "text" }
+              ],
+              "rows": [
+                ["t1", "no status given"]
+              ]
+            }
+          },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "t1", "title": "no status given", "status": "todo", "priority": 2 }
+  ],
+  "assertions": [
+    {
+      "name": "the created row carries the schema defaults",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "tasks", "scope": "t" },
+          "one": {
+            "kind": "filter",
+            "input": "t",
+            "predicate": {
+              "kind": "binary",
+              "op": "eq",
+              "left": { "kind": "col", "scope": "t", "column": "id" },
+              "right": { "kind": "lit", "value": { "type": "text", "value": "t1" } }
+            }
+          }
+        },
+        "root": { "node": "one", "cardinality": "exactly_one" }
+      },
+      "expect": { "id": "t1", "title": "no status given", "status": "todo", "priority": 2 }
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "collide",
+        "kind": "create",
+        "table": "seats",
+        "relation": {
+          "nodes": { "r": { "kind": "rows", "scope": "r",
+            "columns": [ { "name": "id", "type": "text" }, { "name": "slot", "type": "int64" } ],
+            "rows": [ ["a", "1"], ["b", "1"] ] } },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "invalid", "contains": "unique index" }
+}

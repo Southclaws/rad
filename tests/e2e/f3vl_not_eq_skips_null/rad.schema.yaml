@@ -1,0 +1,9 @@
+# e2e/f3vl_not_eq_skips_null — the load-bearing K3 rule: not(x = v) does NOT
+# match rows where x is NULL. eq against NULL is UNKNOWN, and not(UNKNOWN) is
+# UNKNOWN, which filter drops.
+tables:
+  - id: 1
+    name: t
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: x,  type: int64, nullable: true }

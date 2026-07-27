@@ -1,0 +1,293 @@
+package planner
+
+// The rows node: finite constant relations. Column types are declared, cell
+// coercion follows the literal rules, nullability derives from the cells,
+// and the relation is an ordinary bag — joinable, filterable, aggregatable,
+// bindable. Every query is the literal wire tree.
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/Southclaws/rad/rad/protocol/lirwire"
+)
+
+// cols is shorthand for declaring rows columns; a trailing "?" on the type
+// marks the column nullable ("int64?").
+func cols(pairs ...string) []lirwire.RowsColumn {
+	out := make([]lirwire.RowsColumn, 0, len(pairs)/2)
+	for i := 0; i < len(pairs); i += 2 {
+		typ, nullable := strings.CutSuffix(pairs[i+1], "?")
+		var np *bool
+		if nullable {
+			np = ptrBool(true)
+		}
+		out = append(out, lirwire.RowsColumn{Name: pairs[i], Type: lirwire.ScalarType(typ), Nullable: np})
+	}
+	return out
+}
+
+func TestRowsBasic(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Rows("r", cols("name", "text", "age", "int64"),
+			[][]lirwire.Cell{{mustValue("ada"), mustValue(36)}, {mustValue("grace"), mustValue(41)}}),
+	}, "r", "many")).EqualsUnordered(`[
+		{"name":"ada","age":36},
+		{"name":"grace","age":41}
+	]`)
+}
+
+// Document order of literal rows is not a logical order; an explicit order
+// above the node is what makes the sequence observable.
+func TestRowsOrdered(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Rows("r", cols("n", "int64"),
+			[][]lirwire.Cell{{mustValue(3)}, {mustValue(1)}, {mustValue(2)}}),
+		"o": lirwire.Order("r",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("r", "n")}}),
+	}, "o", "many")).Equals(`[{"n":1},{"n":2},{"n":3}]`)
+}
+
+// With declared types, the empty constant relation is well-typed: zero rows,
+// fully usable output schema.
+func TestRowsEmpty(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Rows("r", cols("id", "int64", "label", "text"),
+			[][]lirwire.Cell{}),
+		"out": lirwire.Project("r", "", nil,
+			[]lirwire.Field{{As: "l", Expr: lirwire.Col("r", "label")}}),
+	}, "out", "many")).Empty()
+}
+
+// All four scalar types plus NULL cells in declared-nullable columns;
+// is_null is the only test that matches one.
+func TestRowsAllTypesAndNulls(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Rows("r", cols("t", "text?", "i", "int64?", "f", "float64?", "b", "bool?"),
+			[][]lirwire.Cell{
+				{mustValue("x"), mustValue(1), mustValue(1.5), mustValue(true)},
+				{mustValue(nil), mustValue(nil), mustValue(nil), mustValue(nil)},
+			}),
+		"nulls": lirwire.Filter("r",
+			lirwire.Unary("is_null", lirwire.Col("r", "t"))),
+	}, "nulls", "many")).Equals(`[{"t":null,"i":null,"f":null,"b":null}]`)
+}
+
+// Nullability is declared, never inferred: a NULL cell in a non-nullable
+// column is rejected, and a nullable column with no nulls in this
+// particular bag is fine — the schema does not depend on the data.
+func TestRowsNullabilityIsDeclared(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Rows("r", cols("n", "int64"),
+			[][]lirwire.Cell{{mustValue(1)}, {mustValue(nil)}}),
+	}, "r", "many")).ExpectStatus(422).ExpectError("not nullable")
+
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Rows("r", cols("n", "int64?"),
+			[][]lirwire.Cell{{mustValue(1)}, {mustValue(2)}}),
+	}, "r", "many")).EqualsUnordered(`[{"n":1},{"n":2}]`)
+}
+
+// Raw JSON numbers keep full int64 precision — a value beyond float64's
+// exact-integer range survives the round trip bit-for-bit.
+func TestRowsInt64Precision(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Rows("r", cols("big", "int64"),
+			[][]lirwire.Cell{{mustValue(int64(9007199254740993))}}),
+	}, "r", "many")).Equals(`[{"big":9007199254740993}]`)
+}
+
+// A one-row constant relation is statically exactly one row, so first needs
+// no order; a multi-row one without an order is rejected — taking "the
+// first" of an unordered bag would be arbitrary.
+func TestRowsCardinalityUnderFirst(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Rows("r", cols("n", "int64"),
+			[][]lirwire.Cell{{mustValue(7)}}),
+	}, "r", "first")).EqualsDatum(`{"n":7}`)
+
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Rows("r", cols("n", "int64"),
+			[][]lirwire.Cell{{mustValue(1)}, {mustValue(2)}}),
+	}, "r", "first")).ExpectError("unordered")
+}
+
+// scalar over a single-column, single-row constant relation.
+func TestRowsScalarRoot(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Rows("r", cols("answer", "int64"),
+			[][]lirwire.Cell{{mustValue(42)}}),
+	}, "r", "scalar")).EqualsDatum(`42`)
+}
+
+// The flagship composition: join stored rows against an ad hoc mapping. The
+// constant relation behaves exactly like a table on the right of a join.
+func TestRowsJoinAgainstTable(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"m": lirwire.Rows("m", cols("tier", "text", "rank", "int64"),
+			[][]lirwire.Cell{{mustValue("gold"), mustValue(1)}, {mustValue("silver"), mustValue(2)}, {mustValue("bronze"), mustValue(3)}}),
+		"j": lirwire.Join("c", "m", "inner",
+			lirwire.Binary("eq", lirwire.Col("c", "tier"), lirwire.Col("m", "tier"))),
+		"out": lirwire.Project("j", "", nil, []lirwire.Field{
+			{As: "name", Expr: lirwire.Col("c", "name")},
+			{As: "rank", Expr: lirwire.Col("m", "rank")},
+		}),
+	}, "out", "many")).EqualsUnordered(`[
+		{"name":"Ada","rank":1},
+		{"name":"Cyn","rank":1},
+		{"name":"Bob","rank":2},
+		{"name":"Dee","rank":3},
+		{"name":"Eli","rank":3}
+	]`)
+}
+
+// Constant relations fold like any other relation.
+func TestRowsAggregate(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Rows("r", cols("team", "text", "points", "int64"),
+			[][]lirwire.Cell{
+				{mustValue("red"), mustValue(3)}, {mustValue("blue"), mustValue(5)}, {mustValue("red"), mustValue(4)}, {mustValue("blue"), mustValue(1)},
+			}),
+		"agg": lirwire.Aggregate("r", "g",
+			[]lirwire.GroupTerm{{Expr: lirwire.Col("r", "team")}},
+			[]lirwire.AggTerm{{Fn: "sum", Arg: ptrExpr(lirwire.Col("r", "points")), As: "total"}}),
+		"o": lirwire.Order("agg",
+			[]lirwire.OrderTerm{{Expr: lirwire.Col("g", "team")}}),
+	}, "o", "many")).Equals(`[{"team":"blue","total":6},{"team":"red","total":7}]`)
+}
+
+// A binding whose body is a constant relation: both occurrences observe the
+// same bag under fresh scopes, exactly as with any other binding.
+func TestRowsAsBinding(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(qb(map[string]lirwire.Node{
+		"lit": lirwire.Rows("l", cols("n", "int64"),
+			[][]lirwire.Cell{{mustValue(1)}, {mustValue(2)}}),
+		"a": lirwire.Ref("nums", "a"),
+		"b": lirwire.Ref("nums", "b"),
+		"j": lirwire.Join("a", "b", "inner",
+			lirwire.Binary("lt", lirwire.Col("a", "n"), lirwire.Col("b", "n"))),
+		"out": lirwire.Project("j", "", nil, []lirwire.Field{
+			{As: "lo", Expr: lirwire.Col("a", "n")},
+			{As: "hi", Expr: lirwire.Col("b", "n")},
+		}),
+	}, map[string]lirwire.Binding{"nums": lirwire.Derived("lit")},
+		"out", "many")).EqualsUnordered(`[{"lo":1,"hi":2}]`)
+}
+
+// A correlated crossing whose sub-relation is a constant: exists over rows
+// filtered by an outer column.
+func TestRowsCorrelatedCrossing(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"vip": lirwire.Rows("v", cols("tier", "text"),
+			[][]lirwire.Cell{{mustValue("gold")}}),
+		"match": lirwire.Filter("vip",
+			lirwire.Binary("eq", lirwire.Col("v", "tier"), lirwire.Col("c", "tier"))),
+		"keep": lirwire.Filter("c",
+			lirwire.Exists("match")),
+		"out": lirwire.Project("keep", "", nil,
+			[]lirwire.Field{{As: "name", Expr: lirwire.Col("c", "name")}}),
+	}, "out", "many")).EqualsUnordered(`[{"name":"Ada"},{"name":"Cyn"}]`)
+}
+
+// -
+// rejections
+// -
+
+func TestRowsRejectsDuplicateColumns(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Rows("r", cols("n", "int64", "n", "text"),
+			[][]lirwire.Cell{{mustValue(1), mustValue("x")}}),
+	}, "r", "many")).ExpectStatus(422).ExpectError("declares column")
+}
+
+func TestRowsRejectsArityMismatch(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Rows("r", cols("a", "int64", "b", "text"),
+			[][]lirwire.Cell{{mustValue(1), mustValue("x")}, {mustValue(2)}}),
+	}, "r", "many")).ExpectStatus(422).ExpectError("want 2")
+}
+
+func TestRowsRejectsCellTypeMismatch(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Rows("r", cols("n", "int64"),
+			[][]lirwire.Cell{{mustValue("ten")}}),
+	}, "r", "many")).ExpectStatus(422).ExpectError("int64")
+}
+
+func TestRowsRejectsFractionalInt(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Rows("r", cols("n", "int64"),
+			[][]lirwire.Cell{{mustValue(1.5)}}),
+	}, "r", "many")).ExpectStatus(422).ExpectError("int64")
+}
+
+func TestRowsRejectsUnknownColumnType(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	// The schema itself rejects the type enum — client-side, before the
+	// request is even sent.
+	d.Query(q(map[string]lirwire.Node{
+		"r": lirwire.Rows("r", []lirwire.RowsColumn{{Name: "n", Type: "varchar"}},
+			[][]lirwire.Cell{{mustValue(1)}}),
+	}, "r", "many")).ExpectError("varchar")
+}
+
+func TestRowsRejectsMissingColumns(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	// The schema requires at least one declared column; the client-side
+	// validation catches it before the request is sent. Built without the
+	// q() helper: its order synthesis needs a first column to exist.
+	d.Query(lirwire.Query{
+		Nodes: map[string]lirwire.Node{
+			"r": lirwire.Rows("r", []lirwire.RowsColumn{}, [][]lirwire.Cell{{mustValue(1)}}),
+		},
+		Root: lirwire.Root{Node: "r", Cardinality: "many"},
+	}).ExpectError("minItems")
+}
+
+func TestRowsRejectsDuplicateScope(t *testing.T) {
+	t.Parallel()
+	d := shop(t)
+	d.Query(q(map[string]lirwire.Node{
+		"c": lirwire.Scan("customers", "c"),
+		"r": lirwire.Rows("c", cols("n", "int64"),
+			[][]lirwire.Cell{{mustValue(1)}}),
+		"j": lirwire.Join("c", "r", "inner",
+			lirwire.LitOf(true)),
+	}, "j", "many")).ExpectStatus(422).ExpectError("duplicate scope")
+}

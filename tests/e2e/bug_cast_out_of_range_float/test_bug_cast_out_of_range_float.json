@@ -1,0 +1,22 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "cast_big",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "p": { "kind": "project", "input": "t", "scope": "p", "fields": [
+              { "as": "n", "expr": { "kind": "cast", "to": "int64",
+                "expr": { "kind": "col", "scope": "t", "column": "f" } } }
+            ] },
+            "sl": { "kind": "slice", "input": "p", "limit": 1 }
+          },
+          "root": { "node": "sl", "cardinality": "scalar" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "execution_failed", "contains": "out of range" }
+}

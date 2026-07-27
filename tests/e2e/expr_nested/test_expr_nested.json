@@ -1,0 +1,34 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "compound",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "p": { "kind": "project", "input": "t", "scope": "p", "fields": [
+              { "as": "id", "expr": { "kind": "col", "scope": "t", "column": "id" } },
+              { "as": "v", "expr": { "kind": "binary", "op": "mul",
+                "left":  { "kind": "binary", "op": "add",
+                  "left":  { "kind": "col", "scope": "t", "column": "a" },
+                  "right": { "kind": "col", "scope": "t", "column": "b" } },
+                "right": { "kind": "binary", "op": "sub",
+                  "left":  { "kind": "col", "scope": "t", "column": "c" },
+                  "right": { "kind": "col", "scope": "t", "column": "d" } } } }
+            ] },
+            "o": { "kind": "order", "input": "p", "terms": [
+              { "expr": { "kind": "col", "scope": "p", "column": "id" } }
+            ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "r1", "v": 21 },
+    { "id": "r2", "v": 0 },
+    { "id": "r3", "v": -35 }
+  ]
+}

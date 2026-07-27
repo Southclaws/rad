@@ -1,0 +1,6 @@
+[
+  { "table": "seats", "rows": [
+    { "id": "a", "slot": 1 },
+    { "id": "b", "slot": 2 }
+  ] }
+]

@@ -1,0 +1,111 @@
+---
+title: Why build a new relational database
+description: "What could a relational database look like if built today, for today's software ecoststem."
+date: 2026-07-09
+author: Barnaby Keene
+---
+
+When Go was released in 2009, writing software looked very different back then. You'd pick a compiler, maybe a linter and an IDE. Wire together some libraries with build scripts, CMakeLists.txt, a test compilation pipeline with an assertion library. HTTP was either roll your own or wire up a DLL from elsewhere. There was a lot of roll-your-own or just purchase a solution.
+
+Go evolved out of Google's world of internal tooling culture. And while things like a "proper" package manager came later, compared to what was around in the 2010s, Go really did boast a lot by its 1.0 release in 2012. It had:
+
+- A fantastic standard library, with HTTP servers, clients, TLS
+- HTML and JSON encoding and decoding
+- Built-in testing tools, linting and a single compiler
+
+The team didn't write a specification, release (or sell) it and say to the industry "here's our idea, go implement your interpretation of it" no, they just built everything in their vision. It was coherent and coupled for better or worse.
+
+<ToolchainDiagram />
+
+Now it's 2026, Bun has a built in test runner, Rust has a built in package manager, TypeScript has, arguably an entire IDE and intellisense ecosystem. The industry realised that the text part of a language is only about 20% of what makes it _feel_ good to use.
+
+## Databases
+
+Databases feel different, in some ways. And by databases I am going to focus on OLTP relational databases. Which, at the time of writing, almost exclusively means SQL databases. Because those two worlds are so tightly intertwined it's almost impossible, outside of research and pet projects to find any meaningful separation between them.
+
+They feel different because, for one, they're quite important. You may argue more important than the language your application code runs in. If your Python application malfunctions, the fallout depends on your/team's implementation of error handling (or lack...) If your database malfunctions, you may in really big trouble. So databases have to work really really well and thus, are built by very smart people. Persisting state is hard.
+
+But in another way, they feel different because the companies and people researching and building databases don't necessarily represent all categories of the developers building software upon said databases.
+
+To draw an analogy, it evokes the same feeling as what the post [Weird things engineers believe about Web development](https://birtles.blog/2024/01/06/weird-things-engineers-believe-about-development/) particularly, the section titled [”The people who make Web specifications know Web development really well”](https://birtles.blog/2024/01/06/weird-things-engineers-believe-about-development/#the-people-who-make-web-specifications-know-web-development-really-well)
+
+Perhaps one of my favourite examples of this however is an academic paper titled [“Enhanced SQL error messages facilitate faster error fixing”](https://link.springer.com/article/10.1007/s10664-025-10695-1)
+
+Rust didn't write a paper about error messages, they just made their compiler do it.
+
+I suppose my socratic irony here is really saying: why is that paper not _just_ a PR to Postgres?
+
+alright, enough reductio ad absurdum, let's move on...
+
+I'm not going to dive into the SQL side in this post, it's very well trodden ground:
+
+- https://borretti.me/article/composable-sql
+- https://lobste.rs/s/gd1pre/sql_has_problems_we_can_fix_them_pipe
+- https://blog.nelhage.com/post/some-opinionated-sql-takes/
+- https://www.geldata.com/blog/we-can-do-better-than-sql
+- https://stack.convex.dev/not-sql
+- https://southcla.ws/sql
+
+I'll dive a bit deeper on why Rad doesn't use SQL, and what it uses instead, in a future post.
+
+## Building Databases
+
+If your database malfunctions, you may in really big trouble. So really smart people build databases, because they are really difficult to get right and prove so. [Jepsen](https://jepsen.io/) is really good at proving otherwise.
+
+And my thesis has been that, because databases are really hard to build, the people who use them day to day, aren't the same peope who build them.
+
+Databases are also very monolithic. You can't use MySQL's dialect over PostgreSQL's file format. There's no intermediary format like how LLVM lets you write a fun little programming language and get it to compile for almost every modern chip.
+
+Databases don't have anything like that. Everything moves in lockstep. The SQL standard (which is not an open standard like almost everything else we use on the web btw, you buy it) releases, a few years later some databases MIGHT add SOME features from it.
+
+Then of course, as you know, every database is different, nobody _actually_ implements the standard, so there effectively _is_ no standard.
+
+## The OLAP World
+
+The OLAP world, as I learned recently, is _really_ different. Partly due to the risk profile, the workloads and the ecosystem.
+
+I recently tested three different _query engines_ against the exact same data. The data was in a file format called [Parquet](https://parquet.apache.org/) and was described by a metadata format called [Apache Iceberg](https://iceberg.apache.org/).
+
+This was really cool because I could directly compare these engines without changing the underlying data. It lived in a standardised format on object storage.
+
+And that ecosystem is really rich, that evaluation process was to build a Flink + Paimon streaming system and then allow querying the outputs via StarrocksDB. Everything _just worked_ together, hats off to Apache!
+
+## OLAP vs OLTP
+
+In all the major OLTP databases I've used, every layer is welded together. Storage, query language, planner, protocol. But then the bits on the outside can't easily inteoperate with any of these layers, all they have is SQL.
+
+In the OLAP world, those layers have been somewhat decomposed. The storage format is standardised. Multiple engines compete on execution. Metadata is shared. Suddenly innovation can happen independently at each layer.
+
+<StackDiagram />
+
+While it feels hard to contribute innovations on the layers I have the technical capability to do so with a project like PostgreSQL. And I equally haven't found it particularly fulfilling to innovate outside of the codebase because the only real tools I have are gluing SQL strings together.
+
+## Rad
+
+All of that has lead to Rad. A research project, but also a usable prototype, designed to start conversations about all the different shapes relational databases _could_ be.
+
+I want to explore three distinct areas with this project, that for various reasons are complex or awkward to do when being forced to live at the tip of the abstraction tree atop SQL.
+
+1. Small and simple databases for the really common use-cases that still need the relational model
+2. Fully integrated toolchain, much like Go: one vision driving the whole stack
+3. SQL is just one of many ways to access relational data, what if we had an IR to target?
+
+<IRDiagram />
+
+### What it's not
+
+I'm not setting out to build a competing platform to PostgreSQL. That first item, “small”, matters because in all the side projects I've built over the last decade, I've not once reached for foreign data wrappers, PL-pgSQL, table partitioning, etc.
+
+In the same way that C++ has a thousand features that solve every problem under the sun, and Go launched with 25 keywords and no generics.
+
+I'm interested in what relational databases would look like if we started _designing_ them today, after watching what has happened to programming languages, developer tooling and the things developers have come to expect from software over the last decade.
+
+## Final words
+
+The prototype on this site is real. It was the result of finally giving in and just building it. AI helped a lot, but that's fine, it's a proof of concept to test the waters.
+
+Another thing this project would not exist without is [SlateDB](https://slatedb.io/) a really high quality abstraction over object storage that powers Rad's key-value store, upon which the relational model is assembled.
+
+Please share your thoughts and try Rad out on a toy project. It's an exploration of developer experience as much as it is of implementing a relational algebra engine. It's nowhere near production ready, but if the project resonates, I'd love to commit more time to fuzz testing, consistency and more critical requirements for real world usage.
+
+_This project was the result of many productive discussions over at [Makeroom](https://makeroom.club/) readers of this are invited to join us not only to provide feedback, but become a part of our community!_

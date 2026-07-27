@@ -1,0 +1,78 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "catalogue",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "b": { "kind": "scan", "table": "books", "scope": "b" },
+            "pb": { "kind": "project", "input": "b",
+              "fields": [
+                { "as": "title",  "expr": { "kind": "col", "scope": "b", "column": "title" } },
+                { "as": "length", "expr": { "kind": "col", "scope": "b", "column": "pages" } }
+              ] },
+            "m": { "kind": "scan", "table": "movies", "scope": "m" },
+            "pm": { "kind": "project", "input": "m",
+              "fields": [
+                { "as": "title",  "expr": { "kind": "col", "scope": "m", "column": "title" } },
+                { "as": "length", "expr": { "kind": "col", "scope": "m", "column": "minutes" } }
+              ] },
+            "u":   { "kind": "concatenate", "inputs": ["pb", "pm"], "scope": "u" },
+            "ord": { "kind": "order", "input": "u",
+              "terms": [ { "expr": { "kind": "col", "scope": "u", "column": "title" } } ] }
+          },
+          "root": { "node": "ord", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "title": "Alien", "length": 117 },
+    { "title": "Blade Runner", "length": 117 },
+    { "title": "Dune", "length": 412 },
+    { "title": "Hyperion", "length": 482 },
+    { "title": "Ubik", "length": 224 }
+  ],
+  "assertions": [
+    {
+      "name": "count_over_concat",
+      "query": {
+        "nodes": {
+          "b": { "kind": "scan", "table": "books", "scope": "b" },
+          "pb": { "kind": "project", "input": "b",
+            "fields": [ { "as": "title", "expr": { "kind": "col", "scope": "b", "column": "title" } } ] },
+          "m": { "kind": "scan", "table": "movies", "scope": "m" },
+          "pm": { "kind": "project", "input": "m",
+            "fields": [ { "as": "title", "expr": { "kind": "col", "scope": "m", "column": "title" } } ] },
+          "u": { "kind": "concatenate", "inputs": ["pb", "pm"], "scope": "u" },
+          "n": { "kind": "aggregate", "input": "u",
+            "aggs": [ { "fn": "count", "as": "n" } ] }
+        },
+        "root": { "node": "n", "cardinality": "scalar" }
+      },
+      "expect": 5
+    },
+    {
+      "name": "fold_over_concat",
+      "query": {
+        "nodes": {
+          "b": { "kind": "scan", "table": "books", "scope": "b" },
+          "pb": { "kind": "project", "input": "b",
+            "fields": [ { "as": "length", "expr": { "kind": "col", "scope": "b", "column": "pages" } } ] },
+          "m": { "kind": "scan", "table": "movies", "scope": "m" },
+          "pm": { "kind": "project", "input": "m",
+            "fields": [ { "as": "length", "expr": { "kind": "col", "scope": "m", "column": "minutes" } } ] },
+          "u": { "kind": "concatenate", "inputs": ["pb", "pm"], "scope": "u" },
+          "agg": { "kind": "aggregate", "input": "u",
+            "aggs": [
+              { "fn": "count", "as": "n" },
+              { "fn": "max", "arg": { "kind": "col", "scope": "u", "column": "length" }, "as": "longest" }
+            ] }
+        },
+        "root": { "node": "agg", "cardinality": "exactly_one" }
+      },
+      "expect": { "n": 5, "longest": 482 }
+    }
+  ]
+}

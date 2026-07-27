@@ -1,0 +1,16 @@
+# e2e/program_compose — two statements in one program: create a user, then
+# create a post whose input relation references the first statement's result
+# (a statement-result binding via `ref`), exercising read-your-writes and a
+# foreign key across statements.
+tables:
+  - id: 1
+    name: users
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+  - id: 2
+    name: posts
+    columns:
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: user_id, type: string, ref: users.id }
+      - { id: 3, name: title,   type: string }

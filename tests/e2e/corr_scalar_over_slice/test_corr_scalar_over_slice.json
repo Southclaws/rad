@@ -1,0 +1,62 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "parents_with_top_value",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "parents": { "kind": "scan", "table": "parents", "scope": "p" },
+            "children": { "kind": "scan", "table": "children", "scope": "c" },
+            "mine": {
+              "kind": "filter",
+              "input": "children",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "c", "column": "parent_id" },
+                "right": { "kind": "col", "scope": "p", "column": "id" }
+              }
+            },
+            "vals": {
+              "kind": "project",
+              "input": "mine",
+              "scope": "v",
+              "fields": [
+                { "as": "value", "expr": { "kind": "col", "scope": "c", "column": "value" } }
+              ]
+            },
+            "vals_sorted": {
+              "kind": "order",
+              "input": "vals",
+              "terms": [ { "expr": { "kind": "col", "scope": "v", "column": "value" }, "desc": true } ]
+            },
+            "top": {
+              "kind": "slice",
+              "input": "vals_sorted",
+              "limit": 1
+            },
+            "out": {
+              "kind": "project",
+              "input": "parents",
+              "scope": "o",
+              "spread": ["p"],
+              "fields": [
+                { "as": "top_value", "expr": { "kind": "scalar", "node": "top" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "p1", "top_value": 8 },
+    { "id": "p2", "top_value": null }
+  ]
+}

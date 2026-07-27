@@ -1,0 +1,41 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "nonequi",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "lefts": { "kind": "scan", "table": "lefts", "scope": "l" },
+            "rights": { "kind": "scan", "table": "rights", "scope": "r" },
+            "joined": {
+              "kind": "join",
+              "left": "lefts",
+              "right": "rights",
+              "join": "inner",
+              "on": {
+                "kind": "binary", "op": "lt",
+                "left": { "kind": "col", "scope": "l", "column": "a" },
+                "right": { "kind": "col", "scope": "r", "column": "b" }
+              }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "joined",
+              "terms": [
+                { "expr": { "kind": "col", "scope": "l", "column": "a" } },
+                { "expr": { "kind": "col", "scope": "r", "column": "b" } }
+              ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "lid": "l1", "a": 1, "rid": "r1", "b": 3 },
+    { "lid": "l1", "a": 1, "rid": "r2", "b": 10 },
+    { "lid": "l2", "a": 5, "rid": "r2", "b": 10 }
+  ]
+}

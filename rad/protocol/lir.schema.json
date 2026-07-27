@@ -1,0 +1,1302 @@
+{
+  "$defs": {
+    "AggTerm": {
+      "additionalProperties": false,
+      "description": "One aggregate fold, exposed in the output under `as`.\n\n- `count` with no `arg` counts rows; with an `arg` it counts the rows\n  where the argument is non-null. It is int64 and never NULL (`0` over an\n  empty group).\n- `sum` and `avg` require a numeric argument; `avg` is float64.\n- `min` and `max` accept any comparable argument.\n\nAll folds skip NULL arguments. Over an empty global fold, `count` is `0`\nand every other fold is NULL.\n",
+      "properties": {
+        "arg": {
+          "$ref": "#/$defs/Expr",
+          "description": "The argument expression. Omitted only for `count`, which then counts\nrows rather than non-null values.\n"
+        },
+        "as": {
+          "description": "The output attribute name for this fold.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "fn": {
+          "description": "The fold function.",
+          "enum": [
+            "count",
+            "sum",
+            "avg",
+            "min",
+            "max"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "fn",
+        "as"
+      ],
+      "title": "AggTerm",
+      "type": "object"
+    },
+    "AggregateNode": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "groups"
+          ]
+        },
+        {
+          "required": [
+            "aggs"
+          ]
+        }
+      ],
+      "description": "Fold the rows of `input` into groups. With `groups`, it is GROUP BY: one\noutput row per distinct combination of the group expressions. With no\n`groups`, it is the global fold: exactly one output row over the whole\ninput, even when the input is empty. At least one of `groups` or `aggs`\nmust be present.\n\nOver an empty input, a global `count` is `0` and every other fold\n(`sum`, `avg`, `min`, `max`) is NULL. The output row type is the group\nattributes followed by the aggregate term outputs; a node above an\naggregate may reference only those. Bind an output `scope` when a later\nnode references them by name.\n",
+      "properties": {
+        "aggs": {
+          "description": "The aggregate folds computed for each group.",
+          "items": {
+            "$ref": "#/$defs/AggTerm"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "groups": {
+          "description": "Grouping keys. One output row is produced per distinct combination\nof their values. Omit for a single global fold.\n",
+          "items": {
+            "$ref": "#/$defs/GroupTerm"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "input": {
+          "description": "The id of the relation to fold.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "aggregate",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Optional label bound to this aggregate's output row. Required only\nwhen a later node refers to its groups or terms by name.\n",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "input"
+      ],
+      "type": "object"
+    },
+    "AnyManyTextMatchPart": {
+      "additionalProperties": false,
+      "description": "A wildcard matching zero or more characters (SQL `%`). Adjacent\n`any_many` parts are equivalent to one; a producer should emit the\ncollapsed form.\n",
+      "properties": {
+        "kind": {
+          "const": "any_many",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "AnyManyTextMatchPart",
+      "type": "object"
+    },
+    "BinaryExpr": {
+      "additionalProperties": false,
+      "description": "Apply a binary operator to `left` and `right`.\n\n- Comparisons `eq ne lt lte gt gte` yield a boolean under three-valued\n  logic: any NULL operand makes the result `UNKNOWN`.\n- Logical `and` / `or` follow Kleene logic (`F and x = F`, `T or x = T`,\n  otherwise `UNKNOWN`). They are strictly binary; a client left-folds a\n  longer chain into nested `and`/`or`.\n- Arithmetic `add sub mul div` operate on numeric operands and propagate\n  NULL. They are part of the grammar and are evaluated, though the\n  generated clients do not yet emit them.\n",
+      "properties": {
+        "kind": {
+          "const": "binary",
+          "type": "string"
+        },
+        "left": {
+          "$ref": "#/$defs/Expr",
+          "description": "The left operand."
+        },
+        "op": {
+          "description": "The binary operator.",
+          "enum": [
+            "eq",
+            "ne",
+            "lt",
+            "lte",
+            "gt",
+            "gte",
+            "and",
+            "or",
+            "add",
+            "sub",
+            "mul",
+            "div"
+          ],
+          "type": "string"
+        },
+        "right": {
+          "$ref": "#/$defs/Expr",
+          "description": "The right operand."
+        }
+      },
+      "required": [
+        "kind",
+        "op",
+        "left",
+        "right"
+      ],
+      "type": "object"
+    },
+    "Binding": {
+      "description": "One named relational value, a closed tagged union selected by `kind`. A\n`derived` binding names a single defining root; a `recursive` binding\nnames an `anchor` (base case) and a `step` (inductive case) combined into\na fixpoint.\n",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/DerivedBinding"
+        },
+        {
+          "$ref": "#/$defs/RecursiveBinding"
+        }
+      ],
+      "title": "Binding"
+    },
+    "BoolValue": {
+      "additionalProperties": false,
+      "description": "A boolean value, or a bool NULL when `value` is absent.",
+      "properties": {
+        "type": {
+          "const": "bool",
+          "type": "string"
+        },
+        "value": {
+          "description": "The boolean value; absent for a NULL.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "BoolValue",
+      "type": "object"
+    },
+    "BranchArm": {
+      "additionalProperties": false,
+      "description": "One arm of a `branch`: a boolean predicate and the result the branch\nproduces when this is the first predicate to evaluate to TRUE.\n",
+      "properties": {
+        "then": {
+          "$ref": "#/$defs/Expr",
+          "description": "The arm's result expression."
+        },
+        "when": {
+          "$ref": "#/$defs/Expr",
+          "description": "The arm's boolean predicate."
+        }
+      },
+      "required": [
+        "when",
+        "then"
+      ],
+      "type": "object"
+    },
+    "BranchExpr": {
+      "additionalProperties": false,
+      "description": "Ordered, lazy branching. Evaluate branch predicates in document order.\nThe result is the `then` expression belonging to the first predicate\nthat evaluates to TRUE. Predicates evaluating to FALSE or UNKNOWN do\nnot match. If none match, evaluate and return `else`. Unselected result\nexpressions are not evaluated — the laziness is contract, not\noptimization: a division by zero in an arm that is never selected does\nnot raise.\n\n`else` is required. LIR has typed NULLs only, so there is no\nimplicit-NULL default; a frontend that permits an omitted else inserts\na correctly typed NULL itself.\n\nTyping: every `when` must be boolean (nullable is fine — an UNKNOWN\npredicate falls through). Every `then` and the `else` must have the\nsame scalar kind, with no implicit widening; a frontend inserts\nexplicit casts. The result is that kind, nullable when any `then` or\nthe `else` is. A branch subtree may not contain a crossing (`exists` /\n`first` / `scalar` / `array`) anywhere — in a `when`, a `then`, or the\n`else`: the executor attaches crossings per row before expression\nevaluation, which would evaluate crossings in never-selected arms, so\nthey are rejected at bind time.\n",
+      "properties": {
+        "branches": {
+          "description": "The arms, tested in document order.",
+          "items": {
+            "$ref": "#/$defs/BranchArm"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "else": {
+          "$ref": "#/$defs/Expr",
+          "description": "The result when no predicate matches."
+        },
+        "kind": {
+          "const": "branch",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "branches",
+        "else"
+      ],
+      "type": "object"
+    },
+    "CastExpr": {
+      "additionalProperties": false,
+      "description": "Convert `expr` to the scalar type `to`. The conversion is explicit; the\nresult is nullable exactly when the operand is.\n",
+      "properties": {
+        "expr": {
+          "$ref": "#/$defs/Expr",
+          "description": "The expression to convert."
+        },
+        "kind": {
+          "const": "cast",
+          "type": "string"
+        },
+        "to": {
+          "$ref": "#/$defs/ScalarType",
+          "description": "The target scalar type."
+        }
+      },
+      "required": [
+        "kind",
+        "expr",
+        "to"
+      ],
+      "type": "object"
+    },
+    "Cell": {
+      "description": "One schema-directed scalar payload, used inside a `rows` relation where\neach column already declares its type. A string is decoded against the\ncorresponding `RowsColumn.type` — numbers as lossless strings, `bool` as\n\"true\"/\"false\", so precision survives and the type is never repeated per\ncell; JSON null is a typed NULL, valid only when that column is nullable.\nUnlike `Value`, a cell carries no type of its own — the column supplies\nit once for the whole column.\n",
+      "title": "Cell",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ColumnExpr": {
+      "additionalProperties": false,
+      "description": "Reference a column of a bound scope: `scope` names a `scan` (or a\n`project`/`aggregate` that bound an output scope), and `column` names one\nof its attributes. The referenced scope must be in scope at this point in\nthe graph; the binder resolves the reference to the producing relation's\noutput. A reference to a scope bound by an enclosing relation is what\nmakes a sub-relation correlated.\n",
+      "properties": {
+        "column": {
+          "description": "The attribute name within that scope.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "col",
+          "type": "string"
+        },
+        "scope": {
+          "description": "The label of the relation whose column is referenced.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "scope",
+        "column"
+      ],
+      "type": "object"
+    },
+    "ConcatenateNode": {
+      "additionalProperties": false,
+      "description": "Concatenate two or more input relations into one bag: the output\ncontains every row of every input with its multiplicity preserved and\nperforms no deduplication (SQL `UNION ALL`). A set union is the\ncomposition `distinct` over `concatenate`, under `distinct`'s\ncanonical full-row identity.\n\nInputs must have positionally compatible output shapes: the same number\nof columns and, at each position, the same column name and scalar kind.\nNullability is widened positionally: an output column is nullable when\nthe corresponding column of any input is nullable.\n\nThe output carries those shared column names under `scope`, exactly as\na scan exposes its columns under its scope. Input scopes do not remain\nvisible above the concatenation.\n\nA concatenation imposes no logical order. Input declaration order and\nany ordering carried by an input have no observable effect on the\noutput. An implementation may process or emit inputs in any order. The\ndeclaration order is structural only and has no relational or\nobservable meaning. An observable ordered result requires an explicit\n`order` above the concatenation.\n",
+      "properties": {
+        "inputs": {
+          "description": "The ids of the input relations. At least two; n-ary by design,\nsince concatenation is associative.\n",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 2,
+          "type": "array"
+        },
+        "kind": {
+          "const": "concatenate",
+          "type": "string"
+        },
+        "scope": {
+          "description": "The label the output columns are bound to. Must be unique across\nthe query, under the same rules as a scan's scope.\n",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "inputs",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "CrossingExprArray": {
+      "additionalProperties": false,
+      "description": "Every row of the relation `node` as a nested array, in the relation's\norder. Empty when the relation has no rows, never null. Renders a to-many\nrelationship. The relation may be correlated with the enclosing row.\n",
+      "properties": {
+        "kind": {
+          "const": "array",
+          "type": "string"
+        },
+        "node": {
+          "description": "The id of the relation to materialise as an array.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "node"
+      ],
+      "type": "object"
+    },
+    "CrossingExprExists": {
+      "additionalProperties": false,
+      "description": "`EXISTS`: a boolean that is `TRUE` when the relation `node` produces at\nleast one row and `FALSE` otherwise. Never NULL. The relation may be\ncorrelated with the enclosing row.\n",
+      "properties": {
+        "kind": {
+          "const": "exists",
+          "type": "string"
+        },
+        "node": {
+          "description": "The id of the relation whose non-emptiness is tested.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "node"
+      ],
+      "type": "object"
+    },
+    "CrossingExprFirst": {
+      "additionalProperties": false,
+      "description": "The first row of the relation `node` as a nested object, or null when it\nhas no rows. Renders a to-one relationship.\n\nSubject to the determinism rule: `first` is accepted only when the\nrelation is provably at most one row (a unique-key filter, a global\naggregate, a `slice` of one) or carries an explicit `order`. Taking the\nfirst row of an unordered multi-row relation would leak the access path\ninto the result and is rejected at bind time.\n",
+      "properties": {
+        "kind": {
+          "const": "first",
+          "type": "string"
+        },
+        "node": {
+          "description": "The id of the relation to take the first row of.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "node"
+      ],
+      "type": "object"
+    },
+    "CrossingExprScalar": {
+      "additionalProperties": false,
+      "description": "The single value of a single-column, at-most-one-row relation `node`, or\nnull when it has no rows. Renders a scalar subquery, such as a correlated\naggregate count.\n\n`scalar` is a cardinality assertion: the relation must have exactly one\noutput column and be statically at most one row, both checked at bind\ntime. \"First scalar\" is not implied; write it as the composition of\n`scalar` over a `slice` of one over an `order`.\n",
+      "properties": {
+        "kind": {
+          "const": "scalar",
+          "type": "string"
+        },
+        "node": {
+          "description": "The id of the single-column, at-most-one-row relation.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "node"
+      ],
+      "type": "object"
+    },
+    "DerivedBinding": {
+      "additionalProperties": false,
+      "description": "A binding whose value is the one committed relational value its defining\ntree produces for this statement. Under bag semantics that value is one\ncommitted bag: a nondeterministic body (a slice with no total order) is\nresolved once, and every reference observes the same choice. The\nbinding's public output is its root's output shape — interior scopes\nnever leak.\n",
+      "properties": {
+        "kind": {
+          "const": "derived",
+          "type": "string"
+        },
+        "node": {
+          "description": "The id of the binding's defining root node in `nodes`.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "node"
+      ],
+      "title": "DerivedBinding",
+      "type": "object"
+    },
+    "DistinctNode": {
+      "additionalProperties": false,
+      "description": "Remove duplicate complete rows from `input`. Two rows are duplicates when\nevery corresponding datum has the same canonical row identity — the\ncomplete row, type- and order-significant, with typed NULL values equal to\none another (deliberately unlike three-valued predicate equality). The\noutput has `input`'s row type and contains at most one occurrence of each\ncomplete row. `distinct` fixes membership and multiplicity, not order: any\nobservable ordering requires an explicit `order` above it, and an ordered\ninput confers no ordering on the output.\n",
+      "properties": {
+        "input": {
+          "description": "The id of the relation to deduplicate.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "distinct",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "input"
+      ],
+      "type": "object"
+    },
+    "ExceptNode": {
+      "additionalProperties": false,
+      "description": "The bag difference `left` minus `right` (SQL `EXCEPT`): the rows of\n`left` with `right`'s occurrences removed, matched by canonical\nfull-row identity — the `distinct` operator's identity, where typed\nNULLs equal one another. With `quantifier: all`, a row occurring m\ntimes in `left` and n times in `right` occurs max(m − n, 0) times in\nthe output; with `quantifier: distinct`, each distinct `left` row\noccurs exactly once when it does not occur in `right` at all.\n\nThe inputs must be positionally compatible under `concatenate`'s rule:\nthe same number of columns and, at each position, the same column name\nand scalar kind. Every output row is drawn from `left`, so the output\ncolumns carry `left`'s types and nullability, exposed under `scope`\nexactly as a scan exposes its columns. Input scopes are not visible\nabove the node.\n\nThe two sides are independent relations: neither may reference a scope\nbound by the other, exactly as a join's sides may not. The output has\nno inherent order; an observable ordered result requires an explicit\n`order` above it.\n",
+      "properties": {
+        "kind": {
+          "const": "except",
+          "type": "string"
+        },
+        "left": {
+          "description": "The id of the left input relation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "quantifier": {
+          "description": "The set quantifier: `all` subtracts occurrence counts; `distinct`\nemits each distinct `left` row absent from `right` once.\n",
+          "enum": [
+            "all",
+            "distinct"
+          ],
+          "type": "string"
+        },
+        "right": {
+          "description": "The id of the right input relation, whose occurrences are subtracted from `left`.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "scope": {
+          "description": "The label the output columns are bound to. Must be unique across\nthe query, under the same rules as a scan's scope.\n",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "left",
+        "right",
+        "quantifier",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "Expr": {
+      "description": "An expression: a computation producing exactly one typed datum. A closed\ntagged union selected by `kind`. Most expressions are scalar; the `first`\nand `array` crossings produce a row and an array datum respectively.\n\nExpression evaluation is pure: it has no side effects and reads no\nstorage of its own. The crossings (`exists`, `first`, `scalar`, `array`)\nare the only boundary from a relation into an expression, and each states\nhow a stream of rows becomes one datum.\n",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/LiteralExpr"
+        },
+        {
+          "$ref": "#/$defs/ColumnExpr"
+        },
+        {
+          "$ref": "#/$defs/UnaryExpr"
+        },
+        {
+          "$ref": "#/$defs/BinaryExpr"
+        },
+        {
+          "$ref": "#/$defs/CastExpr"
+        },
+        {
+          "$ref": "#/$defs/BranchExpr"
+        },
+        {
+          "$ref": "#/$defs/TextMatchExpr"
+        },
+        {
+          "$ref": "#/$defs/CrossingExprExists"
+        },
+        {
+          "$ref": "#/$defs/CrossingExprFirst"
+        },
+        {
+          "$ref": "#/$defs/CrossingExprScalar"
+        },
+        {
+          "$ref": "#/$defs/CrossingExprArray"
+        }
+      ],
+      "title": "Expr"
+    },
+    "Field": {
+      "additionalProperties": false,
+      "description": "One computed output attribute of a projection: the expression `expr`\nunder the output name `as`. When `expr` is a crossing the field\nmaterialises a nested value: `first` renders an object (or null), `array`\na nested array, `scalar` a bare value, and `exists` a boolean.\n",
+      "properties": {
+        "as": {
+          "description": "The output attribute name. Must not collide with another.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "expr": {
+          "$ref": "#/$defs/Expr",
+          "description": "The expression computing the attribute's value."
+        }
+      },
+      "required": [
+        "as",
+        "expr"
+      ],
+      "title": "Field",
+      "type": "object"
+    },
+    "FilterNode": {
+      "additionalProperties": false,
+      "description": "Keep the rows of `input` whose `predicate` evaluates to `TRUE` under\nthree-valued logic. Rows evaluating to `FALSE` or `UNKNOWN` are dropped;\nthis is the load-bearing K3 rule. The predicate must be of boolean type.\n\nA filter changes cardinality but not row type: its output is its input's\nrow type. A filter whose equality conjuncts cover a unique key of its\ninput (a primary key or unique index) is statically at most one row,\nwhich is what lets the to-parent pattern (`first` over a foreign-key\nmatch) satisfy the determinism rule.\n",
+      "properties": {
+        "input": {
+          "description": "The id of the relation to filter.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "filter",
+          "type": "string"
+        },
+        "predicate": {
+          "$ref": "#/$defs/Expr",
+          "description": "A boolean expression; rows for which it is TRUE are kept."
+        }
+      },
+      "required": [
+        "kind",
+        "input",
+        "predicate"
+      ],
+      "type": "object"
+    },
+    "Float64Value": {
+      "additionalProperties": false,
+      "description": "A finite IEEE-754 binary64 value, or a float64 NULL when `value` is\nabsent. `value` is a decimal string that round-trips exactly to that\nbinary64 value; non-finite values (NaN, Infinity) are rejected by the\nbinder.\n",
+      "properties": {
+        "type": {
+          "const": "float64",
+          "type": "string"
+        },
+        "value": {
+          "description": "The finite binary64 value in canonical round-trip string form; absent for a NULL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "Float64Value",
+      "type": "object"
+    },
+    "GroupTerm": {
+      "additionalProperties": false,
+      "description": "One grouping key of an aggregate: rows are grouped by the value of\n`expr`, and the key is exposed in the output under `as`. When `as` is\nomitted and `expr` is a bare column reference, the column's name is used.\n",
+      "properties": {
+        "as": {
+          "description": "The output name for this key. Defaults to the referenced column name\nwhen `expr` is a bare column.\n",
+          "minLength": 1,
+          "type": "string"
+        },
+        "expr": {
+          "$ref": "#/$defs/Expr",
+          "description": "The expression whose value defines the group."
+        }
+      },
+      "required": [
+        "expr"
+      ],
+      "title": "GroupTerm",
+      "type": "object"
+    },
+    "Int64Value": {
+      "additionalProperties": false,
+      "description": "A signed 64-bit integer, or an int64 NULL when `value` is absent. `value`\nis the integer's canonical base-10 string, with no leading plus sign or\nredundant leading zeroes; values outside the signed 64-bit range are\ninvalid — a bound the pattern cannot express, so the binder enforces it.\n",
+      "properties": {
+        "type": {
+          "const": "int64",
+          "type": "string"
+        },
+        "value": {
+          "description": "The integer as a canonical decimal string, e.g. \"9007199254740993\"; absent for a NULL.",
+          "pattern": "^-?(0|[1-9][0-9]*)$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "Int64Value",
+      "type": "object"
+    },
+    "IntersectNode": {
+      "additionalProperties": false,
+      "description": "The bag intersection of `left` and `right` (SQL `INTERSECT`): the rows\ncommon to both inputs, matched by canonical full-row identity — the\n`distinct` operator's identity, where typed NULLs equal one another.\nWith `quantifier: all`, a row occurring m times in `left` and n times\nin `right` occurs min(m, n) times in the output; with `quantifier:\ndistinct`, each common row occurs exactly once.\n\nThe inputs must be positionally compatible under `concatenate`'s rule:\nthe same number of columns and, at each position, the same column name\nand scalar kind. Every output row is drawn from `left`, so the output\ncolumns carry `left`'s types and nullability, exposed under `scope`\nexactly as a scan exposes its columns. Input scopes are not visible\nabove the node.\n\nThe two sides are independent relations: neither may reference a scope\nbound by the other, exactly as a join's sides may not. The output has\nno inherent order; an observable ordered result requires an explicit\n`order` above it.\n",
+      "properties": {
+        "kind": {
+          "const": "intersect",
+          "type": "string"
+        },
+        "left": {
+          "description": "The id of the left input relation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "quantifier": {
+          "description": "The set quantifier: `all` keeps matched multiplicities (min of the\ntwo sides); `distinct` emits each common row once.\n",
+          "enum": [
+            "all",
+            "distinct"
+          ],
+          "type": "string"
+        },
+        "right": {
+          "description": "The id of the right input relation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "scope": {
+          "description": "The label the output columns are bound to. Must be unique across\nthe query, under the same rules as a scan's scope.\n",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "left",
+        "right",
+        "quantifier",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "JoinNode": {
+      "additionalProperties": false,
+      "description": "Combine `left` and `right` into a relation whose rows carry the\nattributes of both sides, keeping pairs for which `on` is `TRUE` under\nthree-valued logic.\n\n- `inner` — only matched pairs.\n- `left` — every left row at least once; the right attributes are NULL\n  when no right row matches.\n\nThe two sides are independent relations: neither may reference a scope\nbound by the other (a dependent join is rejected at bind time), and `on`\nmay not contain a crossing. Correlated nesting is expressed with a\ncrossing in a projection field, not with a join. `semi` and `anti` are\nreserved and not accepted.\n",
+      "properties": {
+        "join": {
+          "description": "The join mode: `inner` keeps only matched pairs; `left` keeps every\nleft row, padding unmatched right attributes with NULL.\n",
+          "enum": [
+            "inner",
+            "left"
+          ],
+          "type": "string"
+        },
+        "kind": {
+          "const": "join",
+          "type": "string"
+        },
+        "left": {
+          "description": "The id of the left input relation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "on": {
+          "$ref": "#/$defs/Expr",
+          "description": "The boolean join condition. Kept pairs are those for which it is\nTRUE. Must not reference a crossing.\n"
+        },
+        "right": {
+          "description": "The id of the right input relation.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "left",
+        "right",
+        "join",
+        "on"
+      ],
+      "type": "object"
+    },
+    "LiteralExpr": {
+      "additionalProperties": false,
+      "description": "A constant value. `value` is a scalar wire value (see `Value`); numeric\nvalues travel as lossless strings, so a 64-bit integer keeps full\nprecision on the wire.\n",
+      "properties": {
+        "kind": {
+          "const": "lit",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/Value",
+          "description": "The constant's typed scalar value."
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "type": "object"
+    },
+    "LiteralTextMatchPart": {
+      "additionalProperties": false,
+      "description": "A literal span the pattern must match at this position under the enclosing\n`text_match.comparison` rule. Never empty; adjacent literal parts are\nequivalent to one concatenated literal, and a producer should emit the\nconcatenated form.\n",
+      "properties": {
+        "kind": {
+          "const": "literal",
+          "type": "string"
+        },
+        "value": {
+          "description": "The literal text to compare with the corresponding input span.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "title": "LiteralTextMatchPart",
+      "type": "object"
+    },
+    "Node": {
+      "description": "A relation operator: one node of the relation forest. A closed tagged\nunion of the LIR operators, selected by `kind`. Every operator\nconsumes relations and produces a relation whose every output attribute\nis addressable by its consumer (relational closure).\n",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ScanNode"
+        },
+        {
+          "$ref": "#/$defs/RowsNode"
+        },
+        {
+          "$ref": "#/$defs/FilterNode"
+        },
+        {
+          "$ref": "#/$defs/ProjectNode"
+        },
+        {
+          "$ref": "#/$defs/JoinNode"
+        },
+        {
+          "$ref": "#/$defs/ConcatenateNode"
+        },
+        {
+          "$ref": "#/$defs/IntersectNode"
+        },
+        {
+          "$ref": "#/$defs/ExceptNode"
+        },
+        {
+          "$ref": "#/$defs/AggregateNode"
+        },
+        {
+          "$ref": "#/$defs/OrderNode"
+        },
+        {
+          "$ref": "#/$defs/SliceNode"
+        },
+        {
+          "$ref": "#/$defs/RefNode"
+        },
+        {
+          "$ref": "#/$defs/RecursiveRefNode"
+        },
+        {
+          "$ref": "#/$defs/DistinctNode"
+        }
+      ],
+      "title": "Node"
+    },
+    "OrderNode": {
+      "additionalProperties": false,
+      "description": "Impose a logical ordering on `input` without changing its rows or row\ntype. Rows sort by `terms` in order; within each term NULLs sort first\nascending and last descending.\n\nWhen the output carries a known unique key (a scan's primary key, an\naggregate's group columns), that key is appended as trailing ascending\nterms so tied rows order identically under every access path. Without a\nknown unique key, the order of tied rows is unspecified. An explicit\n`order` is what makes a downstream `first` or `slice` a deterministic,\npath-independent selection.\n",
+      "properties": {
+        "input": {
+          "description": "The id of the relation to order.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "order",
+          "type": "string"
+        },
+        "terms": {
+          "description": "The ordering terms, applied in list order.",
+          "items": {
+            "$ref": "#/$defs/OrderTerm"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "input",
+        "terms"
+      ],
+      "type": "object"
+    },
+    "OrderTerm": {
+      "additionalProperties": false,
+      "description": "One ordering term: sort by the value of `expr`, ascending unless `desc`\nis true. NULLs sort first when ascending and last when descending. Terms\napply in list order; a deterministic unique-key tie-breaker is appended\nby the engine when one is known.\n",
+      "properties": {
+        "desc": {
+          "description": "Sort descending instead of the default ascending.",
+          "type": "boolean"
+        },
+        "expr": {
+          "$ref": "#/$defs/Expr",
+          "description": "The expression to sort by."
+        }
+      },
+      "required": [
+        "expr"
+      ],
+      "title": "OrderTerm",
+      "type": "object"
+    },
+    "ProjectNode": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "spread"
+          ]
+        },
+        {
+          "required": [
+            "fields"
+          ]
+        }
+      ],
+      "description": "Establish a new row type from `input`. Projection is not column\nselection: it defines the output row as the columns re-exposed by\n`spread` followed by the computed `fields`. Aliases, computed values,\nand nested materialisation (a field whose expression is a crossing) all\nlive here. At least one of `spread` or `fields` must be present.\n\nOutput attribute names must be unique. Every collision is rejected at\nbind time: field against field, field against a spread-produced column,\nand column against column across spread scopes. Bind an output `scope`\nwhen a later node references this projection's attributes by name.\n",
+      "properties": {
+        "fields": {
+          "description": "Computed output attributes, in order, after any spread.",
+          "items": {
+            "$ref": "#/$defs/Field"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "input": {
+          "description": "The id of the relation to project.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "project",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Optional label bound to this projection's output row. Required only\nwhen a later node refers to these attributes by name.\n",
+          "minLength": 1,
+          "type": "string"
+        },
+        "spread": {
+          "description": "Scopes whose columns are re-exposed in the output, in order, before\nthe computed `fields`. Names must not collide within or across\nspreads or with a field.\n",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "kind",
+        "input"
+      ],
+      "type": "object"
+    },
+    "Query": {
+      "additionalProperties": false,
+      "description": "A complete query: the relation forest plus its root selector.\n\n`nodes` is a flat map from caller-chosen id to relation node. Edges are\nthe string ids a node names in its `input`, `inputs`, `left`, `right`,\nor a crossing's `node`. This encoding carries no sharing among ordinary\nnodes: an id names exactly one inline definition, referenced by exactly\none consumer. The document is a finite forest — one tree rooted at\n`root.node` plus one tree per binding root — and cyclic, dangling,\nshared, or unreachable definitions are rejected before binding.\n\n`bindings` is the one deliberate sharing construct. A binding names\nand denotes a derived relation as a first-class relational value —\nthe name is syntax, the denotation is semantics: one statement-local\ncommitted value, observed by every `ref` node under its own fresh\nscope, exactly as two scans of one table observe the same snapshot.\nBinding names, node ids, and scope labels are three separate\nnamespaces.\n",
+      "properties": {
+        "bindings": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Binding"
+          },
+          "description": "Named relational values, each identifying the root node of its\ndefining tree within `nodes`. A binding's tree is subject to the\nsame single-consumer rules as the main tree; `ref` nodes are edges\ninto this namespace, never ordinary node-consumer edges. Binding\ntrees may themselves reference other bindings: those references\nform a separate acyclic dependency graph over the relation forest.\nThe single exception is a recursive binding, whose `step` references\nthe binding itself through `recursive_ref` — the one sanctioned\ncycle. Every declared binding must be referenced at least once.\n",
+          "minProperties": 1,
+          "propertyNames": {
+            "minLength": 1
+          },
+          "type": "object"
+        },
+        "nodes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Node"
+          },
+          "description": "The relation nodes of the query, keyed by caller-chosen id. Ids are\nopaque labels with no meaning beyond linking a consumer to its\ninput; they carry no sharing or materialisation identity.\n",
+          "minProperties": 1,
+          "propertyNames": {
+            "minLength": 1
+          },
+          "type": "object"
+        },
+        "root": {
+          "$ref": "#/$defs/Root"
+        }
+      },
+      "required": [
+        "nodes",
+        "root"
+      ],
+      "title": "Query",
+      "type": "object"
+    },
+    "RecursiveBinding": {
+      "additionalProperties": false,
+      "description": "A recursively-defined relation, evaluated by iterating a step over a\nfrontier. The `anchor` (base case) is evaluated once to seed both the\nworking table and the result; then the `step` (inductive case) is\nevaluated repeatedly with its `recursive_ref` bound to the previous\niteration's rows — the frontier — and each iteration's output is added to\nthe result, until the frontier is empty. `accumulation: new` admits each\nfull row at most once: rows already in the accumulated result, and\nduplicates produced within the same iteration, are dropped before the\nnext frontier forms (a set fixpoint). `accumulation: all` keeps every\ngenerated row, multiplicity included. This is recursive admission, not\nthe unary `distinct` operator — they share canonical full-row identity\nbut are separate constructs. The `step` must contain exactly one\n`recursive_ref` to this binding and the `anchor` none; the reference\ndenotes the frontier, never the accumulated result.\n\nThe anchor supplies the binding's column names, order, and kinds;\nnullability is the least widening that accommodates both the anchor and\nthe recursive step. The relation has no inherent order and termination is\nnot guaranteed — observing it requires an explicit `order`, and a\nnon-terminating recursion is bounded only by the engine's iteration and\nrow limits.\n",
+      "properties": {
+        "accumulation": {
+          "description": "How each iteration's rows enter the result and next frontier: `all`\nkeeps every generated row with its multiplicity; `new` admits each\nfull row at most once, dropping rows already in the accumulated\nresult and duplicates within the same iteration. Recursive admission,\nnot the unary `distinct` operator.\n",
+          "enum": [
+            "all",
+            "new"
+          ],
+          "type": "string"
+        },
+        "anchor": {
+          "description": "The base-case root node. Contains no `recursive_ref`.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "recursive",
+          "type": "string"
+        },
+        "step": {
+          "description": "The inductive-case root node. Contains exactly one `recursive_ref`\nto this binding.\n",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "anchor",
+        "step",
+        "accumulation"
+      ],
+      "title": "RecursiveBinding",
+      "type": "object"
+    },
+    "RecursiveRefNode": {
+      "additionalProperties": false,
+      "description": "One occurrence of the enclosing recursive binding's frontier: the rows\nthe previous iteration produced (the working table), exposed under a\nfresh `scope` exactly as `ref` exposes a committed binding. Legal only\ninside that binding's `step`, and exactly once. It denotes the frontier,\nnever the accumulated result; the completed fixpoint value is observed\nfrom outside the binding through an ordinary `ref`.\n",
+      "properties": {
+        "binding": {
+          "description": "The enclosing recursive binding whose frontier this observes.\n",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "recursive_ref",
+          "type": "string"
+        },
+        "scope": {
+          "description": "The label this occurrence's rows are bound to. Must be unique across\nthe query, like a scan's scope.\n",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "binding",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "RefNode": {
+      "additionalProperties": false,
+      "description": "One occurrence of a named binding: a fresh variable ranging over the\nbinding's committed value, exactly as a scan is a fresh variable over\na table's snapshot. The occurrence exposes the binding's output\ncolumns under its own `scope`; the binding's interior scopes\nare not visible through it. References are uniformly zero-or-many\nrows regardless of the body — determinism-sensitive consumers bring\ntheir own order or slice.\n",
+      "properties": {
+        "binding": {
+          "description": "The name of the binding this occurrence observes.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "ref",
+          "type": "string"
+        },
+        "scope": {
+          "description": "The label this occurrence's rows are bound to. Must be unique\nacross the query, like a scan's scope.\n",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "binding",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "Root": {
+      "additionalProperties": false,
+      "description": "Selects the result relation and how its rows materialise into the\nresponse body:\n\n- `many` — every row, as an array of objects.\n- `first` — the first row as an object, or null when there are none.\n  Subject to the determinism rule: the root relation must be provably at\n  most one row or carry an explicit `order`.\n- `exactly_one` — the single row as an object; it is an error if the\n  relation produces zero or more than one row.\n- `scalar` — the sole column of the sole row as a bare value, or null\n  when there are no rows. The relation must have exactly one output\n  column and be statically at most one row. Ordering a multi-row\n  relation makes `first` deterministic but does not make it a valid\n  `scalar`.\n",
+      "properties": {
+        "cardinality": {
+          "description": "How the root relation's rows collapse into the response.",
+          "enum": [
+            "many",
+            "first",
+            "exactly_one",
+            "scalar"
+          ],
+          "type": "string"
+        },
+        "node": {
+          "description": "The id of the root relation node.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "node",
+        "cardinality"
+      ],
+      "title": "Root",
+      "type": "object"
+    },
+    "RowsColumn": {
+      "additionalProperties": false,
+      "description": "One declared output column of a constant relation.",
+      "properties": {
+        "name": {
+          "description": "The output attribute name.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "nullable": {
+          "default": false,
+          "description": "Whether cells in this column may be NULL.",
+          "type": "boolean"
+        },
+        "type": {
+          "$ref": "#/$defs/ScalarType",
+          "description": "The column's scalar type."
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "RowsColumn",
+      "type": "object"
+    },
+    "RowsNode": {
+      "additionalProperties": false,
+      "description": "Introduce a finite constant relation: literal rows with explicitly\ndeclared columns, bound to a `scope` label exactly as a scan is. It is\nthe second relational leaf beside `scan`, useful for literal queries,\njoins against ad hoc data, fixtures, and mutation input where a\nliteral row is simply a one-row relation.\n\nColumn types and nullability are declared, never inferred from the\nrow values: a bare JSON number cannot choose between int64 and\nfloat64, and the schema of a relation must not depend on its data.\nEach row is a positional array parallel to `columns`, and its arity\nmust equal the number of declared columns. Each cell is a `Cell`: a bare\nstring payload decoded against its column's declared scalar type (numbers\nas lossless strings, so precision survives end to end), or JSON null for a\ntyped NULL, valid only for a nullable column. The column supplies the\ntype, so — unlike a `Value` literal — a cell never repeats it.\n\n`rows` may be empty. Because type and nullability are declared\nindependently of the values, an empty constant relation remains\nfully typed.\n\nThe relation is a bag containing exactly `rows.length` rows,\nincluding duplicates. Document order is not a logical relation\norder; observing an order requires an explicit `order` node above\nit. Its bag contents are deterministic and independent of storage\naccess paths or physical plan choice.\n",
+      "properties": {
+        "columns": {
+          "description": "The output columns in positional order. Column names must be\nunique.\n",
+          "items": {
+            "$ref": "#/$defs/RowsColumn"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "kind": {
+          "const": "rows",
+          "type": "string"
+        },
+        "rows": {
+          "description": "Literal rows represented as positional arrays parallel to\n`columns`. May be empty.\n",
+          "items": {
+            "items": {
+              "$ref": "#/$defs/Cell"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "scope": {
+          "description": "The label this relation's output attributes are bound to. Must be\nunique across the query, under the same rules as a scan's scope.\n",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "scope",
+        "columns",
+        "rows"
+      ],
+      "type": "object"
+    },
+    "ScalarType": {
+      "description": "The logical type of a scalar value: `text`, `int64`, `float64`, or\n`bool`.\n",
+      "enum": [
+        "text",
+        "int64",
+        "float64",
+        "bool"
+      ],
+      "title": "ScalarType",
+      "type": "string"
+    },
+    "ScanNode": {
+      "additionalProperties": false,
+      "description": "Introduce a base table as a relation and bind a `scope` label to its\nrows. Scans introduce stored rows; `rows` introduces literal ones —\nevery other operator derives from these leaves.\n\nA scan's row order is physical (whatever the chosen access path yields)\nand never logical: to depend on order, place an explicit `order` above\nthe scan. `scope` must be unique across the whole query.\n",
+      "properties": {
+        "kind": {
+          "const": "scan",
+          "type": "string"
+        },
+        "scope": {
+          "description": "The label this scan's rows are bound to, used by `col` references\nelsewhere in the query. Must be unique across the query.\n",
+          "minLength": 1,
+          "type": "string"
+        },
+        "table": {
+          "description": "The catalog table to scan. Rejected if it does not exist.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "table",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "SliceNode": {
+      "additionalProperties": false,
+      "description": "Take a positional window of `input`: skip `offset` rows, then keep at\nmost `limit`. `offset` defaults to 0. An omitted `limit` means\nunlimited; an explicit `0` keeps no rows.\n\nSlicing is positional. Over an ordered relation it selects a logical\nrange; over an unordered one it is an arbitrary but deliberate selection\n(the `LIMIT` without `ORDER BY` contract), the one documented exception\nto path-independence.\n",
+      "properties": {
+        "input": {
+          "description": "The id of the relation to slice.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "slice",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum rows to keep. Omitted means unlimited; an explicit `0` keeps\nno rows.\n",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Rows to skip before taking. Defaults to 0.",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "input"
+      ],
+      "type": "object"
+    },
+    "TextComparison": {
+      "description": "The equality relation used for literal spans in a `text_match`: exact\nUTF-8 bytes or locale-independent Unicode simple case folding.\n",
+      "enum": [
+        "exact",
+        "unicode_simple_fold"
+      ],
+      "title": "TextComparison",
+      "type": "string"
+    },
+    "TextMatchExpr": {
+      "additionalProperties": false,
+      "description": "Test whether `value` matches an anchored pattern built from an ordered\nlist of `parts`. The result is boolean under three-valued logic: a NULL\n`value` yields UNKNOWN, otherwise a total TRUE or FALSE. `value` must be\ntext.\n\nThe match is fully anchored: the concatenation of the parts must consume\nthe whole of `value`, not merely occur within it. `[literal \"foo\"]`\nmatches only \"foo\"; a leading or trailing `any_many` is what admits a\nprefix, suffix, or infix. An `any_many` matches zero or more characters\n(SQL `%`), so `[any_many]` alone matches every non-NULL value including\nthe empty string.\n\nThe pattern is a bind-time constant: literal spans carry strings and\nwildcards are structural, so no part is an expression and the matcher is\ncompiled once. `value` is the only operand that varies per row, and NULL\nenters only through it.\n\n`comparison` controls only how literal spans compare with corresponding\ninput text. `exact`, the default, requires identical UTF-8 bytes.\n`unicode_simple_fold` interprets both spans as UTF-8 and compares their\nUnicode code points under Unicode simple case folding, with the same\nequality relation as Go's `strings.EqualFold`. Simple folding is\none-code-point-to-one-code-point, deterministic, and locale-independent.\nIt performs no Unicode normalization, accent folding, transliteration,\nmulti-code-point full folding, or linguistic collation. In particular,\n\"Straße\" does not match \"STRASSE\", \"é\" does not match \"e\", and composed\nand decomposed forms remain distinct.\n\nThis setting is deliberately narrower than a database collation. A\nfuture cross-cutting collation design may govern equality, ordering,\ngrouping, uniqueness, and matching together; `unicode_simple_fold`\nremains the precisely defined compatibility comparison provided by this\nexpression.\n\nThis is deliberately the SQL `LIKE` wildcard set structurally\nrepresented, not a general pattern algebra: no alternation, repetition of\nsub-patterns, character classes, or backreferences. A richer text-search\nfacility would be a separate expression, never a wider `parts`\nvocabulary.\n",
+      "properties": {
+        "comparison": {
+          "$ref": "#/$defs/TextComparison",
+          "default": "exact",
+          "description": "How literal pattern spans compare with input text. Omission is\nequivalent to `exact`.\n"
+        },
+        "kind": {
+          "const": "text_match",
+          "type": "string"
+        },
+        "parts": {
+          "description": "The pattern, as an ordered list of literal spans and wildcards.\nProducers should emit a canonical list — adjacent literals coalesced,\nadjacent `any_many` collapsed — but the matcher accepts any\nwell-formed list.\n",
+          "items": {
+            "$ref": "#/$defs/TextMatchExprPart"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "value": {
+          "$ref": "#/$defs/Expr",
+          "description": "The text expression matched against the pattern."
+        }
+      },
+      "required": [
+        "kind",
+        "value",
+        "parts"
+      ],
+      "type": "object"
+    },
+    "TextMatchExprPart": {
+      "description": "One element of a text-match pattern: a literal span or a wildcard, a\nclosed tagged union selected by `kind`. The vocabulary is deliberately\nsmall; a single-character wildcard (`any_one`, SQL `_`) is a future\naddition this union admits without a breaking change.\n",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/LiteralTextMatchPart"
+        },
+        {
+          "$ref": "#/$defs/AnyManyTextMatchPart"
+        }
+      ],
+      "title": "TextMatchExprPart"
+    },
+    "TextValue": {
+      "additionalProperties": false,
+      "description": "A text value, or a text NULL when `value` is absent.",
+      "properties": {
+        "type": {
+          "const": "text",
+          "type": "string"
+        },
+        "value": {
+          "description": "The text value; absent for a NULL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "TextValue",
+      "type": "object"
+    },
+    "UnaryExpr": {
+      "additionalProperties": false,
+      "description": "Apply a unary operator to `expr`:\n\n- `not` — three-valued negation: `not TRUE` is FALSE, `not FALSE` is\n  TRUE, `not UNKNOWN` is UNKNOWN.\n- `negate` — arithmetic negation of a numeric value; NULL propagates.\n- `is_null` / `is_not_null` — total tests that are always TRUE or FALSE,\n  never UNKNOWN. `is_null` is the only way to match a NULL.\n",
+      "properties": {
+        "expr": {
+          "$ref": "#/$defs/Expr",
+          "description": "The operand."
+        },
+        "kind": {
+          "const": "unary",
+          "type": "string"
+        },
+        "op": {
+          "description": "The unary operator.",
+          "enum": [
+            "not",
+            "negate",
+            "is_null",
+            "is_not_null"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "op",
+        "expr"
+      ],
+      "type": "object"
+    },
+    "Value": {
+      "description": "A scalar wire value: a discriminated union selected by `type`, which is\nalways a `ScalarType`. Each variant is a value of that scalar type, either\npresent or NULL. When `value` is present it is the datum — numeric types as\na lossless canonical string so JSON never loses precision, `text` and\n`bool` in their natural JSON form; when `value` is absent the value is a\ntyped NULL of that scalar type. Presence, not contents, marks NULL: an\nempty string is a present `text` value, not a NULL. A naked NULL of no\nparticular type is not representable — cast it to give it one. A value's\n`type` must match the scalar type its context expects.\n",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/TextValue"
+        },
+        {
+          "$ref": "#/$defs/Int64Value"
+        },
+        {
+          "$ref": "#/$defs/Float64Value"
+        },
+        {
+          "$ref": "#/$defs/BoolValue"
+        }
+      ],
+      "title": "Value"
+    }
+  },
+  "$id": "https://www.radengine.dev/schema/lir.json",
+  "$ref": "#/$defs/Query",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "LIR is Rad's low-level intermediate representation: the relation tree a\nclient sends to `POST /execute`, and the tree the engine binds, plans, and\nexecutes. This schema is its normative specification. The type definitions\nand the prose in these descriptions are one artifact and move together.\n\nLIR is an internal contract with no external compatibility promise yet; it\nmay change while the design is hardened. It is deliberately unstable, but at\nany moment it is exactly what this document says.\n\n# Model\n\nLIR has exactly two categories, and no third \"shape\" category: shaping is\nprojection, and nesting lives in the value model.\n\n- A **relation** is a possibly empty, possibly many stream of structurally\n  typed rows. Relation operators consume relations and produce relations.\n- An **expression** computes exactly one typed *datum* (null, a scalar, a\n  row, or an array) in some scope. An expression may consume a relation only\n  through an explicit *crossing* that declares how a stream of rows becomes\n  one datum.\n\n**Relational closure** is a law, not an aspiration: the output of every\nrelation operator is itself an ordinary relation whose every attribute is\naddressable by later operators. A `filter` above an `aggregate` references a\nfold's output exactly as it would reference a scanned column.\n\n**Correlation** is a derived property, not an operator. A sub-relation that\nreferences a scope bound by an enclosing relation is correlated, and is\nevaluated with that enclosing row in scope. Correlation is a semantic\nrelationship only: the planner may satisfy it per row, by batching, or by a\njoin, as long as the result is identical. A relation becomes a datum only at\na crossing or the root, never merely by being correlated.\n\nRelations have **bag** semantics: an operator changes multiplicity only when\nthat is its job. `aggregate` folds each group to one row, and `distinct`\nconverts an input bag into the corresponding set of complete rows; every\nother operator preserves multiplicity.\n\n# Determinism\n\nA key-value scan's encounter order is physical, never logical, and the\nengine's access-path choice must never change results. Wherever a stream of\nrows becomes observable, its order must be explicit. Root `many` results and\n`array` crossings require an `order`; root and crossing `first` permit either\nan `order` or a proof of at most one row. A positive `slice.offset` also\nrequires an ordered input. An unordered `limit` is permitted only until a\nlater observable boundary imposes its own ordering requirement. `distinct`\nlikewise imposes no logical ordering — an observable ordered distinct result\nrequires an explicit `order` above it, and an ordered input confers none.\n\n# NULL and three-valued logic\n\nPredicates evaluate in Kleene three-valued logic (K3): `TRUE`, `FALSE`, or\n`UNKNOWN`. Any comparison with a NULL operand is `UNKNOWN`. `filter` and a\njoin's `on` keep only rows that evaluate to `TRUE`, never `UNKNOWN`, so\n`not (x = 1)` does not match rows where `x` is NULL; `is_null` is the only\ntest that matches a NULL. NULLs are distinct under unique indexes.\n\n# The wire\n\nA query is a flat map of caller-chosen node ids plus a root selector. Every\ndefinition is inline; a node id is a plain reference carrying no sharing,\nmemoisation, or materialisation identity. The graph must be acyclic, every\nnode must be reachable from the root and have exactly one consumer, and\ndangling or shared references are rejected before binding. Nodes and\nexpressions are closed `oneOf` unions selected by `kind`; unknown fields,\nfields belonging to another variant, and missing required fields are\nrejected. Literal values travel as raw JSON scalars (see `Value`) and are\ntyped by the binder from the context each literal meets.\n",
+  "title": "Rad LIR"
+}

@@ -1,0 +1,125 @@
+---
+title: "Layer 04: the planner"
+description: "Name binding, semantic dependency analysis, and physical access-path selection."
+---
+
+The planner turns LIR meaning into an executable physical plan. It binds names
+against one coherent catalog snapshot, analyses the bound relation, chooses
+storage access paths, then records every catalog semantic the plan depends
+upon.
+
+Planning does not execute storage operations or change query meaning.
+
+## Planning stages
+
+| Stage | Responsibility |
+| --- | --- |
+| Binding | Resolve tables, scopes, columns, types, cardinality, and PIR statement references |
+| Analysis | Derive relation properties, correlations, constraints, and decoded-column demand |
+| Physical planning | Select executable operators and storage access paths |
+| Dependency preparation | Record the exact catalog semantics used by the chosen plan |
+| Explain | Render physical decisions for inspection |
+
+## Binding against a coherent catalog
+
+Binding can read from:
+
+- the statement snapshot for autocommit queries;
+- a transaction's immutable pinned catalog for ordinary explicit-transaction
+  statements;
+- the transaction-visible catalog after earlier catalog statements in the same
+  PIR program.
+
+Binding resolves names to stable logical and physical identities, assigns dense
+slots, checks expression types, proves cardinality requirements, and fixes the
+exact table definitions used by later planning. Execution does not look a table
+up by its mutable current name again.
+
+## Bound meaning
+
+The bound relation graph uses slots rather than repeated scope and field-name
+resolution. Binding also establishes:
+
+- row type and nullability for every relation;
+- three-valued predicate types;
+- legal cardinality crossings such as `first`, `scalar`, and `array`;
+- correlation dependencies on outer slots;
+- deterministic ordering requirements for operations that can expose a chosen
+  row.
+
+Errors here are caller or catalog errors. A physical plan built from a valid
+bound relation should not fail because a name suddenly stopped resolving.
+
+## Access paths
+
+The planner extracts conjunction constraints around a scan and compares the
+legal candidates:
+
+1. a full primary-key equality can become a point get;
+2. ready indexes compete by leading equality prefix, one optional following
+   range, and useful provided ordering;
+3. the table scan remains the baseline.
+
+Only `ready` indexes are candidates. Building, validating, failed, cancelled,
+or deleting indexes are ignored.
+
+The full original predicate remains above the chosen access node as a residual
+filter. An index narrows candidates; it cannot remove a semantic check. Tests
+run planned access and forced full-scan execution as a differential oracle.
+
+Ordering properties flow through plan nodes where valid. Primary-key table
+scans and index scans provide ascending key order. Descending order requires a
+sort because the KV layer has no reverse scan. A lazy slice can stop an ordered
+stream after the required offset and limit.
+
+## Exact dependency manifests
+
+After choosing access paths, the planner walks the physical plan and attaches a
+deduplicated catalog dependency manifest. Doing this after access selection
+matters: an index that was considered but not chosen is not a dependency.
+
+| Physical work | Catalog dependencies |
+| --- | --- |
+| Table scan | Table existence and only the columns decoded into live slots |
+| Primary-key get | Table existence, decoded columns, and primary-key value semantics |
+| Index range scan | Table existence, decoded and indexed column semantics, selected physical index access fence |
+| Mutation | Input-plan reads, complete target row semantics, and target table write-protocol generation |
+
+Projection-aware decoding carries only the base-row demand the plan needs. A
+scan that projects two columns does not depend on an unobserved third column.
+`count(*)` can depend on table existence while decoding no column values at all.
+
+The manifest deliberately excludes:
+
+- the global canonical schema revision;
+- a table's whole definition generation;
+- unchosen indexes;
+- transition progress generations.
+
+This is why a rename or unrelated catalog publication can overlap an executing
+plan, while deleting a decoded column or retiring its selected index cannot.
+
+## Correlated execution
+
+Crossings are extracted into attach specifications. Correlation is classified
+as:
+
+| Class | Execution choice |
+| --- | --- |
+| Uncorrelated | Evaluate once and share the result |
+| Key-correlated | Deduplicate outer key tuples and run once per distinct key |
+| General | Evaluate per outer frame |
+
+These choices are result-equivalent. Tests disable keyed batching to compare
+the optimised and direct forms.
+
+## Admission boundary
+
+The planner produces the manifest but does not validate it against mutable
+state. Before building or pulling operators, the executor reads every named
+semantic fence inside the SlateDB data transaction. A mismatch returns a
+serialization conflict. The same fence reads remain in the serializable read
+set until commit.
+
+See [Catalog MVCC](/docs/engine/catalog-mvcc) for the complete pin, admit,
+execute, and commit sequence.

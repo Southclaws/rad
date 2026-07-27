@@ -1,0 +1,49 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "parents_with_many_children",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "parents": { "kind": "scan", "table": "parents", "scope": "p" },
+            "children": { "kind": "scan", "table": "children", "scope": "c" },
+            "mine": {
+              "kind": "filter",
+              "input": "children",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "c", "column": "parent_id" },
+                "right": { "kind": "col", "scope": "p", "column": "id" }
+              }
+            },
+            "counted": {
+              "kind": "aggregate",
+              "input": "mine",
+              "scope": "a",
+              "aggs": [ { "fn": "count", "as": "n" } ]
+            },
+            "busy": {
+              "kind": "filter",
+              "input": "parents",
+              "predicate": {
+                "kind": "binary", "op": "gt",
+                "left": { "kind": "scalar", "node": "counted" },
+                "right": { "kind": "lit", "value": { "type": "int64", "value": "1" } }
+              }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "busy",
+              "terms": [ { "expr": { "kind": "col", "scope": "p", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "p1", "name": "Two" }
+  ]
+}

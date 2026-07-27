@@ -1,0 +1,24 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "top2",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "o": { "kind": "order", "input": "t", "terms": [
+              { "expr": { "kind": "col", "scope": "t", "column": "val" } }
+            ] },
+            "s": { "kind": "slice", "input": "o", "limit": 2 }
+          },
+          "root": { "node": "s", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "a", "val": 10 },
+    { "id": "b", "val": 20 }
+  ]
+}

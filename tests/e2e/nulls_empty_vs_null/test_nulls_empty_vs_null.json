@@ -1,0 +1,65 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "ins",
+        "kind": "create",
+        "table": "items",
+        "relation": {
+          "nodes": {
+            "r": {
+              "kind": "rows",
+              "scope": "r",
+              "columns": [
+                { "name": "id", "type": "text" },
+                { "name": "code", "type": "text", "nullable": true }
+              ],
+              "rows": [ ["has-empty", ""], ["has-null", null] ]
+            }
+          },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "name": "empty string and NULL are distinct values under the unique index; ordered NULL sorts before empty string",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "items", "scope": "t" },
+          "o": {
+            "kind": "order",
+            "input": "t",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "code" } } ]
+          }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "has-null", "code": null },
+        { "id": "has-empty", "code": "" }
+      ]
+    },
+    {
+      "name": "filter code = '' matches only the empty-string row, not the NULL row (3VL)",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "items", "scope": "t" },
+          "f": {
+            "kind": "filter",
+            "input": "t",
+            "predicate": {
+              "kind": "binary",
+              "op": "eq",
+              "left": { "kind": "col", "scope": "t", "column": "code" },
+              "right": { "kind": "lit", "value": { "type": "text", "value": "" } }
+            }
+          }
+        },
+        "root": { "node": "f", "cardinality": "exactly_one" }
+      },
+      "expect": { "id": "has-empty", "code": "" }
+    }
+  ]
+}

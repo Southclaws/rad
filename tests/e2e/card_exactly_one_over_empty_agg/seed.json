@@ -1,0 +1,16 @@
+[
+  {
+    "table": "lefts",
+    "rows": [
+      { "lid": "l1", "a": 1 },
+      { "lid": "l2", "a": 5 }
+    ]
+  },
+  {
+    "table": "rights",
+    "rows": [
+      { "rid": "r1", "b": 3 },
+      { "rid": "r2", "b": 10 }
+    ]
+  }
+]

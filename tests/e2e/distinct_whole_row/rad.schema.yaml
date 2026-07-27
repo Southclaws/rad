@@ -1,0 +1,10 @@
+# e2e/distinct_whole_row — distinct identity is the complete row, not any one
+# column: two readings that share a sensor but differ in `ok` stay distinct,
+# while exact-duplicate readings collapse to one.
+tables:
+  - id: 1
+    name: readings
+    columns:
+      - { id: 1, name: id,     type: string, pk: true }
+      - { id: 2, name: sensor, type: string }
+      - { id: 3, name: ok,     type: bool }

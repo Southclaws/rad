@@ -1,0 +1,30 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "src_files",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "files", "scope": "t" },
+            "f": { "kind": "filter", "input": "t", "predicate": {
+              "kind": "text_match",
+              "value": { "kind": "col", "scope": "t", "column": "name" },
+              "parts": [
+                { "kind": "literal", "value": "src/" },
+                { "kind": "any_many" }
+              ] } },
+            "o": { "kind": "order", "input": "f", "terms": [
+              { "expr": { "kind": "col", "scope": "t", "column": "id" } }
+            ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "f1", "name": "src/main.go" },
+    { "id": "f3", "name": "src/util.go" }
+  ]
+}

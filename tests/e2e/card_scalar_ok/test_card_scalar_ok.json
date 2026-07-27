@@ -1,0 +1,34 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "one",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "widgets", "scope": "t" },
+            "hit": {
+              "kind": "filter",
+              "input": "t",
+              "predicate": {
+                "kind": "binary",
+                "op": "eq",
+                "left": { "kind": "col", "scope": "t", "column": "id" },
+                "right": { "kind": "lit", "value": { "type": "text", "value": "w1" } }
+              }
+            },
+            "one_col": {
+              "kind": "project",
+              "input": "hit",
+              "fields": [
+                { "as": "name", "expr": { "kind": "col", "scope": "t", "column": "name" } }
+              ]
+            }
+          },
+          "root": { "node": "one_col", "cardinality": "scalar" }
+        }
+      }
+    ]
+  },
+  "result": "Alpha"
+}

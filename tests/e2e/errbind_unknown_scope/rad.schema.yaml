@@ -1,0 +1,9 @@
+# e2e/errbind_unknown_scope — a col naming a scope label that no node in the
+# query binds must be rejected by the binder as invalid, reason unknown_scope.
+tables:
+  - id: 1
+    name: widgets
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+      - { id: 3, name: qty,  type: int64 }

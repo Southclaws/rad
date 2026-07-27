@@ -1,0 +1,10 @@
+# e2e/card_* — minimal schema for the root-cardinality family: one table with
+# a primary key, a text column, and an int rank so fixtures can exercise
+# exactly_one / scalar / first roots against PK-eq filters and ordered scans.
+tables:
+  - id: 1
+    name: widgets
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+      - { id: 3, name: rank, type: int64 }

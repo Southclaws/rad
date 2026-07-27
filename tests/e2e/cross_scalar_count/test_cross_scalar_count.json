@@ -1,0 +1,50 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "boards_with_count",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "boards": { "kind": "scan", "table": "boards", "scope": "b" },
+            "tasks": { "kind": "scan", "table": "tasks", "scope": "t" },
+            "mine": {
+              "kind": "filter",
+              "input": "tasks",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "t", "column": "board_id" },
+                "right": { "kind": "col", "scope": "b", "column": "id" }
+              }
+            },
+            "counted": {
+              "kind": "aggregate",
+              "input": "mine",
+              "scope": "c",
+              "aggs": [ { "fn": "count", "as": "n" } ]
+            },
+            "out": {
+              "kind": "project",
+              "input": "boards",
+              "scope": "o",
+              "spread": ["b"],
+              "fields": [
+                { "as": "task_count", "expr": { "kind": "scalar", "node": "counted" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "board-1", "name": "Launch", "task_count": 2 },
+    { "id": "board-2", "name": "Empty", "task_count": 0 }
+  ]
+}

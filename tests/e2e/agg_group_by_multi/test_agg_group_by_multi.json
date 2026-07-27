@@ -1,0 +1,32 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "by_region_category",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "sales", "scope": "t" },
+            "agg": { "kind": "aggregate", "input": "t", "scope": "g",
+              "groups": [
+                { "as": "region",   "expr": { "kind": "col", "scope": "t", "column": "region" } },
+                { "as": "category", "expr": { "kind": "col", "scope": "t", "column": "category" } }
+              ],
+              "aggs": [ { "fn": "count", "as": "n" } ] },
+            "ord": { "kind": "order", "input": "agg",
+              "terms": [
+                { "expr": { "kind": "col", "scope": "g", "column": "region" } },
+                { "expr": { "kind": "col", "scope": "g", "column": "category" } }
+              ] }
+          },
+          "root": { "node": "ord", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "region": "east", "category": "food", "n": 2 },
+    { "region": "east", "category": "toys", "n": 1 },
+    { "region": "west", "category": "food", "n": 1 }
+  ]
+}

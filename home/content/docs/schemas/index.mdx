@@ -1,0 +1,141 @@
+---
+title: Schemas in Rad
+description: Define an application schema, keep its identities stable, and choose who owns catalog changes.
+---
+
+An application normally keeps its data model in `rad.schema.yaml`. Rad compares
+that desired schema with the live catalog, checks the data, then applies the
+changes it can prove safe.
+
+```yaml
+tables:
+  - id: 1
+    name: users
+    columns:
+      - { id: 1, name: id, type: string, pk: true, default: uuid() }
+      - { id: 2, name: handle, type: string, unique: true }
+      - { id: 3, name: bio, type: string, nullable: true }
+      - { id: 4, name: created_at, type: int64, format: unix_ms, default: now_ms() }
+```
+
+The file is desired state, not a sequence of migration scripts. You edit the
+result you want. Rad derives the ordered work needed to get there.
+
+## Stable IDs carry identity
+
+Table and column `id` values are stable logical identities. Names are labels.
+Keep an ID when renaming an object:
+
+```yaml
+# Before
+- { id: 2, name: handle, type: string }
+
+# After: a rename of the same column
+- { id: 2, name: username, type: string }
+```
+
+Changing the ID tells Rad that the old object was deleted and a different one
+was created. That can lose data. Rad refuses ambiguous name and ID swaps rather
+than guessing what you meant.
+
+Table IDs must be unique across the schema. Column IDs must be unique within
+their table. Physical storage has separate opaque IDs, so an online column
+replacement can keep logical column `2` while moving its data to a new physical
+representation.
+
+## Schema-managed and Direct mode
+
+Each database has one catalog management mode.
+
+| Mode | Who changes the catalog | Intended use |
+| --- | --- | --- |
+| `schema` | `rad.schema.yaml` migrations | Applications with a reviewed desired schema |
+| `direct` | Imperative catalog API, PIR statements, or desired-schema migration | Tools that deliberately combine catalog workflows |
+
+In schema-managed mode, direct catalog endpoints and catalog PIR statements are
+rejected. Desired-schema migration also works in Direct mode, but other catalog
+writers can make its local accepted state stale. Query and transaction
+semantics are otherwise the same.
+
+The mode is fixed when a fresh database is initialised. Direct mode is the
+default. Start a schema-managed database with `rad serve --catalog-mode=schema`
+or `RAD_CATALOG_MODE=schema`; reopening an existing database with a different
+explicit mode is an error.
+
+## Versions and hashes
+
+Every catalog publication has a monotonic `schema_version`. The accepted
+canonical logical schema also has:
+
+- a SHA-256 `schema_hash` of its canonical form;
+- the complete accepted logical schema.
+
+The CLI records the accepted version and hash locally. `rad schema diff` plans
+against the current pair. `rad schema migrate` sends that exact pair back when
+applying, so a concurrent catalog change produces a conflict instead of
+silently applying an old plan. Online work uses several short publications, so
+the version can advance more than once during one migration. Operational state
+can also advance the version without changing the canonical hash.
+
+This canonical revision is the high-level history of the whole schema. It is
+not the same as a table definition generation, write-protocol generation,
+transition generation, or worker owner epoch. Those counters answer narrower
+engine questions and are explained in [Catalog MVCC](/docs/engine/catalog-mvcc).
+
+## What the file can express
+
+Column types are `string`, `int64`, `float64`, and `bool`. A column can declare
+`nullable`, `format`, a literal `default`, `uuid()`, or `now_ms()` where the
+type permits it. Use `pk`, `unique`, `index`, and `ref` for common single-column
+definitions, or the table-level `primary_key`, `indexes`, and `foreign_keys`
+forms for compound definitions. `format` is metadata; it does not validate
+stored values.
+
+The current migration support is deliberately smaller than the file format:
+
+| Desired change | Current behaviour |
+| --- | --- |
+| Create or rename a table | Immediate catalog publication; indexes on a new empty table are ready immediately |
+| Create or rename a column | Immediate when no physical conversion is needed |
+| Add a nullable column | Immediate; old sparse rows read `NULL` |
+| Add a non-null column with a literal default | Immediate; old missing cells keep the value recorded at introduction |
+| Add a nullable column with a generator default | Immediate; old rows read `NULL`, while new inserts run the generator |
+| Add a non-null column without a literal default | Rejected, including when it has only a generator default |
+| Change an insert default | Immediate; existing missing cells do not change meaning |
+| Add a unique or non-unique index | Durable online index build |
+| Change column type, format, or non-null to nullable | Durable online column replacement with strict conversion |
+| Change nullable to required | Durable not-null validation |
+| Change index columns or uniqueness | Logical deletion of the old index, then an online replacement build |
+| Delete a table, column, or index | Logical deletion followed by automatic physical reclamation; data-bearing deletion requires consent |
+| Reorder existing columns | Rejected |
+| Change a primary key | Rejected |
+| Add, remove, or change a foreign key on an existing table | Rejected |
+| Rename an existing index | Rejected |
+| Replace a column used by a primary key or foreign key | Rejected |
+
+Ordinary indexes that use a replaced column are rebuilt around the replacement.
+The migration planner rejects representation changes it cannot order safely.
+
+## Strict column conversions
+
+An online column replacement uses `strict_builtin`. It performs no locale
+guessing, collation, or implicit cross-type fallback. Numeric narrowing must be
+exact.
+
+| Source | Target | Accepted value |
+| --- | --- | --- |
+| `string` | `int64` | Optional sign followed by base-10 digits, with no whitespace; must fit `int64` |
+| `string` | `float64` | Decimal or hexadecimal floating-point syntax, or case-insensitive `NaN`, signed `Inf`, or signed `Infinity`; range errors are rejected |
+| `string` | `bool` | Exactly `true` or `false`, in lower case |
+| `float64` | `int64` | Finite, integral, and within the exact `int64` range |
+| `int64` | `float64` | Exactly representable as `float64` |
+| `int64`, `float64`, or `bool` | `string` | Base-10 integer, shortest round-trippable float, or lower-case boolean formatting |
+| Same type | Same type | Preserved as-is |
+
+`NULL` remains `NULL` only when the target is nullable. Any row that cannot be
+converted prevents publication and leaves a durable diagnostic on the failed
+transition.
+
+Next, [manage a schema](/docs/schemas/manage) with the CLI, or read how
+[online schema changes](/docs/schemas/online-changes) converge without one enormous
+transaction.

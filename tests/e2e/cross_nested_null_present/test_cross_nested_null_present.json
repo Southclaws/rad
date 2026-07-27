@@ -1,0 +1,83 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "nested_null",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "owners": { "kind": "scan", "table": "owners", "scope": "o" },
+            "fs": { "kind": "scan", "table": "pets", "scope": "f" },
+            "ff": {
+              "kind": "filter",
+              "input": "fs",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "f", "column": "owner_id" },
+                "right": { "kind": "col", "scope": "o", "column": "oid" }
+              }
+            },
+            "fo": {
+              "kind": "order",
+              "input": "ff",
+              "terms": [ { "expr": { "kind": "col", "scope": "f", "column": "pid" } } ]
+            },
+            "as": { "kind": "scan", "table": "pets", "scope": "a" },
+            "af": {
+              "kind": "filter",
+              "input": "as",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "a", "column": "owner_id" },
+                "right": { "kind": "col", "scope": "o", "column": "oid" }
+              }
+            },
+            "ao": {
+              "kind": "order",
+              "input": "af",
+              "terms": [ { "expr": { "kind": "col", "scope": "a", "column": "pid" } } ]
+            },
+            "proj": {
+              "kind": "project",
+              "input": "owners",
+              "scope": "pj",
+              "fields": [
+                { "as": "oid", "expr": { "kind": "col", "scope": "o", "column": "oid" } },
+                { "as": "firstpet", "expr": { "kind": "first", "node": "fo" } },
+                { "as": "pets", "expr": { "kind": "array", "node": "ao" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "proj",
+              "terms": [ { "expr": { "kind": "col", "scope": "pj", "column": "oid" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    {
+      "oid": "o1",
+      "firstpet": { "pid": "p1", "owner_id": "o1", "pname": "Rex" },
+      "pets": [
+        { "pid": "p1", "owner_id": "o1", "pname": "Rex" },
+        { "pid": "p2", "owner_id": "o1", "pname": "Fido" }
+      ]
+    },
+    {
+      "oid": "o2",
+      "firstpet": null,
+      "pets": []
+    },
+    {
+      "oid": "o3",
+      "firstpet": { "pid": "p3", "owner_id": "o3", "pname": "Meow" },
+      "pets": [
+        { "pid": "p3", "owner_id": "o3", "pname": "Meow" }
+      ]
+    }
+  ]
+}

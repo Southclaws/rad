@@ -1,0 +1,17 @@
+# e2e/pir_atomic_rollback — whole-program atomicity. Statement A creates a
+# valid user; statement B creates a post whose user_id references a
+# non-existent user, violating the foreign key. Because a program commits as
+# one transaction (ExecuteProgram wraps runProgram in e.Txn), B's failure
+# rolls back A's insert too — no partial write survives.
+tables:
+  - id: 1
+    name: users
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+  - id: 2
+    name: posts
+    columns:
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: user_id, type: string, ref: users.id }
+      - { id: 3, name: title,   type: string }

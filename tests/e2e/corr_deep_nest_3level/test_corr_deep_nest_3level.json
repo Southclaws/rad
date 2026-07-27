@@ -1,0 +1,129 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "deep",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "parents": { "kind": "scan", "table": "parents", "scope": "p" },
+            "children": { "kind": "scan", "table": "children", "scope": "c" },
+            "grandchildren": { "kind": "scan", "table": "grandchildren", "scope": "g" },
+            "gcc": { "kind": "scan", "table": "grandchildren", "scope": "gcc" },
+
+            "sibs": {
+              "kind": "filter",
+              "input": "gcc",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "gcc", "column": "child_id" },
+                "right": { "kind": "col", "scope": "g", "column": "child_id" }
+              }
+            },
+            "sib_count": {
+              "kind": "aggregate",
+              "input": "sibs",
+              "scope": "sc",
+              "aggs": [ { "fn": "count", "as": "n" } ]
+            },
+
+            "gc_mine": {
+              "kind": "filter",
+              "input": "grandchildren",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "g", "column": "child_id" },
+                "right": { "kind": "col", "scope": "c", "column": "id" }
+              }
+            },
+            "gc_proj": {
+              "kind": "project",
+              "input": "gc_mine",
+              "scope": "gp",
+              "spread": ["g"],
+              "fields": [
+                { "as": "sib", "expr": { "kind": "scalar", "node": "sib_count" } }
+              ]
+            },
+            "gc_sorted": {
+              "kind": "order",
+              "input": "gc_proj",
+              "terms": [ { "expr": { "kind": "col", "scope": "gp", "column": "id" } } ]
+            },
+
+            "c_mine": {
+              "kind": "filter",
+              "input": "children",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "c", "column": "parent_id" },
+                "right": { "kind": "col", "scope": "p", "column": "id" }
+              }
+            },
+            "c_proj": {
+              "kind": "project",
+              "input": "c_mine",
+              "scope": "cp",
+              "spread": ["c"],
+              "fields": [
+                { "as": "grandchildren", "expr": { "kind": "array", "node": "gc_sorted" } }
+              ]
+            },
+            "c_sorted": {
+              "kind": "order",
+              "input": "c_proj",
+              "terms": [ { "expr": { "kind": "col", "scope": "cp", "column": "id" } } ]
+            },
+
+            "out": {
+              "kind": "project",
+              "input": "parents",
+              "scope": "o",
+              "spread": ["p"],
+              "fields": [
+                { "as": "children", "expr": { "kind": "array", "node": "c_sorted" } }
+              ]
+            },
+            "root_sorted": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "root_sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    {
+      "id": "P1",
+      "children": [
+        {
+          "id": "c1", "parent_id": "P1",
+          "grandchildren": [
+            { "id": "g1", "child_id": "c1", "sib": 2 },
+            { "id": "g2", "child_id": "c1", "sib": 2 }
+          ]
+        },
+        {
+          "id": "c2", "parent_id": "P1",
+          "grandchildren": [
+            { "id": "g3", "child_id": "c2", "sib": 1 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "P2",
+      "children": [
+        {
+          "id": "c3", "parent_id": "P2",
+          "grandchildren": [
+            { "id": "g4", "child_id": "c3", "sib": 1 }
+          ]
+        }
+      ]
+    }
+  ]
+}

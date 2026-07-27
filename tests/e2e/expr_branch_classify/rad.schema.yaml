@@ -1,0 +1,9 @@
+# expr_branch_classify — a branch in a projection classifies rows by ordered
+# arms; a NULL column makes every comparison arm UNKNOWN, which falls through
+# to the else (K3 matching: only TRUE selects an arm).
+tables:
+  - id: 1
+    name: tasks
+    columns:
+      - { id: 1, name: id,       type: string, pk: true }
+      - { id: 2, name: estimate, type: int64, nullable: true }

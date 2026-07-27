@@ -1,0 +1,30 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "mixed",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "p": { "kind": "project", "input": "t", "scope": "p", "spread": ["t"], "fields": [
+              { "as": "answer", "expr": { "kind": "lit", "value": { "type": "int64", "value": "42" } } },
+              { "as": "label",  "expr": { "kind": "lit", "value": { "type": "text", "value": "hi" } } },
+              { "as": "sum",    "expr": { "kind": "binary", "op": "add",
+                "left":  { "kind": "col", "scope": "t", "column": "a" },
+                "right": { "kind": "col", "scope": "t", "column": "b" } } }
+            ] },
+            "o": { "kind": "order", "input": "p", "terms": [
+              { "expr": { "kind": "col", "scope": "p", "column": "id" } }
+            ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "r1", "a": 3,  "b": 4, "answer": 42, "label": "hi", "sum": 7 },
+    { "id": "r2", "a": 10, "b": 1, "answer": 42, "label": "hi", "sum": 11 }
+  ]
+}

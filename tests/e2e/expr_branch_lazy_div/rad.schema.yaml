@@ -1,0 +1,10 @@
+# expr_branch_lazy_div — branch laziness is contract: the else divides by the
+# column, which is zero for exactly the rows the first arm catches, so the
+# division must never run for them. Any division-by-zero error means the
+# branch evaluated a result expression it did not select.
+tables:
+  - id: 1
+    name: nums
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: n,  type: int64 }

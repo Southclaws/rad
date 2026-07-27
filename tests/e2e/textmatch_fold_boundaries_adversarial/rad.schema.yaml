@@ -1,0 +1,7 @@
+# NULL, empty text, embedded NULs, supplementary runes, and non-canonical parts.
+tables:
+  - id: 1
+    name: samples
+    columns:
+      - { id: 1, name: id,    type: string, pk: true }
+      - { id: 2, name: value, type: string, nullable: true }

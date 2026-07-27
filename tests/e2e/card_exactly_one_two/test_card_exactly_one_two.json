@@ -1,0 +1,17 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "one",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "widgets", "scope": "t" }
+          },
+          "root": { "node": "t", "cardinality": "exactly_one" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "execution_failed", "contains": "expected exactly one row, got more" }
+}

@@ -1,0 +1,38 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "t", "scope": "t" },
+            "kept": {
+              "kind": "filter",
+              "input": "t",
+              "predicate": {
+                "kind": "unary",
+                "op": "not",
+                "expr": {
+                  "kind": "binary",
+                  "op": "eq",
+                  "left": { "kind": "col", "scope": "t", "column": "x" },
+                  "right": { "kind": "lit", "value": { "type": "int64", "value": "1" } }
+                }
+              }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "kept",
+              "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "r2", "x": 2 }
+  ]
+}

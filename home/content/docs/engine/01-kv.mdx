@@ -1,0 +1,123 @@
+---
+title: "Layer 01: the KV abstraction"
+description: "The ordered key-value and transaction contract beneath Rad's relational engine."
+---
+
+The KV layer is Rad's storage boundary. The catalog, planner, and executor
+depend on this contract rather than SlateDB directly.
+
+The layer deals in byte keys, byte values, ordered ranges, and optimistic
+transactions. It knows nothing about tables or rows. Higher layers create that
+meaning through key layouts and typed encodings.
+
+## Store and iterator contract
+
+The storage vocabulary has four operations:
+
+| Operation | Contract |
+| --- | --- |
+| Point read | Return one value or an explicit missing result |
+| Write | Replace the value at one key |
+| Delete | Remove one key; deleting a missing key succeeds |
+| Scan | Visit a half-open key range in ascending lexicographic byte order |
+
+An omitted scan bound is unbounded. Prefix scans use the smallest possible end
+key after every key beginning with that prefix. This makes a prefix range fit
+the same ordered-scan contract without adding a separate storage operation.
+
+Iterator key and value buffers remain valid only until the next step. Data that
+must survive another step or an interleaved read is copied first. Transaction
+iterators close before commit.
+
+The contract does not specify what an already-open iterator sees after a write
+to the same transaction. Upper layers take a new scan after such writes.
+
+## Transactions
+
+Transactions read a stable snapshot overlaid with their own buffered writes.
+Commit publishes every buffered write atomically. Rollback discards them.
+
+| Isolation level | Conflict detection | Intended use |
+| --- | --- | --- |
+| `Snapshot` | Write-write conflicts | Read-only execution and cases where write skew is acceptable |
+| `SerializableSnapshot` | Write-write and read-write conflicts, including requested scan ranges | Mutations, catalog changes, and PIR programs with effects |
+
+Serializable range reads protect their requested bounds, even when the scan
+returns no keys. A concurrent insert into that range conflicts at commit. Rad
+relies on this for unique-index and foreign-key checks without taking locks.
+
+Conflicts return to the owner of the complete transaction, which may retry from
+the start. The KV layer does not replay the transaction itself.
+
+## Positions
+
+An opaque data position identifies the backend state at which a transaction's
+snapshot began.
+
+The SlateDB adapter encodes its sequence number as decimal text, but that is an
+adapter detail. Higher layers may persist and compare token identity. They must
+not parse, order, increment, or manufacture a position.
+
+The current API cannot begin a transaction at an old position, reopen a
+historical snapshot, or tell SlateDB to retain and later release one. Schema
+transitions record positions as provenance and barriers; workers do not use
+them as read-at-position handles.
+
+## Catalog pinning and data snapshots
+
+An autocommit query binds and reads through one statement-scoped SlateDB
+snapshot.
+
+An explicit engine transaction needs a slightly different sequence:
+
+```text
+read and materialise one coherent catalog snapshot
+  -> close the catalog snapshot transaction
+  -> begin the data transaction
+  -> admit exact catalog compatibility fences
+  -> execute and commit
+```
+
+Fence admission closes the gap between catalog pinning and data-snapshot
+creation. Serializable conflict detection closes the later gap between fence
+admission and commit. Rad does not claim that the separate catalog pin and data
+transaction began at one SlateDB sequence number.
+
+## SlateDB adapter
+
+The SlateDB adapter maps snapshot and serializable isolation to SlateDB's
+corresponding transaction modes. Transaction conflicts are normalised into
+Rad's conflict category.
+
+The adapter uses default durable write options. It checks cancellation before a
+storage call, but a scan or commit already in progress cannot currently be
+interrupted.
+
+Rad opens one SlateDB writer process per database. The adapter supports file
+and memory object-store URLs; tests exercise SlateDB itself on `memory:///`
+rather than a separate fake backend.
+
+## Ordered encoding
+
+The key encoding makes semantic values sort correctly as bytes. Encodings are
+tagged and self-delimiting, so several values can be concatenated into a tuple
+without separators.
+
+| Type | Ordering detail |
+| --- | --- |
+| `NULL` | Sorts before every non-null tagged value |
+| `bool` | Tagged deterministic order |
+| `int64` | Sign bit transformed, then big-endian |
+| `float64` | Bit transform preserving numeric order; callers reject NaN |
+| `text` | NUL escaped and terminated while preserving byte order |
+
+Tags make mixed types deterministic, not numerically interchangeable. Every
+stored column position must use one consistent type.
+
+## Executable evidence
+
+The backend conformance suite covers snapshot stability, own writes and
+deletes, write conflicts, point-read conflicts, phantom ranges, rollback
+lifecycle, and the write-skew distinction between the two isolation levels.
+The SlateDB adapter runs that suite directly. Encoding tests add round-trip and
+random byte-order agreement checks, including embedded NUL and `0xFF` cases.

@@ -1,0 +1,12 @@
+# probe_idx_nullable — range over a nullable indexed column. NULL index
+# entries sort before all non-null values, so a `< x` index range could
+# over-scan them; the residual filter (3VL) must still exclude NULLs. is_null
+# must still find them.
+tables:
+  - id: 1
+    name: t
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: n,  type: int64, nullable: true }
+    indexes:
+      - { columns: [n] }

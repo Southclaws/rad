@@ -1,0 +1,20 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "w": { "kind": "scan", "table": "widgets", "scope": "w" },
+            "f": { "kind": "filter", "input": "w", "predicate": { "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "w", "column": "qty" },
+              "right": { "kind": "lit", "value": { "type": "text", "value": "not-a-number" } } } }
+          },
+          "root": { "node": "f", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "invalid", "contains": "expected a int64 value, got string" }
+}

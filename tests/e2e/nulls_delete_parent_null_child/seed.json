@@ -1,0 +1,4 @@
+[
+  { "table": "parents", "rows": [ { "id": "p1" } ] },
+  { "table": "children", "rows": [ { "id": "c1", "parent_id": null } ] }
+]

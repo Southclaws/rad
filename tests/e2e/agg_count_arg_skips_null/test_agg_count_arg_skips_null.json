@@ -1,0 +1,23 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "counts",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "notes", "scope": "t" },
+            "agg": { "kind": "aggregate", "input": "t", "scope": "g",
+              "aggs": [
+                { "fn": "count", "as": "total" },
+                { "fn": "count", "as": "non_null",
+                  "arg": { "kind": "col", "scope": "t", "column": "body" } }
+              ] }
+          },
+          "root": { "node": "agg", "cardinality": "exactly_one" }
+        }
+      }
+    ]
+  },
+  "result": { "total": 4, "non_null": 2 }
+}

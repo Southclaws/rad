@@ -1,0 +1,26 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "ranked_regions",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "sales", "scope": "t" },
+            "agg": { "kind": "aggregate", "input": "t", "scope": "g",
+              "groups": [ { "as": "region", "expr": { "kind": "col", "scope": "t", "column": "region" } } ],
+              "aggs": [ { "fn": "count", "as": "n" } ] },
+            "ord": { "kind": "order", "input": "agg",
+              "terms": [ { "expr": { "kind": "col", "scope": "g", "column": "n" }, "desc": true } ] }
+          },
+          "root": { "node": "ord", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "region": "west",  "n": 3 },
+    { "region": "east",  "n": 2 },
+    { "region": "north", "n": 1 }
+  ]
+}

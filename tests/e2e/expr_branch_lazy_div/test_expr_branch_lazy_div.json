@@ -1,0 +1,38 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "per_unit",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "nums", "scope": "t" },
+            "p": { "kind": "project", "input": "t", "scope": "p", "fields": [
+              { "as": "id", "expr": { "kind": "col", "scope": "t", "column": "id" } },
+              { "as": "share", "expr": { "kind": "branch",
+                "branches": [
+                  { "when": { "kind": "binary", "op": "eq",
+                      "left":  { "kind": "col", "scope": "t", "column": "n" },
+                      "right": { "kind": "lit", "value": { "type": "int64", "value": "0" } } },
+                    "then": { "kind": "lit", "value": { "type": "int64", "value": "-1" } } }
+                ],
+                "else": { "kind": "binary", "op": "div",
+                  "left":  { "kind": "lit", "value": { "type": "int64", "value": "100" } },
+                  "right": { "kind": "col", "scope": "t", "column": "n" } } } }
+            ] },
+            "o": { "kind": "order", "input": "p", "terms": [
+              { "expr": { "kind": "col", "scope": "p", "column": "id" } }
+            ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "r1", "share": -1 },
+    { "id": "r2", "share": 25 },
+    { "id": "r3", "share": -1 },
+    { "id": "r4", "share": 4 }
+  ]
+}

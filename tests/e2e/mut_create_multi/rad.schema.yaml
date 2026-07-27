@@ -1,0 +1,9 @@
+# e2e/mut_create_multi — one flat table to exercise a single create statement
+# that inserts several rows from a multi-row `rows` relation in one shot.
+tables:
+  - id: 1
+    name: notes
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: body, type: string }
+      - { id: 3, name: rank, type: int64 }

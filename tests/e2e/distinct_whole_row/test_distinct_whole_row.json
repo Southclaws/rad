@@ -1,0 +1,32 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "sensor_states",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "rd":   { "kind": "scan", "table": "readings", "scope": "rd" },
+            "proj": { "kind": "project", "input": "rd", "scope": "p",
+              "fields": [
+                { "as": "sensor", "expr": { "kind": "col", "scope": "rd", "column": "sensor" } },
+                { "as": "ok",     "expr": { "kind": "col", "scope": "rd", "column": "ok" } }
+              ] },
+            "dist": { "kind": "distinct", "input": "proj" },
+            "ord":  { "kind": "order", "input": "dist",
+              "terms": [
+                { "expr": { "kind": "col", "scope": "p", "column": "sensor" } },
+                { "expr": { "kind": "col", "scope": "p", "column": "ok" } }
+              ] }
+          },
+          "root": { "node": "ord", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "sensor": "s1", "ok": false },
+    { "sensor": "s1", "ok": true },
+    { "sensor": "s2", "ok": true }
+  ]
+}

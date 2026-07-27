@@ -1,0 +1,22 @@
+# A schema outside the synthetic subset, exercising the generator's general
+# handling of arbitrary keys, uniqueness, and references: a non-text (int64)
+# primary key, a secondary unique index, a composite primary key, and a
+# foreign key that is part of that composite key and references a non-text key.
+tables:
+  - id: 1
+    name: teams
+    columns:
+      - { id: 1, name: id,   type: int64, pk: true }
+      - { id: 2, name: name, type: string }
+    indexes:
+      - { columns: [name], unique: true }
+
+  - id: 2
+    name: slots
+    columns:
+      - { id: 1, name: team_id, type: int64, pk: true, ref: teams.id }
+      - { id: 2, name: idx,     type: int64, pk: true }
+      - { id: 3, name: label,   type: string, nullable: true }
+      - { id: 4, name: score,   type: float64, nullable: true }
+    indexes:
+      - { columns: [label] }

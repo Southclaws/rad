@@ -1,0 +1,8 @@
+[
+  { "table": "t", "rows": [
+    { "id": "r1", "flag": true },
+    { "id": "r2", "flag": false },
+    { "id": "r3", "flag": true },
+    { "id": "r4", "flag": null }
+  ] }
+]

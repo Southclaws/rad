@@ -1,0 +1,31 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "empty_rows_agg",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "z": {
+              "kind": "rows",
+              "scope": "z",
+              "columns": [ { "name": "v", "type": "int64" } ],
+              "rows": []
+            },
+            "agg": {
+              "kind": "aggregate",
+              "input": "z",
+              "scope": "g",
+              "aggs": [
+                { "fn": "count", "as": "cnt" },
+                { "fn": "sum", "as": "s", "arg": { "kind": "col", "scope": "z", "column": "v" } }
+              ]
+            }
+          },
+          "root": { "node": "agg", "cardinality": "exactly_one" }
+        }
+      }
+    ]
+  },
+  "result": { "cnt": 0, "s": null }
+}

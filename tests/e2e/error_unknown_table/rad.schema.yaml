@@ -1,0 +1,9 @@
+# e2e/error_unknown_table — a negative fixture: a query against a table that
+# does not exist must be rejected by the binder as an invalid request, with
+# the fine-grained reason unknown_table.
+tables:
+  - id: 1
+    name: items
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }

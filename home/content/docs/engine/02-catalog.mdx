@@ -1,0 +1,142 @@
+---
+title: "Layer 02: the catalog"
+description: "The durable schema model, immutable definitions, transitions, retention, and desired-schema reconciliation."
+---
+
+The catalog owns the durable meaning of stored data. It contains the logical
+schema, physical representations, compatibility fences, online transition
+records, and cleanup obligations.
+
+A Rad deployment contains one database. There is no database or schema
+hierarchy above its tables.
+
+## Responsibilities
+
+| Area | Responsibility |
+| --- | --- |
+| Logical schema | Tables, columns, keys, indexes, constraints, and canonical hashes |
+| Physical definitions | Immutable stored representations and current heads |
+| Compatibility | Object-specific fences and table write protocols |
+| Online work | Transition definitions, prerequisites, progress, and terminal state |
+| Retention | Typed pins, horizons, reclamation, and history compaction |
+| Migration | Parse desired schemas, derive ordered changes, and report unsafe findings |
+
+Process-local change notifications wake background work, but are never the
+source of truth. Durable records and sticky work markers recover work after a
+restart.
+
+## Identities and generations
+
+The catalog keeps several identities distinct:
+
+| Term | Meaning |
+| --- | --- |
+| Canonical revision | Monotonic publication record containing the full logical schema and canonical hash |
+| Schema ID | Stable logical table or column identity across rename and replacement |
+| Physical ID | Opaque, never-reused stored representation identity |
+| Table definition generation | Immutable version of the complete physical table document |
+| Existence generation | Semantic lifetime fence for a physical table |
+| Column value generation | Decoding, nullability, and missing-value fence for a physical column |
+| Index access generation | Lifetime and representation fence for a selected physical index |
+| Write-protocol generation | Complete mutation-obligation fence for one table |
+| Transition generation | Durable state and progress version for one schema job |
+| Owner epoch | Worker ownership fence |
+| Data position | Opaque storage position, unrelated to catalog generation |
+
+Consecutive canonical revisions can have the same hash when operational
+catalog state changes without changing the bindable logical schema. A rename
+advances the immutable table definition, but keeps compatible semantic fences
+unchanged.
+
+## Durable storage
+
+Catalog data lives under `/rad/catalog/...` SlateDB keys. The keyspace includes:
+
+- current table and name records;
+- canonical schema revisions;
+- immutable table definitions and current heads;
+- existence, column-value, index-access, and write-protocol fences;
+- immutable write-protocol definitions and heads;
+- transitions, index deltas, unique claims, and violations;
+- retention pins and resource-specific horizons;
+- reclamation and compaction records.
+
+Operational catalog records use strict durable encoding. They are not HTTP
+response shapes. Decoding rejects unknown fields, trailing values, invalid
+lifecycle states, and disagreement between a record's key and identity.
+External APIs expose deliberate projections instead.
+
+## Reading the catalog
+
+Catalog reads resolve tables by current name or stable identity, materialise
+coherent snapshots, and load generation-qualified definitions and protocols.
+
+Autocommit binding reads through its statement snapshot. Explicit transactions
+usually bind through an immutable catalog snapshot pinned before their data
+transaction. When a PIR program performs catalog work, later statements switch
+to the transaction-visible catalog so they can use changes made earlier in the
+same program.
+
+Bound plans do not depend on the whole revision or table document. They record
+the exact semantic fences used by table existence, decoded columns, selected
+index access, and foreground write obligations. The executor admits those
+fences inside its SlateDB transaction.
+
+## Publishing changes
+
+Every logical catalog change is a short serializable transaction. The change
+service validates the current definitions, writes immutable replacements,
+advances only the affected semantic fences, publishes a canonical revision,
+and commits atomically.
+
+Metadata-only changes, such as a rename or adding a nullable sparse column,
+finish in that transaction. Physical work starts a durable transition instead.
+Current transition kinds cover online index builds, column replacements, and
+not-null constraint validation.
+
+Only `ready` indexes enter the canonical schema and planner. Indexes declared
+with a new empty table can publish immediately because there is nothing to
+backfill. Building an index over existing rows publishes planner-invisible work
+first, then completes in bounded background transactions.
+
+## Sparse values and defaults
+
+Rows are keyed by physical column ID. Adding a nullable column needs no row
+rewrite because an absent physical field reads as `NULL`.
+
+A literal default used when a column is introduced is stored separately as its
+immutable historical missing value. Changing the current insert default affects
+future omitted writes only. Old sparse rows do not silently acquire the new
+default.
+
+Type, format, and nullable relaxation changes receive a new physical column and
+use the strict built-in replacement protocol. Nullable-to-not-null changes use
+constraint validation. Primary-key changes, existing-table foreign-key
+changes, existing-column reordering, and index renaming remain unsupported.
+
+## Logical deletion and reclamation
+
+Deletion makes an object unbindable and advances its semantic fence in the
+same transaction that queues typed reclamation. Physical IDs are never reused.
+
+The engine later removes retired rows, cells, indexes, definitions, protocols,
+and transition artifacts in bounded owner-fenced batches. Each batch proves the
+target is still retired and checks exact retention pins. Catalog revision
+compaction is independent of this process; an old audit revision is neither a
+bindability dependency nor permission to delete physical data.
+
+## Desired-schema migration
+
+The desired-schema differ is pure. It matches tables and columns by stable
+schema ID, orders renames and dependency-sensitive work, and returns immediate
+steps or transition starts. Preflight separately reports destructive and
+blocking data findings.
+
+The accepted start program is atomic, but a physical migration is not one long
+transaction or one revision. Workers converge through bounded transactions and
+later publications. The migration is complete when the desired canonical hash
+is current. Repeating the same target recovers matching in-progress work.
+
+See [Catalog MVCC](/docs/engine/catalog-mvcc) for the transaction protocol around these
+records, and [Online schema changes](/docs/schemas/online-changes) for the
+application-facing model.

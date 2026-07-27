@@ -1,0 +1,346 @@
+---
+title: LIR
+description: The structured relational query representation between application tooling and Rad's planner.
+---
+
+LIR is what query tools compile to when they want Rad to retrieve data. It is
+not a language designed for people to type, and it is not a physical execution
+plan. It is a typed, structured description of:
+
+- the relations a query reads and derives;
+- the expressions evaluated over those relations;
+- the shape and cardinality of the result the application wants.
+
+That boundary is the main idea behind Rad. Generated clients use it today. A
+SQL adapter, an ORM, a GraphQL layer, or a new query language can use the same
+frontend boundary by lowering intent into LIR. Rad then owns catalog binding,
+type checking, planning, transaction semantics, and storage access.
+
+```text
+generated client       SQL frontend       another query language
+        \                    |                    /
+                         LIR
+                          |
+                 binder and query planner
+                          |
+                 transactional execution
+```
+
+The point is not to replace SQL with a different string syntax. It is to move
+the integration boundary below syntax, where tools can exchange a relational
+program without parsing, printing, and gluing SQL text.
+
+## What LIR gives a frontend
+
+A frontend describes what the query means. It does not choose an index, turn a
+relationship into a client-side loop, or decide whether a correlated lookup
+should become a join.
+
+That split gives each side a sensible job:
+
+| Frontend owns | Rad owns |
+| --- | --- |
+| Developer-facing syntax and API | Name and schema binding |
+| Parameters and application types | Expression and cardinality checks |
+| The requested relation and result shape | Index and primary-key access selection |
+| How errors appear in its own interface | Correlation batching and physical operators |
+| Lowering its features into LIR | Snapshot, conflict, and execution semantics |
+
+An ORM no longer needs to make a heroic guess about whether twenty thousand
+parent rows should become an enormous `IN (...)` query. It describes the
+relationship. The planner, which knows the catalog and available access paths,
+decides how to run it.
+
+## A query is a graph of relations
+
+Every LIR query is built from relations. A table scan is a relation. Filtering,
+ordering, joining, projecting, grouping, and set operations each consume
+relations and produce another relation.
+
+Expressions operate on a row in scope. They compare values, perform arithmetic,
+branch, match text, and select projected fields. A relation can become one
+value inside an expression through a **crossing**:
+
+| Crossing | Result |
+| --- | --- |
+| `exists` | Whether the relation has any rows |
+| `first` | One row as an object, or `null` |
+| `scalar` | The sole value of a single-column, at-most-one relation |
+| `array` | Every row as a nested array |
+
+Crossings are how LIR describes application-shaped relationships without
+flattening them first.
+
+## One query, already in the application's shape
+
+Suppose an application needs users with their posts nested beneath them. A SQL
+join naturally returns a flat row for each user and post pair. The application
+then has to group repeated user fields back into objects.
+
+LIR can request the nested result directly:
+
+```json
+{
+  "nodes": {
+    "users": { "kind": "scan", "table": "users", "scope": "u" },
+    "users_ordered": {
+      "kind": "order",
+      "input": "users",
+      "terms": [
+        { "expr": { "kind": "col", "scope": "u", "column": "id" } }
+      ]
+    },
+
+    "posts": { "kind": "scan", "table": "posts", "scope": "p" },
+    "posts_for_user": {
+      "kind": "filter",
+      "input": "posts",
+      "predicate": {
+        "kind": "binary",
+        "op": "eq",
+        "left": { "kind": "col", "scope": "p", "column": "user_id" },
+        "right": { "kind": "col", "scope": "u", "column": "id" }
+      }
+    },
+    "post_objects": {
+      "kind": "project",
+      "input": "posts_for_user",
+      "scope": "po",
+      "fields": [
+        {
+          "as": "id",
+          "expr": { "kind": "col", "scope": "p", "column": "id" }
+        },
+        {
+          "as": "title",
+          "expr": { "kind": "col", "scope": "p", "column": "title" }
+        }
+      ]
+    },
+    "posts_ordered": {
+      "kind": "order",
+      "input": "post_objects",
+      "terms": [
+        { "expr": { "kind": "col", "scope": "po", "column": "id" } }
+      ]
+    },
+
+    "result": {
+      "kind": "project",
+      "input": "users_ordered",
+      "scope": "r",
+      "fields": [
+        {
+          "as": "id",
+          "expr": { "kind": "col", "scope": "u", "column": "id" }
+        },
+        {
+          "as": "name",
+          "expr": { "kind": "col", "scope": "u", "column": "name" }
+        },
+        {
+          "as": "posts",
+          "expr": { "kind": "array", "node": "posts_ordered" }
+        }
+      ]
+    }
+  },
+  "root": { "node": "result", "cardinality": "many" }
+}
+```
+
+The result is already the value the application asked for:
+
+```json
+[
+  {
+    "id": "u1",
+    "name": "Ada",
+    "posts": [
+      { "id": "p1", "title": "Relational values" },
+      { "id": "p2", "title": "Query frontends" }
+    ]
+  },
+  {
+    "id": "u2",
+    "name": "Grace",
+    "posts": []
+  }
+]
+```
+
+The important parts are:
+
+- `nodes` contains relation operators connected by named edges such as
+  `input`;
+- `scope` gives a relation occurrence a name for column references;
+- `posts_for_user` refers to the enclosing `u` scope, which makes that
+  relation correlated with the current user;
+- `array` crosses the ordered post relation into one nested value;
+- the root says the outer relation materialises as `many`, an array of
+  objects.
+
+The JSON is verbose because it is a machine target. Application developers are
+expected to use generated builders or another frontend, in the same way that
+most programmers do not write compiler IR by hand.
+
+## Shape is part of the query
+
+LIR does not bolt nested output onto a flat query after execution. Projection
+constructs the output row, and a crossing places a related relation into one of
+its fields. The nested value remains typed and addressable by later relational
+operators.
+
+This matters for application code. A to-one relationship can be an object or
+`null`. A to-many relationship can be an array that is empty rather than null.
+A grouped count can be projected as a scalar field. The query result has one
+defined shape from planning through the wire response.
+
+Rad still evaluates relational operations internally. Nested output does not
+mean the frontend asked for a series of imperative fetches.
+
+## Logical intent stays separate from physical access
+
+The example never names an index or a join algorithm. If `posts.user_id` has an
+index, the planner can select it. If several outer users share a correlation
+key, the executor can deduplicate that key across a batch. A different catalog
+may call for a table scan or another physical strategy without changing the
+LIR result.
+
+One invariant protects that freedom: an access path only narrows candidate
+rows. The complete logical predicate remains as a residual check above it. Rad
+tests planned execution against a forced full-scan execution and requires the
+same result.
+
+<LIRPipeline />
+
+The pipeline is:
+
+1. Validate the wire graph against the LIR schema.
+2. Bind table, scope, and column names against one coherent catalog snapshot.
+3. Infer types, nullability, cardinality, correlation, and ordering rules.
+4. Choose physical access paths and correlation strategies.
+5. Execute the plan in a transaction and materialise the declared root shape.
+
+## Determinism is explicit
+
+Storage encounter order is a physical detail. An index added next week must not
+silently reorder an API response. LIR therefore requires an explicit order
+where a sequence becomes observable.
+
+Root cardinality declares both the expected number of rows and the response
+shape:
+
+| Cardinality | Response |
+| --- | --- |
+| `many` | Every row as an array of objects; the relation must be ordered |
+| `first` | First row as an object, or `null`; requires an order or a proof of at most one row |
+| `exactly_one` | One object; zero or multiple rows are errors |
+| `scalar` | Sole column of an at-most-one relation as a bare value, or `null` |
+
+The same rule applies to crossings. `array` observes an ordered relation.
+`first` cannot expose whichever row happened to arrive first unless the
+relation is already known to contain at most one row.
+
+## Types and nulls travel with meaning
+
+Literals are tagged scalar values. An `int64` travels losslessly as a decimal
+string on the JSON wire, rather than passing through a JavaScript number.
+Columns, computed fields, aggregates, nested objects, and arrays all have
+static types after binding.
+
+Nullable predicates use three-valued logic:
+
+```text
+comparison with NULL      -> UNKNOWN
+not UNKNOWN               -> UNKNOWN
+filter keeps              -> TRUE only
+is_null / is_not_null     -> TRUE or FALSE
+```
+
+This is why `not (x = 1)` does not match a row where `x` is null. It is also
+why rewrites involving `IN`, `ANY`, and `ALL` need more care than replacing
+them mechanically with `exists`.
+
+## Wire vocabulary
+
+The wire uses closed tagged unions selected by `kind`. Unknown fields and
+invalid combinations are rejected before binding.
+
+### Relations
+
+| Kind | Meaning |
+| --- | --- |
+| `scan`, `rows` | Read a catalog table or introduce a finite typed relation |
+| `filter`, `project` | Select rows or construct a new row shape |
+| `join` | Inner or left relational join |
+| `concatenate`, `intersect`, `except` | Bag and set composition |
+| `aggregate` | Global or grouped folds |
+| `distinct` | Remove duplicate complete rows |
+| `order`, `slice` | Define sequence and take an offset or limit |
+| `ref`, `recursive_ref` | Read a named derived value or recursive frontier |
+
+### Expressions
+
+| Kind | Meaning |
+| --- | --- |
+| `lit`, `col` | Typed literal or scoped column reference |
+| `unary`, `binary` | Logical, comparison, and arithmetic operations |
+| `cast` | Explicit scalar conversion |
+| `branch` | Ordered lazy conditional expression with a required fallback |
+| `text_match` | Anchored literal and `%`-style wildcard matching |
+| `exists`, `first`, `scalar`, `array` | Relation-to-value crossings |
+
+`text_match` supports exact UTF-8 comparison and locale-independent Unicode
+simple case folding. It does not perform normalisation, accent folding, full
+multi-code-point folding, or collation. Its current wildcard vocabulary is a
+literal span and `any_many`, equivalent to SQL `%`.
+
+The [LIR JSON Schema](/schema/lir.json) is the normative wire reference.
+
+## Nodes, bindings, and sharing
+
+The wire stores ordinary relation nodes in a flat map. A node ID connects one
+definition to one consumer. It does not imply caching or materialisation, and
+ordinary nodes cannot be shared between several consumers.
+
+Bindings are the explicit sharing mechanism. A derived binding denotes one
+statement-local relational value, and each `ref` observes that same value under
+a fresh scope. Writing the same subtree twice still means two evaluations.
+
+A recursive binding names an anchor and a step. The step reads the previous
+frontier through `recursive_ref` until no new frontier remains. `accumulation:
+new` admits each complete row once; `all` preserves every generated row and its
+multiplicity. Termination is not guaranteed merely because the graph is valid.
+
+## Correlation is meaning, not an algorithm
+
+A relation is correlated when it refers to a scope from an enclosing relation.
+There is no separate correlation operator and no promise of a per-row loop.
+
+The planner currently recognises equality-key correlation. It can deduplicate
+the outer keys in a batch and execute the inner plan once per distinct key. A
+null key short-circuits because equality with null matches no rows. More general
+correlation falls back to nested evaluation. Both strategies must produce the
+same value.
+
+This is the separation LIR is for: a frontend states the relationship once,
+while the query engine remains free to improve how that relationship executes.
+
+## Current boundary
+
+LIR is still an internal contract without a compatibility promise. The schema
+is precise at any one revision, but it can change while Rad is being hardened.
+
+The current planner is rule-based and has no cost model or statistics. Joins
+use nested-loop execution. There are no reverse or index-only scans, window
+functions, quantified comparisons, or relational `LATERAL`/`APPLY`. Text
+matching does not yet have a single-character wildcard or richer search
+algebra.
+
+Those limits are implementation work behind the same boundary. A frontend
+should describe logical intent and leave storage strategy to Rad.
+
+For the engine implementation, continue with
+[Layer 03: LIR and the relation graph](/docs/engine/03-lir) and
+[Layer 04: the planner](/docs/engine/04-planner).

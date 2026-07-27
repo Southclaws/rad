@@ -1,0 +1,151 @@
+---
+title: "Layer 03: LIR and the relation graph"
+description: "The pure relational value model shared by binding, planning, and execution."
+---
+
+Layer 03 defines what a query means. It contains relations, expressions,
+values, static row types, cardinality, and three-valued logic. It contains no
+storage access, catalog lookup, planning, or I/O.
+
+The [LIR specification](/docs/lir) documents the public wire grammar. This page is
+a package reference for engine maintainers.
+
+## Two categories
+
+LIR has two compositional categories:
+
+- a **relation** produces zero or more typed rows;
+- an **expression** produces one typed datum in the current row environment.
+
+Relation operators consume and produce relations. Expression operators consume
+and produce datums. A relation enters expression space only through an explicit
+cardinality crossing:
+
+| Crossing | Datum |
+| --- | --- |
+| `exists` | Boolean, never null |
+| `first` | First row as an object, or null |
+| `scalar` | The one field of an at-most-one relation, or null |
+| `array` | Every row as an array; empty input yields an empty array |
+
+Projection gives the result its shape. A projected crossing becomes a nested
+object, scalar, boolean, or array without introducing a separate include or
+JSON-aggregation relation type.
+
+## Values and datums
+
+A value is a nullable typed scalar. Current scalar types are text, `int64`,
+`float64`, and bool. The wire uses tagged values so invalid combinations are
+rejected.
+
+Datums extend scalar values with objects and arrays. Query roots and nested
+crossings return datums, so result shaping uses the same vocabulary at every
+depth.
+
+Equal scalar types have deterministic ordering. Predicate equality follows
+SQL-style null rules, while row identity for distinct and recursive
+accumulation treats null in the same field position as the same structural
+value.
+
+## Row types, slots, and cardinality
+
+A row type is an ordered list of fields. Each bound field has a dense slot,
+scalar or nested type, and nullability. Slots are execution identity; field
+names remain useful for binding, wire output, and diagnostics.
+
+Cardinality stores minimum and maximum row counts. The maximum can be
+unbounded. Binding uses it to prove requirements such as:
+
+- `scalar` has exactly one output field;
+- `first` and `scalar` are at most one row or have an explicit deterministic
+  choice;
+- `exactly_one` roots cannot be empty or contain two rows;
+- a unique-key equality filter has an upper bound of one.
+
+Cardinality is a static law, not a runtime row count estimate.
+
+## Unbound and bound IR
+
+Unbound LIR carries table names, scope names, column names, and raw literal
+values. The binder resolves them against a catalog snapshot and produces bound
+relations and expressions whose field references are slots.
+
+Bound relation nodes precompute the laws used above them:
+
+| Law | Meaning |
+| --- | --- |
+| `Output` | Ordered row type produced by the node |
+| `FreeSlots` | Outer slots referenced but not produced below |
+| `Produced` | Every slot defined below |
+| `Card` | Static row-count bounds |
+
+Every bound node preserves these laws. Planning and execution trust them rather
+than re-deriving types and scope rules.
+
+## Relations
+
+The relation vocabulary includes:
+
+- `Scan` and finite typed `Rows` leaves;
+- `Filter`, `Project`, `Join`, `Aggregate`, `Order`, `Slice`, and `Distinct`;
+- bag and set composition through `Concatenate`, `Intersect`, and `Except`;
+- `Ref` leaves for named relation bindings;
+- recursive bindings with an anchor, frontier step, and accumulation policy.
+
+All operators preserve relational closure. Grouped and global aggregation use
+the same node: groups produce one row per distinct key, while no groups produce
+one row for the whole input, including empty input.
+
+Correlation needs no relation node. A nested relation simply has free slots
+produced by an enclosing relation. The planner decides whether those slots can
+be evaluated once, once per distinct key, or once per outer frame.
+
+Expressions include literals, scoped columns, unary and binary operations,
+explicit casts, lazy branches, anchored text matching, and the four relation
+crossings. Expression evaluation is pure; crossings are planned before scalar
+evaluation rather than performing hidden storage reads.
+
+## Bindings and references
+
+A binding names one statement-local relational commitment. A `Ref` is one
+occurrence of that value and receives fresh output slots, much like a new scan
+scope.
+
+Bindings are the deliberate sharing construct. The same bound relation body
+written twice means two evaluations. A binding referenced twice means both
+references observe one committed relational value. The planner may materialise
+that value or replay a single safe occurrence, but the semantic commitment does
+not change.
+
+Recursive bindings separate the anchor from a step that reads the current
+frontier. `all` accumulation admits every generated row. `new` admits only rows
+not already present by canonical full-row identity and reaches a fixpoint when
+the next frontier is empty.
+
+## Three-valued logic
+
+Predicates evaluate to `TRUE`, `FALSE`, or `UNKNOWN`. Comparisons with null
+produce `UNKNOWN`; filters retain only `TRUE`. `is_null` and `is_not_null` are
+two-valued.
+
+The K3 truth tables define `and`, `or`, and `not`. Expression evaluation is
+pure over a slot environment. A missing required slot, invalid cast, division
+error, or type mismatch is an execution error rather than an implicit
+coercion.
+
+## Formatting and inspection
+
+The formatter renders stable human-readable relation and expression trees for
+tests, logs, and explain output. It includes useful laws such as cardinality and
+free slots. Inspection walks the same structure without changing query meaning.
+
+The JSON wire schema remains the normative public grammar. Tests are the
+executable contract for bound laws and evaluation.
+
+## Evidence
+
+Tests cover value ordering and arithmetic, null truth tables, row and datum
+shaping, binding commitment, recursive accumulation, cardinality inference,
+slot-set laws, expression inspection, and stable formatting. Planner and
+executor differential tests then prove that physical choices preserve these
+LIR results.

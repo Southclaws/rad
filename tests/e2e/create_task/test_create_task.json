@@ -1,0 +1,103 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "insert_task",
+        "kind": "create",
+        "table": "tasks",
+        "relation": {
+          "nodes": {
+            "r": {
+              "kind": "rows",
+              "scope": "r",
+              "columns": [
+                { "name": "id", "type": "text" },
+                { "name": "board_id", "type": "text" },
+                { "name": "title", "type": "text" },
+                { "name": "status", "type": "text" },
+                { "name": "priority", "type": "int64" },
+                { "name": "creator_id", "type": "text" },
+                { "name": "created_at", "type": "int64" }
+              ],
+              "rows": [
+                ["task-new-1", "board-launch", "Wire up CI", "todo", "1", "user-ada", "2000"]
+              ]
+            }
+          },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    {
+      "id": "task-new-1",
+      "board_id": "board-launch",
+      "title": "Wire up CI",
+      "status": "todo",
+      "priority": 1,
+      "creator_id": "user-ada",
+      "created_at": 2000
+    }
+  ],
+  "assertions": [
+    {
+      "name": "board now has both tasks, oldest first",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "tasks", "scope": "t" },
+          "board_tasks": {
+            "kind": "filter",
+            "input": "t",
+            "predicate": {
+              "kind": "binary",
+              "op": "eq",
+              "left": { "kind": "col", "scope": "t", "column": "board_id" },
+              "right": { "kind": "lit", "value": { "type": "text", "value": "board-launch" } }
+            }
+          },
+          "sorted": {
+            "kind": "order",
+            "input": "board_tasks",
+            "terms": [
+              { "expr": { "kind": "col", "scope": "t", "column": "created_at" } }
+            ]
+          }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "task-seed-1", "board_id": "board-launch", "title": "Draft spec", "status": "todo", "priority": 1, "creator_id": "user-ada", "created_at": 1000 },
+        { "id": "task-new-1", "board_id": "board-launch", "title": "Wire up CI", "status": "todo", "priority": 1, "creator_id": "user-ada", "created_at": 2000 }
+      ]
+    },
+    {
+      "name": "the new task exists exactly once with the inserted fields",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "tasks", "scope": "t" },
+          "new_task": {
+            "kind": "filter",
+            "input": "t",
+            "predicate": {
+              "kind": "binary",
+              "op": "eq",
+              "left": { "kind": "col", "scope": "t", "column": "id" },
+              "right": { "kind": "lit", "value": { "type": "text", "value": "task-new-1" } }
+            }
+          }
+        },
+        "root": { "node": "new_task", "cardinality": "exactly_one" }
+      },
+      "expect": {
+        "id": "task-new-1",
+        "board_id": "board-launch",
+        "title": "Wire up CI",
+        "status": "todo",
+        "priority": 1,
+        "creator_id": "user-ada",
+        "created_at": 2000
+      }
+    }
+  ]
+}

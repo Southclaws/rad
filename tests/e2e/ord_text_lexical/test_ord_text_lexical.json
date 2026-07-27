@@ -1,0 +1,26 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "lexical",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "words", "scope": "t" },
+            "o": { "kind": "order", "input": "t", "terms": [
+              { "expr": { "kind": "col", "scope": "t", "column": "name" } }
+            ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "w5", "name": "1" },
+    { "id": "w4", "name": "10" },
+    { "id": "w2", "name": "2" },
+    { "id": "w3", "name": "apple" },
+    { "id": "w1", "name": "banana" }
+  ]
+}

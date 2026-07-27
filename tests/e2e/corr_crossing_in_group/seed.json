@@ -1,0 +1,19 @@
+[
+  {
+    "table": "parents",
+    "rows": [
+      { "id": "p1", "name": "two-a" },
+      { "id": "p2", "name": "two-b" },
+      { "id": "p3", "name": "zero" }
+    ]
+  },
+  {
+    "table": "children",
+    "rows": [
+      { "id": "a1", "parent_id": "p1" },
+      { "id": "a2", "parent_id": "p1" },
+      { "id": "b1", "parent_id": "p2" },
+      { "id": "b2", "parent_id": "p2" }
+    ]
+  }
+]

@@ -1,0 +1,15 @@
+# NULL through a GENERAL-correlated (inequality) crossing. The key path's
+# NULL short-circuit does NOT apply here; correctness relies on 3VL in the
+# residual filter: child.value < NULL is UNKNOWN, so nothing matches.
+tables:
+  - id: 1
+    name: parents
+    columns:
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: threshold, type: int64, nullable: true }
+
+  - id: 2
+    name: children
+    columns:
+      - { id: 1, name: id,    type: string, pk: true }
+      - { id: 2, name: value, type: int64 }

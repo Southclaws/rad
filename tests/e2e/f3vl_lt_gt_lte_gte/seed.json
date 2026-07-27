@@ -1,0 +1,8 @@
+[
+  { "table": "t", "rows": [
+    { "id": "a", "n": 10, "s": "apple" },
+    { "id": "b", "n": 20, "s": "banana" },
+    { "id": "c", "n": 30, "s": "cherry" },
+    { "id": "d", "n": 40, "s": "date" }
+  ] }
+]

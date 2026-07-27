@@ -1,0 +1,11 @@
+# e2e/mut_create_defaults — a create that omits a column carrying a plain
+# (non-generated) default, to confirm the catalog default is filled in.
+# No uuid()/now_ms() defaults, so every asserted value is deterministic.
+tables:
+  - id: 1
+    name: tasks
+    columns:
+      - { id: 1, name: id,       type: string, pk: true }
+      - { id: 2, name: title,    type: string }
+      - { id: 3, name: status,   type: string, default: todo }
+      - { id: 4, name: priority, type: int64,  default: 2 }

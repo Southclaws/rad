@@ -1,0 +1,21 @@
+# a crossing whose relation is a JOIN (children x categories), correlated on
+# the parent. scanBelow() finds no single scan under a join, so this is
+# general correlation -> per-row nested fallback.
+tables:
+  - id: 1
+    name: parents
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+
+  - id: 2
+    name: categories
+    columns:
+      - { id: 1, name: id,    type: string, pk: true }
+      - { id: 2, name: label, type: string }
+
+  - id: 3
+    name: children
+    columns:
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: parent_id, type: string, nullable: true, ref: parents.id }
+      - { id: 3, name: cat_id,    type: string, nullable: true, ref: categories.id }

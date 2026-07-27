@@ -1,0 +1,101 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "ins",
+        "kind": "create",
+        "table": "items",
+        "relation": {
+          "nodes": {
+            "r": {
+              "kind": "rows",
+              "scope": "r",
+              "columns": [
+                {
+                  "name": "id",
+                  "type": "text"
+                },
+                {
+                  "name": "code",
+                  "type": "text",
+                  "nullable": true
+                }
+              ],
+              "rows": [
+                [
+                  "n",
+                  null
+                ],
+                [
+                  "e",
+                  ""
+                ],
+                [
+                  "a",
+                  "a"
+                ],
+                [
+                  "az",
+                  "a\u0000"
+                ]
+              ]
+            }
+          },
+          "root": {
+            "node": "r",
+            "cardinality": "many"
+          }
+        }
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "name": "NULL, empty, 'a', and a-with-a-trailing-NUL are four distinct unique values ordered by the key encoding",
+      "query": {
+        "nodes": {
+          "t": {
+            "kind": "scan",
+            "table": "items",
+            "scope": "t"
+          },
+          "o": {
+            "kind": "order",
+            "input": "t",
+            "terms": [
+              {
+                "expr": {
+                  "kind": "col",
+                  "scope": "t",
+                  "column": "code"
+                }
+              }
+            ]
+          }
+        },
+        "root": {
+          "node": "o",
+          "cardinality": "many"
+        }
+      },
+      "expect": [
+        {
+          "id": "n",
+          "code": null
+        },
+        {
+          "id": "e",
+          "code": ""
+        },
+        {
+          "id": "a",
+          "code": "a"
+        },
+        {
+          "id": "az",
+          "code": "a\u0000"
+        }
+      ]
+    }
+  ]
+}

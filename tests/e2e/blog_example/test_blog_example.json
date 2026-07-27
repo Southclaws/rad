@@ -1,0 +1,74 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "users": { "kind": "scan", "table": "users", "scope": "u" },
+            "posts": { "kind": "scan", "table": "posts", "scope": "p" },
+
+            "mine": {
+              "kind": "filter",
+              "input": "posts",
+              "predicate": {
+                "kind": "binary", "op": "and",
+                "left": {
+                  "kind": "binary", "op": "eq",
+                  "left":  { "kind": "col", "scope": "p", "column": "user_id" },
+                  "right": { "kind": "col", "scope": "u", "column": "id" }
+                },
+                "right": {
+                  "kind": "binary", "op": "gt",
+                  "left":  { "kind": "col", "scope": "p", "column": "created_at" },
+                  "right": { "kind": "lit", "value": { "type": "int64", "value": "126230400" } }
+                }
+              }
+            },
+            "post_objs": {
+              "kind": "project",
+              "input": "mine",
+              "scope": "po",
+              "fields": [
+                { "as": "title",      "expr": { "kind": "col", "scope": "p", "column": "title" } },
+                { "as": "created_at", "expr": { "kind": "col", "scope": "p", "column": "created_at" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "post_objs",
+              "terms": [ { "expr": { "kind": "col", "scope": "po", "column": "created_at" } } ]
+            },
+
+            "out": {
+              "kind": "project",
+              "input": "users",
+              "scope": "r",
+              "fields": [
+                { "as": "id",    "expr": { "kind": "col", "scope": "u", "column": "id" } },
+                { "as": "name",  "expr": { "kind": "col", "scope": "u", "column": "name" } },
+                { "as": "posts", "expr": { "kind": "array", "node": "sorted" } }
+              ]
+            },
+            "ordered": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "r", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "ordered", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    {
+      "id": 1,
+      "name": "Donald D. Chamberlin",
+      "posts": [
+        { "title": "SEQUEL: A Structured English Query Language", "created_at": 136598400 }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+[
+  { "table": "measurements", "rows": [
+    { "id": "m1", "amount": 2 },
+    { "id": "m2", "amount": 3 },
+    { "id": "m3", "amount": 4 },
+    { "id": "m4", "amount": 5 }
+  ] }
+]

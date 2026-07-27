@@ -1,0 +1,270 @@
+---
+title: Relational IR
+description: "Things databases could learn from compilers: intermediate representations are the glue between interfaces and implementations."
+date: 2026-07-16
+author: Barnaby Keene
+---
+
+Databases are essentially compilers that also happen to store stuff. Query languages _are languages_ just like C, Python, Go, etc. So they often follow a vaguely similar path: lexing, parsing, AST, optimisation, execution.
+
+The main difference is the last two bits: optimisation wants to make sure the query is as efficient as possible in terms of how much data is read, how much work needs to happen to shape it and what order to do things in. Then, execution is reading data from the source rather than performing computations. (I mean, yes it computes stuff but the main role is to read and unpack a data structure into something useful.)
+
+<CompilerPipeline />
+
+Programming language compilers are almost always implemented as **layers**. Frontends, backends, intermediaries, and there's sometimes a story of **interoperability**.
+
+Take C++ for example, you can compile a C++ program using something called LLVM, or "low level virtual machine", the idea is there are too many computer architectures out there for one compiler team to target all of them so LLVM defines a middle ground: LLVM IR, **intermediate representation**, which the LLVM program compiles to whatever architecture you want. This means all you have to do to write a C++ compiler\* is lower your language to LLVM IR, then let LLVM do the rest for x86, Arm, Power PC, weird ones you've never heard of, etc.
+
+In this world, C++ is a "frontend" to LLVM, and each architecture is a backend. It's a really neat system: Rust, Swift, Zig and many others use LLVM too!
+
+<LLVMHourglass />
+
+This makes it slightly easier to build a new language, it takes a lot of the work away from you so you can focus on the **interesting** and **innovative** things: syntax design, developer experience, target use-cases.
+
+<Callout type="warn">\*Don't write a C++ compiler.</Callout>
+
+There are others too: The java world has JVM, and this has resulted in a neat little ecosystem of interoperable JVM languages like Scala, Kotlin, Clojure and even porting existing languages to run on the JVM such as Jython and Rhino! If you think the JVM is pretty neat and you want to make a language, you can target the JVM and not need to really worry too much about supporting x86, x86_64, Arm, and friends.
+
+## Databases
+
+Outside of the OLAP world, databases don't really do this. In the Apache ecosystem for big data, there's a really neat separation of storage formats and query engines, and sometimes: query interfaces (Flink is amazing for this!)
+
+There's no (popular) IR you can target if you want to play with building a new syntax for querying data. If you wanted to take a stab at creating something new, you kind of just have to build a whole database. Engines like Calcite, DataFusion, PostgreSQL and DuckDB all have their own internal representations, and Apache projects increasingly share formats like Substrait, but they're largely implementation details or interoperability layers. A lot more of this work is happening in the OLAP world, but OLTP is still fairly siloed.
+
+I highlighted a couple of words up there too, **interesting** and **innovative**. in 2024, some folks at Google released a paper, [SQL Has Problems. We Can Fix Them: Pipe Syntax In SQL](https://research.google/pubs/sql-has-problems-we-can-fix-them-pipe-syntax-in-sql/)
+
+I thought this was really neat, and a lot of others did too! It makes authoring SQL feel more composable and less restrictive in terms of the order of operations (like, why do I _really_ need to write LIMIT after ORDER, or GROUP BY after WHERE?)
+
+> SQL’s challenges start from its basic query syntax: SELECT ... FROM ... WHERE ... GROUP BY, etc. This operation order is rigid and arbitrary and doesn’t reflect the actual data flow, which starts with table scans in the FROM.
+
+<ClauseOrder />
+
+I'd love to use it but I can't, none of the databases I use support it. Nothing in Postgres, MySQL, Flink or MSSQL. It's in Spark, and Spark is in the Apache world, so it would be neat to see it in Flink but it's unlikely to ever land in other databases. Adopting pipe syntax means every database vendor needs to independently modify its parser, grammar, tooling and documentation.
+
+Imagine instead that relational databases exposed a common, structured query representation rather than SQL text as their primary interface. A pipe-syntax frontend wouldn't need to be implemented N times by all the vendors. It could lower into that common representation, and any database speaking it could execute the result.
+
+<SharedIR />
+
+### What's actually the deal with SQL?
+
+If you've used more than one database, you know there are _dialects_ and this can be quite frustrating the more complex queries you write and features you use.
+
+SQL is also, to the surprise of many I tell, _not free_. It's not an open standard like the wonderful W3 specs or IETF RFCs. No, it costs quite a bit of money to actually get the entire multi-document (about 11 docs I think?) spec, and it's thousands of pages long. As far as I know, no database on earth implements the full spec. Though, it's kind of designed that way, so you can pick and choose the relevant solution for your database.
+
+But, still, as as web developer, I think this is the only non-open/non-free standard (ish) we build on. Which could be one reason (of many) why there are so many dialects.
+
+It also moves slowly, as a design-by-committee businessy-enterprisey thing, I do find it interesting how the hobbyist/OSS community can choose FastAPI over Spring Boot, HTMX over ASP.NET WebForms, GCC over proprietary compilers but for OLTP databases it all leads back to SQL.
+
+### We all hate ORMs, eventually
+
+Most dicussions around ORMs often devolve down to "ORMs bad". With fair points too: they generate terrible queries and ruin your day. Why? Because an ORM is almost doing some of the same work as the database itself, just with a higher level language in the middle. But, to use compiler terms, ORMs almost feel like they are _raising_ only for the database to _lower_ again. A query goes from imperative code _upwards_ to human-friendly SQL then back downwards again through AST -> IR -> plan.
+
+<AbstractionCurve />
+
+They have to choose between exposing SQL's full expressiveness or providing a pleasant programming model. Most sit somewhere in the middle. ORMs don't, and shouldn't, have access to statistics about the underlying catalogs. But that means they can't easily make smarter decisions about query construction. And, even if they could, it would still be string-gluing of an rather complicated grammar.
+
+The database already knows how to bind names, infer types, optimise joins, estimate cardinalities and choose execution strategies. An ORM can't realistically compete with that, so it either generates best-effort SQL strings or asks the developer to write SQL anyway. In other words, we've inserted another compiler frontend, whose only output format is a language designed for humans to explore data. It's all a little strange really.
+
+But ORMs aren't necessarily a problem, they're a symptom _and_ a desire path. It feels _nice_ to type `user.` and see `id`, `name`, and `email` pop up in your editor, it's genuinely a better interface into your already strongly typed data model. And even if you're not writing code by hand any more, strong types help coding agents immensely in their feedback loop while achieving a goal. In my own experience, I've chosen ORMs at faster paced businesses purely because I could happily trade query speed for developer speed.
+
+And of course it didn't always go well. Prisma once tried to cleverly avoid a join and replace it with a correlated subquery, what Prisma didn't know is the left hand side returned over 20 thousand records, so its generated `where in (...)` was just comically large. The question there isn't "why did you use an ORM you idiot!" it's "why did the ORM try to decide correlated subquery over join, surely that's the planners job?". And that's the thing database engine authors have spent decades refining.
+
+## Where Rad fits in
+
+Look, SQL isn't going away, and I've grown to like it as I do a lot more OLAP work nowadays and it's genuinely a nice tool for expressing deeply complex aggregations, especially in streaming contexts with Flink!
+
+But I think that's sort of where I've landed on this: SQL is fantastic as a language despite its quirks, especially when I'm exploring and understanding unfamiliar data where you're typing queries into a UI looking for patterns and insights. Where I feel it falls flat is where you have a rigid business logic driven schema and rigid business logic driven code and crossing that boundary either means gluing strings or using an ORM.
+
+Prisma pioneered the idea of a code-generated ORM, it wasn't the first but it was the one that marketed the idea well and provided a fantastic developer experience around it. They had to build a sort of IR-like layer that glued the type-safe codegen to the schema and SQL generation.
+
+I think build tooling ontop of SQL can be a frustrating experience. The grammar is crazy huge, there are many dialects and it just _feels_ like the wrong direction. But there hasn't really been any other way to do it.
+
+This is what Rad is aiming to challenge and explore. To lower the integration surface by one level of abstraction. You don't talk to Rad with a human DSL, you talk to it using a relational Logical Intermediate Representation, or LIR. Any OLTP workload can be expressed in LIR, it gets passed directly to the planner which figures out how to efficiently retrieve the data in the shape you want.
+
+### Talk is cheap
+
+Enough yapping, here's some LIR.
+
+In SQL, you can grab a user and all their posts after the date:
+
+```sql
+select u.id, u.name, p.title
+from users u
+inner join posts p on p.user_id = u.id
+where p.created_at > '1974-01-01'
+```
+
+We're grabbing users and their posts after a given date, but the natural result is flattened:
+
+| u.id | u.name               | p.title                                     |
+| ---- | -------------------- | ------------------------------------------- |
+| 1    | Donald D. Chamberlin | SEQUEL: A Structured English Query Language |
+
+Donald wrote a few papers, so without the date predicate his id and name would be repeated once for every matching post:
+
+| u.id | u.name               | p.title                                              |
+| ---- | -------------------- | ---------------------------------------------------- |
+| 1    | Donald D. Chamberlin | SEQUEL: A Structured English Query Language          |
+| 1    | Donald D. Chamberlin | SQUARE: Specifying Queries as Relational Expressions |
+
+When exploring data this is fine, but if you're building an application that models this as a nested list of posts under the user, you have to untangle this.
+
+Rad, however, can express the same relationship while preserving the nested shape the application actually wants without sacrificing the relational algebraic semantics internally.
+
+What this looks like in Rad's IR is quite verbose, but remember, humans don't write LLVM IR by hand, so humans don't write this by hand either:
+
+```json
+{
+  "nodes": {
+    "users": { "kind": "scan", "table": "users", "scope": "u" },
+    "posts": { "kind": "scan", "table": "posts", "scope": "p" },
+
+    "mine": {
+      "kind": "filter",
+      "input": "posts",
+      "predicate": {
+        "kind": "binary",
+        "op": "and",
+        "left": {
+          "kind": "binary",
+          "op": "eq",
+          "left": { "kind": "col", "scope": "p", "column": "user_id" },
+          "right": { "kind": "col", "scope": "u", "column": "id" }
+        },
+        "right": {
+          "kind": "binary",
+          "op": "gt",
+          "left": { "kind": "col", "scope": "p", "column": "created_at" },
+          "right": {
+            "kind": "lit",
+            "value": { "type": "int64", "value": "126230400" }
+          }
+        }
+      }
+    },
+    "post_objs": {
+      "kind": "project",
+      "input": "mine",
+      "scope": "po",
+      "fields": [
+        {
+          "as": "title",
+          "expr": { "kind": "col", "scope": "p", "column": "title" }
+        },
+        {
+          "as": "created_at",
+          "expr": { "kind": "col", "scope": "p", "column": "created_at" }
+        }
+      ]
+    },
+    "sorted": {
+      "kind": "order",
+      "input": "post_objs",
+      "terms": [
+        { "expr": { "kind": "col", "scope": "po", "column": "created_at" } }
+      ]
+    },
+
+    "out": {
+      "kind": "project",
+      "input": "users",
+      "scope": "r",
+      "fields": [
+        { "as": "id", "expr": { "kind": "col", "scope": "u", "column": "id" } },
+        {
+          "as": "name",
+          "expr": { "kind": "col", "scope": "u", "column": "name" }
+        },
+        { "as": "posts", "expr": { "kind": "array", "node": "sorted" } }
+      ]
+    },
+    "ordered": {
+      "kind": "order",
+      "input": "out",
+      "terms": [{ "expr": { "kind": "col", "scope": "r", "column": "id" } }]
+    }
+  },
+  "root": { "node": "ordered", "cardinality": "many" }
+}
+```
+
+The result of this query is:
+
+```json
+[
+  {
+    "id": 1,
+    "name": "Donald D. Chamberlin",
+    "posts": [
+      {
+        "title": "SEQUEL: A Structured English Query Language",
+        "created_at": 136598400
+      }
+    ]
+  }
+]
+```
+
+<Callout type="info">
+  Sorry Raymond F. Boyce, you co-authored the paper too! But I didn't want to
+  complicate the example with a m2m junction table of authors...
+</Callout>
+
+Now let's walk through what some of that means:
+
+- It's a tree structure, which makes it really easy for machines to generate and edit. Relation nodes (operators) can reference other relation nodes as inputs while "scopes" are logical aliases to outputs, sort of like functions vs variable bindings. `"input": "posts"` / `"node": "sorted"` are edges into the `nodes` map while `{ "scope": "p", ... }` addresses a column by its relation alias.
+
+- Literals on the query path are self-describing. A `lit` doesn't carry a bare JSON scalar, it's a tagged value `{ "type": "int64", "value": "126230400" }`. Numbers travel as strings so int64 keeps full precision on the wire. I'm not set on JSON being the canonical format forever for this and other reasons, but it's a simple format for examples and development.
+
+- The `many` cardinality demands an explicit order. SQL returns an arbitrary order without `ORDER BY`. Rad instead rejects an observable collection with no order (the binder error is literally "observable collections must not depend on the access path"). It's a determinism guarantee: the result can't silently change when the planner picks a different index, but it's also a developer experience feature. You pretty much always want to specify an order when pulling a list of things because the physical storage layer does not necessarily guarantee result order.
+
+- The `"posts": { "kind": "array", "node": "sorted" }` is a _crossing_, it embeds a correlated subquery: `sorted` filters `posts` to `p.user_id = u.id` (it reads the outer `u` scope) and `created_at > 1974-01-01`. `array` renders those rows as a nested list per user.
+
+What about the internals? Sure, we got a result but did it do it efficiently? Well, Rad _is_ a brand new prototype, it doesn't have a world class cutting edge optimiser (yet) but it produces fairly decent plans already:
+
+```
+Plan card=many
+  Sort r.id#0 asc
+    Project
+      id#0 = u.id#0
+      name#1 = u.name#1
+      posts#6 = posts#6
+      Attach
+        #6 = array key-correlated [user_id#3 = @0]
+          Sort po.created_at#5 asc
+            Project
+              title#4 = p.title#4
+              created_at#5 = p.created_at#5
+              Filter and(eq(p.user_id#3, u.id#0), gt(p.created_at#5, 126230400))
+                IndexRangeScan posts posts_user_id_idx [user_id = @0]
+        TableScan users
+```
+
+Some key points on this:
+
+- The `array` crossing compiled to a key-correlated `Attach`: the nested posts are fetched, batched by the correlation key (`user_id = @0`), not a per-user N+1. `@0` is the outer user's `id` threaded in.
+
+- The planner chose the `posts_user_id_idx` (`IndexRangeScan … [user_id = @0]`) on its own: nothing in the LIR asked for it because LIR is a logical plan which is lowered to a physical plan and undergoes some basic optimisation.
+
+- The `created_at > 1974` predicate rides as a residual `Filter` above the access: the index narrows by `user_id`, the filter finishes the job.
+
+- `#0`,`#3`,`#5`,`#6` are slots (post-binding column addresses); the top `Sort` is the mandatory order for a many root.
+
+Let's go even lower, what actually hit the KV store?
+
+```
+SCAN [/rad/data/t1/primary/ .. /rad/data/t1/primary0)
+SCAN [/rad/index/t4/i9/\x03\x80\x00\x00\x00\x00\x00\x00\x01 .. /rad/index/t4/i9/\x03\x80\x00\x00\x00\x00\x00\x00\x02)
+GET  /rad/data/t4/primary/\x03\x80\x00\x00\x00\x00\x00\x00\x01
+GET  /rad/data/t4/primary/\x03\x80\x00\x00\x00\x00\x00\x00\x02
+```
+
+Reading this:
+
+1. `SCAN` users: one scan over the users primary keyspace (the outer `TableScan`).
+2. `SCAN` the `user_id` index for `user_id = 1`: the batched correlated lookup. `\x03\x80\x00…\x01` is the key encoding of `int64 1` (`\x03` type tag; `\x80…` is the sign-flipped big-endian `int`). The range is `[1 .. 2)` which means "exactly user_id 1".
+3. Two `GET`s on posts rows pk `1` and `2`: both of Chamberlin's posts (both have `user_id`=`1`), fetched by primary key.
+
+Key components like `t1`, `i9`, etc. are internal references to catalog tables and indexes, these are generated with a globally monotonic integer ID, every time a schema change adds something, this increments within the transaction.
+
+<Callout type="warn">This post is not quite finished yet!</Callout>

@@ -1,0 +1,14 @@
+# A crossing embedded inside a filter predicate:
+# filter(parents, scalar(count of my children) > 1).
+tables:
+  - id: 1
+    name: parents
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+
+  - id: 2
+    name: children
+    columns:
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: parent_id, type: string, nullable: true, ref: parents.id }

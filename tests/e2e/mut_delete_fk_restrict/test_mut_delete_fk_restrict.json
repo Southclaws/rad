@@ -1,0 +1,21 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "del_team",
+        "kind": "delete",
+        "table": "teams",
+        "relation": {
+          "nodes": { "r": { "kind": "rows", "scope": "r",
+            "columns": [ { "name": "id", "type": "text" } ],
+            "rows": [ ["team-eng"] ] } },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "error": {
+    "code": "invalid",
+    "contains": "is referenced by"
+  }
+}

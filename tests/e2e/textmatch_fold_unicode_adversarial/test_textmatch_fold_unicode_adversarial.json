@@ -1,0 +1,244 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "ascii_case_fold",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "samples", "scope": "t" },
+            "f": { "kind": "filter", "input": "t", "predicate": {
+              "kind": "text_match",
+              "value": { "kind": "col", "scope": "t", "column": "value" },
+              "comparison": "unicode_simple_fold",
+              "parts": [ { "kind": "literal", "value": "foo" } ]
+            } },
+            "o": { "kind": "order", "input": "f", "terms": [
+              { "expr": { "kind": "col", "scope": "t", "column": "id" } }
+            ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "ascii-lower", "value": "foo" },
+    { "id": "ascii-mixed", "value": "fOo" },
+    { "id": "ascii-upper", "value": "FOO" }
+  ],
+  "assertions": [
+    {
+      "name": "Kelvin sign shares the K/k Unicode simple-fold cycle",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "k" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "kelvin-ascii-lower", "value": "k" },
+        { "id": "kelvin-ascii-upper", "value": "K" },
+        { "id": "kelvin-sign", "value": "K" }
+      ]
+    },
+    {
+      "name": "long s shares the S/s Unicode simple-fold cycle",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "s" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "long-s", "value": "ſ" },
+        { "id": "long-s-ascii-lower", "value": "s" },
+        { "id": "long-s-ascii-upper", "value": "S" }
+      ]
+    },
+    {
+      "name": "capital normal and final Greek sigma are one simple-fold class",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "σ" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "sigma-capital", "value": "Σ" },
+        { "id": "sigma-final", "value": "ς" },
+        { "id": "sigma-small", "value": "σ" }
+      ]
+    },
+    {
+      "name": "sharp s folds one rune to one rune including capital sharp s",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "straße" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "sharp-simple-lower", "value": "Straße" },
+        { "id": "sharp-simple-upper", "value": "STRAẞE" }
+      ]
+    },
+    {
+      "name": "sharp s never expands to ss under simple folding",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "STRASSE" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "sharp-expanded", "value": "STRASSE" } ]
+    },
+    {
+      "name": "accented composed letters fold case but not accents or normalization",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "é" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "accent-composed-lower", "value": "é" },
+        { "id": "accent-composed-upper", "value": "É" }
+      ]
+    },
+    {
+      "name": "plain e does not absorb accents or combining marks",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "e" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "accent-plain", "value": "e" } ]
+    },
+    {
+      "name": "Turkish dotted and dotless I receive no locale-specific treatment",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "i" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "turkish-ascii-lower", "value": "i" },
+        { "id": "turkish-ascii-upper", "value": "I" }
+      ]
+    },
+    {
+      "name": "the ff ligature never expands to two runes",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "ff" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "ligature-expanded", "value": "ff" } ]
+    },
+    {
+      "name": "supplementary-plane Deseret letters fold without byte slicing bugs",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "𐐀" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "deseret-capital", "value": "𐐀" },
+        { "id": "deseret-small", "value": "𐐨" }
+      ]
+    },
+    {
+      "name": "Angstrom sign and ringed A variants follow their simple-fold cycle",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "Å" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "angstrom-lower", "value": "å" },
+        { "id": "angstrom-sign", "value": "Å" },
+        { "id": "angstrom-upper", "value": "Å" }
+      ]
+    },
+    {
+      "name": "micro sign and Greek mu variants follow their simple-fold cycle",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "samples", "scope": "t" },
+          "f": { "kind": "filter", "input": "t", "predicate": {
+            "kind": "text_match", "value": { "kind": "col", "scope": "t", "column": "value" },
+            "comparison": "unicode_simple_fold", "parts": [ { "kind": "literal", "value": "µ" } ]
+          } },
+          "o": { "kind": "order", "input": "f", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "greek-mu-capital", "value": "Μ" },
+        { "id": "greek-mu-small", "value": "μ" },
+        { "id": "micro-sign", "value": "µ" }
+      ]
+    }
+  ]
+}

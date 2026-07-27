@@ -1,0 +1,96 @@
+---
+title: Schema transition reference
+description: Transition kinds, states, control fields, endpoints, and terminal outcomes.
+---
+
+This page describes the administrative projection of durable online schema
+work. It is a reference for operators and tooling authors.
+
+## Kinds
+
+| `transition_kind` | Logical result | Physical protocol |
+| --- | --- | --- |
+| `index_build` | A unique or non-unique index becomes ready | Base scan, captured mutation deltas, catch-up, optional uniqueness validation |
+| `column_replacement` | A stable logical column points to a new physical representation | Strict conversion backfill, foreground dual-write, validation, atomic swap |
+| `constraint_validation` | A constraint becomes valid | Enforce new writes, scan historical rows, validate, publish |
+
+Constraint validation currently supports not-null tightening.
+
+## States
+
+| `state` | Meaning | Foreground behaviour |
+| --- | --- | --- |
+| `waiting` | Durable prerequisites are not all ready | No obligation for this transition is installed |
+| `building` | Base scan or backfill is running | Deltas, dual-writes, or checks follow the active write protocol |
+| `catching_up` | Captured index mutations are being replayed | Index deltas continue to be appended |
+| `validating` | Final checks or publication are in progress | A short finalization gate may reject affected writes |
+| `ready` | Logical result published | New binding and planning can use it |
+| `failed` | Terminal validation or protocol failure | Partial artifacts are queued for cleanup |
+| `cancelled` | Terminal operator cancellation | Obligations are removed and partial artifacts are queued for cleanup |
+
+The state set is shared by all kinds. A kind can skip states that its protocol
+does not need.
+
+## Control object
+
+```json
+{
+  "kind": "transition",
+  "transition_id": "tr42",
+  "object_id": "column:2",
+  "transition_kind": "column_replacement",
+  "state": "building",
+  "generation": 6,
+  "prerequisites": ["tr41"],
+  "retained_work_state": "normal",
+  "rows_scanned": 32000,
+  "applied_delta": 0,
+  "delta_lag": 0
+}
+```
+
+| Field | Presence | Contract |
+| --- | --- | --- |
+| `kind` | Required | Always `transition` |
+| `transition_id` | Required | Stable durable identity for this work |
+| `object_id` | Required | Stable logical identity of the index, column, or constraint being produced |
+| `transition_kind` | Required | One protocol kind from the table above |
+| `state` | Required | Current durable lifecycle state |
+| `generation` | Required | Version of this transition record's state and progress |
+| `prerequisites` | Required | Transition IDs that must publish `ready` before activation |
+| `retained_work_state` | Required | Advisory `normal`, `degraded`, or `write_gated` pressure |
+| `last_error` | Optional | Terminal or most recent worker diagnostic |
+| `rows_scanned` | Required | Advisory count of rows scanned |
+| `applied_delta` | Required | Advisory count or sequence of captured index mutations applied |
+| `delta_lag` | Required | Advisory remaining captured index work |
+
+`generation` is not the canonical schema revision, an object definition
+generation, a table write-protocol generation, a data position, or the worker
+owner epoch. Owner epochs and physical SlateDB positions are internal.
+
+## Endpoints
+
+| Method and path | Behaviour | Errors |
+| --- | --- | --- |
+| `GET /schema/transitions` | Coherent list, including retained terminal records; optional `kind` and `state` filters | Invalid filters are rejected |
+| `GET /schema/transitions/{transition}` | Coherent observation of one transition | `404` when unknown |
+| `POST /schema/transitions/{transition}/cancel` | Atomic cancellation and cleanup scheduling | `404` unknown, `409` publication race, `422` terminal work that cannot be cancelled |
+
+List and get never claim a worker or advance progress. Cancellation cannot be
+interleaved with application statements in a PIR program.
+
+## Terminal outcomes
+
+`ready`, `failed`, and `cancelled` are terminal.
+
+- `ready` means the logical result was published atomically. Delete or change
+  that object through the ordinary schema workflow.
+- `failed` means Rad preserved the diagnostic and did not publish an invalid
+  result. Correct the data or choose a supported target before planning again.
+- `cancelled` means operator intent won before publication. Repeating cancel is
+  safe and returns the same outcome.
+
+Detailed worker state can be compacted after physical cleanup. Rad retains a
+stable terminal summary and failure diagnostic. A diagnostics retention pin can
+delay that compaction, though no public pin-management workflow is documented
+yet.

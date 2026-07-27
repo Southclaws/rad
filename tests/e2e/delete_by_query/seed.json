@@ -1,0 +1,7 @@
+[
+  { "table": "items", "rows": [
+    { "id": "i1", "keep": true },
+    { "id": "i2", "keep": false },
+    { "id": "i3", "keep": false }
+  ] }
+]

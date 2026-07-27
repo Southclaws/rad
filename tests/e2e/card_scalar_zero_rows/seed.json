@@ -1,0 +1,9 @@
+[
+  {
+    "table": "widgets",
+    "rows": [
+      { "id": "w1", "name": "Alpha", "rank": 10 },
+      { "id": "w2", "name": "Beta", "rank": 20 }
+    ]
+  }
+]

@@ -1,0 +1,9 @@
+# e2e/pir_result_selection — three independent create statements; the
+# program's explicit `result` names the MIDDLE (non-final) statement, so the
+# returned value must be that statement's output, not the last statement's.
+tables:
+  - id: 1
+    name: items
+    columns:
+      - { id: 1, name: id,    type: string, pk: true }
+      - { id: 2, name: label, type: string }

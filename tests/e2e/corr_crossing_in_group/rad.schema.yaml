@@ -1,0 +1,14 @@
+# group parents by a correlated scalar(count of children): the crossing is a
+# GROUP BY term. Rows grouped by their per-parent child count.
+tables:
+  - id: 1
+    name: parents
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+
+  - id: 2
+    name: children
+    columns:
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: parent_id, type: string, nullable: true, ref: parents.id }

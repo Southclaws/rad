@@ -1,0 +1,52 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "insert_notes",
+        "kind": "create",
+        "table": "notes",
+        "relation": {
+          "nodes": {
+            "r": {
+              "kind": "rows",
+              "scope": "r",
+              "columns": [
+                { "name": "id", "type": "text" },
+                { "name": "body", "type": "text" },
+                { "name": "rank", "type": "int64" }
+              ],
+              "rows": [
+                ["n1", "first", "1"],
+                ["n2", "second", "2"],
+                ["n3", "third", "3"]
+              ]
+            }
+          },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "name": "all four notes present, ordered by rank",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "notes", "scope": "t" },
+          "o": {
+            "kind": "order",
+            "input": "t",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "rank" } } ]
+          }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "n0", "body": "seed", "rank": 0 },
+        { "id": "n1", "body": "first", "rank": 1 },
+        { "id": "n2", "body": "second", "rank": 2 },
+        { "id": "n3", "body": "third", "rank": 3 }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+[
+  { "table": "sales", "rows": [
+    { "id": "s1", "region": "east", "category": "food", "amount": 10 },
+    { "id": "s2", "region": "east", "category": "food", "amount": 20 },
+    { "id": "s3", "region": "east", "category": "toys", "amount": 5 },
+    { "id": "s4", "region": "west", "category": "food", "amount": 7 }
+  ] }
+]

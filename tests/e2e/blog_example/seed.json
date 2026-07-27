@@ -1,0 +1,9 @@
+[
+  { "table": "users", "rows": [
+    { "id": 1, "name": "Donald D. Chamberlin" }
+  ]},
+  { "table": "posts", "rows": [
+    { "id": 1, "user_id": 1, "title": "SQUARE: Specifying Queries as Relational Expressions", "created_at": 94694400 },
+    { "id": 2, "user_id": 1, "title": "SEQUEL: A Structured English Query Language", "created_at": 136598400 }
+  ]}
+]

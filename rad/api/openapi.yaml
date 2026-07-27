@@ -1,0 +1,1184 @@
+openapi: 3.0.3
+
+info:
+  contact:
+    name: Barnaby Keene
+  description: >
+    The Rad wire protocol: a small JSON over HTTP surface that clients and a
+    Rad server speak to each other.
+
+
+    Rad is reached over a `rad://` (or `rads://` for HTTPS) connection URI
+    which resolves to an HTTP base URL. Rad speaks plain HTTP; front it with
+    your own proxy for encryption or authentication and use `rads://` so the
+    client dials it over HTTPS. Rad never terminates TLS itself. The default
+    port is 7237.
+
+
+    This document is the contract. Every operation describes what it does, what
+    it returns, and how it fails, in enough detail to serve as the basis for
+    acceptance tests. The protocol is deliberately unversioned: Rad is a proof
+    of concept and makes no backwards compatibility guarantees yet.
+
+
+    Errors are returned as RFC 7807 Problem Details with the
+    `application/problem+json` media type. The `code` member is the stable,
+    machine readable discriminator (`invalid`, `not_found`, `conflict`,
+    `internal`) and clients should switch on it rather than parsing the `type`
+    URI or the HTTP status.
+  title: rad
+  version: "v0"
+
+servers:
+  - url: "/"
+    description: >
+      The server mounts every operation at the root. A `rad://host:7237`
+      connection URI maps directly onto `http://host:7237/`.
+
+tags:
+  - name: meta
+    description: Liveness and schema introspection.
+  - name: schema
+    description: Reconciling the database with a rad.schema.yaml file.
+  - name: administration
+    description: Inspecting and controlling durable database maintenance work.
+  - name: catalog
+    description: >
+      Imperative catalog mutation: creating, updating, and deleting tables,
+      columns, and indexes over the API. Available only on directly managed
+      databases; a schema-managed database rejects every operation in this
+      group with an `invalid` problem, since its catalog is owned by
+      `rad.schema.yaml` migrations.
+  - name: data
+    description: Reading and writing rows against committed state.
+  - name: transactions
+    description: Server held serializable transactions.
+
+paths:
+  /info:
+    get:
+      operationId: GetInfo
+      summary: Describe this database.
+      description: |
+        Return stable metadata for the database behind this endpoint. `mode`
+        tells management tools whether catalog changes are available directly
+        through the API or are owned by `rad.schema.yaml` migrations.
+        `schema_version` identifies the latest committed catalog state, and
+        `schema_version_at` reports when that version committed. `location` is
+        the server's configured storage location and is intended for local
+        development and administrative tooling.
+      tags: [meta]
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/GetInfoOK" }
+
+  /health:
+    get:
+      operationId: GetHealth
+      summary: Check that the server is alive.
+      description: |
+        A cheap liveness probe that touches no storage. It always returns `200`
+        with a small status body while the process is serving, so it is safe to
+        use as a readiness check or a `rad://` reachability test before opening
+        a connection.
+      tags: [meta]
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/GetHealthOK" }
+
+  /schema:
+    get:
+      operationId: GetSchema
+      summary: Return the current accepted schema.
+      description: Return the committed canonical schema together with its monotonic version and canonical hash.
+      tags: [schema]
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/GetSchemaOK" }
+
+  /schema/diff:
+    post:
+      operationId: SchemaDiff
+      summary: Plan and preflight a desired schema without changing anything.
+      description: |
+        This is an advisory point-in-time plan. The planner may account for
+        matching durable work already in progress and omit a duplicate
+        transition-start statement. Apply replans against current state and
+        returns the authoritative transition identities accepted for the
+        migration; diff does not return durable transition handles.
+      tags: [schema]
+      requestBody: { $ref: "#/components/requestBodies/SchemaDiff" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/SchemaDiffOK" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /schema/migrate:
+    post:
+      operationId: SchemaMigrate
+      summary: Start or recover reconciliation with a desired schema.
+      description: |
+        The server parses the desired schema, computes and preflights its
+        semantic diff, and atomically commits immediate catalog work plus any
+        durable online transition starts. The response is `ready` only when
+        the current canonical schema equals `desired_hash`; otherwise it is
+        `converging` and returns the transition identities to observe through
+        the administrative API. Repeating the same desired-schema request
+        recovers matching in-flight transitions instead of duplicating them.
+        Destructive findings require `accept_data_loss`; blocking findings can
+        never be bypassed.
+      tags: [schema]
+      requestBody: { $ref: "#/components/requestBodies/SchemaMigrate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/SchemaMigrateOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /schema/compatibility:
+    post:
+      operationId: SchemaCompatibility
+      summary: Verify an exact generated-client schema identity.
+      tags: [schema]
+      requestBody: { $ref: "#/components/requestBodies/SchemaCompatibility" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "204": { $ref: "#/components/responses/NoContent" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /schema/transitions:
+    get:
+      operationId: SchemaTransitionList
+      summary: List durable online schema transitions.
+      description: |
+        Return a coherent administrative snapshot of online schema work,
+        including terminal transitions retained for diagnostics. Optional
+        kind and state filters are applied to that snapshot. This endpoint
+        never claims a worker or advances transition progress and is available
+        in both direct and schema-managed catalog modes.
+      tags: [administration]
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          description: Return only transitions using this physical protocol.
+          schema: { $ref: "#/components/schemas/TransitionKind" }
+        - name: state
+          in: query
+          required: false
+          description: Return only transitions in this durable lifecycle state.
+          schema: { $ref: "#/components/schemas/TransitionState" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/SchemaTransitionListOK" }
+
+  /schema/transitions/{transition}:
+    get:
+      operationId: SchemaTransitionGet
+      summary: Inspect one durable online schema transition.
+      description: |
+        Return the current durable identity and lifecycle state plus advisory
+        progress and retained-work pressure. The observation is read from one
+        coherent storage snapshot and does not claim or advance a worker.
+      tags: [administration]
+      parameters:
+        - { $ref: "#/components/parameters/TransitionID" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/SchemaTransitionOK" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /schema/transitions/{transition}/cancel:
+    post:
+      operationId: SchemaTransitionCancel
+      summary: Cancel one durable online schema transition.
+      description: |
+        Atomically invalidate worker ownership, remove the transition's
+        foreground write obligations, and schedule partial physical state for
+        reclamation. Cancellation is idempotent for an already-cancelled
+        transition. Ready and failed transitions reject cancellation because
+        they require deletion or cleanup instead. This administrative
+        transaction cannot be interleaved with application statements in a PIR
+        program and is available in both catalog management modes.
+      tags: [administration]
+      parameters:
+        - { $ref: "#/components/parameters/TransitionID" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/SchemaTransitionOK" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /tables:
+    get:
+      operationId: TableList
+      summary: List the tables in the database.
+      description: |
+        Return every table currently defined in the catalog, along with its
+        columns and primary key. This reflects the schema as it exists right
+        now, after the most recent successful migration. An empty database
+        returns an empty list, not an error.
+
+        Use this to introspect a running server without access to the original
+        `rad.schema.yaml` file.
+      tags: [meta]
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TableListOK" }
+    post:
+      operationId: TableCreate
+      summary: Create a table.
+      description: |
+        Define a new table in one call: columns, primary key, and optionally
+        indexes and foreign keys, exactly as a `rad.schema.yaml` entry would. Stable
+        schema IDs may be supplied or are assigned by the catalog, and the
+        whole definition commits
+        atomically — a rejected definition leaves nothing behind, including
+        the name.
+
+        Foreign keys may reference existing tables or the table being created
+        (self-references), and must target the referenced table's full
+        primary key. A definition that fails validation — duplicate or
+        missing name, unsupported column type, nullable primary key column,
+        index or key over unknown columns — is rejected with an `invalid`
+        problem. On a schema-managed database this operation is always
+        rejected.
+      tags: [catalog]
+      requestBody: { $ref: "#/components/requestBodies/TableCreate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TableOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /tables/{table}:
+    patch:
+      operationId: TableUpdate
+      summary: Update a table.
+      description: |
+        Update a table's properties. The only updatable property today is
+        `name`: data keys use the table's ID, so a name change is
+        metadata-only and instantaneous, and foreign keys referencing the
+        table are unaffected. A name that is already taken is rejected with
+        an `invalid` problem. On a schema-managed database this operation is
+        always rejected.
+      tags: [catalog]
+      parameters:
+        - { $ref: "#/components/parameters/TableName" }
+      requestBody: { $ref: "#/components/requestBodies/TableUpdate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TableOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+    delete:
+      operationId: TableDelete
+      summary: Delete a table.
+      description: |
+        Remove a table from the catalog. Its rows and index entries become
+        unreachable; table IDs are never reused. A table that another table
+        references through a foreign key cannot be deleted until the
+        referencing table goes first (self-references do not count). On a
+        schema-managed database this operation is always rejected.
+      tags: [catalog]
+      parameters:
+        - { $ref: "#/components/parameters/TableName" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "204": { $ref: "#/components/responses/NoContent" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /tables/{table}/columns:
+    post:
+      operationId: ColumnCreate
+      summary: Create a column on a table.
+      description: |
+        Append a column. Because existing rows have no value for it, the
+        column must be nullable or carry a literal default; generator
+        defaults (`uuid()`, `now_ms()`) are rejected on new columns of
+        existing tables since they would produce a different value on every
+        read of an old row. On a schema-managed database this operation is
+        always rejected.
+      tags: [catalog]
+      parameters:
+        - { $ref: "#/components/parameters/TableName" }
+      requestBody: { $ref: "#/components/requestBodies/ColumnCreate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TableOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /tables/{table}/columns/{column}:
+    patch:
+      operationId: ColumnUpdate
+      summary: Update a column.
+      description: |
+        Update a column's properties. The only updatable property today is
+        `name`; changing a column's type or nullability is not supported. A
+        name change rewrites every metadata reference to the column (primary
+        key, indexes, foreign keys), and rows are keyed by column ID, so no
+        data is touched. On a schema-managed database this operation is
+        always rejected.
+      tags: [catalog]
+      parameters:
+        - { $ref: "#/components/parameters/TableName" }
+        - { $ref: "#/components/parameters/ColumnName" }
+      requestBody: { $ref: "#/components/requestBodies/ColumnUpdate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TableOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+    delete:
+      operationId: ColumnDelete
+      summary: Delete a column.
+      description: |
+        Remove a column. Stored values for it become unreachable. A column
+        used by the primary key, an index, or a foreign key cannot be
+        deleted — delete the index or foreign key holder first. On a
+        schema-managed database this operation is always rejected.
+      tags: [catalog]
+      parameters:
+        - { $ref: "#/components/parameters/TableName" }
+        - { $ref: "#/components/parameters/ColumnName" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TableOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /tables/{table}/indexes:
+    post:
+      operationId: IndexCreate
+      summary: Create an index on a table.
+      description: |
+        Register a secondary index and backfill entries for every existing
+        row, atomically: the index never becomes visible without its
+        entries. Backfilling a unique index over data that already contains
+        duplicates fails with an `invalid` problem — retrying cannot succeed
+        until the data changes — and the registration is rolled back with
+        it. On a schema-managed database this operation is always rejected.
+      tags: [catalog]
+      parameters:
+        - { $ref: "#/components/parameters/TableName" }
+      requestBody: { $ref: "#/components/requestBodies/IndexCreate" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TableOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /tables/{table}/indexes/{index}:
+    delete:
+      operationId: IndexDelete
+      summary: Delete an index.
+      description: |
+        Remove an index from the catalog. Its entries become unreachable;
+        index IDs are never reused. Queries that would have used it fall
+        back to other access paths. On a schema-managed database this
+        operation is always rejected.
+      tags: [catalog]
+      parameters:
+        - { $ref: "#/components/parameters/TableName" }
+        - { $ref: "#/components/parameters/IndexName" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/TableOK" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /execute:
+    post:
+      operationId: Execute
+      summary: Run an execution program.
+      description: |
+        Execute a program: an ordered list of named statements run as one
+        atomic transaction. Each statement is a `query`, `create`, `update`,
+        or `delete` over an LIR relation, and evaluates against the
+        transaction's snapshot plus the effects of all preceding statements.
+        A statement's result is available to later statements, by name,
+        through an LIR `ref` — statement names share the binding namespace.
+
+        Mutations consume relations rather than literal rows: `create` inserts
+        a relation's rows, `update` and `delete` identify target rows by the
+        relation's primary-key columns. A literal row is simply a one-row
+        `rows` relation.
+
+        Exactly one statement's result is returned, named by `result` (or the
+        sole statement of a single-statement program). The response also
+        carries a per-statement summary of affected row counts. If any
+        statement fails validation or execution, or the commit loses a
+        serializable race, the whole program fails and no effects become
+        visible; a failed statement is named in the error.
+
+        The program envelope is validated before binding, and each statement's
+        LIR relation against the independent LIR schema. Binding then resolves
+        tables, columns, scopes, and statement references (which must point at
+        earlier statements).
+      tags: [data]
+      parameters:
+        - name: show-plan
+          in: query
+          required: false
+          description: |
+            When true, the response carries the query plan for each statement —
+            the physical plan and the planner's access-path decisions — as
+            free-form JSON under `plan`, alongside the result (and on the
+            problem when a statement fails after planning).
+          schema: { type: boolean }
+        - name: dry-run
+          in: query
+          required: false
+          description: |
+            When true, bind and plan every statement but execute none: no writes,
+            no result. With `show-plan` this returns the plan only; alone it is a
+            "will this bind and plan?" validation that returns an empty success.
+          schema: { type: boolean }
+      requestBody: { $ref: "#/components/requestBodies/Execute" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/ExecuteOK" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+components:
+  parameters:
+    TableName:
+      name: table
+      in: path
+      required: true
+      description: The table's current name.
+      schema:
+        type: string
+
+    ColumnName:
+      name: column
+      in: path
+      required: true
+      description: The column's current name.
+      schema:
+        type: string
+
+    IndexName:
+      name: index
+      in: path
+      required: true
+      description: The index's name.
+      schema:
+        type: string
+
+    TransitionID:
+      name: transition
+      in: path
+      required: true
+      description: The durable transition identity returned when the work started.
+      schema:
+        type: string
+        minLength: 1
+
+  requestBodies:
+    SchemaDiff:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SchemaRequest" }
+
+    SchemaMigrate:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SchemaMigrateRequest" }
+
+    SchemaCompatibility:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SchemaCompatibilityRequest" }
+
+    Execute:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Program" }
+
+    TableCreate:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/TableDef" }
+
+    TableUpdate:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/TableUpdateProps" }
+
+    ColumnCreate:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ColumnDef" }
+
+    ColumnUpdate:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ColumnUpdateProps" }
+
+    IndexCreate:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/IndexInfo" }
+
+  responses:
+    InternalServerError:
+      description: Something went wrong inside the server that was not the caller's fault.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    BadRequest:
+      description: The request body was malformed or could not be decoded.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    NotFound:
+      description: The addressed resource, such as a transaction, does not exist.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Conflict:
+      description: The write lost an optimistic race; an immediate retry may win.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    UnprocessableEntity:
+      description: The request was well formed but failed validation against the catalog.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    NoContent:
+      description: The operation succeeded and there is no body to return.
+
+    GetHealthOK:
+      description: The server is alive.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Health" }
+    GetInfoOK:
+      description: Metadata about the database behind this endpoint.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/DatabaseInfo" }
+    GetSchemaOK:
+      description: The current accepted schema and identity.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SchemaState" }
+    SchemaDiffOK:
+      description: The semantic diff, catalog PIR, and preflight findings.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SchemaDiffResult" }
+    TableListOK:
+      description: The current set of tables.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/TableList" }
+    TableOK:
+      description: The table's definition after the mutation was applied.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/TableInfo" }
+    SchemaMigrateOK:
+      description: The committed accepted schema and its identity.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SchemaMigrateResult" }
+    SchemaTransitionOK:
+      description: The transition's durable administrative state.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/TransitionControl" }
+    SchemaTransitionListOK:
+      description: A coherent snapshot of durable schema transitions.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/TransitionList" }
+    ExecuteOK:
+      description: The result statement's datum plus a per-statement summary.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ProgramResult" }
+
+  schemas:
+    Problem:
+      description: |
+        An RFC 7807 Problem Details object. Every non 2xx response carries one.
+        The `code` member mirrors the last segment of `type` so clients can
+        branch on a stable string without parsing the URI.
+      type: object
+      required: [type, title, status, code, reason]
+      properties:
+        type:
+          description: A stable URN identifying the problem kind, for example `urn:rad:problem:conflict`.
+          type: string
+        title:
+          description: A short, human readable summary of the problem kind.
+          type: string
+        status:
+          description: The HTTP status code, repeated in the body for convenience.
+          type: integer
+        detail:
+          description: A human readable explanation specific to this occurrence.
+          type: string
+        code:
+          description: |
+            The machine readable class. One of `invalid` for a malformed
+            or rejected request, `execution_failed` for a valid query that
+            failed on the data it met (division by zero, a violated cardinality
+            assertion), `not_found`, `conflict` for a lost optimistic race
+            (an immediate retry may win — constraint violations are
+            `invalid`, since retrying them cannot help), or `internal`.
+          type: string
+          enum: [invalid, execution_failed, not_found, conflict, internal]
+        reason:
+          description: |
+            The stable, fine-grained reason within the `code` class — for
+            example `unknown_table`, `division_by_zero`, or
+            `mutation_target_not_found`. Reasons accumulate over time while the
+            five codes stay fixed; a client may switch on `reason` for precise
+            handling, or fall back to `code`. When the server did not name a
+            specific reason it equals `code` (the class catch-all).
+          type: string
+
+    Value:
+      description: An arbitrary JSON value carried by the HTTP protocol.
+
+    Program:
+      description: |
+        An arbitrary JSON object containing a PIR execution program. As with
+        `Query`, the HTTP contract does not describe the PIR grammar; servers
+        validate this raw body against the independent PIR JSON Schema, and
+        each statement's relation against the LIR schema.
+
+    ColumnDefault:
+      description: |
+        A column default, applied when an insert omits the column: either a
+        builtin generator named by `func` (`uuid` on text columns, `now_ms`
+        on int64 columns) or a literal `value` of the column's type. Exactly
+        one of the two is set.
+      type: object
+      properties:
+        func:
+          description: A builtin generator, `uuid` or `now_ms`.
+          type: string
+        value:
+          description: A literal of the column's type.
+          allOf:
+            - $ref: "#/components/schemas/Value"
+
+    ColumnInfo:
+      description: One column of a table, as reported by introspection.
+      type: object
+      required: [id, name, type]
+      properties:
+        id:
+          description: The stable logical column identity within its table.
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 2147483647
+        name:
+          type: string
+        type:
+          description: The column's storage type, one of `text`, `int64`, `float64`, or `bool`.
+          type: string
+        nullable:
+          type: boolean
+        format:
+          description: An optional semantic hint such as `uuid` or `unix_ms`.
+          type: string
+        default:
+          $ref: "#/components/schemas/ColumnDefault"
+
+    ColumnDef:
+      description: A column definition for a direct catalog create operation.
+      type: object
+      required: [name, type]
+      properties:
+        id:
+          description: An optional stable logical identity; direct mode allocates one when omitted.
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 2147483647
+        name:
+          type: string
+        type:
+          description: The column's storage type, one of `text`, `int64`, `float64`, or `bool`.
+          type: string
+        nullable:
+          type: boolean
+        format:
+          description: An optional semantic hint such as `uuid` or `unix_ms`.
+          type: string
+        default:
+          $ref: "#/components/schemas/ColumnDefault"
+
+    IndexInfo:
+      description: One secondary index, in both definitions and introspection.
+      type: object
+      required: [name, columns]
+      properties:
+        name:
+          type: string
+        columns:
+          description: The indexed column names, in order.
+          type: array
+          items:
+            type: string
+        unique:
+          type: boolean
+
+    ForeignKeyInfo:
+      description: |
+        One foreign key, in both definitions and introspection. The
+        referenced columns must be the referenced table's full primary key.
+      type: object
+      required: [name, columns, ref_table, ref_columns]
+      properties:
+        name:
+          type: string
+        columns:
+          description: The referencing column names on this table.
+          type: array
+          items:
+            type: string
+        ref_table:
+          description: The referenced table's name.
+          type: string
+        ref_columns:
+          description: The referenced table's primary key columns, in order.
+          type: array
+          items:
+            type: string
+
+    TableInfo:
+      description: One table's definition, as reported by introspection.
+      type: object
+      required: [id, name, columns, primary_key]
+      properties:
+        id:
+          description: The stable logical table identity within this database.
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 2147483647
+        name:
+          type: string
+        columns:
+          type: array
+          items: { $ref: "#/components/schemas/ColumnInfo" }
+        primary_key:
+          description: The column names that make up the primary key, in order.
+          type: array
+          items:
+            type: string
+        indexes:
+          type: array
+          items: { $ref: "#/components/schemas/IndexInfo" }
+        foreign_keys:
+          type: array
+          items: { $ref: "#/components/schemas/ForeignKeyInfo" }
+
+    TableDef:
+      description: |
+        A new table's definition, mirroring a `rad.schema.yaml` entry as JSON. The
+        direct API may omit logical IDs for the catalog to allocate. Column
+        types are `text`, `int64`, `float64`, or `bool`; the primary key is
+        required and its columns must not be nullable.
+      type: object
+      required: [name, columns, primary_key]
+      properties:
+        id:
+          description: An optional stable logical identity; direct mode allocates one when omitted.
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 2147483647
+        name:
+          type: string
+        columns:
+          type: array
+          items: { $ref: "#/components/schemas/ColumnDef" }
+        primary_key:
+          type: array
+          items:
+            type: string
+        indexes:
+          type: array
+          items: { $ref: "#/components/schemas/IndexInfo" }
+        foreign_keys:
+          type: array
+          items: { $ref: "#/components/schemas/ForeignKeyInfo" }
+
+    Health:
+      description: The liveness status of the server.
+      type: object
+      required: [status, mode]
+      properties:
+        status:
+          type: string
+        mode:
+          description: |
+            The database's catalog management mode: `direct` (the catalog
+            is mutable over this API) or `schema` (rad.schema.yaml migrations own
+            the catalog and the imperative catalog operations are rejected).
+          type: string
+
+    DatabaseInfo:
+      description: Stable metadata about a Rad database.
+      type: object
+      required: [mode, schema_version, schema_hash]
+      properties:
+        mode:
+          description: |
+            The database's catalog management mode: `direct` (the catalog
+            is mutable over this API) or `schema` (rad.schema.yaml migrations own
+            the catalog and the imperative catalog operations are rejected).
+          type: string
+          enum: [direct, schema]
+        schema_version:
+          description: |
+            The monotonic version of the committed schema. A fresh database
+            starts at zero. Each catalog change in direct mode increments it
+            once, including each reconciler step; an entire schema-managed
+            migration increments it once.
+          type: integer
+          format: int64
+          minimum: 0
+        schema_hash:
+          description: SHA-256 of the canonical committed schema JSON.
+          type: string
+        schema_version_at:
+          description: When the current schema version committed. Absent at version zero.
+          type: string
+          format: date-time
+        location:
+          description: The configured backing-store location, when the server exposes one.
+          type: string
+
+    TableList:
+      description: The set of tables defined in the database.
+      type: object
+      required: [tables]
+      properties:
+        tables:
+          type: array
+          items: { $ref: "#/components/schemas/TableInfo" }
+
+    SchemaRequest:
+      description: A desired schema source to plan.
+      type: object
+      required: [schema]
+      additionalProperties: false
+      properties:
+        schema:
+          description: The full `rad.schema.yaml` source document, as YAML.
+          type: string
+
+    SchemaMigrateRequest:
+      description: A desired schema, the preflighted server identity, and explicit data-loss consent.
+      type: object
+      required: [schema, current_version, current_hash]
+      additionalProperties: false
+      properties:
+        schema:
+          type: string
+        current_version:
+          type: integer
+          format: int64
+          minimum: 0
+        current_hash:
+          type: string
+        accept_data_loss:
+          type: boolean
+
+    SchemaCompatibilityRequest:
+      type: object
+      required: [schema_version, schema_hash]
+      additionalProperties: false
+      properties:
+        schema_version:
+          type: integer
+          format: int64
+          minimum: 0
+        schema_hash:
+          type: string
+
+    SchemaDocument:
+      description: The accepted canonical logical schema.
+      type: object
+      required: [tables]
+      properties:
+        tables:
+          type: array
+          items: { $ref: "#/components/schemas/TableDef" }
+
+    SchemaState:
+      type: object
+      required: [schema_version, schema_hash, schema]
+      properties:
+        schema_version:
+          type: integer
+          format: int64
+          minimum: 0
+        schema_hash:
+          type: string
+        schema:
+          $ref: "#/components/schemas/SchemaDocument"
+
+    SchemaChange:
+      type: object
+      required: [kind, summary]
+      properties:
+        kind: { type: string }
+        summary: { type: string }
+        table: { type: string }
+        column: { type: string }
+
+    SchemaFinding:
+      type: object
+      required: [kind, summary]
+      properties:
+        kind: { type: string }
+        summary: { type: string }
+        table: { type: string }
+        column: { type: string }
+        rows:
+          type: integer
+          format: int64
+          minimum: 0
+
+    SchemaDiffResult:
+      description: |
+        An advisory point-in-time comparison with the desired schema. `program`
+        is the work a newly accepted apply would currently need; it may omit a
+        transition start when matching durable work is already in progress.
+        Apply replans transactionally and returns its authoritative transition
+        identities.
+      type: object
+      required:
+        - current_version
+        - current_hash
+        - desired_hash
+        - changes
+        - program
+        - destructive
+        - blocking
+      properties:
+        current_version:
+          type: integer
+          format: int64
+          minimum: 0
+        current_hash: { type: string }
+        desired_hash: { type: string }
+        changes:
+          type: array
+          items: { $ref: "#/components/schemas/SchemaChange" }
+        program: { $ref: "#/components/schemas/Value" }
+        destructive:
+          type: array
+          items: { $ref: "#/components/schemas/SchemaFinding" }
+        blocking:
+          type: array
+          items: { $ref: "#/components/schemas/SchemaFinding" }
+
+    SchemaMigrateResult:
+      allOf:
+        - $ref: "#/components/schemas/SchemaState"
+        - type: object
+          required: [changes, desired_hash, state, transition_ids]
+          properties:
+            changes:
+              type: array
+              items: { $ref: "#/components/schemas/SchemaChange" }
+            desired_hash:
+              description: Canonical hash of the requested target schema.
+              type: string
+            state:
+              description: Whether the current canonical schema has reached the requested target.
+              type: string
+              enum: [converging, ready]
+            transition_ids:
+              description: Durable online work whose publication converges the current schema toward the target.
+              type: array
+              items: { type: string }
+
+    QueryResult:
+      description: |
+        The result of a query: one datum, shaped exactly as the root
+        materialises. A `many` root is an array of records; `first` is a
+        record or `null`; `exactly_one` is a record; `scalar` is a naked
+        value or `null`. Nested `first` fields are objects (or `null`) and
+        nested `array` fields are arrays, recursively.
+      type: object
+      required: [result]
+      properties:
+        result:
+          allOf:
+            - $ref: "#/components/schemas/Value"
+
+    ProgramResult:
+      description: |
+        The result of a program: the declared result statement's datum (shaped
+        exactly as its LIR root materialises, as in `QueryResult`), plus a
+        per-statement summary in execution order.
+      type: object
+      required: [result, statements]
+      properties:
+        result:
+          allOf:
+            - $ref: "#/components/schemas/Value"
+        statements:
+          type: array
+          items: { $ref: "#/components/schemas/StatementResult" }
+        plan:
+          description: |
+            Present only when the request set `show-plan`. Free-form JSON: the
+            query plan for each statement — the physical plan and the planner's
+            access-path decisions, plus a rendered text form. Transport
+            observability metadata, not part of the LIR/PIR IR; its structure is
+            deliberately unspecified here and evolves with the planner.
+          allOf:
+            - $ref: "#/components/schemas/Value"
+
+    StatementResult:
+      description: |
+        One statement's lightweight outcome. Durable schema work additionally
+        returns a typed control object; relational and immediate catalog
+        statements omit it.
+      type: object
+      required: [name, affected, control]
+      properties:
+        name:
+          type: string
+        affected:
+          description: |
+            For relational statements, the number of rows produced, created,
+            updated, or deleted. A successful immediate catalog or transition
+            start reports one affected object.
+          type: integer
+        control:
+          description: |
+            A typed non-relational result. Transition-start controls contain
+            `kind: transition`, durable identities, lifecycle state and
+            generation, retained-work health, advisory progress/lag, and
+            terminal diagnostics. Worker ownership epochs and physical storage
+            positions are internal and are not exposed. Statements without a
+            control result emit JSON null. This namespace is not a LIR relation
+            and cannot be referenced by a PIR `ref`.
+          allOf:
+            - $ref: "#/components/schemas/Value"
+
+    TransitionKind:
+      description: The physical protocol used to perform online schema work.
+      type: string
+      enum: [index_build, column_replacement, constraint_validation]
+
+    TransitionState:
+      description: The durable lifecycle state of online schema work.
+      type: string
+      enum:
+        [waiting, building, catching_up, validating, ready, failed, cancelled]
+
+    TransitionWorkState:
+      description: |
+        Advisory retained-work pressure. `write_gated` means affected writes
+        are temporarily rejected until the worker catches up or terminates.
+      type: string
+      enum: [normal, degraded, write_gated]
+
+    TransitionControl:
+      description: |
+        The administrative projection of a durable schema transition. Identity,
+        protocol kind, lifecycle state, generation, prerequisite edges, and
+        terminal diagnostics are normative. Progress and retained-work values
+        are advisory snapshots.
+        Worker epochs and physical storage positions remain internal.
+      type: object
+      additionalProperties: false
+      required:
+        - kind
+        - transition_id
+        - object_id
+        - transition_kind
+        - state
+        - generation
+        - prerequisites
+        - retained_work_state
+        - rows_scanned
+        - applied_delta
+        - delta_lag
+      properties:
+        kind:
+          type: string
+          enum: [transition]
+        transition_id:
+          type: string
+        object_id:
+          description: Stable logical identity of the index, column, or constraint being produced.
+          type: string
+        transition_kind:
+          $ref: "#/components/schemas/TransitionKind"
+        state:
+          $ref: "#/components/schemas/TransitionState"
+        generation:
+          type: integer
+          format: int64
+          minimum: 0
+        prerequisites:
+          description: Durable transition identities that must publish ready before this transition can activate.
+          type: array
+          items: { type: string }
+        retained_work_state:
+          $ref: "#/components/schemas/TransitionWorkState"
+        last_error:
+          description: Terminal or most recent worker diagnostic, when present.
+          type: string
+        rows_scanned:
+          type: integer
+          format: int64
+          minimum: 0
+        applied_delta:
+          type: integer
+          format: int64
+          minimum: 0
+        delta_lag:
+          type: integer
+          format: int64
+          minimum: 0
+
+    TransitionList:
+      description: A coherent administrative snapshot of durable schema transitions.
+      type: object
+      additionalProperties: false
+      required: [transitions]
+      properties:
+        transitions:
+          type: array
+          items: { $ref: "#/components/schemas/TransitionControl" }
+
+    TableUpdateProps:
+      description: The table properties to update.
+      type: object
+      required: [name]
+      properties:
+        name:
+          description: The table's new name.
+          type: string
+
+    ColumnUpdateProps:
+      description: The column properties to update.
+      type: object
+      required: [name]
+      properties:
+        name:
+          description: The column's new name.
+          type: string

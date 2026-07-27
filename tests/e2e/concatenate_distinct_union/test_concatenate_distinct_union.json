@@ -1,0 +1,38 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "eng_or_senior",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "s1":  { "kind": "scan", "table": "people", "scope": "s1" },
+            "eng": { "kind": "filter", "input": "s1",
+              "predicate": { "kind": "binary", "op": "eq",
+                "left":  { "kind": "col", "scope": "s1", "column": "team" },
+                "right": { "kind": "lit", "value": { "type": "text", "value": "eng" } } } },
+            "p1": { "kind": "project", "input": "eng",
+              "fields": [ { "as": "name", "expr": { "kind": "col", "scope": "s1", "column": "name" } } ] },
+            "s2": { "kind": "scan", "table": "people", "scope": "s2" },
+            "senior": { "kind": "filter", "input": "s2",
+              "predicate": { "kind": "binary", "op": "gte",
+                "left":  { "kind": "col", "scope": "s2", "column": "age" },
+                "right": { "kind": "lit", "value": { "type": "int64", "value": "30" } } } },
+            "p2": { "kind": "project", "input": "senior",
+              "fields": [ { "as": "name", "expr": { "kind": "col", "scope": "s2", "column": "name" } } ] },
+            "u":    { "kind": "concatenate", "inputs": ["p1", "p2"], "scope": "u" },
+            "dist": { "kind": "distinct", "input": "u" },
+            "ord":  { "kind": "order", "input": "dist",
+              "terms": [ { "expr": { "kind": "col", "scope": "u", "column": "name" } } ] }
+          },
+          "root": { "node": "ord", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "name": "Ada" },
+    { "name": "Bob" },
+    { "name": "Cyn" }
+  ]
+}

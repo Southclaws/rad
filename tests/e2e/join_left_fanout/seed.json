@@ -1,0 +1,18 @@
+[
+  {
+    "table": "owners",
+    "rows": [
+      { "oid": "o1", "oname": "Ann" },
+      { "oid": "o2", "oname": "Bo" },
+      { "oid": "o3", "oname": "Cy" }
+    ]
+  },
+  {
+    "table": "pets",
+    "rows": [
+      { "pid": "p1", "owner_id": "o1", "pname": "Rex" },
+      { "pid": "p2", "owner_id": "o1", "pname": "Fido" },
+      { "pid": "p3", "owner_id": "o3", "pname": "Meow" }
+    ]
+  }
+]

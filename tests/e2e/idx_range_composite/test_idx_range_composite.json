@@ -1,0 +1,107 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "c": { "kind": "scan", "table": "c", "scope": "c" },
+            "kept": {
+              "kind": "filter",
+              "input": "c",
+              "predicate": {
+                "kind": "binary", "op": "and",
+                "left": {
+                  "kind": "binary", "op": "and",
+                  "left": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "c", "column": "a" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "1" } } },
+                  "right": { "kind": "binary", "op": "gt", "left": { "kind": "col", "scope": "c", "column": "b" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "10" } } }
+                },
+                "right": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "c", "column": "b" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "30" } } }
+              }
+            },
+            "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "c", "column": "b" } } ] }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [ { "id": "r2", "a": 1, "b": 20 } ],
+  "assertions": [
+    {
+      "name": "eq prefix a=1 only",
+      "query": {
+        "nodes": {
+          "c": { "kind": "scan", "table": "c", "scope": "c" },
+          "kept": { "kind": "filter", "input": "c", "predicate": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "c", "column": "a" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "1" } } } },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "c", "column": "b" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [ { "id": "r1", "a": 1, "b": 10 }, { "id": "r2", "a": 1, "b": 20 }, { "id": "r3", "a": 1, "b": 30 } ]
+    },
+    {
+      "name": "leading range a>=2",
+      "query": {
+        "nodes": {
+          "c": { "kind": "scan", "table": "c", "scope": "c" },
+          "kept": { "kind": "filter", "input": "c", "predicate": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "c", "column": "a" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "2" } } } },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "c", "column": "b" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [ { "id": "r4", "a": 2, "b": 15 }, { "id": "r5", "a": 2, "b": 25 } ]
+    },
+    {
+      "name": "non-prefix range b>=20 (index unusable as prefix, still correct)",
+      "query": {
+        "nodes": {
+          "c": { "kind": "scan", "table": "c", "scope": "c" },
+          "kept": { "kind": "filter", "input": "c", "predicate": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "c", "column": "b" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "20" } } } },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "c", "column": "b" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [ { "id": "r2", "a": 1, "b": 20 }, { "id": "r5", "a": 2, "b": 25 }, { "id": "r3", "a": 1, "b": 30 } ]
+    },
+    {
+      "name": "eq prefix + inclusive trailing lo a=1 AND b>=20",
+      "query": {
+        "nodes": {
+          "c": { "kind": "scan", "table": "c", "scope": "c" },
+          "kept": {
+            "kind": "filter", "input": "c",
+            "predicate": {
+              "kind": "binary", "op": "and",
+              "left": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "c", "column": "a" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "1" } } },
+              "right": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "c", "column": "b" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "20" } } }
+            }
+          },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "c", "column": "b" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [ { "id": "r2", "a": 1, "b": 20 }, { "id": "r3", "a": 1, "b": 30 } ]
+    },
+    {
+      "name": "eq prefix + inclusive hi a=2 AND b<=15",
+      "query": {
+        "nodes": {
+          "c": { "kind": "scan", "table": "c", "scope": "c" },
+          "kept": {
+            "kind": "filter", "input": "c",
+            "predicate": {
+              "kind": "binary", "op": "and",
+              "left": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "c", "column": "a" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "2" } } },
+              "right": { "kind": "binary", "op": "lte", "left": { "kind": "col", "scope": "c", "column": "b" }, "right": { "kind": "lit", "value": { "type": "int64", "value": "15" } } }
+            }
+          },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "c", "column": "b" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [ { "id": "r4", "a": 2, "b": 15 } ]
+    }
+  ]
+}

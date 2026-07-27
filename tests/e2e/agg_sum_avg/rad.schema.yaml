@@ -1,0 +1,8 @@
+# e2e/agg_sum_avg — global sum (int64) and avg (float64); avg is a fractional
+# result (3.5), proving float division rather than integer division.
+tables:
+  - id: 1
+    name: measurements
+    columns:
+      - { id: 1, name: id,     type: string, pk: true }
+      - { id: 2, name: amount, type: int64 }

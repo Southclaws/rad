@@ -1,0 +1,9 @@
+[
+  { "table": "people", "rows": [
+    { "id": "p1", "name": "Root", "referrer_id": null },
+    { "id": "p2", "name": "Aya", "referrer_id": "p1" },
+    { "id": "p3", "name": "Bo", "referrer_id": "p1" },
+    { "id": "p4", "name": "Cy", "referrer_id": "p2" },
+    { "id": "p5", "name": "Unrelated", "referrer_id": null }
+  ] }
+]

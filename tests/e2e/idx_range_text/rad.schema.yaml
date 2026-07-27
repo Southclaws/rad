@@ -1,0 +1,11 @@
+# probe_idx_text — range bounds on a text index: lexical order, exact
+# endpoints, and prefix boundaries ("app" < "apple") that stress the
+# self-delimiting string encoding + PrefixEnd.
+tables:
+  - id: 1
+    name: t
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: s,  type: string }
+    indexes:
+      - { columns: [s] }

@@ -1,0 +1,46 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "ins",
+        "kind": "create",
+        "table": "pairs",
+        "relation": {
+          "nodes": {
+            "r": {
+              "kind": "rows",
+              "scope": "r",
+              "columns": [
+                { "name": "id", "type": "text" },
+                { "name": "a", "type": "text" },
+                { "name": "b", "type": "text", "nullable": true }
+              ],
+              "rows": [ ["r1", "same", null], ["r2", "same", null] ]
+            }
+          },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "name": "both rows exist: a NULL component makes the composite key distinct",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "pairs", "scope": "t" },
+          "o": {
+            "kind": "order",
+            "input": "t",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ]
+          }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "r1", "a": "same", "b": null },
+        { "id": "r2", "a": "same", "b": null }
+      ]
+    }
+  ]
+}

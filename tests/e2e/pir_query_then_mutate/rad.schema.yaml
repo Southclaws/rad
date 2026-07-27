@@ -1,0 +1,16 @@
+# e2e/pir_query_then_mutate — the first statement is a `query` selecting a
+# user; a later `update` statement consumes that query's result through a
+# `ref` binding, pulling the queried user's name into a post's title. Proves
+# a query statement's output is a first-class binding a mutation can drive.
+tables:
+  - id: 1
+    name: users
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+  - id: 2
+    name: posts
+    columns:
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: user_id, type: string, ref: users.id }
+      - { id: 3, name: title,   type: string }

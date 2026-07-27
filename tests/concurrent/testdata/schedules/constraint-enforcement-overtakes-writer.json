@@ -1,0 +1,9 @@
+[
+  {"actor":"constraint-starter","point":"catalog_pinned","occurrence":1},
+  {"actor":"constraint-starter","point":"snapshot_begun","occurrence":1},
+  {"actor":"constraint-starter","point":"catalog_pinned","occurrence":2},
+  {"actor":"constraint-starter","point":"snapshot_begun","occurrence":2},
+  {"actor":"constraint-starter","point":"commit_ready","occurrence":1},
+  {"actor":"constraint-starter","point":"transaction_committed","occurrence":1},
+  {"actor":"writer","point":"commit_ready","occurrence":1}
+]

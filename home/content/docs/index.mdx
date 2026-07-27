@@ -1,0 +1,47 @@
+---
+title: Rad documentation
+description: Start with schemas, learn the query IR, or read how the engine works.
+---
+
+<Callout type="warn">
+  Rad is still a private, greenfield codebase. These pages describe the current
+  implementation, but compatibility guarantees and public distribution are not
+  settled yet.
+</Callout>
+
+Rad is a relational database built around two intermediate representations.
+PIR describes a transactional program. LIR describes the relations and
+expressions evaluated by its query statements. Rad binds those programs to a
+versioned catalog and executes them over SlateDB.
+
+If you're building an application, start with [Schemas in Rad](/docs/schemas).
+It explains the normal `rad.schema.yaml` workflow and the difference between a
+schema-managed database and Direct mode.
+
+## Choose what you need
+
+- **[Schemas](/docs/schemas)** is for application developers and operators. Define
+  the data model, apply changes, and inspect online work.
+- **[LIR](/docs/lir)** is the query-language specification. Read it when producing
+  queries directly or building a frontend that lowers into Rad.
+- **[Engine](/docs/engine/01-kv)** is for maintainers. It follows a request from
+  ordered key-value storage through the catalog, planner, and executor.
+
+## The short mental model
+
+```text
+rad.schema.yaml
+  -> versioned catalog
+  -> PIR transaction
+  -> bound LIR plan
+  -> SlateDB transaction
+```
+
+The schema says what data exists. LIR says what a query means. The engine docs
+explain how Rad preserves that meaning while choosing storage access paths and
+running schema changes in the background.
+
+For your first schema change, go straight to [Manage a schema](/docs/schemas/manage).
+For a long index build or type change, read
+[Online schema changes](/docs/schemas/online-changes) before reaching for the job
+controls. There is no `VACUUM` incantation hiding at the end.

@@ -1,0 +1,10 @@
+# expr_order_arith — order by a computed arithmetic term (a add b).
+# SortExec must evaluate the term, and the PK tie-breaker must still apply
+# to rows whose computed key ties.
+tables:
+  - id: 1
+    name: nums
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: a,  type: int64 }
+      - { id: 3, name: b,  type: int64 }

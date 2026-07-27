@@ -1,0 +1,37 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "dup_names",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "lefts": { "kind": "scan", "table": "lefts", "scope": "l" },
+            "proj": {
+              "kind": "project",
+              "input": "lefts",
+              "scope": "p",
+              "fields": [
+                { "as": "lid", "expr": { "kind": "col", "scope": "l", "column": "lid" } },
+                { "as": "x",   "expr": { "kind": "col", "scope": "l", "column": "a" } },
+                { "as": "y",   "expr": { "kind": "col", "scope": "l", "column": "a" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "proj",
+              "terms": [
+                { "expr": { "kind": "col", "scope": "p", "column": "lid" } }
+              ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "lid": "l1", "x": 1, "y": 1 },
+    { "lid": "l2", "x": 5, "y": 5 }
+  ]
+}

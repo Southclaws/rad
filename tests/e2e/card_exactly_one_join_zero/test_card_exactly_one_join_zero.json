@@ -1,0 +1,34 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "eo_zero",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "lefts": { "kind": "scan", "table": "lefts", "scope": "l" },
+            "rights": { "kind": "scan", "table": "rights", "scope": "r" },
+            "joined": {
+              "kind": "join",
+              "left": "lefts",
+              "right": "rights",
+              "join": "inner",
+              "on": { "kind": "lit", "value": { "type": "bool", "value": true } }
+            },
+            "filtered": {
+              "kind": "filter",
+              "input": "joined",
+              "predicate": {
+                "kind": "binary", "op": "gt",
+                "left": { "kind": "col", "scope": "r", "column": "b" },
+                "right": { "kind": "lit", "value": { "type": "int64", "value": "100" } }
+              }
+            }
+          },
+          "root": { "node": "filtered", "cardinality": "exactly_one" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "execution_failed", "contains": "exactly one row" }
+}

@@ -1,0 +1,15 @@
+[
+  {
+    "table": "boards",
+    "rows": [
+      { "id": "board-1", "name": "Launch" }
+    ]
+  },
+  {
+    "table": "tasks",
+    "rows": [
+      { "id": "task-linked", "board_id": "board-1", "title": "Linked" },
+      { "id": "task-orphan", "board_id": null, "title": "Orphan" }
+    ]
+  }
+]

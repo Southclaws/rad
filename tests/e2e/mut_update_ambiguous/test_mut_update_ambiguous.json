@@ -1,0 +1,22 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "u",
+        "kind": "update",
+        "table": "items",
+        "relation": {
+          "nodes": { "r": { "kind": "rows", "scope": "r",
+            "columns": [ { "name": "id", "type": "text" }, { "name": "name", "type": "text" } ],
+            "rows": [ ["i1", "first"], ["i1", "second"] ] } },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "error": {
+    "code": "invalid",
+    "reason": "mutation_target_ambiguous",
+    "contains": "same row twice"
+  }
+}

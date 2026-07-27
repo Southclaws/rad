@@ -1,0 +1,8 @@
+# e2e/mut_delete_by_pk — delete a single row identified by primary key via a
+# one-row `rows` relation, confirming siblings survive.
+tables:
+  - id: 1
+    name: items
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }

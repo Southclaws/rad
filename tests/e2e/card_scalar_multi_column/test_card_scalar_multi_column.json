@@ -1,0 +1,27 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "one",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "widgets", "scope": "t" },
+            "hit": {
+              "kind": "filter",
+              "input": "t",
+              "predicate": {
+                "kind": "binary",
+                "op": "eq",
+                "left": { "kind": "col", "scope": "t", "column": "id" },
+                "right": { "kind": "lit", "value": { "type": "text", "value": "w1" } }
+              }
+            }
+          },
+          "root": { "node": "hit", "cardinality": "scalar" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "invalid", "contains": "a scalar query needs a single-column root" }
+}

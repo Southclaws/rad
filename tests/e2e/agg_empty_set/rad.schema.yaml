@@ -1,0 +1,8 @@
+# e2e/agg_empty_set — a global fold over a table filtered to ZERO rows still
+# produces exactly one output row: count = 0, and sum/avg/min/max = NULL.
+tables:
+  - id: 1
+    name: ledger
+    columns:
+      - { id: 1, name: id,     type: string, pk: true }
+      - { id: 2, name: amount, type: int64 }

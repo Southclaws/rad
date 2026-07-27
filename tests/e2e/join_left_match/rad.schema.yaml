@@ -1,0 +1,15 @@
+# e2e/join_left_match — a left join where the left employee row has a matching
+# right department; the right attributes come through populated.
+tables:
+  - id: 1
+    name: departments
+    columns:
+      - { id: 1, name: dept_id,   type: string, pk: true }
+      - { id: 2, name: dept_name, type: string }
+
+  - id: 2
+    name: employees
+    columns:
+      - { id: 1, name: emp_id,   type: string, pk: true }
+      - { id: 2, name: emp_name, type: string }
+      - { id: 3, name: emp_dept, type: string, nullable: true, ref: departments.dept_id }

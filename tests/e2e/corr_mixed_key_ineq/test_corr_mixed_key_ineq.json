@@ -1,0 +1,68 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "parents_with_capped_children",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "parents": { "kind": "scan", "table": "parents", "scope": "p" },
+            "children": { "kind": "scan", "table": "children", "scope": "c" },
+            "mine": {
+              "kind": "filter",
+              "input": "children",
+              "predicate": {
+                "kind": "binary", "op": "and",
+                "left": {
+                  "kind": "binary", "op": "eq",
+                  "left": { "kind": "col", "scope": "c", "column": "parent_id" },
+                  "right": { "kind": "col", "scope": "p", "column": "id" }
+                },
+                "right": {
+                  "kind": "binary", "op": "lt",
+                  "left": { "kind": "col", "scope": "c", "column": "value" },
+                  "right": { "kind": "col", "scope": "p", "column": "cap" }
+                }
+              }
+            },
+            "mine_sorted": {
+              "kind": "order",
+              "input": "mine",
+              "terms": [ { "expr": { "kind": "col", "scope": "c", "column": "id" } } ]
+            },
+            "out": {
+              "kind": "project",
+              "input": "parents",
+              "scope": "o",
+              "spread": ["p"],
+              "fields": [
+                { "as": "kids", "expr": { "kind": "array", "node": "mine_sorted" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    {
+      "id": "p1", "cap": 10,
+      "kids": [
+        { "id": "c1", "parent_id": "p1", "value": 3 },
+        { "id": "c2", "parent_id": "p1", "value": 8 }
+      ]
+    },
+    {
+      "id": "p2", "cap": 4,
+      "kids": [
+        { "id": "c4", "parent_id": "p2", "value": 2 }
+      ]
+    }
+  ]
+}

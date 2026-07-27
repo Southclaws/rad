@@ -1,0 +1,14 @@
+# e2e/pir_halloween — an update whose input relation scans the very table it
+# writes. The Halloween rule: the statement must observe the pre-statement
+# snapshot, never its own in-flight writes. A self-join swaps two rows' values
+# (each row's new n is the OTHER row's n). Under snapshot semantics both new
+# values are read from the pre-statement state, so the swap succeeds
+# (a.n: 1->2, b.n: 2->1). If the update could observe its own writes, writing
+# a.n=2 first and then reading it back for b would collapse both to 2 — that
+# is the observable difference this fixture pins down.
+tables:
+  - id: 1
+    name: nodes
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: n,  type: int64 }

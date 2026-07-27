@@ -1,0 +1,13 @@
+# e2e/self_bom_child_qty — a bill-of-materials adjacency list: parts with a
+# nullable self-FK (parent_id ref parts.id) and a per-part quantity. Each part
+# rolls up scalar(sum(child.qty)) over its direct children — a single finite
+# self-correlated aggregate, NOT a recursive explosion. A leaf has no children,
+# so the sum folds over an empty match to NULL (empty global fold).
+# Assembly: p1 -> {p2 (qty 2), p3 (qty 3)}; p2 -> {p4 (qty 5)}; p3, p4 leaves.
+tables:
+  - id: 1
+    name: parts
+    columns:
+      - { id: 1, name: id,        type: string, pk: true }
+      - { id: 2, name: parent_id, type: string, nullable: true, ref: parts.id }
+      - { id: 3, name: qty,       type: int64 }

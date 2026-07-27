@@ -1,0 +1,67 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "parents_with_category_counts",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "parents": { "kind": "scan", "table": "parents", "scope": "p" },
+            "children": { "kind": "scan", "table": "children", "scope": "c" },
+            "mine": {
+              "kind": "filter",
+              "input": "children",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "c", "column": "parent_id" },
+                "right": { "kind": "col", "scope": "p", "column": "id" }
+              }
+            },
+            "by_cat": {
+              "kind": "aggregate",
+              "input": "mine",
+              "scope": "g",
+              "groups": [ { "as": "category", "expr": { "kind": "col", "scope": "c", "column": "category" } } ],
+              "aggs": [ { "fn": "count", "as": "n" } ]
+            },
+            "by_cat_sorted": {
+              "kind": "order",
+              "input": "by_cat",
+              "terms": [ { "expr": { "kind": "col", "scope": "g", "column": "category" } } ]
+            },
+            "out": {
+              "kind": "project",
+              "input": "parents",
+              "scope": "o",
+              "spread": ["p"],
+              "fields": [
+                { "as": "categories", "expr": { "kind": "array", "node": "by_cat_sorted" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    {
+      "id": "P1",
+      "categories": [
+        { "category": "A", "n": 2 },
+        { "category": "B", "n": 1 }
+      ]
+    },
+    {
+      "id": "P2",
+      "categories": [
+        { "category": "A", "n": 1 }
+      ]
+    }
+  ]
+}

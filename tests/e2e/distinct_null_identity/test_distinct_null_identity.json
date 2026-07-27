@@ -1,0 +1,26 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "kinds",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "e":    { "kind": "scan", "table": "events", "scope": "e" },
+            "proj": { "kind": "project", "input": "e", "scope": "k",
+              "fields": [ { "as": "kind", "expr": { "kind": "col", "scope": "e", "column": "kind" } } ] },
+            "dist": { "kind": "distinct", "input": "proj" },
+            "ord":  { "kind": "order", "input": "dist",
+              "terms": [ { "expr": { "kind": "col", "scope": "k", "column": "kind" } } ] }
+          },
+          "root": { "node": "ord", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "kind": null },
+    { "kind": "click" },
+    { "kind": "view" }
+  ]
+}

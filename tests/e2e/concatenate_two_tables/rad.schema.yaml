@@ -1,0 +1,18 @@
+# e2e/concatenate_two_tables — concatenate combines relations from two
+# different base tables when their projected shapes match positionally (same
+# column names and kinds), and the combined bag feeds ordinary downstream
+# operators: an explicit order for the observable rows, and an aggregate
+# over the union.
+tables:
+  - id: 1
+    name: books
+    columns:
+      - { id: 1, name: id,    type: string, pk: true }
+      - { id: 2, name: title, type: string }
+      - { id: 3, name: pages, type: int64 }
+  - id: 2
+    name: movies
+    columns:
+      - { id: 1, name: id,      type: string, pk: true }
+      - { id: 2, name: title,   type: string }
+      - { id: 3, name: minutes, type: int64 }

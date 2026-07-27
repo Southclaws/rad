@@ -1,0 +1,177 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "t", "scope": "t" },
+            "kept": {
+              "kind": "filter",
+              "input": "t",
+              "predicate": {
+                "kind": "binary",
+                "op": "lt",
+                "left": { "kind": "col", "scope": "t", "column": "n" },
+                "right": { "kind": "lit", "value": { "type": "int64", "value": "30" } }
+              }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "kept",
+              "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "a", "n": 10, "s": "apple" },
+    { "id": "b", "n": 20, "s": "banana" }
+  ],
+  "assertions": [
+    {
+      "name": "int64 gt: n > 20",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": {
+            "kind": "filter",
+            "input": "t",
+            "predicate": {
+              "kind": "binary",
+              "op": "gt",
+              "left": { "kind": "col", "scope": "t", "column": "n" },
+              "right": { "kind": "lit", "value": { "type": "int64", "value": "20" } }
+            }
+          },
+          "sorted": {
+            "kind": "order",
+            "input": "kept",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ]
+          }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "c", "n": 30, "s": "cherry" },
+        { "id": "d", "n": 40, "s": "date" }
+      ]
+    },
+    {
+      "name": "int64 lte: n <= 20",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": {
+            "kind": "filter",
+            "input": "t",
+            "predicate": {
+              "kind": "binary",
+              "op": "lte",
+              "left": { "kind": "col", "scope": "t", "column": "n" },
+              "right": { "kind": "lit", "value": { "type": "int64", "value": "20" } }
+            }
+          },
+          "sorted": {
+            "kind": "order",
+            "input": "kept",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ]
+          }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "a", "n": 10, "s": "apple" },
+        { "id": "b", "n": 20, "s": "banana" }
+      ]
+    },
+    {
+      "name": "int64 gte: n >= 30",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": {
+            "kind": "filter",
+            "input": "t",
+            "predicate": {
+              "kind": "binary",
+              "op": "gte",
+              "left": { "kind": "col", "scope": "t", "column": "n" },
+              "right": { "kind": "lit", "value": { "type": "int64", "value": "30" } }
+            }
+          },
+          "sorted": {
+            "kind": "order",
+            "input": "kept",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "n" } } ]
+          }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "c", "n": 30, "s": "cherry" },
+        { "id": "d", "n": 40, "s": "date" }
+      ]
+    },
+    {
+      "name": "text lt (lexical): s < 'cherry'",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": {
+            "kind": "filter",
+            "input": "t",
+            "predicate": {
+              "kind": "binary",
+              "op": "lt",
+              "left": { "kind": "col", "scope": "t", "column": "s" },
+              "right": { "kind": "lit", "value": { "type": "text", "value": "cherry" } }
+            }
+          },
+          "sorted": {
+            "kind": "order",
+            "input": "kept",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "s" } } ]
+          }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "a", "n": 10, "s": "apple" },
+        { "id": "b", "n": 20, "s": "banana" }
+      ]
+    },
+    {
+      "name": "text gte (lexical): s >= 'cherry'",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": {
+            "kind": "filter",
+            "input": "t",
+            "predicate": {
+              "kind": "binary",
+              "op": "gte",
+              "left": { "kind": "col", "scope": "t", "column": "s" },
+              "right": { "kind": "lit", "value": { "type": "text", "value": "cherry" } }
+            }
+          },
+          "sorted": {
+            "kind": "order",
+            "input": "kept",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "s" } } ]
+          }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "c", "n": 30, "s": "cherry" },
+        { "id": "d", "n": 40, "s": "date" }
+      ]
+    }
+  ]
+}

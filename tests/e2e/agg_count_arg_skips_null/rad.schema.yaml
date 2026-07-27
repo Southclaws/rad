@@ -1,0 +1,8 @@
+# e2e/agg_count_arg_skips_null — count(arg) counts only non-null values, while
+# count with no arg counts every row; both computed over the same data.
+tables:
+  - id: 1
+    name: notes
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: body, type: string, nullable: true }

@@ -1,0 +1,34 @@
+[
+  {
+    "table": "teams",
+    "rows": [
+      { "id": "team-eng", "name": "Engineering" }
+    ]
+  },
+  {
+    "table": "users",
+    "rows": [
+      { "id": "user-ada", "username": "ada" }
+    ]
+  },
+  {
+    "table": "boards",
+    "rows": [
+      { "id": "board-launch", "team_id": "team-eng", "name": "Launch" }
+    ]
+  },
+  {
+    "table": "tasks",
+    "rows": [
+      {
+        "id": "task-seed-1",
+        "board_id": "board-launch",
+        "title": "Draft spec",
+        "status": "todo",
+        "priority": 1,
+        "creator_id": "user-ada",
+        "created_at": 1000
+      }
+    ]
+  }
+]

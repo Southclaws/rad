@@ -1,0 +1,9 @@
+# expr_branch_filter — a bool-typed branch as a filter predicate. Filter
+# keeps only TRUE: a NULL status makes the arm predicate UNKNOWN, which falls
+# through to the else (false), so those rows drop like any FALSE row.
+tables:
+  - id: 1
+    name: tickets
+    columns:
+      - { id: 1, name: id,     type: string, pk: true }
+      - { id: 2, name: status, type: string, nullable: true }

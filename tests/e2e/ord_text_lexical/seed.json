@@ -1,0 +1,9 @@
+[
+  { "table": "words", "rows": [
+    { "id": "w1", "name": "banana" },
+    { "id": "w2", "name": "2" },
+    { "id": "w3", "name": "apple" },
+    { "id": "w4", "name": "10" },
+    { "id": "w5", "name": "1" }
+  ] }
+]

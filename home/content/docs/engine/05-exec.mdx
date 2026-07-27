@@ -1,0 +1,183 @@
+---
+title: "Layer 05: the executor"
+description: "Transactional query execution, mutations, schema jobs, and physical reclamation."
+---
+
+The executor turns bound programs and physical plans into SlateDB operations.
+It owns transaction admission, pull-based query operators, constraint-checked
+mutations, durable schema workers, and automatic reclamation.
+
+## Transaction entry points
+
+Autocommit reads use snapshot isolation. They bind and execute through one
+statement-scoped view, then discard it because there is nothing to publish.
+
+Explicit transactions and PIR programs with effects use serializable snapshot
+isolation. Rad pins a coherent immutable catalog first, begins the data
+transaction, then admits exact semantic fences for each bound plan. All
+statements share the same SlateDB transaction and buffered writes.
+
+Read-only PIR programs take the snapshot fast path and are rolled back rather
+than pointlessly committed. Rad does not retry arbitrary PIR programs on the
+server. A serialization conflict returns to the caller or an adapter that owns
+the complete replayable transaction.
+
+Catalog work inside a PIR program refreshes catalog lookup for following
+statements. Those statements see catalog changes already buffered in the same
+transaction, while ordinary programs keep using the immutable pinned catalog.
+
+## Dependency admission
+
+Every physical plan carries the exact table-existence, column-value,
+index-access, and write-protocol generations it used. The query runner admits
+the complete manifest before constructing operators.
+
+Admission happens inside the data transaction. A mismatch between catalog
+pinning and data-snapshot creation fails before data access. A later catalog
+change to an admitted fence conflicts at commit through SlateDB serializability.
+Unrelated publications leave the manifest's fences untouched.
+
+## Query operators
+
+Physical operators pull one frame at a time until their input is exhausted. A
+frame maps bound slots to datums. It can contain stored scalar fields,
+computed values, nested objects or arrays, and inherited outer slots.
+
+| Operator family | Behaviour |
+| --- | --- |
+| Point get and scans | Stream rows from primary or index storage |
+| Filter and project | Evaluate pure bound expressions per frame |
+| Slice | Stop pulling after offset and limit |
+| Sort | Materialise and stable-sort the input |
+| Aggregate | Fold global or grouped input |
+| Join | Nested-loop current physical implementation |
+| Attach | Evaluate relation crossings and place their datum in a slot |
+
+Filters keep only `TRUE`; `FALSE` and `UNKNOWN` are discarded. Expressions do
+no I/O. The planner has already turned relation-valued crossings into attach
+operators.
+
+## Row and key storage
+
+Primary rows and secondary indexes use these logical layouts:
+
+```text
+/rad/data/{physical_table_id}/primary/{pk_tuple}
+/rad/index/{physical_table_id}/{physical_index_id}/{index_tuple}{pk_tuple}
+```
+
+Tuple values use the order-preserving encodings from layer 01. Index entries
+store the primary-key tuple as their value, so an index scan fetches the base
+row with a point get.
+
+Rows are schema-directed binary frames, not JSON objects. A row begins with a
+format canary and field count, then stores fields by ascending delta-encoded
+physical column ID with a null flag and length-framed typed payload. Retired
+unknown fields can be skipped without loading their old type definition.
+
+Sparse missing fields use the column's immutable historical missing value or
+`NULL`. A later insert-default change does not reinterpret the row. Column
+reclamation eventually rewrites rows in bounded batches to remove retired
+physical fields.
+
+## Mutations and write protocols
+
+Create, update, and delete operations run through serializable transactions.
+They validate types and nullability, apply current insert defaults, check
+primary and foreign keys, and enforce unique indexes.
+
+Each bound target names one immutable table write-protocol generation. The
+protocol contains:
+
+- every ready index to maintain;
+- active online-index delta sinks;
+- active replacement-column dual writes;
+- active constraint checks;
+- an optional finalization gate.
+
+The obligation lists are canonicalised, so the order in which compatible
+transitions started cannot change mutation behaviour. Foreground row writes,
+index changes, captured deltas, dual-written values, and checks commit in the
+same SlateDB transaction.
+
+A changed protocol generation produces a serialization conflict. An index
+delta backlog at its hard limit produces the retryable
+`schema_transition_backpressure` rejection. A finalization gate produces the
+retryable `schema_transition_finalizing` rejection for the affected table.
+
+## Schema transitions
+
+Normal operation starts durable schema work through the migration frontend or
+transactional program boundary. The executor owns its physical protocols:
+
+| Kind | Worker path |
+| --- | --- |
+| Index build | Bounded base scan, ordered delta capture and replay, uniqueness claims when needed, ready publication |
+| Column replacement | Strict conversion backfill, foreground dual-write, violation tracking, logical swap |
+| Constraint validation | Enforce new writes, scan historical rows, validate and publish |
+
+Transitions can wait on prerequisites. Activation resolves stable logical IDs
+against current physical definitions, then installs its write obligation.
+Worker batches commit their physical work and checkpoint atomically. Owner
+epochs prevent a stale worker from committing after takeover.
+
+Unique indexes, replacements, and constraints use a short finalization gate.
+The gate is not held during scanning. Final validation, logical publication,
+obligation removal, and gate release occur in short catalog transactions.
+
+Cancellation invalidates ownership, removes obligations, releases a held gate,
+and queues partial state for cleanup. A ready transition is changed by deleting
+or updating its published object, not by cancelling its historical job.
+
+## Scheduler
+
+Each engine owns a process-local scheduler over durable transitions,
+reclamations, transition compaction, and canonical-history compaction. It:
+
+- discovers work through durable records and sticky markers;
+- rotates fairly across jobs;
+- performs at most one bounded batch per selected job each round;
+- applies batch and logical-item budgets;
+- backs off expected conflicts and retention waits;
+- quarantines repeated unexpected failures;
+- resumes after a file-backed close and reopen.
+
+Shutdown stops and joins this local runner without taking ownership of the
+shared KV store. SlateDB's single-writer constraint means one Rad process owns
+a database for now; worker epochs still matter across restart and stale local
+work.
+
+## Retention and reclamation
+
+Logical retirement atomically creates an idempotent, typed reclamation record.
+Every bounded cleanup batch re-proves the exact target is retired, checks
+matching pins, applies at most its item budget, and commits the physical work
+with its cursor.
+
+Cleanup covers tables, columns, indexes, immutable definitions and protocols,
+transition deltas and validation artifacts, and terminal-record detail.
+Reclamation records finish as compact summaries rather than vanishing.
+
+Typed durable pins and resource-specific horizon reporting exist as substrate.
+Executing SlateDB transactions use SlateDB's own visibility and do not publish
+durable pins. Persistent prepared plans, replicas, CDC, and retained snapshots
+do not yet create production pins. An opaque data-snapshot pin conservatively
+blocks every reclamation kind because the KV contract cannot prove a narrower
+safe position.
+
+Canonical revision-history compaction is separate. It can remove old audit
+revisions without changing current binding and without granting permission to
+reclaim physical data.
+
+## Evidence
+
+Engine tests cover semantic catalog compatibility, the catalog-pin to
+data-snapshot gap, exact dependency admission, planned versus full-scan query
+results, batched versus nested correlation, synchronous versus online indexes,
+restart and owner takeover, finalization races, cancellation, backpressure,
+retention, and bounded reclamation. Top-level concurrent tests add independent
+HTTP and PostgreSQL clients with interleaved catalog and row traffic.
+
+The deterministic hooks used in those tests control chosen engine boundaries,
+not the host runtime scheduler. They make specific histories replayable without
+claiming full deterministic simulation.

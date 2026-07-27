@@ -1,0 +1,35 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "eo_over_empty_agg",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "lefts": { "kind": "scan", "table": "lefts", "scope": "l" },
+            "empty": {
+              "kind": "filter",
+              "input": "lefts",
+              "predicate": {
+                "kind": "binary", "op": "gt",
+                "left": { "kind": "col", "scope": "l", "column": "a" },
+                "right": { "kind": "lit", "value": { "type": "int64", "value": "1000" } }
+              }
+            },
+            "agg": {
+              "kind": "aggregate",
+              "input": "empty",
+              "scope": "g",
+              "aggs": [
+                { "fn": "count", "as": "cnt" },
+                { "fn": "sum", "as": "s", "arg": { "kind": "col", "scope": "l", "column": "a" } }
+              ]
+            }
+          },
+          "root": { "node": "agg", "cardinality": "exactly_one" }
+        }
+      }
+    ]
+  },
+  "result": { "cnt": 0, "s": null }
+}

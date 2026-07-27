@@ -1,0 +1,9 @@
+# e2e/mut_update_clear_null — an update that clears a nullable column to NULL
+# while reassigning another, confirming an explicit NULL wins.
+tables:
+  - id: 1
+    name: items
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+      - { id: 3, name: note, type: string, nullable: true }

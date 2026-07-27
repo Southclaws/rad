@@ -1,0 +1,45 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "ins",
+        "kind": "create",
+        "table": "children",
+        "relation": {
+          "nodes": {
+            "r": {
+              "kind": "rows",
+              "scope": "r",
+              "columns": [
+                { "name": "id", "type": "text" },
+                { "name": "parent_id", "type": "text", "nullable": true }
+              ],
+              "rows": [ ["orphan", null], ["adopted", "p1"] ]
+            }
+          },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "name": "a NULL FK needs no parent; a non-null FK to an existing parent is fine",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "children", "scope": "t" },
+          "o": {
+            "kind": "order",
+            "input": "t",
+            "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ]
+          }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [
+        { "id": "adopted", "parent_id": "p1" },
+        { "id": "orphan", "parent_id": null }
+      ]
+    }
+  ]
+}

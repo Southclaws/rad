@@ -1,0 +1,9 @@
+# e2e/errbind_unknown_table — a scan of a table absent from the catalog must
+# be rejected by the binder as invalid with the reason unknown_table.
+tables:
+  - id: 1
+    name: widgets
+    columns:
+      - { id: 1, name: id,   type: string, pk: true }
+      - { id: 2, name: name, type: string }
+      - { id: 3, name: qty,  type: int64 }

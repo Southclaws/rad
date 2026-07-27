@@ -1,0 +1,71 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "parents_null_threshold",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "parents": { "kind": "scan", "table": "parents", "scope": "p" },
+            "kids_a": { "kind": "scan", "table": "children", "scope": "ca" },
+            "kids_e": { "kind": "scan", "table": "children", "scope": "ce" },
+            "smaller_a": {
+              "kind": "filter",
+              "input": "kids_a",
+              "predicate": {
+                "kind": "binary", "op": "lt",
+                "left": { "kind": "col", "scope": "ca", "column": "value" },
+                "right": { "kind": "col", "scope": "p", "column": "threshold" }
+              }
+            },
+            "smaller_a_sorted": {
+              "kind": "order",
+              "input": "smaller_a",
+              "terms": [ { "expr": { "kind": "col", "scope": "ca", "column": "id" } } ]
+            },
+            "smaller_e": {
+              "kind": "filter",
+              "input": "kids_e",
+              "predicate": {
+                "kind": "binary", "op": "lt",
+                "left": { "kind": "col", "scope": "ce", "column": "value" },
+                "right": { "kind": "col", "scope": "p", "column": "threshold" }
+              }
+            },
+            "out": {
+              "kind": "project",
+              "input": "parents",
+              "scope": "o",
+              "spread": ["p"],
+              "fields": [
+                { "as": "kids", "expr": { "kind": "array", "node": "smaller_a_sorted" } },
+                { "as": "any_smaller", "expr": { "kind": "exists", "node": "smaller_e" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    {
+      "id": "p1", "threshold": 10,
+      "kids": [
+        { "id": "c1", "value": 3 },
+        { "id": "c2", "value": 7 }
+      ],
+      "any_smaller": true
+    },
+    {
+      "id": "p2", "threshold": null,
+      "kids": [],
+      "any_smaller": false
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "f": { "kind": "filter", "input": "missing",
+              "predicate": { "kind": "lit", "value": { "type": "bool", "value": true } } }
+          },
+          "root": { "node": "f", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "invalid", "contains": "unknown node \"missing\"" }
+}

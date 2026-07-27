@@ -1,0 +1,88 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "skiplevel",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "parents": { "kind": "scan", "table": "parents", "scope": "p" },
+            "children": { "kind": "scan", "table": "children", "scope": "c" },
+            "kids2": { "kind": "scan", "table": "children", "scope": "k" },
+
+            "all_of_parent": {
+              "kind": "filter",
+              "input": "kids2",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "k", "column": "parent_id" },
+                "right": { "kind": "col", "scope": "p", "column": "id" }
+              }
+            },
+            "total": {
+              "kind": "aggregate",
+              "input": "all_of_parent",
+              "scope": "t",
+              "aggs": [ { "fn": "count", "as": "n" } ]
+            },
+
+            "c_mine": {
+              "kind": "filter",
+              "input": "children",
+              "predicate": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "c", "column": "parent_id" },
+                "right": { "kind": "col", "scope": "p", "column": "id" }
+              }
+            },
+            "c_proj": {
+              "kind": "project",
+              "input": "c_mine",
+              "scope": "cp",
+              "spread": ["c"],
+              "fields": [
+                { "as": "sibling_total", "expr": { "kind": "scalar", "node": "total" } }
+              ]
+            },
+            "c_sorted": {
+              "kind": "order",
+              "input": "c_proj",
+              "terms": [ { "expr": { "kind": "col", "scope": "cp", "column": "id" } } ]
+            },
+
+            "out": {
+              "kind": "project",
+              "input": "parents",
+              "scope": "o",
+              "spread": ["p"],
+              "fields": [
+                { "as": "children", "expr": { "kind": "array", "node": "c_sorted" } }
+              ]
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "out",
+              "terms": [ { "expr": { "kind": "col", "scope": "o", "column": "id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    {
+      "id": "P1",
+      "children": [
+        { "id": "c1", "parent_id": "P1", "sibling_total": 2 },
+        { "id": "c2", "parent_id": "P1", "sibling_total": 2 }
+      ]
+    },
+    {
+      "id": "P2",
+      "children": [
+        { "id": "c3", "parent_id": "P2", "sibling_total": 1 }
+      ]
+    }
+  ]
+}

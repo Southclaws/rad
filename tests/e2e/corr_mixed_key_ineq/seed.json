@@ -1,0 +1,19 @@
+[
+  {
+    "table": "parents",
+    "rows": [
+      { "id": "p1", "cap": 10 },
+      { "id": "p2", "cap": 4 }
+    ]
+  },
+  {
+    "table": "children",
+    "rows": [
+      { "id": "c1", "parent_id": "p1", "value": 3 },
+      { "id": "c2", "parent_id": "p1", "value": 8 },
+      { "id": "c3", "parent_id": "p1", "value": 12 },
+      { "id": "c4", "parent_id": "p2", "value": 2 },
+      { "id": "c5", "parent_id": "p2", "value": 9 }
+    ]
+  }
+]

@@ -1,0 +1,31 @@
+[
+  { "table": "samples", "rows": [
+    { "id": "empty",             "value": "" },
+    { "id": "null" },
+    { "id": "foo-lower",         "value": "foo" },
+    { "id": "foo-upper",         "value": "FOO" },
+    { "id": "foo-contained",     "value": "xFoOy" },
+    { "id": "foo-prefix",        "value": "FOOx" },
+    { "id": "foo-suffix",        "value": "xfoo" },
+    { "id": "foo-bar-tight",     "value": "FOObar" },
+    { "id": "foo-bar-gap",       "value": "foo---BAR" },
+    { "id": "foo-bar-leading",   "value": "xfoobar" },
+    { "id": "foo-bar-trailing",  "value": "foobarx" },
+    { "id": "double-a-one",      "value": "a" },
+    { "id": "double-a-two",      "value": "AA" },
+    { "id": "double-a-spaced",   "value": "a---A" },
+    { "id": "overlap-abc",       "value": "abc" },
+    { "id": "overlap-abbc",      "value": "abbc" },
+    { "id": "overlap-abxbc",     "value": "abXbc" },
+    { "id": "ordered-abab",      "value": "abab" },
+    { "id": "ordered-abaab",     "value": "abaab" },
+    { "id": "ordered-abac",      "value": "abac" },
+    { "id": "unicode-gaps",      "value": "startK---Σ---STRAẞEend" },
+    { "id": "unicode-wrong-order", "value": "startΣ---K---STRAẞEend" },
+    { "id": "width-prefix-kelvin", "value": "Ktail" },
+    { "id": "width-suffix-kelvin", "value": "headK" },
+    { "id": "width-prefix-sharp",  "value": "STRAẞEtail" },
+    { "id": "width-suffix-sharp",  "value": "headSTRAẞE" },
+    { "id": "stress-many-a", "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaB" }
+  ] }
+]

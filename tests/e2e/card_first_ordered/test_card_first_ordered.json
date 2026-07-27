@@ -1,0 +1,24 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "one",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "widgets", "scope": "t" },
+            "sorted": {
+              "kind": "order",
+              "input": "t",
+              "terms": [
+                { "expr": { "kind": "col", "scope": "t", "column": "rank" } }
+              ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "first" }
+        }
+      }
+    ]
+  },
+  "result": { "id": "w1", "name": "Alpha", "rank": 10 }
+}

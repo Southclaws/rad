@@ -1,0 +1,9 @@
+# expr_group_intdiv — group by a computed integer-division key.
+# Rows whose (x div y) collapse to the same integer must land in one group.
+tables:
+  - id: 1
+    name: nums
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: x,  type: int64 }
+      - { id: 3, name: y,  type: int64 }

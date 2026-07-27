@@ -1,0 +1,37 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "employees_with_dept",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "employees": { "kind": "scan", "table": "employees", "scope": "e" },
+            "departments": { "kind": "scan", "table": "departments", "scope": "d" },
+            "joined": {
+              "kind": "join",
+              "left": "employees",
+              "right": "departments",
+              "join": "inner",
+              "on": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "e", "column": "emp_dept" },
+                "right": { "kind": "col", "scope": "d", "column": "dept_id" }
+              }
+            },
+            "sorted": {
+              "kind": "order",
+              "input": "joined",
+              "terms": [ { "expr": { "kind": "col", "scope": "e", "column": "emp_id" } } ]
+            }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "emp_id": "emp-1", "emp_name": "Ada", "emp_dept": "dept-eng", "dept_id": "dept-eng", "dept_name": "Engineering" },
+    { "emp_id": "emp-2", "emp_name": "Bob", "emp_dept": "dept-ops", "dept_id": "dept-ops", "dept_name": "Operations" }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "w": { "kind": "scan", "table": "widgets", "scope": "w" },
+            "p1": { "kind": "project", "input": "w", "scope": "s1", "fields": [
+              { "as": "x", "expr": { "kind": "col", "scope": "w", "column": "id" } } ] },
+            "p2": { "kind": "project", "input": "w", "scope": "s2", "fields": [
+              { "as": "y", "expr": { "kind": "col", "scope": "w", "column": "id" } } ] },
+            "j": { "kind": "join", "left": "p1", "right": "p2", "join": "inner",
+              "on": { "kind": "lit", "value": { "type": "bool", "value": true } } },
+            "o": { "kind": "order", "input": "j", "terms": [
+              { "expr": { "kind": "col", "scope": "s1", "column": "x" } } ] }
+          },
+          "root": { "node": "o", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "invalid", "contains": "duplicate scope" }
+}

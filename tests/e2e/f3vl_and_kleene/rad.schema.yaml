@@ -1,0 +1,10 @@
+# e2e/f3vl_and_kleene — Kleene AND. A row is kept only when (x = 1) and (y = 1)
+# is TRUE. NULL operands make a conjunct UNKNOWN; FALSE and UNKNOWN = FALSE,
+# TRUE and UNKNOWN = UNKNOWN, UNKNOWN and UNKNOWN = UNKNOWN — all dropped.
+tables:
+  - id: 1
+    name: t
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: x,  type: int64, nullable: true }
+      - { id: 3, name: y,  type: int64, nullable: true }
