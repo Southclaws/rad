@@ -11,6 +11,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/Southclaws/rad/rad/engine/02_catalog/model"
 	lir "github.com/Southclaws/rad/rad/engine/03_lir"
 	lireval "github.com/Southclaws/rad/rad/engine/03_lir/eval"
 )
@@ -61,13 +62,13 @@ func TestOracleRowSetKinds(t *testing.T) {
 	}
 }
 
-// TestOracleRowSetFloatBits documents the deliberate divergence from the
-// production primitive: refexec compares floats by bit pattern, so -0.0 and
-// +0.0 are distinct. (Production stringifies, which happens to agree here; the
-// two would only differ on distinct NaN payloads.)
+// TestOracleRowSetFloatBits pins refexec's divergence: floats identify by bit
+// pattern, so the raw value is built here rather than through lir.Float64
 func TestOracleRowSetFloatBits(t *testing.T) {
 	s := newOracleRowSet([]lir.Field{{Slot: 0}})
-	f := func(v float64) lireval.Env { return lireval.Env{0: lir.ScalarDatum(lir.Float64(v))} }
+	f := func(v float64) lireval.Env {
+		return lireval.Env{0: lir.ScalarDatum(lir.Value{Type: model.TypeFloat64, Float64: v})}
+	}
 	if !s.add(f(0)) {
 		t.Fatal("first +0.0 should be new")
 	}

@@ -26,9 +26,17 @@ type Row map[string]Value
 
 func Text(s string) Value     { return Value{Type: model.TypeText, Text: s} }
 func Int64(i int64) Value     { return Value{Type: model.TypeInt64, Int64: i} }
-func Float64(f float64) Value { return Value{Type: model.TypeFloat64, Float64: f} }
 func Bool(b bool) Value       { return Value{Type: model.TypeBool, Bool: b} }
 func Null(t model.Type) Value { return Value{Type: t, Null: true} }
+
+// Float64 folds -0.0 into +0.0: the two compare equal but encode to different
+// key bytes, so keeping both lets an index seek miss a row a scan matches
+func Float64(f float64) Value {
+	if f == 0 {
+		return Value{Type: model.TypeFloat64, Float64: 0}
+	}
+	return Value{Type: model.TypeFloat64, Float64: f}
+}
 
 // AppendIdentity appends the type-tagged scalar representation used for
 // full-row set identity.
