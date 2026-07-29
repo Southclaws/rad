@@ -1,0 +1,11 @@
+# float_negative_zero_index: -0.0 and +0.0 compare equal, so an index on a
+# float64 column must key them the same. An eq seek and a range scan both have
+# to return the row a table scan would.
+tables:
+  - id: 1
+    name: t
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: f,  type: float64 }
+    indexes:
+      - { columns: [f] }

@@ -1,0 +1,9 @@
+# float_negative_zero_unique: a unique float64 column already holding -0.0 must
+# reject +0.0. The two compare equal, so admitting both would put two rows in
+# the table that no eq filter can tell apart.
+tables:
+  - id: 1
+    name: readings
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: v,  type: float64, unique: true }

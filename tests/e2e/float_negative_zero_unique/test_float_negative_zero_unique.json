@@ -1,0 +1,39 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "collide",
+        "kind": "create",
+        "table": "readings",
+        "relation": {
+          "nodes": {
+            "r": {
+              "kind": "rows",
+              "scope": "r",
+              "columns": [
+                { "name": "id", "type": "text" },
+                { "name": "v", "type": "float64" }
+              ],
+              "rows": [ ["r2", "0"] ]
+            }
+          },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "invalid", "contains": "unique index" },
+  "assertions": [
+    {
+      "name": "the rejected insert left the one seeded zero behind",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "readings", "scope": "t" },
+          "o": { "kind": "order", "input": "t", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "o", "cardinality": "many" }
+      },
+      "expect": [ { "id": "r1", "v": 0 } ]
+    }
+  ]
+}

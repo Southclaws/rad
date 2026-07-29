@@ -1,0 +1,64 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "t": { "kind": "scan", "table": "t", "scope": "t" },
+            "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "t", "column": "f" }, "right": { "kind": "lit", "value": { "type": "float64", "value": "0" } } } },
+            "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+          },
+          "root": { "node": "sorted", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [ { "id": "neg", "f": 0 } ],
+  "assertions": [
+    {
+      "name": "eq -0.0 seeks the same index entry as eq 0.0",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "eq", "left": { "kind": "col", "scope": "t", "column": "f" }, "right": { "kind": "lit", "value": { "type": "float64", "value": "-0" } } } },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [ { "id": "neg", "f": 0 } ]
+    },
+    {
+      "name": "gte 0 AND lte 0 range scan brackets the stored zero",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": {
+            "kind": "filter", "input": "t",
+            "predicate": {
+              "kind": "binary", "op": "and",
+              "left": { "kind": "binary", "op": "gte", "left": { "kind": "col", "scope": "t", "column": "f" }, "right": { "kind": "lit", "value": { "type": "float64", "value": "0" } } },
+              "right": { "kind": "binary", "op": "lte", "left": { "kind": "col", "scope": "t", "column": "f" }, "right": { "kind": "lit", "value": { "type": "float64", "value": "0" } } }
+            }
+          },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": [ { "id": "neg", "f": 0 } ]
+    },
+    {
+      "name": "lt 0 excludes the stored zero rather than ordering before it",
+      "query": {
+        "nodes": {
+          "t": { "kind": "scan", "table": "t", "scope": "t" },
+          "kept": { "kind": "filter", "input": "t", "predicate": { "kind": "binary", "op": "lt", "left": { "kind": "col", "scope": "t", "column": "f" }, "right": { "kind": "lit", "value": { "type": "float64", "value": "0" } } } },
+          "sorted": { "kind": "order", "input": "kept", "terms": [ { "expr": { "kind": "col", "scope": "t", "column": "id" } } ] }
+        },
+        "root": { "node": "sorted", "cardinality": "many" }
+      },
+      "expect": []
+    }
+  ]
+}
