@@ -720,6 +720,23 @@ mod tests {
     }
 
     #[test]
+    fn row_codec_preserves_nan_payload_bits() {
+        let table = table(vec![column("c4", 4, "score", ScalarType::Float64)]);
+        let expected_bits = 0xffff_98e7_0052_0108;
+        let row = Row::from([(
+            "score".into(),
+            Value::Float64(f64::from_bits(expected_bits)),
+        )]);
+
+        let encoded = marshal_row(&table, &row).unwrap();
+        let decoded = unmarshal_row(&table, &encoded).unwrap();
+        let Value::Float64(actual) = decoded["score"] else {
+            panic!("float64 column decoded as a different value type");
+        };
+        assert_eq!(actual.to_bits(), expected_bits);
+    }
+
+    #[test]
     fn tuple_codec_round_trips_ordered_primitives_and_rejects_nan() {
         let values = vec![
             Value::Null(ScalarType::Int64),

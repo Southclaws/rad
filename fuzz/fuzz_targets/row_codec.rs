@@ -28,10 +28,8 @@ fuzz_target!(|input: &[u8]| {
 
     if let Ok(row) = unmarshal_row(&table, input) {
         let encoded = marshal_row(&table, &row).expect("decoded rows can be re-encoded");
-        assert_eq!(
-            unmarshal_row(&table, &encoded).expect("re-encoded row decodes"),
-            row
-        );
+        let round_trip = unmarshal_row(&table, &encoded).expect("re-encoded row decodes");
+        assert_same_row(&round_trip, &row);
     }
 
     for (column, value) in table.columns.iter().zip([
@@ -66,6 +64,19 @@ fuzz_target!(|input: &[u8]| {
         }
     }
 });
+
+fn assert_same_row(actual: &std::collections::HashMap<String, Value>, expected: &std::collections::HashMap<String, Value>) {
+    assert_eq!(actual.len(), expected.len());
+    for (column, expected) in expected {
+        let actual = actual.get(column).expect("round trip preserves every column");
+        match (actual, expected) {
+            (Value::Float64(actual), Value::Float64(expected)) => {
+                assert_eq!(actual.to_bits(), expected.to_bits());
+            }
+            _ => assert_eq!(actual, expected),
+        }
+    }
+}
 
 fn table() -> Table {
     Table {
