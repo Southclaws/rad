@@ -2,15 +2,15 @@
 
 Fixture-driven end-to-end tests. Each subdirectory is one self-contained
 scenario: a schema, seed data, and a program to run against it with
-assertions on the result. `e2e_test.go` is the whole runner — it discovers
-every fixture directory, gives each a fresh in-memory database, and runs it
-in parallel through the real client → server → bind → plan → execute path.
+assertions on the result. `tests/differential_corpus.rs` is the runner: it
+discovers every fixture directory, gives each case fresh production and
+reference executors, and compares both implementations with the authored
+result and post-program assertions.
 A fixture is data, not code, so the suite grows by adding directories, never
 by editing the runner:
 
-```
-go test ./tests/e2e/            # run every fixture
-go test ./tests/e2e/ -run E2E/create_task   # one fixture
+```sh
+task test:differential
 ```
 
 ## Layout
@@ -46,7 +46,7 @@ An ordered array of `{table, rows}` groups, inserted in array order:
 An array, not a table-keyed object, so insertion order — and therefore FK
 dependency order — is unambiguous in JSON (object key order isn't a format
 guarantee). Each row is inserted the same way an application's writes would
-be (through `Create`), so values coerce exactly as production data does.
+be through a create program, so values coerce exactly as production data does.
 
 ## `test_<test-name>.json`
 
@@ -77,14 +77,10 @@ be (through `Create`), so values coerce exactly as production data does.
   statement is `{name, kind, table?, relation}` — `kind` is one of `query`
   / `create` / `update` / `delete`; `table` is set for the three mutation
   kinds; `relation` is a full LIR `Query`. A literal insert's `relation` is
-  a one-node `rows` relation (declared `columns` + positional `rows`
-  arrays) — see `tests/harness/harness.go`'s `DB.Insert` for the reference
-  construction. `result` names which statement's output the program
-  returns; it may be omitted only when there's exactly one statement, in
-  which case that statement is the result. This is executed via the
-  client's single mutation entry point, `Client.Execute(ctx, program)` —
-  there is no separate insert/update/delete call, and no session-based
-  transaction type; atomicity comes from a program having multiple
+  a one-node `rows` relation with declared columns and positional row arrays.
+  `result` names which statement's output the program returns; it may be
+  omitted only when there's exactly one statement, in which case that
+  statement is the result. Atomicity comes from a program having multiple
   statements, not from a held transaction.
 - **`result`** — the exact value `ProgramResult.Result` should produce:
   shaped like a query result (array/object/scalar/null) according to the
@@ -115,9 +111,8 @@ be (through `Create`), so values coerce exactly as production data does.
   a fixture verifies that a failing program left the store untouched (atomic
   rollback).
 
-Comparison is by canonical JSON (object keys sorted, numbers as
-`json.Number`), so key order never matters and an int64 column's `1000`
-matches the fixture's `1000` exactly.
+Comparison is structural JSON, so object key order never matters and an int64
+column's `1000` matches the fixture's `1000` exactly.
 
 ### A caveat on pinning `result` for mutations
 
@@ -145,8 +140,8 @@ this directory should supply ids and timestamps as plain literals instead
 3. Write `test_<name>.json` — the program, its expected result, and enough
    assertions to pin down the state it left behind (or an `error` for a
    negative case).
-4. `go test ./tests/e2e/ -run E2E/<name>` — the runner picks the directory
-   up automatically. No Go to write.
+4. Run `task test:differential`; the runner picks the directory up
+   automatically. No Rust to write.
 
 Exactly one `test_*.json` per directory; a directory without one is
 skipped (so a bare `rad.schema.yaml`/`seed.json` in progress won't fail the

@@ -1,0 +1,151 @@
+name: Rad fuzz campaigns
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "fuzz/**"
+      - "protocol/**"
+      - "src/engine/01_kv/**"
+      - "src/engine/02_catalog/schema.rs"
+      - "src/engine/03_lir/**"
+      - "src/engine/05_exec/codec.rs"
+      - "src/protocol/**"
+      - ".github/workflows/fuzz.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "fuzz/**"
+      - "protocol/**"
+      - "src/engine/01_kv/**"
+      - "src/engine/02_catalog/schema.rs"
+      - "src/engine/03_lir/**"
+      - "src/engine/05_exec/codec.rs"
+      - "src/protocol/**"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    - cron: "43 1 * * *"
+      timezone: Europe/London
+  workflow_dispatch:
+    inputs:
+      seconds_per_target:
+        description: Wall-clock seconds for each fuzz target
+        required: true
+        default: 1800
+        type: number
+      master_seed:
+        description: Root seed shared by the target matrix; 0 derives it from the workflow run
+        required: true
+        default: 0
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rad-fuzz-${{ (github.event_name == 'pull_request' && format('change-{0}', github.event.pull_request.head.ref)) || (github.event_name == 'push' && format('change-{0}', github.ref_name)) || format('{0}-{1}', github.event_name, github.ref_name) }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  FUZZ_TOOLCHAIN: nightly-2026-07-20
+  RAD_TESTED_REVISION: ${{ github.sha }}
+  RAD_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+  RAD_BASE_REVISION: ${{ github.event.pull_request.base.sha || '' }}
+
+jobs:
+  fuzz:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: protocol_lir
+            seed_offset: 0
+          - target: protocol_pir
+            seed_offset: 1
+          - target: schema
+            seed_offset: 2
+          - target: ordered_tuple
+            seed_offset: 3
+          - target: row_codec
+            seed_offset: 4
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CARGO_TARGET_DIR: target
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned fuzz toolchain
+        run: rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal
+
+      - name: Restore Rust fuzz cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: fuzz
+          workspaces: |
+            . -> target
+            fuzz -> ../target
+
+      - name: Install pinned cargo-fuzz
+        run: cargo +"$FUZZ_TOOLCHAIN" install cargo-fuzz --version 0.13.2 --locked
+
+      - name: Run bounded campaign
+        env:
+          TARGET: ${{ matrix.target }}
+          SEED_OFFSET: ${{ matrix.seed_offset }}
+          REQUESTED_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.seconds_per_target || '' }}
+          REQUESTED_MASTER_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.master_seed || '0' }}
+        run: |
+          set -euo pipefail
+          case "$GITHUB_EVENT_NAME" in
+            pull_request|push) seconds=60 ;;
+            schedule) seconds=1800 ;;
+            workflow_dispatch) seconds="$REQUESTED_SECONDS" ;;
+            *) exit 2 ;;
+          esac
+          if (( seconds < 1 || seconds > 2100 )); then
+            echo "seconds_per_target must be between 1 and 2100" >&2
+            exit 2
+          fi
+          case "$GITHUB_EVENT_NAME" in
+            pull_request|push)
+              master_seed=$(( 16#${GITHUB_SHA:0:8} ))
+              ;;
+            schedule)
+              master_seed="$GITHUB_RUN_ID"
+              ;;
+            workflow_dispatch)
+              master_seed="$REQUESTED_MASTER_SEED"
+              if (( master_seed == 0 )); then master_seed="$GITHUB_RUN_ID"; fi
+              ;;
+          esac
+          seed=$(( (master_seed + SEED_OFFSET) & 0x7fffffff ))
+          artifact_dir="$GITHUB_WORKSPACE/artifacts/fuzz/$TARGET"
+          mkdir -p "$artifact_dir/crashes"
+          printf '{"format":"rad-fuzz-campaign-v2","revision":"%s","source_revision":"%s","base_revision":"%s","target":"%s","requested_seconds":%d,"master_seed":%d,"seed":%d,"seed_derivation":"master-plus-target-offset-v1","toolchain":"%s","cargo_fuzz":"0.13.2"}\n' \
+            "$RAD_TESTED_REVISION" "$RAD_SOURCE_REVISION" "$RAD_BASE_REVISION" "$TARGET" "$seconds" "$master_seed" "$seed" "$FUZZ_TOOLCHAIN" > "$artifact_dir/context.json"
+          cargo +"$FUZZ_TOOLCHAIN" fuzz run "$TARGET" "fuzz/corpus/$TARGET" -- \
+            -seed="$seed" \
+            -max_total_time="$seconds" \
+            -print_final_stats=1 \
+            -artifact_prefix="$artifact_dir/crashes/" \
+            2>&1 | tee "$artifact_dir/run.log"
+
+      - name: Retain corpus statistics and crash inputs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rad-fuzz-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: artifacts/fuzz/${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 60

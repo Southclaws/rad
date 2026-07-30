@@ -1,0 +1,277 @@
+name: Rad CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  RAD_TESTED_REVISION: ${{ github.sha }}
+  RAD_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+  RAD_BASE_REVISION: ${{ github.event.pull_request.base.sha || '' }}
+
+concurrency:
+  group: rad-ci-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: format and lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: target
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
+
+      - name: Install pinned Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.2
+          cache: false
+
+      - name: Validate GitHub Actions workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: native
+          save-if: false
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  platform:
+    name: platform (${{ matrix.platform }}, ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            arch: aarch64
+          - runner: macos-15-intel
+            platform: macos
+            arch: x86_64
+          - runner: macos-15
+            platform: macos
+            arch: aarch64
+          - runner: windows-2025
+            platform: windows
+            arch: x86_64
+          - runner: windows-11-arm
+            platform: windows
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: target
+      RAD_TEST_ARTIFACT_DIR: ${{ github.workspace }}/artifacts/platform/dst
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
+
+      - name: Install pinned Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.2
+          cache: false
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: native
+
+      - name: Run complete native suite
+        run: |
+          set -euo pipefail
+          artifact_dir="$GITHUB_WORKSPACE/artifacts/platform"
+          mkdir -p "$artifact_dir"
+          printf '{"format":"rad-platform-evidence-v1","revision":"%s","source_revision":"%s","base_revision":"%s","os":"%s","architecture":"%s","kv_stores":["memory","file"]}\n' \
+            "$RAD_TESTED_REVISION" "$RAD_SOURCE_REVISION" "$RAD_BASE_REVISION" "${{ matrix.platform }}" "${{ matrix.arch }}" > "$artifact_dir/manifest.json"
+          rustc -vV > "$artifact_dir/rustc.txt"
+          go test ./clients/go/... 2>&1 | tee "$artifact_dir/go-sdk-tests.log"
+          go build ./examples/demo
+          cargo test --locked --all-targets 2>&1 | tee "$artifact_dir/tests.log"
+
+      - name: Retain platform evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rad-platform-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_attempt }}
+          path: artifacts/platform
+          if-no-files-found: error
+          retention-days: 30
+
+  backend:
+    name: KV (${{ matrix.arch }}, ${{ matrix.store }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+            store: memory
+          - runner: ubuntu-24.04
+            arch: x86_64
+            store: file
+          - runner: ubuntu-24.04
+            arch: x86_64
+            store: s3-rustfs
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+            store: memory
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+            store: file
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+            store: s3-rustfs
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: target
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: native
+          save-if: false
+
+      - name: Run backend qualification
+        run: |
+          set -euo pipefail
+          artifact_dir="$GITHUB_WORKSPACE/artifacts/backend"
+          mkdir -p "$artifact_dir"
+          printf '{"format":"rad-backend-evidence-v1","revision":"%s","source_revision":"%s","base_revision":"%s","os":"linux","architecture":"%s","kv_store":"%s"}\n' \
+            "$RAD_TESTED_REVISION" "$RAD_SOURCE_REVISION" "$RAD_BASE_REVISION" "${{ matrix.arch }}" "${{ matrix.store }}" > "$artifact_dir/manifest.json"
+          rustc -vV > "$artifact_dir/rustc.txt"
+
+          case "${{ matrix.store }}" in
+            memory)
+              cargo test --locked --test kv_backend_qualification memory_backend_satisfies_transaction_contract -- --exact --nocapture \
+                2>&1 | tee "$artifact_dir/tests.log"
+              ;;
+            file)
+              {
+                cargo test --locked --test kv_backend_qualification local_backend_satisfies_transaction_contract_and_reopens -- --exact --nocapture
+                cargo test --locked --test storage_crash_recovery local_backend_recovers_from_real_process_death -- --exact --nocapture
+              } 2>&1 | tee "$artifact_dir/tests.log"
+              ;;
+            s3-rustfs)
+              docker info > "$artifact_dir/docker.txt"
+              {
+                cargo test --locked --test kv_backend_qualification rustfs_backend_satisfies_the_storage_qualification_suite -- --exact --ignored --nocapture
+                cargo test --locked --test storage_crash_recovery rustfs_backend_recovers_from_real_process_death -- --exact --ignored --nocapture
+                cargo test --locked --test storage_network_faults rustfs_network_fault_matrix_preserves_commit_and_writer_safety -- --exact --ignored --nocapture
+                RAD_TEST_ARTIFACT_DIR="$artifact_dir" RAD_TEST_S3_LATENCY_SEED="$GITHUB_RUN_ID" cargo test --locked --test s3_latency seeded_s3_latency_preserves_http_write_reopen_and_query_correctness -- --exact --ignored --nocapture
+              } 2>&1 | tee "$artifact_dir/tests.log"
+              ;;
+          esac
+
+      - name: Retain backend evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rad-backend-${{ matrix.arch }}-${{ matrix.store }}-${{ github.run_attempt }}
+          path: artifacts/backend
+          if-no-files-found: error
+          retention-days: 30
+
+  determinism:
+    name: byte-identical DST replay
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_TARGET_DIR: target/dst-determinism
+      RAD_TEST_ARTIFACT_DIR: ${{ github.workspace }}/artifacts/determinism
+      RUSTFLAGS: --cfg tokio_unstable
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal
+
+      - name: Restore deterministic simulation cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: dst-determinism
+          workspaces: . -> target/dst-determinism
+
+      - name: Compare same-seed process traces
+        run: cargo test --locked --test schema_scheduler_determinism identical_seed_and_boundary_produce_identical_traces -- --exact --ignored --nocapture
+
+      - name: Retain deterministic replay evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rad-dst-determinism-${{ github.sha }}-${{ github.run_attempt }}
+          path: artifacts/determinism
+          if-no-files-found: error
+          retention-days: 90
+
+  evidence:
+    name: matrix evidence
+    needs:
+      - quality
+      - platform
+      - backend
+      - determinism
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Record completed matrix
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          printf '{"format":"rad-ci-matrix-v1","revision":"%s","source_revision":"%s","base_revision":"%s","platform_cases":6,"operating_systems":["linux","macos","windows"],"architectures":["x86_64","aarch64"],"backend_cases":6,"kv_stores":["memory","file","s3-rustfs"],"deterministic_replay_cases":16}\n' \
+            "$RAD_TESTED_REVISION" "$RAD_SOURCE_REVISION" "$RAD_BASE_REVISION" > evidence/matrix.json
+
+      - name: Upload matrix evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rad-matrix-${{ github.sha }}-${{ github.run_attempt }}
+          path: evidence/matrix.json
+          if-no-files-found: error
+          retention-days: 90

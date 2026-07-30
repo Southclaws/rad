@@ -15,7 +15,7 @@
       }
     ]
   },
-  "result": [ { "id": "neg", "f": 0 } ],
+  "result": [ { "id": "neg", "f": -0.0 } ],
   "assertions": [
     {
       "name": "eq -0.0 seeks the same index entry as eq 0.0",
@@ -27,7 +27,7 @@
         },
         "root": { "node": "sorted", "cardinality": "many" }
       },
-      "expect": [ { "id": "neg", "f": 0 } ]
+      "expect": [ { "id": "neg", "f": -0.0 } ]
     },
     {
       "name": "gte 0 AND lte 0 range scan brackets the stored zero",
@@ -46,7 +46,7 @@
         },
         "root": { "node": "sorted", "cardinality": "many" }
       },
-      "expect": [ { "id": "neg", "f": 0 } ]
+      "expect": [ { "id": "neg", "f": -0.0 } ]
     },
     {
       "name": "lt 0 excludes the stored zero rather than ordering before it",

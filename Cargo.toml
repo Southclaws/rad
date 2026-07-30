@@ -1,0 +1,42 @@
+[package]
+name = "rad"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1.88"
+async-recursion = "1.1.1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+base64 = "0.22.1"
+bytes = "1.10.1"
+casefold = "0.1.0"
+chrono = { version = "0.4.41", features = ["serde"] }
+clap = { version = "4.6", features = ["derive", "env"] }
+http-body-util = "0.1"
+jsonschema = { version = "0.49", default-features = false }
+mime = "0.3"
+minijinja = { version = "2.21.0", default-features = false, features = ["builtins", "macros", "multi_template", "serde"] }
+num-bigint = "0.4.6"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = { version = "1.0.140", features = ["raw_value"] }
+serde_urlencoded = "0.7"
+serde_yaml = "0.9.34"
+sha2 = "0.10.9"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+slatedb = { version = "=0.14.1", default-features = false, features = ["aws"] }
+thiserror = "2.0.12"
+tempfile = "3.20.0"
+tokio = { version = "1.46.1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+url = "2"
+uuid = { version = "1.17.0", features = ["v4"] }
+
+[dev-dependencies]
+rusty-s3 = { version = "0.10.1", default-features = false, features = ["rustcrypto"] }
+testcontainers = "0.27.3"
+tower = { version = "0.5", features = ["util"] }
+turmoil = "0.7.2"
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dev-dependencies]
+fastrand = "2.3.0"
+mad-turmoil = { git = "https://github.com/s2-streamstore/mad-turmoil.git", rev = "f2dc7556f60497dacb54dfb23c00af7eac487069" }
+rand = "0.10.0"

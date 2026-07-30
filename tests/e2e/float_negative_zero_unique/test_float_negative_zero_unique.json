@@ -33,7 +33,7 @@
         },
         "root": { "node": "o", "cardinality": "many" }
       },
-      "expect": [ { "id": "r1", "v": 0 } ]
+      "expect": [ { "id": "r1", "v": -0.0 } ]
     }
   ]
 }

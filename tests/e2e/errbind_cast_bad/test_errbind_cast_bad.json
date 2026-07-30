@@ -20,5 +20,5 @@
       }
     ]
   },
-  "error": { "code": "invalid", "contains": "cannot cast text to int64" }
+  "error": { "code": "invalid", "reason": "type_mismatch", "contains": "cannot cast text to int64" }
 }

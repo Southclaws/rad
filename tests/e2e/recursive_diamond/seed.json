@@ -1,0 +1,8 @@
+[
+  { "table": "edges", "rows": [
+    { "id": "e1", "from": "a", "to": "b" },
+    { "id": "e2", "from": "a", "to": "c" },
+    { "id": "e3", "from": "b", "to": "d" },
+    { "id": "e4", "from": "c", "to": "d" }
+  ] }
+]

@@ -1,0 +1,9 @@
+# A float primary key uses Rad's semantic numeric identity: -0.0 and +0.0 are
+# the same key for point lookup and duplicate detection, while the row body
+# preserves the originally authored sign bit.
+tables:
+  - id: 1
+    name: readings
+    columns:
+      - { id: 1, name: id, type: float64, pk: true }
+      - { id: 2, name: label, type: string }

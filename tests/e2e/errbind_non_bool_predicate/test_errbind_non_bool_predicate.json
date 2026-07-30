@@ -15,5 +15,5 @@
       }
     ]
   },
-  "error": { "code": "invalid", "contains": "filter predicate must be boolean, got int64" }
+  "error": { "code": "invalid", "reason": "type_mismatch", "contains": "filter predicate must be boolean, got int64" }
 }

@@ -1,0 +1,67 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "categories",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "products": {
+              "kind": "scan",
+              "table": "products",
+              "scope": "product"
+            },
+            "category": {
+              "kind": "project",
+              "input": "products",
+              "scope": "category",
+              "fields": [
+                {
+                  "as": "value",
+                  "expr": {
+                    "kind": "col",
+                    "scope": "product",
+                    "column": "category"
+                  }
+                }
+              ]
+            },
+            "committed": {
+              "kind": "ref",
+              "binding": "category_rows",
+              "scope": "committed"
+            },
+            "ordered": {
+              "kind": "order",
+              "input": "committed",
+              "terms": [
+                {
+                  "expr": {
+                    "kind": "col",
+                    "scope": "committed",
+                    "column": "value"
+                  }
+                }
+              ]
+            }
+          },
+          "bindings": {
+            "category_rows": {
+              "kind": "derived",
+              "node": "category"
+            }
+          },
+          "root": {
+            "node": "ordered",
+            "cardinality": "many"
+          }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "value": "books" },
+    { "value": "gear" },
+    { "value": "gear" }
+  ]
+}

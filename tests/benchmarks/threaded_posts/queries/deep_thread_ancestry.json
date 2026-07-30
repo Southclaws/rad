@@ -1,0 +1,67 @@
+{
+  "name": "deep_thread_ancestry",
+  "description": "Walk from the deepest reply to its root through 128 immediate-parent backreferences.",
+  "warmup": 1,
+  "iterations": 5,
+  "expect_rows": 129,
+  "expect_first": { "post_id": "deep-0128", "reply_to_post_id": "deep-0127", "distance": 0 },
+  "expect_last": { "post_id": "deep-0000", "reply_to_post_id": null, "distance": 128 },
+  "program": {
+    "statements": [{
+      "name": "deep_thread_ancestry",
+      "kind": "query",
+      "relation": {
+        "nodes": {
+          "anchor_scan": { "kind": "scan", "table": "posts", "scope": "leaf" },
+          "anchor_filter": {
+            "kind": "filter", "input": "anchor_scan",
+            "predicate": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "leaf", "column": "post_id" },
+              "right": { "kind": "lit", "value": { "type": "text", "value": "deep-0128" } }
+            }
+          },
+          "anchor_project": {
+            "kind": "project", "input": "anchor_filter", "scope": "anchor",
+            "fields": [
+              { "as": "post_id", "expr": { "kind": "col", "scope": "leaf", "column": "post_id" } },
+              { "as": "reply_to_post_id", "expr": { "kind": "col", "scope": "leaf", "column": "reply_to_post_id" } },
+              { "as": "distance", "expr": { "kind": "lit", "value": { "type": "int64", "value": "0" } } }
+            ]
+          },
+          "post_scan": { "kind": "scan", "table": "posts", "scope": "post" },
+          "frontier": { "kind": "recursive_ref", "binding": "ancestors", "scope": "child" },
+          "parent_join": {
+            "kind": "join", "left": "post_scan", "right": "frontier", "join": "inner",
+            "on": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "post", "column": "post_id" },
+              "right": { "kind": "col", "scope": "child", "column": "reply_to_post_id" }
+            }
+          },
+          "parent_project": {
+            "kind": "project", "input": "parent_join", "scope": "parent",
+            "fields": [
+              { "as": "post_id", "expr": { "kind": "col", "scope": "post", "column": "post_id" } },
+              { "as": "reply_to_post_id", "expr": { "kind": "col", "scope": "post", "column": "reply_to_post_id" } },
+              { "as": "distance", "expr": {
+                "kind": "binary", "op": "add",
+                "left": { "kind": "col", "scope": "child", "column": "distance" },
+                "right": { "kind": "lit", "value": { "type": "int64", "value": "1" } }
+              } }
+            ]
+          },
+          "ancestors": { "kind": "ref", "binding": "ancestors", "scope": "ancestor" },
+          "ordered": {
+            "kind": "order", "input": "ancestors",
+            "terms": [{ "expr": { "kind": "col", "scope": "ancestor", "column": "distance" } }]
+          }
+        },
+        "bindings": {
+          "ancestors": { "kind": "recursive", "anchor": "anchor_project", "step": "parent_project", "accumulation": "all" }
+        },
+        "root": { "node": "ordered", "cardinality": "many" }
+      }
+    }]
+  }
+}

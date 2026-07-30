@@ -56,7 +56,9 @@ Models/tools used: Claude & Codex, Fable/Opus, GPT-Sol.
 
 ## Try the demo
 
-The demo is a small team task tracker backend using a generated client - you can view Rad's built-in admin ui at localhost:7238
+The demo is a small team task tracker using the generated Go client. It runs
+the complete schema-migrate, client-generate, HTTP, planner, executor, and
+storage path, then leaves Rad serving at `localhost:7237`.
 
 ```sh
 task up
@@ -88,6 +90,9 @@ Then start a server:
 rad serve
 ```
 
+The public API listens on `http://localhost:7237`. The same process serves the
+built-in administration UI on `http://localhost:7238`.
+
 Preview and apply a schema to the running server:
 
 ```sh
@@ -104,9 +109,14 @@ schema. Application code should not edit `rad.state/`.
 
 ## Development
 
-Useful project commands are defined in [`Taskfile.yml`](Taskfile.yml): these are needed because the prototype is Go but SlateDB is Rust, so we have to run some linker flags to statically compile Slate's output into the Go binary. (but it's gonna be rewritten in Rust so this will go away eventually...)
+Useful cross-platform project commands are defined in
+[`Taskfile.yml`](Taskfile.yml):
 
 ```sh
 task test
 task build
 ```
+
+The admin application's compiled assets are checked in so building Rad does
+not require Node. After changing files under `admin/src`, regenerate those
+assets with `task generate:admin` before rebuilding the binary.

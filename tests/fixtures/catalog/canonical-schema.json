@@ -1,0 +1,1 @@
+{"tables":[{"id":1,"name":"users","columns":[{"id":1,"name":"id","type":"text"},{"id":2,"name":"age","type":"int64","nullable":true,"default":{"int64":18}}],"primary_key":["id"],"indexes":[{"name":"users_age_idx","columns":["age"]}]}]}

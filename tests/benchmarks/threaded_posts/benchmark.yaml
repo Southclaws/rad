@@ -1,0 +1,17 @@
+format: rad-s3-http-benchmark-v1
+name: threaded-posts
+description: A deterministic discussion forest exercising shallow, deep, wide, downward and upward recursive relations.
+schema: schema.yaml
+batch_rows: 200
+dataset:
+  balanced_threads: 12
+  balanced_depth: 6
+  deep_replies: 128
+  wide_replies: 1024
+tables:
+  - { name: posts, rows: 2678 }
+queries:
+  - queries/balanced_thread_with_depth.json
+  - queries/deep_thread_ancestry.json
+  - queries/wide_thread_descendants.json
+  - queries/whole_forest_summary.json

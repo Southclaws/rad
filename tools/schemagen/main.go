@@ -3,8 +3,8 @@
 // truth; the JSON is a generated artifact (embedded by the server for
 // validation, read by Schemancer, and served at the schema's $id URL).
 //
-// It is wired as a //go:generate helper in the protocol package; run it with
-// `go generate ./rad/protocol` or `task protocol:generate`.
+// It is wired into `task generate:protocol`, which updates the published Go
+// module's embedded schemas and the website copies together.
 //
 // Conversion goes through goccy/go-yaml, which follows YAML 1.2: bare tokens
 // like `on`, `off`, `yes`, and `no` stay strings rather than being coerced to

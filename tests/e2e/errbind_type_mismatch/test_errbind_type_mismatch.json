@@ -16,5 +16,5 @@
       }
     ]
   },
-  "error": { "code": "invalid", "contains": "expected a int64 value, got string" }
+  "error": { "code": "invalid", "reason": "type_mismatch", "contains": "expected a int64 value, got string" }
 }

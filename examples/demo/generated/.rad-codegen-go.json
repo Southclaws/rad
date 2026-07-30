@@ -1,0 +1,7 @@
+{
+  "format_version": 1,
+  "generator": "go",
+  "files": [
+    "rad_client_gen.go"
+  ]
+}

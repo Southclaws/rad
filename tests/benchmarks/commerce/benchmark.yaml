@@ -1,0 +1,15 @@
+format: rad-s3-http-benchmark-v1
+name: commerce
+description: A stable multi-tenant commerce workload ranging from primary-key reads to joins and grouped aggregation.
+schema: schema.yaml
+batch_rows: 200
+tables:
+  - { name: customers, rows: 200 }
+  - { name: products, rows: 100 }
+  - { name: orders, rows: 1000 }
+  - { name: order_items, rows: 3000 }
+queries:
+  - queries/customer_by_id.json
+  - queries/paid_orders_page.json
+  - queries/customer_order_summary.json
+  - queries/category_revenue.json

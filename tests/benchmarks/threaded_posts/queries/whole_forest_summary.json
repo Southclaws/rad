@@ -1,0 +1,66 @@
+{
+  "name": "whole_forest_summary",
+  "description": "Traverse every thread from all roots and aggregate the complete recursive result.",
+  "warmup": 0,
+  "iterations": 3,
+  "expect_rows": 1,
+  "expect_result": { "post_count": 2678, "max_depth": 128 },
+  "program": {
+    "statements": [{
+      "name": "whole_forest_summary",
+      "kind": "query",
+      "relation": {
+        "nodes": {
+          "anchor_scan": { "kind": "scan", "table": "posts", "scope": "root_post" },
+          "anchor_filter": {
+            "kind": "filter", "input": "anchor_scan",
+            "predicate": {
+              "kind": "unary", "op": "is_null",
+              "expr": { "kind": "col", "scope": "root_post", "column": "reply_to_post_id" }
+            }
+          },
+          "anchor_project": {
+            "kind": "project", "input": "anchor_filter", "scope": "anchor",
+            "fields": [
+              { "as": "post_id", "expr": { "kind": "col", "scope": "root_post", "column": "post_id" } },
+              { "as": "depth", "expr": { "kind": "lit", "value": { "type": "int64", "value": "0" } } }
+            ]
+          },
+          "reply_scan": { "kind": "scan", "table": "posts", "scope": "reply" },
+          "frontier": { "kind": "recursive_ref", "binding": "forest", "scope": "parent" },
+          "reply_join": {
+            "kind": "join", "left": "reply_scan", "right": "frontier", "join": "inner",
+            "on": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "reply", "column": "reply_to_post_id" },
+              "right": { "kind": "col", "scope": "parent", "column": "post_id" }
+            }
+          },
+          "reply_project": {
+            "kind": "project", "input": "reply_join", "scope": "next",
+            "fields": [
+              { "as": "post_id", "expr": { "kind": "col", "scope": "reply", "column": "post_id" } },
+              { "as": "depth", "expr": {
+                "kind": "binary", "op": "add",
+                "left": { "kind": "col", "scope": "parent", "column": "depth" },
+                "right": { "kind": "lit", "value": { "type": "int64", "value": "1" } }
+              } }
+            ]
+          },
+          "forest": { "kind": "ref", "binding": "forest", "scope": "forest_post" },
+          "summary": {
+            "kind": "aggregate", "input": "forest", "scope": "summary",
+            "aggs": [
+              { "fn": "count", "as": "post_count" },
+              { "fn": "max", "as": "max_depth", "arg": { "kind": "col", "scope": "forest_post", "column": "depth" } }
+            ]
+          }
+        },
+        "bindings": {
+          "forest": { "kind": "recursive", "anchor": "anchor_project", "step": "reply_project", "accumulation": "all" }
+        },
+        "root": { "node": "summary", "cardinality": "exactly_one" }
+      }
+    }]
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "duplicate",
+        "kind": "create",
+        "table": "readings",
+        "relation": {
+          "nodes": {
+            "r": {
+              "kind": "rows",
+              "scope": "r",
+              "columns": [
+                { "name": "id", "type": "float64" },
+                { "name": "label", "type": "text" }
+              ],
+              "rows": [ ["0", "positive"] ]
+            }
+          },
+          "root": { "node": "r", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "invalid", "contains": "primary key" },
+  "assertions": [
+    {
+      "name": "positive zero point-gets the authored negative-zero primary key after duplicate rejection",
+      "query": {
+        "nodes": {
+          "r": { "kind": "scan", "table": "readings", "scope": "r" },
+          "match": {
+            "kind": "filter",
+            "input": "r",
+            "predicate": {
+              "kind": "binary",
+              "op": "eq",
+              "left": { "kind": "col", "scope": "r", "column": "id" },
+              "right": { "kind": "lit", "value": { "type": "float64", "value": "0" } }
+            }
+          },
+          "ordered": {
+            "kind": "order",
+            "input": "match",
+            "terms": [ { "expr": { "kind": "col", "scope": "r", "column": "id" } } ]
+          }
+        },
+        "root": { "node": "ordered", "cardinality": "many" }
+      },
+      "expect": [ { "id": -0.0, "label": "negative" } ]
+    }
+  ]
+}

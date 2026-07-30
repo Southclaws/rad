@@ -1,0 +1,6 @@
+tables:
+  - id: 1
+    name: products
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: category, type: string }

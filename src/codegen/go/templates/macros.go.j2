@@ -1,0 +1,61 @@
+{% macro filter_methods(receiver, query_type, table) %}
+{% for column in table.columns %}
+func ({{ receiver }} *{{ query_type }}) {{ column.field }}Eq(v {{ column.go_type }}) *{{ query_type }} {
+	{{ receiver }}.spec.filters = append({{ receiver }}.spec.filters, lirwire.Binary("eq", lirwire.Col("", {{ column.name_quoted }}), lirwire.LitOf(v)))
+	return {{ receiver }}
+}
+
+func ({{ receiver }} *{{ query_type }}) {{ column.field }}Ne(v {{ column.go_type }}) *{{ query_type }} {
+	{{ receiver }}.spec.filters = append({{ receiver }}.spec.filters, lirwire.Binary("ne", lirwire.Col("", {{ column.name_quoted }}), lirwire.LitOf(v)))
+	return {{ receiver }}
+}
+{% if column.ordered %}
+
+func ({{ receiver }} *{{ query_type }}) {{ column.field }}Lt(v {{ column.go_type }}) *{{ query_type }} {
+	{{ receiver }}.spec.filters = append({{ receiver }}.spec.filters, lirwire.Binary("lt", lirwire.Col("", {{ column.name_quoted }}), lirwire.LitOf(v)))
+	return {{ receiver }}
+}
+
+func ({{ receiver }} *{{ query_type }}) {{ column.field }}Lte(v {{ column.go_type }}) *{{ query_type }} {
+	{{ receiver }}.spec.filters = append({{ receiver }}.spec.filters, lirwire.Binary("lte", lirwire.Col("", {{ column.name_quoted }}), lirwire.LitOf(v)))
+	return {{ receiver }}
+}
+
+func ({{ receiver }} *{{ query_type }}) {{ column.field }}Gt(v {{ column.go_type }}) *{{ query_type }} {
+	{{ receiver }}.spec.filters = append({{ receiver }}.spec.filters, lirwire.Binary("gt", lirwire.Col("", {{ column.name_quoted }}), lirwire.LitOf(v)))
+	return {{ receiver }}
+}
+
+func ({{ receiver }} *{{ query_type }}) {{ column.field }}Gte(v {{ column.go_type }}) *{{ query_type }} {
+	{{ receiver }}.spec.filters = append({{ receiver }}.spec.filters, lirwire.Binary("gte", lirwire.Col("", {{ column.name_quoted }}), lirwire.LitOf(v)))
+	return {{ receiver }}
+}
+{% endif %}
+{% if column.nullable %}
+
+func ({{ receiver }} *{{ query_type }}) {{ column.field }}Null() *{{ query_type }} {
+	{{ receiver }}.spec.filters = append({{ receiver }}.spec.filters, lirwire.Unary("is_null", lirwire.Col("", {{ column.name_quoted }})))
+	return {{ receiver }}
+}
+
+func ({{ receiver }} *{{ query_type }}) {{ column.field }}NotNull() *{{ query_type }} {
+	{{ receiver }}.spec.filters = append({{ receiver }}.spec.filters, lirwire.Unary("is_not_null", lirwire.Col("", {{ column.name_quoted }})))
+	return {{ receiver }}
+}
+{% endif %}
+{% endfor %}
+{% endmacro %}
+
+{% macro order_methods(receiver, query_type, table) %}
+{% for column in table.columns %}
+func ({{ receiver }} *{{ query_type }}) OrderBy{{ column.field }}() *{{ query_type }} {
+	{{ receiver }}.spec.orders = append({{ receiver }}.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", {{ column.name_quoted }})})
+	return {{ receiver }}
+}
+
+func ({{ receiver }} *{{ query_type }}) OrderBy{{ column.field }}Desc() *{{ query_type }} {
+	{{ receiver }}.spec.orders = append({{ receiver }}.spec.orders, lirwire.OrderTerm{Expr: lirwire.Col("", {{ column.name_quoted }}), Desc: ptrBool(true)})
+	return {{ receiver }}
+}
+{% endfor %}
+{% endmacro %}
