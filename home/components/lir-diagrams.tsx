@@ -83,6 +83,154 @@ function Fig({
   );
 }
 
+export function LIRFrontendDiagram() {
+  const frontends = [
+    {
+      x: 20,
+      label: "generated client",
+      sub: "typed application queries",
+    },
+    {
+      x: 225,
+      label: "SQL frontend",
+      sub: "supported SQL lowered to LIR",
+    },
+    {
+      x: 430,
+      label: "another frontend",
+      sub: "its syntax, the same boundary",
+    },
+  ];
+
+  return (
+    <Fig
+      viewBox="0 0 640 390"
+      label="Three query frontends converge on LIR. Rad binds and plans the LIR relation graph, then executes the resulting plan transactionally."
+      caption="Frontends own their developer-facing syntax. LIR is the common relational boundary that Rad binds, plans, and executes."
+    >
+      {frontends.map((frontend, index) => (
+        <g key={frontend.label}>
+          <rect
+            x={frontend.x}
+            y="18"
+            width="190"
+            height="66"
+            rx="7"
+            stroke="var(--line-2)"
+            strokeWidth="1.4"
+          />
+          <text
+            x={frontend.x + 95}
+            y="44"
+            textAnchor="middle"
+            fontSize="13.5"
+            fontWeight="600"
+            fill="var(--ink)"
+          >
+            {frontend.label}
+          </text>
+          <text
+            x={frontend.x + 95}
+            y="65"
+            textAnchor="middle"
+            fontSize="10.5"
+            fill="var(--faint)"
+          >
+            {frontend.sub}
+          </text>
+          <Arrow
+            x1={frontend.x + 95}
+            y1={84}
+            x2={250 + index * 70}
+            y2={142}
+          />
+        </g>
+      ))}
+
+      <rect
+        x="220"
+        y="146"
+        width="200"
+        height="58"
+        rx="7"
+        fill="var(--green-deep)"
+        stroke="var(--green)"
+        strokeWidth="1.8"
+      />
+      <text
+        x="320"
+        y="171"
+        textAnchor="middle"
+        fontSize="16"
+        fontWeight="700"
+        fill="var(--green)"
+      >
+        LIR
+      </text>
+      <text
+        x="320"
+        y="190"
+        textAnchor="middle"
+        fontSize="11"
+        fill="var(--green-mid)"
+      >
+        relations · expressions · result shape
+      </text>
+
+      <Down x={320} y1={204} y2={245} />
+      <rect
+        x="180"
+        y="249"
+        width="280"
+        height="54"
+        rx="7"
+        stroke="var(--line-2)"
+        strokeWidth="1.4"
+      />
+      <text
+        x="320"
+        y="272"
+        textAnchor="middle"
+        fontSize="14"
+        fontWeight="600"
+        fill="var(--ink)"
+      >
+        binder and query planner
+      </text>
+      <text
+        x="320"
+        y="290"
+        textAnchor="middle"
+        fontSize="10.5"
+        fill="var(--faint)"
+      >
+        catalog names · types · access paths
+      </text>
+
+      <Down x={320} y1={303} y2={340} />
+      <rect
+        x="180"
+        y="344"
+        width="280"
+        height="38"
+        rx="7"
+        stroke="var(--green-mid)"
+        strokeWidth="1.4"
+      />
+      <text
+        x="320"
+        y="368"
+        textAnchor="middle"
+        fontSize="13.5"
+        fontWeight="600"
+        fill="var(--ink)"
+      >
+        transactional execution
+      </text>
+    </Fig>
+  );
+}
+
 // ── the read pipeline: wire LIR down to KV and back up as JSON ──────────────
 export function LIRPipeline() {
   const stages: {

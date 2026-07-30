@@ -9,22 +9,26 @@ mutations, durable schema workers, and automatic reclamation.
 
 ## Transaction entry points
 
-Autocommit reads use snapshot isolation. They bind and execute through one
-statement-scoped view, then discard it because there is nothing to publish.
+The standalone LIR read path uses snapshot isolation. It binds and executes
+through one transaction view, then rolls the transaction back because there is
+nothing to publish.
 
-Explicit transactions and PIR programs with effects use serializable snapshot
-isolation. Rad pins a coherent immutable catalog first, begins the data
-transaction, then admits exact semantic fences for each bound plan. All
-statements share the same SlateDB transaction and buffered writes.
+PIR validates the program structure and catalog authority before opening
+storage. It then preflights the complete program in a rollback-only serializable
+snapshot transaction. Execution binds the program again in a fresh transaction.
+A program containing only queries uses snapshot isolation and rolls back after
+producing its result. A program with any data or catalog effect uses
+serializable snapshot isolation and commits atomically. Every statement
+executes through that one execution transaction and its buffered writes.
 
-Read-only PIR programs take the snapshot fast path and are rolled back rather
-than pointlessly committed. Rad does not retry arbitrary PIR programs on the
-server. A serialization conflict returns to the caller or an adapter that owns
-the complete replayable transaction.
+Rad does not retry arbitrary PIR programs on the server. A serialization
+conflict returns to the caller or an adapter that owns the complete replayable
+program.
 
-Catalog work inside a PIR program refreshes catalog lookup for following
-statements. Those statements see catalog changes already buffered in the same
-transaction, while ordinary programs keep using the immutable pinned catalog.
+Every relational statement binds against the catalog visible through the
+execution transaction. When an earlier PIR statement changes the catalog,
+following statements see those buffered changes. Without catalog statements,
+the transaction's stable snapshot keeps the catalog view coherent.
 
 ## Dependency admission
 
@@ -32,10 +36,11 @@ Every physical plan carries the exact table-existence, column-value,
 index-access, and write-protocol generations it used. The query runner admits
 the complete manifest before constructing operators.
 
-Admission happens inside the data transaction. A mismatch between catalog
-pinning and data-snapshot creation fails before data access. A later catalog
-change to an admitted fence conflicts at commit through SlateDB serializability.
-Unrelated publications leave the manifest's fences untouched.
+Admission happens inside the same transaction used for binding and data access.
+For effectful programs, a concurrent change to an admitted fence participates
+in SlateDB's serializable conflict detection at commit. Read-only programs
+instead complete against their stable snapshot and roll back. Unrelated
+catalog publications leave the manifest's fences untouched.
 
 ## Query operators
 

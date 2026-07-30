@@ -7,7 +7,7 @@ info:
   title: rad
   binaryName: rad
   version: "0.1.0"
-  description: An ORM-native relational database on an ordered KV store.
+  description: The radically different database.
 
 exitCodes:
   - code: 0
@@ -60,8 +60,10 @@ commands:
 
   - name: validate
     operationId: validate
-    description: Validate rad.schema.yaml without a running database.
-    longDescription: Parse and validate the schema structure, types, and references without touching a database.
+    description: Validate a rad.schema.yaml file.
+    longDescription: >
+      Parse and validate the schema structure, types, and references locally
+      without calling out to the remote database.
     flags:
       - $ref: "#/components/flags/schema-file"
 

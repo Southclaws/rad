@@ -1,6 +1,6 @@
 ---
 title: LIR
-description: The structured relational query representation between application tooling and Rad's planner.
+description: The relational query contract between application tooling and Rad.
 ---
 
 LIR is what query tools compile to when they want Rad to retrieve data. It is
@@ -16,15 +16,7 @@ SQL adapter, an ORM, a GraphQL layer, or a new query language can use the same
 frontend boundary by lowering intent into LIR. Rad then owns catalog binding,
 type checking, planning, transaction semantics, and storage access.
 
-```text
-generated client       SQL frontend       another query language
-        \                    |                    /
-                         LIR
-                          |
-                 binder and query planner
-                          |
-                 transactional execution
-```
+<LIRFrontendDiagram />
 
 The point is not to replace SQL with a different string syntax. It is to move
 the integration boundary below syntax, where tools can exchange a relational
@@ -251,12 +243,12 @@ static types after binding.
 
 Nullable predicates use three-valued logic:
 
-```text
-comparison with NULL      -> UNKNOWN
-not UNKNOWN               -> UNKNOWN
-filter keeps              -> TRUE only
-is_null / is_not_null     -> TRUE or FALSE
-```
+| Operation | Result |
+| --- | --- |
+| Comparison with `NULL` | `UNKNOWN` |
+| `not UNKNOWN` | `UNKNOWN` |
+| A filter predicate | Keeps `TRUE` only |
+| `is_null` or `is_not_null` | `TRUE` or `FALSE` |
 
 This is why `not (x = 1)` does not match a row where `x` is null. It is also
 why rewrites involving `IN`, `ANY`, and `ALL` need more care than replacing

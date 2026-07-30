@@ -105,6 +105,7 @@ tasks:
     cmds:
       - openapi-to-rust generate --config openapi-to-rust.toml
       - go generate ./clients/go/api
+      - go run ./tools/openapidoc -input api/openapi.yaml -output home/content/docs/reference/http-api.mdx
 
   generate:admin:
     desc: Regenerate the admin UI assets embedded in the Rad binary
@@ -113,9 +114,10 @@ tasks:
       - npm --prefix admin run build
 
   generate:cli:
-    desc: Regenerate the Clap command surface from the normative OpenCLI specification
+    desc: Regenerate the Clap command surface and CLI documentation from OpenCLI
     cmds:
       - opencli generate rust-clap opencli.yaml --output src/cli --module generated
+      - go run ./tools/clidoc -input opencli.yaml -output home/content/docs/cli.mdx
 
   generate:protocol:
     desc: Regenerate Rust and Go LIR/PIR bindings from the normative schemas
@@ -126,6 +128,16 @@ tasks:
       - schemancer protocol/pir.schema.yaml rust src/protocol/generated --rust-filename pir.rs --config protocol/schemancer.yaml
       - schemancer protocol/lir.schema.yaml golang clients/go/protocol/lirwire --package lirwire --config protocol/schemancer.yaml
       - schemancer protocol/pir.schema.yaml golang clients/go/protocol/pirwire --package pirwire --config protocol/schemancer.yaml
+      - go run ./tools/jsonschemadoc -input protocol/lir.schema.yaml -profile lir -output home/content/docs/reference/lir-schema.mdx
+      - go run ./tools/jsonschemadoc -input protocol/pir.schema.yaml -profile pir -output home/content/docs/reference/pir-schema.mdx
+
+  generate:docs:
+    desc: Regenerate CLI, HTTP, LIR, and PIR documentation from their normative specifications
+    cmds:
+      - go run ./tools/clidoc -input opencli.yaml -output home/content/docs/cli.mdx
+      - go run ./tools/openapidoc -input api/openapi.yaml -output home/content/docs/reference/http-api.mdx
+      - go run ./tools/jsonschemadoc -input protocol/lir.schema.yaml -profile lir -output home/content/docs/reference/lir-schema.mdx
+      - go run ./tools/jsonschemadoc -input protocol/pir.schema.yaml -profile pir -output home/content/docs/reference/pir-schema.mdx
 
   check:http:
     desc: Check HTTP bindings for OpenAPI generation drift
@@ -144,5 +156,6 @@ tasks:
     cmds:
       - task: generate:protocol
       - task: generate:cli
+      - task: generate:docs
       - task: check:http
-      - git diff --exit-code -- src/protocol/generated clients/go/protocol/lir.schema.json clients/go/protocol/pir.schema.json clients/go/protocol/lirwire/lirwire.go clients/go/protocol/pirwire/pirwire.go home/public/schema/lir.json home/public/schema/pir.json src/cli/generated.rs src/http/generated
+      - git diff --exit-code -- src/protocol/generated clients/go/protocol/lir.schema.json clients/go/protocol/pir.schema.json clients/go/protocol/lirwire/lirwire.go clients/go/protocol/pirwire/pirwire.go home/public/schema/lir.json home/public/schema/pir.json src/cli/generated.rs home/content/docs/cli.mdx home/content/docs/reference/http-api.mdx home/content/docs/reference/lir-schema.mdx home/content/docs/reference/pir-schema.mdx src/http/generated

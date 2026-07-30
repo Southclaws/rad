@@ -1,0 +1,27 @@
+---
+title: PIR
+description: The ordered transactional program sent to Rad for execution.
+---
+
+PIR groups reads, writes, and catalog changes into one atomic program. Its
+statements run in order. A later statement can consume the result of an earlier
+statement, and a failure rolls back the whole program.
+
+PIR sits above LIR. A query, create, update, or delete statement contains an LIR
+relation describing the rows it reads or changes.
+
+## Statement families
+
+| Family | Purpose |
+| --- | --- |
+| `query` | Read a relation |
+| `create`, `update`, `delete` | Change data using an input relation |
+| Catalog statements | Change tables, columns, indexes, and constraints |
+| Transition statements | Start durable schema work |
+
+Listing, inspecting, and cancelling schema work are administrative HTTP
+operations. They are not PIR statements.
+
+The [PIR JSON Schema](/schema/pir.json) is the normative specification. It
+defines statement ordering, result selection, bindings, catalog identity, and
+failure semantics.

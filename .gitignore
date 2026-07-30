@@ -12,7 +12,7 @@ tests/gen/runs/
 # local stuff
 tasks
 notes
-reference
+/reference
 
 
 # Added by cargo

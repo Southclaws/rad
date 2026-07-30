@@ -1,47 +1,86 @@
 ---
-title: Rad documentation
-description: Start with schemas, learn the query IR, or read how the engine works.
+title: Get started with Rad
+description: Run Rad, try the generated client workflow, and choose what to learn next.
 ---
 
+Rad keeps your data model, database changes, and application client in one
+workflow. Describe your tables in `rad.schema.yaml`, apply them with
+`rad schema migrate`, then use the generated types and queries in your
+application.
+
 <Callout type="warn">
-  Rad is still a private, greenfield codebase. These pages describe the current
-  implementation, but compatibility guarantees and public distribution are not
-  settled yet.
+  Rad is a research project. It is ready to try, but not ready for production or
+  important data. Compatibility guarantees are not settled yet.
 </Callout>
 
-Rad is a relational database built around two intermediate representations.
-PIR describes a transactional program. LIR describes the relations and
-expressions evaluated by its query statements. Rad binds those programs to a
-versioned catalog and executes them over SlateDB.
+## Run the demo
 
-If you're building an application, start with [Schemas in Rad](/docs/schemas).
-It explains the normal `rad.schema.yaml` workflow and the difference between a
-schema-managed database and Direct mode.
+The repository includes a small team task tracker. With current Rust and Go
+toolchains plus [Task](https://taskfile.dev/) installed, run this from the
+repository root:
 
-## Choose what you need
-
-- **[Schemas](/docs/schemas)** is for application developers and operators. Define
-  the data model, apply changes, and inspect online work.
-- **[LIR](/docs/lir)** is the query-language specification. Read it when producing
-  queries directly or building a frontend that lowers into Rad.
-- **[Engine](/docs/engine/01-kv)** is for maintainers. It follows a request from
-  ordered key-value storage through the catalog, planner, and executor.
-
-## The short mental model
-
-```text
-rad.schema.yaml
-  -> versioned catalog
-  -> PIR transaction
-  -> bound LIR plan
-  -> SlateDB transaction
+```console
+$ task up
 ```
 
-The schema says what data exists. LIR says what a query means. The engine docs
-explain how Rad preserves that meaning while choosing storage access paths and
-running schema changes in the background.
+The first run compiles Rad, starts a clean local database, applies the tracker's
+schema, and runs the application through its generated client. The output walks
+through sign-up, nested board views, filters, aggregates, updates, deletes,
+unique constraints, and foreign keys.
 
-For your first schema change, go straight to [Manage a schema](/docs/schemas/manage).
-For a long index build or type change, read
-[Online schema changes](/docs/schemas/online-changes) before reaching for the job
-controls. There is no `VACUUM` incantation hiding at the end.
+When the demo finishes, Rad stays running. Open the administration UI at
+[http://127.0.0.1:7238](http://127.0.0.1:7238), or check that the project and
+database agree from a second terminal:
+
+```console
+$ target/debug/rad schema --config examples/demo/rad.config.yaml status
+...
+Status: synchronized
+
+$ target/debug/rad schema --config examples/demo/rad.config.yaml diff
+No schema changes.
+```
+
+Press `Ctrl+C` in the first terminal when you're done.
+
+## What just happened
+
+The demo uses the same project shape as an application:
+
+```text
+rad.schema.yaml   the data model you own
+rad.config.yaml   the database target and client generator settings
+rad.state/        migration state managed by the Rad CLI
+generated/        the typed application client
+```
+
+The schema file is the source of truth. `rad schema migrate` compares it with
+the running database, reports what will change, applies supported changes, and
+regenerates the configured client. Your application gets ordinary typed models
+and query builders. It does not need SQL strings or a separate migration
+framework.
+
+The demo is deliberately more than a `hello world`. Open
+[`examples/demo/rad.schema.yaml`](https://github.com/Southclaws/rad/blob/main/examples/demo/rad.schema.yaml)
+to see the complete data model, then look at
+[`examples/demo/main.go`](https://github.com/Southclaws/rad/blob/main/examples/demo/main.go)
+to see the generated client in use.
+
+## Build something
+
+Start with [Schemas in Rad](/docs/schemas) to learn how a schema-managed project
+fits together. Then follow [Manage a schema](/docs/schemas/manage) to create a
+schema, preview the migration, apply it, and recover local state when a teammate
+gets there first.
+
+Once the basic loop makes sense:
+
+- [Online schema changes](/docs/schemas/online-changes) explains what happens
+  when a migration needs to scan or rewrite existing data.
+- [LIR](/docs/reference/lir) explains the query model generated clients use instead of
+  constructing SQL strings.
+- [Engine](/docs/engine/01-kv) is the maintainer path through storage, the
+  catalog, planning, and execution.
+
+You can ignore the engine vocabulary until you want to understand or change
+the database itself. It is not required reading before creating a table.

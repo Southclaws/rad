@@ -1,0 +1,911 @@
+---
+title: LIR schema
+description: The relations, expressions, crossings, and result shapes accepted by Rad.
+---
+
+[Open the canonical JSON Schema](/schema/lir.json).
+
+## Model
+
+LIR has exactly two categories, and no third "shape" category: shaping is
+projection, and nesting lives in the value model.
+
+- A **relation** is a possibly empty, possibly many stream of structurally
+  typed rows. Relation operators consume relations and produce relations.
+- An **expression** computes exactly one typed *datum* (null, a scalar, a
+  row, or an array) in some scope. An expression may consume a relation only
+  through an explicit *crossing* that declares how a stream of rows becomes
+  one datum.
+
+**Relational closure** is a law, not an aspiration: the output of every
+relation operator is itself an ordinary relation whose every attribute is
+addressable by later operators. A `filter` above an `aggregate` references a
+fold's output exactly as it would reference a scanned column.
+
+**Correlation** is a derived property, not an operator. A sub-relation that
+references a scope bound by an enclosing relation is correlated, and is
+evaluated with that enclosing row in scope. Correlation is a semantic
+relationship only: the planner may satisfy it per row, by batching, or by a
+join, as long as the result is identical. A relation becomes a datum only at
+a crossing or the root, never merely by being correlated.
+
+Relations have **bag** semantics: an operator changes multiplicity only when
+that is its job. `aggregate` folds each group to one row, and `distinct`
+converts an input bag into the corresponding set of complete rows; every
+other operator preserves multiplicity.
+
+## Determinism
+
+A key-value scan's encounter order is physical, never logical, and the
+engine's access-path choice must never change results. Wherever a stream of
+rows becomes observable, its order must be explicit. Root `many` results and
+`array` crossings require an `order`; root and crossing `first` permit either
+an `order` or a proof of at most one row. A positive `slice.offset` also
+requires an ordered input. An unordered `limit` is permitted only until a
+later observable boundary imposes its own ordering requirement. `distinct`
+likewise imposes no logical ordering; an observable ordered distinct result
+requires an explicit `order` above it, and an ordered input confers none.
+
+## NULL and three-valued logic
+
+Predicates evaluate in Kleene three-valued logic (K3): `TRUE`, `FALSE`, or
+`UNKNOWN`. Any comparison with a NULL operand is `UNKNOWN`. `filter` and a
+join's `on` keep only rows that evaluate to `TRUE`, never `UNKNOWN`, so
+`not (x = 1)` does not match rows where `x` is NULL; `is_null` is the only
+test that matches a NULL. NULLs are distinct under unique indexes.
+
+## The wire
+
+A query is a flat map of caller-chosen node ids plus a root selector. Every
+definition is inline; a node id is a plain reference carrying no sharing,
+memoisation, or materialisation identity. The graph must be acyclic, every
+node must be reachable from the root and have exactly one consumer, and
+dangling or shared references are rejected before binding. Nodes and
+expressions are closed `oneOf` unions selected by `kind`; unknown fields,
+fields belonging to another variant, and missing required fields are
+rejected. Literal values travel as raw JSON scalars (see `Value`) and are
+typed by the binder from the context each literal meets.
+
+## Query document
+
+The top-level query, its named graph, and result root.
+
+#### `Binding`
+
+One named relational value, a closed tagged union selected by `kind`. A
+`derived` binding names a single defining root; a `recursive` binding
+names an `anchor` (base case) and a `step` (inductive case) combined into
+a fixpoint.
+
+**Variants:** `DerivedBinding`, `RecursiveBinding`
+
+#### `DerivedBinding`
+
+A binding whose value is the one committed relational value its defining
+tree produces for this statement. Under bag semantics that value is one
+committed bag: a nondeterministic body (a slice with no total order) is
+resolved once, and every reference observes the same choice. The
+binding's public output is its root's output shape; interior scopes
+never leak.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `derived` | Yes |  |
+| `node` | `string` | Yes | The id of the binding's defining root node in `nodes`. Minimum length: 1. |
+
+#### `Query`
+
+A complete query: the relation forest plus its root selector.
+
+`nodes` is a flat map from caller-chosen id to relation node. Edges are
+the string ids a node names in its `input`, `inputs`, `left`, `right`,
+or a crossing's `node`. This encoding carries no sharing among ordinary
+nodes: an id names exactly one inline definition, referenced by exactly
+one consumer. The document is a finite forest; one tree rooted at
+`root.node` plus one tree per binding root; and cyclic, dangling,
+shared, or unreachable definitions are rejected before binding.
+
+`bindings` is the one deliberate sharing construct. A binding names
+and denotes a derived relation as a first-class relational value -
+the name is syntax, the denotation is semantics: one statement-local
+committed value, observed by every `ref` node under its own fresh
+scope, exactly as two scans of one table observe the same snapshot.
+Binding names, node ids, and scope labels are three separate
+namespaces.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bindings` | `object` |  | Named relational values, each identifying the root node of its defining tree within `nodes`. A binding's tree is subject to the same single-consumer rules as the main tree; `ref` nodes are edges into this namespace, never ordinary node-consumer edges. Binding trees may themselves reference other bindings: those references form a separate acyclic dependency graph over the relation forest. The single exception is a recursive binding, whose `step` references the binding itself through `recursive_ref`; the one sanctioned cycle. Every declared binding must be referenced at least once. |
+| `nodes` | `object` | Yes | The relation nodes of the query, keyed by caller-chosen id. Ids are opaque labels with no meaning beyond linking a consumer to its input; they carry no sharing or materialisation identity. |
+| `root` | `Root` | Yes |  |
+
+#### `RecursiveBinding`
+
+A recursively-defined relation, evaluated by iterating a step over a
+frontier. The `anchor` (base case) is evaluated once to seed both the
+working table and the result; then the `step` (inductive case) is
+evaluated repeatedly with its `recursive_ref` bound to the previous
+iteration's rows; the frontier; and each iteration's output is added to
+the result, until the frontier is empty. `accumulation: new` admits each
+full row at most once: rows already in the accumulated result, and
+duplicates produced within the same iteration, are dropped before the
+next frontier forms (a set fixpoint). `accumulation: all` keeps every
+generated row, multiplicity included. This is recursive admission, not
+the unary `distinct` operator; they share canonical full-row identity
+but are separate constructs. The `step` must contain exactly one
+`recursive_ref` to this binding and the `anchor` none; the reference
+denotes the frontier, never the accumulated result.
+
+The anchor supplies the binding's column names, order, and kinds;
+nullability is the least widening that accommodates both the anchor and
+the recursive step. The relation has no inherent order and termination is
+not guaranteed; observing it requires an explicit `order`, and a
+non-terminating recursion is bounded only by the engine's iteration and
+row limits.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `accumulation` | `all \| new` | Yes | How each iteration's rows enter the result and next frontier: `all` keeps every generated row with its multiplicity; `new` admits each full row at most once, dropping rows already in the accumulated result and duplicates within the same iteration. Recursive admission, not the unary `distinct` operator. |
+| `anchor` | `string` | Yes | The base-case root node. Contains no `recursive_ref`. Minimum length: 1. |
+| `kind` | `recursive` | Yes |  |
+| `step` | `string` | Yes | The inductive-case root node. Contains exactly one `recursive_ref` to this binding. Minimum length: 1. |
+
+#### `Root`
+
+Selects the result relation and how its rows materialise into the
+response body:
+
+- `many`; every row, as an array of objects.
+- `first`; the first row as an object, or null when there are none.
+  Subject to the determinism rule: the root relation must be provably at
+  most one row or carry an explicit `order`.
+- `exactly_one`; the single row as an object; it is an error if the
+  relation produces zero or more than one row.
+- `scalar`; the sole column of the sole row as a bare value, or null
+  when there are no rows. The relation must have exactly one output
+  column and be statically at most one row. Ordering a multi-row
+  relation makes `first` deterministic but does not make it a valid
+  `scalar`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cardinality` | `many \| first \| exactly_one \| scalar` | Yes | How the root relation's rows collapse into the response. |
+| `node` | `string` | Yes | The id of the root relation node. Minimum length: 1. |
+
+## Relations
+
+Nodes that read, combine, reshape, and order rows.
+
+#### `AggregateNode`
+
+Fold the rows of `input` into groups. With `groups`, it is GROUP BY: one
+output row per distinct combination of the group expressions. With no
+`groups`, it is the global fold: exactly one output row over the whole
+input, even when the input is empty. At least one of `groups` or `aggs`
+must be present.
+
+Over an empty input, a global `count` is `0` and every other fold
+(`sum`, `avg`, `min`, `max`) is NULL. The output row type is the group
+attributes followed by the aggregate term outputs; a node above an
+aggregate may reference only those. Bind an output `scope` when a later
+node references them by name.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `aggs` | `array of AggTerm` |  | The aggregate folds computed for each group. Minimum items: 1. |
+| `groups` | `array of GroupTerm` |  | Grouping keys. One output row is produced per distinct combination of their values. Omit for a single global fold. Minimum items: 1. |
+| `input` | `string` | Yes | The id of the relation to fold. Minimum length: 1. |
+| `kind` | `aggregate` | Yes |  |
+| `scope` | `string` |  | Optional label bound to this aggregate's output row. Required only when a later node refers to its groups or terms by name. Minimum length: 1. |
+
+#### `ConcatenateNode`
+
+Concatenate two or more input relations into one bag: the output
+contains every row of every input with its multiplicity preserved and
+performs no deduplication (SQL `UNION ALL`). A set union is the
+composition `distinct` over `concatenate`, under `distinct`'s
+canonical full-row identity.
+
+Inputs must have positionally compatible output shapes: the same number
+of columns and, at each position, the same column name and scalar kind.
+Nullability is widened positionally: an output column is nullable when
+the corresponding column of any input is nullable.
+
+The output carries those shared column names under `scope`, exactly as
+a scan exposes its columns under its scope. Input scopes do not remain
+visible above the concatenation.
+
+A concatenation imposes no logical order. Input declaration order and
+any ordering carried by an input have no observable effect on the
+output. An implementation may process or emit inputs in any order. The
+declaration order is structural only and has no relational or
+observable meaning. An observable ordered result requires an explicit
+`order` above the concatenation.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `inputs` | `array of string` | Yes | The ids of the input relations. At least two; n-ary by design, since concatenation is associative. Minimum items: 2. |
+| `kind` | `concatenate` | Yes |  |
+| `scope` | `string` | Yes | The label the output columns are bound to. Must be unique across the query, under the same rules as a scan's scope. Minimum length: 1. |
+
+#### `DistinctNode`
+
+Remove duplicate complete rows from `input`. Two rows are duplicates when
+every corresponding datum has the same canonical row identity; the
+complete row, type- and order-significant, with typed NULL values equal to
+one another (deliberately unlike three-valued predicate equality). The
+output has `input`'s row type and contains at most one occurrence of each
+complete row. `distinct` fixes membership and multiplicity, not order: any
+observable ordering requires an explicit `order` above it, and an ordered
+input confers no ordering on the output.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `input` | `string` | Yes | The id of the relation to deduplicate. Minimum length: 1. |
+| `kind` | `distinct` | Yes |  |
+
+#### `ExceptNode`
+
+The bag difference `left` minus `right` (SQL `EXCEPT`): the rows of
+`left` with `right`'s occurrences removed, matched by canonical
+full-row identity; the `distinct` operator's identity, where typed
+NULLs equal one another. With `quantifier: all`, a row occurring m
+times in `left` and n times in `right` occurs max(m − n, 0) times in
+the output; with `quantifier: distinct`, each distinct `left` row
+occurs exactly once when it does not occur in `right` at all.
+
+The inputs must be positionally compatible under `concatenate`'s rule:
+the same number of columns and, at each position, the same column name
+and scalar kind. Every output row is drawn from `left`, so the output
+columns carry `left`'s types and nullability, exposed under `scope`
+exactly as a scan exposes its columns. Input scopes are not visible
+above the node.
+
+The two sides are independent relations: neither may reference a scope
+bound by the other, exactly as a join's sides may not. The output has
+no inherent order; an observable ordered result requires an explicit
+`order` above it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `except` | Yes |  |
+| `left` | `string` | Yes | The id of the left input relation. Minimum length: 1. |
+| `quantifier` | `all \| distinct` | Yes | The set quantifier: `all` subtracts occurrence counts; `distinct` emits each distinct `left` row absent from `right` once. |
+| `right` | `string` | Yes | The id of the right input relation, whose occurrences are subtracted from `left`. Minimum length: 1. |
+| `scope` | `string` | Yes | The label the output columns are bound to. Must be unique across the query, under the same rules as a scan's scope. Minimum length: 1. |
+
+#### `FilterNode`
+
+Keep the rows of `input` whose `predicate` evaluates to `TRUE` under
+three-valued logic. Rows evaluating to `FALSE` or `UNKNOWN` are dropped;
+this is the load-bearing K3 rule. The predicate must be of boolean type.
+
+A filter changes cardinality but not row type: its output is its input's
+row type. A filter whose equality conjuncts cover a unique key of its
+input (a primary key or unique index) is statically at most one row,
+which is what lets the to-parent pattern (`first` over a foreign-key
+match) satisfy the determinism rule.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `input` | `string` | Yes | The id of the relation to filter. Minimum length: 1. |
+| `kind` | `filter` | Yes |  |
+| `predicate` | `Expr` | Yes | A boolean expression; rows for which it is TRUE are kept. |
+
+#### `IntersectNode`
+
+The bag intersection of `left` and `right` (SQL `INTERSECT`): the rows
+common to both inputs, matched by canonical full-row identity; the
+`distinct` operator's identity, where typed NULLs equal one another.
+With `quantifier: all`, a row occurring m times in `left` and n times
+in `right` occurs min(m, n) times in the output; with `quantifier:
+distinct`, each common row occurs exactly once.
+
+The inputs must be positionally compatible under `concatenate`'s rule:
+the same number of columns and, at each position, the same column name
+and scalar kind. Every output row is drawn from `left`, so the output
+columns carry `left`'s types and nullability, exposed under `scope`
+exactly as a scan exposes its columns. Input scopes are not visible
+above the node.
+
+The two sides are independent relations: neither may reference a scope
+bound by the other, exactly as a join's sides may not. The output has
+no inherent order; an observable ordered result requires an explicit
+`order` above it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `intersect` | Yes |  |
+| `left` | `string` | Yes | The id of the left input relation. Minimum length: 1. |
+| `quantifier` | `all \| distinct` | Yes | The set quantifier: `all` keeps matched multiplicities (min of the two sides); `distinct` emits each common row once. |
+| `right` | `string` | Yes | The id of the right input relation. Minimum length: 1. |
+| `scope` | `string` | Yes | The label the output columns are bound to. Must be unique across the query, under the same rules as a scan's scope. Minimum length: 1. |
+
+#### `JoinNode`
+
+Combine `left` and `right` into a relation whose rows carry the
+attributes of both sides, keeping pairs for which `on` is `TRUE` under
+three-valued logic.
+
+- `inner`; only matched pairs.
+- `left`; every left row at least once; the right attributes are NULL
+  when no right row matches.
+
+The two sides are independent relations: neither may reference a scope
+bound by the other (a dependent join is rejected at bind time), and `on`
+may not contain a crossing. Correlated nesting is expressed with a
+crossing in a projection field, not with a join. `semi` and `anti` are
+reserved and not accepted.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `join` | `inner \| left` | Yes | The join mode: `inner` keeps only matched pairs; `left` keeps every left row, padding unmatched right attributes with NULL. |
+| `kind` | `join` | Yes |  |
+| `left` | `string` | Yes | The id of the left input relation. Minimum length: 1. |
+| `on` | `Expr` | Yes | The boolean join condition. Kept pairs are those for which it is TRUE. Must not reference a crossing. |
+| `right` | `string` | Yes | The id of the right input relation. Minimum length: 1. |
+
+#### `Node`
+
+A relation operator: one node of the relation forest. A closed tagged
+union of the LIR operators, selected by `kind`. Every operator
+consumes relations and produces a relation whose every output attribute
+is addressable by its consumer (relational closure).
+
+**Variants:** `ScanNode`, `RowsNode`, `FilterNode`, `ProjectNode`, `JoinNode`, `ConcatenateNode`, `IntersectNode`, `ExceptNode`, `AggregateNode`, `OrderNode`, `SliceNode`, `RefNode`, `RecursiveRefNode`, `DistinctNode`
+
+#### `OrderNode`
+
+Impose a logical ordering on `input` without changing its rows or row
+type. Rows sort by `terms` in order; within each term NULLs sort first
+ascending and last descending.
+
+When the output carries a known unique key (a scan's primary key, an
+aggregate's group columns), that key is appended as trailing ascending
+terms so tied rows order identically under every access path. Without a
+known unique key, the order of tied rows is unspecified. An explicit
+`order` is what makes a downstream `first` or `slice` a deterministic,
+path-independent selection.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `input` | `string` | Yes | The id of the relation to order. Minimum length: 1. |
+| `kind` | `order` | Yes |  |
+| `terms` | `array of OrderTerm` | Yes | The ordering terms, applied in list order. Minimum items: 1. |
+
+#### `ProjectNode`
+
+Establish a new row type from `input`. Projection is not column
+selection: it defines the output row as the columns re-exposed by
+`spread` followed by the computed `fields`. Aliases, computed values,
+and nested materialisation (a field whose expression is a crossing) all
+live here. At least one of `spread` or `fields` must be present.
+
+Output attribute names must be unique. Every collision is rejected at
+bind time: field against field, field against a spread-produced column,
+and column against column across spread scopes. Bind an output `scope`
+when a later node references this projection's attributes by name.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `fields` | `array of Field` |  | Computed output attributes, in order, after any spread. Minimum items: 1. |
+| `input` | `string` | Yes | The id of the relation to project. Minimum length: 1. |
+| `kind` | `project` | Yes |  |
+| `scope` | `string` |  | Optional label bound to this projection's output row. Required only when a later node refers to these attributes by name. Minimum length: 1. |
+| `spread` | `array of string` |  | Scopes whose columns are re-exposed in the output, in order, before the computed `fields`. Names must not collide within or across spreads or with a field. Minimum items: 1. Items must be unique. |
+
+#### `RecursiveRefNode`
+
+One occurrence of the enclosing recursive binding's frontier: the rows
+the previous iteration produced (the working table), exposed under a
+fresh `scope` exactly as `ref` exposes a committed binding. Legal only
+inside that binding's `step`, and exactly once. It denotes the frontier,
+never the accumulated result; the completed fixpoint value is observed
+from outside the binding through an ordinary `ref`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `binding` | `string` | Yes | The enclosing recursive binding whose frontier this observes. Minimum length: 1. |
+| `kind` | `recursive_ref` | Yes |  |
+| `scope` | `string` | Yes | The label this occurrence's rows are bound to. Must be unique across the query, like a scan's scope. Minimum length: 1. |
+
+#### `RefNode`
+
+One occurrence of a named binding: a fresh variable ranging over the
+binding's committed value, exactly as a scan is a fresh variable over
+a table's snapshot. The occurrence exposes the binding's output
+columns under its own `scope`; the binding's interior scopes
+are not visible through it. References are uniformly zero-or-many
+rows regardless of the body; determinism-sensitive consumers bring
+their own order or slice.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `binding` | `string` | Yes | The name of the binding this occurrence observes. Minimum length: 1. |
+| `kind` | `ref` | Yes |  |
+| `scope` | `string` | Yes | The label this occurrence's rows are bound to. Must be unique across the query, like a scan's scope. Minimum length: 1. |
+
+#### `RowsColumn`
+
+One declared output column of a constant relation.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | Yes | The output attribute name. Minimum length: 1. |
+| `nullable` | `boolean` |  | Whether cells in this column may be NULL. Default: false. |
+| `type` | `ScalarType` | Yes | The column's scalar type. |
+
+#### `RowsNode`
+
+Introduce a finite constant relation: literal rows with explicitly
+declared columns, bound to a `scope` label exactly as a scan is. It is
+the second relational leaf beside `scan`, useful for literal queries,
+joins against ad hoc data, fixtures, and mutation input where a
+literal row is simply a one-row relation.
+
+Column types and nullability are declared, never inferred from the
+row values: a bare JSON number cannot choose between int64 and
+float64, and the schema of a relation must not depend on its data.
+Each row is a positional array parallel to `columns`, and its arity
+must equal the number of declared columns. Each cell is a `Cell`: a bare
+string payload decoded against its column's declared scalar type (numbers
+as lossless strings, so precision survives end to end), or JSON null for a
+typed NULL, valid only for a nullable column. The column supplies the
+type, so; unlike a `Value` literal; a cell never repeats it.
+
+`rows` may be empty. Because type and nullability are declared
+independently of the values, an empty constant relation remains
+fully typed.
+
+The relation is a bag containing exactly `rows.length` rows,
+including duplicates. Document order is not a logical relation
+order; observing an order requires an explicit `order` node above
+it. Its bag contents are deterministic and independent of storage
+access paths or physical plan choice.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `columns` | `array of RowsColumn` | Yes | The output columns in positional order. Column names must be unique. Minimum items: 1. |
+| `kind` | `rows` | Yes |  |
+| `rows` | `array of array of Cell` | Yes | Literal rows represented as positional arrays parallel to `columns`. May be empty. |
+| `scope` | `string` | Yes | The label this relation's output attributes are bound to. Must be unique across the query, under the same rules as a scan's scope. Minimum length: 1. |
+
+#### `ScanNode`
+
+Introduce a base table as a relation and bind a `scope` label to its
+rows. Scans introduce stored rows; `rows` introduces literal ones -
+every other operator derives from these leaves.
+
+A scan's row order is physical (whatever the chosen access path yields)
+and never logical: to depend on order, place an explicit `order` above
+the scan. `scope` must be unique across the whole query.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `scan` | Yes |  |
+| `scope` | `string` | Yes | The label this scan's rows are bound to, used by `col` references elsewhere in the query. Must be unique across the query. Minimum length: 1. |
+| `table` | `string` | Yes | The catalog table to scan. Rejected if it does not exist. Minimum length: 1. |
+
+#### `SliceNode`
+
+Take a positional window of `input`: skip `offset` rows, then keep at
+most `limit`. `offset` defaults to 0. An omitted `limit` means
+unlimited; an explicit `0` keeps no rows.
+
+Slicing is positional. Over an ordered relation it selects a logical
+range; over an unordered one it is an arbitrary but deliberate selection
+(the `LIMIT` without `ORDER BY` contract), the one documented exception
+to path-independence.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `input` | `string` | Yes | The id of the relation to slice. Minimum length: 1. |
+| `kind` | `slice` | Yes |  |
+| `limit` | `integer` |  | Maximum rows to keep. Omitted means unlimited; an explicit `0` keeps no rows. |
+| `offset` | `integer` |  | Rows to skip before taking. Defaults to 0. |
+
+## Expressions
+
+Values and predicates evaluated in a relation scope.
+
+#### `BinaryExpr`
+
+Apply a binary operator to `left` and `right`.
+
+- Comparisons `eq ne lt lte gt gte` yield a boolean under three-valued
+  logic: any NULL operand makes the result `UNKNOWN`.
+- Logical `and` / `or` follow Kleene logic (`F and x = F`, `T or x = T`,
+  otherwise `UNKNOWN`). They are strictly binary; a client left-folds a
+  longer chain into nested `and`/`or`.
+- Arithmetic `add sub mul div` operate on numeric operands and propagate
+  NULL. They are part of the grammar and are evaluated, though the
+  generated clients do not yet emit them.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `binary` | Yes |  |
+| `left` | `Expr` | Yes | The left operand. |
+| `op` | `eq \| ne \| lt \| lte \| gt \| gte \| and \| or \| add \| sub \| mul \| div` | Yes | The binary operator. |
+| `right` | `Expr` | Yes | The right operand. |
+
+#### `BranchArm`
+
+One arm of a `branch`: a boolean predicate and the result the branch
+produces when this is the first predicate to evaluate to TRUE.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `then` | `Expr` | Yes | The arm's result expression. |
+| `when` | `Expr` | Yes | The arm's boolean predicate. |
+
+#### `BranchExpr`
+
+Ordered, lazy branching. Evaluate branch predicates in document order.
+The result is the `then` expression belonging to the first predicate
+that evaluates to TRUE. Predicates evaluating to FALSE or UNKNOWN do
+not match. If none match, evaluate and return `else`. Unselected result
+expressions are not evaluated; the laziness is contract, not
+optimization: a division by zero in an arm that is never selected does
+not raise.
+
+`else` is required. LIR has typed NULLs only, so there is no
+implicit-NULL default; a frontend that permits an omitted else inserts
+a correctly typed NULL itself.
+
+Typing: every `when` must be boolean (nullable is fine; an UNKNOWN
+predicate falls through). Every `then` and the `else` must have the
+same scalar kind, with no implicit widening; a frontend inserts
+explicit casts. The result is that kind, nullable when any `then` or
+the `else` is. A branch subtree may not contain a crossing (`exists` /
+`first` / `scalar` / `array`) anywhere; in a `when`, a `then`, or the
+`else`: the executor attaches crossings per row before expression
+evaluation, which would evaluate crossings in never-selected arms, so
+they are rejected at bind time.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `branches` | `array of BranchArm` | Yes | The arms, tested in document order. Minimum items: 1. |
+| `else` | `Expr` | Yes | The result when no predicate matches. |
+| `kind` | `branch` | Yes |  |
+
+#### `CastExpr`
+
+Convert `expr` to the scalar type `to`. The conversion is explicit; the
+result is nullable exactly when the operand is.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `expr` | `Expr` | Yes | The expression to convert. |
+| `kind` | `cast` | Yes |  |
+| `to` | `ScalarType` | Yes | The target scalar type. |
+
+#### `ColumnExpr`
+
+Reference a column of a bound scope: `scope` names a `scan` (or a
+`project`/`aggregate` that bound an output scope), and `column` names one
+of its attributes. The referenced scope must be in scope at this point in
+the graph; the binder resolves the reference to the producing relation's
+output. A reference to a scope bound by an enclosing relation is what
+makes a sub-relation correlated.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `column` | `string` | Yes | The attribute name within that scope. Minimum length: 1. |
+| `kind` | `col` | Yes |  |
+| `scope` | `string` | Yes | The label of the relation whose column is referenced. Minimum length: 1. |
+
+#### `CrossingExprArray`
+
+Every row of the relation `node` as a nested array, in the relation's
+order. Empty when the relation has no rows, never null. Renders a to-many
+relationship. The relation may be correlated with the enclosing row.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `array` | Yes |  |
+| `node` | `string` | Yes | The id of the relation to materialise as an array. Minimum length: 1. |
+
+#### `CrossingExprExists`
+
+`EXISTS`: a boolean that is `TRUE` when the relation `node` produces at
+least one row and `FALSE` otherwise. Never NULL. The relation may be
+correlated with the enclosing row.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `exists` | Yes |  |
+| `node` | `string` | Yes | The id of the relation whose non-emptiness is tested. Minimum length: 1. |
+
+#### `CrossingExprFirst`
+
+The first row of the relation `node` as a nested object, or null when it
+has no rows. Renders a to-one relationship.
+
+Subject to the determinism rule: `first` is accepted only when the
+relation is provably at most one row (a unique-key filter, a global
+aggregate, a `slice` of one) or carries an explicit `order`. Taking the
+first row of an unordered multi-row relation would leak the access path
+into the result and is rejected at bind time.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `first` | Yes |  |
+| `node` | `string` | Yes | The id of the relation to take the first row of. Minimum length: 1. |
+
+#### `CrossingExprScalar`
+
+The single value of a single-column, at-most-one-row relation `node`, or
+null when it has no rows. Renders a scalar subquery, such as a correlated
+aggregate count.
+
+`scalar` is a cardinality assertion: the relation must have exactly one
+output column and be statically at most one row, both checked at bind
+time. "First scalar" is not implied; write it as the composition of
+`scalar` over a `slice` of one over an `order`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `scalar` | Yes |  |
+| `node` | `string` | Yes | The id of the single-column, at-most-one-row relation. Minimum length: 1. |
+
+#### `Expr`
+
+An expression: a computation producing exactly one typed datum. A closed
+tagged union selected by `kind`. Most expressions are scalar; the `first`
+and `array` crossings produce a row and an array datum respectively.
+
+Expression evaluation is pure: it has no side effects and reads no
+storage of its own. The crossings (`exists`, `first`, `scalar`, `array`)
+are the only boundary from a relation into an expression, and each states
+how a stream of rows becomes one datum.
+
+**Variants:** `LiteralExpr`, `ColumnExpr`, `UnaryExpr`, `BinaryExpr`, `CastExpr`, `BranchExpr`, `TextMatchExpr`, `CrossingExprExists`, `CrossingExprFirst`, `CrossingExprScalar`, `CrossingExprArray`
+
+#### `LiteralExpr`
+
+A constant value. `value` is a scalar wire value (see `Value`); numeric
+values travel as lossless strings, so a 64-bit integer keeps full
+precision on the wire.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `lit` | Yes |  |
+| `value` | `Value` | Yes | The constant's typed scalar value. |
+
+#### `UnaryExpr`
+
+Apply a unary operator to `expr`:
+
+- `not`; three-valued negation: `not TRUE` is FALSE, `not FALSE` is
+  TRUE, `not UNKNOWN` is UNKNOWN.
+- `negate`; arithmetic negation of a numeric value; NULL propagates.
+- `is_null` / `is_not_null`; total tests that are always TRUE or FALSE,
+  never UNKNOWN. `is_null` is the only way to match a NULL.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `expr` | `Expr` | Yes | The operand. |
+| `kind` | `unary` | Yes |  |
+| `op` | `not \| negate \| is_null \| is_not_null` | Yes | The unary operator. |
+
+## Text matching
+
+Literal spans, wildcards, and comparison rules for text patterns.
+
+#### `AnyManyTextMatchPart`
+
+A wildcard matching zero or more characters (SQL `%`). Adjacent
+`any_many` parts are equivalent to one; a producer should emit the
+collapsed form.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `any_many` | Yes |  |
+
+#### `LiteralTextMatchPart`
+
+A literal span the pattern must match at this position under the enclosing
+`text_match.comparison` rule. Never empty; adjacent literal parts are
+equivalent to one concatenated literal, and a producer should emit the
+concatenated form.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `literal` | Yes |  |
+| `value` | `string` | Yes | The literal text to compare with the corresponding input span. Minimum length: 1. |
+
+#### `TextComparison`
+
+The equality relation used for literal spans in a `text_match`: exact
+UTF-8 bytes or locale-independent Unicode simple case folding.
+
+#### `TextMatchExpr`
+
+Test whether `value` matches an anchored pattern built from an ordered
+list of `parts`. The result is boolean under three-valued logic: a NULL
+`value` yields UNKNOWN, otherwise a total TRUE or FALSE. `value` must be
+text.
+
+The match is fully anchored: the concatenation of the parts must consume
+the whole of `value`, not merely occur within it. `[literal "foo"]`
+matches only "foo"; a leading or trailing `any_many` is what admits a
+prefix, suffix, or infix. An `any_many` matches zero or more characters
+(SQL `%`), so `[any_many]` alone matches every non-NULL value including
+the empty string.
+
+The pattern is a bind-time constant: literal spans carry strings and
+wildcards are structural, so no part is an expression and the matcher is
+compiled once. `value` is the only operand that varies per row, and NULL
+enters only through it.
+
+`comparison` controls only how literal spans compare with corresponding
+input text. `exact`, the default, requires identical UTF-8 bytes.
+`unicode_simple_fold` interprets both spans as UTF-8 and compares their
+Unicode code points under Unicode simple case folding, with the same
+equality relation as Go's `strings.EqualFold`. Simple folding is
+one-code-point-to-one-code-point, deterministic, and locale-independent.
+It performs no Unicode normalization, accent folding, transliteration,
+multi-code-point full folding, or linguistic collation. In particular,
+"Straße" does not match "STRASSE", "é" does not match "e", and composed
+and decomposed forms remain distinct.
+
+This setting is deliberately narrower than a database collation. A
+future cross-cutting collation design may govern equality, ordering,
+grouping, uniqueness, and matching together; `unicode_simple_fold`
+remains the precisely defined compatibility comparison provided by this
+expression.
+
+This is deliberately the SQL `LIKE` wildcard set structurally
+represented, not a general pattern algebra: no alternation, repetition of
+sub-patterns, character classes, or backreferences. A richer text-search
+facility would be a separate expression, never a wider `parts`
+vocabulary.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `comparison` | `TextComparison` |  | How literal pattern spans compare with input text. Omission is equivalent to `exact`. Default: exact. |
+| `kind` | `text_match` | Yes |  |
+| `parts` | `array of TextMatchExprPart` | Yes | The pattern, as an ordered list of literal spans and wildcards. Producers should emit a canonical list; adjacent literals coalesced, adjacent `any_many` collapsed; but the matcher accepts any well-formed list. Minimum items: 1. |
+| `value` | `Expr` | Yes | The text expression matched against the pattern. |
+
+#### `TextMatchExprPart`
+
+One element of a text-match pattern: a literal span or a wildcard, a
+closed tagged union selected by `kind`. The vocabulary is deliberately
+small; a single-character wildcard (`any_one`, SQL `_`) is a future
+addition this union admits without a breaking change.
+
+**Variants:** `LiteralTextMatchPart`, `AnyManyTextMatchPart`
+
+## Projection and terms
+
+Fields, grouping terms, aggregates, and ordering terms.
+
+#### `AggTerm`
+
+One aggregate fold, exposed in the output under `as`.
+
+- `count` with no `arg` counts rows; with an `arg` it counts the rows
+  where the argument is non-null. It is int64 and never NULL (`0` over an
+  empty group).
+- `sum` and `avg` require a numeric argument; `avg` is float64.
+- `min` and `max` accept any comparable argument.
+
+All folds skip NULL arguments. Over an empty global fold, `count` is `0`
+and every other fold is NULL.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `arg` | `Expr` |  | The argument expression. Omitted only for `count`, which then counts rows rather than non-null values. |
+| `as` | `string` | Yes | The output attribute name for this fold. Minimum length: 1. |
+| `fn` | `count \| sum \| avg \| min \| max` | Yes | The fold function. |
+
+#### `Field`
+
+One computed output attribute of a projection: the expression `expr`
+under the output name `as`. When `expr` is a crossing the field
+materialises a nested value: `first` renders an object (or null), `array`
+a nested array, `scalar` a bare value, and `exists` a boolean.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `as` | `string` | Yes | The output attribute name. Must not collide with another. Minimum length: 1. |
+| `expr` | `Expr` | Yes | The expression computing the attribute's value. |
+
+#### `GroupTerm`
+
+One grouping key of an aggregate: rows are grouped by the value of
+`expr`, and the key is exposed in the output under `as`. When `as` is
+omitted and `expr` is a bare column reference, the column's name is used.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `as` | `string` |  | The output name for this key. Defaults to the referenced column name when `expr` is a bare column. Minimum length: 1. |
+| `expr` | `Expr` | Yes | The expression whose value defines the group. |
+
+#### `OrderTerm`
+
+One ordering term: sort by the value of `expr`, ascending unless `desc`
+is true. NULLs sort first when ascending and last when descending. Terms
+apply in list order; a deterministic unique-key tie-breaker is appended
+by the engine when one is known.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `desc` | `boolean` |  | Sort descending instead of the default ascending. |
+| `expr` | `Expr` | Yes | The expression to sort by. |
+
+## Values
+
+Scalar types and JSON value representations.
+
+#### `BoolValue`
+
+A boolean value, or a bool NULL when `value` is absent.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `bool` | Yes |  |
+| `value` | `boolean` |  | The boolean value; absent for a NULL. |
+
+#### `Cell`
+
+One schema-directed scalar payload, used inside a `rows` relation where
+each column already declares its type. A string is decoded against the
+corresponding `RowsColumn.type`; numbers as lossless strings, `bool` as
+"true"/"false", so precision survives and the type is never repeated per
+cell; JSON null is a typed NULL, valid only when that column is nullable.
+Unlike `Value`, a cell carries no type of its own; the column supplies
+it once for the whole column.
+
+#### `Float64Value`
+
+A finite IEEE-754 binary64 value, or a float64 NULL when `value` is
+absent. `value` is a decimal string that round-trips exactly to that
+binary64 value; non-finite values (NaN, Infinity) are rejected by the
+binder.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `float64` | Yes |  |
+| `value` | `string` |  | The finite binary64 value in canonical round-trip string form; absent for a NULL. |
+
+#### `Int64Value`
+
+A signed 64-bit integer, or an int64 NULL when `value` is absent. `value`
+is the integer's canonical base-10 string, with no leading plus sign or
+redundant leading zeroes; values outside the signed 64-bit range are
+invalid; a bound the pattern cannot express, so the binder enforces it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `int64` | Yes |  |
+| `value` | `string` |  | The integer as a canonical decimal string, e.g. "9007199254740993"; absent for a NULL. |
+
+#### `ScalarType`
+
+The logical type of a scalar value: `text`, `int64`, `float64`, or
+`bool`.
+
+#### `TextValue`
+
+A text value, or a text NULL when `value` is absent.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `text` | Yes |  |
+| `value` | `string` |  | The text value; absent for a NULL. |
+
+#### `Value`
+
+A scalar wire value: a discriminated union selected by `type`, which is
+always a `ScalarType`. Each variant is a value of that scalar type, either
+present or NULL. When `value` is present it is the datum; numeric types as
+a lossless canonical string so JSON never loses precision, `text` and
+`bool` in their natural JSON form; when `value` is absent the value is a
+typed NULL of that scalar type. Presence, not contents, marks NULL: an
+empty string is a present `text` value, not a NULL. A naked NULL of no
+particular type is not representable; cast it to give it one. A value's
+`type` must match the scalar type its context expects.
+
+**Variants:** `TextValue`, `Int64Value`, `Float64Value`, `BoolValue`

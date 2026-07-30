@@ -48,22 +48,21 @@ and inspection. It is too broad for ordinary transaction compatibility. A
 rename can advance the revision and table definition while leaving existence,
 column-value, index-access, and write-protocol fences compatible.
 
-## Pin, bind, admit, execute
+## Bind, admit, execute
 
-```text
-pin one coherent immutable catalog snapshot
-  -> bind names to stable identities
-  -> choose access paths
-  -> collect an exact typed dependency manifest
-  -> begin the SlateDB data transaction
-  -> admit every dependency fence
-  -> execute with pinned definitions and write protocols
-  -> commit through SlateDB serializability
-```
+Execution follows this order:
 
-Catalog pinning and data-snapshot creation are separate operations. Admission
-inside the data transaction closes that gap. The admitted fence reads then stay
-in SlateDB's serializable read set, closing the gap from admission to commit.
+1. Begin the SlateDB execution transaction.
+2. Bind names against the catalog visible through that transaction.
+3. Choose access paths and collect an exact typed dependency manifest.
+4. Read every dependency fence through the same transaction.
+5. Execute through the same transaction view.
+6. Roll back a read-only result or commit the complete effectful program.
+
+PIR preflight uses an earlier rollback-only transaction, but execution does not
+reuse its bound plans. It binds the program again inside the execution
+transaction. In a serializable execution transaction, admitted fence reads stay
+in SlateDB's conflict set through commit.
 
 Rad owns binding, compatibility, and publication semantics. SlateDB owns
 version visibility and commit conflict detection. Rad does not build another

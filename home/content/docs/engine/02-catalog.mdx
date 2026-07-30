@@ -71,11 +71,11 @@ External APIs expose deliberate projections instead.
 Catalog reads resolve tables by current name or stable identity, materialise
 coherent snapshots, and load generation-qualified definitions and protocols.
 
-Autocommit binding reads through its statement snapshot. Explicit transactions
-usually bind through an immutable catalog snapshot pinned before their data
-transaction. When a PIR program performs catalog work, later statements switch
-to the transaction-visible catalog so they can use changes made earlier in the
-same program.
+The standalone LIR read path binds against the same transaction view it later
+reads. PIR preflight binds against its rollback-only preflight transaction, then
+execution binds the program again against the execution transaction. When a PIR
+program performs catalog work, later statements bind against that same
+transaction-visible catalog and can use changes buffered by earlier statements.
 
 Bound plans do not depend on the whole revision or table document. They record
 the exact semantic fences used by table existence, decoded columns, selected

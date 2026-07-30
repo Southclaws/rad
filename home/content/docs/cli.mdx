@@ -1,0 +1,107 @@
+---
+title: CLI
+description: Commands and options provided by the Rad command-line tool.
+---
+
+Use the CLI to run Rad, apply `rad.schema.yaml`, and generate a typed client from the accepted schema.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `rad serve` | Run the Rad database server. |
+| `rad validate` | Validate a rad.schema.yaml file. |
+| `rad schema` | Inspect and manage the database schema. |
+| `rad schema status` | Compare server, accepted, desired, and generated schemas. |
+| `rad schema diff` | Show desired schema changes and data preflight findings. |
+| `rad schema migrate` | Apply rad.schema.yaml transactionally. |
+| `rad schema pull` | Recover the accepted schema from the database. |
+| `rad generate` | Generate a typed client for the accepted schema. |
+
+### `rad serve`
+
+Run the Rad database server.
+
+| Option | Purpose | Default | Environment |
+| --- | --- | --- | --- |
+| `--addr <value>` | HTTP server listen address. | `0.0.0.0:7237` | `RAD_ADDR` |
+| `--storage <memory\|file\|s3>` | Storage backend. Choices: memory, file, s3. | `file` | `RAD_STORAGE` |
+| `-d`, `--db <path>` | File storage directory. | `data` | `RAD_DATA_DIR` |
+| `--storage-path <value>` | Logical SlateDB path within the selected backend. | `rad` | `RAD_STORAGE_PATH` |
+| `--catalog-mode <direct\|schema>` | Catalog mode for a fresh database; immutable after initialization. Choices: direct, schema. |  | `RAD_CATALOG_MODE` |
+| `--s3-bucket <value>` | S3 bucket used by the s3 storage backend. |  | `RAD_S3_BUCKET` |
+| `--s3-prefix <value>` | S3 object prefix; defaults to --storage-path. |  | `RAD_S3_PREFIX` |
+| `--s3-region <value>` | S3 region. |  | `RAD_S3_REGION` |
+| `--s3-endpoint <value>` | Custom S3-compatible endpoint, such as RustFS. |  | `RAD_S3_ENDPOINT` |
+
+### `rad validate`
+
+Parse and validate the schema structure, types, and references locally without calling out to the remote database.
+
+| Option | Purpose | Default | Environment |
+| --- | --- | --- | --- |
+| `-f`, `--file <file>` | Desired schema file. | `rad.schema.yaml` |  |
+
+### `rad schema`
+
+Inspect and manage the database schema.
+
+| Subcommand | Purpose |
+| --- | --- |
+| `status` | Compare server, accepted, desired, and generated schemas. |
+| `diff` | Show desired schema changes and data preflight findings. |
+| `migrate` | Apply rad.schema.yaml transactionally. |
+| `pull` | Recover the accepted schema from the database. |
+
+| Option | Purpose | Default | Environment |
+| --- | --- | --- | --- |
+| `--config <file>` | Project configuration file. | `rad.config.yaml` |  |
+| `-f`, `--file <file>` | Desired schema file. | `rad.schema.yaml` |  |
+
+#### `rad schema status`
+
+Compare server, accepted, desired, and generated schemas.
+
+#### `rad schema diff`
+
+Show desired schema changes and data preflight findings.
+
+| Option | Purpose | Default | Environment |
+| --- | --- | --- | --- |
+| `--format <text\|json>` | Output format. Choices: text, json. | `text` |  |
+
+#### `rad schema migrate`
+
+Apply rad.schema.yaml transactionally.
+
+| Option | Purpose | Default | Environment |
+| --- | --- | --- | --- |
+| `--accept-data-loss` | Permit explicitly reported destructive changes. |  |  |
+| `--no-generate` | Do not regenerate configured clients. |  |  |
+
+#### `rad schema pull`
+
+Recover the accepted schema from the database.
+
+| Option | Purpose | Default | Environment |
+| --- | --- | --- | --- |
+| `--force` | Back up and replace a locally modified schema. |  |  |
+| `--no-generate` | Do not regenerate configured clients. |  |  |
+
+### `rad generate`
+
+Generate a typed client for the accepted schema.
+
+| Option | Purpose | Default | Environment |
+| --- | --- | --- | --- |
+| `-f`, `--file <file>` | Desired schema file. | `rad.schema.yaml` |  |
+| `-o`, `--out <path>` | Output directory. | `generated` |  |
+| `--pkg <value>` | Generated package or client name. | `db` |  |
+| `--lang <go>` | Client language. Choices: go. | `go` |  |
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | OK: The command completed successfully. |
+| `1` | Error: The command could not complete. |

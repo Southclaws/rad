@@ -1,0 +1,16 @@
+---
+title: Queries
+description: Typed application queries without building SQL strings.
+---
+
+Application code uses a generated client to filter, order, join, include,
+create, update, and delete data.
+
+The client sends a structured query to Rad. Rad checks it against the current
+schema, chooses how to access the data, and returns the shape requested by the
+client. An include can therefore return related records as nested objects
+without rebuilding a flat join result in application code.
+
+The structured query contract is called LIR. Most application developers do
+not need to write it directly. Read the [LIR reference](/docs/reference/lir)
+when building tooling or working on the query engine.

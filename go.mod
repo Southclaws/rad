@@ -2,7 +2,10 @@ module github.com/Southclaws/rad
 
 go 1.26.2
 
-require github.com/goccy/go-yaml v1.19.2
+require (
+	github.com/goccy/go-yaml v1.19.2
+	github.com/ogen-go/ogen v1.22.0
+)
 
 require (
 	github.com/dlclark/regexp2 v1.12.0 // indirect
@@ -16,7 +19,6 @@ require (
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
-	github.com/ogen-go/ogen v1.22.0 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect

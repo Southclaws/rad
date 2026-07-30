@@ -63,25 +63,21 @@ historical snapshot, or tell SlateDB to retain and later release one. Schema
 transitions record positions as provenance and barriers; workers do not use
 them as read-at-position handles.
 
-## Catalog pinning and data snapshots
+## Execution snapshots
 
-An autocommit query binds and reads through one statement-scoped SlateDB
-snapshot.
+The standalone LIR read path begins one `Snapshot` transaction, then binds,
+plans, admits catalog dependencies, and reads through that transaction's stable
+view. It rolls the transaction back when the result is complete because there
+are no writes to publish.
 
-An explicit engine transaction needs a slightly different sequence:
+PIR execution has two storage phases. Preflight runs against a
+`SerializableSnapshot` transaction and rolls it back. Execution then binds the
+program again against a fresh transaction. A read-only program uses `Snapshot`
+and rolls back after producing its result. A program containing any data or
+catalog effect uses `SerializableSnapshot` and commits the complete program.
 
-```text
-read and materialise one coherent catalog snapshot
-  -> close the catalog snapshot transaction
-  -> begin the data transaction
-  -> admit exact catalog compatibility fences
-  -> execute and commit
-```
-
-Fence admission closes the gap between catalog pinning and data-snapshot
-creation. Serializable conflict detection closes the later gap between fence
-admission and commit. Rad does not claim that the separate catalog pin and data
-transaction began at one SlateDB sequence number.
+Catalog dependency admission happens inside the execution transaction. The
+admitted fence reads remain part of SlateDB's conflict set through commit.
 
 ## SlateDB adapter
 

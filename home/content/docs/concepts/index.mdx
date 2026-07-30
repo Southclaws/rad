@@ -1,0 +1,29 @@
+---
+title: How Rad fits together
+description: The few ideas worth knowing before you build with Rad.
+---
+
+Rad starts with your application's data model and keeps the database and
+generated client aligned with it.
+
+## The normal loop
+
+```text
+rad.schema.yaml
+  -> rad schema migrate
+  -> generated client
+  -> application
+```
+
+You edit the schema, review the change, migrate the database, then use the
+updated client. The database checks that a generated client belongs to the
+schema version it connects to.
+
+## Keep going
+
+- [Schemas and clients](/docs/concepts/schemas-and-clients) covers the files in
+  a Rad project.
+- [Queries](/docs/concepts/queries) explains how application code asks for
+  data.
+- [Transactions](/docs/concepts/transactions) explains what Rad commits as one
+  unit.

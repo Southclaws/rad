@@ -22,13 +22,11 @@ Planning does not execute storage operations or change query meaning.
 
 ## Binding against a coherent catalog
 
-Binding can read from:
-
-- the statement snapshot for autocommit queries;
-- a transaction's immutable pinned catalog for ordinary explicit-transaction
-  statements;
-- the transaction-visible catalog after earlier catalog statements in the same
-  PIR program.
+Binding reads the catalog through the KV view supplied by its execution phase.
+The standalone LIR read path binds against its rollback-only `Snapshot`
+transaction. PIR binds once during preflight, then binds again during execution
+against the execution transaction. The latter view includes catalog changes
+buffered by earlier statements in the same program.
 
 Binding resolves names to stable logical and physical identities, assigns dense
 slots, checks expression types, proves cardinality requirements, and fixes the

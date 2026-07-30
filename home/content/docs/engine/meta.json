@@ -1,10 +1,15 @@
 {
+  "root": true,
   "title": "Engine",
+  "description": "Storage, catalog, planning, and execution inside Rad.",
   "pages": [
+    "index",
+    "---Storage and catalog---",
     "01-kv",
     "02-catalog",
     "catalog-mvcc",
     "03-lir",
+    "---Planning and execution---",
     "04-planner",
     "05-exec"
   ]

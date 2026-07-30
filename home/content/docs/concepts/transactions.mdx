@@ -1,0 +1,18 @@
+---
+title: Transactions
+description: What Rad reads, writes, and commits as one unit.
+---
+
+A Rad transaction sees one coherent database snapshot. Its reads do not drift
+between statements because another request committed halfway through.
+
+A client can send several ordered operations as one program. Later operations
+can use earlier results, and catalog changes are visible to later operations in
+the same program. Rad commits the complete program or none of it.
+
+Conflicting work can fail with a retryable conflict. The client must decide
+whether it is safe to run the complete operation again.
+
+The wire contract for these programs is
+[PIR](/docs/reference/pir). Most generated-client calls create a program for
+you.

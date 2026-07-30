@@ -41,7 +41,7 @@ pub enum ServeStorage {
 #[command(
     name = r"rad",
     version = r"0.1.0",
-    about = r"An ORM-native relational database on an ordered KV store."
+    about = r"The radically different database."
 )]
 pub struct Cli {
     #[command(flatten)]

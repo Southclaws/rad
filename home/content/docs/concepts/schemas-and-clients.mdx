@@ -1,0 +1,18 @@
+---
+title: Schemas and clients
+description: One data model for migrations and application code.
+---
+
+`rad.schema.yaml` describes the tables, columns, relationships, indexes, and
+defaults your application expects.
+
+`rad schema migrate` compares that file with the running database. It reports
+the change before applying it, waits for any required background work, then
+generates the configured application client.
+
+The generated client contains models and query builders for the accepted
+schema. If the database and client disagree about the schema version, the
+client refuses to carry on and asks you to migrate or regenerate it.
+
+See [Schemas in Rad](/docs/schemas) for the file format and
+[Manage a schema](/docs/schemas/manage) for the complete workflow.

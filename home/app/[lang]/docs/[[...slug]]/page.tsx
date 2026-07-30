@@ -3,9 +3,10 @@ import { isDocsLocale } from "@/lib/i18n";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import {
   LIRPipeline,
+  LIRFrontendDiagram,
   KeyLayoutDiagram,
   AccessPathDiagram,
   IndexScanDiagram,
@@ -48,8 +49,18 @@ function Callout({
   );
 }
 
+function DocTable(props: ComponentProps<"table">) {
+  return (
+    <div className="doc__tablewrap">
+      <table {...props} />
+    </div>
+  );
+}
+
 const mdxComponents = {
   Callout,
+  table: DocTable,
+  LIRFrontendDiagram,
   LIRPipeline,
   KeyLayoutDiagram,
   AccessPathDiagram,
@@ -68,7 +79,7 @@ export default async function Page({
   if (!page) notFound();
 
   const MDX = page.data.body;
-  const toc = page.data.toc ?? [];
+  const toc = (page.data.toc ?? []).filter((item) => item.depth <= 3);
   const isFrench = lang === "fr";
 
   return (

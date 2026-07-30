@@ -1,9 +1,15 @@
 {
-  "title": "Docs",
+  "title": "Introduction",
+  "description": "Get Rad running and learn the application workflow.",
   "pages": [
+    "---Start here---",
     "index",
+    "---Concepts---",
+    "concepts",
     "schemas",
-    "lir",
+    "---Tools---",
+    "cli",
+    "reference",
     "engine"
   ]
 }

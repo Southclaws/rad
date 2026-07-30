@@ -1,16 +1,14 @@
-// Copies Rad's canonical JSON Schemas into public/ so their $id URLs resolve
-// to the real documents on the deployed site:
+// Copies Rad's generated protocol schemas into public/ so their $id URLs
+// resolve to the real documents on the deployed site:
 //
-//   https://www.radengine.dev/rad.schema.json  -> the rad.schema.yaml table format
 //   https://www.radengine.dev/schema/lir.json  -> the query IR
 //   https://www.radengine.dev/schema/pir.json  -> the program IR
 //
-// The canonical copies live under the Go module's rad/ tree, which is the
-// single source of truth. This runs before the build to refresh the served
-// copies. On Vercel the module source may live outside the build root, so a
-// missing source is not an error: the committed copy in public/ is used as is.
-// Run it locally (or in CI, where the whole repo is present) to keep them
-// fresh, and commit the result.
+// protocol/*.schema.yaml is the authored source of truth. `task
+// generate:protocol` produces the JSON used by clients and the website. This
+// build step keeps the public copies aligned when the complete repository is
+// available. A deployment from the home directory alone uses the committed
+// public copies.
 
 import { mkdirSync, copyFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -22,15 +20,11 @@ const publicDir = join(here, "..", "public");
 
 const schemas = [
   {
-    src: join(repo, "rad", "engine", "02_catalog", "schema", "radschema.json"),
-    dst: join(publicDir, "rad.schema.json"),
-  },
-  {
-    src: join(repo, "rad", "protocol", "lir.schema.json"),
+    src: join(repo, "clients", "go", "protocol", "lir.schema.json"),
     dst: join(publicDir, "schema", "lir.json"),
   },
   {
-    src: join(repo, "rad", "protocol", "pir.schema.json"),
+    src: join(repo, "clients", "go", "protocol", "pir.schema.json"),
     dst: join(publicDir, "schema", "pir.json"),
   },
 ];

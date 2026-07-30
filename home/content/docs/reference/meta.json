@@ -1,0 +1,15 @@
+{
+  "root": true,
+  "title": "Reference",
+  "description": "The machine contracts and exact behaviour exposed by Rad.",
+  "pages": [
+    "index",
+    "---Query language---",
+    "lir",
+    "pir",
+    "lir-schema",
+    "pir-schema",
+    "---HTTP---",
+    "http-api"
+  ]
+}
