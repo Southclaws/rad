@@ -1,3 +1,5 @@
+![The Rad wordmark](home/public/rad-wordmark-wide.png)
+
 # Rad
 
 Rad is a new relational database built around developer experience and a single cohesive toolchain.
