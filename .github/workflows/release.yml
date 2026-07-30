@@ -59,27 +59,27 @@ jobs:
         include:
           - runner: ubuntu-24.04
             platform: linux
-            arch: x86_64
+            arch: amd64
             extension: ""
           - runner: ubuntu-24.04-arm
             platform: linux
-            arch: aarch64
+            arch: arm64
             extension: ""
           - runner: macos-15-intel
-            platform: macos
-            arch: x86_64
+            platform: darwin
+            arch: amd64
             extension: ""
           - runner: macos-15
-            platform: macos
-            arch: aarch64
+            platform: darwin
+            arch: arm64
             extension: ""
           - runner: windows-2025
             platform: windows
-            arch: x86_64
+            arch: amd64
             extension: .exe
           - runner: windows-11-arm
             platform: windows
-            arch: aarch64
+            arch: arm64
             extension: .exe
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -142,10 +142,10 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-24.04
-            artifact_arch: x86_64
+            artifact_arch: amd64
             platform: linux/amd64
           - runner: ubuntu-24.04-arm
-            artifact_arch: aarch64
+            artifact_arch: arm64
             platform: linux/arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
@@ -331,15 +331,66 @@ jobs:
           set -euo pipefail
           notes="Automated Rad dogfood/staging-alpha build from \`$RELEASE_SHA\`. Binary version: \`$VERSION\`. Six native OS/architecture artifacts and the \`ghcr.io/southclaws/rad:latest\` AMD64/ARM64 image were published only after the complete Rad CI matrix passed."
           if gh release view edge >/dev/null 2>&1; then
-            gh release upload edge dist/* --clobber
-            gh release edit edge \
-              --title "Rad edge ($VERSION)" \
-              --notes "$notes" \
-              --latest
-          else
-            gh release create edge dist/* \
-              --target "$RELEASE_SHA" \
-              --title "Rad edge ($VERSION)" \
-              --notes "$notes" \
-              --latest
+            gh release delete edge --cleanup-tag --yes
           fi
+          gh release create edge dist/* \
+            --target "$RELEASE_SHA" \
+            --title "Rad edge ($VERSION)" \
+            --notes "$notes" \
+            --latest
+
+  install-smoke:
+    name: install (${{ matrix.platform }}, ${{ matrix.arch }})
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+          - runner: macos-15-intel
+            platform: darwin
+            arch: amd64
+          - runner: macos-15
+            platform: darwin
+            arch: arm64
+          - runner: windows-2025
+            platform: windows
+            arch: amd64
+          - runner: windows-11-arm
+            platform: windows
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out tested installer
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install and execute published binary
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export RAD_VERSION=edge
+          export RAD_INSTALL="$RUNNER_TEMP/rad-install"
+          sh install/install.sh
+          "$RAD_INSTALL/bin/rad" --version
+
+      - name: Install and execute published binary
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:RAD_VERSION = "edge"
+          $env:RAD_INSTALL = Join-Path $env:RUNNER_TEMP "rad-install"
+          & ./install/install.ps1
+          & (Join-Path $env:RAD_INSTALL "rad.exe") --version
