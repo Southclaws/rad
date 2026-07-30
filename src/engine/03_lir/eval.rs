@@ -282,13 +282,20 @@ fn evaluate_arithmetic(
     if operation == BinaryOp::Div && right == 0.0 {
         return Err(EvalError::division_by_zero("exec: division by zero"));
     }
-    Ok(Value::Float64(match operation {
+    let value = match operation {
         BinaryOp::Add => left + right,
         BinaryOp::Sub => left - right,
         BinaryOp::Mul => left * right,
         BinaryOp::Div => left / right,
         _ => unreachable!("arithmetic operation"),
-    }))
+    };
+    if !value.is_finite() {
+        return Err(EvalError::numeric_overflow(format!(
+            "exec: float overflow: {left} {} {right}",
+            operation_name(operation)
+        )));
+    }
+    Ok(Value::Float64(value))
 }
 
 fn as_float(value: Value) -> Result<f64> {
@@ -839,6 +846,26 @@ mod tests {
             .unwrap_err();
             assert_eq!(error.kind(), EvalErrorKind::Runtime);
             assert_eq!(error.reason(), EvalErrorReason::DivisionByZero);
+        }
+    }
+
+    #[test]
+    fn float_arithmetic_rejects_non_finite_results() {
+        for (operation, left, right) in [
+            (BinaryOp::Add, f64::MAX, f64::MAX),
+            (BinaryOp::Mul, f64::MAX, 2.0),
+        ] {
+            let error = evaluate(
+                &Expr::binary(
+                    operation,
+                    literal(Value::Float64(left)),
+                    literal(Value::Float64(right)),
+                ),
+                &Env::new(),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), EvalErrorKind::Runtime);
+            assert_eq!(error.reason(), EvalErrorReason::NumericOverflow);
         }
     }
 

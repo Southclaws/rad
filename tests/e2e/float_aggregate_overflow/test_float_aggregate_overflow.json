@@ -1,0 +1,30 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "overflow",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "values": {
+              "kind": "rows",
+              "scope": "v",
+              "columns": [ { "name": "n", "type": "float64" } ],
+              "rows": [ ["1.7976931348623157e308"], ["1.7976931348623157e308"] ]
+            },
+            "aggregate": {
+              "kind": "aggregate",
+              "input": "values",
+              "scope": "a",
+              "aggs": [
+                { "fn": "sum", "as": "total", "arg": { "kind": "col", "scope": "v", "column": "n" } }
+              ]
+            }
+          },
+          "root": { "node": "aggregate", "cardinality": "exactly_one" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "execution_failed", "reason": "numeric_overflow", "contains": "non-finite float aggregate" }
+}

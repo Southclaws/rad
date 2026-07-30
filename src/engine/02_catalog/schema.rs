@@ -287,9 +287,11 @@ fn parse_default(
             result.int64 = value.as_i64().expect("checked")
         }
         Value::Number(value) if scalar_type == ScalarType::Float64 => {
-            result.float64 = value
+            let value = value
                 .as_f64()
-                .ok_or_else(|| "invalid float default".to_owned())?
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| "float default must be finite".to_owned())?;
+            result.float64 = value;
         }
         Value::Number(value) if value.as_i64().is_some() => {
             return Err(format!("integer default on {scalar_type:?} column").to_lowercase());
@@ -475,6 +477,17 @@ tables:
             let error = parse("test.rad", source.as_bytes()).unwrap_err();
             assert_eq!(error.kind(), ErrorKind::InvalidInput);
             assert!(error.to_string().contains("test.rad"));
+        }
+    }
+
+    #[test]
+    fn rejects_non_finite_float_defaults() {
+        for value in [".nan", ".inf", "-.inf"] {
+            let source = format!(
+                "tables: [{{id: 1, name: samples, columns: [{{id: 1, name: value, type: float64, default: {value}}}]}}]"
+            );
+            let error = parse("test.rad", source.as_bytes()).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::InvalidInput);
         }
     }
 

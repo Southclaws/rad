@@ -1,0 +1,38 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "overflow",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "values": {
+              "kind": "rows",
+              "scope": "v",
+              "columns": [ { "name": "n", "type": "float64" } ],
+              "rows": [ ["1.7976931348623157e308"] ]
+            },
+            "project": {
+              "kind": "project",
+              "input": "values",
+              "scope": "p",
+              "fields": [
+                {
+                  "as": "result",
+                  "expr": {
+                    "kind": "binary",
+                    "op": "mul",
+                    "left": { "kind": "col", "scope": "v", "column": "n" },
+                    "right": { "kind": "lit", "value": { "type": "float64", "value": "2" } }
+                  }
+                }
+              ]
+            }
+          },
+          "root": { "node": "project", "cardinality": "exactly_one" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "execution_failed", "reason": "numeric_overflow", "contains": "float overflow" }
+}

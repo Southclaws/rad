@@ -778,7 +778,7 @@ impl Accumulator {
                     .expect("aggregate output is scalar"),
             )
         };
-        Ok(match term.function {
+        let value = match term.function {
             AggregateFunction::Count => Value::Int64(self.count),
             AggregateFunction::Sum if self.values == 0 => null(),
             AggregateFunction::Sum if term.value_type.kind == Kind::Int64 => {
@@ -795,7 +795,15 @@ impl Accumulator {
             AggregateFunction::Average => Value::Float64(self.float_sum / self.values as f64),
             AggregateFunction::Min => self.minimum.unwrap_or_else(null),
             AggregateFunction::Max => self.maximum.unwrap_or_else(null),
-        })
+        };
+        if matches!(&value, Value::Float64(value) if !value.is_finite()) {
+            return Err(Error::with_reason(
+                ErrorKind::Runtime,
+                super::ErrorReason::NumericOverflow,
+                "exec: non-finite float aggregate result",
+            ));
+        }
+        Ok(value)
     }
 }
 
@@ -994,6 +1002,33 @@ mod tests {
     use crate::engine::planner::{PlanOptions, plan_query};
 
     use super::*;
+
+    fn aggregate_term(function: AggregateFunction, kind: Kind) -> bound::BoundAggregateTerm {
+        bound::BoundAggregateTerm {
+            function,
+            argument: None,
+            name: format!("{function:?}"),
+            slot: SlotId(0),
+            value_type: Type::scalar(kind, true),
+        }
+    }
+
+    #[test]
+    fn float_aggregates_reject_non_finite_results() {
+        for function in [AggregateFunction::Sum, AggregateFunction::Average] {
+            let mut accumulator = Accumulator::default();
+            for value in [f64::MAX, f64::MAX] {
+                accumulator
+                    .accumulate(function, Value::Float64(value))
+                    .unwrap();
+            }
+            let error = accumulator
+                .finish(&aggregate_term(function, Kind::Float64))
+                .unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Runtime);
+            assert_eq!(error.reason(), ErrorReason::NumericOverflow);
+        }
+    }
 
     fn table() -> Table {
         Table {

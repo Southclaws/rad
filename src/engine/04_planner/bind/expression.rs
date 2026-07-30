@@ -332,12 +332,19 @@ pub(super) fn coerce_literal(raw: RawScalar, wanted: &Type) -> Result<bound::Exp
             })?)
         }
         (RawScalar::Number(value), ScalarType::Float64) => {
-            Value::Float64(value.parse().map_err(|_| {
+            let float = value.parse::<f64>().map_err(|_| {
                 invalid(
                     Reason::TypeMismatch,
                     format!("planner: expected a float64 value, got {value:?}"),
                 )
-            })?)
+            })?;
+            if !float.is_finite() {
+                return Err(invalid(
+                    Reason::TypeMismatch,
+                    format!("planner: expected a finite float64 value, got {value:?}"),
+                ));
+            }
+            Value::Float64(float)
         }
         (raw, scalar_type) => {
             return Err(invalid(
@@ -382,7 +389,9 @@ fn infer_literal(raw: RawScalar) -> Result<Value> {
         RawScalar::Number(value) => {
             if let Ok(integer) = value.parse::<i64>() {
                 Ok(Value::Int64(integer))
-            } else if let Ok(float) = value.parse::<f64>() {
+            } else if let Ok(float) = value.parse::<f64>()
+                && float.is_finite()
+            {
                 Ok(Value::Float64(float))
             } else {
                 Err(invalid(
@@ -466,5 +475,20 @@ mod tests {
                 .to_string()
                 .contains("expected a int64 value, got string")
         );
+    }
+
+    #[test]
+    fn non_finite_float_literals_are_rejected() {
+        for value in ["NaN", "inf", "-inf"] {
+            let typed = coerce_literal(
+                RawScalar::Number(value.to_owned()),
+                &Type::scalar(Kind::Float64, false),
+            )
+            .unwrap_err();
+            assert_eq!(typed.reason(), Reason::TypeMismatch);
+
+            let inferred = infer_literal(RawScalar::Number(value.to_owned())).unwrap_err();
+            assert_eq!(inferred.reason(), Reason::TypeMismatch);
+        }
     }
 }

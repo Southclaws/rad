@@ -53,9 +53,18 @@ pub fn encode_value(value: &Value) -> Result<Vec<u8>> {
         Value::Null(_) => key_encoding::encode_null().to_vec(),
         Value::Text(value) => key_encoding::encode_text(value),
         Value::Int64(value) => key_encoding::encode_i64(*value).to_vec(),
-        Value::Float64(value) => key_encoding::encode_f64(if *value == 0.0 { 0.0 } else { *value })
-            .ok_or_else(|| Error::message(ErrorKind::Runtime, "exec: cannot encode NaN in a key"))?
-            .to_vec(),
+        Value::Float64(value) => {
+            if !value.is_finite() {
+                return Err(Error::with_reason(
+                    ErrorKind::Runtime,
+                    super::ErrorReason::NumericOverflow,
+                    "exec: cannot encode a non-finite float64 in a key",
+                ));
+            }
+            key_encoding::encode_f64(if *value == 0.0 { 0.0 } else { *value })
+                .expect("finite float64 has an ordered encoding")
+                .to_vec()
+        }
         Value::Bool(value) => key_encoding::encode_bool(*value).to_vec(),
     })
 }
@@ -128,7 +137,7 @@ pub fn decode_value(input: &[u8]) -> Result<(Value, usize)> {
                 !ordered
             };
             let value = f64::from_bits(raw);
-            if value.is_nan() || (value == 0.0 && value.is_sign_negative()) {
+            if !value.is_finite() || (value == 0.0 && value.is_sign_negative()) {
                 return Err(corrupt("exec: non-canonical float64 key value"));
             }
             Ok((Value::Float64(value), 9))
@@ -200,7 +209,7 @@ pub fn marshal_row(table: &Table, row: &Row) -> Result<Vec<u8>> {
             append_uvarint(&mut output, header | 1);
         } else {
             append_uvarint(&mut output, header);
-            let payload = encode_payload(value);
+            let payload = encode_payload(value)?;
             append_uvarint(&mut output, payload.len() as u64);
             output.extend_from_slice(&payload);
         }
@@ -318,7 +327,11 @@ pub fn set_column_value(raw: &[u8], column: &Column, value: &Value) -> Result<Ve
     let replacement = PhysicalField {
         id: target,
         is_null: value.is_null(),
-        payload: (!value.is_null()).then(|| encode_payload(value)),
+        payload: if value.is_null() {
+            None
+        } else {
+            Some(encode_payload(value)?)
+        },
     };
     match fields.binary_search_by_key(&target, |field| field.id) {
         Ok(position) => fields[position] = replacement,
@@ -380,6 +393,12 @@ pub fn convert_column_value(
         }
         return Ok(Value::Null(target.scalar_type));
     }
+    if matches!(value, Value::Float64(value) if !value.is_finite()) {
+        return Err(Error::message(
+            ErrorKind::ConstraintViolation,
+            "codec: cannot convert a non-finite float64",
+        ));
+    }
     if value.scalar_type() == target.scalar_type {
         return Ok(value.clone());
     }
@@ -405,13 +424,20 @@ pub fn convert_column_value(
             Value::Int64(*value as i64)
         }
         (Value::Text(value), ScalarType::Float64) => {
-            Value::Float64(value.parse().map_err(|error| {
+            let parsed = value.parse::<f64>().map_err(|error| {
                 Error::source(
                     ErrorKind::ConstraintViolation,
                     format!("codec: text {value:?} is not a float64"),
                     error,
                 )
-            })?)
+            })?;
+            if !parsed.is_finite() {
+                return Err(Error::message(
+                    ErrorKind::ConstraintViolation,
+                    format!("codec: text {value:?} is not a finite float64"),
+                ));
+            }
+            Value::Float64(parsed)
         }
         (Value::Int64(value), ScalarType::Float64)
             if (*value as f64) as i128 == i128::from(*value) =>
@@ -526,14 +552,21 @@ fn parse_physical_column_id(column_id: &ColumnId) -> Result<u64> {
         .ok_or_else(|| corrupt(format!("codec: malformed physical column ID {column_id:?}")))
 }
 
-fn encode_payload(value: &Value) -> Vec<u8> {
-    match value {
+fn encode_payload(value: &Value) -> Result<Vec<u8>> {
+    Ok(match value {
         Value::Text(value) => value.as_bytes().to_vec(),
         Value::Int64(value) => value.to_be_bytes().to_vec(),
-        Value::Float64(value) => value.to_bits().to_be_bytes().to_vec(),
+        Value::Float64(value) if value.is_finite() => value.to_bits().to_be_bytes().to_vec(),
+        Value::Float64(_) => {
+            return Err(Error::with_reason(
+                ErrorKind::Runtime,
+                super::ErrorReason::NumericOverflow,
+                "exec: cannot store a non-finite float64",
+            ));
+        }
         Value::Bool(value) => vec![u8::from(*value)],
         Value::Null(_) => unreachable!("null payloads have no body"),
-    }
+    })
 }
 
 fn decode_payload(value_type: ScalarType, payload: &[u8]) -> Result<Value> {
@@ -546,9 +579,15 @@ fn decode_payload(value_type: ScalarType, payload: &[u8]) -> Result<Value> {
         ScalarType::Int64 if payload.len() == 8 => Ok(Value::Int64(i64::from_be_bytes(
             payload.try_into().expect("length checked"),
         ))),
-        ScalarType::Float64 if payload.len() == 8 => Ok(Value::Float64(f64::from_bits(
-            u64::from_be_bytes(payload.try_into().expect("length checked")),
-        ))),
+        ScalarType::Float64 if payload.len() == 8 => {
+            let value = f64::from_bits(u64::from_be_bytes(
+                payload.try_into().expect("length checked"),
+            ));
+            if !value.is_finite() {
+                return Err(corrupt("codec: non-finite float64 payload"));
+            }
+            Ok(Value::Float64(value))
+        }
         ScalarType::Bool if payload == [0] => Ok(Value::Bool(false)),
         ScalarType::Bool if payload == [1] => Ok(Value::Bool(true)),
         _ => Err(corrupt(format!(
@@ -720,24 +759,23 @@ mod tests {
     }
 
     #[test]
-    fn row_codec_preserves_nan_payload_bits() {
+    fn row_codec_rejects_non_finite_values() {
         let table = table(vec![column("c4", 4, "score", ScalarType::Float64)]);
-        let expected_bits = 0xffff_98e7_0052_0108;
-        let row = Row::from([(
-            "score".into(),
-            Value::Float64(f64::from_bits(expected_bits)),
-        )]);
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let row = Row::from([("score".into(), Value::Float64(value))]);
+            assert!(marshal_row(&table, &row).is_err());
 
-        let encoded = marshal_row(&table, &row).unwrap();
-        let decoded = unmarshal_row(&table, &encoded).unwrap();
-        let Value::Float64(actual) = decoded["score"] else {
-            panic!("float64 column decoded as a different value type");
-        };
-        assert_eq!(actual.to_bits(), expected_bits);
+            let mut raw = vec![ROW_CANARY, 1, 8, 8];
+            raw.extend_from_slice(&value.to_bits().to_be_bytes());
+            assert_eq!(
+                unmarshal_row(&table, &raw).unwrap_err().kind(),
+                ErrorKind::CorruptData
+            );
+        }
     }
 
     #[test]
-    fn tuple_codec_round_trips_ordered_primitives_and_rejects_nan() {
+    fn tuple_codec_round_trips_ordered_primitives_and_rejects_non_finite_floats() {
         let values = vec![
             Value::Null(ScalarType::Int64),
             Value::Bool(true),
@@ -749,7 +787,9 @@ mod tests {
         let decoded = decode_tuple(&encoded).unwrap();
         assert!(decoded[0].is_null());
         assert_eq!(&decoded[1..], &values[1..]);
-        assert!(encode_value(&Value::Float64(f64::NAN)).is_err());
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(encode_value(&Value::Float64(value)).is_err());
+        }
         assert!(encode_value(&Value::Int64(-1)).unwrap() < encode_value(&Value::Int64(0)).unwrap());
         assert_eq!(
             encode_value(&Value::Float64(-0.0)).unwrap(),
@@ -809,7 +849,7 @@ mod tests {
 
             let left = Value::Float64(f64::from_bits(splitmix64(&mut state)));
             let right = Value::Float64(f64::from_bits(splitmix64(&mut state)));
-            if !matches!((&left, &right), (Value::Float64(left), Value::Float64(right)) if left.is_nan() || right.is_nan())
+            if !matches!((&left, &right), (Value::Float64(left), Value::Float64(right)) if !left.is_finite() || !right.is_finite())
             {
                 assert_key_order(&left, &right);
                 assert_key_round_trip(&left);
@@ -827,13 +867,11 @@ mod tests {
             ],
             vec![Value::Bool(false), Value::Bool(true)],
             vec![
-                Value::Float64(f64::NEG_INFINITY),
                 Value::Float64(-f64::MAX),
                 Value::Float64(-0.0),
                 Value::Float64(0.0),
                 Value::Float64(f64::MIN_POSITIVE),
                 Value::Float64(f64::MAX),
-                Value::Float64(f64::INFINITY),
             ],
         ] {
             for left in &values {
@@ -994,6 +1032,9 @@ mod tests {
 
         for (input, target) in [
             (Value::Text("1,000".into()), &int),
+            (Value::Text("NaN".into()), &float),
+            (Value::Text("inf".into()), &float),
+            (Value::Float64(f64::NAN), &float),
             (Value::Float64(1.5), &int),
             (Value::Float64(f64::NAN), &int),
             (Value::Int64((1_i64 << 53) + 1), &float),

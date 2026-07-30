@@ -1,0 +1,22 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "invalid",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "values": {
+              "kind": "rows",
+              "scope": "v",
+              "columns": [ { "name": "n", "type": "float64" } ],
+              "rows": [ ["NaN"] ]
+            }
+          },
+          "root": { "node": "values", "cardinality": "exactly_one" }
+        }
+      }
+    ]
+  },
+  "error": { "code": "invalid", "reason": "type_mismatch", "contains": "finite float64" }
+}
