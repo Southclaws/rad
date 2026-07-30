@@ -318,7 +318,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum rad-* > SHA256SUMS
+          sha256sum rad-*.tar.gz rad-*.zip > SHA256SUMS
           cat SHA256SUMS
 
       - name: Publish moving edge release
@@ -333,7 +333,18 @@ jobs:
           if gh release view edge >/dev/null 2>&1; then
             gh release delete edge --cleanup-tag --yes
           fi
-          gh release create edge dist/* \
+          set -- dist/rad-*.tar.gz dist/rad-*.zip
+          if [ "$#" -ne 6 ]; then
+            echo "expected six release archives, found $#" >&2
+            exit 1
+          fi
+          for asset in "$@"; do
+            if [ ! -s "$asset" ]; then
+              echo "release archive is missing or empty: $asset" >&2
+              exit 1
+            fi
+          done
+          gh release create edge "$@" dist/SHA256SUMS \
             --target "$RELEASE_SHA" \
             --title "Rad edge ($VERSION)" \
             --notes "$notes" \
