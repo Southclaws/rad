@@ -136,7 +136,7 @@ impl Mutation<'_> {
                 transition.base_position = DataPosition::new(position.as_str());
             }
         }
-        store::save_transition(self.view, &transition).await?;
+        store::create_transition(self.view, &transition).await?;
         self.mark_catalog_changed();
         Ok(transition)
     }

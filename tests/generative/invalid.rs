@@ -32,7 +32,7 @@ pub fn variants(case: &Case) -> Vec<Variant> {
         .clone();
     let scope = "valid";
 
-    vec![
+    let mut variants = vec![
         Variant {
             name: "unknown table",
             query: query(ordered(scan("__missing_table__", scope))),
@@ -111,7 +111,127 @@ pub fn variants(case: &Case) -> Vec<Variant> {
             },
             reason: ErrorReason::ScalarArity,
         },
-    ]
+    ];
+
+    variants.extend([
+        Variant {
+            name: "empty scope",
+            query: query(Relation::Scan {
+                table: table_name.clone(),
+                scope: String::new(),
+            }),
+            reason: ErrorReason::Invalid,
+        },
+        Variant {
+            name: "dependent join",
+            query: query(ordered(Relation::Join {
+                left: Box::new(scan(&table_name, "left")),
+                right: Box::new(Relation::Filter {
+                    input: Box::new(scan(&table_name, "right")),
+                    predicate: equality(
+                        column("right", &primary_key),
+                        column("left", &primary_key),
+                    ),
+                }),
+                kind: JoinKind::Inner,
+                on: boolean(true),
+            })),
+            reason: ErrorReason::DependentJoin,
+        },
+        Variant {
+            name: "binding cycle",
+            query: Query {
+                root: scan(&table_name, "root"),
+                cardinality: RootCardinality::ExactlyOne,
+                bindings: HashMap::from([
+                    (
+                        "a".into(),
+                        Relation::Ref {
+                            binding: "b".into(),
+                            scope: "a".into(),
+                        },
+                    ),
+                    (
+                        "b".into(),
+                        Relation::Ref {
+                            binding: "a".into(),
+                            scope: "b".into(),
+                        },
+                    ),
+                ]),
+            },
+            reason: ErrorReason::BindingCycle,
+        },
+        Variant {
+            name: "binding output collision",
+            query: query_with_binding(
+                Relation::Join {
+                    left: Box::new(scan(&table_name, "first")),
+                    right: Box::new(scan(&table_name, "second")),
+                    kind: JoinKind::Inner,
+                    on: boolean(true),
+                },
+                ordered(Relation::Ref {
+                    binding: "bound".into(),
+                    scope: "output".into(),
+                }),
+            ),
+            reason: ErrorReason::BindingOutputCollision,
+        },
+        Variant {
+            name: "crossing in branch",
+            query: query(ordered(Relation::Project {
+                input: Box::new(scan(&table_name, scope)),
+                scope: Some("projected".into()),
+                spread: Vec::new(),
+                fields: vec![ProjectField {
+                    name: "value".into(),
+                    expression: Expr::Branch {
+                        arms: vec![rad::engine::lir::BranchArm {
+                            when: boolean(true),
+                            then: Expr::Exists(Box::new(single_text_row("inner", "value"))),
+                        }],
+                        otherwise: Box::new(boolean(false)),
+                    },
+                }],
+            })),
+            reason: ErrorReason::Invalid,
+        },
+        Variant {
+            name: "recursive step without recursive ref",
+            query: recursive_query(single_text_row("step", "id")),
+            reason: ErrorReason::Invalid,
+        },
+        Variant {
+            name: "recursive ref in non-monotone slice",
+            query: recursive_query(Relation::Slice {
+                input: Box::new(recursive_ref("walk", "current")),
+                offset: 0,
+                limit: Some(1),
+            }),
+            reason: ErrorReason::Invalid,
+        },
+        Variant {
+            name: "recursive ref names another binding",
+            query: recursive_query(recursive_ref("other", "current")),
+            reason: ErrorReason::UnknownBinding,
+        },
+        Variant {
+            name: "recursive step shape mismatch",
+            query: recursive_query(Relation::Project {
+                input: Box::new(recursive_ref("walk", "current")),
+                scope: Some("step".into()),
+                spread: Vec::new(),
+                fields: vec![ProjectField {
+                    name: "other".into(),
+                    expression: column("current", "id"),
+                }],
+            }),
+            reason: ErrorReason::TypeMismatch,
+        },
+    ]);
+
+    variants
 }
 
 fn query(root: Relation) -> Query {
@@ -119,6 +239,51 @@ fn query(root: Relation) -> Query {
         root,
         cardinality: RootCardinality::Many,
         bindings: HashMap::new(),
+    }
+}
+
+fn query_with_binding(binding: Relation, root: Relation) -> Query {
+    Query {
+        root,
+        cardinality: RootCardinality::Many,
+        bindings: HashMap::from([("bound".into(), binding)]),
+    }
+}
+
+fn recursive_query(step: Relation) -> Query {
+    Query {
+        root: ordered(Relation::Ref {
+            binding: "walk".into(),
+            scope: "result".into(),
+        }),
+        cardinality: RootCardinality::Many,
+        bindings: HashMap::from([(
+            "walk".into(),
+            Relation::Recursive {
+                anchor: Box::new(single_text_row("anchor", "id")),
+                step: Box::new(step),
+                accumulation: rad::engine::lir::RecursiveAccumulation::New,
+            },
+        )]),
+    }
+}
+
+fn recursive_ref(binding: &str, scope: &str) -> Relation {
+    Relation::RecursiveRef {
+        binding: binding.into(),
+        scope: scope.into(),
+    }
+}
+
+fn single_text_row(scope: &str, column: &str) -> Relation {
+    Relation::Rows {
+        scope: scope.into(),
+        columns: vec![rad::engine::lir::RowsColumn {
+            name: column.into(),
+            kind: Kind::Text,
+            nullable: false,
+        }],
+        values: vec![vec![RawScalar::Text("seed".into())]],
     }
 }
 

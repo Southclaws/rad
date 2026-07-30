@@ -279,3 +279,107 @@ fn lowering_preserves_non_null_numeric_literal_types() {
     };
     assert_eq!(literal.kind, Some(crate::engine::lir::Kind::Float64));
 }
+
+#[test]
+fn lowering_rejection_reasons_are_stable() {
+    use crate::engine::exec::ErrorReason;
+
+    let cases = [
+        (
+            "missing root reference",
+            r#"{"nodes":{},"root":{"node":"","cardinality":"many"}}"#,
+            ErrorReason::SchemaViolation,
+            "missing node reference",
+        ),
+        (
+            "unknown root node",
+            r#"{"nodes":{},"root":{"node":"missing","cardinality":"many"}}"#,
+            ErrorReason::UnknownNode,
+            "unknown node",
+        ),
+        (
+            "node cycle",
+            r#"{"nodes":{"a":{"kind":"filter","input":"b","predicate":{"kind":"lit","value":{"type":"bool","value":true}}},"b":{"kind":"filter","input":"a","predicate":{"kind":"lit","value":{"type":"bool","value":true}}}},"root":{"node":"a","cardinality":"many"}}"#,
+            ErrorReason::NodeCycle,
+            "part of a cycle",
+        ),
+        (
+            "unreachable node",
+            r#"{"nodes":{"root":{"kind":"scan","table":"tasks","scope":"root"},"orphan":{"kind":"scan","table":"tasks","scope":"orphan"}},"root":{"node":"root","cardinality":"many"}}"#,
+            ErrorReason::UnreachableNode,
+            "unreachable node definitions",
+        ),
+        (
+            "row arity",
+            r#"{"nodes":{"r":{"kind":"rows","scope":"r","columns":[{"name":"a","type":"text"},{"name":"b","type":"text"}],"rows":[["one"]]}},"root":{"node":"r","cardinality":"many"}}"#,
+            ErrorReason::SchemaViolation,
+            "has 1 cells, want 2",
+        ),
+        (
+            "invalid bool cell",
+            r#"{"nodes":{"r":{"kind":"rows","scope":"r","columns":[{"name":"ready","type":"bool"}],"rows":[["yes"]]}},"root":{"node":"r","cardinality":"many"}}"#,
+            ErrorReason::SchemaViolation,
+            "invalid bool payload",
+        ),
+        (
+            "negative slice offset",
+            r#"{"nodes":{"s":{"kind":"scan","table":"tasks","scope":"s"},"p":{"kind":"slice","input":"s","offset":-1}},"root":{"node":"p","cardinality":"many"}}"#,
+            ErrorReason::SchemaViolation,
+            "slice offset must be non-negative",
+        ),
+    ];
+
+    for (name, raw, reason, detail) in cases {
+        let wire = serde_json::from_str::<lir::Query>(raw)
+            .unwrap_or_else(|error| panic!("case {name} did not reach lowering: {error}"));
+        let error = match super::lower_lir(wire) {
+            Ok(_) => panic!("case {name} unexpectedly lowered"),
+            Err(error) => error,
+        };
+        assert_eq!(error.reason(), reason, "case {name}: {error}");
+        assert!(error.to_string().contains(detail), "case {name}: {error}");
+    }
+}
+
+#[test]
+fn pir_lowering_rejects_invalid_embedded_contracts_by_reason() {
+    use crate::engine::exec::ErrorReason;
+
+    let cases = [
+        (
+            "invalid embedded LIR",
+            r#"{"statements":[{"kind":"query","name":"q","relation":{"nodes":{},"root":{"node":"","cardinality":"many"}}}]}"#,
+            "missing node reference",
+        ),
+        (
+            "zero schema ID",
+            r#"{"statements":[{"kind":"rename_table","name":"rename","table_id":0,"to":"renamed"}]}"#,
+            "schema ID",
+        ),
+        (
+            "unsupported constraint kind",
+            r#"{"statements":[{"kind":"start_constraint_validation","name":"validate","table_id":1,"constraint":{"name":"check","kind":"check","column_id":1}}]}"#,
+            "unsupported constraint kind",
+        ),
+        (
+            "non-scalar literal default",
+            r#"{"statements":[{"kind":"change_column_default","name":"default","table_id":1,"column_id":1,"default":{"kind":"literal","value":{"nested":true}}}]}"#,
+            "literal default must be a non-null scalar",
+        ),
+    ];
+
+    for (name, raw, detail) in cases {
+        let wire = serde_json::from_str::<pir::Program>(raw)
+            .unwrap_or_else(|error| panic!("case {name} did not reach lowering: {error}"));
+        let error = match super::lower_pir(wire) {
+            Ok(_) => panic!("case {name} unexpectedly lowered"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.reason(),
+            ErrorReason::SchemaViolation,
+            "case {name}: {error}"
+        );
+        assert!(error.to_string().contains(detail), "case {name}: {error}");
+    }
+}

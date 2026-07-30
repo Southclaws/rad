@@ -95,24 +95,7 @@ impl Mutation<'_> {
         .await
     }
 
-    pub async fn start_index_build_with_limits(
-        &mut self,
-        table_id: SchemaId,
-        definition: IndexDef,
-        soft_limit: u64,
-        hard_limit: u64,
-    ) -> Result<SchemaTransition> {
-        self.start_index_build_with_limits_and_prerequisites(
-            table_id,
-            definition,
-            Vec::new(),
-            soft_limit,
-            hard_limit,
-        )
-        .await
-    }
-
-    pub async fn start_index_build_with_limits_and_prerequisites(
+    async fn start_index_build_with_limits_and_prerequisites(
         &mut self,
         table_id: SchemaId,
         definition: IndexDef,
@@ -217,7 +200,7 @@ impl Mutation<'_> {
                 transition.base_position = DataPosition::new(position.as_str());
             }
         }
-        store::save_transition(self.view, &transition).await?;
+        store::create_transition(self.view, &transition).await?;
         self.mark_catalog_changed();
         Ok(transition)
     }

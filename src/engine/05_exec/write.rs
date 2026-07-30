@@ -363,3 +363,6 @@ fn has_null(table: &Table, index: &Index, row: &Row) -> bool {
         .into_iter()
         .any(|column| row.get(column).is_none_or(Value::is_null))
 }
+
+#[cfg(test)]
+mod tests;

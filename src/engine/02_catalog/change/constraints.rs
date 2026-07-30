@@ -93,7 +93,7 @@ impl Mutation<'_> {
             updated_at: now,
             compacted_at: Timestamp::default(),
         };
-        store::save_transition(self.view, &transition).await?;
+        store::create_transition(self.view, &transition).await?;
         self.mark_catalog_changed();
         Ok(transition)
     }

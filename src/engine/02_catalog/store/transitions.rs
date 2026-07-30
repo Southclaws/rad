@@ -193,7 +193,20 @@ pub async fn save_transition<V: KvView + ?Sized>(
         Bytes::from(raw),
     )
     .await
-    .map_err(map_kv)?;
+    .map_err(map_kv)
+}
+
+/// Persist a newly admitted transition and mark transition history present.
+///
+/// Product callers perform this inside the catalog transaction so the marker
+/// and transition become visible atomically. Later checkpoints must use
+/// [`save_transition`] and therefore do not contend on the database-wide
+/// discovery marker.
+pub async fn create_transition<V: KvView + ?Sized>(
+    view: &mut V,
+    transition: &SchemaTransition,
+) -> Result<()> {
+    save_transition(view, transition).await?;
     view.put(
         Bytes::from_static(TRANSITION_WAKE_KEY),
         Bytes::from_static(&[1]),
@@ -338,6 +351,12 @@ pub async fn append_index_delta<V: KvView + ?Sized>(
     hard_limit: u64,
     mut delta: IndexDelta,
 ) -> Result<u64> {
+    // This counter intentionally serializes writers captured by one index
+    // build. Its order is the durable catch-up order: replacing it with an
+    // identifier allocated before commit could let the worker advance past a
+    // delta that becomes visible later. Keep the contention explicit until a
+    // replacement protocol supplies commit-ordered identities or rescans a
+    // safely fenced frontier.
     let key = delta_sequence_key(transition_id);
     let sequence = match view.get(&key).await.map_err(map_kv)? {
         Some(raw) => parse_u64_record("delta sequence", transition_id.as_str(), &raw)?,
@@ -643,7 +662,7 @@ mod tests {
         TransitionState, TransitionWorkState,
     };
     use crate::engine::kv::slatedb;
-    use crate::engine::kv::{Kv, TransactionalKv};
+    use crate::engine::kv::{IsolationLevel, Kv, TransactionView, TransactionalKv};
 
     use super::*;
 
@@ -742,7 +761,7 @@ mod tests {
             .await
             .unwrap();
         let value = transition("tr1");
-        save_transition(&mut database, &value).await.unwrap();
+        create_transition(&mut database, &value).await.unwrap();
         assert!(has_transition_history(&mut database).await.unwrap());
         assert_eq!(
             get_transition(&mut database, &value.id).await.unwrap(),
@@ -791,6 +810,70 @@ mod tests {
                 .unwrap_err()
                 .kind(),
             ErrorKind::CatalogCorrupt
+        );
+        database.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unrelated_transition_checkpoints_do_not_conflict() {
+        let mut database = slatedb::Store::memory("catalog-transition-independent-checkpoints")
+            .await
+            .unwrap();
+        let mut first = transition("tr1");
+        let mut second = transition("tr2");
+        create_transition(&mut database, &first).await.unwrap();
+        create_transition(&mut database, &second).await.unwrap();
+
+        let first_transaction = database.begin(IsolationLevel::Snapshot).await.unwrap();
+        let second_transaction = database.begin(IsolationLevel::Snapshot).await.unwrap();
+        first.generation = first.generation.next();
+        second.generation = second.generation.next();
+        {
+            let mut view = TransactionView(first_transaction.as_ref());
+            save_transition(&mut view, &first).await.unwrap();
+        }
+        {
+            let mut view = TransactionView(second_transaction.as_ref());
+            save_transition(&mut view, &second).await.unwrap();
+        }
+
+        first_transaction.commit().await.unwrap();
+        second_transaction.commit().await.unwrap();
+        database.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn transition_creation_does_not_conflict_with_an_unrelated_checkpoint() {
+        let mut database = slatedb::Store::memory("catalog-transition-create-checkpoint-race")
+            .await
+            .unwrap();
+        let mut checkpointed = transition("tr1");
+        create_transition(&mut database, &checkpointed)
+            .await
+            .unwrap();
+
+        let checkpoint_transaction = database.begin(IsolationLevel::Snapshot).await.unwrap();
+        let creation_transaction = database.begin(IsolationLevel::Snapshot).await.unwrap();
+        checkpointed.generation = checkpointed.generation.next();
+        {
+            let mut view = TransactionView(checkpoint_transaction.as_ref());
+            save_transition(&mut view, &checkpointed).await.unwrap();
+        }
+        {
+            let mut view = TransactionView(creation_transaction.as_ref());
+            create_transition(&mut view, &transition("tr2"))
+                .await
+                .unwrap();
+        }
+
+        checkpoint_transaction.commit().await.unwrap();
+        creation_transaction.commit().await.unwrap();
+        assert!(has_transition_history(&mut database).await.unwrap());
+        assert!(
+            get_transition(&mut database, &TransitionId::from("tr2"))
+                .await
+                .unwrap()
+                .is_some()
         );
         database.close().await.unwrap();
     }
@@ -948,6 +1031,55 @@ mod tests {
             .kind(),
             ErrorKind::CatalogCorrupt
         );
+        database.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn active_index_delta_counter_serializes_overlapping_writers_by_design() {
+        const WRITERS: usize = 8;
+
+        let mut database = slatedb::Store::memory("catalog-delta-writer-contention")
+            .await
+            .unwrap();
+        let id = TransitionId::from("tr1");
+        let mut transactions = Vec::with_capacity(WRITERS);
+        for writer in 0..WRITERS {
+            let transaction = database.begin(IsolationLevel::Snapshot).await.unwrap();
+            {
+                let mut view = TransactionView(transaction.as_ref());
+                let sequence = append_index_delta(
+                    &mut view,
+                    &id,
+                    0,
+                    IndexDelta {
+                        id: String::new(),
+                        sequence: 0,
+                        operation: IndexDeltaOperation::Put,
+                        pk: format!("pk-{writer}").into_bytes(),
+                        tuple: format!("tuple-{writer}").into_bytes(),
+                    },
+                )
+                .await
+                .unwrap();
+                assert_eq!(sequence, 1);
+            }
+            transactions.push(transaction);
+        }
+
+        let mut committed = 0;
+        let mut conflicts = 0;
+        for transaction in transactions {
+            match transaction.commit().await {
+                Ok(()) => committed += 1,
+                Err(error) if error.kind() == crate::engine::kv::ErrorKind::Conflict => {
+                    conflicts += 1;
+                }
+                Err(error) => panic!("unexpected delta writer failure: {error}"),
+            }
+        }
+        assert_eq!(committed, 1);
+        assert_eq!(conflicts, WRITERS - 1);
+        assert_eq!(delta_high_water(&mut database, &id).await.unwrap(), 1);
         database.close().await.unwrap();
     }
 

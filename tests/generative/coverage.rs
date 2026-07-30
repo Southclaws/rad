@@ -269,26 +269,38 @@ fn invalid_generator_reaches_each_declared_reason() {
     let case = Case::from_seed(0x696e_7661_6c69_642d);
     let reached = invalid::variants(&case)
         .into_iter()
-        .map(|variant| variant.reason)
+        .map(|variant| (variant.name, variant.reason))
         .collect::<Vec<_>>();
     let expected = [
-        ErrorReason::UnknownTable,
-        ErrorReason::UnknownColumn,
-        ErrorReason::UnknownScope,
-        ErrorReason::UnknownBinding,
-        ErrorReason::DuplicateScope,
-        ErrorReason::TypeMismatch,
-        ErrorReason::ProjectionCollision,
-        ErrorReason::NondeterministicOrder,
-        ErrorReason::ScalarArity,
+        ("unknown table", ErrorReason::UnknownTable),
+        ("unknown column", ErrorReason::UnknownColumn),
+        ("unknown scope", ErrorReason::UnknownScope),
+        ("unknown binding", ErrorReason::UnknownBinding),
+        ("duplicate scope", ErrorReason::DuplicateScope),
+        ("non-boolean predicate", ErrorReason::TypeMismatch),
+        ("projection collision", ErrorReason::ProjectionCollision),
+        (
+            "nondeterministic collection",
+            ErrorReason::NondeterministicOrder,
+        ),
+        ("scalar arity", ErrorReason::ScalarArity),
+        ("empty scope", ErrorReason::Invalid),
+        ("dependent join", ErrorReason::DependentJoin),
+        ("binding cycle", ErrorReason::BindingCycle),
+        (
+            "binding output collision",
+            ErrorReason::BindingOutputCollision,
+        ),
+        ("crossing in branch", ErrorReason::Invalid),
+        ("recursive step without recursive ref", ErrorReason::Invalid),
+        ("recursive ref in non-monotone slice", ErrorReason::Invalid),
+        (
+            "recursive ref names another binding",
+            ErrorReason::UnknownBinding,
+        ),
+        ("recursive step shape mismatch", ErrorReason::TypeMismatch),
     ];
-    assert_eq!(reached.len(), expected.len());
-    for reason in expected {
-        assert!(
-            reached.contains(&reason),
-            "invalid generator missed {reason:?}"
-        );
-    }
+    assert_eq!(reached, expected);
 }
 
 fn detailed_relation(value: &Relation, features: &mut BTreeSet<&'static str>) {

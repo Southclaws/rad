@@ -9,11 +9,26 @@ use tower::ServiceExt;
 use super::{router, router_with_location, serve};
 use crate::engine::catalog::model::Mode;
 use crate::engine::exec::Engine;
+use crate::engine::kv::fault::{FaultAction, FaultController, FaultRule, FaultingKv, Operation};
 use crate::engine::kv::slatedb::Store;
+use crate::engine::kv::{ErrorKind as KvErrorKind, TransactionalKv};
 
 async fn test_router(name: &str, mode: Mode) -> axum::Router {
     let store = Arc::new(Store::memory(name).await.unwrap());
     router(Arc::new(Engine::new(store)), mode)
+}
+
+async fn fault_router(name: &str, operation: Operation, kind: KvErrorKind) -> axum::Router {
+    let store: Arc<dyn TransactionalKv> = Arc::new(Store::memory(name).await.unwrap());
+    let faulting: Arc<dyn TransactionalKv> = Arc::new(FaultingKv::new(
+        store,
+        FaultController::new(vec![FaultRule {
+            operation,
+            occurrence: 1,
+            action: FaultAction::ErrorBefore(kind),
+        }]),
+    ));
+    router(Arc::new(Engine::new(faulting)), Mode::Direct)
 }
 
 fn post_json(uri: &str, body: Value) -> Request<Body> {
@@ -35,6 +50,40 @@ fn request(method: Method, uri: &str) -> Request<Body> {
         .uri(uri)
         .body(Body::empty())
         .unwrap()
+}
+
+fn one_row_program() -> Value {
+    json!({
+        "statements": [{
+            "kind": "query",
+            "name": "one",
+            "relation": {
+                "nodes": {
+                    "row": {
+                        "kind": "rows",
+                        "scope": "row",
+                        "columns": [{"name": "value", "type": "int64"}],
+                        "rows": [["1"]]
+                    }
+                },
+                "root": {"node": "row", "cardinality": "exactly_one"}
+            }
+        }]
+    })
+}
+
+fn create_table_program() -> Value {
+    json!({
+        "statements": [{
+            "kind": "create_table",
+            "name": "create_samples",
+            "table": {
+                "name": "samples",
+                "columns": [{"name": "id", "type": "int64"}],
+                "primary_key": ["id"]
+            }
+        }]
+    })
 }
 
 async fn json_body(response: axum::response::Response) -> Value {
@@ -246,6 +295,126 @@ async fn graph_preflight_failure_retains_its_semantic_reason() {
     assert_eq!(body["reason"], "shared_node");
     assert_eq!(body["stage"], "preflight");
     assert!(body["detail"].as_str().unwrap().contains("duplicate scope"));
+}
+
+#[tokio::test]
+async fn execution_failure_is_a_typed_problem_outside_in() {
+    let response = test_router("http-division-by-zero", Mode::Direct)
+        .await
+        .oneshot(post_json(
+            "/execute",
+            json!({
+                "statements": [{
+                    "name": "q",
+                    "kind": "query",
+                    "relation": {
+                        "nodes": {
+                            "r": {"kind": "rows", "scope": "r",
+                                "columns": [
+                                    {"name": "num", "type": "int64"},
+                                    {"name": "den", "type": "int64"}
+                                ],
+                                "rows": [["1", "0"]]},
+                            "p": {"kind": "project", "input": "r", "fields": [{
+                                "as": "q",
+                                "expr": {"kind": "binary", "op": "div",
+                                    "left": {"kind": "col", "scope": "r", "column": "num"},
+                                    "right": {"kind": "col", "scope": "r", "column": "den"}}
+                            }]},
+                            "s": {"kind": "slice", "input": "p", "limit": 1}
+                        },
+                        "root": {"node": "s", "cardinality": "scalar"}
+                    }
+                }]
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "application/problem+json"
+    );
+    let body = json_body(response).await;
+    assert_eq!(body["type"], "urn:rad:problem:execution_failed");
+    assert_eq!(body["code"], "execution_failed");
+    assert_eq!(body["reason"], "division_by_zero");
+    assert_eq!(body["stage"], "execution");
+    assert_eq!(body["status"], 422);
+    assert!(
+        body["detail"]
+            .as_str()
+            .unwrap()
+            .contains("division by zero")
+    );
+}
+
+#[tokio::test]
+async fn missing_transition_is_a_typed_not_found_problem_outside_in() {
+    let response = test_router("http-transition-not-found", Mode::Direct)
+        .await
+        .oneshot(request(Method::GET, "/schema/transitions/does-not-exist"))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "application/problem+json"
+    );
+    let body = json_body(response).await;
+    assert_eq!(body["type"], "urn:rad:problem:not_found");
+    assert_eq!(body["code"], "not_found");
+    assert_eq!(body["reason"], "schema_transition_not_found");
+    assert_eq!(body["status"], 404);
+    assert_eq!(body["resource"]["kind"], "schema_transition");
+    assert_eq!(body["resource"]["name"], "does-not-exist");
+}
+
+#[tokio::test]
+async fn storage_conflict_is_a_typed_retryable_problem_outside_in() {
+    let response = fault_router("http-conflict", Operation::Commit, KvErrorKind::Conflict)
+        .await
+        .oneshot(post_json("/execute", create_table_program()))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "application/problem+json"
+    );
+    let body = json_body(response).await;
+    assert_eq!(body["type"], "urn:rad:problem:conflict");
+    assert_eq!(body["code"], "conflict");
+    assert_eq!(body["reason"], "serializable_conflict");
+    assert_eq!(body["stage"], "execution");
+    assert_eq!(body["status"], 409);
+}
+
+#[tokio::test]
+async fn internal_storage_failure_is_redacted_outside_in() {
+    let response = fault_router("http-internal", Operation::Begin, KvErrorKind::Internal)
+        .await
+        .oneshot(post_json("/execute", one_row_program()))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "application/problem+json"
+    );
+    let body = json_body(response).await;
+    assert_eq!(body["type"], "urn:rad:problem:internal");
+    assert_eq!(body["code"], "internal");
+    assert_eq!(body["reason"], "internal");
+    assert_eq!(body["status"], 500);
+    assert_eq!(body["detail"], "internal error");
+    assert!(body.get("execution").is_none());
+    assert!(body.get("conflict").is_none());
+    assert!(!body.to_string().contains("injected"));
 }
 
 #[tokio::test]
