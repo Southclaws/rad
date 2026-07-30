@@ -1,28 +1,26 @@
-# Publish the current main build to a moving `edge` GitHub release. The stable
-# asset names are consumed by the installers via releases/latest/download/.
-#
-# SlateDB is linked statically. The resulting binaries still use the platform
-# libc/frameworks: macOS has no static libSystem, Linux uses glibc, and Windows
-# uses the normal system DLLs.
+# Publish the exact revision that passed the complete CI matrix to the
+# moving `edge` release. Stable/tagged release policy belongs to the later CLI
+# and versioning work; these artifacts are dogfood/staging-alpha evidence.
 
-name: release
+name: Rad release
 
 on:
   workflow_run:
     workflows:
-      - test
+      - Rad CI
     types:
       - completed
 
 permissions:
   contents: read
 
+concurrency:
+  group: rad-release-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
 env:
-  # Keep these aligned with slatedb.io/slatedb-go in go.mod. The commit is the
-  # peeled target of the binding's annotated tag, not the mutable tag itself.
-  SLATEDB_COMMIT: 3fe856c15c43f158236e978947ca0b4b6b071306
-  SLATEDB_RUST_TOOLCHAIN: "1.91.1"
-  SLATEDB_VERSION: v0.14.1
+  CARGO_INCREMENTAL: "0"
+  REGISTRY_IMAGE: ghcr.io/southclaws/rad
 
 jobs:
   metadata:
@@ -36,253 +34,275 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.value }}
     steps:
-      - name: Check out repository and tags
+      - name: Check out tested revision and tags
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Derive version
+      - name: Derive build version
         id: version
+        shell: bash
         run: |
           set -euo pipefail
           version="$(git describe --always --tags --exclude edge)"
           echo "value=$version" >> "$GITHUB_OUTPUT"
-          echo "Building $version from ${{ github.event.workflow_run.head_sha }}"
+          echo "Building Rad alpha $version from ${{ github.event.workflow_run.head_sha }}"
 
   build:
-    name: build (${{ matrix.goos }}-${{ matrix.goarch }})
+    name: build (${{ matrix.platform }}, ${{ matrix.arch }})
     needs: metadata
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: ubuntu-24.04
-            goos: linux
-            goarch: amd64
-            cache_target: native
+            platform: linux
+            arch: x86_64
+            extension: ""
           - runner: ubuntu-24.04-arm
-            goos: linux
-            goarch: arm64
-            cache_target: native
-          - runner: macos-14
-            goos: darwin
-            goarch: arm64
-            cache_target: native
-          - runner: windows-2022
-            goos: windows
-            goarch: amd64
-            cache_target: x86_64-pc-windows-msvc
-            rust_target: x86_64-pc-windows-msvc
-            # Go adds a GNU linker script when native clang selects link.exe.
-            # LLD is MSVC-compatible and makes Go skip that incompatible script.
-            cc: clang -fuse-ld=lld
+            platform: linux
+            arch: aarch64
+            extension: ""
+          - runner: macos-15-intel
+            platform: macos
+            arch: x86_64
+            extension: ""
+          - runner: macos-15
+            platform: macos
+            arch: aarch64
+            extension: ""
+          - runner: windows-2025
+            platform: windows
+            arch: x86_64
+            extension: .exe
           - runner: windows-11-arm
-            goos: windows
-            goarch: arm64
-            cache_target: aarch64-pc-windows-msvc
-            rust_target: aarch64-pc-windows-msvc
-            cc: clang
+            platform: windows
+            arch: aarch64
+            extension: .exe
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     defaults:
       run:
         shell: bash
+    env:
+      CARGO_TARGET_DIR: target
     steps:
-      - name: Check out repository
+      - name: Check out tested revision
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal
+
+      - name: Restore Rust release cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
+          shared-key: release
 
-      - name: Prepare SlateDB source
+      - name: Build release binary
+        run: cargo build --locked --release
+
+      - name: Package release evidence
         env:
-          RUST_TARGET: ${{ matrix.rust_target }}
+          BUILD_VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
-          actual_version="$(go list -m slatedb.io/slatedb-go | cut -d' ' -f2)"
-          if [ "$actual_version" != "$SLATEDB_VERSION" ]; then
-            echo "go.mod uses SlateDB $actual_version; update the audited workflow pin" >&2
-            exit 1
-          fi
-          git init slatedb-src
-          git -C slatedb-src remote add origin https://github.com/slatedb/slatedb
-          git -C slatedb-src fetch --depth 1 origin "$SLATEDB_COMMIT"
-          git -C slatedb-src checkout --detach FETCH_HEAD
-
-          rust_toolchain="$(sed -n 's/^channel = "\([^"]*\)"/\1/p' slatedb-src/rust-toolchain.toml)"
-          if [ "$rust_toolchain" != "$SLATEDB_RUST_TOOLCHAIN" ]; then
-            echo "SlateDB uses Rust $rust_toolchain; update the audited workflow pin" >&2
-            exit 1
-          fi
-          rustup toolchain install "$rust_toolchain" --profile minimal
-          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/slatedb-target" >> "$GITHUB_ENV"
-          echo "SLATEDB_CACHE_DIR=$RUNNER_TEMP/slatedb-cache" >> "$GITHUB_ENV"
-          echo "RUSTUP_TOOLCHAIN=$rust_toolchain" >> "$GITHUB_ENV"
-
-          if [ -n "$RUST_TARGET" ]; then
-            rustup target add --toolchain "$rust_toolchain" "$RUST_TARGET"
-          fi
-
-      - name: Restore SlateDB build cache
-        id: slatedb-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ${{ runner.temp }}/slatedb-target
-            ${{ runner.temp }}/slatedb-cache
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: slatedb-uniffi-release-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.cache_target }}-${{ env.SLATEDB_RUST_TOOLCHAIN }}-${{ env.SLATEDB_COMMIT }}
-
-      - name: Build SlateDB native library
-        env:
-          RUST_TARGET: ${{ matrix.rust_target }}
-          SLATEDB_CACHE_HIT: ${{ steps.slatedb-cache.outputs.cache-hit }}
-        run: |
-          set -euo pipefail
-          target_arg=""
-          libdir="$CARGO_TARGET_DIR/release"
-          if [ -n "$RUST_TARGET" ]; then
-            target_arg="$RUST_TARGET"
-            libdir="$CARGO_TARGET_DIR/$RUST_TARGET/release"
-          fi
-
-          cargo_args=(
-            --release
-            -p slatedb-uniffi
-            --manifest-path slatedb-src/Cargo.toml
-          )
-          if [ -n "$target_arg" ]; then
-            cargo_args+=(--target "$target_arg")
-          fi
-          mkdir -p "$SLATEDB_CACHE_DIR"
-          if [ "$SLATEDB_CACHE_HIT" != true ]; then
-            cargo rustc \
-              "${cargo_args[@]}" \
-              -- \
-              --print native-static-libs 2>&1 | tee "$SLATEDB_CACHE_DIR/build.log"
-            grep -m1 -o 'native-static-libs: .*' "$SLATEDB_CACHE_DIR/build.log" \
-              | sed 's/native-static-libs: //' > "$SLATEDB_CACHE_DIR/native-libs.txt"
+          name="rad-${{ matrix.platform }}-${{ matrix.arch }}"
+          mkdir -p package
+          cp "$CARGO_TARGET_DIR/release/rad${{ matrix.extension }}" "package/rad${{ matrix.extension }}"
+          printf '{"format":"rad-release-build-v1","version":"%s","revision":"%s","os":"%s","architecture":"%s","rust":"1.96.0"}\n' \
+            "$BUILD_VERSION" "${{ github.event.workflow_run.head_sha }}" "${{ matrix.platform }}" "${{ matrix.arch }}" > package/BUILD.json
+          if [ "${{ matrix.platform }}" = windows ]; then
+            (cd package && 7z a "../$name.zip" "rad${{ matrix.extension }}" BUILD.json)
           else
-            echo "Using cached SlateDB native build"
-          fi
-          test -s "$SLATEDB_CACHE_DIR/native-libs.txt"
-
-          static_dir="$PWD/lib/static"
-          mkdir -p "$static_dir"
-          static_lib="$(find "$libdir" -maxdepth 1 -type f \
-            \( -name libslatedb_uniffi.a -o -name slatedb_uniffi.lib \) \
-            -print -quit)"
-          if [ -z "$static_lib" ]; then
-            echo "SlateDB static library not found in $libdir" >&2
-            find "$libdir" -maxdepth 1 -type f -print >&2
-            exit 1
-          fi
-          cp "$static_lib" "$static_dir/"
-
-          native_libs="$(cat "$SLATEDB_CACHE_DIR/native-libs.txt")"
-          if [ "$RUNNER_OS" = Windows ]; then
-            # rustc reports MSVC linker syntax, while cgo invokes Clang's
-            # GCC-style driver. Make the flags compatible and colocate any
-            # Cargo-provided import libraries with the SlateDB archive.
-            clang_libs=()
-            for native_lib in $native_libs; do
-              case "$native_lib" in
-                *.lib)
-                  support_lib="$(find "$CARGO_TARGET_DIR" "$HOME/.cargo" "$HOME/.rustup" \
-                    -type f -name "$native_lib" -print -quit 2>/dev/null)"
-                  if [ -n "$support_lib" ]; then
-                    cp "$support_lib" "$static_dir/"
-                  elif [[ "$native_lib" == windows.*.lib ]]; then
-                    echo "Cargo import library $native_lib not found" >&2
-                    exit 1
-                  fi
-                  clang_libs+=("-l${native_lib%.lib}")
-                  ;;
-                /defaultlib:*) clang_libs+=("-Wl,$native_lib") ;;
-                *) clang_libs+=("$native_lib") ;;
-              esac
-            done
-            native_libs="${clang_libs[*]}"
-
-            # CGO invokes native clang outside MSYS path translation.
-            static_dir="$(cygpath -m "$static_dir")"
-          fi
-          echo "LIBDIR=$static_dir" >> "$GITHUB_ENV"
-          echo "NATIVE_LIBS=$native_libs" >> "$GITHUB_ENV"
-
-      - name: Build rad
-        env:
-          CC: ${{ matrix.cc }}
-          CGO_ENABLED: "1"
-          GOARCH: ${{ matrix.goarch }}
-          GOOS: ${{ matrix.goos }}
-          VERSION: ${{ needs.metadata.outputs.version }}
-        run: |
-          set -euo pipefail
-          extension=""
-          extra_ldflags=""
-          if [ "$GOOS" = windows ]; then extension=".exe"; fi
-          if [ "$GOOS" = darwin ]; then extra_ldflags="-Wl,-w"; fi
-
-          mkdir -p release-bin
-          export CGO_LDFLAGS="-L$LIBDIR $NATIVE_LIBS $extra_ldflags"
-          go build \
-            -trimpath \
-            -ldflags "-s -w -X main.version=$VERSION" \
-            -o "release-bin/rad$extension" \
-            ./cmd/rad
-          "./release-bin/rad$extension" --version
-
-      - name: Package
-        env:
-          GOARCH: ${{ matrix.goarch }}
-          GOOS: ${{ matrix.goos }}
-        run: |
-          set -euo pipefail
-          name="rad-$GOOS-$GOARCH"
-          if [ "$GOOS" = windows ]; then
-            (cd release-bin && 7z a "../$name.zip" rad.exe)
-          else
-            tar czf "$name.tar.gz" -C release-bin rad
+            tar czf "$name.tar.gz" -C package "rad${{ matrix.extension }}" BUILD.json
           fi
 
       - name: Upload packaged binary
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: rad-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: rad-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
             rad-*.tar.gz
             rad-*.zip
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14
 
-      - name: Save SlateDB build cache
-        if: steps.slatedb-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+  container:
+    name: container (${{ matrix.platform }})
+    needs:
+      - metadata
+      - build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            artifact_arch: x86_64
+            platform: linux/amd64
+          - runner: ubuntu-24.04-arm
+            artifact_arch: aarch64
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out tested packaging definition
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Download native Linux binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rad-linux-${{ matrix.artifact_arch }}
+          path: artifact
+
+      - name: Prepare container context
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir container
+          tar xzf "artifact/rad-linux-${{ matrix.artifact_arch }}.tar.gz" \
+            -C container rad BUILD.json
+          test -x container/rad
+          test -s container/BUILD.json
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build and push native image by digest
+        id: image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: container
+          file: packaging/container/Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}
+            org.opencontainers.image.version=${{ needs.metadata.outputs.version }}
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=container-${{ matrix.artifact_arch }}
+          cache-to: type=gha,mode=max,scope=container-${{ matrix.artifact_arch }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Retain image digest
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest="${IMAGE_DIGEST#sha256:}"
+          test "$digest" != "$IMAGE_DIGEST"
+          mkdir digests
+          touch "digests/$digest"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rad-container-digest-${{ matrix.artifact_arch }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 14
+
+  container-publish:
+    name: publish container
+    needs:
+      - metadata
+      - container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download native image digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: rad-container-digest-*
+          path: digests
+          merge-multiple: true
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Publish multi-platform image index
+        env:
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t digest_files < <(find digests -maxdepth 1 -type f | sort)
+          test "${#digest_files[@]}" -eq 2
+
+          sources=()
+          for digest_file in "${digest_files[@]}"; do
+            sources+=("$REGISTRY_IMAGE@sha256:$(basename "$digest_file")")
+          done
+
+          docker buildx imagetools create \
+            --tag "$REGISTRY_IMAGE:latest" \
+            --tag "$REGISTRY_IMAGE:edge" \
+            --tag "$REGISTRY_IMAGE:sha-$RELEASE_SHA" \
+            "${sources[@]}"
+
+      - name: Verify and retain image index
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "$REGISTRY_IMAGE:edge" |
+            tee IMAGE.txt
+          docker buildx imagetools inspect --raw "$REGISTRY_IMAGE:edge" \
+            > IMAGE.json
+          jq -e '
+            [
+              .manifests[].platform
+              | select(.os != "unknown")
+              | "\(.os)/\(.architecture)"
+            ]
+            | sort
+            == ["linux/amd64", "linux/arm64"]
+          ' IMAGE.json
+
+      - name: Upload image index evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rad-container-manifest
           path: |
-            ${{ runner.temp }}/slatedb-target
-            ${{ runner.temp }}/slatedb-cache
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ steps.slatedb-cache.outputs.cache-primary-key }}
+            IMAGE.json
+            IMAGE.txt
+          if-no-files-found: error
+          retention-days: 14
 
   release:
     name: publish edge release
     needs:
       - metadata
       - build
+      - container-publish
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -309,8 +329,7 @@ jobs:
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
-
-          notes="Automated prototype build from \`$RELEASE_SHA\`. Binary version: \`$VERSION\`."
+          notes="Automated Rad dogfood/staging-alpha build from \`$RELEASE_SHA\`. Binary version: \`$VERSION\`. Six native OS/architecture artifacts and the \`ghcr.io/southclaws/rad:latest\` AMD64/ARM64 image were published only after the complete Rad CI matrix passed."
           if gh release view edge >/dev/null 2>&1; then
             gh release upload edge dist/* --clobber
             gh release edit edge \

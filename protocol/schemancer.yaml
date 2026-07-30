@@ -1,0 +1,22 @@
+# Schemancer codegen config for the LIR wire types.
+#
+# The LIR Value is a multi-type scalar (string | number | boolean | null).
+# Mapping its `format: raw` to json.RawMessage keeps literal values as raw
+# bytes, so the binder decodes them with full int64 precision instead of the
+# interface{}/float64 Schemancer emits for a bare multi-type schema.
+#
+# `raw` is a deliberately generic format name: other language generators map it
+# to their own raw-JSON type. This relies on Schemancer preserving `format` on
+# multi-type schemas (fixed in schema_to_ir.go); the mapping then selects the
+# concrete type.
+golang:
+  format_mappings:
+    raw:
+      type: json.RawMessage
+      import: encoding/json
+
+rust:
+  format_mappings:
+    raw:
+      type: RawJson
+      import: crate::protocol::RawJson

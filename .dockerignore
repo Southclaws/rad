@@ -3,6 +3,9 @@ lib/
 bin/
 data/
 references/
-ui/node_modules/
+.git/
+target/
+**/node_modules/
+examples/demo/data/
 Dockerfile
 .dockerignore

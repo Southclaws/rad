@@ -1,0 +1,65 @@
+{
+  "name": "wide_thread_descendants",
+  "description": "Walk a thread with 1,024 direct replies to isolate wide-frontier execution cost.",
+  "warmup": 1,
+  "iterations": 8,
+  "expect_rows": 1025,
+  "expect_first": { "post_id": "wide-0000", "depth": 0 },
+  "expect_last": { "post_id": "wide-1024", "depth": 1 },
+  "program": {
+    "statements": [{
+      "name": "wide_thread_descendants",
+      "kind": "query",
+      "relation": {
+        "nodes": {
+          "anchor_scan": { "kind": "scan", "table": "posts", "scope": "anchor_post" },
+          "anchor_filter": {
+            "kind": "filter", "input": "anchor_scan",
+            "predicate": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "anchor_post", "column": "post_id" },
+              "right": { "kind": "lit", "value": { "type": "text", "value": "wide-0000" } }
+            }
+          },
+          "anchor_project": {
+            "kind": "project", "input": "anchor_filter", "scope": "anchor",
+            "fields": [
+              { "as": "post_id", "expr": { "kind": "col", "scope": "anchor_post", "column": "post_id" } },
+              { "as": "depth", "expr": { "kind": "lit", "value": { "type": "int64", "value": "0" } } }
+            ]
+          },
+          "reply_scan": { "kind": "scan", "table": "posts", "scope": "reply" },
+          "frontier": { "kind": "recursive_ref", "binding": "thread", "scope": "parent" },
+          "reply_join": {
+            "kind": "join", "left": "reply_scan", "right": "frontier", "join": "inner",
+            "on": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "reply", "column": "reply_to_post_id" },
+              "right": { "kind": "col", "scope": "parent", "column": "post_id" }
+            }
+          },
+          "reply_project": {
+            "kind": "project", "input": "reply_join", "scope": "next",
+            "fields": [
+              { "as": "post_id", "expr": { "kind": "col", "scope": "reply", "column": "post_id" } },
+              { "as": "depth", "expr": {
+                "kind": "binary", "op": "add",
+                "left": { "kind": "col", "scope": "parent", "column": "depth" },
+                "right": { "kind": "lit", "value": { "type": "int64", "value": "1" } }
+              } }
+            ]
+          },
+          "thread": { "kind": "ref", "binding": "thread", "scope": "thread_post" },
+          "ordered": {
+            "kind": "order", "input": "thread",
+            "terms": [{ "expr": { "kind": "col", "scope": "thread_post", "column": "post_id" } }]
+          }
+        },
+        "bindings": {
+          "thread": { "kind": "recursive", "anchor": "anchor_project", "step": "reply_project", "accumulation": "all" }
+        },
+        "root": { "node": "ordered", "cardinality": "many" }
+      }
+    }]
+  }
+}

@@ -16,5 +16,5 @@
       }
     ]
   },
-  "error": { "code": "invalid", "contains": "is part of a cycle" }
+  "error": { "code": "invalid", "reason": "node_cycle", "contains": "is part of a cycle" }
 }

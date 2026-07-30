@@ -1,0 +1,46 @@
+# Stable commerce benchmark schema. Treat changes as a new benchmark format:
+# historical measurements only compare meaningfully when this file and the
+# deterministic dataset generator are unchanged.
+tables:
+  - id: 1
+    name: customers
+    columns:
+      - { id: 1, name: customer_id, type: string, pk: true }
+      - { id: 2, name: customer_region, type: string }
+      - { id: 3, name: customer_tier, type: string }
+      - { id: 4, name: customer_active, type: bool }
+    indexes:
+      - { columns: [customer_region, customer_tier] }
+
+  - id: 2
+    name: products
+    columns:
+      - { id: 1, name: product_id, type: string, pk: true }
+      - { id: 2, name: product_category, type: string }
+      - { id: 3, name: product_price, type: int64 }
+      - { id: 4, name: product_active, type: bool }
+    indexes:
+      - { columns: [product_category] }
+
+  - id: 3
+    name: orders
+    columns:
+      - { id: 1, name: order_id, type: string, pk: true }
+      - { id: 2, name: order_customer_id, type: string, ref: customers.customer_id }
+      - { id: 3, name: order_status, type: string }
+      - { id: 4, name: order_created_at, type: int64 }
+      - { id: 5, name: order_total, type: int64 }
+    indexes:
+      - { columns: [order_customer_id, order_created_at] }
+      - { columns: [order_status, order_created_at] }
+
+  - id: 4
+    name: order_items
+    columns:
+      - { id: 1, name: item_order_id, type: string, ref: orders.order_id }
+      - { id: 2, name: item_product_id, type: string, ref: products.product_id }
+      - { id: 3, name: item_quantity, type: int64 }
+      - { id: 4, name: item_unit_price, type: int64 }
+    primary_key: [item_order_id, item_product_id]
+    indexes:
+      - { columns: [item_product_id] }

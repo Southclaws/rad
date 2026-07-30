@@ -1,0 +1,28 @@
+{
+  "name": "customer_by_id",
+  "description": "Primary-key equality lookup returning exactly one row.",
+  "warmup": 2,
+  "iterations": 20,
+  "expect_rows": 1,
+  "program": {
+    "statements": [{
+      "name": "customer_by_id",
+      "kind": "query",
+      "relation": {
+        "nodes": {
+          "customers": { "kind": "scan", "table": "customers", "scope": "c" },
+          "selected": {
+            "kind": "filter",
+            "input": "customers",
+            "predicate": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "c", "column": "customer_id" },
+              "right": { "kind": "lit", "value": { "type": "text", "value": "customer-0123" } }
+            }
+          }
+        },
+        "root": { "node": "selected", "cardinality": "exactly_one" }
+      }
+    }]
+  }
+}

@@ -1,5 +1,5 @@
 # expr_intdiv_sign — int64 div truncates toward zero for every sign
-# combination (Go's / semantics): 7/2=3, -7/2=-3, 7/-2=-3, -7/-2=3.
+# combination: 7/2=3, -7/2=-3, 7/-2=-3, -7/-2=3.
 tables:
   - id: 1
     name: nums

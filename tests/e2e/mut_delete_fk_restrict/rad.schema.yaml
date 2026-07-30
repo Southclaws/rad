@@ -1,6 +1,6 @@
 # e2e/mut_delete_fk_restrict — a negative fixture: deleting a parent row that
 # a child row still references through a foreign key must fail (restrict
-# semantics; the POC has no cascades).
+# semantics; cascades are not part of this operation).
 tables:
   - id: 1
     name: teams

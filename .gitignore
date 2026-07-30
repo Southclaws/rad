@@ -13,3 +13,9 @@ tests/gen/runs/
 tasks
 notes
 reference
+
+
+# Added by cargo
+
+/target
+/mutants*.out*/

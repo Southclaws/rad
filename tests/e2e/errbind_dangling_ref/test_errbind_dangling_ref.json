@@ -14,5 +14,5 @@
       }
     ]
   },
-  "error": { "code": "invalid", "contains": "unknown node \"missing\"" }
+  "error": { "code": "invalid", "reason": "unknown_node", "contains": "unknown node \"missing\"" }
 }

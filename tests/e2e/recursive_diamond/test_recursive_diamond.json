@@ -1,0 +1,63 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "diamond",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "anchor": {
+              "kind": "rows",
+              "scope": "a",
+              "columns": [ { "name": "id", "type": "text" } ],
+              "rows": [ ["a"], ["a"] ]
+            },
+            "edges": { "kind": "scan", "table": "edges", "scope": "e" },
+            "frontier": { "kind": "recursive_ref", "binding": "walk", "scope": "f" },
+            "next_edges": {
+              "kind": "join",
+              "left": "edges",
+              "right": "frontier",
+              "join": "inner",
+              "on": {
+                "kind": "binary",
+                "op": "eq",
+                "left": { "kind": "col", "scope": "e", "column": "from" },
+                "right": { "kind": "col", "scope": "f", "column": "id" }
+              }
+            },
+            "step": {
+              "kind": "project",
+              "input": "next_edges",
+              "scope": "s",
+              "fields": [
+                { "as": "id", "expr": { "kind": "col", "scope": "e", "column": "to" } }
+              ]
+            },
+            "result": { "kind": "ref", "binding": "walk", "scope": "r" },
+            "ordered": {
+              "kind": "order",
+              "input": "result",
+              "terms": [ { "expr": { "kind": "col", "scope": "r", "column": "id" } } ]
+            }
+          },
+          "bindings": {
+            "walk": {
+              "kind": "recursive",
+              "anchor": "anchor",
+              "step": "step",
+              "accumulation": "new"
+            }
+          },
+          "root": { "node": "ordered", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "id": "a" },
+    { "id": "b" },
+    { "id": "c" },
+    { "id": "d" }
+  ]
+}

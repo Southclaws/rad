@@ -1,0 +1,33 @@
+{
+  "name": "paid_orders_page",
+  "description": "Indexed status filter followed by descending order and a bounded page.",
+  "warmup": 2,
+  "iterations": 12,
+  "expect_rows": 50,
+  "program": {
+    "statements": [{
+      "name": "paid_orders_page",
+      "kind": "query",
+      "relation": {
+        "nodes": {
+          "orders": { "kind": "scan", "table": "orders", "scope": "o" },
+          "paid": {
+            "kind": "filter",
+            "input": "orders",
+            "predicate": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "o", "column": "order_status" },
+              "right": { "kind": "lit", "value": { "type": "text", "value": "paid" } }
+            }
+          },
+          "newest": {
+            "kind": "order", "input": "paid",
+            "terms": [{ "expr": { "kind": "col", "scope": "o", "column": "order_created_at" }, "desc": true }]
+          },
+          "page": { "kind": "slice", "input": "newest", "limit": 50 }
+        },
+        "root": { "node": "page", "cardinality": "many" }
+      }
+    }]
+  }
+}

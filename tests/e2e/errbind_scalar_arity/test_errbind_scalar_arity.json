@@ -13,5 +13,5 @@
       }
     ]
   },
-  "error": { "code": "invalid", "contains": "a scalar query needs a single-column root" }
+  "error": { "code": "invalid", "reason": "scalar_arity", "contains": "a scalar query needs a single-column root" }
 }

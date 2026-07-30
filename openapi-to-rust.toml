@@ -1,0 +1,37 @@
+[generator]
+spec_path = "api/openapi.yaml"
+output_dir = "src/http/generated"
+module_name = "rad_api"
+
+[features]
+enable_async_client = false
+
+[server]
+framework = "axum"
+operations = [
+  "GetInfo",
+  "GetHealth",
+  "GetSchema",
+  "SchemaDiff",
+  "SchemaMigrate",
+  "SchemaCompatibility",
+  "SchemaTransitionList",
+  "SchemaTransitionGet",
+  "SchemaTransitionCancel",
+  "TableList",
+  "TableCreate",
+  "TableUpdate",
+  "TableDelete",
+  "ColumnCreate",
+  "ColumnUpdate",
+  "ColumnDelete",
+  "IndexCreate",
+  "IndexDelete",
+  "Execute",
+]
+prune_models = true
+
+[server.validation]
+enabled = true
+max_body_bytes = 4194304
+max_errors = 16

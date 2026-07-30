@@ -1,0 +1,44 @@
+{
+  "name": "category_revenue",
+  "description": "Join line items to products and aggregate extended revenue by category.",
+  "warmup": 1,
+  "iterations": 6,
+  "expect_rows": 10,
+  "program": {
+    "statements": [{
+      "name": "category_revenue",
+      "kind": "query",
+      "relation": {
+        "nodes": {
+          "items": { "kind": "scan", "table": "order_items", "scope": "i" },
+          "products": { "kind": "scan", "table": "products", "scope": "p" },
+          "joined": {
+            "kind": "join", "left": "items", "right": "products", "join": "inner",
+            "on": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "i", "column": "item_product_id" },
+              "right": { "kind": "col", "scope": "p", "column": "product_id" }
+            }
+          },
+          "summarized": {
+            "kind": "aggregate", "input": "joined", "scope": "s",
+            "groups": [{ "as": "category", "expr": { "kind": "col", "scope": "p", "column": "product_category" } }],
+            "aggs": [{
+              "fn": "sum", "as": "revenue",
+              "arg": {
+                "kind": "binary", "op": "mul",
+                "left": { "kind": "col", "scope": "i", "column": "item_quantity" },
+                "right": { "kind": "col", "scope": "i", "column": "item_unit_price" }
+              }
+            }]
+          },
+          "ranked": {
+            "kind": "order", "input": "summarized",
+            "terms": [{ "expr": { "kind": "col", "scope": "s", "column": "revenue" }, "desc": true }]
+          }
+        },
+        "root": { "node": "ranked", "cardinality": "many" }
+      }
+    }]
+  }
+}

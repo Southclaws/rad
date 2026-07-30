@@ -1,0 +1,136 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/opencli-dev/opencli/main/schema/opencli.schema.json
+$schema: https://raw.githubusercontent.com/opencli-dev/opencli/main/schema/opencli.schema.json
+
+opencli: "1.0.0"
+
+info:
+  title: rad
+  binaryName: rad
+  version: "0.1.0"
+  description: An ORM-native relational database on an ordered KV store.
+
+exitCodes:
+  - code: 0
+    label: OK
+    description: The command completed successfully.
+  - code: 1
+    label: Error
+    description: The command could not complete.
+
+commands:
+  - name: serve
+    operationId: serve
+    description: Run the Rad database server.
+    flags:
+      - name: addr
+        description: HTTP server listen address.
+        envVar: RAD_ADDR
+        default: 0.0.0.0:7237
+      - name: storage
+        description: Storage backend.
+        envVar: RAD_STORAGE
+        choices: [memory, file, s3]
+        default: file
+      - name: db
+        short: d
+        description: File storage directory.
+        type: path
+        envVar: RAD_DATA_DIR
+        default: data
+      - name: storage-path
+        description: Logical SlateDB path within the selected backend.
+        envVar: RAD_STORAGE_PATH
+        default: rad
+      - name: catalog-mode
+        description: Catalog mode for a fresh database; immutable after initialization.
+        envVar: RAD_CATALOG_MODE
+        choices: [direct, schema]
+      - name: s3-bucket
+        description: S3 bucket used by the s3 storage backend.
+        envVar: RAD_S3_BUCKET
+      - name: s3-prefix
+        description: S3 object prefix; defaults to --storage-path.
+        envVar: RAD_S3_PREFIX
+      - name: s3-region
+        description: S3 region.
+        envVar: RAD_S3_REGION
+      - name: s3-endpoint
+        description: Custom S3-compatible endpoint, such as RustFS.
+        envVar: RAD_S3_ENDPOINT
+
+  - name: validate
+    operationId: validate
+    description: Validate rad.schema.yaml without a running database.
+    longDescription: Parse and validate the schema structure, types, and references without touching a database.
+    flags:
+      - $ref: "#/components/flags/schema-file"
+
+  - name: schema
+    description: Inspect and manage the database schema.
+    flags:
+      - $ref: "#/components/flags/config-file"
+      - $ref: "#/components/flags/schema-file"
+    commands:
+      - name: status
+        operationId: schemaStatus
+        description: Compare server, accepted, desired, and generated schemas.
+      - name: diff
+        operationId: schemaDiff
+        description: Show desired schema changes and data preflight findings.
+        flags:
+          - name: format
+            description: Output format.
+            choices: [text, json]
+            default: text
+      - name: migrate
+        operationId: schemaMigrate
+        description: Apply rad.schema.yaml transactionally.
+        flags:
+          - name: accept-data-loss
+            description: Permit explicitly reported destructive changes.
+            type: boolean
+          - name: no-generate
+            description: Do not regenerate configured clients.
+            type: boolean
+      - name: pull
+        operationId: schemaPull
+        description: Recover the accepted schema from the database.
+        flags:
+          - name: force
+            description: Back up and replace a locally modified schema.
+            type: boolean
+          - name: no-generate
+            description: Do not regenerate configured clients.
+            type: boolean
+
+  - name: generate
+    operationId: generate
+    description: Generate a typed client for the accepted schema.
+    flags:
+      - $ref: "#/components/flags/schema-file"
+      - name: out
+        short: o
+        description: Output directory.
+        type: path
+        default: generated
+      - name: pkg
+        description: Generated package or client name.
+        default: db
+      - name: lang
+        description: Client language.
+        choices: [go]
+        default: go
+
+components:
+  flags:
+    config-file:
+      name: config
+      description: Project configuration file.
+      type: file
+      default: rad.config.yaml
+    schema-file:
+      name: file
+      short: f
+      description: Desired schema file.
+      type: file
+      default: rad.schema.yaml

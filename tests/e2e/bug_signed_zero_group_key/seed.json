@@ -1,0 +1,10 @@
+[
+  {
+    "table": "samples",
+    "rows": [
+      { "id": "negative", "value": -1.5 },
+      { "id": "negative-zero", "value": -0.0 },
+      { "id": "positive-zero", "value": 0.0 }
+    ]
+  }
+]

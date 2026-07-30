@@ -1,0 +1,47 @@
+{
+  "program": {
+    "statements": [
+      {
+        "name": "q",
+        "kind": "query",
+        "relation": {
+          "nodes": {
+            "scan": {
+              "kind": "scan",
+              "table": "samples",
+              "scope": "s"
+            },
+            "aggregate": {
+              "kind": "aggregate",
+              "input": "scan",
+              "scope": "g",
+              "groups": [
+                {
+                  "as": "value",
+                  "expr": { "kind": "col", "scope": "s", "column": "value" }
+                }
+              ],
+              "aggs": [
+                { "fn": "count", "as": "n" }
+              ]
+            },
+            "order": {
+              "kind": "order",
+              "input": "aggregate",
+              "terms": [
+                {
+                  "expr": { "kind": "col", "scope": "g", "column": "value" }
+                }
+              ]
+            }
+          },
+          "root": { "node": "order", "cardinality": "many" }
+        }
+      }
+    ]
+  },
+  "result": [
+    { "value": -1.5, "n": 1 },
+    { "value": -0.0, "n": 2 }
+  ]
+}

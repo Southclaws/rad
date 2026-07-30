@@ -1,0 +1,312 @@
+{% import "macros" as gen %}
+// {{ table.model }} is one row of {{ table.name_quoted }}. Relation fields are populated only when the
+// corresponding Include* option was used on the query.
+type {{ table.model }} struct {
+{% for column in table.columns %}
+	{{ column.field }} {% if column.nullable %}*{% endif %}{{ column.go_type }} `json:"{{ column.name }}{{ column.json_suffix }}"`
+{% endfor %}
+{% for relation in table.forward_relations %}
+	{{ relation.field }} *{{ relation.target_model }} `json:"{{ relation.as_name }},omitempty"`
+{% endfor %}
+{% for relation in table.reverse_relations %}
+	{{ relation.field }} []{{ relation.target_model }} `json:"{{ relation.as_name }},omitempty"`
+{% endfor %}
+}
+
+// {{ table.model }}Create is the input to Create. Pointer fields are optional:
+// nil defers to the column default or NULL.
+type {{ table.model }}Create struct {
+{% for column in table.columns %}
+	{{ column.field }} {% if column.nullable or column.has_default %}*{% endif %}{{ column.go_type }}
+{% endfor %}
+}
+
+// {{ table.model }}Patch is the input to Update. Nil fields are left untouched;
+// Clear* sets a nullable column to NULL.
+type {{ table.model }}Patch struct {
+{% for column in table.columns %}
+{% if not column.primary_key %}
+	{{ column.field }} *{{ column.go_type }}
+{% endif %}
+{% endfor %}
+{% for column in table.columns %}
+{% if not column.primary_key and column.nullable %}
+	Clear{{ column.field }} bool
+{% endif %}
+{% endfor %}
+}
+
+// {{ table.model }}Table provides typed access to {{ table.name_quoted }}.
+type {{ table.model }}Table struct{ v rad.View }
+
+func (t {{ table.model }}Table) Create(ctx context.Context, in {{ table.model }}Create) ({{ table.model }}, error) {
+	values := map[string]any{}
+{% for column in table.columns %}
+{% if column.nullable or column.has_default %}
+	if in.{{ column.field }} != nil {
+		values[{{ column.name_quoted }}] = *in.{{ column.field }}
+	}
+{% else %}
+	values[{{ column.name_quoted }}] = in.{{ column.field }}
+{% endif %}
+{% endfor %}
+	rec, err := t.v.Create(ctx, {{ table.name_quoted }}, values)
+	if err != nil {
+		return {{ table.model }}{}, err
+	}
+	return {{ table.lower_model }}FromRecord(rec), nil
+}
+
+func (t {{ table.model }}Table) Get(ctx context.Context, {{ table.pk_params }}) ({{ table.model }}, bool, error) {
+	rec, found, err := t.v.Get(ctx, {{ table.name_quoted }}, {{ table.pk_key_map }})
+	if err != nil || !found {
+		return {{ table.model }}{}, false, err
+	}
+	return {{ table.lower_model }}FromRecord(rec), true, nil
+}
+
+func (t {{ table.model }}Table) Update(ctx context.Context, {{ table.pk_params }}, patch {{ table.model }}Patch) ({{ table.model }}, bool, error) {
+	set := map[string]any{}
+	var clear []string
+{% for column in table.columns %}
+{% if not column.primary_key %}
+	if patch.{{ column.field }} != nil {
+		set[{{ column.name_quoted }}] = *patch.{{ column.field }}
+	}
+{% if column.nullable %}
+	if patch.Clear{{ column.field }} {
+		clear = append(clear, {{ column.name_quoted }})
+	}
+{% endif %}
+{% endif %}
+{% endfor %}
+	rec, found, err := t.v.Update(ctx, {{ table.name_quoted }}, {{ table.pk_key_map }}, set, clear)
+	if err != nil || !found {
+		return {{ table.model }}{}, false, err
+	}
+	return {{ table.lower_model }}FromRecord(rec), true, nil
+}
+
+func (t {{ table.model }}Table) Delete(ctx context.Context, {{ table.pk_params }}) (bool, error) {
+	return t.v.Delete(ctx, {{ table.name_quoted }}, {{ table.pk_key_map }})
+}
+
+{% for unique in table.unique_indexes %}
+// {{ unique.method }} finds the row by the unique index on ({{ unique.columns_doc }}).
+func (t {{ table.model }}Table) {{ unique.method }}(ctx context.Context, {{ unique.params }}) ({{ table.model }}, bool, error) {
+	recs, err := t.v.Query(ctx, assemble(querySpec{table: {{ table.name_quoted }}, orders: {{ table.default_order_terms }}, limit: 1, limitSet: true, filters: []lirwire.Expr{
+{% for column in unique.columns %}
+		lirwire.Binary("eq", lirwire.Col("", {{ column.name_quoted }}), lirwire.LitOf({{ column.lower_field }})),
+{% endfor %}
+	}}))
+	if err != nil || len(recs) == 0 {
+		return {{ table.model }}{}, false, err
+	}
+	return {{ table.lower_model }}FromRecord(recs[0]), true, nil
+}
+{% endfor %}
+
+func (t {{ table.model }}Table) Query() *{{ table.query }} {
+	return &{{ table.query }}{v: t.v, spec: querySpec{table: {{ table.name_quoted }}}}
+}
+
+// {{ table.query }} is a fluent query builder for {{ table.name_quoted }}. Conditions AND together.
+type {{ table.query }} struct {
+	v    rad.View
+	spec querySpec
+}
+
+{{ gen.filter_methods("q", table.query, table) }}
+{{ gen.order_methods("q", table.query, table) }}
+func (q *{{ table.query }}) Limit(n int) *{{ table.query }}  { q.spec.limit, q.spec.limitSet = n, true; return q }
+func (q *{{ table.query }}) Offset(n int) *{{ table.query }} { q.spec.offset = n; return q }
+
+{% for relation in table.forward_relations %}
+// Include{{ relation.field }} embeds the referenced {{ relation.target_model }} (nil when the FK is NULL).
+func (q *{{ table.query }}) Include{{ relation.field }}(opts ...func(*{{ relation.target_model }}Include)) *{{ table.query }} {
+	b := &{{ relation.target_model }}Include{spec: includeSpec{table: {{ relation.target_name_quoted }}, pairs: {{ relation.pairs_literal }}, as: {{ relation.as_quoted }}, kind: "first"}}
+	for _, o := range opts {
+		o(b)
+	}
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
+	return q
+}
+{% endfor %}
+{% for relation in table.reverse_relations %}
+// Include{{ relation.field }} embeds the {{ relation.target_model }} rows referencing this row.
+func (q *{{ table.query }}) Include{{ relation.field }}(opts ...func(*{{ relation.target_model }}Include)) *{{ table.query }} {
+	b := &{{ relation.target_model }}Include{spec: includeSpec{table: {{ relation.target_name_quoted }}, pairs: {{ relation.pairs_literal }}, as: {{ relation.as_quoted }}, kind: "array"}}
+	for _, o := range opts {
+		o(b)
+	}
+	inc := b.spec
+	q.spec.includes = append(q.spec.includes, inc)
+	return q
+}
+{% endfor %}
+
+// All executes the query.
+func (q *{{ table.query }}) All(ctx context.Context) ([]{{ table.model }}, error) {
+	recs, err := q.v.Query(ctx, assemble(q.spec))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]{{ table.model }}, len(recs))
+	for i, r := range recs {
+		out[i] = {{ table.lower_model }}FromRecord(r)
+	}
+	return out, nil
+}
+
+// First executes the query with limit 1.
+func (q *{{ table.query }}) First(ctx context.Context) ({{ table.model }}, bool, error) {
+	if len(q.spec.orders) == 0 {
+		q.spec.orders = {{ table.default_order_terms }}
+	}
+	q.spec.limit, q.spec.limitSet = 1, true
+	rows, err := q.All(ctx)
+	if err != nil || len(rows) == 0 {
+		return {{ table.model }}{}, false, err
+	}
+	return rows[0], true, nil
+}
+
+// fold sends the builder's filter as an aggregate query and returns the
+// one scalar record the server produces.
+func (q *{{ table.query }}) fold(ctx context.Context, aggs []lirwire.AggTerm) (protocol.Record, error) {
+	spec := q.spec
+	spec.orders, spec.includes, spec.limit, spec.limitSet, spec.offset = nil, nil, 0, false, 0
+	spec.aggs = aggs
+	recs, err := q.v.Query(ctx, assemble(spec))
+	if err != nil || len(recs) == 0 {
+		return protocol.Record{}, err
+	}
+	return recs[0], nil
+}
+
+// Count returns how many rows match (never NULL: 0 when none).
+func (q *{{ table.query }}) Count(ctx context.Context) (int64, error) {
+	rec, err := q.fold(ctx, []lirwire.AggTerm{ {Fn: "count", As: "v"} })
+	if err != nil {
+		return 0, err
+	}
+	return recInt64(rec, "v"), nil
+}
+{% for column in table.columns %}
+{% if column.numeric %}
+
+// Sum{{ column.field }} totals {{ column.name_quoted }} over matching rows (nil when none).
+func (q *{{ table.query }}) Sum{{ column.field }}(ctx context.Context) (*{{ column.go_type }}, error) {
+	rec, err := q.fold(ctx, []lirwire.AggTerm{ {Fn: "sum", Arg: ptrExpr(lirwire.Col("", {{ column.name_quoted }})), As: "v"} })
+	if err != nil {
+		return nil, err
+	}
+	return {{ column.record_pointer_helper }}(rec, "v"), nil
+}
+
+// Avg{{ column.field }} averages {{ column.name_quoted }} (nil when none).
+func (q *{{ table.query }}) Avg{{ column.field }}(ctx context.Context) (*float64, error) {
+	rec, err := q.fold(ctx, []lirwire.AggTerm{ {Fn: "avg", Arg: ptrExpr(lirwire.Col("", {{ column.name_quoted }})), As: "v"} })
+	if err != nil {
+		return nil, err
+	}
+	return recFloat64Ptr(rec, "v"), nil
+}
+{% endif %}
+
+// Min{{ column.field }} is the smallest {{ column.name_quoted }} over matching rows (nil when none).
+func (q *{{ table.query }}) Min{{ column.field }}(ctx context.Context) (*{{ column.go_type }}, error) {
+	rec, err := q.fold(ctx, []lirwire.AggTerm{ {Fn: "min", Arg: ptrExpr(lirwire.Col("", {{ column.name_quoted }})), As: "v"} })
+	if err != nil {
+		return nil, err
+	}
+	return {{ column.record_pointer_helper }}(rec, "v"), nil
+}
+
+// Max{{ column.field }} is the largest {{ column.name_quoted }} over matching rows (nil when none).
+func (q *{{ table.query }}) Max{{ column.field }}(ctx context.Context) (*{{ column.go_type }}, error) {
+	rec, err := q.fold(ctx, []lirwire.AggTerm{ {Fn: "max", Arg: ptrExpr(lirwire.Col("", {{ column.name_quoted }})), As: "v"} })
+	if err != nil {
+		return nil, err
+	}
+	return {{ column.record_pointer_helper }}(rec, "v"), nil
+}
+{% endfor %}
+
+{% for column in table.columns %}
+// {{ table.model }}CountBy{{ column.field }} is one per-{{ column.name }} row count.
+type {{ table.model }}CountBy{{ column.field }} struct {
+	{{ column.field }} {{ column.key_type }}
+	Count int64
+}
+
+// CountBy{{ column.field }} counts matching rows per distinct {{ column.name_quoted }}, ordered by the
+// group key — one round trip, no rows fetched.
+func (q *{{ table.query }}) CountBy{{ column.field }}(ctx context.Context) ([]{{ table.model }}CountBy{{ column.field }}, error) {
+	spec := q.spec
+	spec.filters = q.spec.filters
+	recs, err := q.v.Query(ctx, assembleGrouped(spec, {{ column.name_quoted }}))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]{{ table.model }}CountBy{{ column.field }}, len(recs))
+	for i, r := range recs {
+		out[i] = {{ table.model }}CountBy{{ column.field }}{ {{ column.field }}: {{ column.record_helper }}(r, {{ column.name_quoted }}), Count: recInt64(r, "count") }
+	}
+	return out, nil
+}
+{% endfor %}
+
+// {{ table.include }} refines an included {{ table.name_quoted }} fetch.
+type {{ table.include }} struct {
+	spec includeSpec
+}
+
+{{ gen.filter_methods("b", table.include, table) }}
+{{ gen.order_methods("b", table.include, table) }}
+func (b *{{ table.include }}) Limit(n int) *{{ table.include }} { b.spec.limit, b.spec.limitSet = n, true; return b }
+
+{% for relation in table.forward_relations %}
+func (b *{{ table.include }}) Include{{ relation.field }}(opts ...func(*{{ relation.target_model }}Include)) *{{ table.include }} {
+	n := &{{ relation.target_model }}Include{spec: includeSpec{table: {{ relation.target_name_quoted }}, pairs: {{ relation.pairs_literal }}, as: {{ relation.as_quoted }}, kind: "first"}}
+	for _, o := range opts {
+		o(n)
+	}
+	b.spec.nested = append(b.spec.nested, n.spec)
+	return b
+}
+{% endfor %}
+{% for relation in table.reverse_relations %}
+func (b *{{ table.include }}) Include{{ relation.field }}(opts ...func(*{{ relation.target_model }}Include)) *{{ table.include }} {
+	n := &{{ relation.target_model }}Include{spec: includeSpec{table: {{ relation.target_name_quoted }}, pairs: {{ relation.pairs_literal }}, as: {{ relation.as_quoted }}, kind: "array"}}
+	for _, o := range opts {
+		o(n)
+	}
+	b.spec.nested = append(b.spec.nested, n.spec)
+	return b
+}
+{% endfor %}
+
+func {{ table.lower_model }}FromRecord(rec protocol.Record) {{ table.model }} {
+	m := {{ table.model }}{}
+{% for column in table.columns %}
+	m.{{ column.field }} = {{ column.record_helper }}(rec, {{ column.name_quoted }})
+{% endfor %}
+{% for relation in table.forward_relations %}
+	if parent, ok := rec[{{ relation.as_quoted }}].(map[string]any); ok {
+		v := {{ relation.target_lower_model }}FromRecord(parent)
+		m.{{ relation.field }} = &v
+	}
+{% endfor %}
+{% for relation in table.reverse_relations %}
+	if kids, ok := rec[{{ relation.as_quoted }}].([]any); ok {
+		for _, k := range kids {
+			if child, ok := k.(map[string]any); ok {
+				m.{{ relation.field }} = append(m.{{ relation.field }}, {{ relation.target_lower_model }}FromRecord(child))
+			}
+		}
+	}
+{% endfor %}
+	return m
+}

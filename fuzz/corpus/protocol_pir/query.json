@@ -1,0 +1,2 @@
+{"statements":[{"kind":"query","name":"answer","relation":{"nodes":{"row":{"kind":"rows","scope":"row","columns":[{"name":"value","type":"int64"}],"rows":[["42"]]}},"root":{"node":"row","cardinality":"exactly_one"}}}],"result":"answer"}
+

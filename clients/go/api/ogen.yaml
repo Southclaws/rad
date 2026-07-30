@@ -1,0 +1,8 @@
+parser: {}
+generator:
+  features:
+    disable:
+      - paths/server
+      - webhooks/server
+      - ogen/unimplemented
+      - ogen/otel

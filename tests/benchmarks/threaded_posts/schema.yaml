@@ -1,0 +1,16 @@
+# Stable recursive-relations benchmark schema. Roots have both references set
+# to null. Replies retain both their thread root and their immediate parent.
+tables:
+  - id: 1
+    name: posts
+    columns:
+      - { id: 1, name: post_id, type: string, pk: true }
+      - { id: 2, name: root_post_id, type: string, nullable: true, ref: posts.post_id }
+      - { id: 3, name: reply_to_post_id, type: string, nullable: true, ref: posts.post_id }
+      - { id: 4, name: author_id, type: string }
+      - { id: 5, name: post_body, type: string }
+      - { id: 6, name: post_score, type: int64 }
+      - { id: 7, name: post_created_at, type: int64 }
+    indexes:
+      - { columns: [root_post_id, post_created_at] }
+      - { columns: [reply_to_post_id, post_created_at] }

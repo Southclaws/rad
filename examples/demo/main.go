@@ -24,11 +24,11 @@ import (
 
 	tracker "demo/generated"
 
-	radclient "github.com/Southclaws/rad/rad/client"
+	rad "github.com/Southclaws/rad/clients/go/rad"
 )
 
 func main() {
-	if err := run(); err != nil {
+	if err := runDemo(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -36,19 +36,14 @@ func main() {
 
 func ptr[T any](v T) *T { return &v }
 
-func run() error {
+func runTracker(url string) error {
 	ctx := context.Background()
-
-	url := os.Getenv("RAD_URL")
-	if url == "" {
-		url = "rad://localhost:7237"
-	}
 	db, err := tracker.Connect(url)
 	if err != nil {
 		return err
 	}
 	if err := db.Ping(ctx); err != nil {
-		var apiError *radclient.APIError
+		var apiError *rad.APIError
 		if errors.As(err, &apiError) {
 			return err
 		}

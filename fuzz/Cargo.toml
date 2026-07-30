@@ -1,0 +1,48 @@
+[package]
+name = "rad-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+rad = { path = ".." }
+
+[[bin]]
+name = "protocol_lir"
+path = "fuzz_targets/protocol_lir.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "protocol_pir"
+path = "fuzz_targets/protocol_pir.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "schema"
+path = "fuzz_targets/schema.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ordered_tuple"
+path = "fuzz_targets/ordered_tuple.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "row_codec"
+path = "fuzz_targets/row_codec.rs"
+test = false
+doc = false
+bench = false

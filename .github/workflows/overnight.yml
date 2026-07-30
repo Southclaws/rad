@@ -1,0 +1,199 @@
+name: Rad overnight confidence
+
+on:
+  schedule:
+    - cron: "17 22 * * *"
+      timezone: Europe/London
+  workflow_dispatch:
+    inputs:
+      wave_minutes:
+        description: Minutes per wave (two sequential waves; keep below 300)
+        required: true
+        default: 230
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rad-confidence-${{ github.repository }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  RAD_SOURCE_REVISION: ${{ github.sha }}
+
+jobs:
+  dst:
+    name: DST overnight wave ${{ matrix.wave }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        wave: [1, 2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 270
+    env:
+      CAMPAIGN_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.wave_minutes || '230' }}
+      CARGO_TARGET_DIR: target
+      RAD_TEST_ARTIFACT_DIR: ${{ github.workspace }}/artifacts/dst
+      WAVE: ${{ matrix.wave }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: native
+          save-if: false
+
+      - name: Run bounded semantic schedules
+        run: |
+          set -euo pipefail
+          if (( CAMPAIGN_MINUTES < 1 || CAMPAIGN_MINUTES > 300 )); then
+            echo "wave_minutes must be between 1 and 300" >&2
+            exit 2
+          fi
+          export RAD_DST_SECONDS="$((CAMPAIGN_MINUTES * 60))"
+          export RAD_DST_SEED_START="$(((WAVE - 1) * 1000000 + 4))"
+          mkdir -p "$RAD_TEST_ARTIFACT_DIR"
+          printf '{"format":"rad-overnight-wave-v1","revision":"%s","campaign":"dst","wave":%d,"requested_minutes":%d,"seed_start":%d}\n' \
+            "$GITHUB_SHA" "$WAVE" "$CAMPAIGN_MINUTES" "$RAD_DST_SEED_START" > "$RAD_TEST_ARTIFACT_DIR/context.json"
+          cargo test --locked --test schema_scheduler_simulation turmoil_schema_work_soak -- --exact --ignored --nocapture \
+            2>&1 | tee "$RAD_TEST_ARTIFACT_DIR/run.log"
+
+      - name: Retain DST evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rad-overnight-dst-wave-${{ matrix.wave }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: artifacts/dst
+          if-no-files-found: error
+          retention-days: 60
+
+  generative:
+    name: generative overnight wave ${{ matrix.wave }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        wave: [1, 2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 270
+    env:
+      CAMPAIGN_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.wave_minutes || '230' }}
+      CARGO_TARGET_DIR: target
+      RAD_TEST_ARTIFACT_DIR: ${{ github.workspace }}/artifacts/generative
+      WAVE: ${{ matrix.wave }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: native
+          save-if: false
+
+      - name: Run generated semantic wave
+        run: |
+          set -euo pipefail
+          if (( CAMPAIGN_MINUTES < 1 || CAMPAIGN_MINUTES > 300 )); then
+            echo "wave_minutes must be between 1 and 300" >&2
+            exit 2
+          fi
+          export RAD_GEN_SOAK_SECONDS="$((CAMPAIGN_MINUTES * 60))"
+          export RAD_GEN_SOAK_SEED="$((GITHUB_RUN_ID + WAVE * 100000000))"
+          mkdir -p "$RAD_TEST_ARTIFACT_DIR"
+          cargo test --locked --test generative_differential generative_semantic_soak -- --exact --ignored --nocapture \
+            2>&1 | tee "$RAD_TEST_ARTIFACT_DIR/run.log"
+
+      - name: Retain minimized fixtures and replay context
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rad-overnight-generative-wave-${{ matrix.wave }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: artifacts/generative
+          if-no-files-found: error
+          retention-days: 60
+
+  storage:
+    name: storage overnight wave ${{ matrix.wave }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        wave: [1, 2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 270
+    env:
+      CAMPAIGN_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.wave_minutes || '230' }}
+      CARGO_TARGET_DIR: target
+      WAVE: ${{ matrix.wave }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: native
+          save-if: false
+
+      - name: Verify Docker daemon
+        run: docker info
+
+      - name: Repeatedly qualify RustFS, process death, and Toxiproxy
+        run: |
+          set -euo pipefail
+          if (( CAMPAIGN_MINUTES < 1 || CAMPAIGN_MINUTES > 300 )); then
+            echo "wave_minutes must be between 1 and 300" >&2
+            exit 2
+          fi
+          artifact_dir="$GITHUB_WORKSPACE/artifacts/storage"
+          mkdir -p "$artifact_dir"
+          printf '{"format":"rad-overnight-wave-v1","revision":"%s","campaign":"storage","wave":%d,"requested_minutes":%d,"rustfs":"rustfs/rustfs:1.0.0-beta.11@sha256:84ce557a0245a06a9aae5516f55ee0f007fca78d41df356f419306fdc0cb168c","toxiproxy":"ghcr.io/shopify/toxiproxy:2.12.0@sha256:9378ed52a28bc50edc1350f936f518f31fa95f0d15917d6eb40b8e376d1a214e"}\n' \
+            "$GITHUB_SHA" "$WAVE" "$CAMPAIGN_MINUTES" > "$artifact_dir/context.json"
+          deadline=$((SECONDS + CAMPAIGN_MINUTES * 60))
+          iteration=0
+          while (( SECONDS < deadline )); do
+            iteration=$((iteration + 1))
+            log="$artifact_dir/iteration-$iteration.log"
+            {
+              echo "revision=$GITHUB_SHA"
+              echo "wave=$WAVE"
+              echo "iteration=$iteration"
+              cargo test --locked --test kv_backend_qualification rustfs_backend_satisfies_the_storage_qualification_suite -- --exact --ignored --nocapture
+              cargo test --locked --test storage_crash_recovery rustfs_backend_recovers_from_real_process_death -- --exact --ignored --nocapture
+              cargo test --locked --test storage_network_faults rustfs_network_fault_matrix_preserves_commit_and_writer_safety -- --exact --ignored --nocapture
+              RAD_TEST_ARTIFACT_DIR="$artifact_dir" RAD_TEST_S3_LATENCY_SEED="$((GITHUB_RUN_ID + WAVE * 1000000 + iteration))" cargo test --locked --test s3_latency seeded_s3_latency_preserves_http_write_reopen_and_query_correctness -- --exact --ignored --nocapture
+            } 2>&1 | tee "$log"
+          done
+          printf '{"format":"rad-storage-campaign-v1","revision":"%s","wave":%d,"completed_iterations":%d,"requested_minutes":%d}\n' \
+            "$GITHUB_SHA" "$WAVE" "$iteration" "$CAMPAIGN_MINUTES" > "$artifact_dir/campaign.json"
+
+      - name: Retain storage evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rad-overnight-storage-wave-${{ matrix.wave }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: artifacts/storage
+          if-no-files-found: error
+          retention-days: 60

@@ -1,0 +1,47 @@
+{
+  "name": "customer_order_summary",
+  "description": "Join, group, aggregate, order and slice across customers and orders.",
+  "warmup": 1,
+  "iterations": 8,
+  "expect_rows": 25,
+  "program": {
+    "statements": [{
+      "name": "customer_order_summary",
+      "kind": "query",
+      "relation": {
+        "nodes": {
+          "customers": { "kind": "scan", "table": "customers", "scope": "c" },
+          "orders": { "kind": "scan", "table": "orders", "scope": "o" },
+          "joined": {
+            "kind": "join", "left": "customers", "right": "orders", "join": "inner",
+            "on": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "c", "column": "customer_id" },
+              "right": { "kind": "col", "scope": "o", "column": "order_customer_id" }
+            }
+          },
+          "summarized": {
+            "kind": "aggregate", "input": "joined", "scope": "s",
+            "groups": [
+              { "as": "customer_id", "expr": { "kind": "col", "scope": "c", "column": "customer_id" } },
+              { "as": "region", "expr": { "kind": "col", "scope": "c", "column": "customer_region" } }
+            ],
+            "aggs": [
+              { "fn": "count", "as": "order_count", "arg": { "kind": "col", "scope": "o", "column": "order_id" } },
+              { "fn": "sum", "as": "lifetime_value", "arg": { "kind": "col", "scope": "o", "column": "order_total" } }
+            ]
+          },
+          "ranked": {
+            "kind": "order", "input": "summarized",
+            "terms": [
+              { "expr": { "kind": "col", "scope": "s", "column": "lifetime_value" }, "desc": true },
+              { "expr": { "kind": "col", "scope": "s", "column": "customer_id" } }
+            ]
+          },
+          "top": { "kind": "slice", "input": "ranked", "limit": 25 }
+        },
+        "root": { "node": "top", "cardinality": "many" }
+      }
+    }]
+  }
+}

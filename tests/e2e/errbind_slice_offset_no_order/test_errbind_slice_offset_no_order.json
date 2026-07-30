@@ -27,5 +27,5 @@
       }
     ]
   },
-  "error": { "code": "invalid", "contains": "offset" }
+  "error": { "code": "invalid", "reason": "nondeterministic_order", "contains": "offset" }
 }
