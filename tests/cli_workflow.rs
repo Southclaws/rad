@@ -44,8 +44,8 @@ async fn generated_cli_drives_the_schema_workflow_over_http() {
             "--catalog-mode",
             "schema",
         ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
     let mut server = Server(child);

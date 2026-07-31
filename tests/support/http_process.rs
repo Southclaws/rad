@@ -40,8 +40,8 @@ impl RadProcess {
             ])
             .env("AWS_ACCESS_KEY_ID", &config.access_key)
             .env("AWS_SECRET_ACCESS_KEY", &config.secret_key)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
             .spawn()?;
         let mut process = Self {
             child,
