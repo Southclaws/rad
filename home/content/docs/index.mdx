@@ -84,3 +84,17 @@ Once the basic loop makes sense:
 
 You can ignore the engine vocabulary until you want to understand or change
 the database itself. It is not required reading before creating a table.
+
+## Use Rad with an AI agent
+
+The CLI ships one version-matched [Agent Skills](https://agentskills.io) guide
+covering the complete project workflow:
+
+```console
+$ rad skills get rad
+```
+
+Use `rad skills get rad --full` for detailed schema, operations, and generated
+Go client references. Prefer `--output json` for finite commands and add
+`--non-interactive` in unattended work so required confirmation becomes an
+explicit error instead of a prompt.

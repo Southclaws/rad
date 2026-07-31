@@ -146,6 +146,7 @@ tasks:
   generate:cli:
     desc: Regenerate the Clap command surface and CLI documentation from OpenCLI
     cmds:
+      - opencli validate opencli.yaml
       - opencli generate rust-clap opencli.yaml --output src/cli --module generated
       - go run ./tools/clidoc -input opencli.yaml -output home/content/docs/cli.mdx
 

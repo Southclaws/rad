@@ -29,7 +29,13 @@ async fn generated_cli_drives_the_schema_workflow_over_http() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
-    std::fs::write(&config, format!("database_url: rad://127.0.0.1:{port}\n")).unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "database_url: rad://127.0.0.1:{port}\ngenerate:\n  - language: go\n    output: generated\n    package: db\n"
+        ),
+    )
+    .unwrap();
 
     let binary = env!("CARGO_BIN_EXE_rad");
     let child = Command::new(binary)
@@ -56,9 +62,18 @@ async fn generated_cli_drives_the_schema_workflow_over_http() {
     let body: serde_json::Value = serde_json::from_slice(&diff.stdout).unwrap();
     assert_eq!(body["changes"].as_array().unwrap().len(), 1);
 
-    let migrate = run(binary, &config, &schema, &["migrate"]);
+    let migrate = run(binary, &config, &schema, &["migrate", "--output", "json"]);
     assert_success(&migrate);
-    assert!(String::from_utf8_lossy(&migrate.stdout).contains("Schema version 1 committed"));
+    let migrate_body: serde_json::Value = serde_json::from_slice(&migrate.stdout).unwrap();
+    assert_eq!(migrate_body["state"], "ready");
+    assert_eq!(migrate_body["schema_version"], 1);
+    assert_eq!(migrate_body["generated"].as_array().unwrap().len(), 1);
+    assert!(
+        migrate_body["snapshot"]
+            .as_str()
+            .unwrap()
+            .ends_with("rad.state/changelog/00000001.rad.schema.yaml")
+    );
     assert!(directory.path().join("rad.state/schema.lock.json").exists());
 
     let generated = directory.path().join("generated");
@@ -79,6 +94,12 @@ async fn generated_cli_drives_the_schema_workflow_over_http() {
     let status = run(binary, &config, &schema, &["status"]);
     assert_success(&status);
     assert!(String::from_utf8_lossy(&status.stdout).contains("Status: synchronized"));
+    let json_status = run(binary, &config, &schema, &["status", "--output", "json"]);
+    assert_success(&json_status);
+    let status_body: serde_json::Value = serde_json::from_slice(&json_status.stdout).unwrap();
+    assert_eq!(status_body["status"], "synchronized");
+    assert_eq!(status_body["desired_changes"], 0);
+    assert_eq!(status_body["generated_clients"][0]["state"], "synchronized");
 
     let inserted = reqwest::Client::new()
         .post(format!("http://127.0.0.1:{port}/execute"))
@@ -143,10 +164,16 @@ async fn generated_cli_drives_the_schema_workflow_over_http() {
     );
 
     std::fs::write(&schema, "tables: []\n").unwrap();
-    let destructive = run(binary, &config, &schema, &["migrate"]);
+    let destructive = run(
+        binary,
+        &config,
+        &schema,
+        &["migrate", "--non-interactive", "--output", "json"],
+    );
     assert_failure(&destructive);
-    assert!(String::from_utf8_lossy(&destructive.stdout).contains("Continue? [y/N]"));
-    assert!(String::from_utf8_lossy(&destructive.stderr).contains("migration cancelled"));
+    assert!(destructive.stdout.is_empty());
+    let error: serde_json::Value = serde_json::from_slice(&destructive.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "confirmation_required");
 
     let indexed = SCHEMA.replace(
         "    columns:\n",
@@ -173,6 +200,49 @@ async fn generated_cli_drives_the_schema_workflow_over_http() {
     let final_status = run(binary, &config, &schema, &["status"]);
     assert_success(&final_status);
     assert!(String::from_utf8_lossy(&final_status.stdout).contains("Status: synchronized"));
+
+    let transitions = run(
+        binary,
+        &config,
+        &schema,
+        &["transitions", "list", "--output", "json"],
+    );
+    assert_success(&transitions);
+    let transitions: serde_json::Value = serde_json::from_slice(&transitions.stdout).unwrap();
+    let transition = transitions["transitions"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    assert_eq!(transition["state"], "ready");
+    let transition_id = transition["transition_id"].as_str().unwrap();
+
+    let waited = run(
+        binary,
+        &config,
+        &schema,
+        &["transitions", "wait", transition_id, "--output", "json"],
+    );
+    assert_success(&waited);
+    let waited: serde_json::Value = serde_json::from_slice(&waited.stdout).unwrap();
+    assert_eq!(waited["transition_id"], transition_id);
+    assert_eq!(waited["state"], "ready");
+
+    let doctor = Command::new(binary)
+        .args([
+            "doctor",
+            "--config",
+            &config.display().to_string(),
+            "--file",
+            &schema.display().to_string(),
+            "--output",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&doctor);
+    let doctor: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    assert_eq!(doctor["healthy"], true);
 }
 
 fn run_generate(binary: &str, schema: &Path, output: &Path) -> Output {

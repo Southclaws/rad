@@ -4,7 +4,23 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "**"
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "!home/content/blog/**"
+      # These Markdown files ship as CLI payload and remain product inputs.
+      - "skill-data/**"
+      - "skills/**"
   pull_request:
+    paths:
+      - "**"
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "!home/content/blog/**"
+      # These Markdown files ship as CLI payload and remain product inputs.
+      - "skill-data/**"
+      - "skills/**"
 
 permissions:
   contents: read

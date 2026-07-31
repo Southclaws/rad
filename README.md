@@ -117,6 +117,31 @@ that is ahead of the local project. The generated client is tied to that exact
 accepted schema version and hash and refuses to run against a different server
 schema. Application code should not edit `rad.state/`.
 
+## AI agents
+
+Rad ships an [Agent Skills](https://agentskills.io)-compatible guide that
+always matches the installed CLI. Start an agent session with:
+
+```sh
+rad skills get rad
+```
+
+Use `rad skills get rad --full` for the bundled schema, operations, and Go
+client references. `rad --help` links to the relevant product documentation,
+and finite commands support `--output json`. Add `--non-interactive` in
+unattended work so Rad fails instead of prompting for input or destructive
+consent.
+
+The small discovery skill in `skills/rad/` can be installed into compatible
+coding agents with:
+
+```sh
+npx skills add Southclaws/rad --skill rad
+```
+
+The discovery skill redirects the agent to the version-matched instructions
+embedded in the `rad` binary.
+
 ## Development
 
 Useful cross-platform project commands are defined in

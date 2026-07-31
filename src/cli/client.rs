@@ -6,8 +6,8 @@ use serde::de::DeserializeOwned;
 use url::Url;
 
 use crate::http::generated::types::{
-    Problem, SchemaDiffResult, SchemaMigrateRequest, SchemaMigrateResult, SchemaRequest,
-    SchemaState, TransitionControl, TransitionState,
+    DatabaseInfo, Health, Problem, SchemaDiffResult, SchemaMigrateRequest, SchemaMigrateResult,
+    SchemaRequest, SchemaState, TransitionControl, TransitionKind, TransitionList, TransitionState,
 };
 use crate::process::Result;
 
@@ -29,6 +29,14 @@ impl Client {
 
     pub(super) async fn schema(&self) -> Result<SchemaState> {
         self.get("schema").await
+    }
+
+    pub(super) async fn health(&self) -> Result<Health> {
+        self.get("health").await
+    }
+
+    pub(super) async fn info(&self) -> Result<DatabaseInfo> {
+        self.get("info").await
     }
 
     pub(super) async fn schema_diff(&self, schema: String) -> Result<SchemaDiffResult> {
@@ -100,6 +108,38 @@ impl Client {
         }
     }
 
+    pub(super) async fn transitions(
+        &self,
+        kind: Option<&TransitionKind>,
+        state: Option<&TransitionState>,
+    ) -> Result<TransitionList> {
+        let mut endpoint = self.endpoint("schema/transitions")?;
+        {
+            let mut query = endpoint.query_pairs_mut();
+            if let Some(kind) = kind {
+                query.append_pair("kind", kind.as_str());
+            }
+            if let Some(state) = state {
+                query.append_pair("state", state.as_str());
+            }
+        }
+        let response = self.http.get(endpoint).send().await?;
+        decode(response).await
+    }
+
+    pub(super) async fn transition(&self, transition: &str) -> Result<TransitionControl> {
+        self.get(&format!("schema/transitions/{transition}")).await
+    }
+
+    pub(super) async fn cancel_transition(&self, transition: &str) -> Result<TransitionControl> {
+        let response = self
+            .http
+            .post(self.endpoint(&format!("schema/transitions/{transition}/cancel"))?)
+            .send()
+            .await?;
+        decode(response).await
+    }
+
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let response = self.http.get(self.endpoint(path)?).send().await?;
         decode(response).await
@@ -136,14 +176,28 @@ async fn decode<T: DeserializeOwned>(response: Response) -> Result<T> {
 }
 
 #[derive(Debug)]
-struct ApiError {
+pub(super) struct ApiError {
     status: StatusCode,
     problem: Problem,
 }
 
-impl std::fmt::Display for ApiError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (code, reason, detail) = match &self.problem {
+impl ApiError {
+    pub(super) fn value(&self) -> serde_json::Value {
+        let (code, reason, detail) = self.parts();
+        serde_json::json!({
+            "ok": false,
+            "error": {
+                "code": code,
+                "reason": reason,
+                "message": detail.unwrap_or("request failed"),
+                "http_status": self.status.as_u16(),
+                "problem": self.problem,
+            }
+        })
+    }
+
+    fn parts(&self) -> (&'static str, &str, Option<&str>) {
+        match &self.problem {
             Problem::InvalidProblem(problem) => (
                 "invalid",
                 problem.reason.as_str(),
@@ -169,7 +223,13 @@ impl std::fmt::Display for ApiError {
                 problem.reason.as_str(),
                 problem.detail.as_deref(),
             ),
-        };
+        }
+    }
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (code, reason, detail) = self.parts();
         write!(
             formatter,
             "{} ({code}/{reason}, HTTP {})",

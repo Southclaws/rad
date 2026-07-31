@@ -12,11 +12,47 @@ pub enum GenerateLang {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum GlobalOutput {
+    #[value(name = r"text")]
+    Text,
+    #[value(name = r"json")]
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum SchemaDiffFormat {
     #[value(name = r"text")]
     Text,
     #[value(name = r"json")]
     Json,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum SchemaTransitionsListKind {
+    #[value(name = r"index-build")]
+    IndexBuild,
+    #[value(name = r"column-replacement")]
+    ColumnReplacement,
+    #[value(name = r"constraint-validation")]
+    ConstraintValidation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum SchemaTransitionsListState {
+    #[value(name = r"waiting")]
+    Waiting,
+    #[value(name = r"building")]
+    Building,
+    #[value(name = r"catching-up")]
+    CatchingUp,
+    #[value(name = r"validating")]
+    Validating,
+    #[value(name = r"ready")]
+    Ready,
+    #[value(name = r"failed")]
+    Failed,
+    #[value(name = r"cancelled")]
+    Cancelled,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -37,11 +73,42 @@ pub enum ServeStorage {
     S3,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum SkillsGetName {
+    #[value(name = r"rad")]
+    Rad,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum SkillsPathName {
+    #[value(name = r"rad")]
+    Rad,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum SpecFormat {
+    #[value(name = r"yaml")]
+    Yaml,
+    #[value(name = r"json")]
+    Json,
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = r"rad",
     version = r"0.1.0",
-    about = r"The radically different database."
+    about = r"The radically different relational database.",
+    long_about = r"Rad is a relational database. This binary provides the database server,
+schema migration tools and type-safe code generation for database clients.
+
+Start here (for AI agents):
+  rad skills get rad
+
+Machine-readable output:
+  rad --output json <command>
+
+Documentation: https://www.radengine.dev/docs
+"
 )]
 pub struct Cli {
     #[command(flatten)]
@@ -52,11 +119,28 @@ pub struct Cli {
 }
 
 #[derive(Args)]
-pub struct GlobalArgs {}
+pub struct GlobalArgs {
+    #[arg(
+        id = r"output",
+        long = r"output",
+        help = r"Output format for finite command results.",
+        global = true,
+        default_value = r"text",
+        value_enum
+    )]
+    pub output: GlobalOutput,
+    #[arg(id = r"json", long = r"json", help = r"Emit JSON; shorthand for --output json.", global = true, default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    pub json: bool,
+    #[arg(id = r"non-interactive", long = r"non-interactive", help = r"Never prompt; fail when confirmation or input is required.", global = true, default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    pub non_interactive: bool,
+}
 
 impl std::fmt::Debug for GlobalArgs {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug = formatter.debug_struct("GlobalArgs");
+        debug.field("output", &self.output);
+        debug.field("json", &self.json);
+        debug.field("non_interactive", &self.non_interactive);
         debug.finish()
     }
 }
@@ -72,29 +156,123 @@ impl GlobalArgs {
 pub enum RootCommand {
     #[command(
         name = r"init",
-        about = r"Initialize a Rad project.",
-        long_about = r"Create rad.config.yaml and rad.schema.yaml in a new or existing project directory. In a terminal, Rad guides you through the small set of project choices. Use --yes to accept defaults without prompts. Existing project files are never overwritten, and accepted rad.state is created only by a successful schema migration or pull.
-"
+        about = r"Initialize a Rad project without overwriting existing project files.",
+        long_about = r"Create rad.config.yaml and rad.schema.yaml in a new or existing project
+directory. In a terminal, Rad guides you through the small set of project
+choices. Use --yes to accept defaults without prompts. Existing project
+files are never overwritten, and accepted rad.state is created only by a
+successful schema migration or pull.
+
+Documentation: https://www.radengine.dev/docs/cli#rad-init
+",
+        after_help = r"Guided setup in the current directory.
+  rad init
+Unattended setup with defaults.
+  rad --output json init --yes ./app"
     )]
     Init(InitArgs),
-    #[command(name = r"serve", about = r"Run the Rad database server.")]
+    #[command(
+        name = r"serve",
+        about = r"Run the database API and administration UI.",
+        long_about = r"Run Rad until interrupted. A fresh database defaults to direct catalog
+management; pass --catalog-mode schema when rad.schema.yaml should own all
+catalog changes. Catalog mode is immutable after database initialization.
+
+The public API uses --addr (default port 7237). The administration UI uses
+the following port (default 7238).
+
+Documentation: https://www.radengine.dev/docs/cli#rad-serve
+",
+        after_help = r"Start an in-memory schema-managed development database.
+  rad serve --storage memory --catalog-mode schema
+Start against an S3-compatible endpoint.
+  rad serve --storage s3 --s3-bucket rad --s3-endpoint http://127.0.0.1:9000"
+    )]
     Serve(ServeArgs),
     #[command(
         name = r"validate",
-        about = r"Validate a rad.schema.yaml file.",
-        long_about = r"Parse and validate the schema structure, types, and references locally without calling out to the remote database.
-"
+        about = r"Validate a desired schema locally without contacting a server.",
+        long_about = r"Parse and validate rad.schema.yaml structure, types, identities,
+constraints, indexes, and references without changing any state or
+contacting the configured database.
+
+Documentation: https://www.radengine.dev/docs/schemas
+",
+        after_help = r"  rad validate
+  rad --output json validate --file ./schema/rad.schema.yaml"
     )]
     Validate(ValidateArgs),
-    #[command(name = r"schema", about = r"Inspect and manage the database schema.")]
+    #[command(
+        name = r"doctor",
+        about = r"Diagnose project, server, accepted-state, generation, and transition health.",
+        long_about = r"Run read-only checks against rad.config.yaml, rad.schema.yaml, rad.state,
+the configured server, generated clients, and durable schema transitions.
+Warnings identify expected or recoverable drift. Failed checks make the
+command exit unsuccessfully.
+
+Documentation: https://www.radengine.dev/docs/cli#rad-doctor
+",
+        after_help = r"  rad doctor
+  rad --output json doctor"
+    )]
+    Doctor(DoctorArgs),
+    #[command(
+        name = r"schema",
+        about = r"Validate, inspect, plan, apply, recover, and monitor schemas.",
+        long_about = r"Manage the desired schema in rad.schema.yaml, the database's accepted
+schema, local accepted state in rad.state, generated clients, and durable
+online transition work.
+
+Safe workflow:
+  rad validate
+  rad schema diff
+  rad schema migrate
+  rad schema status
+
+Documentation: https://www.radengine.dev/docs/schemas/manage
+"
+    )]
     Schema(SchemaArgs),
     #[command(
         name = r"generate",
-        about = r"Generate a typed client for the accepted schema.",
-        long_about = r"Generate a typed client from the accepted schema state recorded by rad schema migrate or rad schema pull. The lockfile points to an immutable changelog snapshot so generation cannot silently target unapplied local schema changes. rad generate reads this state; it does not create it.
-"
+        about = r"Generate a typed Go client for the exact accepted schema.",
+        long_about = r"Generate a typed client from the immutable accepted schema snapshot
+recorded by rad schema migrate or rad schema pull. Generation refuses to
+target unapplied desired changes. rad generate reads accepted state; it
+does not create or repair it.
+
+Documentation: https://www.radengine.dev/docs/concepts/schemas-and-clients
+",
+        after_help = r"  rad generate
+  rad --output json generate --out internal/db --pkg db"
     )]
     Generate(GenerateArgs),
+    #[command(
+        name = r"skills",
+        about = r"Discover the Agent Skill bundled with this Rad version.",
+        long_about = r"Rad ships one Agent Skills-compatible guide covering project setup,
+declarative schema editing, migration safety, client generation,
+diagnostics, and operations. The bundled instructions always match this
+binary.
+
+Agent Skills standard: https://agentskills.io
+Documentation: https://www.radengine.dev/docs/cli#rad-skills
+"
+    )]
+    Skills(SkillsArgs),
+    #[command(
+        name = r"spec",
+        about = r"Print the bundled OpenCLI command specification.",
+        long_about = r"Emit the exact command contract used to generate this binary's parser and
+CLI documentation. YAML is the normative source; JSON is available for
+machine consumers.
+
+Documentation: https://www.radengine.dev/docs/cli#rad-spec
+",
+        after_help = r"  rad spec
+  rad spec --format json"
+    )]
+    Spec(SpecArgs),
 }
 
 #[allow(async_fn_in_trait)]
@@ -115,6 +293,11 @@ pub trait Handler {
         &mut self,
         globals: &GlobalArgs,
         args: ValidateArgs,
+    ) -> std::result::Result<(), Self::Error>;
+    async fn doctor(
+        &mut self,
+        globals: &GlobalArgs,
+        args: DoctorArgs,
     ) -> std::result::Result<(), Self::Error>;
     async fn schema_status(
         &mut self,
@@ -140,10 +323,67 @@ pub trait Handler {
         context_schema: &SchemaOptions,
         args: SchemaPullArgs,
     ) -> std::result::Result<(), Self::Error>;
+    async fn schema_json_schema(
+        &mut self,
+        globals: &GlobalArgs,
+        context_schema: &SchemaOptions,
+        args: SchemaJsonSchemaArgs,
+    ) -> std::result::Result<(), Self::Error>;
+    async fn schema_transitions_list(
+        &mut self,
+        globals: &GlobalArgs,
+        context_schema: &SchemaOptions,
+        context_schema_transitions: &SchemaTransitionsOptions,
+        args: SchemaTransitionsListArgs,
+    ) -> std::result::Result<(), Self::Error>;
+    async fn schema_transitions_get(
+        &mut self,
+        globals: &GlobalArgs,
+        context_schema: &SchemaOptions,
+        context_schema_transitions: &SchemaTransitionsOptions,
+        args: SchemaTransitionsGetArgs,
+    ) -> std::result::Result<(), Self::Error>;
+    async fn schema_transitions_wait(
+        &mut self,
+        globals: &GlobalArgs,
+        context_schema: &SchemaOptions,
+        context_schema_transitions: &SchemaTransitionsOptions,
+        args: SchemaTransitionsWaitArgs,
+    ) -> std::result::Result<(), Self::Error>;
+    async fn schema_transitions_cancel(
+        &mut self,
+        globals: &GlobalArgs,
+        context_schema: &SchemaOptions,
+        context_schema_transitions: &SchemaTransitionsOptions,
+        args: SchemaTransitionsCancelArgs,
+    ) -> std::result::Result<(), Self::Error>;
     async fn generate(
         &mut self,
         globals: &GlobalArgs,
         args: GenerateArgs,
+    ) -> std::result::Result<(), Self::Error>;
+    async fn skills_list(
+        &mut self,
+        globals: &GlobalArgs,
+        context_skills: &SkillsOptions,
+        args: SkillsListArgs,
+    ) -> std::result::Result<(), Self::Error>;
+    async fn skills_get(
+        &mut self,
+        globals: &GlobalArgs,
+        context_skills: &SkillsOptions,
+        args: SkillsGetArgs,
+    ) -> std::result::Result<(), Self::Error>;
+    async fn skills_path(
+        &mut self,
+        globals: &GlobalArgs,
+        context_skills: &SkillsOptions,
+        args: SkillsPathArgs,
+    ) -> std::result::Result<(), Self::Error>;
+    async fn spec(
+        &mut self,
+        globals: &GlobalArgs,
+        args: SpecArgs,
     ) -> std::result::Result<(), Self::Error>;
 }
 
@@ -196,8 +436,11 @@ impl RootCommand {
             Self::Init(args) => args.apply_track_changed(child_matches),
             Self::Serve(args) => args.apply_track_changed(child_matches),
             Self::Validate(args) => args.apply_track_changed(child_matches),
+            Self::Doctor(args) => args.apply_track_changed(child_matches),
             Self::Schema(args) => args.apply_track_changed(child_matches),
             Self::Generate(args) => args.apply_track_changed(child_matches),
+            Self::Skills(args) => args.apply_track_changed(child_matches),
+            Self::Spec(args) => args.apply_track_changed(child_matches),
         }
     }
 
@@ -211,8 +454,11 @@ impl RootCommand {
             Self::Init(args) => args.dispatch(globals, handler, writer).await,
             Self::Serve(args) => args.dispatch(globals, handler, writer).await,
             Self::Validate(args) => args.dispatch(globals, handler, writer).await,
+            Self::Doctor(args) => args.dispatch(globals, handler, writer).await,
             Self::Schema(args) => args.dispatch(globals, handler, writer).await,
             Self::Generate(args) => args.dispatch(globals, handler, writer).await,
+            Self::Skills(args) => args.dispatch(globals, handler, writer).await,
+            Self::Spec(args) => args.dispatch(globals, handler, writer).await,
         }
     }
 }
@@ -291,7 +537,7 @@ pub struct ServeArgs {
     #[arg(
         id = r"addr",
         long = r"addr",
-        help = r"HTTP server listen address.",
+        help = r"Public HTTP listen address; the admin UI uses the next port.",
         env = r"RAD_ADDR",
         default_value = r"0.0.0.0:7237"
     )]
@@ -299,7 +545,7 @@ pub struct ServeArgs {
     #[arg(
         id = r"storage",
         long = r"storage",
-        help = r"Storage backend.",
+        help = r"Storage backend for SlateDB data.",
         env = r"RAD_STORAGE",
         default_value = r"file",
         value_enum
@@ -309,7 +555,7 @@ pub struct ServeArgs {
         id = r"db",
         long = r"db",
         short = 'd',
-        help = r"File storage directory.",
+        help = r"File storage directory; used only with --storage file.",
         env = r"RAD_DATA_DIR",
         default_value = r"data"
     )]
@@ -333,7 +579,7 @@ pub struct ServeArgs {
     #[arg(
         id = r"s3-bucket",
         long = r"s3-bucket",
-        help = r"S3 bucket used by the s3 storage backend.",
+        help = r"S3 bucket; required with --storage s3.",
         env = r"RAD_S3_BUCKET"
     )]
     pub s3_bucket: Option<String>,
@@ -398,7 +644,7 @@ pub struct ValidateArgs {
         id = r"file",
         long = r"file",
         short = 'f',
-        help = r"Desired schema file.",
+        help = r"Desired declarative schema file.",
         default_value = r"rad.schema.yaml"
     )]
     pub file: std::path::PathBuf,
@@ -429,6 +675,50 @@ impl ValidateArgs {
     }
 }
 #[derive(Args)]
+pub struct DoctorArgs {
+    #[arg(
+        id = r"config",
+        long = r"config",
+        help = r"Project configuration file; relative schema and output paths resolve from it.",
+        default_value = r"rad.config.yaml"
+    )]
+    pub config: std::path::PathBuf,
+    #[arg(
+        id = r"file",
+        long = r"file",
+        short = 'f',
+        help = r"Desired declarative schema file.",
+        default_value = r"rad.schema.yaml"
+    )]
+    pub file: std::path::PathBuf,
+}
+impl std::fmt::Debug for DoctorArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("DoctorArgs");
+        debug.field("config", &self.config);
+        debug.field("file", &self.file);
+        debug.finish()
+    }
+}
+
+impl DoctorArgs {
+    #[allow(clippy::unused_self)]
+    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
+        let _ = matches;
+    }
+    pub const OPERATION_ID: &'static str = r"doctor";
+}
+impl DoctorArgs {
+    async fn dispatch<H: Handler, W: std::io::Write>(
+        self,
+        globals: &GlobalArgs,
+        handler: &mut H,
+        _writer: &mut W,
+    ) -> std::result::Result<(), H::Error> {
+        handler.doctor(globals, self).await
+    }
+}
+#[derive(Args)]
 pub struct SchemaArgs {
     #[command(flatten)]
     pub options: SchemaOptions,
@@ -450,7 +740,7 @@ pub struct SchemaOptions {
     #[arg(
         id = r"config",
         long = r"config",
-        help = r"Project configuration file.",
+        help = r"Project configuration file; relative schema and output paths resolve from it.",
         default_value = r"rad.config.yaml"
     )]
     pub config: std::path::PathBuf,
@@ -458,7 +748,7 @@ pub struct SchemaOptions {
         id = r"file",
         long = r"file",
         short = 'f',
-        help = r"Desired schema file.",
+        help = r"Desired declarative schema file.",
         default_value = r"rad.schema.yaml"
     )]
     pub file: std::path::PathBuf,
@@ -504,21 +794,90 @@ impl SchemaArgs {
 pub enum SchemaCommand {
     #[command(
         name = r"status",
-        about = r"Compare server, accepted, desired, and generated schemas."
+        about = r"Compare server, accepted, desired, and generated schema state.",
+        long_about = r"Read the server schema, local immutable accepted snapshot, and desired
+schema, verify configured generated clients, then summarize whether all
+four copies are synchronized. This command does not modify the project
+or database.
+
+Documentation: https://www.radengine.dev/docs/schemas/manage#1-check-the-four-copies
+",
+        after_help = r"  rad schema status
+  rad --output json schema status"
     )]
     Status(SchemaStatusArgs),
     #[command(
         name = r"diff",
-        about = r"Show desired schema changes and data preflight findings."
+        about = r"Plan desired changes and report destructive or blocking findings.",
+        long_about = r"Ask the server to plan rad.schema.yaml against the current accepted
+schema. The plan is read-only and point-in-time. Migration replans
+transactionally before applying. Destructive findings require explicit
+consent; blocking findings cannot be bypassed.
+
+Documentation: https://www.radengine.dev/docs/schemas/manage#2-review-the-plan
+",
+        after_help = r"  rad schema diff
+  rad --output json schema diff"
     )]
     Diff(SchemaDiffArgs),
-    #[command(name = r"migrate", about = r"Apply rad.schema.yaml transactionally.")]
+    #[command(
+        name = r"migrate",
+        about = r"Apply rad.schema.yaml transactionally and wait for online work.",
+        long_about = r"Replan and apply the desired schema against the current catalog. Rad
+refuses blocking changes, requests explicit consent for reported data
+loss, waits for durable online transitions, updates rad.state, and
+regenerates configured clients.
+
+In non-interactive mode, a destructive plan fails unless
+--accept-data-loss is supplied. Never add that flag without reviewing
+the JSON diff and obtaining the user's consent.
+
+Documentation: https://www.radengine.dev/docs/schemas/manage#3-apply-and-wait
+",
+        after_help = r"  rad schema migrate
+  rad --non-interactive --output json schema migrate
+  rad schema migrate --accept-data-loss"
+    )]
     Migrate(SchemaMigrateArgs),
     #[command(
         name = r"pull",
-        about = r"Recover the accepted schema from the database."
+        about = r"Recover desired and accepted local state from the server.",
+        long_about = r"Use the server's accepted schema as the source of truth. Pull refuses
+to overwrite a locally modified rad.schema.yaml unless --force is
+supplied; forced pulls first write a timestamped backup.
+
+Pull is a recovery operation, not the normal way to accept desired
+schema changes.
+
+Documentation: https://www.radengine.dev/docs/schemas/manage#recover-local-state-from-the-server
+",
+        after_help = r"  rad schema pull
+  rad schema pull --force"
     )]
     Pull(SchemaPullArgs),
+    #[command(
+        name = r"json-schema",
+        about = r"Print the bundled JSON Schema for rad.schema.yaml.",
+        long_about = r"Emit the exact rad.schema.yaml JSON Schema bundled with this Rad
+binary. Use it for offline validation, editor integration, or agent
+introspection.
+
+Documentation: https://www.radengine.dev/docs/schemas
+",
+        after_help = r"  rad schema json-schema"
+    )]
+    JsonSchema(SchemaJsonSchemaArgs),
+    #[command(
+        name = r"transitions",
+        about = r"Inspect, wait for, and cancel durable online schema work.",
+        long_about = r"Observe the authoritative lifecycle state of schema transitions.
+Progress counters are advisory; ready, failed, and cancelled are
+terminal states.
+
+Documentation: https://www.radengine.dev/docs/schemas/monitor
+"
+    )]
+    Transitions(SchemaTransitionsArgs),
 }
 
 impl SchemaCommand {
@@ -531,6 +890,8 @@ impl SchemaCommand {
             Self::Diff(args) => args.apply_track_changed(child_matches),
             Self::Migrate(args) => args.apply_track_changed(child_matches),
             Self::Pull(args) => args.apply_track_changed(child_matches),
+            Self::JsonSchema(args) => args.apply_track_changed(child_matches),
+            Self::Transitions(args) => args.apply_track_changed(child_matches),
         }
     }
 
@@ -555,6 +916,14 @@ impl SchemaCommand {
                     .await
             }
             Self::Pull(args) => {
+                args.dispatch(globals, context_schema, handler, writer)
+                    .await
+            }
+            Self::JsonSchema(args) => {
+                args.dispatch(globals, context_schema, handler, writer)
+                    .await
+            }
+            Self::Transitions(args) => {
                 args.dispatch(globals, context_schema, handler, writer)
                     .await
             }
@@ -594,7 +963,7 @@ pub struct SchemaDiffArgs {
     #[arg(
         id = r"format",
         long = r"format",
-        help = r"Output format.",
+        help = r"Output format; retained for compatibility with existing tooling.",
         default_value = r"text",
         value_enum
     )]
@@ -628,9 +997,9 @@ impl SchemaDiffArgs {
 }
 #[derive(Args)]
 pub struct SchemaMigrateArgs {
-    #[arg(id = r"accept-data-loss", long = r"accept-data-loss", help = r"Permit explicitly reported destructive changes.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(id = r"accept-data-loss", long = r"accept-data-loss", help = r"Permit only the destructive findings reported by the migration plan.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pub accept_data_loss: bool,
-    #[arg(id = r"no-generate", long = r"no-generate", help = r"Do not regenerate configured clients.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(id = r"no-generate", long = r"no-generate", help = r"Do not regenerate configured clients after acceptance.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pub no_generate: bool,
 }
 impl std::fmt::Debug for SchemaMigrateArgs {
@@ -662,9 +1031,9 @@ impl SchemaMigrateArgs {
 }
 #[derive(Args)]
 pub struct SchemaPullArgs {
-    #[arg(id = r"force", long = r"force", help = r"Back up and replace a locally modified schema.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(id = r"force", long = r"force", help = r"Back up and replace a locally modified desired schema.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pub force: bool,
-    #[arg(id = r"no-generate", long = r"no-generate", help = r"Do not regenerate configured clients.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(id = r"no-generate", long = r"no-generate", help = r"Do not regenerate configured clients after recovery.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pub no_generate: bool,
 }
 impl std::fmt::Debug for SchemaPullArgs {
@@ -695,12 +1064,395 @@ impl SchemaPullArgs {
     }
 }
 #[derive(Args)]
+pub struct SchemaJsonSchemaArgs {}
+impl std::fmt::Debug for SchemaJsonSchemaArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SchemaJsonSchemaArgs");
+        debug.finish()
+    }
+}
+
+impl SchemaJsonSchemaArgs {
+    #[allow(clippy::unused_self)]
+    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
+        let _ = matches;
+    }
+    pub const OPERATION_ID: &'static str = r"schemaJsonSchema";
+}
+impl SchemaJsonSchemaArgs {
+    async fn dispatch<H: Handler, W: std::io::Write>(
+        self,
+        globals: &GlobalArgs,
+        context_schema: &SchemaOptions,
+        handler: &mut H,
+        _writer: &mut W,
+    ) -> std::result::Result<(), H::Error> {
+        handler
+            .schema_json_schema(globals, context_schema, self)
+            .await
+    }
+}
+#[derive(Args)]
+pub struct SchemaTransitionsArgs {
+    #[command(flatten)]
+    pub options: SchemaTransitionsOptions,
+
+    #[command(subcommand)]
+    pub command: SchemaTransitionsCommand,
+}
+impl std::fmt::Debug for SchemaTransitionsArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SchemaTransitionsArgs");
+        debug.field("options", &self.options);
+        debug.field("command", &self.command);
+        debug.finish()
+    }
+}
+
+#[derive(Args)]
+pub struct SchemaTransitionsOptions {}
+impl std::fmt::Debug for SchemaTransitionsOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SchemaTransitionsOptions");
+        debug.finish()
+    }
+}
+impl SchemaTransitionsOptions {
+    #[allow(clippy::unused_self)]
+    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
+        let _ = matches;
+    }
+}
+
+impl SchemaTransitionsArgs {
+    #[allow(clippy::unused_self)]
+    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
+        let _ = matches;
+        self.options.apply_track_changed(matches);
+        if let Some((_, child_matches)) = matches.subcommand() {
+            self.command.apply_track_changed(child_matches);
+        }
+    }
+}
+impl SchemaTransitionsArgs {
+    async fn dispatch<H: Handler, W: std::io::Write>(
+        self,
+        globals: &GlobalArgs,
+        context_schema: &SchemaOptions,
+        handler: &mut H,
+        writer: &mut W,
+    ) -> std::result::Result<(), H::Error> {
+        self.command
+            .dispatch(globals, context_schema, &self.options, handler, writer)
+            .await
+    }
+}
+#[derive(Debug, Subcommand)]
+pub enum SchemaTransitionsCommand {
+    #[command(
+        name = r"list",
+        about = r"List durable schema transitions, including retained terminal records.",
+        long_about = r"List active transitions and retained terminal records. Filter by
+protocol kind or lifecycle state without changing work.
+
+Documentation: https://www.radengine.dev/docs/schemas/monitor
+",
+        after_help = r"  rad --output json schema transitions list
+  rad schema transitions list --state failed"
+    )]
+    List(SchemaTransitionsListArgs),
+    #[command(
+        name = r"get",
+        about = r"Inspect one transition without advancing it.",
+        long_about = r"Read the durable control record, progress counters, retained-work
+pressure, and last error for one transition.
+
+Documentation: https://www.radengine.dev/docs/schemas/transitions
+",
+        after_help = r"  rad --output json schema transitions get tr42"
+    )]
+    Get(SchemaTransitionsGetArgs),
+    #[command(
+        name = r"wait",
+        about = r"Wait until one transition reaches a terminal state.",
+        long_about = r"Poll one transition until it becomes ready, failed, or cancelled.
+The wait has explicit interval and timeout bounds and never advances
+the transition itself.
+
+Documentation: https://www.radengine.dev/docs/schemas/monitor
+",
+        after_help = r"  rad --output json schema transitions wait tr42"
+    )]
+    Wait(SchemaTransitionsWaitArgs),
+    #[command(
+        name = r"cancel",
+        about = r"Cancel active transition work and schedule partial artifacts for cleanup.",
+        long_about = r"Cancel only when abandoning the requested schema change. The
+operation is idempotent for an already-cancelled transition and
+rejects ready or failed terminal work. Use --yes for unattended
+execution.
+
+Documentation: https://www.radengine.dev/docs/schemas/monitor
+",
+        after_help = r"  rad schema transitions cancel tr42
+  rad --non-interactive schema transitions cancel tr42 --yes"
+    )]
+    Cancel(SchemaTransitionsCancelArgs),
+}
+
+impl SchemaTransitionsCommand {
+    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
+        let Some((_, child_matches)) = matches.subcommand() else {
+            return;
+        };
+        match self {
+            Self::List(args) => args.apply_track_changed(child_matches),
+            Self::Get(args) => args.apply_track_changed(child_matches),
+            Self::Wait(args) => args.apply_track_changed(child_matches),
+            Self::Cancel(args) => args.apply_track_changed(child_matches),
+        }
+    }
+
+    async fn dispatch<H: Handler, W: std::io::Write>(
+        self,
+        globals: &GlobalArgs,
+        context_schema: &SchemaOptions,
+        context_schema_transitions: &SchemaTransitionsOptions,
+        handler: &mut H,
+        writer: &mut W,
+    ) -> std::result::Result<(), H::Error> {
+        match self {
+            Self::List(args) => {
+                args.dispatch(
+                    globals,
+                    context_schema,
+                    context_schema_transitions,
+                    handler,
+                    writer,
+                )
+                .await
+            }
+            Self::Get(args) => {
+                args.dispatch(
+                    globals,
+                    context_schema,
+                    context_schema_transitions,
+                    handler,
+                    writer,
+                )
+                .await
+            }
+            Self::Wait(args) => {
+                args.dispatch(
+                    globals,
+                    context_schema,
+                    context_schema_transitions,
+                    handler,
+                    writer,
+                )
+                .await
+            }
+            Self::Cancel(args) => {
+                args.dispatch(
+                    globals,
+                    context_schema,
+                    context_schema_transitions,
+                    handler,
+                    writer,
+                )
+                .await
+            }
+        }
+    }
+}
+
+#[derive(Args)]
+pub struct SchemaTransitionsListArgs {
+    #[arg(
+        id = r"kind",
+        long = r"kind",
+        help = r"Return only one transition protocol kind.",
+        value_enum
+    )]
+    pub kind: Option<SchemaTransitionsListKind>,
+    #[arg(
+        id = r"state",
+        long = r"state",
+        help = r"Return only one lifecycle state.",
+        value_enum
+    )]
+    pub state: Option<SchemaTransitionsListState>,
+}
+impl std::fmt::Debug for SchemaTransitionsListArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SchemaTransitionsListArgs");
+        debug.field("kind", &self.kind);
+        debug.field("state", &self.state);
+        debug.finish()
+    }
+}
+
+impl SchemaTransitionsListArgs {
+    #[allow(clippy::unused_self)]
+    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
+        let _ = matches;
+    }
+    pub const OPERATION_ID: &'static str = r"schemaTransitionsList";
+}
+impl SchemaTransitionsListArgs {
+    async fn dispatch<H: Handler, W: std::io::Write>(
+        self,
+        globals: &GlobalArgs,
+        context_schema: &SchemaOptions,
+        context_schema_transitions: &SchemaTransitionsOptions,
+        handler: &mut H,
+        _writer: &mut W,
+    ) -> std::result::Result<(), H::Error> {
+        handler
+            .schema_transitions_list(globals, context_schema, context_schema_transitions, self)
+            .await
+    }
+}
+#[derive(Args)]
+pub struct SchemaTransitionsGetArgs {
+    #[arg(
+        id = r"TRANSITION",
+        index = 1,
+        help = r"Durable transition ID, such as tr42."
+    )]
+    pub transition: String,
+}
+impl std::fmt::Debug for SchemaTransitionsGetArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SchemaTransitionsGetArgs");
+        debug.field("transition", &self.transition);
+        debug.finish()
+    }
+}
+
+impl SchemaTransitionsGetArgs {
+    #[allow(clippy::unused_self)]
+    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
+        let _ = matches;
+    }
+    pub const OPERATION_ID: &'static str = r"schemaTransitionsGet";
+}
+impl SchemaTransitionsGetArgs {
+    async fn dispatch<H: Handler, W: std::io::Write>(
+        self,
+        globals: &GlobalArgs,
+        context_schema: &SchemaOptions,
+        context_schema_transitions: &SchemaTransitionsOptions,
+        handler: &mut H,
+        _writer: &mut W,
+    ) -> std::result::Result<(), H::Error> {
+        handler
+            .schema_transitions_get(globals, context_schema, context_schema_transitions, self)
+            .await
+    }
+}
+#[derive(Args)]
+pub struct SchemaTransitionsWaitArgs {
+    #[arg(
+        id = r"interval-ms",
+        long = r"interval-ms",
+        help = r"Poll interval in milliseconds.",
+        default_value = r"500"
+    )]
+    pub interval_ms: i64,
+    #[arg(
+        id = r"timeout-seconds",
+        long = r"timeout-seconds",
+        help = r"Maximum wait in seconds.",
+        default_value = r"300"
+    )]
+    pub timeout_seconds: i64,
+    #[arg(
+        id = r"TRANSITION",
+        index = 1,
+        help = r"Durable transition ID, such as tr42."
+    )]
+    pub transition: String,
+}
+impl std::fmt::Debug for SchemaTransitionsWaitArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SchemaTransitionsWaitArgs");
+        debug.field("interval_ms", &self.interval_ms);
+        debug.field("timeout_seconds", &self.timeout_seconds);
+        debug.field("transition", &self.transition);
+        debug.finish()
+    }
+}
+
+impl SchemaTransitionsWaitArgs {
+    #[allow(clippy::unused_self)]
+    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
+        let _ = matches;
+    }
+    pub const OPERATION_ID: &'static str = r"schemaTransitionsWait";
+}
+impl SchemaTransitionsWaitArgs {
+    async fn dispatch<H: Handler, W: std::io::Write>(
+        self,
+        globals: &GlobalArgs,
+        context_schema: &SchemaOptions,
+        context_schema_transitions: &SchemaTransitionsOptions,
+        handler: &mut H,
+        _writer: &mut W,
+    ) -> std::result::Result<(), H::Error> {
+        handler
+            .schema_transitions_wait(globals, context_schema, context_schema_transitions, self)
+            .await
+    }
+}
+#[derive(Args)]
+pub struct SchemaTransitionsCancelArgs {
+    #[arg(id = r"yes", long = r"yes", short = 'y', help = r"Confirm cancellation without prompting.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    pub yes: bool,
+    #[arg(
+        id = r"TRANSITION",
+        index = 1,
+        help = r"Durable transition ID, such as tr42."
+    )]
+    pub transition: String,
+}
+impl std::fmt::Debug for SchemaTransitionsCancelArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SchemaTransitionsCancelArgs");
+        debug.field("yes", &self.yes);
+        debug.field("transition", &self.transition);
+        debug.finish()
+    }
+}
+
+impl SchemaTransitionsCancelArgs {
+    #[allow(clippy::unused_self)]
+    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
+        let _ = matches;
+    }
+    pub const OPERATION_ID: &'static str = r"schemaTransitionsCancel";
+}
+impl SchemaTransitionsCancelArgs {
+    async fn dispatch<H: Handler, W: std::io::Write>(
+        self,
+        globals: &GlobalArgs,
+        context_schema: &SchemaOptions,
+        context_schema_transitions: &SchemaTransitionsOptions,
+        handler: &mut H,
+        _writer: &mut W,
+    ) -> std::result::Result<(), H::Error> {
+        handler
+            .schema_transitions_cancel(globals, context_schema, context_schema_transitions, self)
+            .await
+    }
+}
+#[derive(Args)]
 pub struct GenerateArgs {
     #[arg(
         id = r"file",
         long = r"file",
         short = 'f',
-        help = r"Desired schema file.",
+        help = r"Desired declarative schema file.",
         default_value = r"rad.schema.yaml"
     )]
     pub file: std::path::PathBuf,
@@ -754,5 +1506,261 @@ impl GenerateArgs {
         _writer: &mut W,
     ) -> std::result::Result<(), H::Error> {
         handler.generate(globals, self).await
+    }
+}
+#[derive(Args)]
+pub struct SkillsArgs {
+    #[command(flatten)]
+    pub options: SkillsOptions,
+
+    #[command(subcommand)]
+    pub command: SkillsCommand,
+}
+impl std::fmt::Debug for SkillsArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SkillsArgs");
+        debug.field("options", &self.options);
+        debug.field("command", &self.command);
+        debug.finish()
+    }
+}
+
+#[derive(Args)]
+pub struct SkillsOptions {}
+impl std::fmt::Debug for SkillsOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SkillsOptions");
+        debug.finish()
+    }
+}
+impl SkillsOptions {
+    #[allow(clippy::unused_self)]
+    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
+        let _ = matches;
+    }
+}
+
+impl SkillsArgs {
+    #[allow(clippy::unused_self)]
+    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
+        let _ = matches;
+        self.options.apply_track_changed(matches);
+        if let Some((_, child_matches)) = matches.subcommand() {
+            self.command.apply_track_changed(child_matches);
+        }
+    }
+}
+impl SkillsArgs {
+    async fn dispatch<H: Handler, W: std::io::Write>(
+        self,
+        globals: &GlobalArgs,
+        handler: &mut H,
+        writer: &mut W,
+    ) -> std::result::Result<(), H::Error> {
+        self.command
+            .dispatch(globals, &self.options, handler, writer)
+            .await
+    }
+}
+#[derive(Debug, Subcommand)]
+pub enum SkillsCommand {
+    #[command(
+        name = r"list",
+        about = r"List bundled skills.",
+        long_about = r"List the Agent Skills-compatible guides embedded in this Rad binary.
+
+Documentation: https://www.radengine.dev/docs/cli#rad-skills-list
+",
+        after_help = r"  rad skills list"
+    )]
+    List(SkillsListArgs),
+    #[command(
+        name = r"get",
+        about = r"Print the Rad skill instructions.",
+        long_about = r"Print the canonical skill instructions matching this binary. Add
+--full to include each referenced guide in the same response.
+
+Documentation: https://www.radengine.dev/docs/cli#rad-skills-get
+",
+        after_help = r"  rad skills get rad
+  rad skills get rad --full"
+    )]
+    Get(SkillsGetArgs),
+    #[command(
+        name = r"path",
+        about = r"Materialize the bundled skill and print its directory path.",
+        long_about = r"Write the complete, version-matched skill into Rad's cache and print
+its root directory for agents that load skills from the filesystem.
+Set RAD_SKILLS_DIR to choose the parent directory.
+
+Documentation: https://www.radengine.dev/docs/cli#rad-skills-path
+",
+        after_help = r"  rad skills path rad"
+    )]
+    Path(SkillsPathArgs),
+}
+
+impl SkillsCommand {
+    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
+        let Some((_, child_matches)) = matches.subcommand() else {
+            return;
+        };
+        match self {
+            Self::List(args) => args.apply_track_changed(child_matches),
+            Self::Get(args) => args.apply_track_changed(child_matches),
+            Self::Path(args) => args.apply_track_changed(child_matches),
+        }
+    }
+
+    async fn dispatch<H: Handler, W: std::io::Write>(
+        self,
+        globals: &GlobalArgs,
+        context_skills: &SkillsOptions,
+        handler: &mut H,
+        writer: &mut W,
+    ) -> std::result::Result<(), H::Error> {
+        match self {
+            Self::List(args) => {
+                args.dispatch(globals, context_skills, handler, writer)
+                    .await
+            }
+            Self::Get(args) => {
+                args.dispatch(globals, context_skills, handler, writer)
+                    .await
+            }
+            Self::Path(args) => {
+                args.dispatch(globals, context_skills, handler, writer)
+                    .await
+            }
+        }
+    }
+}
+
+#[derive(Args)]
+pub struct SkillsListArgs {}
+impl std::fmt::Debug for SkillsListArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SkillsListArgs");
+        debug.finish()
+    }
+}
+
+impl SkillsListArgs {
+    #[allow(clippy::unused_self)]
+    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
+        let _ = matches;
+    }
+    pub const OPERATION_ID: &'static str = r"skillsList";
+}
+impl SkillsListArgs {
+    async fn dispatch<H: Handler, W: std::io::Write>(
+        self,
+        globals: &GlobalArgs,
+        context_skills: &SkillsOptions,
+        handler: &mut H,
+        _writer: &mut W,
+    ) -> std::result::Result<(), H::Error> {
+        handler.skills_list(globals, context_skills, self).await
+    }
+}
+#[derive(Args)]
+pub struct SkillsGetArgs {
+    #[arg(id = r"full", long = r"full", help = r"Include all bundled reference documents.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    pub full: bool,
+    #[arg(id = r"NAME", index = 1, help = r"Bundled skill name.", value_enum)]
+    pub name: SkillsGetName,
+}
+impl std::fmt::Debug for SkillsGetArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SkillsGetArgs");
+        debug.field("full", &self.full);
+        debug.field("name", &self.name);
+        debug.finish()
+    }
+}
+
+impl SkillsGetArgs {
+    #[allow(clippy::unused_self)]
+    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
+        let _ = matches;
+    }
+    pub const OPERATION_ID: &'static str = r"skillsGet";
+}
+impl SkillsGetArgs {
+    async fn dispatch<H: Handler, W: std::io::Write>(
+        self,
+        globals: &GlobalArgs,
+        context_skills: &SkillsOptions,
+        handler: &mut H,
+        _writer: &mut W,
+    ) -> std::result::Result<(), H::Error> {
+        handler.skills_get(globals, context_skills, self).await
+    }
+}
+#[derive(Args)]
+pub struct SkillsPathArgs {
+    #[arg(id = r"NAME", index = 1, help = r"Bundled skill name.", value_enum)]
+    pub name: SkillsPathName,
+}
+impl std::fmt::Debug for SkillsPathArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SkillsPathArgs");
+        debug.field("name", &self.name);
+        debug.finish()
+    }
+}
+
+impl SkillsPathArgs {
+    #[allow(clippy::unused_self)]
+    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
+        let _ = matches;
+    }
+    pub const OPERATION_ID: &'static str = r"skillsPath";
+}
+impl SkillsPathArgs {
+    async fn dispatch<H: Handler, W: std::io::Write>(
+        self,
+        globals: &GlobalArgs,
+        context_skills: &SkillsOptions,
+        handler: &mut H,
+        _writer: &mut W,
+    ) -> std::result::Result<(), H::Error> {
+        handler.skills_path(globals, context_skills, self).await
+    }
+}
+#[derive(Args)]
+pub struct SpecArgs {
+    #[arg(
+        id = r"format",
+        long = r"format",
+        help = r"Specification encoding.",
+        default_value = r"yaml",
+        value_enum
+    )]
+    pub format: SpecFormat,
+}
+impl std::fmt::Debug for SpecArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SpecArgs");
+        debug.field("format", &self.format);
+        debug.finish()
+    }
+}
+
+impl SpecArgs {
+    #[allow(clippy::unused_self)]
+    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
+        let _ = matches;
+    }
+    pub const OPERATION_ID: &'static str = r"spec";
+}
+impl SpecArgs {
+    async fn dispatch<H: Handler, W: std::io::Write>(
+        self,
+        globals: &GlobalArgs,
+        handler: &mut H,
+        _writer: &mut W,
+    ) -> std::result::Result<(), H::Error> {
+        handler.spec(globals, self).await
     }
 }

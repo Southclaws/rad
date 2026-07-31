@@ -2,12 +2,16 @@ use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 use super::generated::InitArgs;
 use super::project::{Configuration, DEFAULT_CONFIG_FILE, DEFAULT_SCHEMA_FILE, GenerationTarget};
 use crate::process::Result;
 
-const EMPTY_SCHEMA: &str = "tables: []\n";
-const STARTER_SCHEMA: &str = r#"tables:
+const EMPTY_SCHEMA: &str =
+    "# yaml-language-server: $schema=https://www.radengine.dev/rad.schema.json\ntables: []\n";
+const STARTER_SCHEMA: &str = r#"# yaml-language-server: $schema=https://www.radengine.dev/rad.schema.json
+tables:
   - id: 1
     name: users
     columns:
@@ -16,12 +20,18 @@ const STARTER_SCHEMA: &str = r#"tables:
       - { id: 3, name: joined_at, type: int64, format: unix_ms, default: now_ms() }
 "#;
 
-pub(super) fn run(mut args: InitArgs) -> Result {
+pub(super) fn run(mut args: InitArgs, non_interactive: bool) -> Result<InitializedProject> {
     let destination = Destination::new(&args.directory)?;
     destination.check_available()?;
 
     let interactive = !args.yes;
     if interactive {
+        if non_interactive {
+            return Err(
+                "rad init requires --yes when --non-interactive is set; pass every non-default choice explicitly"
+                    .into(),
+            );
+        }
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
             return Err(
                 "rad init needs a terminal for guided setup\n\nRun rad init --yes to accept defaults, or pass the desired options alongside --yes."
@@ -41,10 +51,22 @@ pub(super) fn run(mut args: InitArgs) -> Result {
     );
     if interactive {
         cliclack::outro_note("Rad project initialized", summary)?;
-    } else {
-        println!("Rad project initialized.\n\n{summary}");
     }
-    Ok(())
+    Ok(InitializedProject {
+        root: destination.root,
+        config_file: created.config_file,
+        schema_file: created.schema_file,
+        interactive,
+    })
+}
+
+#[derive(Serialize)]
+pub(super) struct InitializedProject {
+    pub root: PathBuf,
+    pub config_file: PathBuf,
+    pub schema_file: PathBuf,
+    #[serde(skip)]
+    pub interactive: bool,
 }
 
 fn prompt(destination: &Destination, args: &mut InitArgs) -> Result {

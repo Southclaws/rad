@@ -2,20 +2,36 @@
 
 mod client;
 mod commands;
+mod doctor;
 pub mod generated;
 mod init;
+mod output;
 mod project;
+mod skills;
+mod spec;
 mod state;
 
-use crate::process::Result;
+use std::process::ExitCode;
 
-pub async fn run() -> Result {
-    generated::Cli::parse().dispatch(&mut commands::App).await
+use clap::Parser;
+
+pub async fn run() -> ExitCode {
+    let cli = generated::Cli::parse();
+    let json = output::is_json(&cli.globals);
+    match cli.dispatch(&mut commands::App).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            output::render_error(error.as_ref(), json);
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
+
+    use clap::Parser;
 
     use super::generated::*;
     #[test]
@@ -116,6 +132,10 @@ mod tests {
             unreachable!()
         }
 
+        async fn doctor(&mut self, _: &GlobalArgs, _: DoctorArgs) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+
         async fn schema_status(
             &mut self,
             _: &GlobalArgs,
@@ -153,7 +173,87 @@ mod tests {
             unreachable!()
         }
 
+        async fn schema_json_schema(
+            &mut self,
+            _: &GlobalArgs,
+            _: &SchemaOptions,
+            _: SchemaJsonSchemaArgs,
+        ) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+
+        async fn schema_transitions_list(
+            &mut self,
+            _: &GlobalArgs,
+            _: &SchemaOptions,
+            _: &SchemaTransitionsOptions,
+            _: SchemaTransitionsListArgs,
+        ) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+
+        async fn schema_transitions_get(
+            &mut self,
+            _: &GlobalArgs,
+            _: &SchemaOptions,
+            _: &SchemaTransitionsOptions,
+            _: SchemaTransitionsGetArgs,
+        ) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+
+        async fn schema_transitions_wait(
+            &mut self,
+            _: &GlobalArgs,
+            _: &SchemaOptions,
+            _: &SchemaTransitionsOptions,
+            _: SchemaTransitionsWaitArgs,
+        ) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+
+        async fn schema_transitions_cancel(
+            &mut self,
+            _: &GlobalArgs,
+            _: &SchemaOptions,
+            _: &SchemaTransitionsOptions,
+            _: SchemaTransitionsCancelArgs,
+        ) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+
         async fn generate(&mut self, _: &GlobalArgs, _: GenerateArgs) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+
+        async fn skills_list(
+            &mut self,
+            _: &GlobalArgs,
+            _: &SkillsOptions,
+            _: SkillsListArgs,
+        ) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+
+        async fn skills_get(
+            &mut self,
+            _: &GlobalArgs,
+            _: &SkillsOptions,
+            _: SkillsGetArgs,
+        ) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+
+        async fn skills_path(
+            &mut self,
+            _: &GlobalArgs,
+            _: &SkillsOptions,
+            _: SkillsPathArgs,
+        ) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+
+        async fn spec(&mut self, _: &GlobalArgs, _: SpecArgs) -> Result<(), Self::Error> {
             unreachable!()
         }
     }

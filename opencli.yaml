@@ -7,7 +7,32 @@ info:
   title: rad
   binaryName: rad
   version: "0.1.0"
-  description: The radically different database.
+  description: The radically different relational database.
+  longDescription: |
+    Rad is a relational database. This binary provides the database server,
+    schema migration tools and type-safe code generation for database clients.
+
+    Start here (for AI agents):
+      rad skills get rad
+
+    Machine-readable output:
+      rad --output json <command>
+
+    Documentation: https://www.radengine.dev/docs
+  homepage: https://www.radengine.dev
+  documentationUrl: https://www.radengine.dev/docs
+
+flags:
+  - name: output
+    description: Output format for finite command results.
+    choices: [text, json]
+    default: text
+  - name: json
+    description: Emit JSON; shorthand for --output json.
+    type: boolean
+  - name: non-interactive
+    description: Never prompt; fail when confirmation or input is required.
+    type: boolean
 
 exitCodes:
   - code: 0
@@ -15,18 +40,25 @@ exitCodes:
     description: The command completed successfully.
   - code: 1
     label: Error
-    description: The command could not complete.
+    description: The command could not complete; JSON errors include a stable code.
 
 commands:
   - name: init
     operationId: init
-    description: Initialize a Rad project.
-    longDescription: >
+    description: Initialize a Rad project without overwriting existing project files.
+    longDescription: |
       Create rad.config.yaml and rad.schema.yaml in a new or existing project
       directory. In a terminal, Rad guides you through the small set of project
       choices. Use --yes to accept defaults without prompts. Existing project
       files are never overwritten, and accepted rad.state is created only by a
       successful schema migration or pull.
+
+      Documentation: https://www.radengine.dev/docs/cli#rad-init
+    examples:
+      - description: Guided setup in the current directory.
+        command: rad init
+      - description: Unattended setup with defaults.
+        command: rad --output json init --yes ./app
     arguments:
       - name: DIRECTORY
         description: Directory to initialize.
@@ -58,20 +90,34 @@ commands:
 
   - name: serve
     operationId: serve
-    description: Run the Rad database server.
+    description: Run the database API and administration UI.
+    longDescription: |
+      Run Rad until interrupted. A fresh database defaults to direct catalog
+      management; pass --catalog-mode schema when rad.schema.yaml should own all
+      catalog changes. Catalog mode is immutable after database initialization.
+
+      The public API uses --addr (default port 7237). The administration UI uses
+      the following port (default 7238).
+
+      Documentation: https://www.radengine.dev/docs/cli#rad-serve
+    examples:
+      - description: Start an in-memory schema-managed development database.
+        command: rad serve --storage memory --catalog-mode schema
+      - description: Start against an S3-compatible endpoint.
+        command: rad serve --storage s3 --s3-bucket rad --s3-endpoint http://127.0.0.1:9000
     flags:
       - name: addr
-        description: HTTP server listen address.
+        description: Public HTTP listen address; the admin UI uses the next port.
         envVar: RAD_ADDR
         default: 0.0.0.0:7237
       - name: storage
-        description: Storage backend.
+        description: Storage backend for SlateDB data.
         envVar: RAD_STORAGE
         choices: [memory, file, s3]
         default: file
       - name: db
         short: d
-        description: File storage directory.
+        description: File storage directory; used only with --storage file.
         type: path
         envVar: RAD_DATA_DIR
         default: data
@@ -84,7 +130,7 @@ commands:
         envVar: RAD_CATALOG_MODE
         choices: [direct, schema]
       - name: s3-bucket
-        description: S3 bucket used by the s3 storage backend.
+        description: S3 bucket; required with --storage s3.
         envVar: RAD_S3_BUCKET
       - name: s3-prefix
         description: S3 object prefix; defaults to --storage-path.
@@ -98,59 +144,259 @@ commands:
 
   - name: validate
     operationId: validate
-    description: Validate a rad.schema.yaml file.
-    longDescription: >
-      Parse and validate the schema structure, types, and references locally
-      without calling out to the remote database.
+    description: Validate a desired schema locally without contacting a server.
+    longDescription: |
+      Parse and validate rad.schema.yaml structure, types, identities,
+      constraints, indexes, and references without changing any state or
+      contacting the configured database.
+
+      Documentation: https://www.radengine.dev/docs/schemas
+    examples:
+      - command: rad validate
+      - command: rad --output json validate --file ./schema/rad.schema.yaml
     flags:
       - $ref: "#/components/flags/schema-file"
 
+  - name: doctor
+    operationId: doctor
+    description: Diagnose project, server, accepted-state, generation, and transition health.
+    longDescription: |
+      Run read-only checks against rad.config.yaml, rad.schema.yaml, rad.state,
+      the configured server, generated clients, and durable schema transitions.
+      Warnings identify expected or recoverable drift. Failed checks make the
+      command exit unsuccessfully.
+
+      Documentation: https://www.radengine.dev/docs/cli#rad-doctor
+    examples:
+      - command: rad doctor
+      - command: rad --output json doctor
+    flags:
+      - $ref: "#/components/flags/config-file"
+      - $ref: "#/components/flags/schema-file"
+
   - name: schema
-    description: Inspect and manage the database schema.
+    description: Validate, inspect, plan, apply, recover, and monitor schemas.
+    longDescription: |
+      Manage the desired schema in rad.schema.yaml, the database's accepted
+      schema, local accepted state in rad.state, generated clients, and durable
+      online transition work.
+
+      Safe workflow:
+        rad validate
+        rad schema diff
+        rad schema migrate
+        rad schema status
+
+      Documentation: https://www.radengine.dev/docs/schemas/manage
     flags:
       - $ref: "#/components/flags/config-file"
       - $ref: "#/components/flags/schema-file"
     commands:
       - name: status
         operationId: schemaStatus
-        description: Compare server, accepted, desired, and generated schemas.
+        description: Compare server, accepted, desired, and generated schema state.
+        longDescription: |
+          Read the server schema, local immutable accepted snapshot, and desired
+          schema, verify configured generated clients, then summarize whether all
+          four copies are synchronized. This command does not modify the project
+          or database.
+
+          Documentation: https://www.radengine.dev/docs/schemas/manage#1-check-the-four-copies
+        examples:
+          - command: rad schema status
+          - command: rad --output json schema status
+
       - name: diff
         operationId: schemaDiff
-        description: Show desired schema changes and data preflight findings.
+        description: Plan desired changes and report destructive or blocking findings.
+        longDescription: |
+          Ask the server to plan rad.schema.yaml against the current accepted
+          schema. The plan is read-only and point-in-time. Migration replans
+          transactionally before applying. Destructive findings require explicit
+          consent; blocking findings cannot be bypassed.
+
+          Documentation: https://www.radengine.dev/docs/schemas/manage#2-review-the-plan
+        examples:
+          - command: rad schema diff
+          - command: rad --output json schema diff
         flags:
           - name: format
-            description: Output format.
+            description: Output format; retained for compatibility with existing tooling.
             choices: [text, json]
             default: text
+
       - name: migrate
         operationId: schemaMigrate
-        description: Apply rad.schema.yaml transactionally.
+        description: Apply rad.schema.yaml transactionally and wait for online work.
+        longDescription: |
+          Replan and apply the desired schema against the current catalog. Rad
+          refuses blocking changes, requests explicit consent for reported data
+          loss, waits for durable online transitions, updates rad.state, and
+          regenerates configured clients.
+
+          In non-interactive mode, a destructive plan fails unless
+          --accept-data-loss is supplied. Never add that flag without reviewing
+          the JSON diff and obtaining the user's consent.
+
+          Documentation: https://www.radengine.dev/docs/schemas/manage#3-apply-and-wait
+        examples:
+          - command: rad schema migrate
+          - command: rad --non-interactive --output json schema migrate
+          - command: rad schema migrate --accept-data-loss
         flags:
           - name: accept-data-loss
-            description: Permit explicitly reported destructive changes.
+            description: Permit only the destructive findings reported by the migration plan.
             type: boolean
           - name: no-generate
-            description: Do not regenerate configured clients.
+            description: Do not regenerate configured clients after acceptance.
             type: boolean
+
       - name: pull
         operationId: schemaPull
-        description: Recover the accepted schema from the database.
+        description: Recover desired and accepted local state from the server.
+        longDescription: |
+          Use the server's accepted schema as the source of truth. Pull refuses
+          to overwrite a locally modified rad.schema.yaml unless --force is
+          supplied; forced pulls first write a timestamped backup.
+
+          Pull is a recovery operation, not the normal way to accept desired
+          schema changes.
+
+          Documentation: https://www.radengine.dev/docs/schemas/manage#recover-local-state-from-the-server
+        examples:
+          - command: rad schema pull
+          - command: rad schema pull --force
         flags:
           - name: force
-            description: Back up and replace a locally modified schema.
+            description: Back up and replace a locally modified desired schema.
             type: boolean
           - name: no-generate
-            description: Do not regenerate configured clients.
+            description: Do not regenerate configured clients after recovery.
             type: boolean
+
+      - name: json-schema
+        operationId: schemaJsonSchema
+        description: Print the bundled JSON Schema for rad.schema.yaml.
+        longDescription: |
+          Emit the exact rad.schema.yaml JSON Schema bundled with this Rad
+          binary. Use it for offline validation, editor integration, or agent
+          introspection.
+
+          Documentation: https://www.radengine.dev/docs/schemas
+        examples:
+          - command: rad schema json-schema
+
+      - name: transitions
+        description: Inspect, wait for, and cancel durable online schema work.
+        longDescription: |
+          Observe the authoritative lifecycle state of schema transitions.
+          Progress counters are advisory; ready, failed, and cancelled are
+          terminal states.
+
+          Documentation: https://www.radengine.dev/docs/schemas/monitor
+        commands:
+          - name: list
+            operationId: schemaTransitionsList
+            description: List durable schema transitions, including retained terminal records.
+            longDescription: |
+              List active transitions and retained terminal records. Filter by
+              protocol kind or lifecycle state without changing work.
+
+              Documentation: https://www.radengine.dev/docs/schemas/monitor
+            flags:
+              - name: kind
+                description: Return only one transition protocol kind.
+                choices:
+                  [index-build, column-replacement, constraint-validation]
+              - name: state
+                description: Return only one lifecycle state.
+                choices:
+                  [
+                    waiting,
+                    building,
+                    catching-up,
+                    validating,
+                    ready,
+                    failed,
+                    cancelled,
+                  ]
+            examples:
+              - command: rad --output json schema transitions list
+              - command: rad schema transitions list --state failed
+
+          - name: get
+            operationId: schemaTransitionsGet
+            description: Inspect one transition without advancing it.
+            longDescription: |
+              Read the durable control record, progress counters, retained-work
+              pressure, and last error for one transition.
+
+              Documentation: https://www.radengine.dev/docs/schemas/transitions
+            arguments:
+              - name: TRANSITION
+                description: Durable transition ID, such as tr42.
+            examples:
+              - command: rad --output json schema transitions get tr42
+
+          - name: wait
+            operationId: schemaTransitionsWait
+            description: Wait until one transition reaches a terminal state.
+            longDescription: |
+              Poll one transition until it becomes ready, failed, or cancelled.
+              The wait has explicit interval and timeout bounds and never advances
+              the transition itself.
+
+              Documentation: https://www.radengine.dev/docs/schemas/monitor
+            arguments:
+              - name: TRANSITION
+                description: Durable transition ID, such as tr42.
+            flags:
+              - name: interval-ms
+                description: Poll interval in milliseconds.
+                type: integer
+                default: 500
+              - name: timeout-seconds
+                description: Maximum wait in seconds.
+                type: integer
+                default: 300
+            examples:
+              - command: rad --output json schema transitions wait tr42
+
+          - name: cancel
+            operationId: schemaTransitionsCancel
+            description: Cancel active transition work and schedule partial artifacts for cleanup.
+            longDescription: |
+              Cancel only when abandoning the requested schema change. The
+              operation is idempotent for an already-cancelled transition and
+              rejects ready or failed terminal work. Use --yes for unattended
+              execution.
+
+              Documentation: https://www.radengine.dev/docs/schemas/monitor
+            arguments:
+              - name: TRANSITION
+                description: Durable transition ID, such as tr42.
+            flags:
+              - name: yes
+                short: y
+                description: Confirm cancellation without prompting.
+                type: boolean
+            examples:
+              - command: rad schema transitions cancel tr42
+              - command: rad --non-interactive schema transitions cancel tr42 --yes
 
   - name: generate
     operationId: generate
-    description: Generate a typed client for the accepted schema.
-    longDescription: >
-      Generate a typed client from the accepted schema state recorded by rad
-      schema migrate or rad schema pull. The lockfile points to an immutable
-      changelog snapshot so generation cannot silently target unapplied local
-      schema changes. rad generate reads this state; it does not create it.
+    description: Generate a typed Go client for the exact accepted schema.
+    longDescription: |
+      Generate a typed client from the immutable accepted schema snapshot
+      recorded by rad schema migrate or rad schema pull. Generation refuses to
+      target unapplied desired changes. rad generate reads accepted state; it
+      does not create or repair it.
+
+      Documentation: https://www.radengine.dev/docs/concepts/schemas-and-clients
+    examples:
+      - command: rad generate
+      - command: rad --output json generate --out internal/db --pkg db
     flags:
       - $ref: "#/components/flags/schema-file"
       - name: out
@@ -166,16 +412,89 @@ commands:
         choices: [go]
         default: go
 
+  - name: skills
+    description: Discover the Agent Skill bundled with this Rad version.
+    longDescription: |
+      Rad ships one Agent Skills-compatible guide covering project setup,
+      declarative schema editing, migration safety, client generation,
+      diagnostics, and operations. The bundled instructions always match this
+      binary.
+
+      Agent Skills standard: https://agentskills.io
+      Documentation: https://www.radengine.dev/docs/cli#rad-skills
+    commands:
+      - name: list
+        operationId: skillsList
+        description: List bundled skills.
+        longDescription: |
+          List the Agent Skills-compatible guides embedded in this Rad binary.
+
+          Documentation: https://www.radengine.dev/docs/cli#rad-skills-list
+        examples:
+          - command: rad skills list
+      - name: get
+        operationId: skillsGet
+        description: Print the Rad skill instructions.
+        longDescription: |
+          Print the canonical skill instructions matching this binary. Add
+          --full to include each referenced guide in the same response.
+
+          Documentation: https://www.radengine.dev/docs/cli#rad-skills-get
+        arguments:
+          - name: NAME
+            description: Bundled skill name.
+            choices: [rad]
+        flags:
+          - name: full
+            description: Include all bundled reference documents.
+            type: boolean
+        examples:
+          - command: rad skills get rad
+          - command: rad skills get rad --full
+      - name: path
+        operationId: skillsPath
+        description: Materialize the bundled skill and print its directory path.
+        longDescription: |
+          Write the complete, version-matched skill into Rad's cache and print
+          its root directory for agents that load skills from the filesystem.
+          Set RAD_SKILLS_DIR to choose the parent directory.
+
+          Documentation: https://www.radengine.dev/docs/cli#rad-skills-path
+        arguments:
+          - name: NAME
+            description: Bundled skill name.
+            choices: [rad]
+        examples:
+          - command: rad skills path rad
+
+  - name: spec
+    operationId: spec
+    description: Print the bundled OpenCLI command specification.
+    longDescription: |
+      Emit the exact command contract used to generate this binary's parser and
+      CLI documentation. YAML is the normative source; JSON is available for
+      machine consumers.
+
+      Documentation: https://www.radengine.dev/docs/cli#rad-spec
+    flags:
+      - name: format
+        description: Specification encoding.
+        choices: [yaml, json]
+        default: yaml
+    examples:
+      - command: rad spec
+      - command: rad spec --format json
+
 components:
   flags:
     config-file:
       name: config
-      description: Project configuration file.
+      description: Project configuration file; relative schema and output paths resolve from it.
       type: file
       default: rad.config.yaml
     schema-file:
       name: file
       short: f
-      description: Desired schema file.
+      description: Desired declarative schema file.
       type: file
       default: rad.schema.yaml
