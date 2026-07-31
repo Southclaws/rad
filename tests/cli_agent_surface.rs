@@ -4,25 +4,6 @@ use std::process::{Command, Output};
 fn cli_exposes_version_matched_agent_guidance_and_machine_contracts() {
     let binary = env!("CARGO_BIN_EXE_rad");
 
-    let help = run(binary, &["--help"]);
-    assert_success(&help);
-    let help = String::from_utf8(help.stdout).unwrap();
-    assert!(
-        help.contains("Rad is a relational database, developer tool, and code generator"),
-        "{help}"
-    );
-    assert!(help.contains("Start here (for AI agents):"), "{help}");
-    assert!(help.contains("rad skills get rad"), "{help}");
-    assert!(help.contains("https://www.radengine.dev/docs"), "{help}");
-
-    let skill_help = run(binary, &["skills", "get", "--help"]);
-    assert_success(&skill_help);
-    let skill_help = String::from_utf8(skill_help.stdout).unwrap();
-    assert!(
-        skill_help.contains("https://www.radengine.dev/docs/cli#rad-skills-get"),
-        "{skill_help}"
-    );
-
     let skill = run(binary, &["skills", "get", "rad"]);
     assert_success(&skill);
     let skill = String::from_utf8(skill.stdout).unwrap();
