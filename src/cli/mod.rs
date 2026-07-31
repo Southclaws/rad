@@ -7,8 +7,6 @@ mod init;
 mod project;
 mod state;
 
-use clap::Parser;
-
 use crate::process::Result;
 
 pub async fn run() -> Result {
@@ -20,8 +18,6 @@ mod tests {
     use std::convert::Infallible;
 
     use super::generated::*;
-    use clap::Parser;
-
     #[test]
     fn generated_parser_preserves_parent_schema_options() {
         let cli = Cli::try_parse_from([

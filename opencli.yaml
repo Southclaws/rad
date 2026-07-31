@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/opencli-dev/opencli/main/schema/opencli.schema.json
 $schema: https://raw.githubusercontent.com/opencli-dev/opencli/main/schema/opencli.schema.json
 
-opencli: "1.0.0"
+opencli: "0.1.0"
 
 info:
   title: rad
