@@ -68,11 +68,13 @@ async fn generated_cli_drives_the_schema_workflow_over_http() {
     assert_eq!(migrate_body["state"], "ready");
     assert_eq!(migrate_body["schema_version"], 1);
     assert_eq!(migrate_body["generated"].as_array().unwrap().len(), 1);
+    let snapshot = Path::new(migrate_body["snapshot"].as_str().unwrap());
     assert!(
-        migrate_body["snapshot"]
-            .as_str()
-            .unwrap()
-            .ends_with("rad.state/changelog/00000001.rad.schema.yaml")
+        snapshot.ends_with(
+            Path::new("rad.state")
+                .join("changelog")
+                .join("00000001.rad.schema.yaml")
+        )
     );
     assert!(directory.path().join("rad.state/schema.lock.json").exists());
 
