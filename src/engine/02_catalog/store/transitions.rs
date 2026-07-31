@@ -5,12 +5,14 @@ use crate::engine::catalog::model::{
     IndexDelta, SchemaTransition, UniqueIndexClaim, WriteProtocol,
 };
 use crate::engine::catalog::{Error, ErrorKind, Result};
-use crate::engine::kv::key_encoding::prefix_end;
 use crate::engine::kv::{KeyRange, KvView};
 
 use super::durable_json::{decode, encode};
 use super::write_protocol_canonical::canonical_write_protocol;
-use super::{current_revision, map_kv, queue_reclamation, write_protocol_reclamation_id};
+use super::{
+    current_revision, map_kv, parse_u64, prefix_bounds, prefix_range, queue_reclamation,
+    write_protocol_reclamation_id,
+};
 use crate::engine::catalog::model::Timestamp;
 use crate::engine::catalog::model::{Reclamation, ReclamationKind, Table};
 
@@ -41,8 +43,7 @@ pub fn write_protocol_definition_key(
 
 pub fn write_protocol_definition_range(table_id: &TableId) -> (Vec<u8>, Vec<u8>) {
     let start = format!("{WRITE_PROTOCOL_DEFINITION_PREFIX}{table_id}/definition/").into_bytes();
-    let end = prefix_end(&start).expect("catalog prefix has an upper bound");
-    (start, end)
+    prefix_bounds(start)
 }
 
 pub async fn write_protocol_generation<V: KvView + ?Sized>(
@@ -235,13 +236,7 @@ pub async fn get_transition<V: KvView + ?Sized>(
 
 pub async fn list_transitions<V: KvView + ?Sized>(view: &mut V) -> Result<Vec<SchemaTransition>> {
     let prefix = TRANSITION_PREFIX.as_bytes();
-    let mut iterator = view
-        .scan(KeyRange::new(
-            Bytes::copy_from_slice(prefix),
-            Bytes::from(prefix_end(prefix).expect("catalog prefix has an upper bound")),
-        ))
-        .await
-        .map_err(map_kv)?;
+    let mut iterator = view.scan(prefix_range(prefix)).await.map_err(map_kv)?;
     let mut transitions = Vec::new();
     while let Some(entry) = iterator.next().await.map_err(map_kv)? {
         let id = entry
@@ -333,8 +328,7 @@ pub fn delta_key(id: &TransitionId, sequence: u64) -> Vec<u8> {
 
 pub fn delta_range(id: &TransitionId) -> (Vec<u8>, Vec<u8>) {
     let start = format!("{DELTA_PREFIX}{id}/").into_bytes();
-    let end = prefix_end(&start).expect("catalog prefix has an upper bound");
-    (start, end)
+    prefix_bounds(start)
 }
 
 pub async fn delete_delta_metadata<V: KvView + ?Sized>(
@@ -359,7 +353,7 @@ pub async fn append_index_delta<V: KvView + ?Sized>(
     // safely fenced frontier.
     let key = delta_sequence_key(transition_id);
     let sequence = match view.get(&key).await.map_err(map_kv)? {
-        Some(raw) => parse_u64_record("delta sequence", transition_id.as_str(), &raw)?,
+        Some(raw) => parse_u64("delta sequence", Some(transition_id.as_str()), &raw)?,
         None => 0,
     };
     if sequence == u64::MAX {
@@ -398,7 +392,7 @@ async fn delta_applied<V: KvView + ?Sized>(view: &mut V, id: &TransitionId) -> R
     let Some(raw) = view.get(&delta_applied_key(id)).await.map_err(map_kv)? else {
         return Ok(0);
     };
-    parse_u64_record("applied delta", id.as_str(), &raw)
+    parse_u64("applied delta", Some(id.as_str()), &raw)
 }
 
 pub async fn save_delta_applied<V: KvView + ?Sized>(
@@ -418,7 +412,7 @@ pub async fn delta_high_water<V: KvView + ?Sized>(view: &mut V, id: &TransitionI
     let Some(raw) = view.get(&delta_sequence_key(id)).await.map_err(map_kv)? else {
         return Ok(0);
     };
-    parse_u64_record("delta sequence", id.as_str(), &raw)
+    parse_u64("delta sequence", Some(id.as_str()), &raw)
 }
 
 pub fn decode_index_delta(
@@ -483,14 +477,12 @@ fn unique_claim_key(id: &TransitionId, tuple: &[u8], pk: &[u8]) -> Vec<u8> {
 
 pub fn unique_claim_range(id: &TransitionId) -> (Vec<u8>, Vec<u8>) {
     let start = format!("{UNIQUE_CLAIM_PREFIX}{id}/").into_bytes();
-    let end = prefix_end(&start).expect("catalog prefix has an upper bound");
-    (start, end)
+    prefix_bounds(start)
 }
 
 pub fn unique_violation_range(id: &TransitionId) -> (Vec<u8>, Vec<u8>) {
     let start = format!("{UNIQUE_VIOLATION_PREFIX}{id}/").into_bytes();
-    let end = prefix_end(&start).expect("catalog prefix has an upper bound");
-    (start, end)
+    prefix_bounds(start)
 }
 
 fn unique_violation_key(id: &TransitionId, tuple: &[u8]) -> Vec<u8> {
@@ -514,13 +506,7 @@ pub async fn put_unique_claim<V: KvView + ?Sized>(
     let prefix = unique_claim_tuple_prefix(transition_id, tuple);
     let mut duplicate = false;
     {
-        let mut iterator = view
-            .scan(KeyRange::new(
-                Bytes::copy_from_slice(&prefix),
-                Bytes::from(prefix_end(&prefix).expect("claim prefix has an upper bound")),
-            ))
-            .await
-            .map_err(map_kv)?;
+        let mut iterator = view.scan(prefix_range(&prefix)).await.map_err(map_kv)?;
         while let Some(entry) = iterator.next().await.map_err(map_kv)? {
             let existing: UniqueIndexClaim = decode("unique index claim", "", &entry.value)?;
             if existing.tuple != tuple || existing.pk.as_slice() != &entry.key[prefix.len()..] {
@@ -572,13 +558,7 @@ pub async fn delete_unique_claim<V: KvView + ?Sized>(
         .map_err(map_kv)?;
     let prefix = unique_claim_tuple_prefix(transition_id, tuple);
     let remaining = {
-        let mut iterator = view
-            .scan(KeyRange::new(
-                Bytes::copy_from_slice(&prefix),
-                Bytes::from(prefix_end(&prefix).expect("claim prefix has an upper bound")),
-            ))
-            .await
-            .map_err(map_kv)?;
+        let mut iterator = view.scan(prefix_range(&prefix)).await.map_err(map_kv)?;
         let mut remaining = 0;
         while let Some(entry) = iterator.next().await.map_err(map_kv)? {
             let claim: UniqueIndexClaim = decode("unique index claim", "", &entry.value)?;
@@ -631,24 +611,7 @@ pub async fn first_unique_violation<V: KvView + ?Sized>(
 }
 
 fn parse_generation(kind: &str, table_id: &str, raw: &[u8]) -> Result<WriteProtocolGeneration> {
-    parse_u64_record(kind, table_id, raw).map(Into::into)
-}
-
-fn parse_u64_record(kind: &str, id: &str, raw: &[u8]) -> Result<u64> {
-    let value = std::str::from_utf8(raw).map_err(|error| {
-        Error::source(
-            ErrorKind::CatalogCorrupt,
-            format!("catalog: corrupt {kind} for {id:?}"),
-            error,
-        )
-    })?;
-    value.parse::<u64>().map_err(|error| {
-        Error::source(
-            ErrorKind::CatalogCorrupt,
-            format!("catalog: corrupt {kind} for {id:?}"),
-            error,
-        )
-    })
+    parse_u64(kind, Some(table_id), raw).map(Into::into)
 }
 
 #[cfg(test)]

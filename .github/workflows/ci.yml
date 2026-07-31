@@ -57,6 +57,62 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
+      - name: Enforce production Rust hygiene
+        run: |
+          cargo clippy --locked --lib --bins -- \
+            -D warnings \
+            -D unreachable-pub \
+            -D unused-qualifications \
+            -D clippy::large-futures \
+            -D clippy::match-same-arms \
+            -D clippy::significant-drop-in-scrutinee \
+            -D clippy::struct-excessive-bools \
+            -D clippy::unnecessary-wraps \
+            -D clippy::unused-self \
+            -D clippy::zero-sized-map-values
+
+      - name: Check Rust documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --no-deps
+
+      - name: Check dependency policy
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          arguments: --all-features
+          command: check
+          # License checking joins this gate when Rad declares its package license.
+          command-arguments: advisories bans sources
+
+      - name: Check unused dependencies
+        uses: bnjbvr/cargo-machete@ac30a525c0a8d163a92d727b3ff079ee3f6ecb08 # v0.9.2
+        with:
+          args: --with-metadata
+
+  semver:
+    name: public Rust API
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository history
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check semantic-version compatibility
+        if: github.event_name == 'pull_request'
+        uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2.9
+        with:
+          baseline-rev: ${{ github.event.pull_request.base.sha }}
+          release-type: minor
+          rust-toolchain: 1.96.0
+
+      - name: Record push policy
+        if: github.event_name != 'pull_request'
+        run: echo "Semantic-version comparison runs on pull requests with an explicit base revision."
+
   platform:
     name: platform (${{ matrix.platform }}, ${{ matrix.arch }})
     strategy:
@@ -255,6 +311,7 @@ jobs:
     name: matrix evidence
     needs:
       - quality
+      - semver
       - platform
       - backend
       - determinism

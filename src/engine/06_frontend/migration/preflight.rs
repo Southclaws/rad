@@ -2,9 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::engine::catalog::identity::SchemaId;
 use crate::engine::catalog::migrate::Step;
-use crate::engine::catalog::model::{
-    Column, ColumnReplacementDef, DefaultValue, ScalarType, Schema, Table,
-};
+use crate::engine::catalog::model::{ColumnReplacementDef, Schema, Table};
 use crate::engine::exec::{Engine, Error, ErrorKind, Result, codec};
 use crate::engine::lir::{Row, Value};
 
@@ -93,14 +91,14 @@ pub(super) async fn inspect(
                     .iter()
                     .find(|candidate| candidate.schema_id == *column_id)
                     .ok_or_else(|| invalid("migration preflight: replacement source is missing"))?;
-                let target = replacement_target(source, definition);
                 let count = table_rows(engine, &mut rows, current)
                     .await?
                     .iter()
                     .filter(|row| {
-                        codec::convert_column_value(
+                        codec::convert_value(
                             &row[&source.name],
-                            &target,
+                            definition.scalar_type,
+                            definition.nullable,
                             definition.conversion,
                         )
                         .is_err()
@@ -214,11 +212,6 @@ fn duplicate_keys(
     names: &[String],
     replacements: &HashMap<(SchemaId, SchemaId), &ColumnReplacementDef>,
 ) -> Result<u64> {
-    let desired_by_name = desired
-        .columns
-        .iter()
-        .map(|column| (column.name.as_str(), column))
-        .collect::<HashMap<_, _>>();
     let current_by_id = current
         .columns
         .iter()
@@ -230,7 +223,7 @@ fn duplicate_keys(
         let mut values = Vec::with_capacity(names.len());
         let mut conversion_invalid = false;
         for name in names {
-            let desired_column = desired_by_name.get(name.as_str()).ok_or_else(|| {
+            let desired_column = desired.column(name).ok_or_else(|| {
                 invalid(format!(
                     "migration preflight: index column {name:?} is missing"
                 ))
@@ -238,14 +231,21 @@ fn duplicate_keys(
             let mut value = if let Some(current_column) = current_by_id.get(&desired_column.id) {
                 row[&current_column.name].clone()
             } else {
-                historical_value(desired_column.scalar_type, desired_column.default.as_ref())
+                desired_column
+                    .default
+                    .as_ref()
+                    .and_then(|default| {
+                        codec::literal_default_value(desired_column.scalar_type, default)
+                    })
+                    .unwrap_or(Value::Null(desired_column.scalar_type))
             };
             if let Some(replacement) = replacements.get(&(current.schema_id, desired_column.id)) {
-                let source = current_by_id
-                    .get(&desired_column.id)
-                    .expect("replacement source was validated by migration diff");
-                let target = replacement_target(source, replacement);
-                match codec::convert_column_value(&value, &target, replacement.conversion) {
+                match codec::convert_value(
+                    &value,
+                    replacement.scalar_type,
+                    replacement.nullable,
+                    replacement.conversion,
+                ) {
                     Ok(converted) => value = converted,
                     Err(_) => {
                         conversion_invalid = true;
@@ -263,26 +263,6 @@ fn duplicate_keys(
         }
     }
     Ok(duplicates)
-}
-
-fn replacement_target(source: &Column, replacement: &ColumnReplacementDef) -> Column {
-    let mut target = source.clone();
-    target.scalar_type = replacement.scalar_type;
-    target.nullable = replacement.nullable;
-    target.format.clone_from(&replacement.format);
-    target
-}
-
-fn historical_value(scalar_type: ScalarType, default: Option<&DefaultValue>) -> Value {
-    let Some(default) = default.filter(|default| default.function.is_none()) else {
-        return Value::Null(scalar_type);
-    };
-    match scalar_type {
-        ScalarType::Text => Value::Text(default.text.clone()),
-        ScalarType::Int64 => Value::Int64(default.int64),
-        ScalarType::Float64 => Value::Float64(default.float64),
-        ScalarType::Bool => Value::Bool(default.bool_value),
-    }
 }
 
 fn finding(kind: &str, table: &str, column: &str, rows: u64, summary: String) -> SchemaFinding {

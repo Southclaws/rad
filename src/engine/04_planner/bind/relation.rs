@@ -5,6 +5,7 @@ use crate::engine::lir::{self, Cardinality, Kind, SlotId, Type};
 
 use super::expression::{coerce_literal, contains_crossing};
 use super::{Binder, duplicate_column, invalid};
+use crate::engine::planner::analysis::{conjuncts, underlying_scan, visit_scan_filters};
 use crate::engine::planner::{Reason, Result};
 
 impl Binder<'_> {
@@ -44,7 +45,7 @@ impl Binder<'_> {
                     ));
                 }
                 let mut filter = bound::Relation::filter(input, predicate);
-                self.refine_unique(&mut filter);
+                Self::refine_unique(&mut filter);
                 Ok(filter)
             }
             lir::Relation::Project {
@@ -614,7 +615,7 @@ impl Binder<'_> {
         Ok(bound_inputs)
     }
 
-    fn refine_unique(&self, relation: &mut bound::Relation) {
+    fn refine_unique(relation: &mut bound::Relation) {
         let RelationNode::Filter { .. } = &relation.node else {
             return;
         };
@@ -628,7 +629,7 @@ impl Binder<'_> {
             .map(|field| (field.slot, field.name.clone()))
             .collect();
         let mut pinned = HashSet::new();
-        collect_filter_predicates(relation, &mut |predicate| {
+        let _ = visit_scan_filters(relation, &mut |predicate| {
             for conjunct in conjuncts(predicate) {
                 let bound::Expr::Binary {
                     op: lir::BinaryOp::Eq,
@@ -656,8 +657,9 @@ impl Binder<'_> {
         let covers = |columns: &[String]| {
             !columns.is_empty() && columns.iter().all(|column| pinned.contains(column))
         };
-        let unique = covers(&scan_table(scan).primary_key)
-            || scan_table(scan)
+        let table = scan.scan_table();
+        let unique = covers(&table.primary_key)
+            || table
                 .indexes
                 .iter()
                 .any(|index| index.unique && covers(&index.columns));
@@ -763,55 +765,6 @@ fn compatible_set_inputs(operation: &str, inputs: &[bound::Relation]) -> Result<
         }
     }
     Ok(())
-}
-
-fn underlying_scan(relation: &bound::Relation) -> Option<&bound::Relation> {
-    match &relation.node {
-        RelationNode::Scan { .. } => Some(relation),
-        RelationNode::Filter { input, .. }
-        | RelationNode::Order { input, .. }
-        | RelationNode::Slice { input, .. } => underlying_scan(input),
-        _ => None,
-    }
-}
-
-fn scan_table(relation: &bound::Relation) -> &crate::engine::catalog::model::Table {
-    let RelationNode::Scan { table, .. } = &relation.node else {
-        unreachable!("underlying scan is a scan")
-    };
-    table
-}
-
-fn collect_filter_predicates<'a>(
-    relation: &'a bound::Relation,
-    visitor: &mut impl FnMut(&'a bound::Expr),
-) {
-    match &relation.node {
-        RelationNode::Filter { input, predicate } => {
-            visitor(predicate);
-            collect_filter_predicates(input, visitor);
-        }
-        RelationNode::Order { input, .. } | RelationNode::Slice { input, .. } => {
-            collect_filter_predicates(input, visitor);
-        }
-        _ => {}
-    }
-}
-
-fn conjuncts(expression: &bound::Expr) -> Vec<&bound::Expr> {
-    if let bound::Expr::Binary {
-        op: lir::BinaryOp::And,
-        left,
-        right,
-        ..
-    } = expression
-    {
-        let mut values = conjuncts(left);
-        values.extend(conjuncts(right));
-        values
-    } else {
-        vec![expression]
-    }
 }
 
 fn unique_key_fields(relation: &bound::Relation) -> Option<Vec<lir::Field>> {

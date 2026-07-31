@@ -487,8 +487,8 @@ pub struct IndexDefinition {
 /// generator mapping, so it is deliberately omitted.) Rad validates the
 /// document against the independent LIR schema in the second validation
 /// phase, and binds it against the catalog and prior statement results in
-/// the third. See the LIR specification at
-/// https://www.radengine.dev/schema/lir.json.
+/// the third. See the
+/// [published LIR specification](https://www.radengine.dev/schema/lir.json).
 pub type Relation = RawJson;
 
 /// A statement's unique program-local name. Relational statement names label

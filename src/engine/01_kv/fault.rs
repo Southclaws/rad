@@ -1,6 +1,7 @@
 //! Traceable fault injection at Rad's ordered transactional-KV boundary.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -48,6 +49,27 @@ pub enum Target {
     },
 }
 
+impl Target {
+    fn key(key: &[u8]) -> Self {
+        Self::Key {
+            bytes: key.to_vec(),
+        }
+    }
+
+    fn range(range: &KeyRange) -> Self {
+        Self::Range {
+            start: range.start.as_ref().map(|value| value.to_vec()),
+            end: range.end.as_ref().map(|value| value.to_vec()),
+        }
+    }
+
+    fn isolation(isolation: IsolationLevel) -> Self {
+        Self::Isolation {
+            level: isolation.as_str().into(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", content = "error", rename_all = "snake_case")]
 pub enum FaultAction {
@@ -80,14 +102,14 @@ pub enum TraceOutcome {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct TraceEvent {
+pub struct TraceEvent<T = Target> {
     pub sequence: u64,
     pub phase: TracePhase,
     pub operation: Operation,
     pub occurrence: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transaction: Option<u64>,
-    pub target: Target,
+    pub target: T,
     pub outcome: TraceOutcome,
 }
 
@@ -207,7 +229,7 @@ impl FaultController {
         state.next_transaction
     }
 
-    fn start(&self, operation: Operation, transaction: Option<u64>, target: Target) -> Call {
+    fn start(&self, context: &TraceContext, operation: Operation, target: Target) -> Call {
         let mut state = self.inner.lock().expect("fault controller mutex poisoned");
         let occurrence = {
             let value = state.occurrences.entry(operation).or_default();
@@ -224,26 +246,50 @@ impl FaultController {
             TracePhase::Started,
             operation,
             occurrence,
-            transaction,
+            context.transaction,
             target.clone(),
             TraceOutcome::Pending,
         );
         Call {
-            controller: self.clone(),
+            context: context.clone(),
             operation,
             occurrence,
-            transaction,
             target,
             action,
         }
     }
 }
 
-struct Call {
+#[derive(Clone)]
+struct TraceContext {
     controller: FaultController,
+    transaction: Option<u64>,
+}
+
+impl TraceContext {
+    fn store(controller: FaultController) -> Self {
+        Self {
+            controller,
+            transaction: None,
+        }
+    }
+
+    fn transaction(&self) -> Self {
+        Self {
+            controller: self.controller.clone(),
+            transaction: Some(self.controller.allocate_transaction()),
+        }
+    }
+
+    fn start(&self, operation: Operation, target: Target) -> Call {
+        self.controller.start(self, operation, target)
+    }
+}
+
+struct Call {
+    context: TraceContext,
     operation: Operation,
     occurrence: u64,
-    transaction: Option<u64>,
     target: Target,
     action: Option<FaultAction>,
 }
@@ -274,8 +320,29 @@ impl Call {
         }
     }
 
+    fn run<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.before()?;
+        self.after(operation())
+    }
+
+    async fn run_async<T, F>(&self, operation: impl FnOnce() -> F) -> Result<T>
+    where
+        F: Future<Output = Result<T>>,
+    {
+        self.before()?;
+        self.after(operation().await)
+    }
+
+    fn run_infallible(&self, operation: impl FnOnce()) {
+        if self.before().is_ok() {
+            operation();
+            let _result = self.after(Ok(()));
+        }
+    }
+
     fn finish(&self, outcome: TraceOutcome) {
         let mut state = self
+            .context
             .controller
             .inner
             .lock()
@@ -285,7 +352,7 @@ impl Call {
             TracePhase::Finished,
             self.operation,
             self.occurrence,
-            self.transaction,
+            self.context.transaction,
             self.target.clone(),
             outcome,
         );
@@ -322,66 +389,45 @@ fn injected(operation: Operation, kind: ErrorKind) -> Error {
 
 pub struct FaultingKv {
     inner: Arc<dyn TransactionalKv>,
-    controller: FaultController,
+    context: TraceContext,
 }
 
 impl FaultingKv {
     pub fn new(inner: Arc<dyn TransactionalKv>, controller: FaultController) -> Self {
-        Self { inner, controller }
+        Self {
+            inner,
+            context: TraceContext::store(controller),
+        }
     }
 
     pub fn controller(&self) -> &FaultController {
-        &self.controller
+        &self.context.controller
     }
 }
 
 #[async_trait]
 impl Kv for FaultingKv {
     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        let call = self.controller.start(
-            Operation::Get,
-            None,
-            Target::Key {
-                bytes: key.to_vec(),
-            },
-        );
-        call.before()?;
-        call.after(Kv::get(&*self.inner, key).await)
+        let call = self.context.start(Operation::Get, Target::key(key));
+        call.run_async(|| Kv::get(&*self.inner, key)).await
     }
 
     async fn put(&self, key: Bytes, value: Bytes) -> Result<()> {
-        let call = self.controller.start(
-            Operation::Put,
-            None,
-            Target::Key {
-                bytes: key.to_vec(),
-            },
-        );
-        call.before()?;
-        call.after(Kv::put(&*self.inner, key, value).await)
+        let call = self.context.start(Operation::Put, Target::key(&key));
+        call.run_async(|| Kv::put(&*self.inner, key, value)).await
     }
 
     async fn delete(&self, key: &[u8]) -> Result<()> {
-        let call = self.controller.start(
-            Operation::Delete,
-            None,
-            Target::Key {
-                bytes: key.to_vec(),
-            },
-        );
-        call.before()?;
-        call.after(Kv::delete(&*self.inner, key).await)
+        let call = self.context.start(Operation::Delete, Target::key(key));
+        call.run_async(|| Kv::delete(&*self.inner, key)).await
     }
 
     async fn scan(&self, range: KeyRange) -> Result<Box<dyn KvIterator>> {
-        let target = range_target(&range);
-        let call = self.controller.start(Operation::Scan, None, target);
-        call.before()?;
-        let iterator = call.after(Kv::scan(&*self.inner, range).await)?;
+        let call = self.context.start(Operation::Scan, Target::range(&range));
+        let iterator = call.run_async(|| Kv::scan(&*self.inner, range)).await?;
         Ok(Box::new(FaultingIterator {
             inner: iterator,
-            controller: self.controller.clone(),
-            transaction: None,
+            context: self.context.clone(),
         }))
     }
 }
@@ -389,38 +435,28 @@ impl Kv for FaultingKv {
 #[async_trait]
 impl TransactionalKv for FaultingKv {
     async fn begin(&self, isolation: IsolationLevel) -> Result<Box<dyn Transaction>> {
-        let transaction = self.controller.allocate_transaction();
-        let call = self.controller.start(
-            Operation::Begin,
-            Some(transaction),
-            Target::Isolation {
-                level: match isolation {
-                    IsolationLevel::Snapshot => "snapshot",
-                    IsolationLevel::SerializableSnapshot => "serializable_snapshot",
-                }
-                .into(),
-            },
-        );
-        call.before()?;
-        let inner = call.after(self.inner.begin(isolation).await)?;
-        Ok(Box::new(FaultingTransaction {
-            inner,
-            controller: self.controller.clone(),
-            id: transaction,
-        }))
+        let context = self.context.transaction();
+        let call = context.start(Operation::Begin, Target::isolation(isolation));
+        let inner = call.run_async(|| self.inner.begin(isolation)).await?;
+        Ok(Box::new(FaultingTransaction { inner, context }))
     }
 
     async fn close(&self) -> Result<()> {
-        let call = self.controller.start(Operation::Close, None, Target::None);
-        call.before()?;
-        call.after(self.inner.close().await)
+        let call = self.context.start(Operation::Close, Target::None);
+        call.run_async(|| self.inner.close()).await
     }
 }
 
 struct FaultingTransaction {
     inner: Box<dyn Transaction>,
-    controller: FaultController,
-    id: u64,
+    context: TraceContext,
+}
+
+impl FaultingTransaction {
+    fn into_parts(self) -> (Box<dyn Transaction>, TraceContext) {
+        let Self { inner, context } = self;
+        (inner, context)
+    }
 }
 
 #[async_trait]
@@ -430,39 +466,24 @@ impl Transaction for FaultingTransaction {
     }
 
     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        let call = self.controller.start(
-            Operation::TransactionGet,
-            Some(self.id),
-            Target::Key {
-                bytes: key.to_vec(),
-            },
-        );
-        call.before()?;
-        call.after(self.inner.get(key).await)
+        let call = self
+            .context
+            .start(Operation::TransactionGet, Target::key(key));
+        call.run_async(|| self.inner.get(key)).await
     }
 
     fn put(&self, key: Bytes, value: Bytes) -> Result<()> {
-        let call = self.controller.start(
-            Operation::TransactionPut,
-            Some(self.id),
-            Target::Key {
-                bytes: key.to_vec(),
-            },
-        );
-        call.before()?;
-        call.after(self.inner.put(key, value))
+        let call = self
+            .context
+            .start(Operation::TransactionPut, Target::key(&key));
+        call.run(|| self.inner.put(key, value))
     }
 
     fn delete(&self, key: &[u8]) -> Result<()> {
-        let call = self.controller.start(
-            Operation::TransactionDelete,
-            Some(self.id),
-            Target::Key {
-                bytes: key.to_vec(),
-            },
-        );
-        call.before()?;
-        call.after(self.inner.delete(key))
+        let call = self
+            .context
+            .start(Operation::TransactionDelete, Target::key(key));
+        call.run(|| self.inner.delete(key))
     }
 
     fn untrack_write(&self, key: &[u8]) -> Result<()> {
@@ -470,69 +491,41 @@ impl Transaction for FaultingTransaction {
     }
 
     async fn scan<'a>(&'a self, range: KeyRange) -> Result<Box<dyn KvIterator + 'a>> {
-        let target = range_target(&range);
         let call = self
-            .controller
-            .start(Operation::TransactionScan, Some(self.id), target);
-        call.before()?;
-        let iterator = call.after(self.inner.scan(range).await)?;
+            .context
+            .start(Operation::TransactionScan, Target::range(&range));
+        let iterator = call.run_async(|| self.inner.scan(range)).await?;
         Ok(Box::new(FaultingIterator {
             inner: iterator,
-            controller: self.controller.clone(),
-            transaction: Some(self.id),
+            context: self.context.clone(),
         }))
     }
 
     async fn commit(self: Box<Self>) -> Result<()> {
-        let Self {
-            inner,
-            controller,
-            id,
-        } = *self;
-        let call = controller.start(Operation::Commit, Some(id), Target::None);
-        call.before()?;
-        call.after(inner.commit().await)
+        let (inner, context) = (*self).into_parts();
+        let call = context.start(Operation::Commit, Target::None);
+        call.run_async(|| inner.commit()).await
     }
 
     fn rollback(self: Box<Self>) {
-        let Self {
-            inner,
-            controller,
-            id,
-        } = *self;
-        let call = controller.start(Operation::Rollback, Some(id), Target::None);
-        if call.before().is_ok() {
-            inner.rollback();
-            let _: Result<()> = call.after(Ok(()));
-        } else {
-            // Rollback is infallible at the trait boundary. A pre-injected
-            // rollback fault models an abrupt drop before explicit rollback.
-            drop(inner);
-        }
+        let (inner, context) = (*self).into_parts();
+        let call = context.start(Operation::Rollback, Target::None);
+        // Rollback is infallible at the trait boundary. A pre-injected fault
+        // drops the transaction before explicit rollback.
+        call.run_infallible(|| inner.rollback());
     }
 }
 
 struct FaultingIterator<'a> {
     inner: Box<dyn KvIterator + 'a>,
-    controller: FaultController,
-    transaction: Option<u64>,
+    context: TraceContext,
 }
 
 #[async_trait]
 impl KvIterator for FaultingIterator<'_> {
     async fn next(&mut self) -> Result<Option<Entry>> {
-        let call = self
-            .controller
-            .start(Operation::IteratorNext, self.transaction, Target::None);
-        call.before()?;
-        call.after(self.inner.next().await)
-    }
-}
-
-fn range_target(range: &KeyRange) -> Target {
-    Target::Range {
-        start: range.start.as_ref().map(|value| value.to_vec()),
-        end: range.end.as_ref().map(|value| value.to_vec()),
+        let call = self.context.start(Operation::IteratorNext, Target::None);
+        call.run_async(|| self.inner.next()).await
     }
 }
 

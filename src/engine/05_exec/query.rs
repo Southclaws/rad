@@ -5,7 +5,6 @@
 //! are introduced incrementally. The independent reference interpreter lives
 //! outside this executor.
 
-use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use async_recursion::async_recursion;
@@ -15,12 +14,11 @@ use crate::engine::catalog::store::admit_catalog_dependencies;
 use crate::engine::kv::KvView;
 use crate::engine::lir::bound::{self, RelationNode};
 use crate::engine::lir::eval::{
-    CanonicalRowKey, CanonicalRowSet, Env, canonical_row_key, evaluate, evaluate_datum,
-    evaluate_predicate,
+    CanonicalRowSet, Env, evaluate, evaluate_datum, evaluate_predicate,
 };
 use crate::engine::lir::{
-    AggregateFunction, Datum, Kind, ObjectField, RecursiveAccumulation, RootCardinality, RowType,
-    SetQuantifier, SlotId, TriBool, Value,
+    AggregateFunction, Datum, Kind, RecursiveAccumulation, RowType, SetQuantifier, SlotId, TriBool,
+    Value,
 };
 use crate::engine::planner::analysis::{ConstValue, CorrelationKind};
 use crate::engine::planner::physical::{
@@ -28,7 +26,12 @@ use crate::engine::planner::physical::{
 };
 
 use super::codec;
+use super::frames::{
+    frame_scalar, frame_to_object, frames_to_array, merge as merge_frames, new_frame,
+    remap_canonical, remap_positional, row_to_frame, shape_frames, sort,
+};
 use super::row_store;
+use super::set;
 use super::{Error, ErrorKind, Result};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -55,7 +58,7 @@ pub struct Executor<'a> {
     plans: HashMap<String, BindingPlan>,
 }
 
-struct SetOperation<'a> {
+struct SetPlan<'a> {
     left: &'a Node,
     right: &'a Node,
     quantifier: SetQuantifier,
@@ -146,7 +149,7 @@ impl<'a> Executor<'a> {
                 decode_columns,
                 ..
             } => {
-                let table = scan_table(scan);
+                let table = scan.scan_table();
                 let mut values = crate::engine::lir::Row::new();
                 for (column, constant) in table.primary_key.iter().zip(key) {
                     let value = resolve_constant(constant, outer)?;
@@ -167,7 +170,7 @@ impl<'a> Executor<'a> {
                 decode_columns,
                 ..
             } => Ok(
-                row_store::scan_table_columns(self.view, scan_table(scan), decode_columns)
+                row_store::scan_table_columns(self.view, scan.scan_table(), decode_columns)
                     .await?
                     .iter()
                     .map(|row| row_to_frame(scan, row, outer))
@@ -200,7 +203,7 @@ impl<'a> Executor<'a> {
                 });
                 Ok(row_store::scan_index_range_columns(
                     self.view,
-                    scan_table(scan),
+                    scan.scan_table(),
                     index,
                     &equality_prefix,
                     range,
@@ -261,48 +264,9 @@ impl<'a> Executor<'a> {
                 })
                 .collect(),
             Node::Sort { input, terms } => {
-                let frames = self.execute_node(input, outer).await?;
-                let keys = frames
-                    .iter()
-                    .map(|frame| {
-                        terms
-                            .iter()
-                            .map(|term| evaluate(&term.expression, frame).map_err(Into::into))
-                            .collect::<Result<Vec<_>>>()
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                let mut positions = (0..frames.len()).collect::<Vec<_>>();
-                let comparison_error = std::cell::RefCell::new(None);
-                positions.sort_by(|left, right| {
-                    for (index, term) in terms.iter().enumerate() {
-                        let comparison = match keys[*left][index].compare(&keys[*right][index]) {
-                            Ok(comparison) => comparison,
-                            Err(error) => {
-                                *comparison_error.borrow_mut() = Some(error.to_string());
-                                Ordering::Equal
-                            }
-                        };
-                        let comparison = if term.descending {
-                            comparison.reverse()
-                        } else {
-                            comparison
-                        };
-                        if comparison != Ordering::Equal {
-                            return comparison;
-                        }
-                    }
-                    Ordering::Equal
-                });
-                if let Some(error) = comparison_error.into_inner() {
-                    return Err(Error::message(
-                        ErrorKind::Internal,
-                        format!("exec: {error}"),
-                    ));
-                }
-                Ok(positions
-                    .into_iter()
-                    .map(|position| frames[position].clone())
-                    .collect())
+                let mut frames = self.execute_node(input, outer).await?;
+                sort(&mut frames, terms)?;
+                Ok(frames)
             }
             Node::Slice {
                 input,
@@ -369,7 +333,7 @@ impl<'a> Executor<'a> {
                 output,
             } => {
                 self.execute_set_operation(
-                    SetOperation {
+                    SetPlan {
                         left,
                         right,
                         quantifier: *quantifier,
@@ -391,7 +355,7 @@ impl<'a> Executor<'a> {
                 output,
             } => {
                 self.execute_set_operation(
-                    SetOperation {
+                    SetPlan {
                         left,
                         right,
                         quantifier: *quantifier,
@@ -461,39 +425,18 @@ impl<'a> Executor<'a> {
 
     async fn execute_set_operation(
         &mut self,
-        operation: SetOperation<'_>,
+        operation: SetPlan<'_>,
         outer: &Env,
     ) -> Result<Vec<Env>> {
         let left = self.execute_node(operation.left, outer).await?;
         let right = self.execute_node(operation.right, outer).await?;
-        let mut right_counts = HashMap::<CanonicalRowKey, usize>::new();
+        let mut state = set::State::new(operation.quantifier, operation.subtract);
         for frame in &right {
-            *right_counts
-                .entry(canonical_row_key(&operation.right_output.fields, frame))
-                .or_default() += 1;
+            state.add_right(operation.right_output, frame);
         }
-        let mut emitted = std::collections::HashSet::new();
         let mut frames = Vec::new();
         for frame in left {
-            let key = canonical_row_key(&operation.left_output.fields, &frame);
-            let keep = if operation.quantifier == SetQuantifier::Distinct {
-                if emitted.contains(&key) {
-                    false
-                } else {
-                    let in_right = right_counts.get(&key).copied().unwrap_or_default() > 0;
-                    let keep = operation.subtract != in_right;
-                    if keep {
-                        emitted.insert(key.clone());
-                    }
-                    keep
-                }
-            } else if let Some(count) = right_counts.get_mut(&key).filter(|count| **count > 0) {
-                *count -= 1;
-                !operation.subtract
-            } else {
-                operation.subtract
-            };
-            if keep {
+            if state.keep_left(operation.left_output, &frame) {
                 frames.push(remap_positional(
                     operation.output,
                     operation.left_output,
@@ -780,7 +723,7 @@ impl Accumulator {
         };
         let value = match term.function {
             AggregateFunction::Count => Value::Int64(self.count),
-            AggregateFunction::Sum if self.values == 0 => null(),
+            AggregateFunction::Sum | AggregateFunction::Average if self.values == 0 => null(),
             AggregateFunction::Sum if term.value_type.kind == Kind::Int64 => {
                 Value::Int64(i64::try_from(self.integer_sum).map_err(|_| {
                     Error::with_reason(
@@ -791,7 +734,6 @@ impl Accumulator {
                 })?)
             }
             AggregateFunction::Sum => Value::Float64(self.float_sum),
-            AggregateFunction::Average if self.values == 0 => null(),
             AggregateFunction::Average => Value::Float64(self.float_sum / self.values as f64),
             AggregateFunction::Min => self.minimum.unwrap_or_else(null),
             AggregateFunction::Max => self.maximum.unwrap_or_else(null),
@@ -805,117 +747,6 @@ impl Accumulator {
         }
         Ok(value)
     }
-}
-
-pub fn shape_frames(
-    cardinality: RootCardinality,
-    output: &RowType,
-    frames: &[Env],
-) -> Result<Datum> {
-    match cardinality {
-        RootCardinality::Many => Ok(frames_to_array(output, frames)),
-        RootCardinality::First => Ok(frames
-            .first()
-            .map(|frame| frame_to_object(output, frame))
-            .unwrap_or(Datum::Null)),
-        RootCardinality::ExactlyOne => match frames {
-            [frame] => Ok(frame_to_object(output, frame)),
-            [] => Err(Error::with_reason(
-                ErrorKind::Runtime,
-                super::ErrorReason::CardinalityViolation,
-                "exec: expected exactly one row, got none",
-            )),
-            _ => Err(Error::with_reason(
-                ErrorKind::Runtime,
-                super::ErrorReason::CardinalityViolation,
-                "exec: expected exactly one row, got more",
-            )),
-        },
-        RootCardinality::Scalar => Ok(frames
-            .first()
-            .map(|frame| frame_scalar(output, frame))
-            .unwrap_or(Datum::Null)),
-    }
-}
-
-pub(super) fn new_frame(outer: &Env) -> Env {
-    outer.clone()
-}
-
-pub(super) fn merge_frames(left: &Env, right: &Env) -> Env {
-    let mut output = left.clone();
-    output.extend_from(right);
-    output
-}
-
-pub(super) fn row_to_frame(
-    relation: &bound::Relation,
-    row: &crate::engine::lir::Row,
-    outer: &Env,
-) -> Env {
-    let mut frame = new_frame(outer);
-    for field in &relation.output().fields {
-        if let Some(value) = row.get(&field.name) {
-            frame.set_scalar(field.slot, value.clone());
-        }
-    }
-    frame
-}
-
-fn frame_to_object(output: &RowType, frame: &Env) -> Datum {
-    Datum::Object(
-        output
-            .fields
-            .iter()
-            .map(|field| ObjectField {
-                name: field.name.clone(),
-                datum: frame.get(field.slot).cloned().unwrap_or(Datum::Null),
-            })
-            .collect(),
-    )
-}
-
-fn frame_scalar(output: &RowType, frame: &Env) -> Datum {
-    output
-        .fields
-        .first()
-        .and_then(|field| frame.get(field.slot))
-        .cloned()
-        .unwrap_or(Datum::Null)
-}
-
-fn frames_to_array(output: &RowType, frames: &[Env]) -> Datum {
-    Datum::Array(
-        frames
-            .iter()
-            .map(|frame| frame_to_object(output, frame))
-            .collect(),
-    )
-}
-
-fn remap_canonical(output: &RowType, canonical: &[SlotId], source: &Env, outer: &Env) -> Env {
-    let mut frame = new_frame(outer);
-    for (field, canonical) in output.fields.iter().zip(canonical) {
-        if let Some(datum) = source.get(*canonical) {
-            frame.insert(field.slot, datum.clone());
-        }
-    }
-    frame
-}
-
-pub(super) fn remap_positional(
-    output: &RowType,
-    source_output: &RowType,
-    source: &Env,
-    outer: &Env,
-) -> Env {
-    let mut frame = new_frame(outer);
-    for (field, source_field) in output.fields.iter().zip(&source_output.fields) {
-        if let Some(datum) = source.get(source_field.slot) {
-            frame.insert(field.slot, datum.clone());
-        }
-    }
-    frame
 }
 
 pub(super) fn resolve_constant(value: &ConstValue, outer: &Env) -> Result<Value> {
@@ -937,18 +768,12 @@ pub(super) fn resolve_constant(value: &ConstValue, outer: &Env) -> Result<Value>
     }
 }
 
-pub(super) fn scan_table(relation: &bound::Relation) -> &crate::engine::catalog::model::Table {
-    let RelationNode::Scan { table, .. } = &relation.node else {
-        unreachable!("physical access contains a scan relation")
-    };
-    table
-}
-
 fn scan_column_type(node: &Node, name: &str) -> crate::engine::catalog::model::ScalarType {
     match node {
         Node::PrimaryKeyGet { scan, .. }
         | Node::TableScan { scan, .. }
-        | Node::IndexRangeScan { scan, .. } => scan_table(scan)
+        | Node::IndexRangeScan { scan, .. } => scan
+            .scan_table()
             .column(name)
             .map(|column| column.scalar_type)
             .unwrap_or(crate::engine::catalog::model::ScalarType::Text),
@@ -998,7 +823,7 @@ mod tests {
     use crate::engine::kv::slatedb::Store;
     use crate::engine::kv::{Entry, KeyRange, Kv, KvIterator, KvView, TransactionalKv};
     use crate::engine::lir::bound::{BoundOrderTerm, Expr, ProjectField, Relation};
-    use crate::engine::lir::{BinaryOp, Field, Type};
+    use crate::engine::lir::{BinaryOp, Field, RootCardinality, Type};
     use crate::engine::planner::{PlanOptions, plan_query};
 
     use super::*;

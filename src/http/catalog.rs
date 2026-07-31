@@ -341,8 +341,7 @@ fn table_response(tables: &[Table], name: &str) -> Result<TableInfo, Box<Respons
                 std::io::Error::other(format!("missing table {name:?}")),
             ))
         })?;
-    wire::one_table(table, tables)
-        .map_err(|error| Box::new(server::internal_problem("encode table", error)))
+    Ok(wire::one_table(table, tables))
 }
 
 fn mode_gate(mode: Mode) -> Option<ResponseProblem> {

@@ -7,7 +7,7 @@ use crate::engine::catalog::model::{CatalogDependencies, Column, Index, Table};
 use crate::engine::catalog::{Error, ErrorKind, Result};
 use crate::engine::kv::KvView;
 
-use super::{map_kv, write_protocol_key};
+use super::{map_kv, parse_u64, write_protocol_key};
 
 const TABLE_EXISTENCE_PREFIX: &str = "/rad/catalog/fence/table_existence/";
 const COLUMN_VALUE_PREFIX: &str = "/rad/catalog/fence/column_value/";
@@ -69,22 +69,7 @@ async fn read_generation_fence<V: KvView + ?Sized>(
     label: &str,
 ) -> Result<()> {
     let actual = match view.get(key).await.map_err(map_kv)? {
-        Some(raw) => std::str::from_utf8(&raw)
-            .map_err(|error| {
-                Error::source(
-                    ErrorKind::CatalogCorrupt,
-                    format!("catalog: corrupt {label}"),
-                    error,
-                )
-            })?
-            .parse::<u64>()
-            .map_err(|error| {
-                Error::source(
-                    ErrorKind::CatalogCorrupt,
-                    format!("catalog: corrupt {label}"),
-                    error,
-                )
-            })?,
+        Some(raw) => parse_u64(label, None, &raw)?,
         None => 0,
     };
     if actual != expected {

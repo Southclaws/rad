@@ -11,13 +11,13 @@ use crate::http::generated::types::{
 };
 use crate::process::Result;
 
-pub struct Client {
+pub(super) struct Client {
     base: Url,
     http: reqwest::Client,
 }
 
 impl Client {
-    pub fn connect(connection: &str) -> Result<Self> {
+    pub(super) fn connect(connection: &str) -> Result<Self> {
         let base = connection_url(connection)?;
         Ok(Self {
             base,
@@ -27,15 +27,15 @@ impl Client {
         })
     }
 
-    pub async fn schema(&self) -> Result<SchemaState> {
+    pub(super) async fn schema(&self) -> Result<SchemaState> {
         self.get("schema").await
     }
 
-    pub async fn schema_diff(&self, schema: String) -> Result<SchemaDiffResult> {
+    pub(super) async fn schema_diff(&self, schema: String) -> Result<SchemaDiffResult> {
         self.post("schema/diff", &SchemaRequest { schema }).await
     }
 
-    pub async fn schema_migrate(
+    pub(super) async fn schema_migrate(
         &self,
         schema: String,
         current_version: i64,
@@ -51,7 +51,7 @@ impl Client {
         self.post("schema/migrate", &request).await
     }
 
-    pub async fn wait_for_migration(
+    pub(super) async fn wait_for_migration(
         &self,
         mut migration: SchemaMigrateResult,
     ) -> Result<SchemaMigrateResult> {

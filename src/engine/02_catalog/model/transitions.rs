@@ -384,6 +384,26 @@ impl SchemaTransition {
             TransitionWorkState::Normal
         };
     }
+
+    /// Record one bounded physical scan and report whether it reached the end.
+    pub(crate) fn advance_scan(
+        &mut self,
+        items: usize,
+        last_key: Option<&[u8]>,
+        now: Timestamp,
+    ) -> bool {
+        self.batch_id = self.batch_id.saturating_add(1);
+        self.generation = self.generation.next();
+        self.rows_scanned = self.rows_scanned.saturating_add(items as u64);
+        self.updated_at = now;
+        if let Some(last_key) = last_key {
+            self.cursor.clear();
+            self.cursor.extend_from_slice(last_key);
+            false
+        } else {
+            true
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -545,6 +565,21 @@ mod tests {
         value.state = TransitionState::Ready;
         value.refresh_work_state(100);
         assert_eq!(value.work_state, TransitionWorkState::Normal);
+    }
+
+    #[test]
+    fn scan_progress_advances_once_and_reports_exhaustion() {
+        let mut value = transition();
+        let now = Timestamp::test_value();
+        assert!(!value.advance_scan(3, Some(b"last-key"), now));
+        assert_eq!(value.batch_id, 1);
+        assert_eq!(value.generation.get(), 8);
+        assert_eq!(value.rows_scanned, 15);
+        assert_eq!(value.cursor, b"last-key");
+        assert_eq!(value.updated_at, now);
+        assert!(value.advance_scan(0, None, now));
+        assert_eq!(value.batch_id, 2);
+        assert_eq!(value.generation.get(), 9);
     }
 
     #[test]

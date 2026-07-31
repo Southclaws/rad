@@ -4,9 +4,8 @@ use super::*;
 use crate::engine::catalog::identity::{ColumnId, OwnerEpoch, ReclamationId, TransitionId};
 use crate::engine::catalog::model::{
     ColumnConversion, ColumnReplacement, ColumnReplacementDef, ColumnReplacementRequest,
-    ColumnReplacementWrite, ConstraintKind, ConstraintState, DataPosition, Reclamation,
-    ReclamationKind, SchemaTransition, Timestamp, TransitionKind, TransitionState,
-    TransitionWorkState,
+    ColumnReplacementWrite, ConstraintKind, ConstraintState, DataPosition, ReclamationKind,
+    SchemaTransition, Timestamp, TransitionKind, TransitionState, TransitionWorkState,
 };
 
 impl Mutation<'_> {
@@ -341,7 +340,7 @@ impl Mutation<'_> {
         &mut self,
         id: &TransitionId,
         owner: OwnerEpoch,
-    ) -> Result<(SchemaTransition, Table, super::super::model::WriteProtocol)> {
+    ) -> Result<(SchemaTransition, Table, WriteProtocol)> {
         let transition = required_transition(self.view, id).await?;
         if transition.kind != TransitionKind::ColumnReplacement
             || transition.column_replacement.is_none()
@@ -363,12 +362,7 @@ impl Mutation<'_> {
         id: ReclamationId,
         column_id: ColumnId,
     ) -> Result<()> {
-        let mut reclamation = Reclamation::pending(
-            id,
-            kind,
-            store::current_revision(self.view).await?.version.next(),
-            self.now(),
-        );
+        let mut reclamation = self.pending_reclamation(id, kind).await?;
         reclamation.table_id = transition.table_id.clone();
         reclamation.table_schema_id = Some(transition.table_schema_id);
         reclamation.column_id = column_id;

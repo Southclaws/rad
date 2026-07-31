@@ -4,8 +4,8 @@ use crate::engine::catalog::identity::CatalogVersion;
 use crate::engine::catalog::{Error, ErrorKind, Result};
 use crate::engine::kv::KvView;
 
-use super::map_kv;
-use super::revisions::{current_revision, parse_u64, revision_key};
+use super::revisions::{current_revision, revision_key};
+use super::{map_kv, parse_u64};
 
 const COMPACTED_THROUGH_KEY: &[u8] = b"/rad/catalog/meta/schema_revision_compacted_through";
 
@@ -15,7 +15,7 @@ pub async fn revision_compacted_through<V: KvView + ?Sized>(
     let Some(raw) = view.get(COMPACTED_THROUGH_KEY).await.map_err(map_kv)? else {
         return Ok(CatalogVersion::ZERO);
     };
-    parse_u64("compacted revision horizon", &raw).map(Into::into)
+    parse_u64("compacted revision horizon", None, &raw).map(Into::into)
 }
 
 pub async fn revision_compaction_needed<V: KvView + ?Sized>(

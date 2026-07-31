@@ -5,20 +5,27 @@ use chrono::Utc;
 
 use super::client::Client;
 use super::generated::{
-    GenerateArgs, GlobalArgs, Handler, SchemaDiffArgs, SchemaDiffFormat, SchemaMigrateArgs,
-    SchemaOptions, SchemaPullArgs, SchemaStatusArgs, ServeArgs, ServeCatalogMode, ServeStorage,
-    ValidateArgs,
+    GenerateArgs, GlobalArgs, Handler, InitArgs, SchemaDiffArgs, SchemaDiffFormat,
+    SchemaMigrateArgs, SchemaOptions, SchemaPullArgs, SchemaStatusArgs, ServeArgs,
+    ServeCatalogMode, ServeStorage, ValidateArgs,
 };
-use super::project::Project;
+use super::project::{Project, read_schema_file};
 use super::state::{StateStore, matches_accepted};
 use crate::engine::catalog::model::Mode;
 use crate::http::generated::types::{SchemaDiffResult, SchemaMigrateResult, SchemaState};
 use crate::process::{Config, Result, StorageConfig};
 
-pub struct App;
+pub(super) struct App;
+
+const ACCEPTED_STATE_RECOVERY: &str = "Apply the desired schema first with:\n  rad schema migrate\n\nIf the database already has the intended schema, recover it with:\n  rad schema pull";
+const ACCEPTED_STATE_CONTEXT: &str = "schema.lock.json points to an immutable changelog snapshot of the exact schema version accepted by the database. rad generate reads this state so generated clients cannot target unapplied local changes; it does not create accepted state.";
 
 impl Handler for App {
     type Error = Box<dyn std::error::Error + Send + Sync>;
+
+    async fn init(&mut self, _globals: &GlobalArgs, args: InitArgs) -> Result {
+        super::init::run(args)
+    }
 
     async fn serve(&mut self, _globals: &GlobalArgs, args: ServeArgs) -> Result {
         let catalog_mode = args.catalog_mode.map(|mode| match mode {
@@ -54,7 +61,7 @@ impl Handler for App {
     }
 
     async fn validate(&mut self, _globals: &GlobalArgs, args: ValidateArgs) -> Result {
-        let source = std::fs::read(&args.file)?;
+        let source = read_schema_file(&args.file)?;
         let schema =
             crate::engine::catalog::schema::parse(&args.file.display().to_string(), &source)?;
         let columns = schema
@@ -91,7 +98,10 @@ impl Handler for App {
                 "\nLocal accepted schema\n  version: {}\n  hash:    {}",
                 accepted.lock.schema_version, accepted.lock.schema_hash
             ),
-            Err(error) => println!("\nLocal accepted schema\n  unavailable: {error}"),
+            Err(error) => println!(
+                "\nLocal accepted schema\n  unavailable: {}",
+                accepted_state_unavailable(&store, error.as_ref())
+            ),
         }
 
         let changes = match project.read_schema() {
@@ -205,7 +215,7 @@ impl Handler for App {
         }
         let version = server.schema_version;
         let accepted = store.write_snapshot(server)?;
-        store.write_desired(&project.schema_file, &accepted.source)?;
+        StateStore::write_desired(&project.schema_file, &accepted.source)?;
         store.write_lock(&accepted.lock)?;
         println!("Pulled schema version {version}.");
         println!(
@@ -285,16 +295,19 @@ fn local_schema_modified(path: &Path, store: &StateStore, server_hash: &str) -> 
     let source = match std::fs::read(path) {
         Ok(source) => source,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error.into()),
+        Err(error) => {
+            return Err(
+                format!("could not read schema file at {}: {error}", path.display()).into(),
+            );
+        }
     };
     match store.load() {
         Ok(accepted) => Ok(!matches_accepted(path, &source, &accepted)?),
-        Err(error) if is_not_found(error.as_ref()) => {
+        Err(_) => {
             let schema =
                 crate::engine::catalog::schema::parse(&path.display().to_string(), &source)?;
             Ok(schema.canonical().hash()? != server_hash)
         }
-        Err(error) => Err(error),
     }
 }
 
@@ -302,6 +315,27 @@ fn is_not_found(error: &(dyn std::error::Error + 'static)) -> bool {
     error
         .downcast_ref::<io::Error>()
         .is_some_and(|error| error.kind() == io::ErrorKind::NotFound)
+}
+
+fn accepted_state_unavailable(
+    store: &StateStore,
+    error: &(dyn std::error::Error + 'static),
+) -> String {
+    let problem = if is_not_found(error) {
+        if store.lock_path().exists() {
+            format!("accepted schema snapshot is missing: {error}")
+        } else {
+            format!(
+                "no accepted schema state found at {}",
+                store.lock_path().display()
+            )
+        }
+    } else {
+        format!("accepted schema state is invalid: {error}")
+    };
+    format!(
+        "{problem}\n\n{ACCEPTED_STATE_CONTEXT}\n\nrad.state is managed by Rad; do not create or edit its lockfile or snapshots manually.\n\n{ACCEPTED_STATE_RECOVERY}"
+    )
 }
 
 fn status_summary(
@@ -362,11 +396,24 @@ fn generate_target(schema_file: &Path, target: &super::project::GenerationTarget
     let root = schema_file
         .parent()
         .ok_or_else(|| format!("{} has no parent directory", schema_file.display()))?;
+    let desired = read_schema_file(&schema_file)?;
     let store = StateStore::new(root.join(super::project::DEFAULT_STATE_DIR));
+    let lock_path = store.lock_path();
+    if !lock_path.try_exists().map_err(|error| {
+        format!(
+            "could not inspect accepted schema state at {}: {error}",
+            lock_path.display()
+        )
+    })? {
+        return Err(format!(
+            "no accepted schema state found at {}\n\n{ACCEPTED_STATE_CONTEXT}\n\nrad.state is managed by Rad; do not create or edit its lockfile or snapshots manually.\n\n{ACCEPTED_STATE_RECOVERY}",
+            lock_path.display()
+        )
+        .into());
+    }
     let accepted = store
         .load()
-        .map_err(|error| format!("load accepted schema state: {error}"))?;
-    let desired = std::fs::read(&schema_file)?;
+        .map_err(|error| accepted_state_unavailable(&store, error.as_ref()))?;
     if !matches_accepted(&schema_file, &desired, &accepted)? {
         return Err(format!(
             "{} differs from accepted schema version {}\n\nApply it with:\n  rad schema migrate\n\nOr restore the accepted schema with:\n  rad schema pull",
@@ -401,4 +448,141 @@ fn generate_target(schema_file: &Path, target: &super::project::GenerationTarget
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_explains_how_to_create_missing_accepted_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = StateStore::new(directory.path().join("rad.state"));
+        let error = store.load().unwrap_err();
+
+        let message = accepted_state_unavailable(&store, error.as_ref());
+
+        assert!(
+            message.contains(
+                &directory
+                    .path()
+                    .join("rad.state/schema.lock.json")
+                    .display()
+                    .to_string()
+            ),
+            "{message}"
+        );
+        assert!(message.contains("rad schema migrate"), "{message}");
+        assert!(message.contains("rad schema pull"), "{message}");
+    }
+
+    #[test]
+    fn invalid_accepted_state_explains_ownership_and_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = StateStore::new(directory.path());
+        std::fs::write(
+            store.lock_path(),
+            r#"{"format_version":1,"schema_version":0,"schema_hash":"sha256:none","snapshot":""}"#,
+        )
+        .unwrap();
+        let error = store.load().unwrap_err();
+
+        let message = accepted_state_unavailable(&store, error.as_ref());
+
+        assert!(
+            message.contains("accepted schema state is invalid"),
+            "{message}"
+        );
+        assert!(
+            message.contains("immutable changelog snapshot"),
+            "{message}"
+        );
+        assert!(message.contains("managed by Rad"), "{message}");
+        assert!(message.contains("do not create or edit"), "{message}");
+        assert!(message.contains("rad schema migrate"), "{message}");
+        assert!(message.contains("rad schema pull"), "{message}");
+    }
+
+    #[test]
+    fn missing_changelog_snapshot_explains_why_generate_needs_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = StateStore::new(directory.path());
+        std::fs::write(
+            store.lock_path(),
+            r#"{"format_version":1,"schema_version":0,"schema_hash":"sha256:none","snapshot":"changelog/00000000.rad.schema.yaml"}"#,
+        )
+        .unwrap();
+        let error = store.load().unwrap_err();
+
+        let message = accepted_state_unavailable(&store, error.as_ref());
+
+        assert!(message.contains("snapshot is missing"), "{message}");
+        assert!(
+            message.contains("exact schema version accepted"),
+            "{message}"
+        );
+        assert!(
+            message.contains("does not create accepted state"),
+            "{message}"
+        );
+        assert!(message.contains("rad schema migrate"), "{message}");
+        assert!(message.contains("rad schema pull"), "{message}");
+    }
+
+    #[test]
+    fn pull_recovery_still_detects_changes_when_local_state_is_invalid() {
+        let directory = tempfile::tempdir().unwrap();
+        let schema_file = directory.path().join("rad.schema.yaml");
+        let source = b"tables:\n  - id: 1\n    name: users\n    columns:\n      - { id: 1, name: id, type: string, pk: true }\n";
+        std::fs::write(&schema_file, source).unwrap();
+        let canonical = crate::engine::catalog::schema::parse("fixture", source)
+            .unwrap()
+            .canonical();
+        let store = StateStore::new(directory.path().join("rad.state"));
+        std::fs::create_dir_all(directory.path().join("rad.state")).unwrap();
+        std::fs::write(
+            store.lock_path(),
+            r#"{"format_version":1,"schema_version":0,"schema_hash":"sha256:none","snapshot":""}"#,
+        )
+        .unwrap();
+
+        assert!(!local_schema_modified(&schema_file, &store, &canonical.hash().unwrap()).unwrap());
+        std::fs::write(
+            &schema_file,
+            b"tables:\n  - id: 1\n    name: accounts\n    columns:\n      - { id: 1, name: id, type: string, pk: true }\n",
+        )
+        .unwrap();
+        assert!(local_schema_modified(&schema_file, &store, &canonical.hash().unwrap()).unwrap());
+    }
+
+    #[test]
+    fn generate_explains_how_to_create_missing_accepted_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let schema_file = directory.path().join("rad.schema.yaml");
+        std::fs::write(
+            &schema_file,
+            b"tables:\n  - id: 1\n    name: users\n    columns:\n      - { id: 1, name: id, type: string, pk: true }\n",
+        )
+        .unwrap();
+        let target = crate::cli::project::GenerationTarget::default();
+
+        let error = generate_target(&schema_file, &target)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.contains(
+                &directory
+                    .path()
+                    .join("rad.state/schema.lock.json")
+                    .display()
+                    .to_string()
+            ),
+            "{error}"
+        );
+        assert!(error.contains("immutable changelog snapshot"), "{error}");
+        assert!(error.contains("does not create accepted state"), "{error}");
+        assert!(error.contains("rad schema migrate"), "{error}");
+        assert!(error.contains("rad schema pull"), "{error}");
+    }
 }

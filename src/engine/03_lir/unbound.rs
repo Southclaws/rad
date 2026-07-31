@@ -114,10 +114,28 @@ pub enum JoinKind {
     Left,
 }
 
+impl JoinKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Inner => "inner",
+            Self::Left => "left",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SetQuantifier {
     All,
     Distinct,
+}
+
+impl SetQuantifier {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Distinct => "distinct",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -127,6 +145,18 @@ pub enum AggregateFunction {
     Average,
     Min,
     Max,
+}
+
+impl AggregateFunction {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Count => "count",
+            Self::Sum => "sum",
+            Self::Average => "avg",
+            Self::Min => "min",
+            Self::Max => "max",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -152,6 +182,15 @@ pub struct OrderTerm {
 pub enum RecursiveAccumulation {
     All,
     New,
+}
+
+impl RecursiveAccumulation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::New => "new",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -234,6 +273,17 @@ pub enum RootCardinality {
     First,
     ExactlyOne,
     Scalar,
+}
+
+impl RootCardinality {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Many => "many",
+            Self::First => "first",
+            Self::ExactlyOne => "exactly_one",
+            Self::Scalar => "scalar",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -13,7 +13,7 @@ pub(super) struct ResponseProblem {
 }
 
 impl ResponseProblem {
-    pub fn from_failure(failure: Failure) -> Self {
+    pub(super) fn from_failure(failure: Failure) -> Self {
         match failure {
             Failure::Invalid(failure) => Self::invalid(failure, StatusCode::UNPROCESSABLE_ENTITY),
             Failure::ExecutionFailed(failure) => Self::execution(failure),
@@ -23,7 +23,7 @@ impl ResponseProblem {
         }
     }
 
-    pub fn invalid(failure: InvalidFailure, status: StatusCode) -> Self {
+    pub(super) fn invalid(failure: InvalidFailure, status: StatusCode) -> Self {
         Self {
             status,
             body: wire::Problem::InvalidProblem(wire::InvalidProblem {
@@ -114,7 +114,7 @@ impl ResponseProblem {
         Self::internal_transport()
     }
 
-    pub fn internal_transport() -> Self {
+    pub(super) fn internal_transport() -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             body: wire::Problem::InternalProblem(wire::InternalProblem {

@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use super::{GeneratedFile, LanguageGenerator, Model, Options, Result, ScalarKind};
 
-pub struct Generator;
+pub(super) struct Generator;
 
 const CLIENT_TEMPLATE: &str = include_str!("templates/client.go.j2");
 const RUNTIME_TEMPLATE: &str = include_str!("templates/runtime.go.j2");
@@ -99,6 +99,10 @@ struct TableView {
 }
 
 #[derive(Clone, Serialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the template view exposes independent column capabilities"
+)]
 struct ColumnView {
     name: String,
     name_quoted: String,

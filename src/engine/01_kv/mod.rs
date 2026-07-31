@@ -17,6 +17,15 @@ pub enum IsolationLevel {
     SerializableSnapshot,
 }
 
+impl IsolationLevel {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Snapshot => "snapshot",
+            Self::SerializableSnapshot => "serializable_snapshot",
+        }
+    }
+}
+
 /// An opaque storage position identifying the snapshot at transaction start.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct DataPosition(String);

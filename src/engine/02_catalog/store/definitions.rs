@@ -6,10 +6,9 @@ use crate::engine::catalog::identity::{CatalogVersion, DefinitionGeneration, Sch
 use crate::engine::catalog::model::{Reclamation, ReclamationKind, Schema, Table, Timestamp};
 use crate::engine::catalog::{Error, ErrorKind, Result};
 use crate::engine::kv::KvView;
-use crate::engine::kv::key_encoding::prefix_end;
 
 use super::durable_json::encode;
-use super::{map_kv, queue_reclamation, table_definition_reclamation_id};
+use super::{map_kv, parse_u64, prefix_bounds, queue_reclamation, table_definition_reclamation_id};
 
 const TABLE_DEFINITION_PREFIX: &str = "/rad/catalog/object/table/";
 const TABLE_HEAD_PREFIX: &str = "/rad/catalog/head/table/";
@@ -25,8 +24,7 @@ pub fn table_definition_key(id: SchemaId, generation: DefinitionGeneration) -> V
 
 pub fn table_definition_range(id: SchemaId) -> (Vec<u8>, Vec<u8>) {
     let start = format!("{TABLE_DEFINITION_PREFIX}{:010}/definition/", id.get()).into_bytes();
-    let end = prefix_end(&start).expect("catalog prefix has an upper bound");
-    (start, end)
+    prefix_bounds(start)
 }
 
 pub fn table_head_key(id: SchemaId) -> Vec<u8> {
@@ -125,20 +123,8 @@ pub async fn definition_head<V: KvView + ?Sized>(
             format!("catalog: corrupt table definition head {raw:?}"),
         ));
     };
-    let version = version.parse::<u64>().map_err(|error| {
-        Error::source(
-            ErrorKind::CatalogCorrupt,
-            "catalog: corrupt definition version",
-            error,
-        )
-    })?;
-    let generation = generation.parse::<u64>().map_err(|error| {
-        Error::source(
-            ErrorKind::CatalogCorrupt,
-            "catalog: corrupt definition generation",
-            error,
-        )
-    })?;
+    let version = parse_u64("definition version", None, version.as_bytes())?;
+    let generation = parse_u64("definition generation", None, generation.as_bytes())?;
     Ok(Some((version.into(), generation.into())))
 }
 

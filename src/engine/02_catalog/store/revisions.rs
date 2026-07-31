@@ -3,11 +3,10 @@ use bytes::Bytes;
 use crate::engine::catalog::identity::CatalogVersion;
 use crate::engine::catalog::model::{Revision, Schema, Timestamp};
 use crate::engine::catalog::{Error, ErrorKind, Result};
-use crate::engine::kv::key_encoding::prefix_end;
-use crate::engine::kv::{KeyRange, KvView};
+use crate::engine::kv::KvView;
 
 use super::durable_json::{decode, encode};
-use super::{list_tables, map_kv, publish_definitions};
+use super::{list_tables, map_kv, parse_u64, prefix_range, publish_definitions};
 
 const SCHEMA_VERSION_KEY: &[u8] = b"/rad/catalog/meta/schema_version";
 const CATALOG_GENERATION_KEY: &[u8] = b"/rad/catalog/meta/catalog_generation";
@@ -15,7 +14,7 @@ const SCHEMA_REVISION_PREFIX: &str = "/rad/catalog/meta/schema_revision/";
 
 pub(crate) async fn bump_catalog_generation<V: KvView + ?Sized>(view: &mut V) -> Result<u64> {
     let current = match view.get(CATALOG_GENERATION_KEY).await.map_err(map_kv)? {
-        Some(raw) => parse_u64("catalog_generation", &raw)?,
+        Some(raw) => parse_u64("catalog_generation", None, &raw)?,
         None => 0,
     };
     let next = current.checked_add(1).ok_or_else(|| {
@@ -43,7 +42,7 @@ pub async fn current_revision<V: KvView + ?Sized>(view: &mut V) -> Result<Revisi
             schema,
         });
     };
-    let version = parse_u64("schema_version", &raw)?;
+    let version = parse_u64("schema_version", None, &raw)?;
     read_revision(view, version.into()).await?.ok_or_else(|| {
         Error::message(
             ErrorKind::CatalogCorrupt,
@@ -79,13 +78,7 @@ pub async fn bump_revision<V: KvView + ?Sized>(view: &mut V, now: Timestamp) -> 
 
 pub async fn revisions<V: KvView + ?Sized>(view: &mut V) -> Result<Vec<Revision>> {
     let prefix = SCHEMA_REVISION_PREFIX.as_bytes();
-    let mut iterator = view
-        .scan(KeyRange::new(
-            Bytes::copy_from_slice(prefix),
-            Bytes::from(prefix_end(prefix).expect("catalog prefix has an upper bound")),
-        ))
-        .await
-        .map_err(map_kv)?;
+    let mut iterator = view.scan(prefix_range(prefix)).await.map_err(map_kv)?;
     let mut values = Vec::new();
     while let Some(entry) = iterator.next().await.map_err(map_kv)? {
         let key_version = entry
@@ -152,23 +145,6 @@ fn validate_revision(revision: &Revision) -> Result<()> {
 
 pub(crate) fn revision_key(version: CatalogVersion) -> Vec<u8> {
     format!("{SCHEMA_REVISION_PREFIX}{:020}", version.get()).into_bytes()
-}
-
-pub(crate) fn parse_u64(kind: &str, raw: &[u8]) -> Result<u64> {
-    let value = std::str::from_utf8(raw).map_err(|error| {
-        Error::source(
-            ErrorKind::CatalogCorrupt,
-            format!("catalog: corrupt {kind} {raw:?}"),
-            error,
-        )
-    })?;
-    value.parse::<u64>().map_err(|error| {
-        Error::source(
-            ErrorKind::CatalogCorrupt,
-            format!("catalog: corrupt {kind} {raw:?}"),
-            error,
-        )
-    })
 }
 
 #[cfg(test)]

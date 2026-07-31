@@ -11,6 +11,36 @@ tasks:
     cmds:
       - cargo build --locked --release {{.CLI_ARGS}}
 
+  lint:
+    desc: Check Rust formatting, all targets, production hygiene, and rustdoc
+    cmds:
+      - cargo fmt --all -- --check
+      - cargo clippy --locked --all-targets -- -D warnings
+      - >-
+        cargo clippy --locked --lib --bins --
+        -D warnings
+        -D unreachable-pub
+        -D unused-qualifications
+        -D clippy::large-futures
+        -D clippy::match-same-arms
+        -D clippy::significant-drop-in-scrutinee
+        -D clippy::struct-excessive-bools
+        -D clippy::unnecessary-wraps
+        -D clippy::unused-self
+        -D clippy::zero-sized-map-values
+      - RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps
+
+  check:dependencies:
+    desc: Check dependency advisories, bans, sources, and unused declarations
+    cmds:
+      - cargo deny --all-features check advisories bans sources
+      - cargo machete --with-metadata
+
+  check:semver:
+    desc: Check the public Rust API against a supplied release or revision baseline
+    cmds:
+      - cargo semver-checks {{.CLI_ARGS}}
+
   install:
     desc: Install the Rad binary from this checkout
     cmds:

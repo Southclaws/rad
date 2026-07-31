@@ -2,10 +2,8 @@ use std::collections::HashSet;
 
 use super::admission::{TransitionCandidate, affected_column_schema_ids, index_column_schema_ids};
 use super::*;
-use crate::engine::catalog::identity::{CatalogVersion, ColumnId};
-use crate::engine::catalog::model::{
-    ColumnDraft, DefaultValue, Reclamation, ReclamationKind, TransitionKind,
-};
+use crate::engine::catalog::identity::ColumnId;
+use crate::engine::catalog::model::{ColumnDraft, DefaultValue, ReclamationKind, TransitionKind};
 use crate::engine::catalog::naming;
 
 impl Mutation<'_> {
@@ -441,17 +439,13 @@ impl Mutation<'_> {
         Ok(())
     }
 
-    async fn next_catalog_version(&mut self) -> Result<CatalogVersion> {
-        Ok(store::current_revision(self.view).await?.version.next())
-    }
-
     async fn retire_table(&mut self, table: &Table) -> Result<()> {
-        let mut reclamation = Reclamation::pending(
-            store::table_reclamation_id(&table.id),
-            ReclamationKind::Table,
-            self.next_catalog_version().await?,
-            self.now(),
-        );
+        let mut reclamation = self
+            .pending_reclamation(
+                store::table_reclamation_id(&table.id),
+                ReclamationKind::Table,
+            )
+            .await?;
         reclamation.table_id = table.id.clone();
         reclamation.table_schema_id = Some(table.schema_id);
         reclamation.index_ids = table.indexes.iter().map(|index| index.id.clone()).collect();
@@ -460,12 +454,12 @@ impl Mutation<'_> {
     }
 
     async fn retire_column(&mut self, table: &Table, column_id: &ColumnId) -> Result<()> {
-        let mut reclamation = Reclamation::pending(
-            store::column_reclamation_id(&table.id, column_id),
-            ReclamationKind::Column,
-            self.next_catalog_version().await?,
-            self.now(),
-        );
+        let mut reclamation = self
+            .pending_reclamation(
+                store::column_reclamation_id(&table.id, column_id),
+                ReclamationKind::Column,
+            )
+            .await?;
         reclamation.table_id = table.id.clone();
         reclamation.table_schema_id = Some(table.schema_id);
         reclamation.column_id = column_id.clone();
@@ -473,12 +467,12 @@ impl Mutation<'_> {
     }
 
     async fn retire_index(&mut self, table: &Table, index: &Index) -> Result<()> {
-        let mut reclamation = Reclamation::pending(
-            store::index_reclamation_id(&table.id, &index.id),
-            ReclamationKind::Index,
-            self.next_catalog_version().await?,
-            self.now(),
-        );
+        let mut reclamation = self
+            .pending_reclamation(
+                store::index_reclamation_id(&table.id, &index.id),
+                ReclamationKind::Index,
+            )
+            .await?;
         reclamation.table_id = table.id.clone();
         reclamation.table_schema_id = Some(table.schema_id);
         reclamation.index_id = index.id.clone();
@@ -488,35 +482,11 @@ impl Mutation<'_> {
 
 impl Service {
     pub async fn rename_table(&self, old_name: &str, new_name: &str) -> Result<()> {
-        let mut transaction = self
-            .store
-            .begin(IsolationLevel::SerializableSnapshot)
-            .await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
-            let mut mutation = Mutation::with_runtime(&mut view, self.runtime.clone());
-            match mutation.rename_table(old_name, new_name).await {
-                Ok(()) => mutation.finish().await.map(|_| ()),
-                Err(error) => Err(error),
-            }
-        };
-        complete_transaction(transaction, result).await
+        run_mutation!(self, |mutation| mutation.rename_table(old_name, new_name))
     }
 
     pub async fn create_column(&self, table: &str, draft: ColumnDraft) -> Result<Table> {
-        let mut transaction = self
-            .store
-            .begin(IsolationLevel::SerializableSnapshot)
-            .await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
-            let mut mutation = Mutation::with_runtime(&mut view, self.runtime.clone());
-            match mutation.create_column(table, draft).await {
-                Ok(table) => mutation.finish().await.map(|_| table),
-                Err(error) => Err(error),
-            }
-        };
-        complete_transaction(transaction, result).await
+        run_mutation!(self, |mutation| mutation.create_column(table, draft))
     }
 
     pub async fn change_column_insert_default(
@@ -525,22 +495,8 @@ impl Service {
         column: &str,
         value: Option<DefaultValue>,
     ) -> Result<Table> {
-        let mut transaction = self
-            .store
-            .begin(IsolationLevel::SerializableSnapshot)
-            .await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
-            let mut mutation = Mutation::with_runtime(&mut view, self.runtime.clone());
-            match mutation
-                .change_column_insert_default(table, column, value)
-                .await
-            {
-                Ok(table) => mutation.finish().await.map(|_| table),
-                Err(error) => Err(error),
-            }
-        };
-        complete_transaction(transaction, result).await
+        run_mutation!(self, |mutation| mutation
+            .change_column_insert_default(table, column, value))
     }
 
     pub async fn rename_column(
@@ -549,83 +505,24 @@ impl Service {
         old_name: &str,
         new_name: &str,
     ) -> Result<Table> {
-        let mut transaction = self
-            .store
-            .begin(IsolationLevel::SerializableSnapshot)
-            .await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
-            let mut mutation = Mutation::with_runtime(&mut view, self.runtime.clone());
-            match mutation.rename_column(table, old_name, new_name).await {
-                Ok(table) => mutation.finish().await.map(|_| table),
-                Err(error) => Err(error),
-            }
-        };
-        complete_transaction(transaction, result).await
+        run_mutation!(self, |mutation| mutation
+            .rename_column(table, old_name, new_name))
     }
 
     pub async fn delete_table(&self, table: &str) -> Result<()> {
-        let mut transaction = self
-            .store
-            .begin(IsolationLevel::SerializableSnapshot)
-            .await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
-            let mut mutation = Mutation::with_runtime(&mut view, self.runtime.clone());
-            match mutation.delete_table(table).await {
-                Ok(()) => mutation.finish().await.map(|_| ()),
-                Err(error) => Err(error),
-            }
-        };
-        complete_transaction(transaction, result).await
+        run_mutation!(self, |mutation| mutation.delete_table(table))
     }
 
     pub async fn delete_column(&self, table: &str, column: &str) -> Result<Table> {
-        let mut transaction = self
-            .store
-            .begin(IsolationLevel::SerializableSnapshot)
-            .await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
-            let mut mutation = Mutation::with_runtime(&mut view, self.runtime.clone());
-            match mutation.delete_column(table, column).await {
-                Ok(table) => mutation.finish().await.map(|_| table),
-                Err(error) => Err(error),
-            }
-        };
-        complete_transaction(transaction, result).await
+        run_mutation!(self, |mutation| mutation.delete_column(table, column))
     }
 
     pub async fn create_index(&self, table: &str, definition: IndexDef) -> Result<Index> {
-        let mut transaction = self
-            .store
-            .begin(IsolationLevel::SerializableSnapshot)
-            .await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
-            let mut mutation = Mutation::with_runtime(&mut view, self.runtime.clone());
-            match mutation.create_index(table, definition).await {
-                Ok(index) => mutation.finish().await.map(|_| index),
-                Err(error) => Err(error),
-            }
-        };
-        complete_transaction(transaction, result).await
+        run_mutation!(self, |mutation| mutation.create_index(table, definition))
     }
 
     pub async fn delete_index(&self, table: &str, index: &str) -> Result<()> {
-        let mut transaction = self
-            .store
-            .begin(IsolationLevel::SerializableSnapshot)
-            .await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
-            let mut mutation = Mutation::with_runtime(&mut view, self.runtime.clone());
-            match mutation.delete_index(table, index).await {
-                Ok(()) => mutation.finish().await.map(|_| ()),
-                Err(error) => Err(error),
-            }
-        };
-        complete_transaction(transaction, result).await
+        run_mutation!(self, |mutation| mutation.delete_index(table, index))
     }
 }
 

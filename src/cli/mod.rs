@@ -3,6 +3,7 @@
 mod client;
 mod commands;
 pub mod generated;
+mod init;
 mod project;
 mod state;
 
@@ -58,6 +59,29 @@ mod tests {
         assert_eq!(serve.storage, ServeStorage::Memory);
     }
 
+    #[test]
+    fn generated_init_supports_the_fast_non_interactive_path() {
+        let cli = Cli::try_parse_from([
+            "rad",
+            "init",
+            "project",
+            "--yes",
+            "--empty",
+            "--no-generate",
+            "--database-url",
+            "rads://db.example.com",
+        ])
+        .unwrap();
+        let RootCommand::Init(init) = cli.command else {
+            panic!("expected init command");
+        };
+        assert_eq!(init.directory, std::path::Path::new("project"));
+        assert_eq!(init.database_url, "rads://db.example.com");
+        assert!(init.yes);
+        assert!(init.empty);
+        assert!(init.no_generate);
+    }
+
     #[tokio::test]
     async fn generated_dispatch_passes_parent_options_to_the_leaf_handler() {
         let cli = Cli::try_parse_from([
@@ -83,6 +107,10 @@ mod tests {
 
     impl Handler for RecordingHandler {
         type Error = Infallible;
+
+        async fn init(&mut self, _: &GlobalArgs, _: InitArgs) -> Result<(), Self::Error> {
+            unreachable!()
+        }
 
         async fn serve(&mut self, _: &GlobalArgs, _: ServeArgs) -> Result<(), Self::Error> {
             unreachable!()

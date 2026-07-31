@@ -3,8 +3,8 @@ use super::*;
 use crate::engine::catalog::identity::{OwnerEpoch, TransitionId};
 use crate::engine::catalog::model::{
     DEFAULT_DELTA_HARD_LIMIT, DEFAULT_DELTA_SOFT_LIMIT, DataPosition, IndexBuildRequest,
-    IndexDeltaSink, Reclamation, ReclamationKind, SchemaFinalizationGate, SchemaTransition,
-    Timestamp, TransitionKind, TransitionState, TransitionWorkState,
+    IndexDeltaSink, ReclamationKind, SchemaFinalizationGate, SchemaTransition, Timestamp,
+    TransitionKind, TransitionState, TransitionWorkState,
 };
 
 impl Mutation<'_> {
@@ -512,7 +512,7 @@ impl Mutation<'_> {
                         .await;
                 };
                 if let Err(error) =
-                    super::replacements::validate_dependencies(&table, &source, request.nullable)
+                    replacements::validate_dependencies(&table, &source, request.nullable)
                 {
                     return self
                         .fail_waiting_transition(transition, error.to_string())
@@ -538,8 +538,7 @@ impl Mutation<'_> {
                     conversion: request.conversion,
                     prerequisites: Vec::new(),
                 };
-                let target =
-                    super::replacements::build_target(self.view, &source, &definition).await?;
+                let target = replacements::build_target(self.view, &source, &definition).await?;
                 let replacement = crate::engine::catalog::model::ColumnReplacement {
                     source,
                     target,
@@ -677,10 +676,9 @@ impl Mutation<'_> {
         &mut self,
         transition: &SchemaTransition,
         kind: ReclamationKind,
-        reclamation_id: crate::engine::catalog::identity::ReclamationId,
+        reclamation_id: ReclamationId,
     ) -> Result<()> {
-        let version = store::current_revision(self.view).await?.version.next();
-        let mut reclamation = Reclamation::pending(reclamation_id, kind, version, self.now());
+        let mut reclamation = self.pending_reclamation(reclamation_id, kind).await?;
         reclamation.table_id = transition.table_id.clone();
         reclamation.table_schema_id = Some(transition.table_schema_id);
         reclamation.index_id = transition.index.id.clone();
@@ -691,9 +689,7 @@ impl Mutation<'_> {
 
 impl Service {
     pub async fn get_transition(&self, id: &TransitionId) -> Result<Option<SchemaTransition>> {
-        let mut transaction = self.store.begin(IsolationLevel::Snapshot).await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
+        read_snapshot!(self, |mut view| async {
             match store::get_transition(&mut view, id).await? {
                 Some(mut transition) => {
                     let high_water = store::delta_high_water(&mut view, id).await?;
@@ -702,40 +698,22 @@ impl Service {
                 }
                 None => Ok(None),
             }
-        };
-        transaction.rollback();
-        result
+        })
     }
 
     pub async fn list_transitions(&self) -> Result<Vec<SchemaTransition>> {
-        let mut transaction = self.store.begin(IsolationLevel::Snapshot).await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
+        read_snapshot!(self, |mut view| async {
             let mut transitions = store::list_transitions(&mut view).await?;
             for transition in &mut transitions {
                 let high_water = store::delta_high_water(&mut view, &transition.id).await?;
                 transition.refresh_work_state(high_water);
             }
             Ok(transitions)
-        };
-        transaction.rollback();
-        result
+        })
     }
 
     pub async fn cancel_schema_transition(&self, id: &TransitionId) -> Result<SchemaTransition> {
-        let mut transaction = self
-            .store
-            .begin(IsolationLevel::SerializableSnapshot)
-            .await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
-            let mut mutation = Mutation::with_runtime(&mut view, self.runtime.clone());
-            match mutation.cancel_schema_transition(id).await {
-                Ok(transition) => mutation.finish().await.map(|_| transition),
-                Err(error) => Err(error),
-            }
-        };
-        complete_transaction(transaction, result).await
+        run_mutation!(self, |mutation| mutation.cancel_schema_transition(id))
     }
 }
 
@@ -842,7 +820,7 @@ fn gate(transition: &SchemaTransition) -> SchemaFinalizationGate {
 }
 
 pub(super) fn acquire_gate(
-    protocol: &mut super::super::model::WriteProtocol,
+    protocol: &mut WriteProtocol,
     transition: &SchemaTransition,
 ) -> Result<()> {
     let expected = gate(transition);
@@ -873,7 +851,7 @@ pub(super) fn acquire_gate(
 }
 
 pub(super) fn remove_owned_gate(
-    protocol: &mut super::super::model::WriteProtocol,
+    protocol: &mut WriteProtocol,
     transition: &SchemaTransition,
 ) -> Result<()> {
     match &protocol.finalization_gate {

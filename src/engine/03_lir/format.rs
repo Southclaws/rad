@@ -1,14 +1,11 @@
 use std::fmt::Write;
 
 use super::bound::{Expr, Query, Relation, RelationNode};
-use super::{
-    AggregateFunction, BinaryOp, JoinKind, RecursiveAccumulation, RootCardinality, SetQuantifier,
-    TextComparison, UnaryOp,
-};
+use super::{BinaryOp, RecursiveAccumulation, TextComparison, UnaryOp};
 
 pub fn print(query: &Query) -> String {
     let mut output = String::new();
-    writeln!(output, "Query card={}", root_cardinality(query.cardinality)).unwrap();
+    writeln!(output, "Query card={}", query.cardinality.as_str()).unwrap();
     for binding in &query.bindings {
         let sensitivity = if binding.plan_sensitive {
             " plan-choice-sensitive"
@@ -20,7 +17,9 @@ pub fn print(query: &Query) -> String {
                 output,
                 "  Binding {} recursive accumulation={}{}",
                 binding.name,
-                accumulation(binding.accumulation),
+                binding
+                    .accumulation
+                    .map_or("", RecursiveAccumulation::as_str),
                 sensitivity
             )
             .unwrap();
@@ -114,7 +113,7 @@ fn print_relation_into(output: &mut String, relation: &Relation, depth: usize) {
             writeln!(
                 output,
                 "{padding}Join {} on {}{}",
-                join_kind(*kind),
+                kind.as_str(),
                 print_expression(on),
                 suffix(relation)
             )
@@ -143,7 +142,7 @@ fn print_relation_into(output: &mut String, relation: &Relation, depth: usize) {
             writeln!(
                 output,
                 "{padding}Intersect {} ({scope}) {}{}",
-                set_quantifier(*quantifier),
+                quantifier.as_str(),
                 row_type(relation),
                 suffix(relation)
             )
@@ -160,7 +159,7 @@ fn print_relation_into(output: &mut String, relation: &Relation, depth: usize) {
             writeln!(
                 output,
                 "{padding}Except {} ({scope}) {}{}",
-                set_quantifier(*quantifier),
+                quantifier.as_str(),
                 row_type(relation),
                 suffix(relation)
             )
@@ -194,7 +193,7 @@ fn print_relation_into(output: &mut String, relation: &Relation, depth: usize) {
                     "{padding}  {}#{} = {}({argument}) : {}",
                     term.name,
                     term.slot.0,
-                    aggregate_function(term.function),
+                    term.function.as_str(),
                     term.value_type
                 )
                 .unwrap();
@@ -321,47 +320,6 @@ fn row_type(relation: &Relation) -> String {
     )
 }
 
-fn root_cardinality(value: RootCardinality) -> &'static str {
-    match value {
-        RootCardinality::Many => "many",
-        RootCardinality::First => "first",
-        RootCardinality::ExactlyOne => "exactly_one",
-        RootCardinality::Scalar => "scalar",
-    }
-}
-
-fn accumulation(value: Option<RecursiveAccumulation>) -> &'static str {
-    match value {
-        Some(RecursiveAccumulation::All) => "all",
-        Some(RecursiveAccumulation::New) => "new",
-        None => "",
-    }
-}
-
-fn join_kind(value: JoinKind) -> &'static str {
-    match value {
-        JoinKind::Inner => "inner",
-        JoinKind::Left => "left",
-    }
-}
-
-fn set_quantifier(value: SetQuantifier) -> &'static str {
-    match value {
-        SetQuantifier::All => "all",
-        SetQuantifier::Distinct => "distinct",
-    }
-}
-
-fn aggregate_function(value: AggregateFunction) -> &'static str {
-    match value {
-        AggregateFunction::Count => "count",
-        AggregateFunction::Sum => "sum",
-        AggregateFunction::Average => "avg",
-        AggregateFunction::Min => "min",
-        AggregateFunction::Max => "max",
-    }
-}
-
 fn unary_op(value: UnaryOp) -> &'static str {
     match value {
         UnaryOp::Not => "not",
@@ -392,7 +350,7 @@ fn binary_op(value: BinaryOp) -> &'static str {
 mod tests {
     use super::*;
     use crate::engine::lir::bound::Relation;
-    use crate::engine::lir::{Field, Kind, SlotId, Type, Value};
+    use crate::engine::lir::{Field, Kind, RootCardinality, SlotId, Type, Value};
 
     #[test]
     fn printing_pins_slots_and_laws() {

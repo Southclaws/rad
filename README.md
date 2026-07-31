@@ -68,18 +68,25 @@ task up
 
 ## Basic workflow
 
-A Rad project keeps its declarative schema and database target together:
+Initialize a project interactively, or add `--yes` to accept the defaults:
 
-```text
-rad.schema.yaml   schema source of truth
-rad.config.yaml   project configuration, including the target database URL
-rad.state/        migration staging, lockfiles, and other CLI-managed state
+```sh
+rad init
 ```
 
-Configure the database target in `rad.config.yaml`:
+This gets you started with the right files, as well as a simple template schema.
+
+```text
+rad.schema.yaml   your declarative Rad database schema definition
+rad.config.yaml   project configuration, including the target database URL
+rad.state/        accepted state created by schema migrate or schema pull
+```
+
+The generated `rad.config.yaml` targets a local Rad server and configures a Go
+client by default:
 
 ```yaml
-database_url: rad://localhost
+database_url: rad://127.0.0.1:7237
 generate:
   - language: go
     output: generated
@@ -89,11 +96,12 @@ generate:
 Then start a server:
 
 ```sh
-rad serve
+rad serve --catalog-mode schema
 ```
 
-The public API listens on `http://localhost:7237`. The same process serves the
-built-in administration UI on `http://localhost:7238`.
+Catalog mode schema means you can only modify the database schema by running migrations. You can omit this in order to more freely create/edit/delete tables and columns.
+
+The public API listens on `http://localhost:7237`. The same process serves the built-in administration UI on `http://localhost:7238`. You can use the admin UI to explore, if you aren't using Schema mode, you can create, edit and delete tables or columns from this UI.
 
 Preview and apply a schema to the running server:
 

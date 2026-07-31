@@ -3,7 +3,8 @@
 #[allow(
     clippy::collapsible_if,
     clippy::double_must_use,
-    clippy::nonminimal_bool
+    clippy::nonminimal_bool,
+    unused_qualifications
 )]
 #[rustfmt::skip]
 pub mod generated;

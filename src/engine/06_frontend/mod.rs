@@ -14,10 +14,7 @@ pub async fn execute_pir(
     program: pir::Program,
     catalog_policy: CatalogPolicy,
 ) -> crate::engine::exec::Result<ProgramResult> {
-    let program = crate::protocol::lower_pir(program).map_err(|error| {
-        let reason = error.reason();
-        Error::source_with_reason(ErrorKind::InvalidInput, reason, error.to_string(), error)
-    })?;
+    let program = lower_pir(program)?;
     engine.execute_program(program, catalog_policy).await
 }
 
@@ -26,11 +23,15 @@ pub async fn execute_pir_with_options(
     program: pir::Program,
     options: ProgramOptions,
 ) -> crate::engine::exec::Result<ProgramResult> {
-    let program = crate::protocol::lower_pir(program).map_err(|error| {
+    let program = lower_pir(program)?;
+    engine.execute_program_with_options(program, options).await
+}
+
+fn lower_pir(program: pir::Program) -> crate::engine::exec::Result<crate::engine::exec::Program> {
+    crate::protocol::lower_pir(program).map_err(|error| {
         let reason = error.reason();
         Error::source_with_reason(ErrorKind::InvalidInput, reason, error.to_string(), error)
-    })?;
-    engine.execute_program_with_options(program, options).await
+    })
 }
 
 #[cfg(test)]

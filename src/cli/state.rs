@@ -13,7 +13,7 @@ use crate::process::Result;
 const FORMAT_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Lock {
+pub(super) struct Lock {
     pub format_version: u32,
     pub schema_version: u64,
     pub schema_hash: String,
@@ -21,31 +21,31 @@ pub struct Lock {
 }
 
 #[derive(Clone, Debug)]
-pub struct Accepted {
+pub(super) struct Accepted {
     pub lock: Lock,
     pub source: Vec<u8>,
 }
 
-pub struct StateStore {
+pub(super) struct StateStore {
     root: PathBuf,
 }
 
 impl StateStore {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
+    pub(super) fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
 
-    pub fn lock_path(&self) -> PathBuf {
+    pub(super) fn lock_path(&self) -> PathBuf {
         self.root.join("schema.lock.json")
     }
 
-    pub fn snapshot_path(&self, version: u64) -> PathBuf {
+    pub(super) fn snapshot_path(&self, version: u64) -> PathBuf {
         self.root.join("changelog").join(snapshot_name(version))
     }
 
-    pub fn load(&self) -> Result<Accepted> {
+    pub(super) fn load(&self) -> Result<Accepted> {
         let lock_path = self.lock_path();
-        let lock: Lock = serde_json::from_slice(&std::fs::read(&lock_path)?)
+        let lock: Lock = serde_json::from_slice(&read_file(&lock_path)?)
             .map_err(|error| format!("{}: {error}", lock_path.display()))?;
         if lock.format_version != FORMAT_VERSION {
             return Err(format!(
@@ -58,7 +58,7 @@ impl StateStore {
         let expected = format!("changelog/{}", snapshot_name(lock.schema_version));
         if lock.snapshot != expected {
             return Err(format!(
-                "{}: snapshot is {:?}, want {:?}",
+                "{}: invalid snapshot {:?}; expected {:?}",
                 lock_path.display(),
                 lock.snapshot,
                 expected
@@ -66,7 +66,7 @@ impl StateStore {
             .into());
         }
         let snapshot = safe_snapshot_path(&self.root, &lock.snapshot)?;
-        let source = std::fs::read(&snapshot)?;
+        let source = read_file(&snapshot)?;
         let hash = parse_snapshot(&snapshot, &source)?.hash()?;
         if hash != lock.schema_hash {
             return Err(divergence(&snapshot, &lock.schema_hash, &hash));
@@ -74,13 +74,13 @@ impl StateStore {
         Ok(Accepted { lock, source })
     }
 
-    pub fn write_accepted(&self, state: wire::SchemaState) -> Result<Accepted> {
+    pub(super) fn write_accepted(&self, state: wire::SchemaState) -> Result<Accepted> {
         let accepted = self.write_snapshot(state)?;
         self.write_lock(&accepted.lock)?;
         Ok(accepted)
     }
 
-    pub fn write_snapshot(&self, state: wire::SchemaState) -> Result<Accepted> {
+    pub(super) fn write_snapshot(&self, state: wire::SchemaState) -> Result<Accepted> {
         let version = u64::try_from(state.schema_version)
             .map_err(|_| format!("invalid server schema version {}", state.schema_version))?;
         let schema = canonical_schema(state.schema)?;
@@ -95,7 +95,7 @@ impl StateStore {
         let mut source = crate::engine::catalog::schema::render(&schema)?;
         let snapshot = self.snapshot_path(version);
         if snapshot.exists() {
-            let existing = std::fs::read(&snapshot)?;
+            let existing = read_file(&snapshot)?;
             let existing_hash = parse_snapshot(&snapshot, &existing)?.hash()?;
             if existing_hash != hash {
                 return Err(divergence(&snapshot, &hash, &existing_hash));
@@ -108,7 +108,7 @@ impl StateStore {
             match atomic_create(&snapshot, &source) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let existing = std::fs::read(&snapshot)?;
+                    let existing = read_file(&snapshot)?;
                     let existing_hash = parse_snapshot(&snapshot, &existing)?.hash()?;
                     if existing_hash != hash {
                         return Err(divergence(&snapshot, &hash, &existing_hash));
@@ -129,19 +129,19 @@ impl StateStore {
         })
     }
 
-    pub fn write_lock(&self, lock: &Lock) -> Result {
+    pub(super) fn write_lock(&self, lock: &Lock) -> Result {
         let mut source = serde_json::to_vec_pretty(lock)?;
         source.push(b'\n');
         atomic_write(&self.lock_path(), &source)
     }
 
-    pub fn write_desired(&self, path: &Path, source: &[u8]) -> Result {
+    pub(super) fn write_desired(path: &Path, source: &[u8]) -> Result {
         parse_snapshot(path, source)?;
         atomic_write(path, source)
     }
 
-    pub fn backup_desired(&self, path: &Path, now: DateTime<Utc>) -> Result<PathBuf> {
-        let source = std::fs::read(path)?;
+    pub(super) fn backup_desired(&self, path: &Path, now: DateTime<Utc>) -> Result<PathBuf> {
+        let source = read_file(path)?;
         let backup = self
             .root
             .join("backups")
@@ -154,7 +154,7 @@ impl StateStore {
     }
 }
 
-pub fn matches_accepted(path: &Path, source: &[u8], accepted: &Accepted) -> Result<bool> {
+pub(super) fn matches_accepted(path: &Path, source: &[u8], accepted: &Accepted) -> Result<bool> {
     Ok(parse_snapshot(path, source)?.hash()? == accepted.lock.schema_hash)
 }
 
@@ -164,6 +164,11 @@ fn snapshot_name(version: u64) -> String {
 
 fn parse_snapshot(path: &Path, source: &[u8]) -> Result<Schema> {
     Ok(crate::engine::catalog::schema::parse(&path.display().to_string(), source)?.canonical())
+}
+
+fn read_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    std::fs::read(path)
+        .map_err(|error| std::io::Error::new(error.kind(), format!("{}: {error}", path.display())))
 }
 
 fn canonical_schema(document: wire::SchemaDocument) -> Result<Schema> {
@@ -329,6 +334,50 @@ fn divergence(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_state_names_the_expected_lock_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = StateStore::new(directory.path());
+
+        let error = store.load().unwrap_err();
+
+        assert!(
+            error.to_string().contains(
+                &directory
+                    .path()
+                    .join("schema.lock.json")
+                    .display()
+                    .to_string()
+            ),
+            "{error}"
+        );
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::NotFound)
+        );
+    }
+
+    #[test]
+    fn invalid_lock_snapshot_names_the_field_and_expected_value() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = StateStore::new(directory.path());
+        std::fs::write(
+            store.lock_path(),
+            r#"{"format_version":1,"schema_version":0,"schema_hash":"sha256:none","snapshot":""}"#,
+        )
+        .unwrap();
+
+        let error = store.load().unwrap_err().to_string();
+
+        assert!(error.contains("invalid snapshot \"\""), "{error}");
+        assert!(
+            error.contains("expected \"changelog/00000000.rad.schema.yaml\""),
+            "{error}"
+        );
+    }
 
     #[test]
     fn snapshot_paths_cannot_escape_state() {

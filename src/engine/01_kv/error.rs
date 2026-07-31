@@ -1,9 +1,10 @@
 use std::error::Error as StdError;
 use std::fmt;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-type Source = Box<dyn StdError + Send + Sync>;
+type Source = Arc<dyn StdError + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -17,7 +18,7 @@ pub enum ErrorKind {
     Internal,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Error {
     kind: ErrorKind,
     message: String,
@@ -45,7 +46,7 @@ impl Error {
         Self {
             kind,
             message: message.into(),
-            source: Some(Box::new(source)),
+            source: Some(Arc::new(source)),
         }
     }
 }

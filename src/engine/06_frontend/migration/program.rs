@@ -2,50 +2,15 @@ use std::collections::HashMap;
 
 use crate::engine::catalog::identity::SchemaId;
 use crate::engine::catalog::migrate::Step;
-use crate::engine::catalog::model::{DefaultValue, ScalarType, Table};
+use crate::engine::catalog::model::{Schema, TableDef};
 use crate::engine::exec::{DefaultSpec, Error, ErrorKind, Program, Result, Statement};
 
-#[derive(Clone)]
-struct LogicalColumn {
-    id: SchemaId,
-    name: String,
-    scalar_type: ScalarType,
-}
-
-#[derive(Clone)]
-struct LogicalTable {
-    id: SchemaId,
-    name: String,
-    columns: Vec<LogicalColumn>,
-}
-
-impl LogicalTable {
-    fn column(&self, name: &str) -> Option<&LogicalColumn> {
-        self.columns.iter().find(|column| column.name == name)
-    }
-}
-
-pub(super) fn lower(current: &[Table], steps: &[Step]) -> Result<Program> {
+pub(super) fn lower(current: &Schema, steps: &[Step]) -> Result<Program> {
     let mut tables = current
+        .tables
         .iter()
-        .map(|table| {
-            (
-                table.name.clone(),
-                LogicalTable {
-                    id: table.schema_id,
-                    name: table.name.clone(),
-                    columns: table
-                        .columns
-                        .iter()
-                        .map(|column| LogicalColumn {
-                            id: column.schema_id,
-                            name: column.name.clone(),
-                            scalar_type: column.scalar_type,
-                        })
-                        .collect(),
-                },
-            )
-        })
+        .cloned()
+        .map(|table| (table.name.clone(), table))
         .collect::<HashMap<_, _>>();
     let mut replacement_by_column = HashMap::<(SchemaId, SchemaId), String>::new();
     let mut statements = Vec::with_capacity(steps.len());
@@ -87,19 +52,7 @@ pub(super) fn lower(current: &[Table], steps: &[Step]) -> Result<Program> {
                 statement
             }
             Step::CreateTable { definition } => {
-                let logical = LogicalTable {
-                    id: definition.id,
-                    name: definition.name.clone(),
-                    columns: definition
-                        .columns
-                        .iter()
-                        .map(|column| LogicalColumn {
-                            id: column.id,
-                            name: column.name.clone(),
-                            scalar_type: column.scalar_type,
-                        })
-                        .collect(),
-                };
+                let logical = definition.clone();
                 tables.insert(logical.name.clone(), logical);
                 Statement::CreateTable {
                     name,
@@ -113,11 +66,7 @@ pub(super) fn lower(current: &[Table], steps: &[Step]) -> Result<Program> {
                     table_id: logical.id,
                     column: definition.clone().into(),
                 };
-                logical.columns.push(LogicalColumn {
-                    id: definition.id,
-                    name: definition.name.clone(),
-                    scalar_type: definition.scalar_type,
-                });
+                logical.columns.push(definition.clone());
                 tables.insert(table.clone(), logical);
                 statement
             }
@@ -138,7 +87,7 @@ pub(super) fn lower(current: &[Table], steps: &[Step]) -> Result<Program> {
                     column_id: column.id,
                     default: default
                         .as_ref()
-                        .map(|value| default_spec(value, column.scalar_type)),
+                        .map(|value| DefaultSpec::from_catalog(value, column.scalar_type)),
                 }
             }
             Step::CreateIndex { table, definition } => {
@@ -240,31 +189,16 @@ pub(super) fn lower(current: &[Table], steps: &[Step]) -> Result<Program> {
     })
 }
 
-fn required_table<'a>(
-    tables: &'a HashMap<String, LogicalTable>,
-    name: &str,
-) -> Result<&'a LogicalTable> {
+fn required_table<'a>(tables: &'a HashMap<String, TableDef>, name: &str) -> Result<&'a TableDef> {
     tables
         .get(name)
         .ok_or_else(|| input(format!("migration: table {name:?} does not exist")))
 }
 
-fn take_table(tables: &mut HashMap<String, LogicalTable>, name: &str) -> Result<LogicalTable> {
+fn take_table(tables: &mut HashMap<String, TableDef>, name: &str) -> Result<TableDef> {
     tables
         .remove(name)
         .ok_or_else(|| input(format!("migration: table {name:?} does not exist")))
-}
-
-fn default_spec(value: &DefaultValue, scalar_type: ScalarType) -> DefaultSpec {
-    if let Some(function) = value.function {
-        return DefaultSpec::Generator(function);
-    }
-    match scalar_type {
-        ScalarType::Text => DefaultSpec::Text(value.text.clone()),
-        ScalarType::Int64 => DefaultSpec::Number(value.int64.to_string()),
-        ScalarType::Float64 => DefaultSpec::Number(value.float64.to_string()),
-        ScalarType::Bool => DefaultSpec::Bool(value.bool_value),
-    }
 }
 
 fn input(message: impl Into<String>) -> Error {
@@ -280,7 +214,7 @@ mod tests {
     use crate::engine::catalog::migrate::Step;
     use crate::engine::catalog::model::{
         Column, ColumnConversion, ColumnReplacementDef, ConstraintDef, ConstraintKind, IndexDef,
-        ScalarType, Table,
+        ScalarType, Schema, Table,
     };
     use crate::engine::exec::Statement;
 
@@ -332,11 +266,12 @@ mod tests {
 
     #[test]
     fn dependencies_follow_stable_column_identity_through_renames() {
-        let current = vec![table(
+        let current = Schema::from_physical(&[table(
             41,
             "events",
             &[(1, "id"), (2, "left_value"), (3, "right_value")],
-        )];
+        )])
+        .unwrap();
         let steps = vec![
             Step::RenameTable {
                 from: "events".into(),
@@ -400,10 +335,11 @@ mod tests {
 
     #[test]
     fn replacement_dependencies_do_not_leak_across_tables() {
-        let current = vec![
+        let current = Schema::from_physical(&[
             table(1, "left", &[(1, "value")]),
             table(2, "right", &[(1, "value")]),
-        ];
+        ])
+        .unwrap();
         let program = lower(
             &current,
             &[

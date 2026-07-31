@@ -14,7 +14,7 @@ mod tests;
 
 use crate::engine::catalog::Mutation;
 use crate::engine::catalog::identity::{OwnerEpoch, ReclamationId, TransitionId};
-use crate::engine::catalog::model::{SchemaTransition, TransitionKind, TransitionState};
+use crate::engine::catalog::model::{SchemaTransition, Table, TransitionKind, TransitionState};
 use crate::engine::catalog::store;
 use crate::engine::kv::{IsolationLevel, TransactionView};
 
@@ -132,15 +132,15 @@ impl Engine {
             Ok(transition)
         }
         .await;
-        let value = finish(
-            self,
-            EngineOperation::CancelTransition {
-                transition_id: id.clone(),
-            },
-            transaction,
-            result,
-        )
-        .await?;
+        let value = self
+            .finish_transaction(
+                transaction,
+                result,
+                Some(EngineOperation::CancelTransition {
+                    transition_id: id.clone(),
+                }),
+            )
+            .await?;
         self.notify_catalog_change();
         Ok(value)
     }
@@ -174,13 +174,12 @@ impl Engine {
             Ok(transition.owner_epoch)
         }
         .await;
-        finish(
-            self,
-            EngineOperation::ClaimTransition {
-                transition_id: id.clone(),
-            },
+        self.finish_transaction(
             transaction,
             result,
+            Some(EngineOperation::ClaimTransition {
+                transition_id: id.clone(),
+            }),
         )
         .await
     }
@@ -230,13 +229,12 @@ impl Engine {
             Ok(transition)
         }
         .await;
-        finish(
-            self,
-            EngineOperation::ActivateTransition {
-                transition_id: id.clone(),
-            },
+        self.finish_transaction(
             transaction,
             result,
+            Some(EngineOperation::ActivateTransition {
+                transition_id: id.clone(),
+            }),
         )
         .await
     }
@@ -282,15 +280,93 @@ impl Engine {
             Ok(transition)
         }
         .await;
-        finish(
-            self,
-            EngineOperation::RecordTransitionError {
-                transition_id: id.clone(),
-            },
+        self.finish_transaction(
             transaction,
             result,
+            Some(EngineOperation::RecordTransitionError {
+                transition_id: id.clone(),
+            }),
         )
         .await
+    }
+
+    async fn finish_transition_step(
+        &self,
+        operation: EngineOperation,
+        transaction: Box<dyn crate::engine::kv::Transaction>,
+        result: Result<TransitionStep>,
+    ) -> Result<TransitionStep> {
+        let step = self
+            .finish_transaction(transaction, result, Some(operation))
+            .await?;
+        Ok(TransitionStep {
+            transition: self.inspect_schema_transition(&step.transition.id).await?,
+            items: step.items,
+        })
+    }
+
+    async fn stage_transition_checkpoint(
+        &self,
+        operation: &EngineOperation,
+        transition: &SchemaTransition,
+    ) {
+        self.events
+            .reach(EngineEvent::CheckpointStaged {
+                operation: operation.clone(),
+                generation: transition.generation.get(),
+                batch_id: transition.batch_id,
+                state: transition.state,
+            })
+            .await;
+    }
+
+    async fn stage_physical_batch(&self, operation: &EngineOperation, items: usize) {
+        self.events
+            .reach(EngineEvent::PhysicalBatchStaged {
+                operation: operation.clone(),
+                items,
+            })
+            .await;
+    }
+
+    async fn stage_finalization_gate(
+        &self,
+        view: &mut dyn crate::engine::kv::KvView,
+        operation: &EngineOperation,
+        transition: &SchemaTransition,
+    ) -> Result<()> {
+        self.events
+            .reach(EngineEvent::FinalizationGateStaged {
+                operation: operation.clone(),
+                action: GateAction::Acquired,
+            })
+            .await;
+        emit_write_protocol(self, view, operation, transition).await
+    }
+
+    async fn stage_transition_publication(
+        &self,
+        view: &mut dyn crate::engine::kv::KvView,
+        operation: &EngineOperation,
+        transition: &SchemaTransition,
+        release_gate: bool,
+    ) -> Result<()> {
+        if release_gate {
+            self.events
+                .reach(EngineEvent::FinalizationGateStaged {
+                    operation: operation.clone(),
+                    action: GateAction::Released,
+                })
+                .await;
+        }
+        emit_write_protocol(self, view, operation, transition).await?;
+        self.events
+            .reach(EngineEvent::CatalogPublicationStaged {
+                operation: operation.clone(),
+                state: transition.state,
+            })
+            .await;
+        Ok(())
     }
 }
 
@@ -316,17 +392,7 @@ async fn emit_write_protocol(
     operation: &EngineOperation,
     transition: &SchemaTransition,
 ) -> Result<()> {
-    let table = store::get_table_by_id(view, &transition.table_id)
-        .await?
-        .ok_or_else(|| {
-            Error::message(
-                ErrorKind::CorruptData,
-                format!(
-                    "catalog: transition {:?} table disappeared while publishing its write protocol",
-                    transition.id
-                ),
-            )
-        })?;
+    let table = transition_table(view, transition).await?;
     engine
         .events
         .reach(EngineEvent::WriteProtocolStaged {
@@ -338,37 +404,44 @@ async fn emit_write_protocol(
     Ok(())
 }
 
+async fn required_owned_transition(
+    view: &mut dyn crate::engine::kv::KvView,
+    id: &TransitionId,
+    owner: OwnerEpoch,
+) -> Result<SchemaTransition> {
+    let transition = store::get_transition(view, id).await?.ok_or_else(|| {
+        Error::with_reason(
+            ErrorKind::InvalidInput,
+            ErrorReason::SchemaTransitionNotFound,
+            format!("catalog: transition {id:?} does not exist"),
+        )
+    })?;
+    if transition.owner_epoch != owner {
+        return Err(ownership_changed(id));
+    }
+    Ok(transition)
+}
+
+async fn transition_table(
+    view: &dyn crate::engine::kv::KvView,
+    transition: &SchemaTransition,
+) -> Result<Table> {
+    store::get_table_by_id(view, &transition.table_id)
+        .await?
+        .ok_or_else(|| {
+            Error::message(
+                ErrorKind::CorruptData,
+                format!(
+                    "catalog: transition {:?} table {:?} no longer exists",
+                    transition.id, transition.table_id
+                ),
+            )
+        })
+}
+
 fn ownership_changed(id: &TransitionId) -> Error {
     Error::message(
         ErrorKind::Conflict,
         format!("catalog: transition {id:?} ownership changed"),
     )
-}
-
-async fn finish<T>(
-    engine: &Engine,
-    operation: EngineOperation,
-    transaction: Box<dyn crate::engine::kv::Transaction>,
-    result: Result<T>,
-) -> Result<T> {
-    match result {
-        Ok(value) => {
-            engine
-                .events
-                .reach(EngineEvent::CommitStarted {
-                    operation: operation.clone(),
-                })
-                .await;
-            transaction.commit().await?;
-            engine
-                .events
-                .reach(EngineEvent::CommitSucceeded { operation })
-                .await;
-            Ok(value)
-        }
-        Err(error) => {
-            transaction.rollback();
-            Err(error)
-        }
-    }
 }

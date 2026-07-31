@@ -9,6 +9,7 @@ Use the CLI to run Rad, apply `rad.schema.yaml`, and generate a typed client fro
 
 | Command | Purpose |
 | --- | --- |
+| `rad init` | Initialize a Rad project. |
 | `rad serve` | Run the Rad database server. |
 | `rad validate` | Validate a rad.schema.yaml file. |
 | `rad schema` | Inspect and manage the database schema. |
@@ -17,6 +18,23 @@ Use the CLI to run Rad, apply `rad.schema.yaml`, and generate a typed client fro
 | `rad schema migrate` | Apply rad.schema.yaml transactionally. |
 | `rad schema pull` | Recover the accepted schema from the database. |
 | `rad generate` | Generate a typed client for the accepted schema. |
+
+### `rad init`
+
+Create rad.config.yaml and rad.schema.yaml in a new or existing project directory. In a terminal, Rad guides you through the small set of project choices. Use --yes to accept defaults without prompts. Existing project files are never overwritten, and accepted rad.state is created only by a successful schema migration or pull.
+
+| Argument | Purpose | Default |
+| --- | --- | --- |
+| `[DIRECTORY]` | Directory to initialize. | `.` |
+
+| Option | Purpose | Default | Environment |
+| --- | --- | --- | --- |
+| `--database-url <value>` | Rad database URL written to the project configuration. | `rad://127.0.0.1:7237` |  |
+| `-o`, `--out <path>` | Generated Go client output directory. | `generated` |  |
+| `--pkg <value>` | Generated Go package name. | `db` |  |
+| `--no-generate` | Do not configure generated client output. |  |  |
+| `--empty` | Create an empty schema instead of the starter users table. |  |  |
+| `-y`, `--yes` | Accept supplied values and defaults without prompting. |  |  |
 
 ### `rad serve`
 
@@ -90,7 +108,7 @@ Recover the accepted schema from the database.
 
 ### `rad generate`
 
-Generate a typed client for the accepted schema.
+Generate a typed client from the accepted schema state recorded by rad schema migrate or rad schema pull. The lockfile points to an immutable changelog snapshot so generation cannot silently target unapplied local schema changes. rad generate reads this state; it does not create it.
 
 | Option | Purpose | Default | Environment |
 | --- | --- | --- | --- |

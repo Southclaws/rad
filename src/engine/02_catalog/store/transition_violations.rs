@@ -2,10 +2,9 @@ use bytes::Bytes;
 
 use crate::engine::catalog::identity::TransitionId;
 use crate::engine::catalog::{Error, ErrorKind, Result};
-use crate::engine::kv::key_encoding::prefix_end;
-use crate::engine::kv::{KeyRange, KvView};
+use crate::engine::kv::KvView;
 
-use super::map_kv;
+use super::{map_kv, prefix_bounds};
 
 const TRANSITION_VIOLATION_PREFIX: &str = "/rad/catalog/transition_violation/";
 
@@ -19,8 +18,7 @@ fn transition_violation_key(id: &TransitionId, row_identity: &[u8]) -> Vec<u8> {
 
 pub fn transition_violation_range(id: &TransitionId) -> (Vec<u8>, Vec<u8>) {
     let start = format!("{TRANSITION_VIOLATION_PREFIX}{id}/").into_bytes();
-    let end = prefix_end(&start).expect("catalog prefix has an upper bound");
-    (start, end)
+    prefix_bounds(start)
 }
 
 pub async fn put_transition_violation<V: KvView + ?Sized>(
@@ -53,7 +51,7 @@ pub async fn first_transition_violation<V: KvView + ?Sized>(
 ) -> Result<Option<(Vec<u8>, String)>> {
     let (start, end) = transition_violation_range(id);
     let mut iterator = view
-        .scan(KeyRange::new(
+        .scan(crate::engine::kv::KeyRange::new(
             Bytes::copy_from_slice(&start),
             Bytes::from(end),
         ))

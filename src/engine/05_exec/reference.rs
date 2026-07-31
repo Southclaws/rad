@@ -19,6 +19,7 @@ use crate::engine::lir::{
     SlotId, TriBool, Type, Value,
 };
 
+use super::frames::{merge, remap_canonical, remap_positional};
 use super::{Error, ErrorKind, Limits, Result, row_store, shape_frames};
 
 pub struct ReferenceExecutor<'a> {
@@ -142,7 +143,12 @@ impl<'a> ReferenceExecutor<'a> {
                 let mut output = Vec::new();
                 for input in inputs {
                     for row in self.relation(input, outer).await? {
-                        output.push(remap(relation.output(), input.output(), &row, outer));
+                        output.push(remap_positional(
+                            relation.output(),
+                            input.output(),
+                            &row,
+                            outer,
+                        ));
                     }
                 }
                 Ok(output)
@@ -288,7 +294,12 @@ impl<'a> ReferenceExecutor<'a> {
             };
             if keep {
                 emitted.push(identity);
-                rows.push(remap(output.output(), left.output(), &row, outer));
+                rows.push(remap_positional(
+                    output.output(),
+                    left.output(),
+                    &row,
+                    outer,
+                ));
             }
         }
         Ok(rows)
@@ -574,32 +585,6 @@ impl<'a> ReferenceExecutor<'a> {
     }
 }
 
-fn merge(left: &Env, right: &Env) -> Env {
-    let mut output = left.clone();
-    output.extend_from(right);
-    output
-}
-
-fn remap(output: &RowType, source: &RowType, row: &Env, outer: &Env) -> Env {
-    let mut mapped = outer.clone();
-    for (output, source) in output.fields.iter().zip(&source.fields) {
-        if let Some(datum) = row.get(source.slot) {
-            mapped.insert(output.slot, datum.clone());
-        }
-    }
-    mapped
-}
-
-fn remap_canonical(output: &RowType, canonical: &[SlotId], row: &Env, outer: &Env) -> Env {
-    let mut mapped = outer.clone();
-    for (field, canonical) in output.fields.iter().zip(canonical) {
-        if let Some(datum) = row.get(*canonical) {
-            mapped.insert(field.slot, datum.clone());
-        }
-    }
-    mapped
-}
-
 fn projection(canonical: &RowType, source: &RowType) -> Result<Vec<(SlotId, SlotId)>> {
     canonical
         .fields
@@ -774,7 +759,7 @@ impl Accumulator {
         };
         let value = match term.function {
             AggregateFunction::Count => Value::Int64(self.count),
-            AggregateFunction::Sum if self.values == 0 => null(),
+            AggregateFunction::Sum | AggregateFunction::Average if self.values == 0 => null(),
             AggregateFunction::Sum if term.value_type.kind == Kind::Int64 => {
                 Value::Int64(i64::try_from(self.integer_sum).map_err(|_| {
                     Error::with_reason(
@@ -785,7 +770,6 @@ impl Accumulator {
                 })?)
             }
             AggregateFunction::Sum => Value::Float64(self.float_sum),
-            AggregateFunction::Average if self.values == 0 => null(),
             AggregateFunction::Average => Value::Float64(self.float_sum / self.values as f64),
             AggregateFunction::Min => self.minimum.unwrap_or_else(null),
             AggregateFunction::Max => self.maximum.unwrap_or_else(null),

@@ -1,24 +1,20 @@
 //! Pull operators for the streaming portion of a physical plan.
 
-use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
-
 use async_recursion::async_recursion;
 use async_trait::async_trait;
 
 use crate::engine::kv::KvView;
 use crate::engine::lir::bound::{self, RelationNode};
-use crate::engine::lir::eval::{
-    CanonicalRowKey, CanonicalRowSet, Env, canonical_row_key, evaluate, evaluate_datum,
-    evaluate_predicate,
-};
+use crate::engine::lir::eval::{CanonicalRowSet, Env, evaluate_datum, evaluate_predicate};
 use crate::engine::lir::{JoinKind, RowType, SetQuantifier, TriBool, Value};
 use crate::engine::planner::physical::{Node, PhysicalField};
 
-use super::query::{
-    merge_frames, new_frame, remap_positional, resolve_constant, row_to_frame, scan_table,
+use super::frames::{
+    merge as merge_frames, new_frame, remap_positional, row_to_frame, sort as sort_frames,
 };
+use super::query::resolve_constant;
 use super::row_store::{self, RowIterator};
+use super::set;
 use super::{Error, ErrorKind, Result};
 
 #[async_trait]
@@ -67,7 +63,7 @@ async fn build<'a>(
             decode_columns,
             ..
         } => {
-            let table = scan_table(scan);
+            let table = scan.scan_table();
             let mut values = crate::engine::lir::Row::new();
             for (column, constant) in table.primary_key.iter().zip(key) {
                 let value = resolve_constant(constant, &outer)?;
@@ -90,7 +86,7 @@ async fn build<'a>(
             decode_columns,
             ..
         } => Box::new(RowScan {
-            iterator: row_store::scan_table(view, scan_table(scan), decode_columns).await?,
+            iterator: row_store::scan_table(view, scan.scan_table(), decode_columns).await?,
             scan: (**scan).clone(),
             outer,
         }),
@@ -122,7 +118,7 @@ async fn build<'a>(
             Box::new(RowScan {
                 iterator: row_store::scan_index_range(
                     view,
-                    scan_table(scan),
+                    scan.scan_table(),
                     index,
                     &equality_prefix,
                     range,
@@ -207,7 +203,7 @@ async fn build<'a>(
             left_output,
             right_output,
             output,
-        } => Box::new(SetOperation::new(
+        } => Box::new(SetOperator::new(
             build(view, left, outer.clone()).await?,
             build(view, right, outer.clone()).await?,
             *quantifier,
@@ -224,7 +220,7 @@ async fn build<'a>(
             left_output,
             right_output,
             output,
-        } => Box::new(SetOperation::new(
+        } => Box::new(SetOperator::new(
             build(view, left, outer.clone()).await?,
             build(view, right, outer.clone()).await?,
             *quantifier,
@@ -270,7 +266,7 @@ impl Operator for PrimaryKeyGet<'_> {
         }
         self.done = true;
         Ok(
-            row_store::get_columns(self.view, scan_table(&self.scan), &self.key, &self.columns)
+            row_store::get_columns(self.view, self.scan.scan_table(), &self.key, &self.columns)
                 .await?
                 .map(|row| row_to_frame(&self.scan, &row, &self.outer)),
         )
@@ -497,20 +493,17 @@ impl Operator for NestedLoopJoin<'_> {
     }
 }
 
-struct SetOperation<'a> {
+struct SetOperator<'a> {
     left: Box<dyn Operator + 'a>,
     right: Option<Box<dyn Operator + 'a>>,
-    quantifier: SetQuantifier,
-    subtract: bool,
     left_output: RowType,
     right_output: RowType,
     output: RowType,
     outer: Env,
-    right_counts: HashMap<CanonicalRowKey, usize>,
-    emitted: HashSet<CanonicalRowKey>,
+    state: set::State,
 }
 
-impl<'a> SetOperation<'a> {
+impl<'a> SetOperator<'a> {
     #[allow(clippy::too_many_arguments)]
     fn new(
         left: Box<dyn Operator + 'a>,
@@ -525,50 +518,25 @@ impl<'a> SetOperation<'a> {
         Self {
             left,
             right: Some(right),
-            quantifier,
-            subtract,
             left_output,
             right_output,
             output,
             outer,
-            right_counts: HashMap::new(),
-            emitted: HashSet::new(),
+            state: set::State::new(quantifier, subtract),
         }
     }
 }
 
 #[async_trait]
-impl Operator for SetOperation<'_> {
+impl Operator for SetOperator<'_> {
     async fn next(&mut self) -> Result<Option<Env>> {
         if let Some(mut right) = self.right.take() {
             while let Some(frame) = right.next().await? {
-                *self
-                    .right_counts
-                    .entry(canonical_row_key(&self.right_output.fields, &frame))
-                    .or_default() += 1;
+                self.state.add_right(&self.right_output, &frame);
             }
         }
         while let Some(frame) = self.left.next().await? {
-            let key = canonical_row_key(&self.left_output.fields, &frame);
-            let keep = if self.quantifier == SetQuantifier::Distinct {
-                if self.emitted.contains(&key) {
-                    false
-                } else {
-                    let in_right = self.right_counts.get(&key).copied().unwrap_or_default() > 0;
-                    let keep = self.subtract != in_right;
-                    if keep {
-                        self.emitted.insert(key);
-                    }
-                    keep
-                }
-            } else if let Some(count) = self.right_counts.get_mut(&key).filter(|count| **count > 0)
-            {
-                *count -= 1;
-                !self.subtract
-            } else {
-                self.subtract
-            };
-            if keep {
+            if self.state.keep_left(&self.left_output, &frame) {
                 return Ok(Some(remap_positional(
                     &self.output,
                     &self.left_output,
@@ -579,50 +547,4 @@ impl Operator for SetOperation<'_> {
         }
         Ok(None)
     }
-}
-
-fn sort_frames(frames: &mut Vec<Env>, terms: &[bound::BoundOrderTerm]) -> Result<()> {
-    let keys = frames
-        .iter()
-        .map(|frame| {
-            terms
-                .iter()
-                .map(|term| evaluate(&term.expression, frame).map_err(Into::into))
-                .collect::<Result<Vec<_>>>()
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let mut positions = (0..frames.len()).collect::<Vec<_>>();
-    let comparison_error = std::cell::RefCell::new(None);
-    positions.sort_by(|left, right| {
-        for (index, term) in terms.iter().enumerate() {
-            let comparison = match keys[*left][index].compare(&keys[*right][index]) {
-                Ok(comparison) => comparison,
-                Err(error) => {
-                    *comparison_error.borrow_mut() = Some(error.to_string());
-                    Ordering::Equal
-                }
-            };
-            let comparison = if term.descending {
-                comparison.reverse()
-            } else {
-                comparison
-            };
-            if comparison != Ordering::Equal {
-                return comparison;
-            }
-        }
-        Ordering::Equal
-    });
-    if let Some(error) = comparison_error.into_inner() {
-        return Err(Error::message(
-            ErrorKind::Internal,
-            format!("exec: {error}"),
-        ));
-    }
-    let sorted = positions
-        .into_iter()
-        .map(|position| frames[position].clone())
-        .collect();
-    *frames = sorted;
-    Ok(())
 }

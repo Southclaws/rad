@@ -156,25 +156,25 @@ fn column_default(
     }
 }
 
-pub(super) fn table_list(tables: &[Table]) -> Result<wire::TableList, EncodeError> {
+pub(super) fn table_list(tables: &[Table]) -> wire::TableList {
     let names = tables
         .iter()
         .map(|table| (table.id.clone(), table.name.as_str()))
         .collect::<HashMap<_, _>>();
-    Ok(wire::TableList {
+    wire::TableList {
         tables: tables
             .iter()
             .map(|table| table_info(table, &names))
             .collect(),
-    })
+    }
 }
 
-pub(super) fn one_table(table: &Table, tables: &[Table]) -> Result<wire::TableInfo, EncodeError> {
+pub(super) fn one_table(table: &Table, tables: &[Table]) -> wire::TableInfo {
     let names = tables
         .iter()
         .map(|table| (table.id.clone(), table.name.as_str()))
         .collect::<HashMap<_, _>>();
-    Ok(table_info(table, &names))
+    table_info(table, &names)
 }
 
 fn table_info(

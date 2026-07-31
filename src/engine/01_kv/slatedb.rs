@@ -1,4 +1,3 @@
-use std::ops::Bound;
 use std::sync::{Arc, Mutex};
 
 use ::slatedb as slate_db;
@@ -63,11 +62,7 @@ impl Kv for Store {
 
     async fn scan(&self, range: KeyRange) -> Result<Box<dyn KvIterator>> {
         let lease = self.lifecycle.acquire()?;
-        let iterator = self
-            .db
-            .scan(slate_range(range))
-            .await
-            .map_err(map_operation_error)?;
+        let iterator = self.db.scan(range).await.map_err(map_operation_error)?;
         Ok(Box::new(SlateIterator {
             iterator,
             _lease: Some(lease),
@@ -81,12 +76,7 @@ impl TransactionalKv for Store {
         let lease = self.lifecycle.acquire()?;
         let transaction = self
             .db
-            .begin(match isolation {
-                IsolationLevel::Snapshot => slate_db::IsolationLevel::Snapshot,
-                IsolationLevel::SerializableSnapshot => {
-                    slate_db::IsolationLevel::SerializableSnapshot
-                }
-            })
+            .begin(isolation.into())
             .await
             .map_err(map_operation_error)?;
         let begin_position = DataPosition::from_sequence(transaction.seqnum());
@@ -107,16 +97,36 @@ impl TransactionalKv for Store {
                 match self.db.close().await {
                     Ok(()) => Ok(()),
                     Err(error) if matches!(error.kind(), slate_db::ErrorKind::Closed(_)) => Ok(()),
-                    Err(error) => Err(CloseFailure {
-                        kind: operation_error_kind(&error),
-                        message: error.to_string(),
-                    }),
+                    Err(error) => Err(map_operation_error(error)),
                 }
             })
             .await
             .clone();
         self.lifecycle.finish_close();
-        result.map_err(CloseFailure::into_error)
+        result
+    }
+}
+
+impl From<IsolationLevel> for slate_db::IsolationLevel {
+    fn from(isolation: IsolationLevel) -> Self {
+        match isolation {
+            IsolationLevel::Snapshot => Self::Snapshot,
+            IsolationLevel::SerializableSnapshot => Self::SerializableSnapshot,
+        }
+    }
+}
+
+impl slate_db::ByteRangeBounds for KeyRange {
+    fn start_bound(&self) -> std::ops::Bound<&[u8]> {
+        self.start
+            .as_deref()
+            .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Included)
+    }
+
+    fn end_bound(&self) -> std::ops::Bound<&[u8]> {
+        self.end
+            .as_deref()
+            .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded)
     }
 }
 
@@ -124,6 +134,17 @@ struct SlateTransaction {
     transaction: slate_db::DbTransaction,
     begin_position: DataPosition,
     _lease: Lease,
+}
+
+impl SlateTransaction {
+    fn into_parts(self) -> (slate_db::DbTransaction, Lease) {
+        let Self {
+            transaction,
+            begin_position: _,
+            _lease: lease,
+        } = self;
+        (transaction, lease)
+    }
 }
 
 #[async_trait]
@@ -155,7 +176,7 @@ impl Transaction for SlateTransaction {
     async fn scan<'a>(&'a self, range: KeyRange) -> Result<Box<dyn KvIterator + 'a>> {
         let iterator = self
             .transaction
-            .scan(slate_range(range))
+            .scan(range)
             .await
             .map_err(map_operation_error)?;
         Ok(Box::new(SlateIterator {
@@ -165,11 +186,7 @@ impl Transaction for SlateTransaction {
     }
 
     async fn commit(self: Box<Self>) -> Result<()> {
-        let Self {
-            transaction,
-            begin_position: _,
-            _lease: lease,
-        } = *self;
+        let (transaction, lease) = (*self).into_parts();
         let result = transaction
             .commit()
             .await
@@ -180,11 +197,7 @@ impl Transaction for SlateTransaction {
     }
 
     fn rollback(self: Box<Self>) {
-        let Self {
-            transaction,
-            begin_position: _,
-            _lease: lease,
-        } = *self;
+        let (transaction, lease) = (*self).into_parts();
         transaction.rollback();
         drop(lease);
     }
@@ -211,12 +224,6 @@ impl KvIterator for SlateIterator {
     }
 }
 
-fn slate_range(range: KeyRange) -> (Bound<Bytes>, Bound<Bytes>) {
-    let start = range.start.map_or(Bound::Unbounded, Bound::Included);
-    let end = range.end.map_or(Bound::Unbounded, Bound::Excluded);
-    (start, end)
-}
-
 fn map_operation_error(error: slate_db::Error) -> Error {
     Error::source(operation_error_kind(&error), error.to_string(), error)
 }
@@ -228,13 +235,12 @@ fn operation_error_kind(error: &slate_db::Error) -> ErrorKind {
         slate_db::ErrorKind::Unavailable => ErrorKind::Unavailable,
         slate_db::ErrorKind::Invalid => ErrorKind::Invalid,
         slate_db::ErrorKind::Data => ErrorKind::Data,
-        slate_db::ErrorKind::Internal => ErrorKind::Internal,
         _ => ErrorKind::Internal,
     }
 }
 
 fn map_commit_error(error: slate_db::Error) -> Error {
-    if matches!(error.kind(), slate_db::ErrorKind::Transaction) {
+    if operation_error_kind(&error) == ErrorKind::Conflict {
         Error::source(ErrorKind::Conflict, error.to_string(), error)
     } else {
         Error::source(
@@ -249,19 +255,7 @@ fn map_commit_error(error: slate_db::Error) -> Error {
 struct Lifecycle {
     state: Mutex<LifecycleState>,
     changed: Notify,
-    close_result: OnceCell<std::result::Result<(), CloseFailure>>,
-}
-
-#[derive(Clone)]
-struct CloseFailure {
-    kind: ErrorKind,
-    message: String,
-}
-
-impl CloseFailure {
-    fn into_error(self) -> Error {
-        Error::message(self.kind, self.message)
-    }
+    close_result: OnceCell<Result<()>>,
 }
 
 #[derive(Default)]

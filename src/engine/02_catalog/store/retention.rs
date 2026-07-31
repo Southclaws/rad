@@ -8,11 +8,10 @@ use crate::engine::catalog::model::{
     RetentionResource, RetentionResourceKind, Timestamp,
 };
 use crate::engine::catalog::{Error, ErrorKind, Result};
-use crate::engine::kv::key_encoding::prefix_end;
-use crate::engine::kv::{KeyRange, KvView};
+use crate::engine::kv::KvView;
 
 use super::durable_json::{decode, encode};
-use super::map_kv;
+use super::{map_kv, prefix_range};
 
 const RETENTION_PIN_PREFIX: &str = "/rad/catalog/retention_pin/";
 
@@ -78,13 +77,7 @@ pub async fn get_retention_pin<V: KvView + ?Sized>(
 
 pub async fn list_retention_pins<V: KvView + ?Sized>(view: &mut V) -> Result<Vec<RetentionPin>> {
     let prefix = RETENTION_PIN_PREFIX.as_bytes();
-    let mut iterator = view
-        .scan(KeyRange::new(
-            Bytes::copy_from_slice(prefix),
-            Bytes::from(prefix_end(prefix).expect("catalog prefix has an upper bound")),
-        ))
-        .await
-        .map_err(map_kv)?;
+    let mut iterator = view.scan(prefix_range(prefix)).await.map_err(map_kv)?;
     let mut pins = Vec::new();
     while let Some(entry) = iterator.next().await.map_err(map_kv)? {
         let id = entry
@@ -137,21 +130,15 @@ pub async fn retention_horizons<V: KvView + ?Sized>(view: &mut V) -> Result<Rete
             pin_count,
         });
     }
-    horizons
-        .catalog_definitions
-        .sort_by(|left, right| left.resource.cmp(&right.resource));
-    horizons
-        .data_snapshots
-        .sort_by(|left, right| left.resource.cmp(&right.resource));
-    horizons
-        .transition_deltas
-        .sort_by(|left, right| left.resource.cmp(&right.resource));
-    horizons
-        .physical_artifacts
-        .sort_by(|left, right| left.resource.cmp(&right.resource));
-    horizons
-        .transition_diagnostics
-        .sort_by(|left, right| left.resource.cmp(&right.resource));
+    for group in [
+        &mut horizons.catalog_definitions,
+        &mut horizons.data_snapshots,
+        &mut horizons.transition_deltas,
+        &mut horizons.physical_artifacts,
+        &mut horizons.transition_diagnostics,
+    ] {
+        group.sort_by(|left, right| left.resource.cmp(&right.resource));
+    }
     Ok(horizons)
 }
 
@@ -171,7 +158,10 @@ fn pin_blocks_reclamation(resource: &RetentionResource, reclamation: &Reclamatio
             resource.kind == RetentionResourceKind::PhysicalTable
                 && resource.table_id == reclamation.table_id
         }
-        ReclamationKind::Column => {
+        ReclamationKind::Column
+        | ReclamationKind::ReplacedColumn
+        | ReclamationKind::CancelledReplacement
+        | ReclamationKind::FailedReplacement => {
             resource.kind == RetentionResourceKind::PhysicalColumn
                 && resource.table_id == reclamation.table_id
                 && resource.column_id == reclamation.column_id
@@ -201,13 +191,6 @@ fn pin_blocks_reclamation(resource: &RetentionResource, reclamation: &Reclamatio
                 || (resource.kind == RetentionResourceKind::PhysicalIndex
                     && resource.table_id == reclamation.table_id
                     && resource.index_id == reclamation.index_id)
-        }
-        ReclamationKind::ReplacedColumn
-        | ReclamationKind::CancelledReplacement
-        | ReclamationKind::FailedReplacement => {
-            resource.kind == RetentionResourceKind::PhysicalColumn
-                && resource.table_id == reclamation.table_id
-                && resource.column_id == reclamation.column_id
         }
         ReclamationKind::ConstraintValidation => false,
     }

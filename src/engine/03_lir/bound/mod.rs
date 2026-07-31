@@ -313,6 +313,16 @@ impl Laws {
             ordered: false,
         }
     }
+
+    fn inherited(input: &Relation) -> Self {
+        Self {
+            output: input.output().clone(),
+            free: input.free_slots().clone(),
+            produced: input.produced().clone(),
+            cardinality: input.cardinality(),
+            ordered: input.is_ordered(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -454,7 +464,7 @@ impl Relation {
     }
 
     pub fn rows(scope: impl Into<String>, fields: Vec<Field>, values: Vec<Vec<Value>>) -> Self {
-        let count = values.len() as i64;
+        let count = i64::try_from(values.len()).unwrap_or(i64::MAX);
         Self {
             laws: Laws::leaf(
                 RowType { fields },
@@ -471,18 +481,11 @@ impl Relation {
     }
 
     pub fn filter(input: Relation, predicate: Expr) -> Self {
-        let laws = Laws {
-            output: input.output().clone(),
-            free: input
-                .free_slots()
-                .union(&predicate.free_slots().without(input.produced())),
-            produced: input.produced().clone(),
-            cardinality: Cardinality {
-                min: 0,
-                max: input.cardinality().max,
-            },
-            ordered: input.is_ordered(),
-        };
+        let mut laws = Laws::inherited(&input);
+        laws.free = laws
+            .free
+            .union(&predicate.free_slots().without(input.produced()));
+        laws.cardinality.min = 0;
         Self {
             node: RelationNode::Filter {
                 input: Box::new(input),
@@ -722,16 +725,11 @@ impl Relation {
     }
 
     pub fn order(input: Relation, terms: Vec<BoundOrderTerm>) -> Self {
-        let free = terms.iter().fold(input.free_slots().clone(), |free, term| {
+        let mut laws = Laws::inherited(&input);
+        laws.free = terms.iter().fold(laws.free, |free, term| {
             free.union(&term.expression.free_slots().without(input.produced()))
         });
-        let laws = Laws {
-            output: input.output().clone(),
-            free,
-            produced: input.produced().clone(),
-            cardinality: input.cardinality(),
-            ordered: true,
-        };
+        laws.ordered = true;
         Self {
             node: RelationNode::Order {
                 input: Box::new(input),
@@ -742,20 +740,13 @@ impl Relation {
     }
 
     pub fn slice(input: Relation, offset: usize, limit: Option<usize>) -> Self {
-        let mut cardinality = input.cardinality();
-        cardinality.min = 0;
-        if let Some(limit) = limit
-            && (cardinality.max == UNBOUNDED || limit as i64 <= cardinality.max)
+        let mut laws = Laws::inherited(&input);
+        laws.cardinality.min = 0;
+        if let Some(limit) = limit.and_then(|limit| i64::try_from(limit).ok())
+            && (laws.cardinality.max == UNBOUNDED || limit <= laws.cardinality.max)
         {
-            cardinality.max = limit as i64;
+            laws.cardinality.max = limit;
         }
-        let laws = Laws {
-            output: input.output().clone(),
-            free: input.free_slots().clone(),
-            produced: input.produced().clone(),
-            cardinality,
-            ordered: input.is_ordered(),
-        };
         Self {
             node: RelationNode::Slice {
                 input: Box::new(input),
@@ -801,19 +792,20 @@ impl Relation {
     }
 
     pub fn distinct(input: Relation) -> Self {
-        let laws = Laws {
-            output: input.output().clone(),
-            free: input.free_slots().clone(),
-            produced: input.produced().clone(),
-            cardinality: Cardinality {
-                min: 0,
-                max: input.cardinality().max,
-            },
-            ordered: false,
-        };
+        let mut laws = Laws::inherited(&input);
+        laws.cardinality.min = 0;
+        laws.ordered = false;
         Self {
             node: RelationNode::Distinct(Box::new(input)),
             laws,
+        }
+    }
+
+    /// Returns the catalog table retained by a scan relation.
+    pub(crate) fn scan_table(&self) -> &Table {
+        match &self.node {
+            RelationNode::Scan { table, .. } => table,
+            _ => unreachable!("scan table requested from a non-scan relation"),
         }
     }
 
@@ -1027,6 +1019,17 @@ mod tests {
             !slots
                 .without(&SlotSet::new([SlotId(64)]))
                 .contains(SlotId(64))
+        );
+    }
+
+    #[test]
+    fn oversized_slice_limit_does_not_wrap_cardinality() {
+        let expected = i64::try_from(usize::MAX).unwrap_or(UNBOUNDED);
+        assert_eq!(
+            Relation::slice(scan(), 0, Some(usize::MAX))
+                .cardinality()
+                .max,
+            expected
         );
     }
 

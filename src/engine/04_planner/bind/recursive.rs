@@ -44,7 +44,7 @@ impl Binder<'_> {
             self.recursing = previous.clone();
             let candidate = candidate?;
             let widened = reconcile_recursive(anchor.output(), candidate.output())?;
-            let stable = row_shape_equal(&widened, &binding.output);
+            let stable = widened == binding.output;
             binding.output = widened;
             self.bindings.insert(name.into(), binding.clone());
             if stable {
@@ -101,11 +101,13 @@ fn check_anchor(name: &str, relation: &lir::Relation) -> Result<()> {
         }
         _ => {}
     }
-    visit_relation(
+    lir::inspect::try_visit_unbound_relation_parts(
         relation,
         &mut |child| check_anchor(name, child),
         &mut |expression| {
-            check_expression_relations(expression, &mut |child| check_anchor(name, child))
+            lir::inspect::try_visit_unbound_expression_relations(expression, &mut |child| {
+                check_anchor(name, child)
+            })
         },
     )
 }
@@ -160,10 +162,7 @@ fn check_step(
                 forbidden || *kind == lir::JoinKind::Left,
                 count,
             )?;
-            return check_expression_relations(on, &mut |child| {
-                let mut ignored = 0;
-                check_step(name, child, true, &mut ignored)
-            });
+            return check_forbidden_expression(name, on);
         }
         lir::Relation::Except { left, right, .. } => {
             check_step(name, left, forbidden, count)?;
@@ -177,17 +176,11 @@ fn check_step(
         } => {
             check_step(name, input, true, count)?;
             for group in groups {
-                check_expression_relations(&group.expression, &mut |child| {
-                    let mut ignored = 0;
-                    check_step(name, child, true, &mut ignored)
-                })?;
+                check_forbidden_expression(name, &group.expression)?;
             }
             for term in terms {
                 if let Some(argument) = &term.argument {
-                    check_expression_relations(argument, &mut |child| {
-                        let mut ignored = 0;
-                        check_step(name, child, true, &mut ignored)
-                    })?;
+                    check_forbidden_expression(name, argument)?;
                 }
             }
             return Ok(());
@@ -196,151 +189,24 @@ fn check_step(
         lir::Relation::Order { input, terms } => {
             check_step(name, input, forbidden, count)?;
             for term in terms {
-                check_expression_relations(&term.expression, &mut |child| {
-                    let mut ignored = 0;
-                    check_step(name, child, true, &mut ignored)
-                })?;
+                check_forbidden_expression(name, &term.expression)?;
             }
             return Ok(());
         }
         _ => {}
     }
-    visit_relation(
+    lir::inspect::try_visit_unbound_relation_parts(
         relation,
         &mut |child| check_step(name, child, forbidden, count),
-        &mut |expression| {
-            check_expression_relations(expression, &mut |child| {
-                let mut ignored = 0;
-                check_step(name, child, true, &mut ignored)
-            })
-        },
+        &mut |expression| check_forbidden_expression(name, expression),
     )
 }
 
-fn visit_relation(
-    relation: &lir::Relation,
-    relation_visitor: &mut impl FnMut(&lir::Relation) -> Result<()>,
-    expression_visitor: &mut impl FnMut(&lir::Expr) -> Result<()>,
-) -> Result<()> {
-    match relation {
-        lir::Relation::Scan { .. }
-        | lir::Relation::Rows { .. }
-        | lir::Relation::Ref { .. }
-        | lir::Relation::RecursiveRef { .. } => {}
-        lir::Relation::Filter { input, predicate } => {
-            relation_visitor(input)?;
-            expression_visitor(predicate)?;
-        }
-        lir::Relation::Project { input, fields, .. } => {
-            relation_visitor(input)?;
-            for field in fields {
-                expression_visitor(&field.expression)?;
-            }
-        }
-        lir::Relation::Join {
-            left, right, on, ..
-        } => {
-            relation_visitor(left)?;
-            relation_visitor(right)?;
-            expression_visitor(on)?;
-        }
-        lir::Relation::Concatenate { inputs, .. } => {
-            for input in inputs {
-                relation_visitor(input)?;
-            }
-        }
-        lir::Relation::Intersect { left, right, .. }
-        | lir::Relation::Except { left, right, .. } => {
-            relation_visitor(left)?;
-            relation_visitor(right)?;
-        }
-        lir::Relation::Aggregate {
-            input,
-            groups,
-            terms,
-            ..
-        } => {
-            relation_visitor(input)?;
-            for group in groups {
-                expression_visitor(&group.expression)?;
-            }
-            for term in terms {
-                if let Some(argument) = &term.argument {
-                    expression_visitor(argument)?;
-                }
-            }
-        }
-        lir::Relation::Order { input, terms } => {
-            relation_visitor(input)?;
-            for term in terms {
-                expression_visitor(&term.expression)?;
-            }
-        }
-        lir::Relation::Slice { input, .. } => relation_visitor(input)?,
-        lir::Relation::Recursive { anchor, step, .. } => {
-            relation_visitor(anchor)?;
-            relation_visitor(step)?;
-        }
-        lir::Relation::Distinct(input) => relation_visitor(input)?,
-    }
-    Ok(())
-}
-
-fn check_expression_relations(
-    expression: &lir::Expr,
-    relation_visitor: &mut impl FnMut(&lir::Relation) -> Result<()>,
-) -> Result<()> {
-    match expression {
-        lir::Expr::Literal(_) | lir::Expr::Column { .. } => {}
-        lir::Expr::Unary { expression, .. }
-        | lir::Expr::Cast { expression, .. }
-        | lir::Expr::TextMatch {
-            value: expression, ..
-        } => check_expression_relations(expression, relation_visitor)?,
-        lir::Expr::Binary { left, right, .. } => {
-            check_expression_relations(left, relation_visitor)?;
-            check_expression_relations(right, relation_visitor)?;
-        }
-        lir::Expr::Branch {
-            arms, otherwise, ..
-        } => {
-            for arm in arms {
-                check_expression_relations(&arm.when, relation_visitor)?;
-                check_expression_relations(&arm.then, relation_visitor)?;
-            }
-            check_expression_relations(otherwise, relation_visitor)?;
-        }
-        lir::Expr::Exists(relation)
-        | lir::Expr::First(relation)
-        | lir::Expr::Scalar(relation)
-        | lir::Expr::Array(relation) => relation_visitor(relation)?,
-    }
-    Ok(())
-}
-
-fn row_shape_equal(left: &lir::RowType, right: &lir::RowType) -> bool {
-    left.fields.len() == right.fields.len()
-        && left.fields.iter().zip(&right.fields).all(|(left, right)| {
-            left.name == right.name && type_shape_equal(&left.value_type, &right.value_type)
-        })
-}
-
-fn type_shape_equal(left: &Type, right: &Type) -> bool {
-    left.kind == right.kind
-        && left.nullable == right.nullable
-        && match left.kind {
-            lir::Kind::Row => match (&left.row, &right.row) {
-                (Some(left), Some(right)) => row_shape_equal(left, right),
-                (None, None) => true,
-                _ => false,
-            },
-            lir::Kind::Array => match (&left.element, &right.element) {
-                (Some(left), Some(right)) => type_shape_equal(left, right),
-                (None, None) => true,
-                _ => false,
-            },
-            _ => true,
-        }
+fn check_forbidden_expression(name: &str, expression: &lir::Expr) -> Result<()> {
+    lir::inspect::try_visit_unbound_expression_relations(expression, &mut |child| {
+        let mut ignored = 0;
+        check_step(name, child, true, &mut ignored)
+    })
 }
 
 fn reconcile_recursive(anchor: &lir::RowType, step: &lir::RowType) -> Result<lir::RowType> {
@@ -450,4 +316,48 @@ fn reconcile_nested_row(
         fields.push(field);
     }
     Ok(lir::RowType { fields })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn recursive_ref() -> lir::Relation {
+        lir::Relation::RecursiveRef {
+            binding: "walk".into(),
+            scope: "current".into(),
+        }
+    }
+
+    fn scan() -> lir::Relation {
+        lir::Relation::Scan {
+            table: "nodes".into(),
+            scope: "n".into(),
+        }
+    }
+
+    #[test]
+    fn recursive_crossings_preserve_anchor_and_non_monotone_rules() {
+        let anchor_crossing = lir::Relation::Filter {
+            input: Box::new(scan()),
+            predicate: lir::Expr::Exists(Box::new(recursive_ref())),
+        };
+        let error = validate_recursive("walk", &anchor_crossing, &recursive_ref()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("anchor contains a recursive_ref")
+        );
+
+        let step_crossing = lir::Relation::Filter {
+            input: Box::new(recursive_ref()),
+            predicate: lir::Expr::Exists(Box::new(recursive_ref())),
+        };
+        let error = validate_recursive("walk", &scan(), &step_crossing).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("recursive_ref appears in a non-monotone position")
+        );
+    }
 }

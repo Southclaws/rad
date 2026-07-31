@@ -1,7 +1,7 @@
 //! Pure constraint extraction and correlation classification over bound LIR.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::engine::lir::bound::{self, RelationNode};
 use crate::engine::lir::{self, SlotId, Value};
@@ -32,13 +32,7 @@ pub struct ScanConstraints {
 }
 
 pub fn underlying_scan(relation: &bound::Relation) -> Option<&bound::Relation> {
-    match &relation.node {
-        RelationNode::Scan { .. } => Some(relation),
-        RelationNode::Filter { input, .. }
-        | RelationNode::Order { input, .. }
-        | RelationNode::Slice { input, .. } => underlying_scan(input),
-        _ => None,
-    }
+    visit_scan_filters(relation, &mut |_| {})
 }
 
 pub fn extract_constraints(relation: &bound::Relation) -> Option<ScanConstraints> {
@@ -50,23 +44,13 @@ pub fn extract_constraints(relation: &bound::Relation) -> Option<ScanConstraints
         .map(|field| (field.slot, field.name.clone()))
         .collect();
     let mut columns = HashMap::new();
-    let mut poisoned = HashMap::new();
+    let mut poisoned = HashSet::new();
 
-    let mut chain = relation;
-    loop {
-        match &chain.node {
-            RelationNode::Filter { input, predicate } => {
-                for conjunct in conjuncts(predicate) {
-                    extract_conjunct(conjunct, scan, &slot_to_column, &mut columns, &mut poisoned);
-                }
-                chain = input;
-            }
-            RelationNode::Order { input, .. } | RelationNode::Slice { input, .. } => {
-                chain = input;
-            }
-            _ => break,
+    let _ = visit_scan_filters(relation, &mut |predicate| {
+        for conjunct in conjuncts(predicate) {
+            extract_conjunct(conjunct, scan, &slot_to_column, &mut columns, &mut poisoned);
         }
-    }
+    });
     Some(ScanConstraints {
         scan: scan.clone(),
         columns,
@@ -78,7 +62,7 @@ fn extract_conjunct(
     scan: &bound::Relation,
     slot_to_column: &HashMap<SlotId, String>,
     columns: &mut HashMap<String, Domain>,
-    poisoned: &mut HashMap<String, bool>,
+    poisoned: &mut HashSet<String>,
 ) {
     let bound::Expr::Binary {
         op, left, right, ..
@@ -95,7 +79,7 @@ fn extract_conjunct(
                 let Some(column) = slot_to_column.get(slot) else {
                     continue;
                 };
-                if poisoned.get(column).copied().unwrap_or(false) {
+                if poisoned.contains(column) {
                     continue;
                 }
                 let Some(value) = const_value(value, scan) else {
@@ -107,7 +91,7 @@ fn extract_conjunct(
                     .as_ref()
                     .is_some_and(|existing| !same_const(existing, &value))
                 {
-                    poisoned.insert(column.clone(), true);
+                    poisoned.insert(column.clone());
                     columns.remove(column);
                     continue;
                 }
@@ -170,7 +154,7 @@ fn same_const(left: &ConstValue, right: &ConstValue) -> bool {
 
 fn add_range(
     columns: &mut HashMap<String, Domain>,
-    poisoned: &HashMap<String, bool>,
+    poisoned: &HashSet<String>,
     slot_to_column: &HashMap<SlotId, String>,
     slot: SlotId,
     operation: lir::BinaryOp,
@@ -179,7 +163,7 @@ fn add_range(
     let Some(column) = slot_to_column.get(&slot) else {
         return;
     };
-    if poisoned.get(column).copied().unwrap_or(false) {
+    if poisoned.contains(column) {
         return;
     }
     let domain = columns.entry(column.clone()).or_default();
@@ -241,7 +225,7 @@ fn tighter_upper(candidate: &RangeBound, existing: &RangeBound) -> bool {
         })
 }
 
-fn conjuncts(expression: &bound::Expr) -> Vec<&bound::Expr> {
+pub(super) fn conjuncts(expression: &bound::Expr) -> Vec<&bound::Expr> {
     if let bound::Expr::Binary {
         op: lir::BinaryOp::And,
         left,
@@ -254,6 +238,25 @@ fn conjuncts(expression: &bound::Expr) -> Vec<&bound::Expr> {
         output
     } else {
         vec![expression]
+    }
+}
+
+pub(super) fn visit_scan_filters<'a>(
+    mut relation: &'a bound::Relation,
+    visitor: &mut impl FnMut(&'a bound::Expr),
+) -> Option<&'a bound::Relation> {
+    loop {
+        match &relation.node {
+            RelationNode::Scan { .. } => return Some(relation),
+            RelationNode::Filter { input, predicate } => {
+                visitor(predicate);
+                relation = input;
+            }
+            RelationNode::Order { input, .. } | RelationNode::Slice { input, .. } => {
+                relation = input;
+            }
+            _ => return None,
+        }
     }
 }
 

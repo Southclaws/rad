@@ -25,10 +25,7 @@ pub fn encode_text(value: &str) -> Vec<u8> {
 
 /// Encodes an integer so that byte order matches numeric order.
 pub fn encode_i64(value: i64) -> [u8; 9] {
-    let mut encoded = [0; 9];
-    encoded[0] = TAG_I64;
-    encoded[1..].copy_from_slice(&((value as u64) ^ (1_u64 << 63)).to_be_bytes());
-    encoded
+    encode_ordered_u64(TAG_I64, (value as u64) ^ (1_u64 << 63))
 }
 
 /// Encodes a non-NaN float so that byte order matches numeric order.
@@ -43,10 +40,14 @@ pub fn encode_f64(value: f64) -> Option<[u8; 9]> {
     } else {
         raw | (1_u64 << 63)
     };
+    Some(encode_ordered_u64(TAG_F64, ordered))
+}
+
+fn encode_ordered_u64(tag: u8, value: u64) -> [u8; 9] {
     let mut encoded = [0; 9];
-    encoded[0] = TAG_F64;
-    encoded[1..].copy_from_slice(&ordered.to_be_bytes());
-    Some(encoded)
+    encoded[0] = tag;
+    encoded[1..].copy_from_slice(&value.to_be_bytes());
+    encoded
 }
 
 pub fn encode_null() -> [u8; 1] {

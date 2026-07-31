@@ -58,21 +58,15 @@ impl Catalog {
     }
 
     pub async fn create_table(&self, definition: impl Into<TableDraft>) -> Result<Table> {
-        let result = self.changes.create_table(definition.into()).await;
-        self.notify(&result);
-        result
+        self.notify(self.changes.create_table(definition.into()).await)
     }
 
     pub async fn delete_table(&self, name: &str) -> Result<()> {
-        let result = self.changes.delete_table(name).await;
-        self.notify(&result);
-        result
+        self.notify(self.changes.delete_table(name).await)
     }
 
     pub async fn rename_table(&self, from: &str, to: &str) -> Result<()> {
-        let result = self.changes.rename_table(from, to).await;
-        self.notify(&result);
-        result
+        self.notify(self.changes.rename_table(from, to).await)
     }
 
     pub async fn create_column(
@@ -80,21 +74,15 @@ impl Catalog {
         table: &str,
         definition: impl Into<ColumnDraft>,
     ) -> Result<Table> {
-        let result = self.changes.create_column(table, definition.into()).await;
-        self.notify(&result);
-        result
+        self.notify(self.changes.create_column(table, definition.into()).await)
     }
 
     pub async fn delete_column(&self, table: &str, column: &str) -> Result<Table> {
-        let result = self.changes.delete_column(table, column).await;
-        self.notify(&result);
-        result
+        self.notify(self.changes.delete_column(table, column).await)
     }
 
     pub async fn rename_column(&self, table: &str, from: &str, to: &str) -> Result<Table> {
-        let result = self.changes.rename_column(table, from, to).await;
-        self.notify(&result);
-        result
+        self.notify(self.changes.rename_column(table, from, to).await)
     }
 
     pub async fn change_column_insert_default(
@@ -103,24 +91,19 @@ impl Catalog {
         column: &str,
         value: Option<DefaultValue>,
     ) -> Result<Table> {
-        let result = self
-            .changes
-            .change_column_insert_default(table, column, value)
-            .await;
-        self.notify(&result);
-        result
+        self.notify(
+            self.changes
+                .change_column_insert_default(table, column, value)
+                .await,
+        )
     }
 
     pub async fn create_index(&self, table: &str, definition: IndexDef) -> Result<Index> {
-        let result = self.changes.create_index(table, definition).await;
-        self.notify(&result);
-        result
+        self.notify(self.changes.create_index(table, definition).await)
     }
 
     pub async fn delete_index(&self, table: &str, index: &str) -> Result<()> {
-        let result = self.changes.delete_index(table, index).await;
-        self.notify(&result);
-        result
+        self.notify(self.changes.delete_index(table, index).await)
     }
 
     pub async fn get_transition(&self, id: &TransitionId) -> Result<Option<SchemaTransition>> {
@@ -132,9 +115,7 @@ impl Catalog {
     }
 
     pub async fn cancel_schema_transition(&self, id: &TransitionId) -> Result<SchemaTransition> {
-        let result = self.changes.cancel_schema_transition(id).await;
-        self.notify(&result);
-        result
+        self.notify(self.changes.cancel_schema_transition(id).await)
     }
 
     pub async fn mode(&self) -> Result<Mode> {
@@ -161,18 +142,18 @@ impl Catalog {
         self.changes.validate_current_schema().await
     }
 
-    fn notify<T>(&self, result: &Result<T>) {
-        if result.is_err() {
-            return;
+    fn notify<T>(&self, result: Result<T>) -> Result<T> {
+        if result.is_ok() {
+            let observers = self
+                .observers
+                .read()
+                .expect("catalog observer lock poisoned")
+                .clone();
+            for observer in observers {
+                observer();
+            }
         }
-        let observers = self
-            .observers
-            .read()
-            .expect("catalog observer lock poisoned")
-            .clone();
-        for observer in observers {
-            observer();
-        }
+        result
     }
 }
 

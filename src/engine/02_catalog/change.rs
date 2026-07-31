@@ -2,17 +2,63 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::identity::{
-    AccessGeneration, DefinitionGeneration, ExistenceGeneration, LogicalIndexId, SchemaId, TableId,
-    ValueGeneration, WriteProtocolGeneration,
+    AccessGeneration, DefinitionGeneration, ExistenceGeneration, LogicalIndexId, ReclamationId,
+    SchemaId, TableId, ValueGeneration, WriteProtocolGeneration,
 };
 use super::model::{
-    Column, DefaultFunction, ForeignKey, Index, IndexDef, IndexState, Mode, Reclamation, Revision,
-    ScalarType, Table, TableDraft, WriteProtocol,
+    Column, DefaultFunction, ForeignKey, Index, IndexDef, IndexState, Mode, Reclamation,
+    ReclamationKind, Revision, ScalarType, Table, TableDraft, WriteProtocol,
 };
 use super::store;
 use super::{Error, ErrorKind, Result};
 use crate::engine::kv::{IsolationLevel, KvView, TransactionView, TransactionalKv};
 use crate::runtime::{RuntimeEffects, SystemRuntime};
+
+macro_rules! read_snapshot {
+    ($service:expr, |mut $view:ident| $operation:expr) => {{
+        let mut transaction = $service.store.begin(IsolationLevel::Snapshot).await?;
+        let result = {
+            let mut $view = TransactionView(transaction.as_mut());
+            $operation.await
+        };
+        transaction.rollback();
+        result
+    }};
+    ($service:expr, |$view:ident| $operation:expr) => {{
+        let mut transaction = $service.store.begin(IsolationLevel::Snapshot).await?;
+        let result = {
+            let $view = TransactionView(transaction.as_mut());
+            $operation.await
+        };
+        transaction.rollback();
+        result
+    }};
+}
+
+macro_rules! write_transaction {
+    ($service:expr, |$view:ident| $operation:expr) => {{
+        let mut transaction = $service
+            .store
+            .begin(IsolationLevel::SerializableSnapshot)
+            .await?;
+        let result = {
+            let mut $view = TransactionView(transaction.as_mut());
+            $operation.await
+        };
+        complete_transaction(transaction, result).await
+    }};
+}
+
+macro_rules! run_mutation {
+    ($service:expr, |$mutation:ident| $operation:expr) => {{
+        write_transaction!($service, |view| async {
+            let mut $mutation = Mutation::with_runtime(&mut view, $service.runtime.clone());
+            let value = $operation.await?;
+            $mutation.finish().await?;
+            Ok(value)
+        })
+    }};
+}
 
 mod admission;
 mod constraints;
@@ -27,8 +73,15 @@ mod transitions;
 pub struct Mutation<'a> {
     view: &'a mut dyn KvView,
     runtime: Arc<dyn RuntimeEffects>,
-    catalog_changed: bool,
-    schema_changed: bool,
+    change: Change,
+}
+
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum Change {
+    #[default]
+    None,
+    Catalog,
+    Schema,
 }
 
 impl<'a> Mutation<'a> {
@@ -40,8 +93,7 @@ impl<'a> Mutation<'a> {
         Self {
             view,
             runtime,
-            catalog_changed: false,
-            schema_changed: false,
+            change: Change::None,
         }
     }
 
@@ -59,21 +111,31 @@ impl<'a> Mutation<'a> {
         store::queue_reclamation(self.view, reclamation, now).await
     }
 
+    pub(crate) async fn pending_reclamation(
+        &mut self,
+        id: ReclamationId,
+        kind: ReclamationKind,
+    ) -> Result<Reclamation> {
+        let version = store::current_revision(self.view).await?.version.next();
+        Ok(Reclamation::pending(id, kind, version, self.now()))
+    }
+
     pub fn schema_changed(&self) -> bool {
-        self.schema_changed
+        self.change == Change::Schema
     }
 
     pub fn catalog_changed(&self) -> bool {
-        self.catalog_changed
+        self.change != Change::None
     }
 
     pub(crate) fn mark_catalog_changed(&mut self) {
-        self.catalog_changed = true;
+        if self.change == Change::None {
+            self.change = Change::Catalog;
+        }
     }
 
     pub(crate) fn mark_schema_changed(&mut self) {
-        self.catalog_changed = true;
-        self.schema_changed = true;
+        self.change = Change::Schema;
     }
 
     pub(crate) fn view(&self) -> &dyn KvView {
@@ -81,10 +143,10 @@ impl<'a> Mutation<'a> {
     }
 
     pub async fn finish(&mut self) -> Result<Revision> {
-        if self.catalog_changed {
+        if self.catalog_changed() {
             store::bump_catalog_generation(self.view).await?;
         }
-        if self.schema_changed {
+        if self.schema_changed() {
             store::bump_revision(self.view, self.now()).await
         } else {
             store::current_revision(self.view).await
@@ -441,84 +503,33 @@ impl Service {
     }
 
     pub async fn create_table(&self, draft: TableDraft) -> Result<Table> {
-        let mut transaction = self
-            .store
-            .begin(IsolationLevel::SerializableSnapshot)
-            .await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
-            let mut mutation = Mutation::with_runtime(&mut view, self.runtime.clone());
-            match mutation.create_table(draft).await {
-                Ok(table) => mutation.finish().await.map(|_| table),
-                Err(error) => Err(error),
-            }
-        };
-        match result {
-            Ok(table) => {
-                transaction.commit().await?;
-                Ok(table)
-            }
-            Err(error) => {
-                transaction.rollback();
-                Err(error)
-            }
-        }
+        run_mutation!(self, |mutation| mutation.create_table(draft))
     }
 
     pub async fn get_table(&self, name: &str) -> Result<Option<Table>> {
-        let mut transaction = self.store.begin(IsolationLevel::Snapshot).await?;
-        let result = {
-            let view = TransactionView(transaction.as_mut());
-            store::get_table(&view, name).await
-        };
-        transaction.rollback();
-        result
+        read_snapshot!(self, |view| store::get_table(&view, name))
     }
 
     pub async fn get_table_by_id(&self, id: &TableId) -> Result<Option<Table>> {
-        let mut transaction = self.store.begin(IsolationLevel::Snapshot).await?;
-        let result = {
-            let view = TransactionView(transaction.as_mut());
-            store::get_table_by_id(&view, id).await
-        };
-        transaction.rollback();
-        result
+        read_snapshot!(self, |view| store::get_table_by_id(&view, id))
     }
 
     pub async fn get_table_by_schema_id(&self, id: SchemaId) -> Result<Option<Table>> {
-        let mut transaction = self.store.begin(IsolationLevel::Snapshot).await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
-            store::get_table_by_schema_id(&mut view, id).await
-        };
-        transaction.rollback();
-        result
+        read_snapshot!(self, |mut view| store::get_table_by_schema_id(
+            &mut view, id
+        ))
     }
 
     pub async fn list_tables(&self) -> Result<Vec<Table>> {
-        let mut transaction = self.store.begin(IsolationLevel::Snapshot).await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
-            store::list_tables(&mut view).await
-        };
-        transaction.rollback();
-        result
+        read_snapshot!(self, |mut view| store::list_tables(&mut view))
     }
 
     pub async fn schema(&self) -> Result<super::model::Schema> {
-        let mut transaction = self.store.begin(IsolationLevel::Snapshot).await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
-            store::read_schema(&mut view).await
-        };
-        transaction.rollback();
-        result
+        read_snapshot!(self, |mut view| store::read_schema(&mut view))
     }
 
     pub async fn validate_current_schema(&self) -> Result<()> {
-        let mut transaction = self.store.begin(IsolationLevel::Snapshot).await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
+        read_snapshot!(self, |mut view| async {
             match store::current_revision(&mut view).await {
                 Err(error) => Err(error),
                 Ok(revision) => store::read_schema(&mut view).await.and_then(|actual| {
@@ -535,48 +546,23 @@ impl Service {
                     }
                 }),
             }
-        };
-        transaction.rollback();
-        result
+        })
     }
 
     pub async fn revision(&self) -> Result<Revision> {
-        let mut transaction = self.store.begin(IsolationLevel::Snapshot).await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
-            store::current_revision(&mut view).await
-        };
-        transaction.rollback();
-        result
+        read_snapshot!(self, |mut view| store::current_revision(&mut view))
     }
 
     pub async fn revisions(&self) -> Result<Vec<Revision>> {
-        let mut transaction = self.store.begin(IsolationLevel::Snapshot).await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
-            store::revisions(&mut view).await
-        };
-        transaction.rollback();
-        result
+        read_snapshot!(self, |mut view| store::revisions(&mut view))
     }
 
     pub async fn mode(&self) -> Result<Mode> {
-        let mut transaction = self.store.begin(IsolationLevel::Snapshot).await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
-            store::read_mode(&mut view).await
-        };
-        transaction.rollback();
-        result
+        read_snapshot!(self, |mut view| store::read_mode(&mut view))
     }
 
     pub async fn init_mode(&self, requested: Option<Mode>) -> Result<Mode> {
-        let mut transaction = self
-            .store
-            .begin(IsolationLevel::SerializableSnapshot)
-            .await?;
-        let result = {
-            let mut view = TransactionView(transaction.as_mut());
+        write_transaction!(self, |view| async {
             match store::read_stored_mode(&mut view).await {
                 Err(error) => Err(error),
                 Ok(Some(stored)) if requested.is_some_and(|mode| mode != stored) => {
@@ -590,17 +576,7 @@ impl Service {
                     store::set_mode(&mut view, settled).await.map(|()| settled)
                 }
             }
-        };
-        match result {
-            Ok(mode) => {
-                transaction.commit().await?;
-                Ok(mode)
-            }
-            Err(error) => {
-                transaction.rollback();
-                Err(error)
-            }
-        }
+        })
     }
 }
 

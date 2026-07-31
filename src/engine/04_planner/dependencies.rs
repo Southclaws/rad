@@ -1,23 +1,21 @@
 //! Compute physical decode liveness and immutable catalog compatibility fences.
 
 use crate::engine::catalog::model::{CatalogDependencies, Column, Table};
-use crate::engine::lir::bound::{self, RelationNode, SlotSet};
+use crate::engine::lir::bound::{self, SlotSet};
 
 use super::physical::{BindingPlanKind, Node, Plan};
 
 pub(super) fn prepare_catalog_dependencies(plan: &mut Plan) {
     let required = required_slots(plan);
     let mut dependencies = CatalogDependencies::default();
-    walk_plan_mut(plan, &mut |node| match node {
+    plan.walk_mut(&mut |node| match node {
         Node::PrimaryKeyGet {
             scan,
             decode_columns,
             ..
         } => {
             *decode_columns = decode_columns_for(scan, &required);
-            let RelationNode::Scan { table, .. } = &scan.node else {
-                unreachable!()
-            };
+            let table = scan.scan_table();
             let mut columns = decode_columns.clone();
             append_named_columns(&mut columns, table, &table.primary_key);
             dependencies.add_table_read(table, &columns);
@@ -28,9 +26,7 @@ pub(super) fn prepare_catalog_dependencies(plan: &mut Plan) {
             ..
         } => {
             *decode_columns = decode_columns_for(scan, &required);
-            let RelationNode::Scan { table, .. } = &scan.node else {
-                unreachable!()
-            };
+            let table = scan.scan_table();
             dependencies.add_table_read(table, decode_columns);
         }
         Node::IndexRangeScan {
@@ -40,9 +36,7 @@ pub(super) fn prepare_catalog_dependencies(plan: &mut Plan) {
             ..
         } => {
             *decode_columns = decode_columns_for(scan, &required);
-            let RelationNode::Scan { table, .. } = &scan.node else {
-                unreachable!()
-            };
+            let table = scan.scan_table();
             let mut columns = decode_columns.clone();
             let names = table
                 .index_column_names(index)
@@ -69,7 +63,7 @@ fn required_slots(plan: &Plan) -> SlotSet {
             required = required.union(&SlotSet::new(output.slots()));
         }
     }
-    walk_plan(plan, &mut |node| match node {
+    plan.walk(&mut |node| match node {
         Node::Filter { predicate, .. } => add_expr(&mut required, predicate),
         Node::Attach { specifications, .. } => {
             for specification in specifications {
@@ -128,9 +122,7 @@ fn add_expr(required: &mut SlotSet, expression: &bound::Expr) {
 }
 
 fn decode_columns_for(scan: &bound::Relation, required: &SlotSet) -> Vec<Column> {
-    let RelationNode::Scan { table, .. } = &scan.node else {
-        unreachable!()
-    };
+    let table = scan.scan_table();
     scan.output()
         .fields
         .iter()
@@ -147,70 +139,6 @@ fn append_named_columns(columns: &mut Vec<Column>, table: &Table, names: &[Strin
             .expect("bound access must reference an existing column");
         if !columns.iter().any(|existing| existing.id == column.id) {
             columns.push(column.clone());
-        }
-    }
-}
-
-fn walk_plan(plan: &Plan, visitor: &mut impl FnMut(&Node)) {
-    for binding in &plan.bindings {
-        match &binding.kind {
-            BindingPlanKind::Derived { plan, .. } => plan.walk(visitor),
-            BindingPlanKind::Recursive { anchor, step, .. } => {
-                anchor.walk(visitor);
-                step.walk(visitor);
-            }
-        }
-    }
-    plan.root.walk(visitor);
-}
-
-fn walk_plan_mut(plan: &mut Plan, visitor: &mut impl FnMut(&mut Node)) {
-    for binding in &mut plan.bindings {
-        match &mut binding.kind {
-            BindingPlanKind::Derived { plan, .. } => walk_node_mut(plan, visitor),
-            BindingPlanKind::Recursive { anchor, step, .. } => {
-                walk_node_mut(anchor, visitor);
-                walk_node_mut(step, visitor);
-            }
-        }
-    }
-    walk_node_mut(&mut plan.root, visitor);
-}
-
-fn walk_node_mut(node: &mut Node, visitor: &mut impl FnMut(&mut Node)) {
-    visitor(node);
-    match node {
-        Node::PrimaryKeyGet { .. }
-        | Node::TableScan { .. }
-        | Node::Rows(_)
-        | Node::IndexRangeScan { .. }
-        | Node::Reference { .. }
-        | Node::RecursiveReference { .. } => {}
-        Node::Filter { input, .. }
-        | Node::Project { input, .. }
-        | Node::Sort { input, .. }
-        | Node::Slice { input, .. }
-        | Node::Distinct { input, .. }
-        | Node::Aggregate { input, .. } => walk_node_mut(input, visitor),
-        Node::Attach {
-            input,
-            specifications,
-        } => {
-            walk_node_mut(input, visitor);
-            for specification in specifications {
-                walk_node_mut(&mut specification.plan, visitor);
-            }
-        }
-        Node::NestedLoopJoin { left, right, .. }
-        | Node::Intersect { left, right, .. }
-        | Node::Except { left, right, .. } => {
-            walk_node_mut(left, visitor);
-            walk_node_mut(right, visitor);
-        }
-        Node::Concatenate { inputs, .. } => {
-            for input in inputs {
-                walk_node_mut(input, visitor);
-            }
         }
     }
 }

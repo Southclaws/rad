@@ -31,7 +31,7 @@ impl LowerError {
     }
 }
 
-pub type LowerResult<T> = std::result::Result<T, LowerError>;
+pub type LowerResult<T> = Result<T, LowerError>;
 
 pub fn lower_pir(program: pir_wire::Program) -> LowerResult<crate::engine::exec::Program> {
     Ok(crate::engine::exec::Program {

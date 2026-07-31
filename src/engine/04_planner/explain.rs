@@ -5,14 +5,9 @@ use std::fmt::Write;
 use serde::Serialize;
 
 use crate::engine::lir::format::print_expression;
-use crate::engine::lir::{
-    AggregateFunction, JoinKind, RecursiveAccumulation, RootCardinality, SetQuantifier,
-};
 
 use super::analysis::{ConstValue, Correlation, CorrelationKind};
-use super::physical::{
-    AccessCandidate, BindingPlanKind, BindingStrategy, CrossingKind, Node, Plan, RangeSpec,
-};
+use super::physical::{AccessCandidate, BindingPlanKind, BindingStrategy, Node, Plan, RangeSpec};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,7 +61,7 @@ enum Render {
 impl PlanView {
     pub fn new(plan: &Plan) -> Self {
         Self {
-            cardinality: root_cardinality(plan.cardinality).into(),
+            cardinality: plan.cardinality.as_str().into(),
             bindings: plan
                 .bindings
                 .iter()
@@ -87,7 +82,7 @@ impl PlanView {
                         } => (
                             binding_strategy(BindingStrategy::Materialize).into(),
                             true,
-                            Some(self::accumulation(*accumulation).into()),
+                            Some(accumulation.as_str().into()),
                             view_node(anchor),
                             Some(view_node(step)),
                         ),
@@ -182,19 +177,22 @@ fn view_node(node: &Node) -> PlanNodeView {
     match node {
         Node::PrimaryKeyGet {
             scan, key, access, ..
-        } => plain(
-            "PKGet",
-            format!(
-                "{} [{}]",
-                table(scan).name,
-                key_equalities(&table(scan).primary_key, key)
-            ),
-            access.candidates.clone(),
-            Vec::new(),
-        ),
+        } => {
+            let table = scan.scan_table();
+            plain(
+                "PKGet",
+                format!(
+                    "{} [{}]",
+                    table.name,
+                    key_equalities(&table.primary_key, key)
+                ),
+                access.candidates.clone(),
+                Vec::new(),
+            )
+        }
         Node::TableScan { scan, access, .. } => plain(
             "TableScan",
-            table(scan).name.clone(),
+            scan.scan_table().name.clone(),
             access.candidates.clone(),
             Vec::new(),
         ),
@@ -218,7 +216,7 @@ fn view_node(node: &Node) -> PlanNodeView {
             access,
             ..
         } => {
-            let table = table(scan);
+            let table = scan.scan_table();
             let index_columns = table.index_column_names(index);
             let mut constraints = Vec::new();
             if !equality_prefix.is_empty() {
@@ -262,7 +260,7 @@ fn view_node(node: &Node) -> PlanNodeView {
                 let header = format!(
                     "#{} = {} {}{}",
                     specification.slot.0,
-                    crossing_kind(specification.kind),
+                    specification.kind.label(),
                     correlation_kind(specification.correlation.kind),
                     correlation_keys(&specification.correlation)
                 );
@@ -357,7 +355,7 @@ fn view_node(node: &Node) -> PlanNodeView {
             ..
         } => plain(
             "NestedLoopJoin",
-            format!("{} on {}", join_kind(*kind), print_expression(on)),
+            format!("{} on {}", kind.as_str(), print_expression(on)),
             Vec::new(),
             vec![view_node(left), view_node(right)],
         ),
@@ -374,7 +372,7 @@ fn view_node(node: &Node) -> PlanNodeView {
             ..
         } => plain(
             "Intersect",
-            set_quantifier(*quantifier).into(),
+            quantifier.as_str().into(),
             Vec::new(),
             vec![view_node(left), view_node(right)],
         ),
@@ -385,7 +383,7 @@ fn view_node(node: &Node) -> PlanNodeView {
             ..
         } => plain(
             "Except",
-            set_quantifier(*quantifier).into(),
+            quantifier.as_str().into(),
             Vec::new(),
             vec![view_node(left), view_node(right)],
         ),
@@ -416,7 +414,7 @@ fn view_node(node: &Node) -> PlanNodeView {
                     "{}#{}={}({})",
                     term.name,
                     term.slot.0,
-                    aggregate_function(term.function),
+                    term.function.as_str(),
                     term.argument
                         .as_ref()
                         .map_or_else(|| "*".into(), print_expression)
@@ -542,39 +540,10 @@ fn correlation_keys(correlation: &Correlation) -> String {
     )
 }
 
-fn table(scan: &crate::engine::lir::bound::Relation) -> &crate::engine::catalog::model::Table {
-    let crate::engine::lir::bound::RelationNode::Scan { table, .. } = &scan.node else {
-        unreachable!()
-    };
-    table
-}
-
-fn root_cardinality(value: RootCardinality) -> &'static str {
-    match value {
-        RootCardinality::Many => "many",
-        RootCardinality::First => "first",
-        RootCardinality::ExactlyOne => "exactly_one",
-        RootCardinality::Scalar => "scalar",
-    }
-}
 fn binding_strategy(value: BindingStrategy) -> &'static str {
     match value {
         BindingStrategy::Materialize => "materialise",
         BindingStrategy::Replay => "replay",
-    }
-}
-fn accumulation(value: RecursiveAccumulation) -> &'static str {
-    match value {
-        RecursiveAccumulation::All => "all",
-        RecursiveAccumulation::New => "new",
-    }
-}
-fn crossing_kind(value: CrossingKind) -> &'static str {
-    match value {
-        CrossingKind::Exists => "exists",
-        CrossingKind::First => "first",
-        CrossingKind::Scalar => "scalar",
-        CrossingKind::Array => "array",
     }
 }
 fn correlation_kind(value: CorrelationKind) -> &'static str {
@@ -584,28 +553,6 @@ fn correlation_kind(value: CorrelationKind) -> &'static str {
         CorrelationKind::General => "general-correlated",
     }
 }
-fn join_kind(value: JoinKind) -> &'static str {
-    match value {
-        JoinKind::Inner => "inner",
-        JoinKind::Left => "left",
-    }
-}
-fn set_quantifier(value: SetQuantifier) -> &'static str {
-    match value {
-        SetQuantifier::All => "all",
-        SetQuantifier::Distinct => "distinct",
-    }
-}
-fn aggregate_function(value: AggregateFunction) -> &'static str {
-    match value {
-        AggregateFunction::Count => "count",
-        AggregateFunction::Sum => "sum",
-        AggregateFunction::Average => "avg",
-        AggregateFunction::Min => "min",
-        AggregateFunction::Max => "max",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::engine::lir::bound;

@@ -8,8 +8,8 @@ use crate::engine::kv::{IsolationLevel, KvView, TransactionView};
 use crate::engine::lir::Value;
 
 use super::{
-    Engine, EngineEvent, EngineOperation, Error, ErrorKind, GateAction, Result, TransitionStep,
-    emit_write_protocol, finish, ownership_changed,
+    Engine, EngineOperation, Error, ErrorKind, Result, TransitionStep, emit_write_protocol,
+    required_owned_transition, transition_table,
 };
 use crate::engine::exec::{codec, row_store};
 
@@ -33,18 +33,18 @@ impl Engine {
             .await?;
         let result = async {
             let mut view = TransactionView(&*transaction);
-            let mut transition = required_owned(&mut view, &current, owner).await?;
-            let table = store::get_table_by_id(&view, &transition.table_id)
-                .await?
-                .ok_or_else(|| {
-                    Error::message(
-                        ErrorKind::CorruptData,
-                        format!(
-                            "catalog: constraint transition {:?} table no longer exists",
-                            transition.id
-                        ),
-                    )
-                })?;
+            let mut transition =
+                required_owned_transition(&mut view, &current.id, owner).await?;
+            if transition.constraint.is_none() {
+                return Err(Error::message(
+                    ErrorKind::CorruptData,
+                    format!(
+                        "catalog: constraint transition {:?} has no definition",
+                        transition.id
+                    ),
+                ));
+            }
+            let table = transition_table(&view, &transition).await?;
             let constraint = transition
                 .constraint
                 .clone()
@@ -86,54 +86,14 @@ impl Engine {
                     ));
                 }
             };
-            self.events
-                .reach(EngineEvent::CheckpointStaged {
-                    operation: operation.clone(),
-                    generation: transition.generation.get(),
-                    batch_id: transition.batch_id,
-                    state: transition.state,
-                })
+            self.stage_transition_checkpoint(&operation, &transition)
                 .await;
             Ok(TransitionStep { transition, items })
         }
         .await;
-        let step = finish(self, operation, transaction, result).await?;
-        Ok(TransitionStep {
-            transition: self.inspect_schema_transition(&step.transition.id).await?,
-            items: step.items,
-        })
+        self.finish_transition_step(operation, transaction, result)
+            .await
     }
-}
-
-async fn required_owned(
-    view: &mut dyn KvView,
-    expected: &SchemaTransition,
-    owner: OwnerEpoch,
-) -> Result<SchemaTransition> {
-    let transition = store::get_transition(view, &expected.id)
-        .await?
-        .ok_or_else(|| {
-            Error::message(
-                ErrorKind::InvalidInput,
-                format!(
-                    "catalog: constraint transition {:?} does not exist",
-                    expected.id
-                ),
-            )
-        })?;
-    if transition.owner_epoch != owner {
-        return Err(ownership_changed(&expected.id));
-    }
-    if transition.constraint.is_none() {
-        return Err(Error::message(
-            ErrorKind::CorruptData,
-            format!(
-                "catalog: constraint transition {:?} has no definition",
-                expected.id
-            ),
-        ));
-    }
-    Ok(transition)
 }
 
 async fn scan_batch(
@@ -187,19 +147,13 @@ async fn scan_batch(
             store::delete_transition_violation(view, &transition.id, &row.primary_key).await?;
         }
     }
-    engine
-        .events
-        .reach(EngineEvent::PhysicalBatchStaged {
-            operation: operation.clone(),
-            items: rows.len(),
-        })
-        .await;
-    transition.batch_id = transition.batch_id.saturating_add(1);
-    transition.generation = transition.generation.next();
-    transition.rows_scanned = transition.rows_scanned.saturating_add(rows.len() as u64);
-    transition.updated_at = engine.runtime.now().into();
-    if let Some(last) = rows.last() {
-        transition.cursor.clone_from(&last.key);
+    engine.stage_physical_batch(operation, rows.len()).await;
+    let exhausted = transition.advance_scan(
+        rows.len(),
+        rows.last().map(|row| row.key.as_slice()),
+        engine.runtime.now().into(),
+    );
+    if !exhausted {
         store::save_transition(view, transition).await?;
     } else {
         store::save_transition(view, transition).await?;
@@ -208,13 +162,8 @@ async fn scan_batch(
         *transition = mutation.begin_constraint_finalization(&id, owner).await?;
         mutation.finish().await?;
         engine
-            .events
-            .reach(EngineEvent::FinalizationGateStaged {
-                operation: operation.clone(),
-                action: GateAction::Acquired,
-            })
-            .await;
-        emit_write_protocol(engine, view, operation, transition).await?;
+            .stage_finalization_gate(view, operation, transition)
+            .await?;
     }
     Ok(rows.len())
 }
@@ -254,19 +203,7 @@ async fn validate(
     };
     mutation.finish().await?;
     engine
-        .events
-        .reach(EngineEvent::FinalizationGateStaged {
-            operation: operation.clone(),
-            action: GateAction::Released,
-        })
-        .await;
-    emit_write_protocol(engine, view, operation, transition).await?;
-    engine
-        .events
-        .reach(EngineEvent::CatalogPublicationStaged {
-            operation: operation.clone(),
-            state: transition.state,
-        })
-        .await;
+        .stage_transition_publication(view, operation, transition, true)
+        .await?;
     Ok(())
 }

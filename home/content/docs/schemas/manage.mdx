@@ -9,7 +9,13 @@ and any generated client will agree on one version and hash.
 ## Before you begin
 
 You need a running Rad server in schema-managed mode and the `rad` binary on
-your `PATH`. In the project directory, create `rad.config.yaml`:
+your `PATH`. In the project directory, run:
+
+```console
+$ rad init
+```
+
+The short walkthrough creates `rad.config.yaml`:
 
 ```yaml
 database_url: rad://127.0.0.1:7237
@@ -19,7 +25,7 @@ generate:
     package: db
 ```
 
-Create `rad.schema.yaml`:
+It also creates a valid starter `rad.schema.yaml`:
 
 ```yaml
 tables:
@@ -32,7 +38,8 @@ tables:
 ```
 
 The commands below use `rad.config.yaml` and `rad.schema.yaml` by default. Pass
-`--config` or `--file` when your project uses different paths.
+`--config` or `--file` when your project uses different paths. For an
+unattended setup, use `rad init --yes`; add `--empty` to omit the starter table.
 
 ## 1. Check the four copies
 

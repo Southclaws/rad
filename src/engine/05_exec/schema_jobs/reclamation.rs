@@ -8,7 +8,7 @@ use crate::engine::catalog::store;
 use crate::engine::kv::key_encoding::prefix_end;
 use crate::engine::kv::{IsolationLevel, KeyRange, KvView, TransactionView};
 
-use super::{Engine, EngineEvent, EngineOperation, Error, ErrorKind, Result, finish};
+use super::{Engine, EngineEvent, EngineOperation, Error, ErrorKind, Result};
 use crate::engine::exec::codec;
 
 impl Engine {
@@ -37,13 +37,12 @@ impl Engine {
             Ok(Some(reclamation.owner_epoch))
         }
         .await;
-        finish(
-            self,
-            EngineOperation::ClaimReclamation {
-                reclamation_id: id.clone(),
-            },
+        self.finish_transaction(
             transaction,
             result,
+            Some(EngineOperation::ClaimReclamation {
+                reclamation_id: id.clone(),
+            }),
         )
         .await
     }
@@ -69,21 +68,7 @@ impl Engine {
             .await?;
         let result = async {
             let mut view = TransactionView(&*transaction);
-            let mut reclamation =
-                store::get_reclamation(&mut view, id)
-                    .await?
-                    .ok_or_else(|| {
-                        Error::message(
-                            ErrorKind::InvalidInput,
-                            format!("catalog: reclamation {id:?} does not exist"),
-                        )
-                    })?;
-            if reclamation.owner_epoch != owner {
-                return Err(Error::message(
-                    ErrorKind::Conflict,
-                    format!("catalog: reclamation {id:?} ownership changed"),
-                ));
-            }
+            let mut reclamation = required_owned(&mut view, id, owner).await?;
             if reclamation.state == ReclamationState::Reclaimed {
                 return Ok((reclamation, 0));
             }
@@ -107,12 +92,7 @@ impl Engine {
             }
             validate_eligibility(&mut view, &reclamation).await?;
             let (items, done) = apply_batch(&mut view, &mut reclamation, batch_size).await?;
-            self.events
-                .reach(EngineEvent::PhysicalBatchStaged {
-                    operation: operation.clone(),
-                    items,
-                })
-                .await;
+            self.stage_physical_batch(&operation, items).await;
             reclamation.batch_id = reclamation.batch_id.saturating_add(1);
             reclamation.items_reclaimed = reclamation.items_reclaimed.saturating_add(items as u64);
             reclamation.generation = reclamation.generation.next();
@@ -142,7 +122,8 @@ impl Engine {
             Ok((reclamation, items))
         }
         .await;
-        finish(self, operation, transaction, result).await
+        self.finish_transaction(transaction, result, Some(operation))
+            .await
     }
 
     pub async fn fail_reclamation(
@@ -158,21 +139,7 @@ impl Engine {
         let cause = cause.into();
         let result = async {
             let mut view = TransactionView(&*transaction);
-            let mut reclamation =
-                store::get_reclamation(&mut view, id)
-                    .await?
-                    .ok_or_else(|| {
-                        Error::message(
-                            ErrorKind::InvalidInput,
-                            format!("catalog: reclamation {id:?} does not exist"),
-                        )
-                    })?;
-            if reclamation.owner_epoch != owner {
-                return Err(Error::message(
-                    ErrorKind::Conflict,
-                    format!("catalog: reclamation {id:?} ownership changed"),
-                ));
-            }
+            let mut reclamation = required_owned(&mut view, id, owner).await?;
             if reclamation.state == ReclamationState::Reclaimed {
                 return Ok(reclamation);
             }
@@ -184,13 +151,12 @@ impl Engine {
             Ok(reclamation)
         }
         .await;
-        finish(
-            self,
-            EngineOperation::FailReclamation {
-                reclamation_id: id.clone(),
-            },
+        self.finish_transaction(
             transaction,
             result,
+            Some(EngineOperation::FailReclamation {
+                reclamation_id: id.clone(),
+            }),
         )
         .await
     }
@@ -218,7 +184,8 @@ impl Engine {
             Ok(result)
         }
         .await;
-        finish(self, operation, transaction, result).await
+        self.finish_transaction(transaction, result, Some(operation))
+            .await
     }
 
     pub async fn compact_transition_step(
@@ -253,8 +220,29 @@ impl Engine {
             Ok(true)
         }
         .await;
-        finish(self, operation, transaction, result).await
+        self.finish_transaction(transaction, result, Some(operation))
+            .await
     }
+}
+
+async fn required_owned(
+    view: &mut dyn KvView,
+    id: &ReclamationId,
+    owner: OwnerEpoch,
+) -> Result<Reclamation> {
+    let reclamation = store::get_reclamation(view, id).await?.ok_or_else(|| {
+        Error::message(
+            ErrorKind::InvalidInput,
+            format!("catalog: reclamation {id:?} does not exist"),
+        )
+    })?;
+    if reclamation.owner_epoch != owner {
+        return Err(Error::message(
+            ErrorKind::Conflict,
+            format!("catalog: reclamation {id:?} ownership changed"),
+        ));
+    }
+    Ok(reclamation)
 }
 
 async fn validate_eligibility(view: &mut dyn KvView, value: &Reclamation) -> Result<()> {

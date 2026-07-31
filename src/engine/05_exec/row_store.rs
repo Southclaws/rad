@@ -11,7 +11,7 @@ use crate::engine::lir::{Row, Value};
 use super::codec;
 use super::{Error, ErrorKind, Result};
 
-pub async fn get_columns(
+pub(super) async fn get_columns(
     view: &dyn KvView,
     table: &Table,
     key: &Row,
@@ -35,34 +35,29 @@ pub async fn get_columns(
         .transpose()
 }
 
-pub async fn scan_table_columns(
+pub(super) async fn scan_table_columns(
     view: &dyn KvView,
     table: &Table,
     columns: &[Column],
 ) -> Result<Vec<Row>> {
-    let mut iterator = scan_table(view, table, columns).await?;
-    let mut rows = Vec::new();
-    while let Some(row) = iterator.next().await? {
-        rows.push(row);
-    }
-    Ok(rows)
+    collect(scan_table(view, table, columns).await?).await
 }
 
 #[derive(Clone, Debug)]
-pub struct BatchRow {
+pub(super) struct BatchRow {
     pub key: Vec<u8>,
     pub primary_key: Vec<u8>,
     pub row: Row,
 }
 
 #[derive(Clone, Debug)]
-pub struct RawBatchRow {
+pub(super) struct RawBatchRow {
     pub key: Vec<u8>,
     pub primary_key: Vec<u8>,
     pub raw: Vec<u8>,
 }
 
-pub async fn scan_table_batch(
+pub(super) async fn scan_table_batch(
     view: &dyn KvView,
     table: &Table,
     cursor: &[u8],
@@ -80,7 +75,7 @@ pub async fn scan_table_batch(
         .collect()
 }
 
-pub async fn scan_raw_table_batch(
+pub(super) async fn scan_raw_table_batch(
     view: &dyn KvView,
     table: &Table,
     cursor: &[u8],
@@ -122,11 +117,11 @@ pub async fn scan_raw_table_batch(
 }
 
 #[async_trait]
-pub trait RowIterator: Send {
+pub(super) trait RowIterator: Send {
     async fn next(&mut self) -> Result<Option<Row>>;
 }
 
-pub async fn scan_table<'a>(
+pub(super) async fn scan_table<'a>(
     view: &'a dyn KvView,
     table: &Table,
     columns: &[Column],
@@ -176,12 +171,12 @@ impl RowIterator for TableIterator<'_> {
     }
 }
 
-pub struct Range<'a> {
+pub(super) struct Range<'a> {
     pub lower: Option<(&'a Value, bool)>,
     pub upper: Option<(&'a Value, bool)>,
 }
 
-pub async fn scan_index_range_columns(
+pub(super) async fn scan_index_range_columns(
     view: &dyn KvView,
     table: &Table,
     index: &Index,
@@ -189,8 +184,10 @@ pub async fn scan_index_range_columns(
     range: Option<Range<'_>>,
     columns: &[Column],
 ) -> Result<Vec<Row>> {
-    let mut iterator =
-        scan_index_range(view, table, index, equality_prefix, range, columns).await?;
+    collect(scan_index_range(view, table, index, equality_prefix, range, columns).await?).await
+}
+
+async fn collect(mut iterator: Box<dyn RowIterator + '_>) -> Result<Vec<Row>> {
     let mut rows = Vec::new();
     while let Some(row) = iterator.next().await? {
         rows.push(row);
@@ -198,7 +195,7 @@ pub async fn scan_index_range_columns(
     Ok(rows)
 }
 
-pub async fn scan_index_range<'a>(
+pub(super) async fn scan_index_range<'a>(
     view: &'a dyn KvView,
     table: &Table,
     index: &Index,

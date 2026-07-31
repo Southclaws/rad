@@ -55,6 +55,10 @@ struct FileTable {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "schema shorthand flags are independent authored properties"
+)]
 struct FileColumn {
     id: SchemaId,
     name: String,

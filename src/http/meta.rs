@@ -47,10 +47,7 @@ impl MetaApi for Api {
             Ok(snapshot) => snapshot,
             Err(error) => return table_list_problem(server::engine_problem(&error)),
         };
-        match wire::table_list(&tables) {
-            Ok(tables) => TableListResponse::Ok(tables),
-            Err(error) => table_list_problem(server::internal_problem("encode table list", error)),
-        }
+        TableListResponse::Ok(wire::table_list(&tables))
     }
 }
 

@@ -3,7 +3,7 @@
 pub(super) mod constraints;
 mod defaults;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::engine::catalog::model::Table;
 use crate::engine::kv::KvView;
@@ -13,7 +13,7 @@ use crate::runtime::RuntimeEffects;
 use super::row_store;
 use super::{Error, ErrorKind, ErrorReason, Result, codec, write};
 
-pub async fn create(
+pub(super) async fn create(
     view: &mut dyn KvView,
     table: &Table,
     input: &[Row],
@@ -57,7 +57,7 @@ pub async fn create(
     Ok(stored)
 }
 
-pub async fn update(
+pub(super) async fn update(
     view: &mut dyn KvView,
     table: &Table,
     input_type: &RowType,
@@ -71,26 +71,13 @@ pub async fn update(
         primary_key: Vec<u8>,
     }
     let mut pending = Vec::with_capacity(input.len());
-    let mut seen = HashSet::new();
+    let targets = load_targets(view, table, input, "update").await?;
 
-    for input in input {
-        let key = select_columns(input, &table.primary_key)?;
-        let primary_key = codec::encode_row_tuple(&key, &table.primary_key)?;
-        let Some(before) = row_store::get_columns(view, table, &key, &table.columns).await? else {
-            return Err(Error::message(
-                ErrorKind::MutationNotFound,
-                format!("exec: update target not found in {:?}", table.name),
-            ));
-        };
-        if !seen.insert(primary_key.clone()) {
-            return Err(Error::message(
-                ErrorKind::MutationAmbiguous,
-                format!(
-                    "exec: update of {:?} identifies the same row twice",
-                    table.name
-                ),
-            ));
-        }
+    for (input, target) in input.iter().zip(targets) {
+        let Target {
+            before,
+            primary_key,
+        } = target;
         let mut after = before.clone();
         let mut assigned = Row::new();
         for column in &assigned_columns {
@@ -137,14 +124,35 @@ pub async fn update(
     Ok(pending.into_iter().map(|mutation| mutation.after).collect())
 }
 
-pub async fn delete(
+pub(super) async fn delete(
     view: &mut dyn KvView,
     table: &Table,
     input_type: &RowType,
     input: &[Row],
 ) -> Result<Vec<Row>> {
     validate_delete_columns(table, input_type)?;
-    let mut pending = Vec::with_capacity(input.len());
+    let targets = load_targets(view, table, input, "delete").await?;
+    for target in &targets {
+        write::delete(view, table, &target.before, &target.primary_key).await?;
+    }
+    for target in &targets {
+        constraints::check_no_references(view, table, &target.before).await?;
+    }
+    Ok(targets.into_iter().map(|target| target.before).collect())
+}
+
+struct Target {
+    before: Row,
+    primary_key: Vec<u8>,
+}
+
+async fn load_targets(
+    view: &dyn KvView,
+    table: &Table,
+    input: &[Row],
+    operation: &str,
+) -> Result<Vec<Target>> {
+    let mut targets = Vec::with_capacity(input.len());
     let mut seen = HashSet::new();
     for input in input {
         let key = select_columns(input, &table.primary_key)?;
@@ -152,31 +160,28 @@ pub async fn delete(
         let Some(before) = row_store::get_columns(view, table, &key, &table.columns).await? else {
             return Err(Error::message(
                 ErrorKind::MutationNotFound,
-                format!("exec: delete target not found in {:?}", table.name),
+                format!("exec: {operation} target not found in {:?}", table.name),
             ));
         };
         if !seen.insert(primary_key.clone()) {
             return Err(Error::message(
                 ErrorKind::MutationAmbiguous,
                 format!(
-                    "exec: delete of {:?} identifies the same row twice",
+                    "exec: {operation} of {:?} identifies the same row twice",
                     table.name
                 ),
             ));
         }
-        pending.push((before, primary_key));
+        targets.push(Target {
+            before,
+            primary_key,
+        });
     }
-    for (before, primary_key) in &pending {
-        write::delete(view, table, before, primary_key).await?;
-    }
-    for (before, _) in &pending {
-        constraints::check_no_references(view, table, before).await?;
-    }
-    Ok(pending.into_iter().map(|(before, _)| before).collect())
+    Ok(targets)
 }
 
 fn update_columns(table: &Table, input: &RowType) -> Result<Vec<String>> {
-    let mut present = HashMap::new();
+    let mut present = HashSet::new();
     for field in &input.fields {
         if table.column(&field.name).is_none() {
             return Err(Error::message(
@@ -187,7 +192,7 @@ fn update_columns(table: &Table, input: &RowType) -> Result<Vec<String>> {
                 ),
             ));
         }
-        if present.insert(field.name.clone(), ()).is_some() {
+        if !present.insert(field.name.clone()) {
             return Err(Error::message(
                 ErrorKind::InvalidInput,
                 format!("exec: update input duplicates column {:?}", field.name),
@@ -195,7 +200,7 @@ fn update_columns(table: &Table, input: &RowType) -> Result<Vec<String>> {
         }
     }
     for primary_key in &table.primary_key {
-        if !present.contains_key(primary_key) {
+        if !present.contains(primary_key) {
             return Err(Error::message(
                 ErrorKind::InvalidInput,
                 format!(

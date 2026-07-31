@@ -32,15 +32,17 @@ type exitCode struct {
 }
 
 type components struct {
-	Flags map[string]option `yaml:"flags"`
+	Flags     map[string]option   `yaml:"flags"`
+	Arguments map[string]argument `yaml:"arguments"`
 }
 
 type command struct {
-	Name            string    `yaml:"name"`
-	Description     string    `yaml:"description"`
-	LongDescription string    `yaml:"longDescription"`
-	Flags           []option  `yaml:"flags"`
-	Commands        []command `yaml:"commands"`
+	Name            string     `yaml:"name"`
+	Description     string     `yaml:"description"`
+	LongDescription string     `yaml:"longDescription"`
+	Flags           []option   `yaml:"flags"`
+	Arguments       []argument `yaml:"arguments"`
+	Commands        []command  `yaml:"commands"`
 }
 
 type option struct {
@@ -51,6 +53,16 @@ type option struct {
 	Type        string   `yaml:"type"`
 	EnvVar      string   `yaml:"envVar"`
 	Default     any      `yaml:"default"`
+	Choices     []string `yaml:"choices"`
+}
+
+type argument struct {
+	Ref         string   `yaml:"$ref"`
+	Name        string   `yaml:"name"`
+	Description string   `yaml:"description"`
+	Required    *bool    `yaml:"required"`
+	Default     any      `yaml:"default"`
+	Variadic    bool     `yaml:"variadic"`
 	Choices     []string `yaml:"choices"`
 }
 
@@ -71,7 +83,14 @@ type commandDoc struct {
 	Invocation  string
 	Description string
 	Subcommands []commandSummary
+	Arguments   []argumentDoc
 	Options     []optionDoc
+}
+
+type argumentDoc struct {
+	Name        string
+	Description string
+	Default     string
 }
 
 type optionDoc struct {
@@ -106,6 +125,14 @@ description: Commands and options provided by the Rad command-line tool.
 | --- | --- |
 {{- range .Subcommands }}
 | {{ code .Invocation }} | {{ table .Description }} |
+{{- end }}
+{{- end }}
+{{- if .Arguments }}
+
+| Argument | Purpose | Default |
+| --- | --- | --- |
+{{- range .Arguments }}
+| {{ .Name }} | {{ table .Description }} | {{ .Default }} |
 {{- end }}
 {{- end }}
 {{- if .Options }}
@@ -200,6 +227,18 @@ func appendCommand(result *page, spec document, parents []string, item command) 
 		})
 	}
 
+	for _, raw := range item.Arguments {
+		value, err := resolveArgument(spec, raw)
+		if err != nil {
+			return fmt.Errorf("%s: %w", invocation, err)
+		}
+		doc.Arguments = append(doc.Arguments, argumentDoc{
+			Name:        argumentName(value),
+			Description: argumentDescription(value),
+			Default:     docgen.Code(value.Default),
+		})
+	}
+
 	for _, raw := range item.Flags {
 		value, err := resolveOption(spec, raw)
 		if err != nil {
@@ -220,6 +259,40 @@ func appendCommand(result *page, spec document, parents []string, item command) 
 		}
 	}
 	return nil
+}
+
+func resolveArgument(spec document, value argument) (argument, error) {
+	if value.Ref == "" {
+		return value, nil
+	}
+	const prefix = "#/components/arguments/"
+	if !strings.HasPrefix(value.Ref, prefix) {
+		return argument{}, fmt.Errorf("unsupported argument reference %q", value.Ref)
+	}
+	resolved, ok := spec.Components.Arguments[strings.TrimPrefix(value.Ref, prefix)]
+	if !ok {
+		return argument{}, fmt.Errorf("argument reference %q does not exist", value.Ref)
+	}
+	return resolved, nil
+}
+
+func argumentName(value argument) string {
+	name := value.Name
+	if value.Variadic {
+		name += "..."
+	}
+	if value.Required == nil || *value.Required {
+		return "`<" + name + ">`"
+	}
+	return "`[" + name + "]`"
+}
+
+func argumentDescription(value argument) string {
+	description := docgen.OneLine(value.Description)
+	if len(value.Choices) > 0 {
+		description += " Choices: " + strings.Join(value.Choices, ", ") + "."
+	}
+	return description
 }
 
 func resolveOption(spec document, value option) (option, error) {

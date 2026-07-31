@@ -227,22 +227,18 @@ impl<'a> Binder<'a> {
     }
 
     fn fresh_occurrence(&mut self, output: &lir::RowType) -> (Vec<lir::Field>, Vec<SlotId>) {
-        let mut canonical = Vec::with_capacity(output.fields.len());
+        let slots = self.fresh_slots(output.fields.len());
         let fields = output
             .fields
             .iter()
-            .map(|field| {
-                canonical.push(field.slot);
-                let slot = self.next_slot;
-                self.next_slot.0 += 1;
-                lir::Field {
-                    name: field.name.clone(),
-                    slot,
-                    value_type: field.value_type.clone(),
-                }
+            .zip(slots)
+            .map(|(field, slot)| lir::Field {
+                name: field.name.clone(),
+                slot,
+                value_type: field.value_type.clone(),
             })
             .collect();
-        (fields, canonical)
+        (fields, output.slots())
     }
 
     fn slot_for(&mut self, expression: &bound::Expr) -> SlotId {
@@ -328,105 +324,11 @@ fn binding_order(bindings: &HashMap<String, lir::Relation>) -> Result<Vec<String
 }
 
 fn collect_binding_dependencies(relation: &lir::Relation, output: &mut Vec<String>) {
-    if let lir::Relation::Ref { binding, .. } = relation {
-        output.push(binding.clone());
-    }
-    walk_unbound_relation_children(relation, &mut |relation| {
-        collect_binding_dependencies(relation, output)
+    lir::inspect::walk_unbound_relation(relation, &mut |relation| {
+        if let lir::Relation::Ref { binding, .. } = relation {
+            output.push(binding.clone());
+        }
     });
-}
-
-fn walk_unbound_relation_children(
-    relation: &lir::Relation,
-    visitor: &mut impl FnMut(&lir::Relation),
-) {
-    match relation {
-        lir::Relation::Scan { .. }
-        | lir::Relation::Rows { .. }
-        | lir::Relation::Ref { .. }
-        | lir::Relation::RecursiveRef { .. } => {}
-        lir::Relation::Filter { input, predicate } => {
-            visitor(input);
-            walk_unbound_expression_relations(predicate, visitor);
-        }
-        lir::Relation::Project { input, fields, .. } => {
-            visitor(input);
-            for field in fields {
-                walk_unbound_expression_relations(&field.expression, visitor);
-            }
-        }
-        lir::Relation::Join {
-            left, right, on, ..
-        } => {
-            visitor(left);
-            visitor(right);
-            walk_unbound_expression_relations(on, visitor);
-        }
-        lir::Relation::Concatenate { inputs, .. } => inputs.iter().for_each(&mut *visitor),
-        lir::Relation::Intersect { left, right, .. }
-        | lir::Relation::Except { left, right, .. } => {
-            visitor(left);
-            visitor(right);
-        }
-        lir::Relation::Aggregate {
-            input,
-            groups,
-            terms,
-            ..
-        } => {
-            visitor(input);
-            for group in groups {
-                walk_unbound_expression_relations(&group.expression, visitor);
-            }
-            for term in terms {
-                if let Some(argument) = &term.argument {
-                    walk_unbound_expression_relations(argument, visitor);
-                }
-            }
-        }
-        lir::Relation::Order { input, terms } => {
-            visitor(input);
-            for term in terms {
-                walk_unbound_expression_relations(&term.expression, visitor);
-            }
-        }
-        lir::Relation::Slice { input, .. } | lir::Relation::Distinct(input) => visitor(input),
-        lir::Relation::Recursive { anchor, step, .. } => {
-            visitor(anchor);
-            visitor(step);
-        }
-    }
-}
-
-fn walk_unbound_expression_relations(
-    expression: &lir::Expr,
-    visitor: &mut impl FnMut(&lir::Relation),
-) {
-    match expression {
-        lir::Expr::Literal(_) | lir::Expr::Column { .. } => {}
-        lir::Expr::Unary { expression, .. }
-        | lir::Expr::Cast { expression, .. }
-        | lir::Expr::TextMatch {
-            value: expression, ..
-        } => walk_unbound_expression_relations(expression, visitor),
-        lir::Expr::Binary { left, right, .. } => {
-            walk_unbound_expression_relations(left, visitor);
-            walk_unbound_expression_relations(right, visitor);
-        }
-        lir::Expr::Branch {
-            arms, otherwise, ..
-        } => {
-            for arm in arms {
-                walk_unbound_expression_relations(&arm.when, visitor);
-                walk_unbound_expression_relations(&arm.then, visitor);
-            }
-            walk_unbound_expression_relations(otherwise, visitor);
-        }
-        lir::Expr::Exists(relation)
-        | lir::Expr::First(relation)
-        | lir::Expr::Scalar(relation)
-        | lir::Expr::Array(relation) => visitor(relation),
-    }
 }
 
 #[cfg(test)]

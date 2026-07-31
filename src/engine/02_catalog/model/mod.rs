@@ -256,6 +256,12 @@ pub struct TableDef {
     pub foreign_keys: Vec<ForeignKeyDef>,
 }
 
+impl TableDef {
+    pub fn column(&self, name: &str) -> Option<&ColumnDef> {
+        self.columns.iter().find(|column| column.name == name)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ColumnDef {

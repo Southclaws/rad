@@ -107,14 +107,10 @@ pub(crate) async fn check_unique_index(
     if !index.unique {
         return Ok(());
     }
-    let columns = index_columns(table, index);
-    if columns
-        .iter()
-        .any(|column| row.get(column).is_none_or(Value::is_null))
-    {
+    if codec::index_has_null(table, index, row) {
         return Ok(());
     }
-    let tuple = codec::encode_row_tuple(row, &columns)?;
+    let tuple = codec::encode_index_tuple(table, index, row)?;
     let mut prefix = codec::index_prefix(table, &index.id);
     prefix.extend_from_slice(&tuple);
     let mut iterator = view

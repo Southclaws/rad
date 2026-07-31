@@ -18,7 +18,7 @@ pub(super) async fn build(engine: &Engine, desired: &schema::Schema) -> Result<M
     let steps = migrate::diff(&tables, desired)?;
     let (program_steps, recovered, transition_findings) =
         recover_transitions(&canonical, &steps, &transitions);
-    let program = program::lower(&tables, &program_steps)?;
+    let program = program::lower(&current.schema, &program_steps)?;
     let mut blocking = structure_findings(&tables, &canonical, &steps);
     let (destructive, data_blocking) =
         preflight::inspect(engine, &tables, &canonical, &steps).await?;
@@ -156,14 +156,9 @@ fn desired_index_column_ids(
     table: &crate::engine::catalog::model::TableDef,
     names: &[String],
 ) -> Option<Vec<SchemaId>> {
-    let ids = table
-        .columns
-        .iter()
-        .map(|column| (column.name.as_str(), column.id))
-        .collect::<HashMap<_, _>>();
     names
         .iter()
-        .map(|name| ids.get(name.as_str()).copied())
+        .map(|name| table.column(name).map(|column| column.id))
         .collect()
 }
 

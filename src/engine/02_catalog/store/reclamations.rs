@@ -6,11 +6,10 @@ use crate::engine::catalog::identity::{
 };
 use crate::engine::catalog::model::{Reclamation, ReclamationKind, ReclamationState, Timestamp};
 use crate::engine::catalog::{Error, ErrorKind, Result};
-use crate::engine::kv::key_encoding::prefix_end;
-use crate::engine::kv::{KeyRange, KvView};
+use crate::engine::kv::KvView;
 
 use super::durable_json::{decode, encode};
-use super::map_kv;
+use super::{map_kv, prefix_range};
 
 const RECLAMATION_PREFIX: &str = "/rad/catalog/reclamation/";
 const RECLAMATION_WAKE_KEY: &[u8] = b"/rad/catalog/meta/reclamation_seen";
@@ -98,13 +97,7 @@ pub async fn get_reclamation<V: KvView + ?Sized>(
 
 pub async fn list_reclamations<V: KvView + ?Sized>(view: &mut V) -> Result<Vec<Reclamation>> {
     let prefix = RECLAMATION_PREFIX.as_bytes();
-    let mut iterator = view
-        .scan(KeyRange::new(
-            Bytes::copy_from_slice(prefix),
-            Bytes::from(prefix_end(prefix).expect("catalog prefix has an upper bound")),
-        ))
-        .await
-        .map_err(map_kv)?;
+    let mut iterator = view.scan(prefix_range(prefix)).await.map_err(map_kv)?;
     let mut values = Vec::new();
     while let Some(entry) = iterator.next().await.map_err(map_kv)? {
         let id = entry

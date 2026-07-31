@@ -14,7 +14,7 @@ use super::{Error, ErrorKind, Result};
 
 /// Populate one newly registered ready index from a transaction-visible row.
 /// The caller scans the table before any later statement can observe the index.
-pub async fn backfill_index_entry(
+pub(super) async fn backfill_index_entry(
     view: &dyn KvView,
     table: &Table,
     index: &Index,
@@ -25,7 +25,7 @@ pub async fn backfill_index_entry(
         super::mutate::constraints::check_unique_index(view, table, row, &primary_key, index)
             .await?;
     }
-    let tuple = index_tuple(table, index, row)?;
+    let tuple = codec::encode_index_tuple(table, index, row)?;
     view.put(
         Bytes::from(codec::index_key(table, &index.id, &tuple, &primary_key)),
         Bytes::from(primary_key),
@@ -34,7 +34,7 @@ pub async fn backfill_index_entry(
     Ok(())
 }
 
-pub async fn insert(
+pub(super) async fn insert(
     view: &mut dyn KvView,
     table: &Table,
     row: &Row,
@@ -50,7 +50,7 @@ pub async fn insert(
     )
     .await?;
     for index in &protocol.ready_indexes {
-        let tuple = index_tuple(table, index, row)?;
+        let tuple = codec::encode_index_tuple(table, index, row)?;
         view.put(
             Bytes::from(codec::index_key(table, &index.id, &tuple, primary_key)),
             Bytes::copy_from_slice(primary_key),
@@ -60,7 +60,7 @@ pub async fn insert(
     emit_insert_deltas(view, table, &protocol, row, primary_key).await
 }
 
-pub async fn replace(
+pub(super) async fn replace(
     view: &mut dyn KvView,
     table: &Table,
     before: &Row,
@@ -77,8 +77,8 @@ pub async fn replace(
     )
     .await?;
     for index in &protocol.ready_indexes {
-        let old_tuple = index_tuple(table, index, before)?;
-        let new_tuple = index_tuple(table, index, after)?;
+        let old_tuple = codec::encode_index_tuple(table, index, before)?;
+        let new_tuple = codec::encode_index_tuple(table, index, after)?;
         if old_tuple == new_tuple {
             continue;
         }
@@ -93,7 +93,7 @@ pub async fn replace(
     emit_replace_deltas(view, table, &protocol, before, after, primary_key).await
 }
 
-pub async fn delete(
+pub(super) async fn delete(
     view: &mut dyn KvView,
     table: &Table,
     row: &Row,
@@ -101,7 +101,7 @@ pub async fn delete(
 ) -> Result<()> {
     let protocol = admit(view, table).await?;
     for index in &protocol.ready_indexes {
-        let tuple = index_tuple(table, index, row)?;
+        let tuple = codec::encode_index_tuple(table, index, row)?;
         view.delete(&codec::index_key(table, &index.id, &tuple, primary_key))
             .await?;
     }
@@ -237,8 +237,8 @@ async fn emit_insert_deltas(
     primary_key: &[u8],
 ) -> Result<()> {
     for sink in &protocol.delta_sinks {
-        let tuple = index_tuple(table, &sink.index, row)?;
-        if sink.index.unique && !has_null(table, &sink.index, row) {
+        let tuple = codec::encode_index_tuple(table, &sink.index, row)?;
+        if sink.index.unique && !codec::index_has_null(table, &sink.index, row) {
             store::put_unique_claim(view, &sink.transition_id, &tuple, primary_key).await?;
         }
         append_delta(
@@ -263,17 +263,17 @@ async fn emit_replace_deltas(
     primary_key: &[u8],
 ) -> Result<()> {
     for sink in &protocol.delta_sinks {
-        let old_tuple = index_tuple(table, &sink.index, before)?;
-        let new_tuple = index_tuple(table, &sink.index, after)?;
+        let old_tuple = codec::encode_index_tuple(table, &sink.index, before)?;
+        let new_tuple = codec::encode_index_tuple(table, &sink.index, after)?;
         if old_tuple == new_tuple {
             continue;
         }
         if sink.index.unique {
-            if !has_null(table, &sink.index, before) {
+            if !codec::index_has_null(table, &sink.index, before) {
                 store::delete_unique_claim(view, &sink.transition_id, &old_tuple, primary_key)
                     .await?;
             }
-            if !has_null(table, &sink.index, after) {
+            if !codec::index_has_null(table, &sink.index, after) {
                 store::put_unique_claim(view, &sink.transition_id, &new_tuple, primary_key).await?;
             }
         }
@@ -307,8 +307,8 @@ async fn emit_delete_deltas(
     primary_key: &[u8],
 ) -> Result<()> {
     for sink in &protocol.delta_sinks {
-        let tuple = index_tuple(table, &sink.index, row)?;
-        if sink.index.unique && !has_null(table, &sink.index, row) {
+        let tuple = codec::encode_index_tuple(table, &sink.index, row)?;
+        if sink.index.unique && !codec::index_has_null(table, &sink.index, row) {
             store::delete_unique_claim(view, &sink.transition_id, &tuple, primary_key).await?;
         }
         append_delta(
@@ -346,22 +346,6 @@ async fn append_delta(
     )
     .await?;
     Ok(())
-}
-
-fn index_tuple(table: &Table, index: &Index, row: &Row) -> Result<Vec<u8>> {
-    let columns = table
-        .index_column_names(index)
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    codec::encode_row_tuple(row, &columns)
-}
-
-fn has_null(table: &Table, index: &Index, row: &Row) -> bool {
-    table
-        .index_column_names(index)
-        .into_iter()
-        .any(|column| row.get(column).is_none_or(Value::is_null))
 }
 
 #[cfg(test)]

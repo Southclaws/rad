@@ -309,16 +309,11 @@ impl Engine {
                     (!catalog_statements.is_empty()).then_some(EngineOperation::CatalogProgram {
                         statements: catalog_statements,
                     });
-                if let Some(operation) = catalog_operation.clone() {
-                    self.events
-                        .reach(EngineEvent::CommitStarted { operation })
-                        .await;
-                }
-                transaction.commit().await?;
-                if let Some(operation) = catalog_operation {
-                    self.events
-                        .reach(EngineEvent::CommitSucceeded { operation })
-                        .await;
+                let catalog_changed = catalog_operation.is_some();
+                let result = self
+                    .finish_transaction(transaction, Ok(result), catalog_operation)
+                    .await?;
+                if catalog_changed {
                     self.notify_catalog_change();
                 }
                 Ok(result)
@@ -348,7 +343,7 @@ impl Engine {
             let mut view = TransactionView(&*transaction);
             create_on_view(&mut view, table, &rows, self.runtime.as_ref()).await
         };
-        finish_write(transaction, result).await
+        self.finish_transaction(transaction, result, None).await
     }
 
     pub async fn create_many_in(
@@ -375,7 +370,7 @@ impl Engine {
             let mut view = TransactionView(&*transaction);
             update_on_view(&mut view, table, &input_type, &rows).await
         };
-        finish_write(transaction, result).await
+        self.finish_transaction(transaction, result, None).await
     }
 
     pub async fn update_many_in(
@@ -403,7 +398,7 @@ impl Engine {
             let mut view = TransactionView(&*transaction);
             delete_on_view(&mut view, table, &input_type, &rows).await
         };
-        finish_write(transaction, result).await
+        self.finish_transaction(transaction, result, None).await
     }
 
     pub async fn delete_many_in(
@@ -431,17 +426,32 @@ impl Engine {
         transaction.rollback();
         result
     }
-}
 
-async fn finish_write<T>(transaction: Box<dyn Transaction>, result: Result<T>) -> Result<T> {
-    match result {
-        Ok(value) => {
-            transaction.commit().await?;
-            Ok(value)
-        }
-        Err(error) => {
-            transaction.rollback();
-            Err(error)
+    pub(super) async fn finish_transaction<T>(
+        &self,
+        transaction: Box<dyn Transaction>,
+        result: Result<T>,
+        operation: Option<EngineOperation>,
+    ) -> Result<T> {
+        match result {
+            Ok(value) => {
+                if let Some(operation) = operation.clone() {
+                    self.events
+                        .reach(EngineEvent::CommitStarted { operation })
+                        .await;
+                }
+                transaction.commit().await?;
+                if let Some(operation) = operation {
+                    self.events
+                        .reach(EngineEvent::CommitSucceeded { operation })
+                        .await;
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                transaction.rollback();
+                Err(error)
+            }
         }
     }
 }

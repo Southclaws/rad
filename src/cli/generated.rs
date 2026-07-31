@@ -56,19 +56,29 @@ pub struct GlobalArgs {}
 
 #[derive(Debug, Subcommand)]
 pub enum RootCommand {
+    #[command(
+        name = r"init",
+        about = r"Initialize a Rad project.",
+        long_about = r"Create rad.config.yaml and rad.schema.yaml in a new or existing project directory. In a terminal, Rad guides you through the small set of project choices. Use --yes to accept defaults without prompts. Existing project files are never overwritten, and accepted rad.state is created only by a successful schema migration or pull.
+"
+    )]
+    Init(InitArgs),
     #[command(name = r"serve", about = r"Run the Rad database server.")]
     Serve(ServeArgs),
     #[command(
         name = r"validate",
-        about = r"Validate rad.schema.yaml without a running database.",
-        long_about = r"Parse and validate the schema structure, types, and references without touching a database."
+        about = r"Validate a rad.schema.yaml file.",
+        long_about = r"Parse and validate the schema structure, types, and references locally without calling out to the remote database.
+"
     )]
     Validate(ValidateArgs),
     #[command(name = r"schema", about = r"Inspect and manage the database schema.")]
     Schema(SchemaArgs),
     #[command(
         name = r"generate",
-        about = r"Generate a typed client for the accepted schema."
+        about = r"Generate a typed client for the accepted schema.",
+        long_about = r"Generate a typed client from the accepted schema state recorded by rad schema migrate or rad schema pull. The lockfile points to an immutable changelog snapshot so generation cannot silently target unapplied local schema changes. rad generate reads this state; it does not create it.
+"
     )]
     Generate(GenerateArgs),
 }
@@ -77,6 +87,7 @@ pub enum RootCommand {
 pub trait Handler {
     type Error;
 
+    async fn init(&mut self, globals: &GlobalArgs, args: InitArgs) -> Result<(), Self::Error>;
     async fn serve(&mut self, globals: &GlobalArgs, args: ServeArgs) -> Result<(), Self::Error>;
     async fn validate(
         &mut self,
@@ -127,6 +138,7 @@ impl RootCommand {
         handler: &mut H,
     ) -> Result<(), H::Error> {
         match self {
+            Self::Init(args) => args.dispatch(globals, handler).await,
             Self::Serve(args) => args.dispatch(globals, handler).await,
             Self::Validate(args) => args.dispatch(globals, handler).await,
             Self::Schema(args) => args.dispatch(globals, handler).await,
@@ -135,6 +147,71 @@ impl RootCommand {
     }
 }
 
+#[derive(Debug, Args)]
+pub struct InitArgs {
+    #[arg(
+        id = r"database-url",
+        long = r"database-url",
+        help = r"Rad database URL written to the project configuration.",
+        default_value = r"rad://127.0.0.1:7237"
+    )]
+    pub database_url: String,
+    #[arg(
+        id = r"out",
+        long = r"out",
+        short = 'o',
+        help = r"Generated Go client output directory.",
+        default_value = r"generated"
+    )]
+    pub out: std::path::PathBuf,
+    #[arg(
+        id = r"pkg",
+        long = r"pkg",
+        help = r"Generated Go package name.",
+        default_value = r"db"
+    )]
+    pub pkg: String,
+    #[arg(
+        id = r"no-generate",
+        long = r"no-generate",
+        help = r"Do not configure generated client output."
+    )]
+    pub no_generate: bool,
+    #[arg(
+        id = r"empty",
+        long = r"empty",
+        help = r"Create an empty schema instead of the starter users table."
+    )]
+    pub empty: bool,
+    #[arg(
+        id = r"yes",
+        long = r"yes",
+        short = 'y',
+        help = r"Accept supplied values and defaults without prompting."
+    )]
+    pub yes: bool,
+    #[arg(
+        id = r"DIRECTORY",
+        index = 1,
+        help = r"Directory to initialize.",
+        default_value = r"."
+    )]
+    pub directory: std::path::PathBuf,
+}
+
+impl InitArgs {
+    pub const OPERATION_ID: &'static str = r"init";
+}
+
+impl InitArgs {
+    async fn dispatch<H: Handler>(
+        self,
+        globals: &GlobalArgs,
+        handler: &mut H,
+    ) -> Result<(), H::Error> {
+        handler.init(globals, self).await
+    }
+}
 #[derive(Debug, Args)]
 pub struct ServeArgs {
     #[arg(

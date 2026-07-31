@@ -1,16 +1,16 @@
 //! Pure reference evaluation for bound scalar expressions.
 
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::engine::catalog::model::ScalarType;
 
 use super::bound::{Expr, TextPattern};
-use super::{BinaryOp, Datum, Field, Kind, SlotId, TriBool, Type, UnaryOp, Value};
+use super::{BinaryOp, Datum, Field, Kind, SlotId, SlotRow, TriBool, Type, UnaryOp, Value};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Env {
-    values: HashMap<SlotId, Datum>,
+    values: SlotRow,
 }
 
 impl Env {
@@ -179,7 +179,6 @@ pub fn evaluate(expression: &Expr, environment: &Env) -> Result<Value> {
             right,
             value_type,
         } => evaluate_arithmetic(*op, left, right, value_type.kind, environment),
-        Expr::Binary { .. } => Ok(tri_value(evaluate_predicate(expression, environment)?)),
         Expr::Unary {
             op: UnaryOp::Negate,
             expression,
@@ -195,7 +194,9 @@ pub fn evaluate(expression: &Expr, environment: &Env) -> Result<Value> {
                 value.scalar_type()
             ))),
         },
-        Expr::Unary { .. } => Ok(tri_value(evaluate_predicate(expression, environment)?)),
+        Expr::Binary { .. } | Expr::Unary { .. } => {
+            Ok(tri_value(evaluate_predicate(expression, environment)?))
+        }
         Expr::Cast { expression, to, .. } => evaluate_cast(expression, *to, environment),
         Expr::Branch {
             arms, otherwise, ..
@@ -375,38 +376,37 @@ pub enum EvalErrorReason {
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
 pub struct EvalError {
-    kind: EvalErrorKind,
     reason: EvalErrorReason,
     message: String,
 }
 
 impl EvalError {
     fn division_by_zero(message: impl Into<String>) -> Self {
-        Self {
-            kind: EvalErrorKind::Runtime,
-            reason: EvalErrorReason::DivisionByZero,
-            message: message.into(),
-        }
+        Self::with_reason(EvalErrorReason::DivisionByZero, message)
     }
 
     fn numeric_overflow(message: impl Into<String>) -> Self {
-        Self {
-            kind: EvalErrorKind::Runtime,
-            reason: EvalErrorReason::NumericOverflow,
-            message: message.into(),
-        }
+        Self::with_reason(EvalErrorReason::NumericOverflow, message)
     }
 
     fn internal(message: impl Into<String>) -> Self {
+        Self::with_reason(EvalErrorReason::Internal, message)
+    }
+
+    fn with_reason(reason: EvalErrorReason, message: impl Into<String>) -> Self {
         Self {
-            kind: EvalErrorKind::Internal,
-            reason: EvalErrorReason::Internal,
+            reason,
             message: message.into(),
         }
     }
 
     pub fn kind(&self) -> EvalErrorKind {
-        self.kind
+        match self.reason {
+            EvalErrorReason::Runtime
+            | EvalErrorReason::DivisionByZero
+            | EvalErrorReason::NumericOverflow => EvalErrorKind::Runtime,
+            EvalErrorReason::Internal => EvalErrorKind::Internal,
+        }
     }
 
     pub fn reason(&self) -> EvalErrorReason {
@@ -418,24 +418,26 @@ pub type Result<T> = std::result::Result<T, EvalError>;
 
 /// Shared full-row identity for distinct, recursion, intersect, and except.
 pub struct CanonicalRowSet {
-    fields: Vec<Field>,
+    slots: Vec<SlotId>,
     seen: HashSet<CanonicalRowKey>,
 }
 
 impl CanonicalRowSet {
     pub fn new(fields: Vec<Field>) -> Self {
         Self {
-            fields,
+            slots: fields.into_iter().map(|field| field.slot).collect(),
             seen: HashSet::new(),
         }
     }
 
     pub fn insert(&mut self, row: &Env) -> bool {
-        self.seen.insert(canonical_row_key(&self.fields, row))
+        self.seen
+            .insert(canonical_key(self.slots.iter().copied(), row))
     }
 
     pub fn contains(&self, row: &Env) -> bool {
-        self.seen.contains(&canonical_row_key(&self.fields, row))
+        self.seen
+            .contains(&canonical_key(self.slots.iter().copied(), row))
     }
 }
 
@@ -489,10 +491,14 @@ impl CanonicalDatum {
 }
 
 pub fn canonical_row_key(fields: &[Field], row: &Env) -> CanonicalRowKey {
+    canonical_key(fields.iter().map(|field| field.slot), row)
+}
+
+fn canonical_key(slots: impl IntoIterator<Item = SlotId>, row: &Env) -> CanonicalRowKey {
     CanonicalRowKey(
-        fields
-            .iter()
-            .map(|field| CanonicalDatum::from_datum(row.get(field.slot)))
+        slots
+            .into_iter()
+            .map(|slot| CanonicalDatum::from_datum(row.get(slot)))
             .collect(),
     )
 }

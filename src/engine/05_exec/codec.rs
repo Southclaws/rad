@@ -3,7 +3,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::engine::catalog::identity::ColumnId;
-use crate::engine::catalog::model::{Column, ColumnConversion, DefaultValue, ScalarType, Table};
+use crate::engine::catalog::model::{
+    Column, ColumnConversion, DefaultValue, Index, ScalarType, Table,
+};
 use crate::engine::kv::key_encoding;
 use crate::engine::lir::{Row, Value};
 
@@ -90,6 +92,29 @@ pub fn encode_row_tuple(row: &Row, columns: &[String]) -> Result<Vec<u8>> {
         })
         .collect::<Result<Vec<_>>>()?;
     encode_tuple(&values)
+}
+
+pub(crate) fn encode_index_tuple(table: &Table, index: &Index, row: &Row) -> Result<Vec<u8>> {
+    let values = table
+        .index_column_names(index)
+        .into_iter()
+        .map(|column| {
+            row.get(column).cloned().ok_or_else(|| {
+                Error::message(
+                    ErrorKind::Internal,
+                    format!("codec: row lacks index column {column:?}"),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    encode_tuple(&values)
+}
+
+pub(crate) fn index_has_null(table: &Table, index: &Index, row: &Row) -> bool {
+    table
+        .index_column_names(index)
+        .into_iter()
+        .any(|column| row.get(column).is_none_or(Value::is_null))
 }
 
 pub fn decode_tuple(mut input: &[u8]) -> Result<Vec<Value>> {
@@ -300,12 +325,8 @@ pub fn decode_missing_value(column: &Column) -> Result<Value> {
     let Some(default) = &column.missing_value else {
         return Ok(Value::Null(column.scalar_type));
     };
-    if default.function.is_some() {
-        return Err(corrupt(
-            "codec: historical missing value cannot use a generator",
-        ));
-    }
-    Ok(default_value(column.scalar_type, default))
+    literal_default_value(column.scalar_type, default)
+        .ok_or_else(|| corrupt("codec: historical missing value cannot use a generator"))
 }
 
 /// Add or replace one immutable physical column representation while
@@ -375,6 +396,15 @@ pub fn convert_column_value(
     target: &Column,
     conversion: ColumnConversion,
 ) -> Result<Value> {
+    convert_value(value, target.scalar_type, target.nullable, conversion)
+}
+
+pub(crate) fn convert_value(
+    value: &Value,
+    target_type: ScalarType,
+    target_nullable: bool,
+    conversion: ColumnConversion,
+) -> Result<Value> {
     if conversion != ColumnConversion::StrictBuiltin {
         return Err(Error::message(
             ErrorKind::Internal,
@@ -382,16 +412,16 @@ pub fn convert_column_value(
         ));
     }
     if value.is_null() {
-        if !target.nullable {
+        if !target_nullable {
             return Err(Error::message(
                 ErrorKind::ConstraintViolation,
                 format!(
                     "codec: NULL cannot be converted to non-nullable {:?}",
-                    target.scalar_type
+                    target_type
                 ),
             ));
         }
-        return Ok(Value::Null(target.scalar_type));
+        return Ok(Value::Null(target_type));
     }
     if matches!(value, Value::Float64(value) if !value.is_finite()) {
         return Err(Error::message(
@@ -399,10 +429,10 @@ pub fn convert_column_value(
             "codec: cannot convert a non-finite float64",
         ));
     }
-    if value.scalar_type() == target.scalar_type {
+    if value.scalar_type() == target_type {
         return Ok(value.clone());
     }
-    let converted = match (value, target.scalar_type) {
+    let converted = match (value, target_type) {
         (Value::Int64(value), ScalarType::Text) => Value::Text(value.to_string()),
         (Value::Float64(value), ScalarType::Text) => Value::Text(value.to_string()),
         (Value::Bool(value), ScalarType::Text) => Value::Text(value.to_string()),
@@ -452,7 +482,7 @@ pub fn convert_column_value(
                 format!(
                     "codec: no strict built-in conversion from {:?} to {:?}",
                     value.scalar_type(),
-                    target.scalar_type
+                    target_type
                 ),
             ));
         }
@@ -525,13 +555,19 @@ fn encode_physical_fields(fields: &[PhysicalField]) -> Vec<u8> {
     output
 }
 
-fn default_value(value_type: ScalarType, default: &DefaultValue) -> Value {
-    match value_type {
+pub(crate) fn literal_default_value(
+    value_type: ScalarType,
+    default: &DefaultValue,
+) -> Option<Value> {
+    if default.function.is_some() {
+        return None;
+    }
+    Some(match value_type {
         ScalarType::Text => Value::Text(default.text.clone()),
         ScalarType::Int64 => Value::Int64(default.int64),
         ScalarType::Float64 => Value::Float64(default.float64),
         ScalarType::Bool => Value::Bool(default.bool_value),
-    }
+    })
 }
 
 fn physical_id(column: &Column) -> Result<u64> {

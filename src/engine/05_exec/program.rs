@@ -38,7 +38,7 @@ pub enum CatalogPolicy {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CatalogExpectation {
-    pub version: crate::engine::catalog::identity::CatalogVersion,
+    pub version: catalog::identity::CatalogVersion,
     pub hash: String,
 }
 
@@ -82,6 +82,20 @@ pub enum DefaultSpec {
     Text(String),
     Number(String),
     Bool(bool),
+}
+
+impl DefaultSpec {
+    pub(crate) fn from_catalog(value: &DefaultValue, scalar_type: ScalarType) -> Self {
+        if let Some(function) = value.function {
+            return Self::Generator(function);
+        }
+        match scalar_type {
+            ScalarType::Text => Self::Text(value.text.clone()),
+            ScalarType::Int64 => Self::Number(value.int64.to_string()),
+            ScalarType::Float64 => Self::Number(value.float64.to_string()),
+            ScalarType::Bool => Self::Bool(value.bool_value),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -776,7 +790,6 @@ pub(crate) fn resolve_default(spec: DefaultSpec, scalar_type: ScalarType) -> Res
             function: Some(DefaultFunction::NowMs),
             ..DefaultValue::default()
         },
-        (DefaultSpec::Generator(_), _) => return Err(mismatch()),
         (DefaultSpec::Text(text), ScalarType::Text) => DefaultValue {
             text,
             ..DefaultValue::default()
@@ -1653,6 +1666,7 @@ mod tests {
             ),
         ];
         for (spec, scalar_type, expected) in cases {
+            assert_eq!(DefaultSpec::from_catalog(&expected, scalar_type), spec);
             assert_eq!(resolve_default(spec, scalar_type).unwrap(), expected);
         }
     }

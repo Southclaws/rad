@@ -271,7 +271,8 @@ impl SchemaJobRunner {
     /// kernel future is never dropped merely because shutdown was requested.
     pub async fn shutdown(&self) -> Result<(), tokio::task::JoinError> {
         self.request_stop();
-        if let Some(task) = self.task.lock().await.take() {
+        let task = self.task.lock().await.take();
+        if let Some(task) = task {
             task.await?;
         }
         Ok(())

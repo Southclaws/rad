@@ -1,4 +1,12 @@
+use std::process::ExitCode;
+
 #[tokio::main]
-async fn main() -> rad::process::Result {
-    rad::cli::run().await
+async fn main() -> ExitCode {
+    match rad::cli::run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }

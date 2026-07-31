@@ -69,6 +69,17 @@ pub enum CrossingKind {
     Array,
 }
 
+impl CrossingKind {
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Exists => "exists",
+            Self::First => "first",
+            Self::Scalar => "scalar",
+            Self::Array => "array",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct AttachSpec {
     pub slot: SlotId,
@@ -184,6 +195,34 @@ pub enum Node {
     },
 }
 
+impl Plan {
+    pub(super) fn walk(&self, visitor: &mut impl FnMut(&Node)) {
+        for binding in &self.bindings {
+            match &binding.kind {
+                BindingPlanKind::Derived { plan, .. } => plan.walk(visitor),
+                BindingPlanKind::Recursive { anchor, step, .. } => {
+                    anchor.walk(visitor);
+                    step.walk(visitor);
+                }
+            }
+        }
+        self.root.walk(visitor);
+    }
+
+    pub(super) fn walk_mut(&mut self, visitor: &mut impl FnMut(&mut Node)) {
+        for binding in &mut self.bindings {
+            match &mut binding.kind {
+                BindingPlanKind::Derived { plan, .. } => plan.walk_mut(visitor),
+                BindingPlanKind::Recursive { anchor, step, .. } => {
+                    anchor.walk_mut(visitor);
+                    step.walk_mut(visitor);
+                }
+            }
+        }
+        self.root.walk_mut(visitor);
+    }
+}
+
 impl Node {
     pub fn children(&self) -> Vec<&Self> {
         match self {
@@ -219,5 +258,102 @@ impl Node {
         for child in self.children() {
             child.walk(visitor);
         }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut Self> {
+        match self {
+            Self::PrimaryKeyGet { .. }
+            | Self::TableScan { .. }
+            | Self::Rows(_)
+            | Self::IndexRangeScan { .. }
+            | Self::Reference { .. }
+            | Self::RecursiveReference { .. } => Vec::new(),
+            Self::Filter { input, .. }
+            | Self::Project { input, .. }
+            | Self::Sort { input, .. }
+            | Self::Slice { input, .. }
+            | Self::Distinct { input, .. }
+            | Self::Aggregate { input, .. } => vec![input],
+            Self::Attach {
+                input,
+                specifications,
+            } => std::iter::once(&mut **input)
+                .chain(
+                    specifications
+                        .iter_mut()
+                        .map(|specification| &mut specification.plan),
+                )
+                .collect(),
+            Self::NestedLoopJoin { left, right, .. }
+            | Self::Intersect { left, right, .. }
+            | Self::Except { left, right, .. } => vec![left, right],
+            Self::Concatenate { inputs, .. } => inputs.iter_mut().collect(),
+        }
+    }
+
+    fn walk_mut(&mut self, visitor: &mut impl FnMut(&mut Self)) {
+        visitor(self);
+        for child in self.children_mut() {
+            child.walk_mut(visitor);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::engine::lir::{RootCardinality, SlotId};
+    use crate::engine::planner::analysis::{Correlation, CorrelationKind};
+    use crate::engine::planner::test_support::scan;
+
+    use super::*;
+
+    fn leaf(scan: &bound::Relation) -> Node {
+        Node::TableScan {
+            scan: Box::new(scan.clone()),
+            decode_columns: Vec::new(),
+            access: AccessDecision::default(),
+        }
+    }
+
+    #[test]
+    fn plan_walkers_cover_bindings_root_and_attached_plans() {
+        let scan = scan();
+        let output = scan.output().clone();
+        let mut plan = Plan {
+            bindings: vec![BindingPlan {
+                name: "saved".into(),
+                output: output.clone(),
+                sensitive: false,
+                kind: BindingPlanKind::Derived {
+                    plan: Box::new(leaf(&scan)),
+                    strategy: BindingStrategy::Replay,
+                },
+            }],
+            root: Node::Attach {
+                input: Box::new(leaf(&scan)),
+                specifications: vec![AttachSpec {
+                    slot: SlotId(3),
+                    kind: CrossingKind::Exists,
+                    correlation: Correlation {
+                        kind: CorrelationKind::Uncorrelated,
+                        keys: Vec::new(),
+                    },
+                    plan: leaf(&scan),
+                    output: output.clone(),
+                }],
+            },
+            cardinality: RootCardinality::Many,
+            output,
+            dependencies: CatalogDependencies::default(),
+            next_slot: SlotId(4),
+        };
+
+        let mut immutable = 0;
+        plan.walk(&mut |_| immutable += 1);
+        let mut mutable = 0;
+        plan.walk_mut(&mut |_| mutable += 1);
+
+        assert_eq!(immutable, 4);
+        assert_eq!(mutable, immutable);
     }
 }

@@ -65,10 +65,15 @@ impl TextPattern {
 
     pub fn is_match(&self, value: &str) -> bool {
         match self.comparison {
-            TextComparison::Exact => self.match_exact(value),
+            TextComparison::Exact => match_segments(
+                value.as_bytes(),
+                &self.segments,
+                self.leading,
+                self.trailing,
+            ),
             TextComparison::UnicodeSimpleFold => {
                 let value: Vec<_> = value.chars().map(simple_fold_char).collect();
-                self.match_folded(&value)
+                match_segments(&value, &self.folded_segments, self.leading, self.trailing)
             }
         }
     }
@@ -76,73 +81,63 @@ impl TextPattern {
     pub fn comparison(&self) -> TextComparison {
         self.comparison
     }
+}
 
-    fn match_exact(&self, mut value: &str) -> bool {
-        let mut segments = self.segments.as_slice();
-        if segments.is_empty() {
-            return true;
-        }
-        if !self.leading {
-            let Some(rest) = value.strip_prefix(&segments[0]) else {
-                return false;
-            };
-            value = rest;
-            segments = &segments[1..];
-            if segments.is_empty() {
-                return self.trailing || value.is_empty();
-            }
-        }
-        if !self.trailing {
-            let last = segments.last().expect("non-empty segment set");
-            let Some(rest) = value.strip_suffix(last) else {
-                return false;
-            };
-            value = rest;
-            segments = &segments[..segments.len() - 1];
-        }
-        for segment in segments {
-            let Some(index) = value.find(segment) else {
-                return false;
-            };
-            value = &value[index + segment.len()..];
-        }
-        true
-    }
+trait SegmentUnits<T> {
+    fn units(&self) -> &[T];
+}
 
-    fn match_folded(&self, mut value: &[char]) -> bool {
-        let mut segments = self.folded_segments.as_slice();
-        if segments.is_empty() {
-            return true;
-        }
-        if !self.leading {
-            if !value.starts_with(&segments[0]) {
-                return false;
-            }
-            value = &value[segments[0].len()..];
-            segments = &segments[1..];
-            if segments.is_empty() {
-                return self.trailing || value.is_empty();
-            }
-        }
-        if !self.trailing {
-            let last = segments.last().expect("non-empty segment set");
-            if !value.ends_with(last) {
-                return false;
-            }
-            value = &value[..value.len() - last.len()];
-            segments = &segments[..segments.len() - 1];
-        }
-        for segment in segments {
-            let Some(index) = value
-                .windows(segment.len())
-                .position(|window| window == segment)
-            else {
-                return false;
-            };
-            value = &value[index + segment.len()..];
-        }
-        true
+impl SegmentUnits<u8> for String {
+    fn units(&self) -> &[u8] {
+        self.as_bytes()
     }
+}
+
+impl SegmentUnits<char> for Vec<char> {
+    fn units(&self) -> &[char] {
+        self
+    }
+}
+
+fn match_segments<T: PartialEq, S: SegmentUnits<T>>(
+    mut value: &[T],
+    mut segments: &[S],
+    leading: bool,
+    trailing: bool,
+) -> bool {
+    if segments.is_empty() {
+        return true;
+    }
+    if !leading {
+        let first = segments[0].units();
+        if !value.starts_with(first) {
+            return false;
+        }
+        value = &value[first.len()..];
+        segments = &segments[1..];
+        if segments.is_empty() {
+            return trailing || value.is_empty();
+        }
+    }
+    if !trailing {
+        let last = segments.last().expect("non-empty segment set").units();
+        if !value.ends_with(last) {
+            return false;
+        }
+        value = &value[..value.len() - last.len()];
+        segments = &segments[..segments.len() - 1];
+    }
+    for segment in segments {
+        let segment = segment.units();
+        let Some(index) = value
+            .windows(segment.len())
+            .position(|window| window == segment)
+        else {
+            return false;
+        };
+        value = &value[index + segment.len()..];
+    }
+    true
 }
 
 /// Canonical one-code-point fold pinned to the protocol's Unicode 15.0

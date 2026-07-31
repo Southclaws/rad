@@ -3,11 +3,10 @@ use bytes::Bytes;
 use crate::engine::catalog::identity::{DefinitionGeneration, SchemaId, TableId};
 use crate::engine::catalog::model::{Schema, Table};
 use crate::engine::catalog::{Error, ErrorKind, Result};
-use crate::engine::kv::key_encoding::prefix_end;
-use crate::engine::kv::{KeyRange, KvView};
+use crate::engine::kv::KvView;
 
 use super::durable_json::{decode, encode};
-use super::map_kv;
+use super::{map_kv, parse_u64, prefix_range};
 
 const NEXT_ID_KEY: &[u8] = b"/rad/catalog/meta/next_id";
 const TABLE_PREFIX: &str = "/rad/catalog/table/";
@@ -103,13 +102,7 @@ pub async fn get_table_by_schema_id<V: KvView + ?Sized>(
 
 pub async fn list_tables<V: KvView + ?Sized>(view: &mut V) -> Result<Vec<Table>> {
     let prefix = TABLE_PREFIX.as_bytes();
-    let mut iterator = view
-        .scan(KeyRange::new(
-            Bytes::copy_from_slice(prefix),
-            Bytes::from(prefix_end(prefix).expect("catalog prefix has an upper bound")),
-        ))
-        .await
-        .map_err(map_kv)?;
+    let mut iterator = view.scan(prefix_range(prefix)).await.map_err(map_kv)?;
     let mut tables = Vec::new();
     while let Some(entry) = iterator.next().await.map_err(map_kv)? {
         let key_id = entry
@@ -161,22 +154,7 @@ pub async fn save_table<V: KvView + ?Sized>(view: &mut V, table: &mut Table) -> 
 
 pub async fn next_physical_id<V: KvView + ?Sized>(view: &mut V, kind: &str) -> Result<String> {
     let next = match view.get(NEXT_ID_KEY).await.map_err(map_kv)? {
-        Some(raw) => std::str::from_utf8(&raw)
-            .map_err(|error| {
-                Error::source(
-                    ErrorKind::CatalogCorrupt,
-                    format!("catalog: corrupt next_id {raw:?}"),
-                    error,
-                )
-            })?
-            .parse::<u64>()
-            .map_err(|error| {
-                Error::source(
-                    ErrorKind::CatalogCorrupt,
-                    format!("catalog: corrupt next_id {raw:?}"),
-                    error,
-                )
-            })?
+        Some(raw) => parse_u64("next_id", None, &raw)?
             .checked_add(1)
             .ok_or_else(|| {
                 Error::message(ErrorKind::CatalogCorrupt, "catalog: next_id exhausted")

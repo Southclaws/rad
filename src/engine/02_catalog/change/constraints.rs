@@ -4,8 +4,8 @@ use super::*;
 use crate::engine::catalog::identity::{ConstraintId, OwnerEpoch, TransitionId};
 use crate::engine::catalog::model::{
     Constraint, ConstraintCheck, ConstraintDef, ConstraintKind, ConstraintState,
-    ConstraintValidationRequest, DataPosition, Reclamation, ReclamationKind, SchemaTransition,
-    Timestamp, TransitionKind, TransitionState, TransitionWorkState, WriteProtocol,
+    ConstraintValidationRequest, DataPosition, ReclamationKind, SchemaTransition, Timestamp,
+    TransitionKind, TransitionState, TransitionWorkState, WriteProtocol,
 };
 
 impl Mutation<'_> {
@@ -432,12 +432,12 @@ impl Mutation<'_> {
     }
 
     pub(super) async fn retire_constraint(&mut self, transition: &SchemaTransition) -> Result<()> {
-        let mut reclamation = Reclamation::pending(
-            store::constraint_validation_reclamation_id(&transition.id),
-            ReclamationKind::ConstraintValidation,
-            store::current_revision(self.view).await?.version.next(),
-            self.now(),
-        );
+        let mut reclamation = self
+            .pending_reclamation(
+                store::constraint_validation_reclamation_id(&transition.id),
+                ReclamationKind::ConstraintValidation,
+            )
+            .await?;
         reclamation.table_id = transition.table_id.clone();
         reclamation.table_schema_id = Some(transition.table_schema_id);
         reclamation.transition_id = transition.id.clone();

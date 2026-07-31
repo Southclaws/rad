@@ -1,8 +1,8 @@
-use crate::engine::catalog::model::{DefaultFunction, ScalarType, Table};
+use crate::engine::catalog::model::{DefaultFunction, Table};
 use crate::engine::lir::{Row, Value};
 use crate::runtime::RuntimeEffects;
 
-use super::super::{Error, ErrorKind, ErrorReason, Result};
+use super::super::{Error, ErrorKind, ErrorReason, Result, codec};
 
 pub(super) fn prepare(table: &Table, row: &Row, runtime: &dyn RuntimeEffects) -> Result<Row> {
     let mut with_defaults = row.clone();
@@ -16,12 +16,8 @@ pub(super) fn prepare(table: &Table, row: &Row, runtime: &dyn RuntimeEffects) ->
         let value = match default.function {
             Some(DefaultFunction::Uuid) => Value::Text(runtime.new_uuid().to_string()),
             Some(DefaultFunction::NowMs) => Value::Int64(runtime.now().timestamp_millis()),
-            None => match column.scalar_type {
-                ScalarType::Text => Value::Text(default.text.clone()),
-                ScalarType::Int64 => Value::Int64(default.int64),
-                ScalarType::Float64 => Value::Float64(default.float64),
-                ScalarType::Bool => Value::Bool(default.bool_value),
-            },
+            None => codec::literal_default_value(column.scalar_type, default)
+                .expect("literal default has no generator"),
         };
         with_defaults.insert(column.name.clone(), value);
     }

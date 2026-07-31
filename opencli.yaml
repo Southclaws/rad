@@ -18,6 +18,44 @@ exitCodes:
     description: The command could not complete.
 
 commands:
+  - name: init
+    operationId: init
+    description: Initialize a Rad project.
+    longDescription: >
+      Create rad.config.yaml and rad.schema.yaml in a new or existing project
+      directory. In a terminal, Rad guides you through the small set of project
+      choices. Use --yes to accept defaults without prompts. Existing project
+      files are never overwritten, and accepted rad.state is created only by a
+      successful schema migration or pull.
+    arguments:
+      - name: DIRECTORY
+        description: Directory to initialize.
+        type: path
+        required: false
+        default: .
+    flags:
+      - name: database-url
+        description: Rad database URL written to the project configuration.
+        default: rad://127.0.0.1:7237
+      - name: out
+        short: o
+        description: Generated Go client output directory.
+        type: path
+        default: generated
+      - name: pkg
+        description: Generated Go package name.
+        default: db
+      - name: no-generate
+        description: Do not configure generated client output.
+        type: boolean
+      - name: empty
+        description: Create an empty schema instead of the starter users table.
+        type: boolean
+      - name: yes
+        short: y
+        description: Accept supplied values and defaults without prompting.
+        type: boolean
+
   - name: serve
     operationId: serve
     description: Run the Rad database server.
@@ -108,6 +146,11 @@ commands:
   - name: generate
     operationId: generate
     description: Generate a typed client for the accepted schema.
+    longDescription: >
+      Generate a typed client from the accepted schema state recorded by rad
+      schema migrate or rad schema pull. The lockfile points to an immutable
+      changelog snapshot so generation cannot silently target unapplied local
+      schema changes. rad generate reads this state; it does not create it.
     flags:
       - $ref: "#/components/flags/schema-file"
       - name: out

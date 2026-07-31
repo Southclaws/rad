@@ -22,7 +22,7 @@ pub fn plan_query(query: &bound::Query, options: PlanOptions) -> Plan {
         options,
         next_slot: query.next_slot,
     };
-    let mut bindings = query
+    let bindings = query
         .bindings
         .iter()
         .map(|binding| {
@@ -52,27 +52,6 @@ pub fn plan_query(query: &bound::Query, options: PlanOptions) -> Plan {
         .collect::<Vec<_>>();
     let root = planner.plan(&query.root, &[]);
 
-    let mut references = std::collections::HashMap::<String, usize>::new();
-    count_references(&root, &mut references);
-    for binding in &bindings {
-        match &binding.kind {
-            BindingPlanKind::Derived { plan, .. } => count_references(plan, &mut references),
-            BindingPlanKind::Recursive { anchor, step, .. } => {
-                count_references(anchor, &mut references);
-                count_references(step, &mut references);
-            }
-        }
-    }
-    for binding in &mut bindings {
-        if let BindingPlanKind::Derived { strategy, .. } = &mut binding.kind {
-            *strategy = if references.get(&binding.name) == Some(&1) {
-                BindingStrategy::Replay
-            } else {
-                BindingStrategy::Materialize
-            };
-        }
-    }
-
     let mut plan = Plan {
         bindings,
         root,
@@ -81,16 +60,28 @@ pub fn plan_query(query: &bound::Query, options: PlanOptions) -> Plan {
         dependencies: Default::default(),
         next_slot: planner.next_slot,
     };
+    let references = reference_counts(&plan);
+    for binding in &mut plan.bindings {
+        if let BindingPlanKind::Derived { strategy, .. } = &mut binding.kind {
+            *strategy = if references.get(&binding.name) == Some(&1) {
+                BindingStrategy::Replay
+            } else {
+                BindingStrategy::Materialize
+            };
+        }
+    }
     prepare_catalog_dependencies(&mut plan);
     plan
 }
 
-fn count_references(node: &Node, references: &mut std::collections::HashMap<String, usize>) {
-    node.walk(&mut |node| {
+fn reference_counts(plan: &Plan) -> std::collections::HashMap<String, usize> {
+    let mut references = std::collections::HashMap::new();
+    plan.walk(&mut |node| {
         if let Node::Reference { binding, .. } = node {
             *references.entry(binding.clone()).or_default() += 1;
         }
     });
+    references
 }
 
 struct Planner {
@@ -120,12 +111,11 @@ impl Planner {
             ),
             RelationNode::Rows { .. } => Node::Rows(relation.clone()),
             RelationNode::Filter { input, predicate } => {
-                if filter_chain(relation) {
+                if let Some(predicate) = merged_scan_predicate(relation) {
                     let constraints = analysis::extract_constraints(relation)
                         .expect("a filter chain terminating in a scan has constraints");
                     let access = self.choose_access_path(&constraints, required_order);
-                    let (predicate, specifications) =
-                        self.extract_expr(&merged_predicate(relation));
+                    let (predicate, specifications) = self.extract_expr(&predicate);
                     Node::Filter {
                         input: Box::new(attach_wrap(access, specifications)),
                         predicate,
@@ -302,7 +292,7 @@ impl Planner {
             let slot = self.allocate_slot();
             let specification = self.attach_spec(slot, kind, relation);
             return (
-                bound::Expr::slot(slot, crossing_name(kind), expression.value_type()),
+                bound::Expr::slot(slot, kind.label(), expression.value_type()),
                 vec![specification],
             );
         }
@@ -343,9 +333,6 @@ impl Planner {
                     (bound::Expr::cast(inner, *to), specifications)
                 }
             }
-            // Branch crossings are rejected by the binder because eager
-            // attachment would violate lazy arm evaluation.
-            bound::Expr::Branch { .. } => (expression.clone(), Vec::new()),
             bound::Expr::TextMatch { value, pattern, .. } => {
                 let (value, specifications) = self.extract_expr(value);
                 if specifications.is_empty() {
@@ -361,6 +348,9 @@ impl Planner {
                     )
                 }
             }
+            // Branch crossings are rejected by the binder because eager
+            // attachment would violate lazy arm evaluation. All other forms
+            // have no nested relation to extract.
             _ => (expression.clone(), Vec::new()),
         }
     }
@@ -385,9 +375,7 @@ impl Planner {
         constraints: &ScanConstraints,
         required_order: &[bound::BoundOrderTerm],
     ) -> Node {
-        let RelationNode::Scan { table, .. } = &constraints.scan.node else {
-            unreachable!("scan constraints must reference a scan")
-        };
+        let table = constraints.scan.scan_table();
         if self.options.full_scan_only {
             return Node::TableScan {
                 scan: Box::new(constraints.scan.clone()),
@@ -450,6 +438,8 @@ impl Planner {
                         upper: domain.upper.clone(),
                     })
                 });
+            let equality_prefix_len = equality_prefix.len();
+            let has_range = range.is_some();
             let candidate = Node::IndexRangeScan {
                 scan: Box::new(constraints.scan.clone()),
                 index: index.clone(),
@@ -458,17 +448,7 @@ impl Planner {
                 decode_columns: Vec::new(),
                 access: Default::default(),
             };
-            let candidate_score = score(
-                &candidate,
-                match &candidate {
-                    Node::IndexRangeScan {
-                        equality_prefix, ..
-                    } => equality_prefix.len(),
-                    _ => unreachable!(),
-                },
-                matches!(&candidate, Node::IndexRangeScan { range: Some(_), .. }),
-                required_order,
-            );
+            let candidate_score = score(&candidate, equality_prefix_len, has_range, required_order);
             candidates.push(AccessCandidate {
                 method: format!("IndexRangeScan {}", index.name),
                 score: candidate_score,
@@ -502,15 +482,6 @@ fn crossing(expression: &bound::Expr) -> Option<(CrossingKind, &bound::Relation)
     }
 }
 
-fn crossing_name(kind: CrossingKind) -> &'static str {
-    match kind {
-        CrossingKind::Exists => "exists",
-        CrossingKind::First => "first",
-        CrossingKind::Scalar => "scalar",
-        CrossingKind::Array => "array",
-    }
-}
-
 fn attach_wrap(input: Node, specifications: Vec<AttachSpec>) -> Node {
     if specifications.is_empty() {
         input
@@ -522,17 +493,7 @@ fn attach_wrap(input: Node, specifications: Vec<AttachSpec>) -> Node {
     }
 }
 
-fn filter_chain(mut relation: &bound::Relation) -> bool {
-    loop {
-        match &relation.node {
-            RelationNode::Filter { input, .. } => relation = input,
-            RelationNode::Scan { .. } => return true,
-            _ => return false,
-        }
-    }
-}
-
-fn merged_predicate(relation: &bound::Relation) -> bound::Expr {
+fn merged_scan_predicate(relation: &bound::Relation) -> Option<bound::Expr> {
     let mut relation = relation;
     let mut predicate = None;
     while let RelationNode::Filter {
@@ -546,7 +507,7 @@ fn merged_predicate(relation: &bound::Relation) -> bound::Expr {
         });
         relation = input;
     }
-    predicate.expect("a filter chain has at least one predicate")
+    matches!(relation.node, RelationNode::Scan { .. }).then_some(predicate?)
 }
 
 fn pinned_key(constraints: &ScanConstraints, columns: &[String]) -> Option<Vec<ConstValue>> {
@@ -593,9 +554,7 @@ fn provided_order(node: &Node) -> (Vec<SlotId>, bool) {
             equality_prefix,
             ..
         } => {
-            let RelationNode::Scan { table, .. } = &scan.node else {
-                unreachable!()
-            };
+            let table = scan.scan_table();
             let mut slots = table
                 .index_column_names(index)
                 .into_iter()
@@ -613,9 +572,7 @@ fn provided_order(node: &Node) -> (Vec<SlotId>, bool) {
 }
 
 fn primary_key_slots(scan: &bound::Relation) -> Vec<SlotId> {
-    let RelationNode::Scan { table, .. } = &scan.node else {
-        unreachable!()
-    };
+    let table = scan.scan_table();
     table
         .primary_key
         .iter()

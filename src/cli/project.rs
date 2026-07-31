@@ -1,25 +1,24 @@
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::process::Result;
 
-#[cfg(test)]
-pub const DEFAULT_CONFIG_FILE: &str = "rad.config.yaml";
-pub const DEFAULT_SCHEMA_FILE: &str = "rad.schema.yaml";
-pub const DEFAULT_STATE_DIR: &str = "rad.state";
+pub(super) const DEFAULT_CONFIG_FILE: &str = "rad.config.yaml";
+pub(super) const DEFAULT_SCHEMA_FILE: &str = "rad.schema.yaml";
+pub(super) const DEFAULT_STATE_DIR: &str = "rad.state";
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Configuration {
+pub(super) struct Configuration {
     pub database_url: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub generate: Vec<GenerationTarget>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct GenerationTarget {
+pub(super) struct GenerationTarget {
     #[serde(default = "default_language")]
     pub language: String,
     #[serde(default = "default_output")]
@@ -29,7 +28,7 @@ pub struct GenerationTarget {
 }
 
 #[derive(Clone, Debug)]
-pub struct Project {
+pub(super) struct Project {
     pub root: PathBuf,
     pub schema_file: PathBuf,
     pub state_dir: PathBuf,
@@ -37,9 +36,25 @@ pub struct Project {
 }
 
 impl Project {
-    pub fn load(config_file: &Path, schema_file: &Path) -> Result<Self> {
+    pub(super) fn load(config_file: &Path, schema_file: &Path) -> Result<Self> {
         let config_file = absolute(config_file)?;
-        let source = std::fs::read(&config_file)?;
+        let source = match std::fs::read(&config_file) {
+            Ok(source) => source,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(format!(
+                    "project configuration not found at {}\n\nCreate {DEFAULT_CONFIG_FILE}, for example:\n  database_url: rad://127.0.0.1:7237\n\nOr select another file with:\n  rad schema --config <path> <command>",
+                    config_file.display()
+                )
+                .into());
+            }
+            Err(error) => {
+                return Err(format!(
+                    "could not read project configuration at {}: {error}",
+                    config_file.display()
+                )
+                .into());
+            }
+        };
         let config: Configuration = serde_yaml::from_slice(&source)
             .map_err(|error| format!("{}: {error}", config_file.display()))?;
         validate(&config_file, &config)?;
@@ -60,8 +75,21 @@ impl Project {
         })
     }
 
-    pub fn read_schema(&self) -> Result<Vec<u8>> {
-        std::fs::read(&self.schema_file).map_err(Into::into)
+    pub(super) fn read_schema(&self) -> Result<Vec<u8>> {
+        read_schema_file(&self.schema_file)
+    }
+}
+
+pub(super) fn read_schema_file(path: &Path) -> Result<Vec<u8>> {
+    let path = absolute(path)?;
+    match std::fs::read(&path) {
+        Ok(source) => Ok(source),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(format!(
+            "schema file not found at {}\n\nCreate {DEFAULT_SCHEMA_FILE} or select another file with --file <path>.",
+            path.display()
+        )
+        .into()),
+        Err(error) => Err(format!("could not read schema file at {}: {error}", path.display()).into()),
     }
 }
 
@@ -117,6 +145,36 @@ impl Default for GenerationTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_configuration_names_the_file_and_minimum_setup() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(DEFAULT_CONFIG_FILE);
+
+        let error = Project::load(&path, Path::new(DEFAULT_SCHEMA_FILE))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(error.contains("database_url: rad://"), "{error}");
+        assert!(error.contains("rad schema --config <path>"), "{error}");
+    }
+
+    #[test]
+    fn missing_schema_names_the_file_and_override() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = directory.path().join(DEFAULT_CONFIG_FILE);
+        std::fs::write(&config, "database_url: rad://localhost\n").unwrap();
+        let project = Project::load(&config, Path::new(DEFAULT_SCHEMA_FILE)).unwrap();
+
+        let error = project.read_schema().unwrap_err().to_string();
+
+        assert!(
+            error.contains(&project.schema_file.display().to_string()),
+            "{error}"
+        );
+        assert!(error.contains("--file <path>"), "{error}");
+    }
 
     #[test]
     fn project_paths_are_rooted_at_the_configuration() {

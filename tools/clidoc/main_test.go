@@ -44,3 +44,37 @@ func TestRender(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderIncludesPositionalArguments(t *testing.T) {
+	required := false
+	page, err := render(document{
+		Info: info{BinaryName: "rad"},
+		Commands: []command{
+			{
+				Name:        "init",
+				Description: "Initialize a project.",
+				Arguments: []argument{
+					{
+						Name:        "DIRECTORY",
+						Description: "Directory to initialize.",
+						Required:    &required,
+						Default:     ".",
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output := string(page)
+	for _, expected := range []string{
+		"| Argument | Purpose | Default |",
+		"| `[DIRECTORY]` | Directory to initialize. | `.` |",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("rendered page does not contain %q:\n%s", expected, output)
+		}
+	}
+}

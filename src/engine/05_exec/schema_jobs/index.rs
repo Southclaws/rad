@@ -1,7 +1,7 @@
 use bytes::Bytes;
 
 use crate::engine::catalog::Mutation;
-use crate::engine::catalog::identity::{OwnerEpoch, TransitionId};
+use crate::engine::catalog::identity::OwnerEpoch;
 use crate::engine::catalog::model::{
     DataPosition, IndexDeltaOperation, IndexState, SchemaTransition, TransitionState,
 };
@@ -9,8 +9,8 @@ use crate::engine::catalog::store;
 use crate::engine::kv::{IsolationLevel, KeyRange, KvView, TransactionView};
 
 use super::{
-    Engine, EngineEvent, EngineOperation, Error, ErrorKind, GateAction, Result, TransitionStep,
-    emit_write_protocol, finish, ownership_changed,
+    Engine, EngineOperation, Error, ErrorKind, Result, TransitionStep, required_owned_transition,
+    transition_table,
 };
 use crate::engine::exec::{codec, row_store};
 
@@ -36,19 +36,9 @@ impl Engine {
         let transaction = self.store.begin(isolation).await?;
         let result = async {
             let mut view = TransactionView(&*transaction);
-            let mut transition = required_owned(&mut view, &current.id, owner).await?;
+            let mut transition = required_owned_transition(&mut view, &current.id, owner).await?;
             let started_state = transition.state;
-            let table = store::get_table_by_id(&view, &transition.table_id)
-                .await?
-                .ok_or_else(|| {
-                    Error::message(
-                        ErrorKind::CorruptData,
-                        format!(
-                            "catalog: transition {:?} table no longer exists",
-                            transition.id
-                        ),
-                    )
-                })?;
+            let table = transition_table(&view, &transition).await?;
             let previous_applied = transition.applied_delta;
             let items = match started_state {
                 TransitionState::Building => {
@@ -93,12 +83,7 @@ impl Engine {
                     ));
                 }
             };
-            self.events
-                .reach(EngineEvent::PhysicalBatchStaged {
-                    operation: operation.clone(),
-                    items,
-                })
-                .await;
+            self.stage_physical_batch(&operation, items).await;
             if transition.applied_delta != previous_applied {
                 store::save_delta_applied(&mut view, &transition.id, transition.applied_delta)
                     .await?;
@@ -118,40 +103,14 @@ impl Engine {
                 &operation,
             )
             .await?;
-            self.events
-                .reach(EngineEvent::CheckpointStaged {
-                    operation: operation.clone(),
-                    generation: transition.generation.get(),
-                    batch_id: transition.batch_id,
-                    state: transition.state,
-                })
+            self.stage_transition_checkpoint(&operation, &transition)
                 .await;
             Ok(TransitionStep { transition, items })
         }
         .await;
-        let step = finish(self, operation, transaction, result).await?;
-        Ok(TransitionStep {
-            transition: self.inspect_schema_transition(&step.transition.id).await?,
-            items: step.items,
-        })
+        self.finish_transition_step(operation, transaction, result)
+            .await
     }
-}
-
-async fn required_owned(
-    view: &mut dyn KvView,
-    id: &TransitionId,
-    owner: OwnerEpoch,
-) -> Result<SchemaTransition> {
-    let transition = store::get_transition(view, id).await?.ok_or_else(|| {
-        Error::message(
-            ErrorKind::InvalidInput,
-            format!("catalog: transition {id:?} does not exist"),
-        )
-    })?;
-    if transition.owner_epoch != owner {
-        return Err(ownership_changed(id));
-    }
-    Ok(transition)
 }
 
 async fn scan_build_batch(
@@ -163,14 +122,8 @@ async fn scan_build_batch(
 ) -> Result<usize> {
     let rows = row_store::scan_table_batch(view, table, &transition.cursor, batch_size).await?;
     for row in &rows {
-        let tuple = codec::encode_row_tuple(&row.row, &transition.index.columns)?;
-        if transition.index.unique
-            && transition
-                .index
-                .columns
-                .iter()
-                .all(|column| !row.row[column].is_null())
-        {
+        let tuple = codec::encode_index_tuple(table, &transition.index, &row.row)?;
+        if transition.index.unique && !codec::index_has_null(table, &transition.index, &row.row) {
             store::put_unique_claim(view, &transition.id, &tuple, &row.primary_key).await?;
         }
         view.put(
@@ -184,13 +137,7 @@ async fn scan_build_batch(
         )
         .await?;
     }
-    transition.batch_id = transition.batch_id.saturating_add(1);
-    transition.generation = transition.generation.next();
-    transition.rows_scanned = transition.rows_scanned.saturating_add(rows.len() as u64);
-    transition.updated_at = now;
-    if let Some(last) = rows.last() {
-        transition.cursor.clone_from(&last.key);
-    } else {
+    if transition.advance_scan(rows.len(), rows.last().map(|row| row.key.as_slice()), now) {
         transition.state = TransitionState::CatchingUp;
         transition.index.state = IndexState::CatchingUp;
     }
@@ -266,13 +213,8 @@ async fn finish_index_state(
             .await?;
         mutation.finish().await?;
         engine
-            .events
-            .reach(EngineEvent::FinalizationGateStaged {
-                operation: operation.clone(),
-                action: GateAction::Acquired,
-            })
-            .await;
-        emit_write_protocol(engine, view, operation, &transition).await?;
+            .stage_finalization_gate(view, operation, &transition)
+            .await?;
         return Ok(transition);
     }
     if started_state == TransitionState::Validating && drained && caught_up {
@@ -290,20 +232,8 @@ async fn finish_index_state(
                 .await?;
             mutation.finish().await?;
             engine
-                .events
-                .reach(EngineEvent::FinalizationGateStaged {
-                    operation: operation.clone(),
-                    action: GateAction::Released,
-                })
-                .await;
-            emit_write_protocol(engine, view, operation, &transition).await?;
-            engine
-                .events
-                .reach(EngineEvent::CatalogPublicationStaged {
-                    operation: operation.clone(),
-                    state: transition.state,
-                })
-                .await;
+                .stage_transition_publication(view, operation, &transition, true)
+                .await?;
             return Ok(transition);
         }
         if let Some(position) = view.begin_position() {
@@ -313,23 +243,9 @@ async fn finish_index_state(
         let mut mutation = Mutation::with_runtime(view, engine.runtime.clone());
         transition = mutation.publish_index_ready(&transition.id, owner).await?;
         mutation.finish().await?;
-        if transition.index.unique {
-            engine
-                .events
-                .reach(EngineEvent::FinalizationGateStaged {
-                    operation: operation.clone(),
-                    action: GateAction::Released,
-                })
-                .await;
-        }
-        emit_write_protocol(engine, view, operation, &transition).await?;
         engine
-            .events
-            .reach(EngineEvent::CatalogPublicationStaged {
-                operation: operation.clone(),
-                state: transition.state,
-            })
-            .await;
+            .stage_transition_publication(view, operation, &transition, transition.index.unique)
+            .await?;
         return Ok(transition);
     }
     transition.refresh_work_state(high_water);

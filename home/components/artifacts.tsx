@@ -9,21 +9,35 @@ const FILES: { name: string; lang: Lang; code: string }[] = [
     name: "rad.schema.yaml",
     lang: "yaml",
     code: `tables:
-  - name: boards
+  - id: 1
+    name: users
     columns:
-      - { name: id,      type: string, pk: true, default: uuid() }
-      - { name: team_id, type: string, ref: teams.id }
-      - { name: name,    type: string }
+      - { id: 1, name: id,    type: string, pk: true, default: uuid() }
+      - { id: 2, name: email, type: string, unique: true }
 
-  - name: tasks
+  - id: 2
+    name: teams
     columns:
-      - { name: id,          type: string, pk: true, default: uuid() }
-      - { name: board_id,    type: string, ref: boards.id, index: true }
-      - { name: title,       type: string }
-      - { name: status,      type: string, default: todo }
-      - { name: priority,    type: int64, default: 2 }
-      - { name: assignee_id, type: string, ref: users.id, nullable: true }
-      - { name: estimate,    type: float64, nullable: true }
+      - { id: 1, name: id,   type: string, pk: true, default: uuid() }
+      - { id: 2, name: name, type: string }
+
+  - id: 3
+    name: boards
+    columns:
+      - { id: 1, name: id,      type: string, pk: true, default: uuid() }
+      - { id: 2, name: team_id, type: string, ref: teams.id }
+      - { id: 3, name: name,    type: string }
+
+  - id: 4
+    name: tasks
+    columns:
+      - { id: 1, name: id,          type: string, pk: true, default: uuid() }
+      - { id: 2, name: board_id,    type: string, ref: boards.id, index: true }
+      - { id: 3, name: title,       type: string }
+      - { id: 4, name: status,      type: string, default: todo }
+      - { id: 5, name: priority,    type: int64, default: 2 }
+      - { id: 6, name: assignee_id, type: string, ref: users.id, nullable: true }
+      - { id: 7, name: estimate,    type: float64, nullable: true }
     indexes:
       - { columns: [board_id, status] }`,
   },
