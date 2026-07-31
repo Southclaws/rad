@@ -466,7 +466,8 @@ mod tests {
             message.contains(
                 &directory
                     .path()
-                    .join("rad.state/schema.lock.json")
+                    .join("rad.state")
+                    .join("schema.lock.json")
                     .display()
                     .to_string()
             ),
@@ -574,7 +575,8 @@ mod tests {
             error.contains(
                 &directory
                     .path()
-                    .join("rad.state/schema.lock.json")
+                    .join("rad.state")
+                    .join("schema.lock.json")
                     .display()
                     .to_string()
             ),
