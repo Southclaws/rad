@@ -267,4 +267,34 @@ Reading this:
 
 Key components like `t1`, `i9`, etc. are internal references to catalog tables and indexes, these are generated with a globally monotonic integer ID, every time a schema change adds something, this increments within the transaction.
 
-<Callout type="warn">This post is not quite finished yet!</Callout>
+### Zooming back out
+
+That's quite a long journey for a query nobody is expected to write by hand.
+
+The LIR described the data the application wanted, including its nested shape and ordering requirements. The planner decided how to retrieve it, turned the crossing into a batched correlated lookup and chose an index. Finally, the executor reduced the whole thing to a handful of operations against the key-value store.
+
+The caller describes relationships, predicates and result shape. It doesn't choose an index, construct a join strategy or decide whether a correlated query should execute once or twenty thousand times. Those decisions stay inside the database, where the catalog, statistics and planner already live. It's declarative,just like SQL!
+
+That gives Rad an hourglass-shaped architecture much like the compiler systems from the start of this post. Above LIR, there can be different ways to author a query. Below it, the engine is free to bind, optimise and execute that query however it sees fit.
+
+Rad's generated clients are the first frontend. They know the schema, expose it through the host language's type system and lower operations directly into LIR. But they don't need to be the only frontend. A pipe syntax, a visual query builder, SQL, GraphQL or something nobody has invented yet could target the same representation without each one becoming its own database engine.
+
+Likewise, adding a frontend doesn't require teaching it about SlateDB keys, indexes or physical plans. It only needs to describe a valid relational operation.
+
+### Is LIR a standard?
+
+No, at least not currently. But it could be, with feedback and governance!
+
+Rad's LIR is a contract for a young database and it will change as I learn where the abstraction is wrong. Designing a portable database IR also involves much more than serialising relational algebra: type systems, transactions, capabilities, schema evolution, errors and versioning all need answers. Projects such as Substrait demonstrate both how useful this separation can be and how much detail it contains.
+
+I'm also deliberately starting with a much narrower problem: application-shaped OLTP queries against one engine. The goal isn't to declare this JSON format the LLVM IR of databases. The goal is to find out what becomes possible when the primary application interface is a structured relational representation rather than an SQL string.
+
+## Final words
+
+SQL remains a great frontend. It might even remain the best frontend for humans exploring unfamiliar data. But it doesn't have to be the interface every tool, library and programming language is forced to generate.
+
+Once the boundary moves down a layer, an ORM no longer has to pretend to be a query planner. A new query syntax shouldn't have to be implemented independently by every database vendor. Generated clients can preserve types and result shapes without reverse-engineering them from strings. The database still gets to make the decisions databases are good at making.
+
+Rad's LIR will certainly evolve, and some of these ideas may turn out to be wrong. but that's what this project is for.
+
+But I think the question is worth exploring: what could we build if SQL were one frontend to a relational database, rather than the narrow waist of the entire ecosystem?
