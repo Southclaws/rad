@@ -3,6 +3,9 @@
 mod client;
 mod commands;
 mod doctor;
+// OpenCLI owns this module, so generated style does not participate in Rad's
+// hand-written code hygiene gate.
+#[allow(warnings, unused_qualifications)]
 pub mod generated;
 mod init;
 mod output;
@@ -12,8 +15,6 @@ mod spec;
 mod state;
 
 use std::process::ExitCode;
-
-use clap::Parser;
 
 pub async fn run() -> ExitCode {
     let cli = generated::Cli::parse();
@@ -30,8 +31,6 @@ pub async fn run() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
-
-    use clap::Parser;
 
     use super::generated::*;
     #[test]
