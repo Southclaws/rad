@@ -214,13 +214,20 @@ impl<'a> ReferenceExecutor<'a> {
                 input,
                 offset,
                 limit,
-            } => Ok(self
-                .relation(input, outer)
-                .await?
-                .into_iter()
-                .skip(*offset)
-                .take(limit.unwrap_or(usize::MAX))
-                .collect()),
+            } => {
+                // The production slice never polls its input when no rows are requested, so
+                // discarded expressions cannot surface runtime errors through the oracle.
+                if *limit == Some(0) {
+                    return Ok(Vec::new());
+                }
+                Ok(self
+                    .relation(input, outer)
+                    .await?
+                    .into_iter()
+                    .skip(*offset)
+                    .take(limit.unwrap_or(usize::MAX))
+                    .collect())
+            }
             RelationNode::Ref {
                 binding, canonical, ..
             } => {
@@ -793,6 +800,7 @@ fn internal(message: impl Into<String>) -> Error {
 mod tests {
     use super::*;
     use crate::engine::kv::slatedb::Store;
+    use crate::engine::lir::bound::ProjectField;
     use crate::engine::lir::{BinaryOp, Field, ObjectField};
 
     fn aggregate_term(function: AggregateFunction, kind: Kind) -> bound::BoundAggregateTerm {
@@ -912,6 +920,44 @@ mod tests {
                 crate::engine::exec::ErrorReason::NumericOverflow
             );
         }
+    }
+
+    #[tokio::test]
+    async fn zero_limit_does_not_evaluate_discarded_rows() {
+        let value_type = Type::scalar(Kind::Int64, false);
+        let rows = Relation::rows(
+            "input",
+            vec![Field {
+                name: "value".into(),
+                slot: SlotId(0),
+                value_type: value_type.clone(),
+            }],
+            vec![vec![Value::Int64(i64::MIN)]],
+        );
+        let projected = Relation::project(
+            rows,
+            "projected",
+            vec![ProjectField {
+                name: "overflow".into(),
+                slot: SlotId(1),
+                expression: Expr::binary(
+                    BinaryOp::Add,
+                    Expr::slot(SlotId(0), "value", value_type),
+                    Expr::literal(Value::Int64(-1)),
+                ),
+            }],
+        );
+        let sliced = Relation::slice(projected, 0, Some(0));
+        let store = Store::memory("reference-zero-limit").await.unwrap();
+        let mut executor = ReferenceExecutor::new(&store, Limits::default());
+
+        assert!(
+            executor
+                .relation(&sliced, &Env::new())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
