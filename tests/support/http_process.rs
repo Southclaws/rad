@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -16,9 +17,8 @@ pub struct RadProcess {
 
 impl RadProcess {
     pub async fn start_s3(config: &S3Config, endpoint: &str, prefix: &str) -> TestResult<Self> {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        let port = listener.local_addr()?.port();
-        drop(listener);
+        let (port, public, admin) = reserve_port_pair()?;
+        drop((public, admin));
 
         let child = Command::new(env!("CARGO_BIN_EXE_rad"))
             .args([
@@ -172,6 +172,23 @@ impl RadProcess {
         }
         Err("Rad did not become ready".into())
     }
+}
+
+pub(crate) fn reserve_port_pair() -> TestResult<(u16, TcpListener, TcpListener)> {
+    for port in (12_000..30_000).step_by(2) {
+        let public = match TcpListener::bind(("127.0.0.1", port)) {
+            Ok(public) => public,
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let admin_port = port + 1;
+        match TcpListener::bind(("127.0.0.1", admin_port)) {
+            Ok(admin) => return Ok((port, public, admin)),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err("could not reserve adjacent public and admin ports outside the ephemeral range".into())
 }
 
 impl Drop for RadProcess {

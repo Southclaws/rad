@@ -189,6 +189,26 @@ fn latency_schedule_is_seeded_bounded_and_reproducible() {
     assert!(first.into_iter().all(|latency| (5..=40).contains(&latency)));
 }
 
+#[test]
+fn http_process_reserves_public_and_admin_ports_together() {
+    let (port, public, admin) = support::http_process::reserve_port_pair().unwrap();
+    assert!((12_000..30_000).contains(&port));
+    assert_eq!(public.local_addr().unwrap().port(), port);
+    assert_eq!(admin.local_addr().unwrap().port(), port + 1);
+    assert_eq!(
+        std::net::TcpListener::bind(("127.0.0.1", port))
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::AddrInUse
+    );
+    assert_eq!(
+        std::net::TcpListener::bind(("127.0.0.1", port + 1))
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::AddrInUse
+    );
+}
+
 #[tokio::test]
 async fn toxiproxy_seed_rejects_values_its_signed_flag_cannot_replay() {
     for seed in [0, u64::MAX] {
