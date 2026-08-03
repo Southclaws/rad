@@ -97,7 +97,8 @@ commands:
       catalog changes. Catalog mode is immutable after database initialization.
 
       The public API uses --addr (default port 7237). The administration UI uses
-      the following port (default 7238).
+      the following port (default 7238). Pass --frontend postgres to also expose
+      the PostgreSQL wire protocol on port 5432.
 
       Documentation: https://www.radengine.dev/docs/cli#rad-serve
     examples:
@@ -129,6 +130,14 @@ commands:
         description: Catalog mode for a fresh database; immutable after initialization.
         envVar: RAD_CATALOG_MODE
         choices: [direct, schema]
+      - name: frontend
+        description: Optional compatibility frontend to expose alongside the HTTP API.
+        envVar: RAD_FRONTEND
+        choices: [postgres]
+      - name: postgres-addr
+        description: PostgreSQL frontend listen address; used with --frontend postgres.
+        envVar: RAD_POSTGRES_ADDR
+        default: 0.0.0.0:5432
       - name: s3-bucket
         description: S3 bucket; required with --storage s3.
         envVar: RAD_S3_BUCKET

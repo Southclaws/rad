@@ -3,8 +3,95 @@
 pub mod migration;
 pub mod schema_transitions;
 
-use crate::engine::exec::{CatalogPolicy, Engine, Error, ErrorKind, ProgramOptions, ProgramResult};
+use std::sync::Arc;
+
+use crate::engine::catalog;
+use crate::engine::catalog::model::Table;
+use crate::engine::exec::{
+    CatalogPolicy, Engine, Error, ErrorKind, Program, ProgramOptions, ProgramResult,
+};
+use crate::engine::kv::{Transaction, TransactionView};
 use crate::protocol::generated::pir;
+
+/// One frontend session transaction backed by one storage transaction.
+///
+/// Transport adapters own this handle. Programs remain independently valid
+/// PIR units while reads, writes, and catalog changes share one snapshot until
+/// the frontend commits or rolls back the handle.
+pub struct Tx {
+    engine: Arc<Engine>,
+    transaction: Option<Box<dyn Transaction>>,
+    catalog_statements: Vec<String>,
+}
+
+impl Tx {
+    pub async fn begin(engine: Arc<Engine>) -> crate::engine::exec::Result<Self> {
+        let transaction = engine.begin_frontend_transaction().await?;
+        Ok(Self {
+            engine,
+            transaction: Some(transaction),
+            catalog_statements: Vec::new(),
+        })
+    }
+
+    pub async fn execute_program(
+        &mut self,
+        program: Program,
+        catalog_policy: CatalogPolicy,
+    ) -> crate::engine::exec::Result<ProgramResult> {
+        let catalog_statements = program
+            .statements
+            .iter()
+            .filter(|statement| !statement.relational())
+            .map(|statement| statement.name().to_owned())
+            .collect::<Vec<_>>();
+        let transaction = self
+            .transaction
+            .as_deref_mut()
+            .expect("frontend transaction remains open while executing");
+        let result = self
+            .engine
+            .execute_program_in_transaction(transaction, &program, catalog_policy)
+            .await?;
+        self.catalog_statements.extend(catalog_statements);
+        Ok(result)
+    }
+
+    pub async fn list_tables(&mut self) -> crate::engine::exec::Result<Vec<Table>> {
+        let transaction = self
+            .transaction
+            .as_deref_mut()
+            .expect("frontend transaction remains open while reading catalog");
+        let mut view = TransactionView(&*transaction);
+        catalog::store::list_tables(&mut view)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn commit(mut self) -> crate::engine::exec::Result<()> {
+        let transaction = self
+            .transaction
+            .take()
+            .expect("frontend transaction commits once");
+        self.engine
+            .commit_frontend_transaction(transaction, std::mem::take(&mut self.catalog_statements))
+            .await
+    }
+
+    pub fn rollback(mut self) {
+        if let Some(transaction) = self.transaction.take() {
+            transaction.rollback();
+        }
+    }
+}
+
+impl Drop for Tx {
+    fn drop(&mut self) {
+        if let Some(transaction) = self.transaction.take() {
+            transaction.rollback();
+        }
+    }
+}
 
 /// Validate/lower the generated PIR envelope and execute it through the
 /// numbered engine layers. Transport adapters can call this without inventing

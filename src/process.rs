@@ -35,10 +35,17 @@ pub enum StorageConfig {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Frontend {
+    Postgres,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     pub address: String,
     pub catalog_mode: Option<Mode>,
+    pub frontend: Option<Frontend>,
+    pub postgres_address: String,
     pub storage: StorageConfig,
 }
 
@@ -50,6 +57,14 @@ impl Config {
             .filter(|value| !value.is_empty())
             .map(|value| value.parse())
             .transpose()?;
+        let frontend = match env::var("RAD_FRONTEND").ok().as_deref() {
+            None | Some("") => None,
+            Some("postgres") => Some(Frontend::Postgres),
+            Some(value) => {
+                return Err(format!("unknown RAD_FRONTEND {value:?} (postgres)").into());
+            }
+        };
+        let postgres_address = normalize_address(&env_or("RAD_POSTGRES_ADDR", "0.0.0.0:5432"));
         let path = env_or("RAD_STORAGE_PATH", "rad");
         let storage = match env_or("RAD_STORAGE", "file").as_str() {
             "memory" => StorageConfig::Memory { path },
@@ -76,6 +91,8 @@ impl Config {
         Ok(Self {
             address,
             catalog_mode,
+            frontend,
+            postgres_address,
             storage,
         })
     }
@@ -90,9 +107,15 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
     let listener = tokio::net::TcpListener::bind(&config.address).await?;
     let admin_address = admin_address(&config.address)?;
     let admin_listener = tokio::net::TcpListener::bind(&admin_address).await?;
+    let postgres_listener = match config.frontend {
+        Some(Frontend::Postgres) => {
+            Some(tokio::net::TcpListener::bind(&config.postgres_address).await?)
+        }
+        None => None,
+    };
     let (store, location) = open_storage(&config.storage).await?;
     let store = Arc::new(store);
-    let catalog = Catalog::new(store.clone());
+    let catalog = Arc::new(Catalog::new(store.clone()));
     let mode = match catalog.init_mode(config.catalog_mode).await {
         Ok(mode) => mode,
         Err(error) => return close_after_error(&store, error).await,
@@ -108,6 +131,9 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
     let bound_admin_address = admin_listener.local_addr()?;
     eprintln!("rad serving on {public_address} (storage: {location}, catalog: {mode:?})");
     eprintln!("admin UI on http://{bound_admin_address}");
+    if let Some(listener) = &postgres_listener {
+        eprintln!("postgres frontend on {}", listener.local_addr()?);
+    }
 
     let (stop_sender, stop_receiver) = tokio::sync::watch::channel(false);
     let shutdown_sender = stop_sender.clone();
@@ -115,27 +141,41 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
         shutdown.await;
         let _ = shutdown_sender.send(true);
     });
-    let mut public_server = Box::pin(crate::http::serve(
-        listener,
-        crate::http::router_with_location(engine, mode, location),
-        wait_for_stop(stop_receiver.clone()),
-    ));
+    let mut servers = tokio::task::JoinSet::new();
+    let http_engine = engine.clone();
+    let http_stop = stop_receiver.clone();
+    servers.spawn(async move {
+        crate::http::serve(
+            listener,
+            crate::http::router_with_location(http_engine, mode, location),
+            wait_for_stop(http_stop),
+        )
+        .await
+    });
     let admin_store: Arc<dyn TransactionalKv> = store.clone();
-    let mut admin_server = Box::pin(crate::http::serve(
-        admin_listener,
-        crate::admin::router(admin_store),
-        wait_for_stop(stop_receiver),
-    ));
-    let server_result = tokio::select! {
-        result = &mut public_server => {
-            let _ = stop_sender.send(true);
-            combine_servers(result, admin_server.await)
-        }
-        result = &mut admin_server => {
-            let _ = stop_sender.send(true);
-            combine_servers(result, public_server.await)
-        }
-    };
+    let admin_stop = stop_receiver.clone();
+    servers.spawn(async move {
+        crate::http::serve(
+            admin_listener,
+            crate::admin::router(admin_store),
+            wait_for_stop(admin_stop),
+        )
+        .await
+    });
+    if let Some(listener) = postgres_listener {
+        let postgres_stop = stop_receiver;
+        let postgres = crate::postgres::Server::new(engine, catalog.clone(), mode);
+        servers
+            .spawn(async move { crate::postgres::serve(listener, postgres, postgres_stop).await });
+    }
+    let mut server_result = Ok(());
+    if let Some(result) = servers.join_next().await {
+        server_result = joined_server(result);
+        let _ = stop_sender.send(true);
+    }
+    while let Some(result) = servers.join_next().await {
+        server_result = combine_servers(server_result, joined_server(result));
+    }
     shutdown_task.abort();
     let scheduler_result = jobs.shutdown().await;
     let close_result = store.close().await;
@@ -159,6 +199,12 @@ async fn wait_for_stop(mut receiver: tokio::sync::watch::Receiver<bool>) {
 
 fn combine_servers(first: std::io::Result<()>, second: std::io::Result<()>) -> std::io::Result<()> {
     first.and(second)
+}
+
+fn joined_server(
+    result: std::result::Result<std::io::Result<()>, tokio::task::JoinError>,
+) -> std::io::Result<()> {
+    result.map_err(std::io::Error::other)?
 }
 
 pub async fn run() -> Result {
@@ -280,6 +326,8 @@ mod tests {
         let config = Config {
             address: "127.0.0.1:0".into(),
             catalog_mode: Some(Mode::Schema),
+            frontend: Some(Frontend::Postgres),
+            postgres_address: "127.0.0.1:0".into(),
             storage: StorageConfig::Memory {
                 path: "process-lifecycle".into(),
             },
@@ -298,6 +346,8 @@ mod tests {
             Config {
                 address: "127.0.0.1:0".into(),
                 catalog_mode: Some(Mode::Direct),
+                frontend: None,
+                postgres_address: "127.0.0.1:0".into(),
                 storage: storage.clone(),
             },
             std::future::ready(()),
@@ -308,6 +358,8 @@ mod tests {
             Config {
                 address: "127.0.0.1:0".into(),
                 catalog_mode: None,
+                frontend: None,
+                postgres_address: "127.0.0.1:0".into(),
                 storage,
             },
             std::future::ready(()),

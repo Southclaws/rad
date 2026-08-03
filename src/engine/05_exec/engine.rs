@@ -208,6 +208,50 @@ impl Engine {
         self.execute_program_path(program, options, false).await
     }
 
+    pub(crate) async fn begin_frontend_transaction(&self) -> Result<Box<dyn Transaction>> {
+        self.store
+            .begin(IsolationLevel::SerializableSnapshot)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub(crate) async fn execute_program_in_transaction(
+        &self,
+        transaction: &mut dyn Transaction,
+        program: &Program,
+        catalog_policy: CatalogPolicy,
+    ) -> Result<ProgramResult> {
+        let result_name = super::program::validate(program, catalog_policy)?;
+        let mut view = TransactionView(&*transaction);
+        super::program::run(
+            &mut view,
+            program,
+            result_name.as_deref(),
+            catalog_policy,
+            self.limits,
+            &self.runtime,
+        )
+        .await
+    }
+
+    pub(crate) async fn commit_frontend_transaction(
+        &self,
+        transaction: Box<dyn Transaction>,
+        catalog_statements: Vec<String>,
+    ) -> Result<()> {
+        let operation =
+            (!catalog_statements.is_empty()).then_some(EngineOperation::CatalogProgram {
+                statements: catalog_statements,
+            });
+        let catalog_changed = operation.is_some();
+        self.finish_transaction(transaction, Ok(()), operation)
+            .await?;
+        if catalog_changed {
+            self.notify_catalog_change();
+        }
+        Ok(())
+    }
+
     /// Execute a PIR program with relational statements interpreted from bound
     /// logical LIR. Transaction, catalog, and mutation orchestration stays the
     /// same so differential tests isolate planner/executor semantics.

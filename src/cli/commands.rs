@@ -11,8 +11,8 @@ use super::generated::{
     SchemaJsonSchemaArgs, SchemaMigrateArgs, SchemaOptions, SchemaPullArgs, SchemaStatusArgs,
     SchemaTransitionsCancelArgs, SchemaTransitionsGetArgs, SchemaTransitionsListArgs,
     SchemaTransitionsListKind, SchemaTransitionsListState, SchemaTransitionsOptions,
-    SchemaTransitionsWaitArgs, ServeArgs, ServeCatalogMode, ServeStorage, SkillsGetArgs,
-    SkillsListArgs, SkillsOptions, SkillsPathArgs, SpecArgs, ValidateArgs,
+    SchemaTransitionsWaitArgs, ServeArgs, ServeCatalogMode, ServeFrontend, ServeStorage,
+    SkillsGetArgs, SkillsListArgs, SkillsOptions, SkillsPathArgs, SpecArgs, ValidateArgs,
 };
 use super::output::{self, CliError};
 use super::project::{Project, read_schema_file};
@@ -163,6 +163,10 @@ impl Handler for App {
             Config {
                 address: crate::process::normalize_address(&args.addr),
                 catalog_mode,
+                frontend: args.frontend.map(|frontend| match frontend {
+                    ServeFrontend::Postgres => crate::process::Frontend::Postgres,
+                }),
+                postgres_address: crate::process::normalize_address(&args.postgres_addr),
                 storage,
             },
             crate::process::shutdown_signal(),

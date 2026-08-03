@@ -63,11 +63,23 @@ mod tests {
 
     #[test]
     fn generated_serve_flags_are_strongly_typed() {
-        let cli = Cli::try_parse_from(["rad", "serve", "--storage", "memory"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "rad",
+            "serve",
+            "--storage",
+            "memory",
+            "--frontend",
+            "postgres",
+            "--postgres-addr",
+            "127.0.0.1:15432",
+        ])
+        .unwrap();
         let RootCommand::Serve(serve) = cli.command else {
             panic!("expected serve command");
         };
         assert_eq!(serve.storage, ServeStorage::Memory);
+        assert_eq!(serve.frontend, Some(ServeFrontend::Postgres));
+        assert_eq!(serve.postgres_addr, "127.0.0.1:15432");
     }
 
     #[test]

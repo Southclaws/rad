@@ -22,16 +22,19 @@ casefold = "0.1.0"
 chrono = { version = "0.4.41", features = ["serde"] }
 clap = { version = "4.6", features = ["derive", "env"] }
 cliclack = "0.5.5"
+futures = "0.3.31"
 http-body-util = "0.1"
 jsonschema = { version = "0.49", default-features = false }
 mime = "0.3"
 minijinja = { version = "2.21.0", default-features = false, features = ["builtins", "macros", "multi_template", "serde"] }
 num-bigint = "0.4.6"
+pgwire = { version = "0.40.5", default-features = false, features = ["pg-type-chrono", "server-api"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.140", features = ["raw_value"] }
 serde_urlencoded = "0.7"
 serde_yaml = "0.9.34"
 sha2 = "0.10.9"
+sqlparser = "0.62.0"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 slatedb = { version = "=0.14.1", default-features = false, features = ["aws"] }
 thiserror = "2.0.12"

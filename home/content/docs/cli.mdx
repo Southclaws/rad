@@ -61,7 +61,8 @@ management; pass --catalog-mode schema when rad.schema.yaml should own all
 catalog changes. Catalog mode is immutable after database initialization.
 
 The public API uses --addr (default port 7237). The administration UI uses
-the following port (default 7238).
+the following port (default 7238). Pass --frontend postgres to also expose
+the PostgreSQL wire protocol on port 5432.
 
 Documentation: https://www.radengine.dev/docs/cli#rad-serve
 
@@ -72,6 +73,8 @@ Documentation: https://www.radengine.dev/docs/cli#rad-serve
 | `-d`, `--db <path>` | File storage directory; used only with --storage file. | `data` | `RAD_DATA_DIR` |
 | `--storage-path <value>` | Logical SlateDB path within the selected backend. | `rad` | `RAD_STORAGE_PATH` |
 | `--catalog-mode <direct\|schema>` | Catalog mode for a fresh database; immutable after initialization. Choices: direct, schema. |  | `RAD_CATALOG_MODE` |
+| `--frontend <postgres>` | Optional compatibility frontend to expose alongside the HTTP API. Choices: postgres. |  | `RAD_FRONTEND` |
+| `--postgres-addr <value>` | PostgreSQL frontend listen address; used with --frontend postgres. | `0.0.0.0:5432` | `RAD_POSTGRES_ADDR` |
 | `--s3-bucket <value>` | S3 bucket; required with --storage s3. |  | `RAD_S3_BUCKET` |
 | `--s3-prefix <value>` | S3 object prefix; defaults to --storage-path. |  | `RAD_S3_PREFIX` |
 | `--s3-region <value>` | S3 region. |  | `RAD_S3_REGION` |

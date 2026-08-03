@@ -64,6 +64,12 @@ pub enum ServeCatalogMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServeFrontend {
+    #[value(name = r"postgres")]
+    Postgres,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ServeStorage {
     #[value(name = r"memory")]
     Memory,
@@ -577,6 +583,22 @@ pub struct ServeArgs {
     )]
     pub catalog_mode: Option<ServeCatalogMode>,
     #[arg(
+        id = r"frontend",
+        long = r"frontend",
+        help = r"Optional compatibility frontend to expose alongside the HTTP API.",
+        env = r"RAD_FRONTEND",
+        value_enum
+    )]
+    pub frontend: Option<ServeFrontend>,
+    #[arg(
+        id = r"postgres-addr",
+        long = r"postgres-addr",
+        help = r"PostgreSQL frontend listen address; used with --frontend postgres.",
+        env = r"RAD_POSTGRES_ADDR",
+        default_value = r"0.0.0.0:5432"
+    )]
+    pub postgres_addr: String,
+    #[arg(
         id = r"s3-bucket",
         long = r"s3-bucket",
         help = r"S3 bucket; required with --storage s3.",
@@ -613,6 +635,8 @@ impl std::fmt::Debug for ServeArgs {
         debug.field("db", &self.db);
         debug.field("storage_path", &self.storage_path);
         debug.field("catalog_mode", &self.catalog_mode);
+        debug.field("frontend", &self.frontend);
+        debug.field("postgres_addr", &self.postgres_addr);
         debug.field("s3_bucket", &self.s3_bucket);
         debug.field("s3_prefix", &self.s3_prefix);
         debug.field("s3_region", &self.s3_region);
