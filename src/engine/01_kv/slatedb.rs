@@ -1,10 +1,11 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
 use ::slatedb as slate_db;
 use async_trait::async_trait;
 use bytes::Bytes;
 use slate_db::object_store::{ObjectStore, memory::InMemory};
-use tokio::sync::{Notify, OnceCell};
+use tokio::sync::{Mutex as AsyncMutex, Notify, OnceCell};
 
 use super::{
     DataPosition, Entry, Error, ErrorKind, IsolationLevel, KeyRange, Kv, KvIterator, Result,
@@ -14,6 +15,123 @@ use super::{
 pub struct Store {
     db: Arc<slate_db::Db>,
     lifecycle: Arc<Lifecycle>,
+}
+
+/// A Slate checkpoint reader exposed through Rad's transactional read surface.
+/// Transactions are stable only for the duration of each individual operation;
+/// the engine rejects every effectful program before it opens this view.
+pub struct ReaderStore {
+    reader: Arc<ReaderBackend>,
+    lifecycle: Arc<Lifecycle>,
+}
+
+struct ReaderBackend {
+    db: RwLock<Arc<slate_db::DbReader>>,
+    path: slate_db::object_store::path::Path,
+    object_store: Arc<dyn ObjectStore>,
+    options: slate_db::config::DbReaderOptions,
+    reopen: AsyncMutex<()>,
+}
+
+impl ReaderStore {
+    pub async fn open(
+        path: impl Into<slate_db::object_store::path::Path> + Send,
+        object_store: Arc<dyn ObjectStore>,
+        poll_interval: Duration,
+    ) -> Result<Self> {
+        let path = path.into();
+        let options = slate_db::config::DbReaderOptions {
+            manifest_poll_interval: poll_interval,
+            checkpoint_lifetime: poll_interval
+                .checked_mul(10)
+                .unwrap_or(Duration::from_secs(60))
+                .max(Duration::from_secs(1)),
+            ..Default::default()
+        };
+        let db = slate_db::DbReader::open(
+            path.clone(),
+            Arc::clone(&object_store),
+            None,
+            options.clone(),
+        )
+        .await
+        .map_err(map_operation_error)?;
+        Ok(Self {
+            reader: Arc::new(ReaderBackend {
+                db: RwLock::new(Arc::new(db)),
+                path,
+                object_store,
+                options,
+                reopen: AsyncMutex::new(()),
+            }),
+            lifecycle: Arc::new(Lifecycle::default()),
+        })
+    }
+}
+
+impl ReaderBackend {
+    fn current(&self) -> Arc<slate_db::DbReader> {
+        Arc::clone(&self.db.read().expect("reader backend lock poisoned"))
+    }
+
+    async fn reopen_after(
+        &self,
+        failed: &Arc<slate_db::DbReader>,
+    ) -> std::result::Result<Arc<slate_db::DbReader>, slate_db::Error> {
+        let _guard = self.reopen.lock().await;
+        let current = self.current();
+        if !Arc::ptr_eq(&current, failed) {
+            return Ok(current);
+        }
+        let replacement = Arc::new(
+            slate_db::DbReader::open(
+                self.path.clone(),
+                Arc::clone(&self.object_store),
+                None,
+                self.options.clone(),
+            )
+            .await?,
+        );
+        *self.db.write().expect("reader backend lock poisoned") = Arc::clone(&replacement);
+        let _ = current.close().await;
+        Ok(replacement)
+    }
+
+    async fn get(&self, key: &[u8]) -> std::result::Result<Option<Bytes>, slate_db::Error> {
+        let reader = self.current();
+        match reader.get(key).await {
+            Ok(value) => Ok(value),
+            Err(error) if reader_must_reopen(&error) => {
+                self.reopen_after(&reader).await?.get(key).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn scan(
+        &self,
+        range: KeyRange,
+    ) -> std::result::Result<slate_db::DbIterator, slate_db::Error> {
+        let reader = self.current();
+        match reader.scan(range.clone()).await {
+            Ok(iterator) => Ok(iterator),
+            Err(error) if reader_must_reopen(&error) => {
+                self.reopen_after(&reader).await?.scan(range).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn close(&self) -> std::result::Result<(), slate_db::Error> {
+        let _guard = self.reopen.lock().await;
+        self.current().close().await
+    }
+}
+
+fn reader_must_reopen(error: &slate_db::Error) -> bool {
+    matches!(error.kind(), slate_db::ErrorKind::Closed(_))
+        || matches!(error.kind(), slate_db::ErrorKind::Data)
+            && error.to_string().contains("checkpoint missing")
 }
 
 impl Store {
@@ -107,6 +225,61 @@ impl TransactionalKv for Store {
     }
 }
 
+#[async_trait]
+impl Kv for ReaderStore {
+    async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
+        let _lease = self.lifecycle.acquire()?;
+        self.reader.get(key).await.map_err(map_operation_error)
+    }
+
+    async fn put(&self, _key: Bytes, _value: Bytes) -> Result<()> {
+        Err(read_only_error())
+    }
+
+    async fn delete(&self, _key: &[u8]) -> Result<()> {
+        Err(read_only_error())
+    }
+
+    async fn scan(&self, range: KeyRange) -> Result<Box<dyn KvIterator>> {
+        let lease = self.lifecycle.acquire()?;
+        let iterator = self.reader.scan(range).await.map_err(map_operation_error)?;
+        Ok(Box::new(SlateIterator {
+            iterator,
+            _lease: Some(lease),
+        }))
+    }
+}
+
+#[async_trait]
+impl TransactionalKv for ReaderStore {
+    async fn begin(&self, _isolation: IsolationLevel) -> Result<Box<dyn Transaction>> {
+        let lease = self.lifecycle.acquire()?;
+        Ok(Box::new(ReaderTransaction {
+            reader: Arc::clone(&self.reader),
+            begin_position: DataPosition::reader(),
+            _lease: lease,
+        }))
+    }
+
+    async fn close(&self) -> Result<()> {
+        self.lifecycle.start_closing();
+        let result = self
+            .lifecycle
+            .close_result
+            .get_or_init(|| async {
+                self.lifecycle.wait_until_idle().await;
+                match self.reader.close().await {
+                    Ok(()) => Ok(()),
+                    Err(error) => map_close_error(error),
+                }
+            })
+            .await
+            .clone();
+        self.lifecycle.finish_close();
+        result
+    }
+}
+
 impl From<IsolationLevel> for slate_db::IsolationLevel {
     fn from(isolation: IsolationLevel) -> Self {
         match isolation {
@@ -134,6 +307,49 @@ struct SlateTransaction {
     transaction: slate_db::DbTransaction,
     begin_position: DataPosition,
     _lease: Lease,
+}
+
+struct ReaderTransaction {
+    reader: Arc<ReaderBackend>,
+    begin_position: DataPosition,
+    _lease: Lease,
+}
+
+#[async_trait]
+impl Transaction for ReaderTransaction {
+    fn begin_position(&self) -> &DataPosition {
+        &self.begin_position
+    }
+
+    async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
+        self.reader.get(key).await.map_err(map_operation_error)
+    }
+
+    fn put(&self, _key: Bytes, _value: Bytes) -> Result<()> {
+        Err(read_only_error())
+    }
+
+    fn delete(&self, _key: &[u8]) -> Result<()> {
+        Err(read_only_error())
+    }
+
+    fn untrack_write(&self, _key: &[u8]) -> Result<()> {
+        Err(read_only_error())
+    }
+
+    async fn scan<'a>(&'a self, range: KeyRange) -> Result<Box<dyn KvIterator + 'a>> {
+        let iterator = self.reader.scan(range).await.map_err(map_operation_error)?;
+        Ok(Box::new(SlateIterator {
+            iterator,
+            _lease: None,
+        }))
+    }
+
+    async fn commit(self: Box<Self>) -> Result<()> {
+        Ok(())
+    }
+
+    fn rollback(self: Box<Self>) {}
 }
 
 impl SlateTransaction {
@@ -226,6 +442,18 @@ impl KvIterator for SlateIterator {
 
 fn map_operation_error(error: slate_db::Error) -> Error {
     Error::source(operation_error_kind(&error), error.to_string(), error)
+}
+
+fn map_close_error(error: slate_db::Error) -> Result<()> {
+    if matches!(error.kind(), slate_db::ErrorKind::Closed(_)) {
+        Ok(())
+    } else {
+        Err(map_operation_error(error))
+    }
+}
+
+fn read_only_error() -> Error {
+    Error::message(ErrorKind::ReadOnly, "database is read-only")
 }
 
 fn operation_error_kind(error: &slate_db::Error) -> ErrorKind {
@@ -329,9 +557,99 @@ impl Drop for Lease {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use futures::stream::BoxStream;
+    use slate_db::object_store::path::Path;
+    use slate_db::object_store::{
+        CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
+        PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as ObjectStoreResult,
+    };
     use tokio::sync::oneshot;
 
     use super::*;
+
+    #[derive(Debug, Default)]
+    struct FaultingReadStore {
+        inner: InMemory,
+        failures_remaining: AtomicUsize,
+        read_attempts: AtomicUsize,
+    }
+
+    impl fmt::Display for FaultingReadStore {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("faulting-read-store")
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for FaultingReadStore {
+        async fn put_opts(
+            &self,
+            location: &Path,
+            payload: PutPayload,
+            options: PutOptions,
+        ) -> ObjectStoreResult<PutResult> {
+            self.inner.put_opts(location, payload, options).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            options: PutMultipartOptions,
+        ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(location, options).await
+        }
+
+        async fn get_opts(
+            &self,
+            location: &Path,
+            options: GetOptions,
+        ) -> ObjectStoreResult<GetResult> {
+            self.read_attempts.fetch_add(1, Ordering::Relaxed);
+            if self
+                .failures_remaining
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(slate_db::object_store::Error::NotFound {
+                    path: location.to_string(),
+                    source: Box::new(std::io::Error::other("injected missing object")),
+                });
+            }
+            self.inner.get_opts(location, options).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: BoxStream<'static, ObjectStoreResult<Path>>,
+        ) -> BoxStream<'static, ObjectStoreResult<Path>> {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&Path>,
+        ) -> ObjectStoreResult<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: CopyOptions,
+        ) -> ObjectStoreResult<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+    }
 
     async fn collect(mut iterator: Box<dyn KvIterator + '_>) -> Result<Vec<Entry>> {
         let mut entries = Vec::new();
@@ -574,5 +892,194 @@ mod tests {
             ErrorKind::Closed
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn reader_rejects_storage_mutations_and_closes_its_checkpoint_client() -> Result<()> {
+        let objects: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let writer = Store::open("reader-contract", Arc::clone(&objects)).await?;
+        writer
+            .put(Bytes::from_static(b"key"), Bytes::from_static(b"value"))
+            .await?;
+        let reader =
+            ReaderStore::open("reader-contract", objects, Duration::from_millis(100)).await?;
+
+        assert_eq!(
+            reader
+                .put(Bytes::from_static(b"other"), Bytes::from_static(b"value"))
+                .await
+                .unwrap_err()
+                .kind(),
+            ErrorKind::ReadOnly
+        );
+        assert_eq!(
+            reader.delete(b"key").await.unwrap_err().kind(),
+            ErrorKind::ReadOnly
+        );
+
+        let transaction = reader.begin(IsolationLevel::Snapshot).await?;
+        assert_eq!(
+            transaction
+                .put(Bytes::from_static(b"other"), Bytes::from_static(b"value"))
+                .unwrap_err()
+                .kind(),
+            ErrorKind::ReadOnly
+        );
+        assert_eq!(
+            transaction.delete(b"key").unwrap_err().kind(),
+            ErrorKind::ReadOnly
+        );
+        assert_eq!(
+            transaction.untrack_write(b"key").unwrap_err().kind(),
+            ErrorKind::ReadOnly
+        );
+        transaction.rollback();
+
+        let checkpoint_client = reader.reader.current();
+        reader.close().await?;
+        assert_eq!(
+            reader.get(b"key").await.unwrap_err().kind(),
+            ErrorKind::Closed
+        );
+        let error = checkpoint_client.get(b"key").await.unwrap_err();
+        assert!(matches!(error.kind(), slate_db::ErrorKind::Closed(_)));
+        writer.close().await
+    }
+
+    #[tokio::test]
+    async fn reader_reopens_after_its_checkpoint_client_closes() -> Result<()> {
+        let objects: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let writer = Store::open("reader-reopen", Arc::clone(&objects)).await?;
+        writer
+            .put(Bytes::from_static(b"key"), Bytes::from_static(b"value"))
+            .await?;
+        let reader =
+            ReaderStore::open("reader-reopen", objects, Duration::from_millis(100)).await?;
+        assert_eq!(
+            reader.reader.options.manifest_poll_interval,
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            reader.reader.options.checkpoint_lifetime,
+            Duration::from_secs(1)
+        );
+
+        reader
+            .reader
+            .current()
+            .close()
+            .await
+            .map_err(map_operation_error)?;
+        assert_eq!(
+            reader.get(b"key").await?,
+            Some(Bytes::from_static(b"value"))
+        );
+
+        reader
+            .reader
+            .current()
+            .close()
+            .await
+            .map_err(map_operation_error)?;
+        let entries = collect(
+            reader
+                .scan(KeyRange::new(
+                    Bytes::from_static(b"key"),
+                    Bytes::from_static(b"kez"),
+                ))
+                .await?,
+        )
+        .await?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].key, Bytes::from_static(b"key"));
+        assert_eq!(entries[0].value, Bytes::from_static(b"value"));
+
+        reader.close().await?;
+        writer.close().await
+    }
+
+    #[test]
+    fn reader_reopen_classifier_rejects_unrelated_errors() {
+        assert!(reader_must_reopen(&slate_db::Error::closed(
+            "closed".into(),
+            slate_db::CloseReason::Clean,
+        )));
+        assert!(reader_must_reopen(&slate_db::Error::data(
+            "checkpoint missing during refresh".into(),
+        )));
+        assert!(!reader_must_reopen(&slate_db::Error::data(
+            "checksum mismatch".into(),
+        )));
+        assert!(!reader_must_reopen(&slate_db::Error::unavailable(
+            "temporary object-store failure".into(),
+        )));
+    }
+
+    #[test]
+    fn reader_close_ignores_only_an_already_closed_client() {
+        assert!(
+            map_close_error(slate_db::Error::closed(
+                "closed".into(),
+                slate_db::CloseReason::Clean,
+            ))
+            .is_ok()
+        );
+        assert_eq!(
+            map_close_error(slate_db::Error::unavailable(
+                "temporary object-store failure".into(),
+            ))
+            .unwrap_err()
+            .kind(),
+            ErrorKind::Unavailable,
+        );
+    }
+
+    #[tokio::test]
+    async fn reader_reopen_policy_propagates_unrelated_data_errors() -> Result<()> {
+        let objects = Arc::new(FaultingReadStore::default());
+        let writer = Store::open(
+            "reader-unavailable",
+            Arc::clone(&objects) as Arc<dyn ObjectStore>,
+        )
+        .await?;
+        writer
+            .put(Bytes::from_static(b"key"), Bytes::from_static(b"value"))
+            .await?;
+        writer.close().await?;
+        let reader = ReaderStore::open(
+            "reader-unavailable",
+            Arc::clone(&objects) as Arc<dyn ObjectStore>,
+            Duration::from_secs(60),
+        )
+        .await?;
+
+        objects.failures_remaining.store(2, Ordering::Relaxed);
+        let before_get = objects.read_attempts.load(Ordering::Relaxed);
+        assert_eq!(
+            reader.get(b"key").await.unwrap_err().kind(),
+            ErrorKind::Data
+        );
+        assert_eq!(
+            objects.read_attempts.load(Ordering::Relaxed) - before_get,
+            2,
+            "unrelated data error from get attempted to reopen the reader",
+        );
+
+        objects.failures_remaining.store(2, Ordering::Relaxed);
+        let before_scan = objects.read_attempts.load(Ordering::Relaxed);
+        assert_eq!(
+            match reader.scan(KeyRange::all()).await {
+                Ok(_) => panic!("scan unexpectedly succeeded through an unavailable store"),
+                Err(error) => error.kind(),
+            },
+            ErrorKind::Data,
+        );
+        assert_eq!(
+            objects.read_attempts.load(Ordering::Relaxed) - before_scan,
+            2,
+            "unrelated data error from scan attempted to reopen the reader",
+        );
+
+        reader.close().await
     }
 }

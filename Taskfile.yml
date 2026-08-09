@@ -76,6 +76,16 @@ tasks:
     cmds:
       - cargo test --locked --test generative_differential {{.CLI_ARGS}}
 
+  test:replicas:
+    desc: Run the file-backed read replica, read-only contract, and writer-fencing process tests
+    cmds:
+      - cargo test --locked --test file_multi_replica --test read_only_contract --test writer_fencing {{.CLI_ARGS}}
+
+  test:replicas:s3:
+    desc: Qualify one writer and multiple readers against RustFS
+    cmds:
+      - cargo test --locked --test s3_multi_replica one_writer_and_multiple_readers_share_an_s3_database -- --exact --ignored --nocapture {{.CLI_ARGS}}
+
   test:fuzz:smoke:
     desc: Run a bounded smoke pass over every coverage-guided fuzz target
     cmds:
@@ -118,9 +128,10 @@ tasks:
       - cargo test --locked --test kv_backend_qualification --test storage_crash_recovery --test storage_fault_campaign --test storage_simulation --test storage_network_faults {{.CLI_ARGS}}
 
   test:storage:rustfs:
-    desc: Run qualification, process-death, network-fault, and latency suites against RustFS
+    desc: Run qualification, replicas, process-death, network-fault, and latency suites against RustFS
     cmds:
       - cargo test --locked --test kv_backend_qualification rustfs_backend_satisfies_the_storage_qualification_suite -- --exact --ignored --nocapture {{.CLI_ARGS}}
+      - cargo test --locked --test s3_multi_replica one_writer_and_multiple_readers_share_an_s3_database -- --exact --ignored --nocapture {{.CLI_ARGS}}
       - cargo test --locked --test storage_crash_recovery rustfs_backend_recovers_from_real_process_death -- --exact --ignored --nocapture {{.CLI_ARGS}}
       - cargo test --locked --test storage_network_faults rustfs_network_fault_matrix_preserves_commit_and_writer_safety -- --exact --ignored --nocapture {{.CLI_ARGS}}
       - cargo test --locked --test s3_latency seeded_s3_latency_preserves_http_write_reopen_and_query_correctness -- --exact --ignored --nocapture {{.CLI_ARGS}}

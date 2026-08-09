@@ -13,6 +13,46 @@ import (
 	"github.com/ogen-go/ogen/validate"
 )
 
+// Encode encodes Access as json.
+func (s Access) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes Access from json.
+func (s *Access) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode Access to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch Access(v) {
+	case AccessRead:
+		*s = AccessRead
+	case AccessWrite:
+		*s = AccessWrite
+	default:
+		*s = Access(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s Access) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *Access) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes ColumnCreateConflict as json.
 func (s ColumnCreateConflict) Encode(e *jx.Encoder) {
 	unwrapped := Problem(s)
@@ -47,6 +87,44 @@ func (s ColumnCreateConflict) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *ColumnCreateConflict) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes ColumnCreateForbidden as json.
+func (s ColumnCreateForbidden) Encode(e *jx.Encoder) {
+	unwrapped := Problem(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ColumnCreateForbidden from json.
+func (s *ColumnCreateForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ColumnCreateForbidden to nil")
+	}
+	var unwrapped Problem
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ColumnCreateForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s ColumnCreateForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ColumnCreateForbidden) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -385,6 +463,44 @@ func (s *ColumnDeleteConflict) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes ColumnDeleteForbidden as json.
+func (s ColumnDeleteForbidden) Encode(e *jx.Encoder) {
+	unwrapped := Problem(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ColumnDeleteForbidden from json.
+func (s *ColumnDeleteForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ColumnDeleteForbidden to nil")
+	}
+	var unwrapped Problem
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ColumnDeleteForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s ColumnDeleteForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ColumnDeleteForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes ColumnDeleteUnprocessableEntity as json.
 func (s ColumnDeleteUnprocessableEntity) Encode(e *jx.Encoder) {
 	unwrapped := Problem(s)
@@ -638,6 +754,44 @@ func (s ColumnUpdateConflict) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *ColumnUpdateConflict) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes ColumnUpdateForbidden as json.
+func (s ColumnUpdateForbidden) Encode(e *jx.Encoder) {
+	unwrapped := Problem(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ColumnUpdateForbidden from json.
+func (s *ColumnUpdateForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ColumnUpdateForbidden to nil")
+	}
+	var unwrapped Problem
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ColumnUpdateForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s ColumnUpdateForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ColumnUpdateForbidden) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -1346,6 +1500,10 @@ func (s *DatabaseInfo) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *DatabaseInfo) encodeFields(e *jx.Encoder) {
 	{
+		e.FieldStart("access")
+		s.Access.Encode(e)
+	}
+	{
 		e.FieldStart("mode")
 		s.Mode.Encode(e)
 	}
@@ -1371,12 +1529,13 @@ func (s *DatabaseInfo) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfDatabaseInfo = [5]string{
-	0: "mode",
-	1: "schema_version",
-	2: "schema_hash",
-	3: "schema_version_at",
-	4: "location",
+var jsonFieldsNameOfDatabaseInfo = [6]string{
+	0: "access",
+	1: "mode",
+	2: "schema_version",
+	3: "schema_hash",
+	4: "schema_version_at",
+	5: "location",
 }
 
 // Decode decodes DatabaseInfo from json.
@@ -1388,8 +1547,18 @@ func (s *DatabaseInfo) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
-		case "mode":
+		case "access":
 			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				if err := s.Access.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"access\"")
+			}
+		case "mode":
+			requiredBitSet[0] |= 1 << 1
 			if err := func() error {
 				if err := s.Mode.Decode(d); err != nil {
 					return err
@@ -1399,7 +1568,7 @@ func (s *DatabaseInfo) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"mode\"")
 			}
 		case "schema_version":
-			requiredBitSet[0] |= 1 << 1
+			requiredBitSet[0] |= 1 << 2
 			if err := func() error {
 				v, err := d.Int64()
 				s.SchemaVersion = int64(v)
@@ -1411,7 +1580,7 @@ func (s *DatabaseInfo) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"schema_version\"")
 			}
 		case "schema_hash":
-			requiredBitSet[0] |= 1 << 2
+			requiredBitSet[0] |= 1 << 3
 			if err := func() error {
 				v, err := d.Str()
 				s.SchemaHash = string(v)
@@ -1452,7 +1621,7 @@ func (s *DatabaseInfo) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00000111,
+		0b00001111,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -1610,6 +1779,44 @@ func (s ExecuteConflict) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *ExecuteConflict) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes ExecuteForbidden as json.
+func (s ExecuteForbidden) Encode(e *jx.Encoder) {
+	unwrapped := Problem(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ExecuteForbidden from json.
+func (s *ExecuteForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ExecuteForbidden to nil")
+	}
+	var unwrapped Problem
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ExecuteForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s ExecuteForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ExecuteForbidden) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -2365,14 +2572,19 @@ func (s *Health) encodeFields(e *jx.Encoder) {
 		e.Str(s.Status)
 	}
 	{
+		e.FieldStart("access")
+		s.Access.Encode(e)
+	}
+	{
 		e.FieldStart("mode")
 		e.Str(s.Mode)
 	}
 }
 
-var jsonFieldsNameOfHealth = [2]string{
+var jsonFieldsNameOfHealth = [3]string{
 	0: "status",
-	1: "mode",
+	1: "access",
+	2: "mode",
 }
 
 // Decode decodes Health from json.
@@ -2396,8 +2608,18 @@ func (s *Health) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"status\"")
 			}
-		case "mode":
+		case "access":
 			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				if err := s.Access.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"access\"")
+			}
+		case "mode":
+			requiredBitSet[0] |= 1 << 2
 			if err := func() error {
 				v, err := d.Str()
 				s.Mode = string(v)
@@ -2418,7 +2640,7 @@ func (s *Health) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00000011,
+		0b00000111,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -2502,6 +2724,44 @@ func (s *IndexCreateConflict) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes IndexCreateForbidden as json.
+func (s IndexCreateForbidden) Encode(e *jx.Encoder) {
+	unwrapped := Problem(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes IndexCreateForbidden from json.
+func (s *IndexCreateForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode IndexCreateForbidden to nil")
+	}
+	var unwrapped Problem
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = IndexCreateForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s IndexCreateForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *IndexCreateForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes IndexCreateUnprocessableEntity as json.
 func (s IndexCreateUnprocessableEntity) Encode(e *jx.Encoder) {
 	unwrapped := Problem(s)
@@ -2574,6 +2834,44 @@ func (s IndexDeleteConflict) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *IndexDeleteConflict) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes IndexDeleteForbidden as json.
+func (s IndexDeleteForbidden) Encode(e *jx.Encoder) {
+	unwrapped := Problem(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes IndexDeleteForbidden from json.
+func (s *IndexDeleteForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode IndexDeleteForbidden to nil")
+	}
+	var unwrapped Problem
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = IndexDeleteForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s IndexDeleteForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *IndexDeleteForbidden) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -6175,6 +6473,44 @@ func (s *SchemaMigrateConflict) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes SchemaMigrateForbidden as json.
+func (s SchemaMigrateForbidden) Encode(e *jx.Encoder) {
+	unwrapped := Problem(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes SchemaMigrateForbidden from json.
+func (s *SchemaMigrateForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode SchemaMigrateForbidden to nil")
+	}
+	var unwrapped Problem
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = SchemaMigrateForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s SchemaMigrateForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *SchemaMigrateForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode implements json.Marshaler.
 func (s *SchemaMigrateRequest) Encode(e *jx.Encoder) {
 	e.ObjStart()
@@ -6878,6 +7214,44 @@ func (s *SchemaTransitionCancelConflict) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes SchemaTransitionCancelForbidden as json.
+func (s SchemaTransitionCancelForbidden) Encode(e *jx.Encoder) {
+	unwrapped := Problem(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes SchemaTransitionCancelForbidden from json.
+func (s *SchemaTransitionCancelForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode SchemaTransitionCancelForbidden to nil")
+	}
+	var unwrapped Problem
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = SchemaTransitionCancelForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s SchemaTransitionCancelForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *SchemaTransitionCancelForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes SchemaTransitionCancelNotFound as json.
 func (s SchemaTransitionCancelNotFound) Encode(e *jx.Encoder) {
 	unwrapped := Problem(s)
@@ -7116,6 +7490,44 @@ func (s TableCreateConflict) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *TableCreateConflict) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes TableCreateForbidden as json.
+func (s TableCreateForbidden) Encode(e *jx.Encoder) {
+	unwrapped := Problem(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes TableCreateForbidden from json.
+func (s *TableCreateForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode TableCreateForbidden to nil")
+	}
+	var unwrapped Problem
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = TableCreateForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s TableCreateForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *TableCreateForbidden) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -7417,6 +7829,44 @@ func (s TableDeleteConflict) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *TableDeleteConflict) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes TableDeleteForbidden as json.
+func (s TableDeleteForbidden) Encode(e *jx.Encoder) {
+	unwrapped := Problem(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes TableDeleteForbidden from json.
+func (s *TableDeleteForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode TableDeleteForbidden to nil")
+	}
+	var unwrapped Problem
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = TableDeleteForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s TableDeleteForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *TableDeleteForbidden) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -7824,6 +8274,44 @@ func (s TableUpdateConflict) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *TableUpdateConflict) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes TableUpdateForbidden as json.
+func (s TableUpdateForbidden) Encode(e *jx.Encoder) {
+	unwrapped := Problem(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes TableUpdateForbidden from json.
+func (s *TableUpdateForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode TableUpdateForbidden to nil")
+	}
+	var unwrapped Problem
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = TableUpdateForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s TableUpdateForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *TableUpdateForbidden) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

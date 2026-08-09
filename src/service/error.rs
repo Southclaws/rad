@@ -58,6 +58,7 @@ macro_rules! reasons {
 }
 
 reasons!(InvalidReason {
+    ReadOnly => "read_only",
     Invalid => "invalid",
     SchemaViolation => "schema_violation",
     UnknownTable => "unknown_table",
@@ -245,6 +246,7 @@ impl Failure {
         let stage = stage(error);
         let detail = error.to_string();
         match error.reason() {
+            ErrorReason::ReadOnly => invalid(Stage::Preflight, InvalidReason::ReadOnly, detail),
             ErrorReason::Invalid => invalid(stage, InvalidReason::Invalid, detail),
             ErrorReason::SchemaViolation => {
                 invalid(Stage::Schema, InvalidReason::SchemaViolation, detail)
@@ -379,6 +381,7 @@ fn conflict(stage: Stage, reason: ConflictReason, detail: String) -> Failure {
 fn stage(error: &Error) -> Stage {
     use crate::engine::exec::ErrorKind;
     match error.kind() {
+        ErrorKind::ReadOnly => Stage::Preflight,
         ErrorKind::InvalidInput | ErrorKind::DataLossAcceptance => {
             if matches!(
                 error.reason(),

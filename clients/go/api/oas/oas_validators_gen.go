@@ -9,7 +9,26 @@ import (
 	"github.com/ogen-go/ogen/validate"
 )
 
+func (s Access) Validate() error {
+	switch s {
+	case "read":
+		return nil
+	case "write":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
 func (s ColumnCreateConflict) Validate() error {
+	alias := (Problem)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s ColumnCreateForbidden) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
 		return err
@@ -73,6 +92,14 @@ func (s ColumnDeleteConflict) Validate() error {
 	return nil
 }
 
+func (s ColumnDeleteForbidden) Validate() error {
+	alias := (Problem)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s ColumnDeleteUnprocessableEntity) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
@@ -115,6 +142,14 @@ func (s *ColumnInfo) Validate() error {
 }
 
 func (s ColumnUpdateConflict) Validate() error {
+	alias := (Problem)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s ColumnUpdateForbidden) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
 		return err
@@ -332,6 +367,17 @@ func (s *DatabaseInfo) Validate() error {
 
 	var failures []validate.FieldError
 	if err := func() error {
+		if err := s.Access.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "access",
+			Error: err,
+		})
+	}
+	if err := func() error {
 		if err := s.Mode.Validate(); err != nil {
 			return err
 		}
@@ -389,6 +435,14 @@ func (s ExecuteBadRequest) Validate() error {
 }
 
 func (s ExecuteConflict) Validate() error {
+	alias := (Problem)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s ExecuteForbidden) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
 		return err
@@ -541,7 +595,38 @@ func (s *ForeignKeyInfo) Validate() error {
 	return nil
 }
 
+func (s *Health) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Access.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "access",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
 func (s IndexCreateConflict) Validate() error {
+	alias := (Problem)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s IndexCreateForbidden) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
 		return err
@@ -558,6 +643,14 @@ func (s IndexCreateUnprocessableEntity) Validate() error {
 }
 
 func (s IndexDeleteConflict) Validate() error {
+	alias := (Problem)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s IndexDeleteForbidden) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
 		return err
@@ -1252,6 +1345,14 @@ func (s SchemaMigrateConflict) Validate() error {
 	return nil
 }
 
+func (s SchemaMigrateForbidden) Validate() error {
+	alias := (Problem)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *SchemaMigrateRequest) Validate() error {
 	if s == nil {
 		return validate.ErrNilPointer
@@ -1433,6 +1534,14 @@ func (s SchemaTransitionCancelConflict) Validate() error {
 	return nil
 }
 
+func (s SchemaTransitionCancelForbidden) Validate() error {
+	alias := (Problem)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s SchemaTransitionCancelNotFound) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
@@ -1450,6 +1559,14 @@ func (s SchemaTransitionCancelUnprocessableEntity) Validate() error {
 }
 
 func (s TableCreateConflict) Validate() error {
+	alias := (Problem)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s TableCreateForbidden) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
 		return err
@@ -1595,6 +1712,14 @@ func (s *TableDef) Validate() error {
 }
 
 func (s TableDeleteConflict) Validate() error {
+	alias := (Problem)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s TableDeleteForbidden) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
 		return err
@@ -1773,6 +1898,14 @@ func (s *TableList) Validate() error {
 }
 
 func (s TableUpdateConflict) Validate() error {
+	alias := (Problem)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s TableUpdateForbidden) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
 		return err

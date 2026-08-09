@@ -38,6 +38,10 @@ impl DataPosition {
     fn from_sequence(sequence: u64) -> Self {
         Self(sequence.to_string())
     }
+
+    fn reader() -> Self {
+        Self("reader".into())
+    }
 }
 
 /// An owned, half-open key range: `[start, end)`.

@@ -21,6 +21,7 @@ type CatalogObserver = Arc<dyn Fn() + Send + Sync>;
 
 pub struct Engine {
     pub(super) store: Arc<dyn TransactionalKv>,
+    read_only: bool,
     limits: Limits,
     pub(super) runtime: Arc<dyn RuntimeEffects>,
     pub(super) events: Arc<dyn EngineEventHook>,
@@ -35,11 +36,32 @@ impl Engine {
     pub fn with_runtime(store: Arc<dyn TransactionalKv>, runtime: Arc<dyn RuntimeEffects>) -> Self {
         Self {
             store,
+            read_only: false,
             limits: Limits::default(),
             runtime,
             events: Arc::new(NoopEngineEventHook),
             catalog_observers: RwLock::new(Vec::new()),
         }
+    }
+
+    pub fn read_only(store: Arc<dyn TransactionalKv>) -> Self {
+        let mut engine = Self::new(store);
+        engine.read_only = true;
+        engine
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    pub fn require_write(&self) -> Result<()> {
+        if self.read_only {
+            return Err(super::Error::message(
+                super::ErrorKind::ReadOnly,
+                "database is read-only",
+            ));
+        }
+        Ok(())
     }
 
     pub fn with_limits(store: Arc<dyn TransactionalKv>, limits: Limits) -> Self {
@@ -53,6 +75,7 @@ impl Engine {
     ) -> Self {
         Self {
             store,
+            read_only: false,
             limits,
             runtime,
             events: Arc::new(NoopEngineEventHook),
@@ -221,6 +244,9 @@ impl Engine {
         program: &Program,
         catalog_policy: CatalogPolicy,
     ) -> Result<ProgramResult> {
+        if program.statements.iter().any(super::Statement::effectful) {
+            self.require_write()?;
+        }
         let result_name = super::program::validate(program, catalog_policy)?;
         let mut view = TransactionView(&*transaction);
         super::program::run(
@@ -269,6 +295,9 @@ impl Engine {
         options: ProgramOptions,
         reference: bool,
     ) -> Result<ProgramResult> {
+        if program.statements.iter().any(super::Statement::effectful) {
+            self.require_write()?;
+        }
         let result_name = super::program::validate(&program, options.catalog)?;
         let catalog_statements = program
             .statements
@@ -379,6 +408,7 @@ impl Engine {
     }
 
     pub async fn create_many(&self, table: &str, rows: Vec<Row>) -> Result<Vec<Row>> {
+        self.require_write()?;
         let transaction = self
             .store
             .begin(IsolationLevel::SerializableSnapshot)
@@ -396,6 +426,7 @@ impl Engine {
         table: &str,
         rows: &[Row],
     ) -> Result<Vec<Row>> {
+        self.require_write()?;
         let mut view = TransactionView(&*transaction);
         create_on_view(&mut view, table, rows, self.runtime.as_ref()).await
     }
@@ -406,6 +437,7 @@ impl Engine {
         input_type: RowType,
         rows: Vec<Row>,
     ) -> Result<Vec<Row>> {
+        self.require_write()?;
         let transaction = self
             .store
             .begin(IsolationLevel::SerializableSnapshot)
@@ -424,6 +456,7 @@ impl Engine {
         input_type: &RowType,
         rows: &[Row],
     ) -> Result<Vec<Row>> {
+        self.require_write()?;
         let mut view = TransactionView(&*transaction);
         update_on_view(&mut view, table, input_type, rows).await
     }
@@ -434,6 +467,7 @@ impl Engine {
         input_type: RowType,
         rows: Vec<Row>,
     ) -> Result<Vec<Row>> {
+        self.require_write()?;
         let transaction = self
             .store
             .begin(IsolationLevel::SerializableSnapshot)
@@ -452,6 +486,7 @@ impl Engine {
         input_type: &RowType,
         rows: &[Row],
     ) -> Result<Vec<Row>> {
+        self.require_write()?;
         let mut view = TransactionView(&*transaction);
         delete_on_view(&mut view, table, input_type, rows).await
     }

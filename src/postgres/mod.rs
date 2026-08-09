@@ -1103,6 +1103,7 @@ fn engine_error_with_sql(error: crate::engine::exec::Error, sql: &str) -> PgWire
 
 fn engine_error_message(error: crate::engine::exec::Error, sql: Option<&str>) -> PgWireError {
     let code = match error.reason() {
+        ErrorReason::ReadOnly => "25006",
         ErrorReason::ConstraintViolation => "23505",
         ErrorReason::SerializableConflict => "40001",
         ErrorReason::UnknownTable | ErrorReason::UnknownColumn => "42P01",
@@ -1354,6 +1355,8 @@ fn default_datum(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::kv::TransactionalKv;
+    use crate::engine::kv::slatedb::Store;
 
     #[test]
     fn recognizes_atlas_catalog_queries_without_a_generic_sql_lowering() {
@@ -1364,5 +1367,17 @@ mod tests {
         assert!(matches!(tables.kind, CatalogKind::Tables));
         assert_eq!(tables.parameter_count, 1);
         assert_eq!(tables.columns[2].name, "table_name");
+    }
+
+    #[tokio::test]
+    async fn read_only_errors_use_postgres_sqlstate() {
+        let store = Arc::new(Store::memory("postgres-read-only").await.unwrap());
+        let engine = Engine::read_only(store.clone());
+        let error = engine_error(engine.require_write().unwrap_err());
+        let PgWireError::UserError(error) = error else {
+            panic!("expected user error");
+        };
+        assert_eq!(error.code, "25006");
+        store.close().await.unwrap();
     }
 }

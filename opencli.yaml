@@ -92,9 +92,11 @@ commands:
     operationId: serve
     description: Run the database API and administration UI.
     longDescription: |
-      Run Rad until interrupted. A fresh database defaults to direct catalog
-      management; pass --catalog-mode schema when rad.schema.yaml should own all
-      catalog changes. Catalog mode is immutable after database initialization.
+      Run Rad until interrupted. A write instance owns the Slate writer; any
+      number of read instances can serve polling checkpoint views of the same
+      storage path. A fresh database defaults to direct catalog management;
+      pass --catalog-mode schema when rad.schema.yaml should own all catalog
+      changes. Catalog mode is immutable after database initialization.
 
       The public API uses --addr (default port 7237). The administration UI uses
       the following port (default 7238). Pass --frontend postgres to also expose
@@ -104,6 +106,8 @@ commands:
     examples:
       - description: Start an in-memory schema-managed development database.
         command: rad serve --storage memory --catalog-mode schema
+      - description: Start a read replica of an existing database.
+        command: rad serve --role read
       - description: Start against an S3-compatible endpoint.
         command: rad serve --storage s3 --s3-bucket rad --s3-endpoint http://127.0.0.1:9000
     flags:
@@ -111,6 +115,16 @@ commands:
         description: Public HTTP listen address; the admin UI uses the next port.
         envVar: RAD_ADDR
         default: 0.0.0.0:7237
+      - name: role
+        description: Process-wide Slate access role.
+        envVar: RAD_ROLE
+        choices: [read, write]
+        default: write
+      - name: reader-poll-interval-ms
+        description: Slate manifest polling interval for read instances.
+        type: integer
+        envVar: RAD_READER_POLL_INTERVAL_MS
+        default: 1000
       - name: storage
         description: Storage backend for SlateDB data.
         envVar: RAD_STORAGE

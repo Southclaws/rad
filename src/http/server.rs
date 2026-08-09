@@ -37,6 +37,13 @@ impl Api {
             Mode::Schema => CatalogPolicy::Forbidden,
         }
     }
+
+    pub(super) fn write_problem(&self) -> Option<problem::ResponseProblem> {
+        self.engine
+            .require_write()
+            .err()
+            .map(|error| engine_problem(&error))
+    }
 }
 
 /// Build the generated API router. Callers may add a fallback or nest this
@@ -120,6 +127,7 @@ fn invalid_request(detail: impl Into<String>) -> ExecuteResponse {
 fn execute_problem(problem: problem::ResponseProblem) -> ExecuteResponse {
     match problem.status {
         StatusCode::BAD_REQUEST => ExecuteResponse::BadRequest(problem.body),
+        StatusCode::FORBIDDEN => ExecuteResponse::Forbidden(problem.body),
         StatusCode::CONFLICT => ExecuteResponse::Conflict(problem.body),
         StatusCode::UNPROCESSABLE_ENTITY => ExecuteResponse::UnprocessableEntity(problem.body),
         status => ExecuteResponse::Default(status, problem.body),

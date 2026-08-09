@@ -179,6 +179,8 @@ func (c *Client) SchemaMigrate(
 		return migration, nil
 	case *oas.SchemaMigrateConflict:
 		return protocol.SchemaMigration{}, apiError(oas.Problem(*value))
+	case *oas.SchemaMigrateForbidden:
+		return protocol.SchemaMigration{}, apiError(oas.Problem(*value))
 	case *oas.SchemaMigrateUnprocessableEntity:
 		return protocol.SchemaMigration{}, apiError(oas.Problem(*value))
 	default:
@@ -217,6 +219,8 @@ func (c *Client) TableCreate(ctx context.Context, def protocol.TableDef) (protoc
 		return api.TableFromOAS(*v), nil
 	case *oas.TableCreateConflict:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.TableCreateForbidden:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
 	case *oas.TableCreateUnprocessableEntity:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
 	default:
@@ -235,6 +239,8 @@ func (c *Client) TableDelete(ctx context.Context, table string) error {
 	case *oas.NoContent:
 		return nil
 	case *oas.TableDeleteConflict:
+		return apiError(oas.Problem(*v))
+	case *oas.TableDeleteForbidden:
 		return apiError(oas.Problem(*v))
 	case *oas.TableDeleteUnprocessableEntity:
 		return apiError(oas.Problem(*v))
@@ -257,6 +263,8 @@ func (c *Client) TableUpdate(ctx context.Context, table, name string) (protocol.
 		return api.TableFromOAS(*v), nil
 	case *oas.TableUpdateConflict:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.TableUpdateForbidden:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
 	case *oas.TableUpdateUnprocessableEntity:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
 	default:
@@ -278,6 +286,8 @@ func (c *Client) ColumnCreate(ctx context.Context, table string, col protocol.Co
 		return api.TableFromOAS(*v), nil
 	case *oas.ColumnCreateConflict:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.ColumnCreateForbidden:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
 	case *oas.ColumnCreateUnprocessableEntity:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
 	default:
@@ -296,6 +306,8 @@ func (c *Client) ColumnDelete(ctx context.Context, table, column string) (protoc
 	case *oas.TableInfo:
 		return api.TableFromOAS(*v), nil
 	case *oas.ColumnDeleteConflict:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.ColumnDeleteForbidden:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
 	case *oas.ColumnDeleteUnprocessableEntity:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
@@ -317,6 +329,8 @@ func (c *Client) ColumnUpdate(ctx context.Context, table, column, name string) (
 	case *oas.TableInfo:
 		return api.TableFromOAS(*v), nil
 	case *oas.ColumnUpdateConflict:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.ColumnUpdateForbidden:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
 	case *oas.ColumnUpdateUnprocessableEntity:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
@@ -340,6 +354,8 @@ func (c *Client) IndexCreate(ctx context.Context, table string, idx protocol.Ind
 		return api.TableFromOAS(*v), nil
 	case *oas.IndexCreateConflict:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.IndexCreateForbidden:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
 	case *oas.IndexCreateUnprocessableEntity:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
 	default:
@@ -357,6 +373,8 @@ func (c *Client) IndexDelete(ctx context.Context, table, index string) (protocol
 	case *oas.TableInfo:
 		return api.TableFromOAS(*v), nil
 	case *oas.IndexDeleteConflict:
+		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.IndexDeleteForbidden:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
 	case *oas.IndexDeleteUnprocessableEntity:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))

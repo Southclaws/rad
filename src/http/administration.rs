@@ -62,6 +62,9 @@ impl AdministrationApi for Api {
     }
 
     async fn schema_transition_cancel(&self, transition: String) -> SchemaTransitionCancelResponse {
+        if let Some(problem) = self.write_problem() {
+            return cancel_problem(problem);
+        }
         let id = TransitionId::from(transition.as_str());
         let control = match cancel_schema_transition(&self.engine, &id).await {
             Ok(control) => control,
@@ -104,6 +107,7 @@ fn get_problem(problem: ResponseProblem) -> SchemaTransitionGetResponse {
 
 fn cancel_problem(problem: ResponseProblem) -> SchemaTransitionCancelResponse {
     match problem.status {
+        StatusCode::FORBIDDEN => SchemaTransitionCancelResponse::Forbidden(problem.body),
         StatusCode::NOT_FOUND => SchemaTransitionCancelResponse::NotFound(problem.body),
         StatusCode::CONFLICT => SchemaTransitionCancelResponse::Conflict(problem.body),
         StatusCode::UNPROCESSABLE_ENTITY => {

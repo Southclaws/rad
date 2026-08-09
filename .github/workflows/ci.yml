@@ -272,6 +272,7 @@ jobs:
               docker info > "$artifact_dir/docker.txt"
               {
                 cargo test --locked --test kv_backend_qualification rustfs_backend_satisfies_the_storage_qualification_suite -- --exact --ignored --nocapture
+                cargo test --locked --test s3_multi_replica one_writer_and_multiple_readers_share_an_s3_database -- --exact --ignored --nocapture
                 cargo test --locked --test storage_crash_recovery rustfs_backend_recovers_from_real_process_death -- --exact --ignored --nocapture
                 cargo test --locked --test storage_network_faults rustfs_network_fault_matrix_preserves_commit_and_writer_safety -- --exact --ignored --nocapture
                 RAD_TEST_ARTIFACT_DIR="$artifact_dir" RAD_TEST_S3_LATENCY_SEED="$GITHUB_RUN_ID" cargo test --locked --test s3_latency seeded_s3_latency_preserves_http_write_reopen_and_query_correctness -- --exact --ignored --nocapture

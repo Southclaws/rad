@@ -141,6 +141,7 @@ never be bypassed.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `SchemaMigrateResult` | The committed accepted schema and its identity. |
+| `403` | application/problem+json `Problem` | The operation requires a write instance. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -187,6 +188,7 @@ program and is available in both catalog management modes.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TransitionControl` | The transition's durable administrative state. |
+| `403` | application/problem+json `Problem` | The operation requires a write instance. |
 | `404` | application/problem+json `Problem` | The addressed resource, such as a transaction, does not exist. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
@@ -268,6 +270,7 @@ schema-managed database this operation is always rejected.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TableInfo` | The table's definition after the mutation was applied. |
+| `403` | application/problem+json `Problem` | The operation requires a write instance. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -299,6 +302,7 @@ always rejected.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TableInfo` | The table's definition after the mutation was applied. |
+| `403` | application/problem+json `Problem` | The operation requires a write instance. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -329,6 +333,7 @@ always rejected.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TableInfo` | The table's definition after the mutation was applied. |
+| `403` | application/problem+json `Problem` | The operation requires a write instance. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -352,6 +357,7 @@ operation is always rejected.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TableInfo` | The table's definition after the mutation was applied. |
+| `403` | application/problem+json `Problem` | The operation requires a write instance. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -382,6 +388,7 @@ it. On a schema-managed database this operation is always rejected.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TableInfo` | The table's definition after the mutation was applied. |
+| `403` | application/problem+json `Problem` | The operation requires a write instance. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -405,6 +412,7 @@ schema-managed database this operation is always rejected.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `204` | No body | The operation succeeded and there is no body to return. |
+| `403` | application/problem+json `Problem` | The operation requires a write instance. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -435,6 +443,7 @@ always rejected.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TableInfo` | The table's definition after the mutation was applied. |
+| `403` | application/problem+json `Problem` | The operation requires a write instance. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -467,6 +476,7 @@ rejected.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TableInfo` | The table's definition after the mutation was applied. |
+| `403` | application/problem+json `Problem` | The operation requires a write instance. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -524,6 +534,7 @@ earlier statements).
 | --- | --- | --- |
 | `200` | application/json `ProgramResult` | The result statement's datum plus a per-statement summary. |
 | `400` | application/problem+json `Problem` | The request body was malformed or could not be decoded. |
+| `403` | application/problem+json `Problem` | The operation requires a write instance. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -531,6 +542,10 @@ earlier statements).
 ## Data shapes
 
 These reusable objects appear in request bodies, responses, and error details.
+
+#### `Access`
+
+Whether this process serves a checkpoint reader or owns the Slate writer.
 
 #### `ColumnDef`
 
@@ -607,6 +622,7 @@ Stable metadata about a Rad database.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `access` | `Access` | Yes |  |
 | `mode` | `direct \| schema` | Yes | The database's catalog management mode: `direct` (the catalog is mutable over this API) or `schema` (rad.schema.yaml migrations own the catalog and the imperative catalog operations are rejected). |
 | `schema_version` | `integer` | Yes | The monotonic version of the committed schema. A fresh database starts at zero. Each catalog change in direct mode increments it once, including each reconciler step; an entire schema-managed migration increments it once. Format: int64. |
 | `schema_hash` | `string` | Yes | SHA-256 of the canonical committed schema JSON. |
@@ -649,6 +665,7 @@ The liveness status of the server.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `status` | `string` | Yes |  |
+| `access` | `Access` | Yes |  |
 | `mode` | `string` | Yes | The database's catalog management mode: `direct` (the catalog is mutable over this API) or `schema` (rad.schema.yaml migrations own the catalog and the imperative catalog operations are rejected). |
 
 #### `IndexInfo`

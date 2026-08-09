@@ -14,9 +14,56 @@ func (s *InternalServerErrorStatusCode) Error() string {
 	return fmt.Sprintf("code %d: %+v", s.StatusCode, s.Response)
 }
 
+// Whether this process serves a checkpoint reader or owns the Slate writer.
+// Ref: #/components/schemas/Access
+type Access string
+
+const (
+	AccessRead  Access = "read"
+	AccessWrite Access = "write"
+)
+
+// AllValues returns all Access values.
+func (Access) AllValues() []Access {
+	return []Access{
+		AccessRead,
+		AccessWrite,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s Access) MarshalText() ([]byte, error) {
+	switch s {
+	case AccessRead:
+		return []byte(s), nil
+	case AccessWrite:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *Access) UnmarshalText(data []byte) error {
+	switch Access(data) {
+	case AccessRead:
+		*s = AccessRead
+		return nil
+	case AccessWrite:
+		*s = AccessWrite
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 type ColumnCreateConflict Problem
 
 func (*ColumnCreateConflict) columnCreateRes() {}
+
+type ColumnCreateForbidden Problem
+
+func (*ColumnCreateForbidden) columnCreateRes() {}
 
 type ColumnCreateUnprocessableEntity Problem
 
@@ -131,6 +178,10 @@ type ColumnDeleteConflict Problem
 
 func (*ColumnDeleteConflict) columnDeleteRes() {}
 
+type ColumnDeleteForbidden Problem
+
+func (*ColumnDeleteForbidden) columnDeleteRes() {}
+
 type ColumnDeleteUnprocessableEntity Problem
 
 func (*ColumnDeleteUnprocessableEntity) columnDeleteRes() {}
@@ -212,6 +263,10 @@ func (s *ColumnInfo) SetDefault(val OptColumnDefault) {
 type ColumnUpdateConflict Problem
 
 func (*ColumnUpdateConflict) columnUpdateRes() {}
+
+type ColumnUpdateForbidden Problem
+
+func (*ColumnUpdateForbidden) columnUpdateRes() {}
 
 // The column properties to update.
 // Ref: #/components/schemas/ColumnUpdateProps
@@ -601,6 +656,7 @@ func (s *ConflictProblemType) UnmarshalText(data []byte) error {
 // Stable metadata about a Rad database.
 // Ref: #/components/schemas/DatabaseInfo
 type DatabaseInfo struct {
+	Access Access `json:"access"`
 	// The database's catalog management mode: `direct` (the catalog is mutable over this API) or `schema`
 	// (rad.schema.yaml migrations own the catalog and the imperative catalog operations are rejected).
 	Mode DatabaseInfoMode `json:"mode"`
@@ -614,6 +670,11 @@ type DatabaseInfo struct {
 	SchemaVersionAt OptDateTime `json:"schema_version_at"`
 	// The configured backing-store location, when the server exposes one.
 	Location OptString `json:"location"`
+}
+
+// GetAccess returns the value of Access.
+func (s *DatabaseInfo) GetAccess() Access {
+	return s.Access
 }
 
 // GetMode returns the value of Mode.
@@ -639,6 +700,11 @@ func (s *DatabaseInfo) GetSchemaVersionAt() OptDateTime {
 // GetLocation returns the value of Location.
 func (s *DatabaseInfo) GetLocation() OptString {
 	return s.Location
+}
+
+// SetAccess sets the value of Access.
+func (s *DatabaseInfo) SetAccess(val Access) {
+	s.Access = val
 }
 
 // SetMode sets the value of Mode.
@@ -716,6 +782,10 @@ func (*ExecuteBadRequest) executeRes() {}
 type ExecuteConflict Problem
 
 func (*ExecuteConflict) executeRes() {}
+
+type ExecuteForbidden Problem
+
+func (*ExecuteForbidden) executeRes() {}
 
 type ExecuteUnprocessableEntity Problem
 
@@ -1078,6 +1148,7 @@ func (s *ForeignKeyInfo) SetRefColumns(val []string) {
 // Ref: #/components/schemas/Health
 type Health struct {
 	Status string `json:"status"`
+	Access Access `json:"access"`
 	// The database's catalog management mode: `direct` (the catalog is mutable over this API) or `schema`
 	// (rad.schema.yaml migrations own the catalog and the imperative catalog operations are rejected).
 	Mode string `json:"mode"`
@@ -1086,6 +1157,11 @@ type Health struct {
 // GetStatus returns the value of Status.
 func (s *Health) GetStatus() string {
 	return s.Status
+}
+
+// GetAccess returns the value of Access.
+func (s *Health) GetAccess() Access {
+	return s.Access
 }
 
 // GetMode returns the value of Mode.
@@ -1098,6 +1174,11 @@ func (s *Health) SetStatus(val string) {
 	s.Status = val
 }
 
+// SetAccess sets the value of Access.
+func (s *Health) SetAccess(val Access) {
+	s.Access = val
+}
+
 // SetMode sets the value of Mode.
 func (s *Health) SetMode(val string) {
 	s.Mode = val
@@ -1107,6 +1188,10 @@ type IndexCreateConflict Problem
 
 func (*IndexCreateConflict) indexCreateRes() {}
 
+type IndexCreateForbidden Problem
+
+func (*IndexCreateForbidden) indexCreateRes() {}
+
 type IndexCreateUnprocessableEntity Problem
 
 func (*IndexCreateUnprocessableEntity) indexCreateRes() {}
@@ -1114,6 +1199,10 @@ func (*IndexCreateUnprocessableEntity) indexCreateRes() {}
 type IndexDeleteConflict Problem
 
 func (*IndexDeleteConflict) indexDeleteRes() {}
+
+type IndexDeleteForbidden Problem
+
+func (*IndexDeleteForbidden) indexDeleteRes() {}
 
 type IndexDeleteUnprocessableEntity Problem
 
@@ -3468,6 +3557,10 @@ type SchemaMigrateConflict Problem
 
 func (*SchemaMigrateConflict) schemaMigrateRes() {}
 
+type SchemaMigrateForbidden Problem
+
+func (*SchemaMigrateForbidden) schemaMigrateRes() {}
+
 // A desired schema, the preflighted server identity, and explicit data-loss consent.
 // Ref: #/components/schemas/SchemaMigrateRequest
 type SchemaMigrateRequest struct {
@@ -3708,6 +3801,10 @@ type SchemaTransitionCancelConflict Problem
 
 func (*SchemaTransitionCancelConflict) schemaTransitionCancelRes() {}
 
+type SchemaTransitionCancelForbidden Problem
+
+func (*SchemaTransitionCancelForbidden) schemaTransitionCancelRes() {}
+
 type SchemaTransitionCancelNotFound Problem
 
 func (*SchemaTransitionCancelNotFound) schemaTransitionCancelRes() {}
@@ -3765,6 +3862,10 @@ func (s *StatementResult) SetControl(val Value) {
 type TableCreateConflict Problem
 
 func (*TableCreateConflict) tableCreateRes() {}
+
+type TableCreateForbidden Problem
+
+func (*TableCreateForbidden) tableCreateRes() {}
 
 type TableCreateUnprocessableEntity Problem
 
@@ -3847,6 +3948,10 @@ func (s *TableDef) SetForeignKeys(val []ForeignKeyInfo) {
 type TableDeleteConflict Problem
 
 func (*TableDeleteConflict) tableDeleteRes() {}
+
+type TableDeleteForbidden Problem
+
+func (*TableDeleteForbidden) tableDeleteRes() {}
 
 type TableDeleteUnprocessableEntity Problem
 
@@ -3952,6 +4057,10 @@ func (s *TableList) SetTables(val []TableInfo) {
 type TableUpdateConflict Problem
 
 func (*TableUpdateConflict) tableUpdateRes() {}
+
+type TableUpdateForbidden Problem
+
+func (*TableUpdateForbidden) tableUpdateRes() {}
 
 // The table properties to update.
 // Ref: #/components/schemas/TableUpdateProps

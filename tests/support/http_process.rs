@@ -17,6 +17,23 @@ pub struct RadProcess {
 
 impl RadProcess {
     pub async fn start_s3(config: &S3Config, endpoint: &str, prefix: &str) -> TestResult<Self> {
+        Self::start_s3_role(config, endpoint, prefix, "write").await
+    }
+
+    pub async fn start_s3_reader(
+        config: &S3Config,
+        endpoint: &str,
+        prefix: &str,
+    ) -> TestResult<Self> {
+        Self::start_s3_role(config, endpoint, prefix, "read").await
+    }
+
+    async fn start_s3_role(
+        config: &S3Config,
+        endpoint: &str,
+        prefix: &str,
+        role: &str,
+    ) -> TestResult<Self> {
         let (port, public, admin) = reserve_port_pair()?;
         drop((public, admin));
 
@@ -31,6 +48,10 @@ impl RadProcess {
                 prefix,
                 "--catalog-mode",
                 "schema",
+                "--role",
+                role,
+                "--reader-poll-interval-ms",
+                "100",
                 "--s3-bucket",
                 &config.bucket,
                 "--s3-region",
@@ -40,6 +61,51 @@ impl RadProcess {
             ])
             .env("AWS_ACCESS_KEY_ID", &config.access_key)
             .env("AWS_SECRET_ACCESS_KEY", &config.secret_key)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()?;
+        let mut process = Self {
+            child,
+            base: format!("http://127.0.0.1:{port}"),
+            client: Client::builder().timeout(Duration::from_secs(60)).build()?,
+        };
+        process.wait_until_ready().await?;
+        Ok(process)
+    }
+
+    pub async fn start_file(directory: &std::path::Path, prefix: &str) -> TestResult<Self> {
+        Self::start_file_role(directory, prefix, "write").await
+    }
+
+    pub async fn start_file_reader(directory: &std::path::Path, prefix: &str) -> TestResult<Self> {
+        Self::start_file_role(directory, prefix, "read").await
+    }
+
+    async fn start_file_role(
+        directory: &std::path::Path,
+        prefix: &str,
+        role: &str,
+    ) -> TestResult<Self> {
+        let (port, public, admin) = reserve_port_pair()?;
+        drop((public, admin));
+        let child = Command::new(env!("CARGO_BIN_EXE_rad"))
+            .args([
+                "serve",
+                "--addr",
+                &format!("127.0.0.1:{port}"),
+                "--storage",
+                "file",
+                "--db",
+                directory.to_str().ok_or("temporary path is not UTF-8")?,
+                "--storage-path",
+                prefix,
+                "--catalog-mode",
+                "schema",
+                "--role",
+                role,
+                "--reader-poll-interval-ms",
+                "100",
+            ])
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()?;

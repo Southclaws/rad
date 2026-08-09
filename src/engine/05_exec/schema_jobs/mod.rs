@@ -106,6 +106,7 @@ impl Engine {
     }
 
     pub async fn cancel_schema_transition(&self, id: &TransitionId) -> Result<SchemaTransition> {
+        self.require_write()?;
         let transaction = self
             .store
             .begin(IsolationLevel::SerializableSnapshot)

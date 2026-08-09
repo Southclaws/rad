@@ -70,6 +70,14 @@ pub enum ServeFrontend {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServeRole {
+    #[value(name = r"read")]
+    Read,
+    #[value(name = r"write")]
+    Write,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ServeStorage {
     #[value(name = r"memory")]
     Memory,
@@ -180,9 +188,11 @@ Unattended setup with defaults.
     #[command(
         name = r"serve",
         about = r"Run the database API and administration UI.",
-        long_about = r"Run Rad until interrupted. A fresh database defaults to direct catalog
-management; pass --catalog-mode schema when rad.schema.yaml should own all
-catalog changes. Catalog mode is immutable after database initialization.
+        long_about = r"Run Rad until interrupted. A write instance owns the Slate writer; any
+number of read instances can serve polling checkpoint views of the same
+storage path. A fresh database defaults to direct catalog management;
+pass --catalog-mode schema when rad.schema.yaml should own all catalog
+changes. Catalog mode is immutable after database initialization.
 
 The public API uses --addr (default port 7237). The administration UI uses
 the following port (default 7238).
@@ -191,6 +201,8 @@ Documentation: https://www.radengine.dev/docs/cli#rad-serve
 ",
         after_help = r"Start an in-memory schema-managed development database.
   rad serve --storage memory --catalog-mode schema
+Start a read replica of an existing database.
+  rad serve --role read
 Start against an S3-compatible endpoint.
   rad serve --storage s3 --s3-bucket rad --s3-endpoint http://127.0.0.1:9000"
     )]
@@ -549,6 +561,23 @@ pub struct ServeArgs {
     )]
     pub addr: String,
     #[arg(
+        id = r"role",
+        long = r"role",
+        help = r"Process-wide Slate access role.",
+        env = r"RAD_ROLE",
+        default_value = r"write",
+        value_enum
+    )]
+    pub role: ServeRole,
+    #[arg(
+        id = r"reader-poll-interval-ms",
+        long = r"reader-poll-interval-ms",
+        help = r"Slate manifest polling interval for read instances.",
+        env = r"RAD_READER_POLL_INTERVAL_MS",
+        default_value = r"1000"
+    )]
+    pub reader_poll_interval_ms: i64,
+    #[arg(
         id = r"storage",
         long = r"storage",
         help = r"Storage backend for SlateDB data.",
@@ -631,6 +660,8 @@ impl std::fmt::Debug for ServeArgs {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug = formatter.debug_struct("ServeArgs");
         debug.field("addr", &self.addr);
+        debug.field("role", &self.role);
+        debug.field("reader_poll_interval_ms", &self.reader_poll_interval_ms);
         debug.field("storage", &self.storage);
         debug.field("db", &self.db);
         debug.field("storage_path", &self.storage_path);

@@ -15,7 +15,14 @@ pub(super) struct ResponseProblem {
 impl ResponseProblem {
     pub(super) fn from_failure(failure: Failure) -> Self {
         match failure {
-            Failure::Invalid(failure) => Self::invalid(failure, StatusCode::UNPROCESSABLE_ENTITY),
+            Failure::Invalid(failure) => {
+                let status = if failure.reason == crate::service::error::InvalidReason::ReadOnly {
+                    StatusCode::FORBIDDEN
+                } else {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                };
+                Self::invalid(failure, status)
+            }
             Failure::ExecutionFailed(failure) => Self::execution(failure),
             Failure::Conflict(failure) => Self::conflict(failure),
             Failure::NotFound(failure) => Self::not_found(failure),
