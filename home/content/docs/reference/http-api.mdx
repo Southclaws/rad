@@ -15,16 +15,17 @@ Liveness and schema introspection.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/health` | Check that the server is alive. |
+| `GET` | `/healthz` | Check that the server is alive. |
 | `GET` | `/info` | Describe this database. |
 | `GET` | `/tables` | List the tables in the database. |
 
-#### `GET` `/health`
+#### `GET` `/healthz`
 
-A cheap liveness probe that touches no storage. It always returns `200`
-with a small status body while the process is serving, so it is safe to
-use as a readiness check or a `rad://` reachability test before opening
-a connection.
+A cheap check that touches no storage. It always returns `200` with a
+small status body while the process is serving, so it is safe to use as
+a `rad://` reachability test before opening a connection. It is database
+metadata, not an orchestrator signal: use `/readyz` and `/livez` for
+those.
 
 **Responses**
 
@@ -65,6 +66,75 @@ Use this to introspect a running server without access to the original
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TableList` | The current set of tables. |
+| `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
+
+### Probes
+
+Process probes for orchestrators such as Kubernetes. They describe the serving process rather than the database's contents, never mutate catalog or application data, and are answerable before the database itself is available. An orchestrator decides from the HTTP status alone.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/livez` | Report whether the process and its critical tasks run. |
+| `GET` | `/readyz` | Report whether the database can accept traffic. |
+| `GET` | `/startupz` | Report whether the database finished starting. |
+
+#### `GET` `/livez`
+
+Succeed while the process serves requests and every critical background
+task is alive. Storage never fails this probe: a temporary object-store
+or network outage must withdraw traffic through `/readyz` rather than
+restart a process that would come back to the same outage.
+
+The reason is `live`, `draining`, or `task_failed`.
+
+**Responses**
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| `200` | application/json `ProbeStatus` | The probed condition holds. |
+| `503` | application/json `ProbeStatus` | The probed condition does not hold. |
+| `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
+
+#### `GET` `/readyz`
+
+Succeed only while the process can serve the read or write access it was
+started with. It fails as soon as shutdown begins, as soon as the writer
+is fenced, and while storage is failing or has not been observed within
+the freshness window. A background task refreshes that observation, so
+answering the probe never issues a new object-store request.
+
+The reason is `starting`, `serving`, `draining`, `fenced`,
+`storage_unavailable`, or `storage_stale`.
+
+**Responses**
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| `200` | application/json `ProbeStatus` | The probed condition holds. |
+| `503` | application/json `ProbeStatus` | The probed condition does not hold. |
+| `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
+
+#### `GET` `/startupz`
+
+Succeed once storage is open, the catalog's identity and mode are
+validated, and the required background workers are running. Until then
+the process answers the probe endpoints and nothing else, so an
+orchestrator can bound initial storage startup without restarting a
+process that is still opening a slow object store, and no client reaches
+a partially initialized database.
+
+A storage preflight monitors the object store while startup is held.
+The preflight sets the reason to show the cause of the hold. On
+success, the reason is `started`. While startup is held, the reason is
+`starting`, `storage_bucket_missing`, `storage_unauthorized`, or
+`storage_unreachable`.
+
+**Responses**
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| `200` | application/json `ProbeStatus` | The probed condition holds. |
+| `503` | application/json `ProbeStatus` | The probed condition does not hold. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
 
 ### Schema
@@ -701,6 +771,14 @@ One diagnostic within a multi-error invalid problem.
 #### `NotFoundProblem`
 
 
+
+#### `ProbeStatus`
+
+Why a probe answered as it did. The HTTP status is the answer; this body is a diagnostic for whoever is reading `curl` output or a failing test, and orchestrators ignore it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `reason` | `string` | Yes | A stable token naming the process state behind the result. Each probe reports its own set, listed in that operation's description. |
 
 #### `Problem`
 

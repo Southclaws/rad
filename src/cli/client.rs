@@ -32,7 +32,7 @@ impl Client {
     }
 
     pub(super) async fn health(&self) -> Result<Health> {
-        self.get("health").await
+        self.get("healthz").await
     }
 
     pub(super) async fn info(&self) -> Result<DatabaseInfo> {

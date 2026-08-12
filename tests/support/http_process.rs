@@ -227,7 +227,7 @@ impl RadProcess {
             }
             if self
                 .client
-                .get(format!("{}/health", self.base))
+                .get(format!("{}/healthz", self.base))
                 .send()
                 .await
                 .is_ok_and(|response| response.status().is_success())

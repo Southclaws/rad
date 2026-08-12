@@ -1144,6 +1144,30 @@ func (s *ForeignKeyInfo) SetRefColumns(val []string) {
 	s.RefColumns = val
 }
 
+type GetLivezOK ProbeStatus
+
+func (*GetLivezOK) getLivezRes() {}
+
+type GetLivezServiceUnavailable ProbeStatus
+
+func (*GetLivezServiceUnavailable) getLivezRes() {}
+
+type GetReadyzOK ProbeStatus
+
+func (*GetReadyzOK) getReadyzRes() {}
+
+type GetReadyzServiceUnavailable ProbeStatus
+
+func (*GetReadyzServiceUnavailable) getReadyzRes() {}
+
+type GetStartupzOK ProbeStatus
+
+func (*GetStartupzOK) getStartupzRes() {}
+
+type GetStartupzServiceUnavailable ProbeStatus
+
+func (*GetStartupzServiceUnavailable) getStartupzRes() {}
+
 // The liveness status of the server.
 // Ref: #/components/schemas/Health
 type Health struct {
@@ -2954,6 +2978,25 @@ func (o OptTransitionState) Or(d TransitionState) TransitionState {
 		return v
 	}
 	return d
+}
+
+// Why a probe answered as it did. The HTTP status is the answer; this body is a diagnostic for whoever
+// is reading `curl` output or a failing test, and orchestrators ignore it.
+// Ref: #/components/schemas/ProbeStatus
+type ProbeStatus struct {
+	// A stable token naming the process state behind the result. Each probe reports its own set, listed in
+	// that operation's description.
+	Reason string `json:"reason"`
+}
+
+// GetReason returns the value of Reason.
+func (s *ProbeStatus) GetReason() string {
+	return s.Reason
+}
+
+// SetReason sets the value of Reason.
+func (s *ProbeStatus) SetReason(val string) {
+	s.Reason = val
 }
 
 // An RFC 7807 Problem Details object. Every non-2xx response carries one. `code` is the stable

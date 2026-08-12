@@ -461,7 +461,7 @@ impl Process {
             }
             if self
                 .client
-                .get(format!("{}/health", self.root))
+                .get(format!("{}/healthz", self.root))
                 .send()
                 .await
                 .is_ok_and(|response| response.status().is_success())

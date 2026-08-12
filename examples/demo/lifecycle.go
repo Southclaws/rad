@@ -148,9 +148,9 @@ func waitUntilReady(exited <-chan error, timeout time.Duration) error {
 		case err := <-exited:
 			return fmt.Errorf("server exited: %w", err)
 		case <-deadline.C:
-			return errors.New("timed out waiting for /health")
+			return errors.New("timed out waiting for /healthz")
 		case <-ticker.C:
-			response, err := client.Get("http://127.0.0.1:7237/health")
+			response, err := client.Get("http://127.0.0.1:7237/healthz")
 			if err == nil {
 				response.Body.Close()
 				if response.StatusCode >= 200 && response.StatusCode < 300 {

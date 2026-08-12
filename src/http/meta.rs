@@ -1,4 +1,4 @@
-use super::generated::server::{GetHealthResponse, GetInfoResponse, MetaApi, TableListResponse};
+use super::generated::server::{GetHealthzResponse, GetInfoResponse, MetaApi, TableListResponse};
 use super::generated::types::{Access, DatabaseInfo, DatabaseInfoMode, Health};
 use super::{server, wire};
 use crate::engine::catalog::model::Mode;
@@ -36,8 +36,8 @@ impl MetaApi for Api {
         })
     }
 
-    async fn get_health(&self) -> GetHealthResponse {
-        GetHealthResponse::Ok(Health {
+    async fn get_healthz(&self) -> GetHealthzResponse {
+        GetHealthzResponse::Ok(Health {
             access: if self.engine.is_read_only() {
                 Access::Read
             } else {

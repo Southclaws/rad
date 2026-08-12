@@ -1324,6 +1324,14 @@ pub struct ColumnUpdateProps {
     ///The column's new name.
     pub name: String,
 }
+/**Why a probe answered as it did. The HTTP status is the answer; this body is a diagnostic for whoever is reading `curl` output or a failing test, and orchestrators ignore it.
+*/
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProbeStatus {
+    /**A stable token naming the process state behind the result. Each probe reports its own set, listed in that operation's description.
+*/
+    pub reason: String,
+}
 /**An arbitrary JSON object containing a PIR execution program. As with
 `Query`, the HTTP contract does not describe the PIR grammar; servers
 validate this raw body against the independent PIR JSON Schema, and

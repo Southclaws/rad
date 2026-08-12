@@ -259,6 +259,17 @@ impl SchemaJobRunner {
         self.shared.stats.load()
     }
 
+    /// Whether the worker stopped without shutdown being requested, which
+    /// leaves durable transitions unowned until the process restarts.
+    pub fn worker_lost(&self) -> bool {
+        if self.shared.stopping.load(Ordering::Acquire) {
+            return false;
+        }
+        self.task
+            .try_lock()
+            .is_ok_and(|task| task.as_ref().is_some_and(JoinHandle::is_finished))
+    }
+
     pub fn last_error(&self) -> Option<String> {
         self.shared
             .last_error

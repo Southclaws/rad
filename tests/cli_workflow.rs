@@ -301,7 +301,7 @@ async fn wait_until_ready(port: u16, child: &mut Child) {
             panic!("server exited before readiness: {status}");
         }
         if client
-            .get(format!("http://127.0.0.1:{port}/health"))
+            .get(format!("http://127.0.0.1:{port}/healthz"))
             .send()
             .await
             .is_ok_and(|response| response.status().is_success())

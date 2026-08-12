@@ -4,4 +4,5 @@ use (
 	.
 	./clients/go
 	./examples/demo
+	./operator
 )

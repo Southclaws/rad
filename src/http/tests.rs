@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
@@ -12,6 +13,7 @@ use crate::engine::exec::Engine;
 use crate::engine::kv::fault::{FaultAction, FaultController, FaultRule, FaultingKv, Operation};
 use crate::engine::kv::slatedb::Store;
 use crate::engine::kv::{ErrorKind as KvErrorKind, TransactionalKv};
+use crate::health::Health;
 
 async fn test_router(name: &str, mode: Mode) -> axum::Router {
     let store = Arc::new(Store::memory(name).await.unwrap());
@@ -95,7 +97,7 @@ async fn json_body(response: axum::response::Response) -> Value {
 async fn health_reports_the_immutable_catalog_mode() {
     let response = test_router("http-health", Mode::Schema)
         .await
-        .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+        .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -104,6 +106,119 @@ async fn health_reports_the_immutable_catalog_mode() {
         json_body(response).await,
         json!({"status": "ok", "access": "write", "mode": "schema"})
     );
+}
+
+#[tokio::test]
+async fn a_serving_router_passes_every_probe() {
+    let router = test_router("http-probes-serving", Mode::Schema).await;
+
+    for (path, reason) in [
+        ("/startupz", "started"),
+        ("/readyz", "serving"),
+        ("/livez", "live"),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(request(Method::GET, path))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            json_body(response).await,
+            json!({"reason": reason}),
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_starting_process_serves_probes_and_nothing_else() {
+    let router = super::probe_router(Health::starting(Duration::from_secs(15)));
+
+    let startup = router
+        .clone()
+        .oneshot(request(Method::GET, "/startupz"))
+        .await
+        .unwrap();
+    assert_eq!(startup.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json_body(startup).await, json!({"reason": "starting"}));
+
+    let ready = router
+        .clone()
+        .oneshot(request(Method::GET, "/readyz"))
+        .await
+        .unwrap();
+    assert_eq!(ready.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json_body(ready).await, json!({"reason": "starting"}));
+
+    let live = router
+        .clone()
+        .oneshot(request(Method::GET, "/livez"))
+        .await
+        .unwrap();
+    assert_eq!(live.status(), StatusCode::OK);
+    assert_eq!(json_body(live).await, json!({"reason": "live"}));
+
+    let execute = router
+        .oneshot(post_json("/execute", one_row_program()))
+        .await
+        .unwrap();
+    assert_eq!(execute.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn draining_withdraws_readiness_while_the_api_still_answers() {
+    let store = Arc::new(Store::memory("http-probes-draining").await.unwrap());
+    let health = Health::serving();
+    let router = super::router_with_health(
+        Arc::new(Engine::new(store)),
+        Mode::Direct,
+        "memory:///draining",
+        health.clone(),
+    );
+    health.drain();
+
+    let ready = router
+        .clone()
+        .oneshot(request(Method::GET, "/readyz"))
+        .await
+        .unwrap();
+    assert_eq!(ready.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json_body(ready).await, json!({"reason": "draining"}));
+
+    let live = router
+        .clone()
+        .oneshot(request(Method::GET, "/livez"))
+        .await
+        .unwrap();
+    assert_eq!(live.status(), StatusCode::OK);
+
+    let execute = router
+        .oneshot(post_json("/execute", one_row_program()))
+        .await
+        .unwrap();
+    assert_eq!(execute.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_fenced_writer_reports_why_it_is_unready() {
+    let health = Health::serving();
+    health.observe_fenced();
+    let router = super::probe_router(health);
+
+    let ready = router
+        .clone()
+        .oneshot(request(Method::GET, "/readyz"))
+        .await
+        .unwrap();
+    assert_eq!(ready.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json_body(ready).await, json!({"reason": "fenced"}));
+
+    let live = router
+        .oneshot(request(Method::GET, "/livez"))
+        .await
+        .unwrap();
+    assert_eq!(live.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -140,7 +255,7 @@ async fn public_api_allows_the_admin_origin_and_json_preflights() {
     );
 
     let response = router
-        .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+        .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);

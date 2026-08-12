@@ -49,7 +49,7 @@ async fn writer_fencing_stops_the_displaced_process() -> TestResult {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
-    let health = reqwest::get(format!("http://127.0.0.1:{second_port}/health")).await?;
+    let health = reqwest::get(format!("http://127.0.0.1:{second_port}/healthz")).await?;
     if !health.status().is_success() {
         return Err(format!(
             "replacement writer did not serve the database: {}",
@@ -97,7 +97,7 @@ async fn wait_for_health(port: u16, process: &mut Child) -> TestResult {
             return Err(format!("writer exited before readiness: {status}").into());
         }
         if client
-            .get(format!("http://127.0.0.1:{port}/health"))
+            .get(format!("http://127.0.0.1:{port}/healthz"))
             .send()
             .await
             .is_ok_and(|response| response.status().is_success())

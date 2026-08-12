@@ -19,10 +19,23 @@ pub enum ErrorKind {
     Internal,
 }
 
+/// Why a store reported itself permanently closed. A closed store is unusable
+/// either way, but the process reacts differently: losing ownership withdraws
+/// traffic and stops, while a panicked background task is a failure the
+/// supervisor should restart.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Closure {
+    Clean,
+    /// A newer writer took ownership of the storage location.
+    Fenced,
+    Panicked,
+}
+
 #[derive(Clone, Debug)]
 pub struct Error {
     kind: ErrorKind,
     message: String,
+    closure: Option<Closure>,
     source: Option<Source>,
 }
 
@@ -31,10 +44,17 @@ impl Error {
         self.kind
     }
 
+    /// Why the store closed, for a [`ErrorKind::Closed`] error whose backend
+    /// reported a cause.
+    pub fn closure(&self) -> Option<Closure> {
+        self.closure
+    }
+
     pub(crate) fn message(kind: ErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
             message: message.into(),
+            closure: None,
             source: None,
         }
     }
@@ -47,6 +67,20 @@ impl Error {
         Self {
             kind,
             message: message.into(),
+            closure: None,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    pub(crate) fn closed(
+        closure: Closure,
+        message: impl Into<String>,
+        source: impl StdError + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            kind: ErrorKind::Closed,
+            message: message.into(),
+            closure: Some(closure),
             source: Some(Arc::new(source)),
         }
     }

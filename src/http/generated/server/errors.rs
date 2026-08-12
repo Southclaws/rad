@@ -79,16 +79,172 @@ impl IntoResponse for GetInfoResponse {
         }
     }
 }
-/// Response for `GET /health` (operationId `GetHealth`).
-pub enum GetHealthResponse {
+/// Response for `GET /healthz` (operationId `GetHealthz`).
+pub enum GetHealthzResponse {
     Ok(Health),
     Default(StatusCode, Problem),
 }
-impl IntoResponse for GetHealthResponse {
+impl IntoResponse for GetHealthzResponse {
     fn into_response(self) -> ::axum::response::Response {
         match self {
             Self::Ok(body) => {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Default(status, body) => {
+                if !(true) {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+                let mut response = (status, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+        }
+    }
+}
+/// Response for `GET /startupz` (operationId `GetStartupz`).
+pub enum GetStartupzResponse {
+    Ok(ProbeStatus),
+    ServiceUnavailable(ProbeStatus),
+    Default(StatusCode, Problem),
+}
+impl IntoResponse for GetStartupzResponse {
+    fn into_response(self) -> ::axum::response::Response {
+        match self {
+            Self::Ok(body) => {
+                let mut response = (StatusCode::OK, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::ServiceUnavailable(body) => {
+                let mut response = (StatusCode::SERVICE_UNAVAILABLE, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Default(status, body) => {
+                if !(true) {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+                let mut response = (status, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+        }
+    }
+}
+/// Response for `GET /readyz` (operationId `GetReadyz`).
+pub enum GetReadyzResponse {
+    Ok(ProbeStatus),
+    ServiceUnavailable(ProbeStatus),
+    Default(StatusCode, Problem),
+}
+impl IntoResponse for GetReadyzResponse {
+    fn into_response(self) -> ::axum::response::Response {
+        match self {
+            Self::Ok(body) => {
+                let mut response = (StatusCode::OK, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::ServiceUnavailable(body) => {
+                let mut response = (StatusCode::SERVICE_UNAVAILABLE, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Default(status, body) => {
+                if !(true) {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+                let mut response = (status, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+        }
+    }
+}
+/// Response for `GET /livez` (operationId `GetLivez`).
+pub enum GetLivezResponse {
+    Ok(ProbeStatus),
+    ServiceUnavailable(ProbeStatus),
+    Default(StatusCode, Problem),
+}
+impl IntoResponse for GetLivezResponse {
+    fn into_response(self) -> ::axum::response::Response {
+        match self {
+            Self::Ok(body) => {
+                let mut response = (StatusCode::OK, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::ServiceUnavailable(body) => {
+                let mut response = (StatusCode::SERVICE_UNAVAILABLE, Json(body))
+                    .into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
                 ) else {

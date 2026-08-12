@@ -3962,7 +3962,7 @@ export class Client {
 
   /** Verifies the server is reachable. */
   async ping(): Promise<void> {
-    await this.rpc.req("/health");
+    await this.rpc.req("/healthz");
   }
 }
 

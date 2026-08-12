@@ -106,12 +106,28 @@ pub trait MetaApi: Send + Sync + 'static {
     async fn get_info(&self) -> GetInfoResponse;
     /// Check that the server is alive.
     ///
-    /// `GET /health`
-    async fn get_health(&self) -> GetHealthResponse;
+    /// `GET /healthz`
+    async fn get_healthz(&self) -> GetHealthzResponse;
     /// List the tables in the database.
     ///
     /// `GET /tables`
     async fn table_list(&self) -> TableListResponse;
+}
+/// Operations under the `probes` tag.
+#[async_trait::async_trait]
+pub trait ProbesApi: Send + Sync + 'static {
+    /// Report whether the database finished starting.
+    ///
+    /// `GET /startupz`
+    async fn get_startupz(&self) -> GetStartupzResponse;
+    /// Report whether the database can accept traffic.
+    ///
+    /// `GET /readyz`
+    async fn get_readyz(&self) -> GetReadyzResponse;
+    /// Report whether the process and its critical tasks run.
+    ///
+    /// `GET /livez`
+    async fn get_livez(&self) -> GetLivezResponse;
 }
 /// Operations under the `schema` tag.
 #[async_trait::async_trait]

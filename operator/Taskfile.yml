@@ -1,0 +1,128 @@
+version: "3"
+
+vars:
+  KUBE_CONTEXT: '{{.KUBE_CONTEXT | default ""}}'
+  NAMESPACE: '{{.NAMESPACE | default "default"}}'
+  OPERATOR_IMAGE: '{{.OPERATOR_IMAGE | default "ghcr.io/southclaws/rad-operator:edge"}}'
+
+tasks:
+  default:
+    silent: true
+    cmds:
+      - task --list-all
+
+  generate:
+    desc: Regenerate Kubernetes API code, CRD, and least-privilege RBAC
+    cmds:
+      - go generate ./...
+
+  fmt:
+    desc: Format operator Go sources
+    cmds:
+      - gofmt -w api cmd internal generate.go
+
+  lint:
+    desc: Check generated artifacts, formatting, and Go diagnostics
+    cmds:
+      - task: generate
+      - task: fmt
+      - git diff --exit-code -- api config cmd generate.go internal
+      - go vet ./...
+
+  manifests:
+    desc: Render the installation, examples, and local proof-of-concept Kustomize trees
+    cmds:
+      - kubectl kustomize config/install >/dev/null
+      - kubectl kustomize config/examples >/dev/null
+      - kubectl kustomize --load-restrictor=LoadRestrictionsNone hack/poc >/dev/null
+
+  test:
+    desc: Test the operator with the race detector
+    cmds:
+      - go test -race ./... {{.CLI_ARGS}}
+
+  test:env:
+    desc: Test reconciliation, admission, and the cluster SDK against a real API server
+    vars:
+      ENVTEST_K8S: '{{.ENVTEST_K8S | default "1.36.x!"}}'
+    cmds:
+      # -count=1 keeps Kubernetes-version sweeps honest: the Go test cache does
+      # not distinguish runs by the API server binaries behind the assets path.
+      - >-
+        KUBEBUILDER_ASSETS="$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1
+        use -p path {{.ENVTEST_K8S}})"
+        go test -race -count=1 -tags=envtest ./internal/controller ./cluster {{.CLI_ARGS}}
+
+  test:e2e:
+    desc: Run the outside-in suite against the current kubecontext's operator installation
+    cmds:
+      - >-
+        RAD_E2E=1
+        {{if .KUBE_CONTEXT}}E2E_KUBE_CONTEXT={{.KUBE_CONTEXT}}{{end}}
+        E2E_NAMESPACE={{.NAMESPACE}}
+        go test -tags=e2e -count=1 -timeout 45m -v ./test/e2e {{.CLI_ARGS}}
+
+  test:soak:
+    desc: Run the multi-tenant chaos soak with the staged-upgrade drill
+    cmds:
+      - >-
+        RAD_E2E=1 RAD_SOAK=1
+        {{if .KUBE_CONTEXT}}E2E_KUBE_CONTEXT={{.KUBE_CONTEXT}}{{end}}
+        E2E_NAMESPACE={{.NAMESPACE}}
+        go test -tags=e2e -count=1 -timeout 60m -v ./test/e2e
+        -run TestSoakFleetUnderChaosLosesNoAcknowledgedWrite {{.CLI_ARGS}}
+
+  chaos:install:
+    desc: Install Chaos Mesh for the soak's network-degradation phase
+    cmds:
+      - helm repo add chaos-mesh https://charts.chaos-mesh.org
+      - >-
+        helm {{if .KUBE_CONTEXT}}--kube-context {{.KUBE_CONTEXT}}{{end}}
+        upgrade --install chaos-mesh chaos-mesh/chaos-mesh
+        --namespace chaos-mesh --create-namespace
+        --set chaosDaemon.runtime=containerd
+        --set chaosDaemon.socketPath=/run/containerd/containerd.sock
+        --wait --timeout 5m
+
+  mutation:
+    desc: Mutation-test every covered controller decision
+    cmds:
+      - >-
+        go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0 unleash
+        --workers=4
+        --timeout-coefficient=150
+        --threshold-efficacy=100
+        --threshold-mcover=98
+        ./internal/controller {{.CLI_ARGS}}
+
+  verify:
+    desc: Run generation, rendering, diagnostics, race tests, envtest, and diff checks
+    cmds:
+      - task: lint
+      - task: manifests
+      - task: test
+      - task: test:env
+      - git diff --check
+
+  build:
+    desc: Build the operator manager binary
+    env:
+      CGO_ENABLED: "0"
+    cmds:
+      - go build -trimpath -o bin/manager ./cmd
+
+  docker:build:
+    desc: Build the operator container image
+    cmds:
+      - docker build -t {{.OPERATOR_IMAGE}} .
+
+  install:
+    desc: Generate and install the Database CRD
+    cmds:
+      - task: generate
+      - kubectl {{if .KUBE_CONTEXT}}--context {{.KUBE_CONTEXT}}{{end}} apply -k config/install/crd
+
+  deploy:
+    desc: Deploy the complete operator installation into a namespace
+    cmds:
+      - kubectl {{if .KUBE_CONTEXT}}--context {{.KUBE_CONTEXT}}{{end}} -n {{.NAMESPACE}} apply -k config/install

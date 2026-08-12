@@ -10,7 +10,10 @@ enable_async_client = false
 framework = "axum"
 operations = [
   "GetInfo",
-  "GetHealth",
+  "GetHealthz",
+  "GetStartupz",
+  "GetReadyz",
+  "GetLivez",
   "GetSchema",
   "SchemaDiff",
   "SchemaMigrate",

@@ -1,5 +1,13 @@
 version: "3"
 
+includes:
+  operator:
+    taskfile: ./operator/Taskfile.yml
+    dir: ./operator
+
+vars:
+  RAD_IMAGE: '{{.RAD_IMAGE | default "ghcr.io/southclaws/rad:edge"}}'
+
 tasks:
   default:
     silent: true
@@ -10,6 +18,11 @@ tasks:
     desc: Build the Rad release binary
     cmds:
       - cargo build --locked --release {{.CLI_ARGS}}
+
+  docker:build:
+    desc: Build the Rad server container image
+    cmds:
+      - docker build -t {{.RAD_IMAGE}} .
 
   lint:
     desc: Check Rust formatting, all targets, production hygiene, and rustdoc

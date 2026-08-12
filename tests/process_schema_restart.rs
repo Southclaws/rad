@@ -162,7 +162,7 @@ async fn wait_until_ready(client: &Client, base: &str, child: &mut Process) {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         child.assert_running();
-        if let Ok(response) = client.get(format!("{base}/health")).send().await
+        if let Ok(response) = client.get(format!("{base}/healthz")).send().await
             && response.status() == StatusCode::OK
         {
             return;
