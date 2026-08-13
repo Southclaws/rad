@@ -150,13 +150,15 @@ input:disabled, select:disabled { color: var(--muted); opacity: .8; }
 .admin-shell__brand { color: var(--accent); font: 700 17px/1 var(--mono); letter-spacing: -.05em; }
 .admin-shell__product, .admin-shell__database { color: var(--muted); font-size: 12px; }
 
-.admin-shell__mode {
+.admin-shell__access, .admin-shell__mode {
   padding: 2px 7px;
   border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent);
   font: 11px/1.4 var(--mono);
 }
+
+.admin-shell__access--read { background: rgb(255 209 124 / 14%); color: var(--warning); }
 
 .admin-shell__mode--schema { background: rgb(255 209 124 / 14%); color: var(--warning); }
 

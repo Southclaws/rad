@@ -88,6 +88,8 @@ func (c *Client) CancelSchemaTransition(ctx context.Context, transitionID string
 		return TransitionControl{}, apiError(oas.Problem(*value))
 	case *oas.SchemaTransitionCancelConflict:
 		return TransitionControl{}, apiError(oas.Problem(*value))
+	case *oas.SchemaTransitionCancelForbidden:
+		return TransitionControl{}, apiError(oas.Problem(*value))
 	case *oas.SchemaTransitionCancelUnprocessableEntity:
 		return TransitionControl{}, apiError(oas.Problem(*value))
 	default:

@@ -132,6 +132,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/SchemaMigrateOK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
@@ -206,6 +207,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/SchemaTransitionOK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
@@ -249,6 +251,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/TableOK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
@@ -270,6 +273,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/TableOK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
     delete:
@@ -287,6 +291,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "204": { $ref: "#/components/responses/NoContent" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
@@ -308,6 +313,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/TableOK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
@@ -330,6 +336,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/TableOK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
     delete:
@@ -347,6 +354,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/TableOK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
@@ -368,6 +376,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/TableOK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
@@ -387,6 +396,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/TableOK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
@@ -442,6 +452,7 @@ paths:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/ExecuteOK" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
@@ -537,6 +548,11 @@ components:
       content:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
+    Forbidden:
+      description: The operation requires a write instance.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
     NotFound:
       description: The addressed resource, such as a transaction, does not exist.
       content:
@@ -607,6 +623,11 @@ components:
           schema: { $ref: "#/components/schemas/ProgramResult" }
 
   schemas:
+    Access:
+      description: Whether this process serves a checkpoint reader or owns the Slate writer.
+      type: string
+      enum: [read, write]
+
     Problem:
       description: |
         An RFC 7807 Problem Details object. Every non-2xx response carries one.
@@ -1052,10 +1073,11 @@ components:
     Health:
       description: The liveness status of the server.
       type: object
-      required: [status, mode]
+      required: [status, access, mode]
       properties:
         status:
           type: string
+        access: { $ref: "#/components/schemas/Access" }
         mode:
           description: |
             The database's catalog management mode: `direct` (the catalog
@@ -1066,8 +1088,9 @@ components:
     DatabaseInfo:
       description: Stable metadata about a Rad database.
       type: object
-      required: [mode, schema_version, schema_hash]
+      required: [access, mode, schema_version, schema_hash]
       properties:
+        access: { $ref: "#/components/schemas/Access" }
         mode:
           description: |
             The database's catalog management mode: `direct` (the catalog

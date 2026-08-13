@@ -25,6 +25,7 @@ export interface KVDetail {
 }
 
 export interface DatabaseInfo {
+  access: "read" | "write";
   mode: "direct" | "schema";
   location?: string;
 }
@@ -65,6 +66,7 @@ export interface TableInfo {
 
 export interface Health {
   status: string;
+  access: "read" | "write";
   mode: "direct" | "schema";
 }
 

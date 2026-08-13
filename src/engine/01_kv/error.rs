@@ -9,6 +9,7 @@ type Source = Arc<dyn StdError + Send + Sync>;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorKind {
+    ReadOnly,
     Conflict,
     CommitOutcomeUnknown,
     Closed,

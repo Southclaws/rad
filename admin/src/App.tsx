@@ -30,6 +30,7 @@ export default function App() {
       <header className="admin-shell__header">
         <span className="admin-shell__brand">rad</span>
         <span className="admin-shell__product">admin</span>
+        {info && <span className={`admin-shell__access admin-shell__access--${info.access}`}>{info.access}</span>}
         {info && <span className={`admin-shell__mode admin-shell__mode--${info.mode}`}>{info.mode} catalog</span>}
         {info?.location && <span className="admin-shell__database" title={info.location}>{info.location}</span>}
       </header>
@@ -45,16 +46,23 @@ export default function App() {
             <span>tables</span>
             <button className="admin-nav__refresh" title="Refresh tables" onClick={refreshTables}>↻</button>
           </div>
-          <button className={`admin-nav__item admin-nav__item--create ${view.kind === 'new-table' ? 'admin-nav__item--active' : ''}`} onClick={() => setView({ kind: 'new-table' })}>
+          {info?.access === 'write' && <button className={`admin-nav__item admin-nav__item--create ${view.kind === 'new-table' ? 'admin-nav__item--active' : ''}`} onClick={() => setView({ kind: 'new-table' })}>
             <span className="admin-nav__icon">+</span> Create table
-          </button>
+          </button>}
           {tables.map((table) => (
             <button key={table.name} className={`admin-nav__item ${view.kind === 'table' && view.name === table.name ? 'admin-nav__item--active' : ''}`} onClick={() => setView({ kind: 'table', name: table.name })}>
               <span className="admin-nav__icon">▤</span> {table.name}
             </button>
           ))}
-          {info?.mode === 'schema' && <p className="admin-nav__note">Schema-managed: catalog edits are unavailable.</p>}
-          {tables.length === 0 && <p className="admin-nav__empty">No tables yet. Create one from the public catalog API.</p>}
+          {info?.access === 'read' && <p className="admin-nav__note">Read replica: catalog edits are unavailable.</p>}
+          {info?.access === 'write' && info.mode === 'schema' && <p className="admin-nav__note">Schema-managed: catalog edits are unavailable.</p>}
+          {tables.length === 0 && <p className="admin-nav__empty">
+            {info?.access === 'read'
+              ? 'No tables are visible on this replica.'
+              : info?.mode === 'schema'
+                ? 'No tables yet. Apply a schema migration to create one.'
+                : 'No tables yet. Create one from the public catalog API.'}
+          </p>}
         </nav>
         <main className="admin-shell__content">
           {error && <div className="ui-notice ui-notice--error" role="alert">{error}</div>}
@@ -72,7 +80,7 @@ export default function App() {
             <TableView
               key={selectedTable.name}
               table={selectedTable}
-              mutable={info?.mode === 'direct'}
+              mutable={info?.access === 'write' && info.mode === 'direct'}
               onChanged={(table) => {
                 refreshTables()
                 setView({ kind: 'table', name: table.name })

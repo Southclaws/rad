@@ -97,6 +97,9 @@ impl SchemaApi for Api {
     }
 
     async fn schema_migrate(&self, body: Option<SchemaMigrateRequest>) -> SchemaMigrateResponse {
+        if let Some(problem) = self.write_problem() {
+            return schema_migrate_problem(problem);
+        }
         let Some(body) = body else {
             return schema_migrate_problem(missing_body());
         };
@@ -259,6 +262,7 @@ fn schema_diff_problem(problem: ResponseProblem) -> SchemaDiffResponse {
 
 fn schema_migrate_problem(problem: ResponseProblem) -> SchemaMigrateResponse {
     match problem.status {
+        StatusCode::FORBIDDEN => SchemaMigrateResponse::Forbidden(problem.body),
         StatusCode::CONFLICT => SchemaMigrateResponse::Conflict(problem.body),
         StatusCode::UNPROCESSABLE_ENTITY => {
             SchemaMigrateResponse::UnprocessableEntity(problem.body)

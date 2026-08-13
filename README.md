@@ -101,6 +101,12 @@ rad serve --catalog-mode schema
 
 Catalog mode schema means you can only modify the database schema by running migrations. You can omit this in order to more freely create/edit/delete tables and columns.
 
+The default process role is `write`. To serve read traffic from the same file
+directory or S3 bucket and storage path, start additional processes with
+`rad serve --role read`. Read replicas follow committed Slate checkpoints at
+the configured polling interval and reject every mutation surface with the
+stable `read_only` reason.
+
 The public API listens on `http://localhost:7237`. The same process serves the built-in administration UI on `http://localhost:7238`. You can use the admin UI to explore, if you aren't using Schema mode, you can create, edit and delete tables or columns from this UI.
 
 Preview and apply a schema to the running server:

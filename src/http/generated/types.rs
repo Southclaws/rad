@@ -774,6 +774,17 @@ impl AsRef<str> for InternalProblemCode {
         self.as_str()
     }
 }
+///The liveness status of the server.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Health {
+    pub access: Access,
+    /**The database's catalog management mode: `direct` (the catalog
+is mutable over this API) or `schema` (rad.schema.yaml migrations own
+the catalog and the imperative catalog operations are rejected).
+*/
+    pub mode: String,
+    pub status: String,
+}
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExecutionFailedProblem {
     ///A human readable explanation specific to this occurrence.
@@ -906,6 +917,7 @@ pub struct ExecutionContext {
 ///Stable metadata about a Rad database.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DatabaseInfo {
+    pub access: Access,
     ///The configured backing-store location, when the server exposes one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
@@ -953,6 +965,33 @@ impl ::std::fmt::Display for DatabaseInfoMode {
     }
 }
 impl AsRef<str> for DatabaseInfoMode {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+///Whether this process serves a checkpoint reader or owns the Slate writer.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum Access {
+    #[default]
+    #[serde(rename = "read")]
+    Read,
+    #[serde(rename = "write")]
+    Write,
+}
+impl Access {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+}
+impl ::std::fmt::Display for Access {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for Access {
     fn as_ref(&self) -> &str {
         self.as_str()
     }
@@ -1284,16 +1323,6 @@ pub type Value = serde_json::Value;
 pub struct ColumnUpdateProps {
     ///The column's new name.
     pub name: String,
-}
-///The liveness status of the server.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Health {
-    /**The database's catalog management mode: `direct` (the catalog
-is mutable over this API) or `schema` (rad.schema.yaml migrations own
-the catalog and the imperative catalog operations are rejected).
-*/
-    pub mode: String,
-    pub status: String,
 }
 /**An arbitrary JSON object containing a PIR execution program. As with
 `Query`, the HTTP contract does not describe the PIR grammar; servers

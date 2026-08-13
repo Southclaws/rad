@@ -20,6 +20,7 @@ macro_rules! catalog_problem {
     ($response:ident, $problem:expr) => {{
         let problem = $problem;
         match problem.status {
+            StatusCode::FORBIDDEN => $response::Forbidden(problem.body),
             StatusCode::CONFLICT => $response::Conflict(problem.body),
             StatusCode::UNPROCESSABLE_ENTITY => $response::UnprocessableEntity(problem.body),
             status => $response::Default(status, problem.body),
@@ -30,6 +31,9 @@ macro_rules! catalog_problem {
 #[async_trait::async_trait]
 impl CatalogApi for Api {
     async fn table_create(&self, body: Option<WireTableDef>) -> TableCreateResponse {
+        if let Some(problem) = self.write_problem() {
+            return catalog_problem!(TableCreateResponse, problem);
+        }
         if let Some(problem) = mode_gate(self.mode) {
             return catalog_problem!(TableCreateResponse, problem);
         }
@@ -64,6 +68,9 @@ impl CatalogApi for Api {
         table: String,
         body: Option<TableUpdateProps>,
     ) -> TableUpdateResponse {
+        if let Some(problem) = self.write_problem() {
+            return catalog_problem!(TableUpdateResponse, problem);
+        }
         if let Some(problem) = mode_gate(self.mode) {
             return catalog_problem!(TableUpdateResponse, problem);
         }
@@ -98,6 +105,9 @@ impl CatalogApi for Api {
     }
 
     async fn table_delete(&self, table: String) -> TableDeleteResponse {
+        if let Some(problem) = self.write_problem() {
+            return table_delete_problem(problem);
+        }
         if let Some(problem) = mode_gate(self.mode) {
             return table_delete_problem(problem);
         }
@@ -127,6 +137,9 @@ impl CatalogApi for Api {
         table: String,
         body: Option<WireColumnDef>,
     ) -> ColumnCreateResponse {
+        if let Some(problem) = self.write_problem() {
+            return catalog_problem!(ColumnCreateResponse, problem);
+        }
         if let Some(problem) = mode_gate(self.mode) {
             return catalog_problem!(ColumnCreateResponse, problem);
         }
@@ -169,6 +182,9 @@ impl CatalogApi for Api {
         column: String,
         body: Option<ColumnUpdateProps>,
     ) -> ColumnUpdateResponse {
+        if let Some(problem) = self.write_problem() {
+            return catalog_problem!(ColumnUpdateResponse, problem);
+        }
         if let Some(problem) = mode_gate(self.mode) {
             return catalog_problem!(ColumnUpdateResponse, problem);
         }
@@ -206,6 +222,9 @@ impl CatalogApi for Api {
     }
 
     async fn column_delete(&self, table: String, column: String) -> ColumnDeleteResponse {
+        if let Some(problem) = self.write_problem() {
+            return catalog_problem!(ColumnDeleteResponse, problem);
+        }
         if let Some(problem) = mode_gate(self.mode) {
             return catalog_problem!(ColumnDeleteResponse, problem);
         }
@@ -239,6 +258,9 @@ impl CatalogApi for Api {
     }
 
     async fn index_create(&self, table: String, body: Option<IndexInfo>) -> IndexCreateResponse {
+        if let Some(problem) = self.write_problem() {
+            return catalog_problem!(IndexCreateResponse, problem);
+        }
         if let Some(problem) = mode_gate(self.mode) {
             return catalog_problem!(IndexCreateResponse, problem);
         }
@@ -273,6 +295,9 @@ impl CatalogApi for Api {
     }
 
     async fn index_delete(&self, table: String, index: String) -> IndexDeleteResponse {
+        if let Some(problem) = self.write_problem() {
+            return catalog_problem!(IndexDeleteResponse, problem);
+        }
         if let Some(problem) = mode_gate(self.mode) {
             return catalog_problem!(IndexDeleteResponse, problem);
         }
@@ -396,6 +421,7 @@ fn invalid_with_reason(reason: InvalidReason, detail: impl Into<String>) -> Resp
 
 fn table_delete_problem(problem: ResponseProblem) -> TableDeleteResponse {
     match problem.status {
+        StatusCode::FORBIDDEN => TableDeleteResponse::Forbidden(problem.body),
         StatusCode::CONFLICT => TableDeleteResponse::Conflict(problem.body),
         StatusCode::UNPROCESSABLE_ENTITY => TableDeleteResponse::UnprocessableEntity(problem.body),
         status => TableDeleteResponse::Default(status, problem.body),

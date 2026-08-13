@@ -46,6 +46,7 @@ uuid = { version = "1.17.0", features = ["v4"] }
 [dev-dependencies]
 rusty-s3 = { version = "0.10.1", default-features = false, features = ["rustcrypto"] }
 testcontainers = "0.27.3"
+tokio-postgres = "0.7.15"
 tower = { version = "0.5", features = ["util"] }
 turmoil = "0.7.2"
 

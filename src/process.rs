@@ -4,16 +4,19 @@ use std::env;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
+use bytes::Bytes;
 use slatedb::object_store::ObjectStore;
 use slatedb::object_store::aws::AmazonS3Builder;
 use slatedb::object_store::local::LocalFileSystem;
+use slatedb::object_store::memory::InMemory;
 
 use crate::engine::catalog::Catalog;
 use crate::engine::catalog::model::Mode;
 use crate::engine::exec::Engine;
-use crate::engine::kv::TransactionalKv;
-use crate::engine::kv::slatedb::Store;
+use crate::engine::kv::slatedb::{ReaderStore, Store};
+use crate::engine::kv::{Kv, TransactionalKv};
 use crate::scheduler::schema_jobs::{SchemaJobConfig, SchemaJobRunner};
 
 pub type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -40,12 +43,42 @@ pub enum Frontend {
     Postgres,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Role {
+    Read,
+    #[default]
+    Write,
+}
+
+impl std::str::FromStr for Role {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "read" => Ok(Self::Read),
+            "write" => Ok(Self::Write),
+            _ => Err(format!("unknown role {value:?} (read or write)")),
+        }
+    }
+}
+
+impl std::fmt::Display for Role {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     pub address: String,
     pub catalog_mode: Option<Mode>,
     pub frontend: Option<Frontend>,
     pub postgres_address: String,
+    pub reader_poll_interval: Duration,
+    pub role: Role,
     pub storage: StorageConfig,
 }
 
@@ -65,6 +98,15 @@ impl Config {
             }
         };
         let postgres_address = normalize_address(&env_or("RAD_POSTGRES_ADDR", "0.0.0.0:5432"));
+        let reader_poll_interval = Duration::from_millis(
+            env_or("RAD_READER_POLL_INTERVAL_MS", "1000")
+                .parse::<u64>()
+                .map_err(|error| format!("invalid RAD_READER_POLL_INTERVAL_MS: {error}"))?,
+        );
+        if reader_poll_interval.is_zero() {
+            return Err("RAD_READER_POLL_INTERVAL_MS must be greater than zero".into());
+        }
+        let role = env_or("RAD_ROLE", "write").parse()?;
         let path = env_or("RAD_STORAGE_PATH", "rad");
         let storage = match env_or("RAD_STORAGE", "file").as_str() {
             "memory" => StorageConfig::Memory { path },
@@ -93,6 +135,8 @@ impl Config {
             catalog_mode,
             frontend,
             postgres_address,
+            reader_poll_interval,
+            role,
             storage,
         })
     }
@@ -113,23 +157,36 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
         }
         None => None,
     };
-    let (store, location) = open_storage(&config.storage).await?;
-    let store = Arc::new(store);
+    let opened = open_storage(&config.storage, config.role, config.reader_poll_interval).await?;
+    let store = opened.store;
+    let writer = opened.writer;
+    let location = opened.location;
     let catalog = Arc::new(Catalog::new(store.clone()));
-    let mode = match catalog.init_mode(config.catalog_mode).await {
+    let mode = match open_catalog_mode(&catalog, config.catalog_mode, config.role).await {
         Ok(mode) => mode,
-        Err(error) => return close_after_error(&store, error).await,
+        Err(error) => return close_after_error(store.as_ref(), error).await,
     };
-    let engine = Arc::new(Engine::new(store.clone()));
-    let jobs = match SchemaJobRunner::start(engine.clone(), SchemaJobConfig::default()) {
-        Ok(jobs) => jobs,
-        Err(error) => return close_after_error(&store, error).await,
+    let engine = Arc::new(match config.role {
+        Role::Read => Engine::read_only(store.clone()),
+        Role::Write => Engine::new(store.clone()),
+    });
+    let jobs = if config.role == Role::Write {
+        let jobs = match SchemaJobRunner::start(engine.clone(), SchemaJobConfig::default()) {
+            Ok(jobs) => jobs,
+            Err(error) => return close_after_error(store.as_ref(), Box::new(error)).await,
+        };
+        jobs.observe_catalog(&catalog);
+        Some(jobs)
+    } else {
+        None
     };
-    jobs.observe_catalog(&catalog);
 
     let public_address = listener.local_addr()?;
     let bound_admin_address = admin_listener.local_addr()?;
-    eprintln!("rad serving on {public_address} (storage: {location}, catalog: {mode:?})");
+    eprintln!(
+        "rad serving on {public_address} (storage: {location}, catalog: {mode:?}, role: {})",
+        config.role
+    );
     eprintln!("admin UI on http://{bound_admin_address}");
     if let Some(listener) = &postgres_listener {
         eprintln!("postgres frontend on {}", listener.local_addr()?);
@@ -142,6 +199,13 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
         let _ = shutdown_sender.send(true);
     });
     let mut servers = tokio::task::JoinSet::new();
+    if let Some(writer) = writer {
+        let writer_stop = stop_receiver.clone();
+        let writer_stop_sender = stop_sender.clone();
+        servers.spawn(async move {
+            monitor_writer_fence(writer, writer_stop, writer_stop_sender).await
+        });
+    }
     let http_engine = engine.clone();
     let http_stop = stop_receiver.clone();
     servers.spawn(async move {
@@ -152,7 +216,7 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
         )
         .await
     });
-    let admin_store: Arc<dyn TransactionalKv> = store.clone();
+    let admin_store = store.clone();
     let admin_stop = stop_receiver.clone();
     servers.spawn(async move {
         crate::http::serve(
@@ -177,7 +241,10 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
         server_result = combine_servers(server_result, joined_server(result));
     }
     shutdown_task.abort();
-    let scheduler_result = jobs.shutdown().await;
+    let scheduler_result = match jobs {
+        Some(jobs) => jobs.shutdown().await,
+        None => Ok(()),
+    };
     let close_result = store.close().await;
 
     server_result?;
@@ -211,16 +278,31 @@ pub async fn run() -> Result {
     serve(Config::from_env()?, shutdown_signal()).await
 }
 
-async fn open_storage(config: &StorageConfig) -> Result<(Store, String)> {
-    match config {
-        StorageConfig::Memory { path } => Ok((Store::memory(path).await?, "memory:///".into())),
+struct OpenedStorage {
+    store: Arc<dyn TransactionalKv>,
+    writer: Option<Arc<Store>>,
+    location: String,
+}
+
+async fn open_storage(
+    config: &StorageConfig,
+    role: Role,
+    reader_poll_interval: Duration,
+) -> Result<OpenedStorage> {
+    let (path, objects, location): (String, Arc<dyn ObjectStore>, String) = match config {
+        StorageConfig::Memory { path } => {
+            (path.clone(), Arc::new(InMemory::new()), "memory:///".into())
+        }
         StorageConfig::File { directory, path } => {
             std::fs::create_dir_all(directory)?;
             let directory = directory.canonicalize()?;
             let objects: Arc<dyn ObjectStore> =
                 Arc::new(LocalFileSystem::new_with_prefix(&directory)?);
-            let store = Store::open(path.clone(), objects).await?;
-            Ok((store, directory.join(path).display().to_string()))
+            (
+                path.clone(),
+                objects,
+                directory.join(path).display().to_string(),
+            )
         }
         StorageConfig::S3 {
             bucket,
@@ -239,19 +321,86 @@ async fn open_storage(config: &StorageConfig) -> Result<(Store, String)> {
                     .with_virtual_hosted_style_request(false);
             }
             let objects: Arc<dyn ObjectStore> = Arc::new(builder.build()?);
-            let store = Store::open(path.clone(), objects).await?;
-            Ok((store, format!("s3://{bucket}/{path}")))
+            (path.clone(), objects, format!("s3://{bucket}/{path}"))
+        }
+    };
+    match role {
+        Role::Write => {
+            let writer = Arc::new(Store::open(path, objects).await?);
+            let store: Arc<dyn TransactionalKv> = writer.clone();
+            Ok(OpenedStorage {
+                store,
+                writer: Some(writer),
+                location,
+            })
+        }
+        Role::Read => {
+            let store: Arc<dyn TransactionalKv> =
+                Arc::new(ReaderStore::open(path, objects, reader_poll_interval).await?);
+            Ok(OpenedStorage {
+                store,
+                writer: None,
+                location,
+            })
+        }
+    }
+}
+
+async fn open_catalog_mode(catalog: &Catalog, requested: Option<Mode>, role: Role) -> Result<Mode> {
+    match role {
+        Role::Write => Ok(catalog.init_mode(requested).await?),
+        Role::Read => {
+            let stored = catalog.mode().await?;
+            if let Some(requested) = requested
+                && requested != stored
+            {
+                return Err(format!(
+                    "requested catalog mode {requested:?} does not match stored mode {stored:?}"
+                )
+                .into());
+            }
+            Ok(stored)
+        }
+    }
+}
+
+async fn monitor_writer_fence(
+    writer: Arc<Store>,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    stop_sender: tokio::sync::watch::Sender<bool>,
+) -> std::io::Result<()> {
+    let token = Bytes::from(uuid::Uuid::new_v4().into_bytes().to_vec());
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        tokio::select! {
+            changed = stop.changed() => {
+                if changed.is_err() || *stop.borrow() {
+                    return Ok(());
+                }
+            }
+            _ = interval.tick() => {
+                if let Err(error) = Kv::put(
+                    writer.as_ref(),
+                    Bytes::from_static(b"/rad/runtime/writer-fence"),
+                    token.clone(),
+                ).await {
+                    let _ = stop_sender.send(true);
+                    return Err(std::io::Error::other(format!(
+                        "Slate writer lost ownership: {error}"
+                    )));
+                }
+            }
         }
     }
 }
 
 async fn close_after_error(
-    store: &Store,
-    error: impl std::error::Error + Send + Sync + 'static,
+    store: &dyn TransactionalKv,
+    error: Box<dyn std::error::Error + Send + Sync>,
 ) -> Result {
     let original = error.to_string();
     match store.close().await {
-        Ok(()) => Err(Box::new(error)),
+        Ok(()) => Err(error),
         Err(close) => Err(format!("{original}; orderly Slate close also failed: {close}").into()),
     }
 }
@@ -328,6 +477,8 @@ mod tests {
             catalog_mode: Some(Mode::Schema),
             frontend: Some(Frontend::Postgres),
             postgres_address: "127.0.0.1:0".into(),
+            reader_poll_interval: Duration::from_millis(10),
+            role: Role::Write,
             storage: StorageConfig::Memory {
                 path: "process-lifecycle".into(),
             },
@@ -348,6 +499,8 @@ mod tests {
                 catalog_mode: Some(Mode::Direct),
                 frontend: None,
                 postgres_address: "127.0.0.1:0".into(),
+                reader_poll_interval: Duration::from_millis(10),
+                role: Role::Write,
                 storage: storage.clone(),
             },
             std::future::ready(()),
@@ -360,6 +513,8 @@ mod tests {
                 catalog_mode: None,
                 frontend: None,
                 postgres_address: "127.0.0.1:0".into(),
+                reader_poll_interval: Duration::from_millis(10),
+                role: Role::Write,
                 storage,
             },
             std::future::ready(()),

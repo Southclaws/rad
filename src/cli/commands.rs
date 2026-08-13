@@ -11,7 +11,7 @@ use super::generated::{
     SchemaJsonSchemaArgs, SchemaMigrateArgs, SchemaOptions, SchemaPullArgs, SchemaStatusArgs,
     SchemaTransitionsCancelArgs, SchemaTransitionsGetArgs, SchemaTransitionsListArgs,
     SchemaTransitionsListKind, SchemaTransitionsListState, SchemaTransitionsOptions,
-    SchemaTransitionsWaitArgs, ServeArgs, ServeCatalogMode, ServeFrontend, ServeStorage,
+    SchemaTransitionsWaitArgs, ServeArgs, ServeCatalogMode, ServeFrontend, ServeRole, ServeStorage,
     SkillsGetArgs, SkillsListArgs, SkillsOptions, SkillsPathArgs, SpecArgs, ValidateArgs,
 };
 use super::output::{self, CliError};
@@ -22,7 +22,7 @@ use crate::http::generated::types::{
     SchemaDiffResult, SchemaMigrateResult, SchemaState, TransitionControl, TransitionKind,
     TransitionState,
 };
-use crate::process::{Config, Result, StorageConfig};
+use crate::process::{Config, Result, Role, StorageConfig};
 
 pub(super) struct App;
 
@@ -159,6 +159,10 @@ impl Handler for App {
                 endpoint: args.s3_endpoint,
             },
         };
+        let reader_poll_interval_ms = u64::try_from(args.reader_poll_interval_ms)
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or("--reader-poll-interval-ms must be greater than zero")?;
         crate::process::serve(
             Config {
                 address: crate::process::normalize_address(&args.addr),
@@ -167,6 +171,11 @@ impl Handler for App {
                     ServeFrontend::Postgres => crate::process::Frontend::Postgres,
                 }),
                 postgres_address: crate::process::normalize_address(&args.postgres_addr),
+                reader_poll_interval: Duration::from_millis(reader_poll_interval_ms),
+                role: match args.role {
+                    ServeRole::Read => Role::Read,
+                    ServeRole::Write => Role::Write,
+                },
                 storage,
             },
             crate::process::shutdown_signal(),

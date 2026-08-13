@@ -1,5 +1,5 @@
 use super::generated::server::{GetHealthResponse, GetInfoResponse, MetaApi, TableListResponse};
-use super::generated::types::{DatabaseInfo, DatabaseInfoMode, Health};
+use super::generated::types::{Access, DatabaseInfo, DatabaseInfoMode, Health};
 use super::{server, wire};
 use crate::engine::catalog::model::Mode;
 
@@ -19,6 +19,11 @@ impl MetaApi for Api {
             }
         };
         GetInfoResponse::Ok(DatabaseInfo {
+            access: if self.engine.is_read_only() {
+                Access::Read
+            } else {
+                Access::Write
+            },
             location: (!self.location.is_empty()).then(|| self.location.to_string()),
             mode: match self.mode {
                 Mode::Direct => DatabaseInfoMode::Direct,
@@ -33,6 +38,11 @@ impl MetaApi for Api {
 
     async fn get_health(&self) -> GetHealthResponse {
         GetHealthResponse::Ok(Health {
+            access: if self.engine.is_read_only() {
+                Access::Read
+            } else {
+                Access::Write
+            },
             mode: match self.mode {
                 Mode::Direct => "direct",
                 Mode::Schema => "schema",

@@ -102,7 +102,7 @@ async fn health_reports_the_immutable_catalog_mode() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         json_body(response).await,
-        json!({"status": "ok", "mode": "schema"})
+        json!({"status": "ok", "access": "write", "mode": "schema"})
     );
 }
 

@@ -2,6 +2,7 @@ use std::error::Error as StdError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorKind {
+    ReadOnly,
     InvalidInput,
     ConstraintViolation,
     DataLossAcceptance,
@@ -25,6 +26,7 @@ pub enum ErrorKind {
 /// reconstructed from message text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorReason {
+    ReadOnly,
     Invalid,
     SchemaViolation,
     UnknownTable,
@@ -67,6 +69,7 @@ pub enum ErrorReason {
 impl ErrorReason {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::ReadOnly => "read_only",
             Self::Invalid => "invalid",
             Self::SchemaViolation => "schema_violation",
             Self::UnknownTable => "unknown_table",
@@ -194,6 +197,7 @@ impl Error {
 impl From<crate::engine::kv::Error> for Error {
     fn from(error: crate::engine::kv::Error) -> Self {
         let (kind, reason) = match error.kind() {
+            crate::engine::kv::ErrorKind::ReadOnly => (ErrorKind::ReadOnly, ErrorReason::ReadOnly),
             crate::engine::kv::ErrorKind::Conflict => {
                 (ErrorKind::Conflict, ErrorReason::SerializableConflict)
             }
@@ -278,6 +282,7 @@ impl From<crate::engine::planner::Error> for Error {
 
 fn default_reason(kind: ErrorKind) -> ErrorReason {
     match kind {
+        ErrorKind::ReadOnly => ErrorReason::ReadOnly,
         ErrorKind::InvalidInput => ErrorReason::Invalid,
         ErrorKind::ConstraintViolation => ErrorReason::ConstraintViolation,
         ErrorKind::DataLossAcceptance => ErrorReason::SchemaDataLossAcceptanceRequired,
@@ -319,7 +324,19 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, ErrorKind};
+    use super::{Error, ErrorKind, ErrorReason};
+
+    #[test]
+    fn read_only_storage_errors_keep_the_stable_execution_reason() {
+        let storage = crate::engine::kv::Error::message(
+            crate::engine::kv::ErrorKind::ReadOnly,
+            "database is read-only",
+        );
+        let error = Error::from(storage);
+        assert_eq!(error.kind(), ErrorKind::ReadOnly);
+        assert_eq!(error.reason(), ErrorReason::ReadOnly);
+        assert_eq!(error.reason().as_str(), "read_only");
+    }
 
     #[test]
     fn retryable_conflict_class_includes_transition_flow_control() {

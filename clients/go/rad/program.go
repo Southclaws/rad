@@ -136,6 +136,8 @@ func (c *Client) Execute(ctx context.Context, prog pirwire.Program, opts ...Exec
 		return out, nil
 	case *oas.ExecuteBadRequest:
 		return ProgramResult{}, apiError(oas.Problem(*v))
+	case *oas.ExecuteForbidden:
+		return ProgramResult{}, apiError(oas.Problem(*v))
 	case *oas.ExecuteConflict:
 		return ProgramResult{}, apiError(oas.Problem(*v))
 	case *oas.ExecuteUnprocessableEntity:
