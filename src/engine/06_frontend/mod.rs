@@ -114,7 +114,7 @@ pub async fn execute_pir_with_options(
     engine.execute_program_with_options(program, options).await
 }
 
-fn lower_pir(program: pir::Program) -> crate::engine::exec::Result<crate::engine::exec::Program> {
+fn lower_pir(program: pir::Program) -> crate::engine::exec::Result<Program> {
     crate::protocol::lower_pir(program).map_err(|error| {
         let reason = error.reason();
         Error::source_with_reason(ErrorKind::InvalidInput, reason, error.to_string(), error)

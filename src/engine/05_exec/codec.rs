@@ -13,6 +13,10 @@ use super::{Error, ErrorKind, Result};
 
 const ROW_CANARY: u8 = b'R';
 
+/// Physical column IDs fit in an i64 so every header delta survives the
+/// `delta << 1` encoding; decoders reject anything larger as corrupt.
+const MAX_PHYSICAL_COLUMN_ID: u64 = i64::MAX as u64;
+
 pub fn data_prefix(table: &Table) -> Vec<u8> {
     data_prefix_for(&table.id)
 }
@@ -279,6 +283,7 @@ pub fn unmarshal_row_columns(table: &Table, columns: &[Column], raw: &[u8]) -> R
         let id = previous
             .checked_add(delta)
             .filter(|_| delta != 0)
+            .filter(|id| *id <= MAX_PHYSICAL_COLUMN_ID)
             .ok_or_else(|| corrupt("codec: duplicate, non-ascending, or overflowing column ID"))?;
         previous = id;
         if header & 1 == 1 {
@@ -511,6 +516,7 @@ fn decode_physical_fields(raw: &[u8]) -> Result<Vec<PhysicalField>> {
         let id = previous
             .checked_add(delta)
             .filter(|_| delta != 0)
+            .filter(|id| *id <= MAX_PHYSICAL_COLUMN_ID)
             .ok_or_else(|| corrupt("codec: duplicate, non-ascending, or overflowing column ID"))?;
         previous = id;
         let is_null = header & 1 == 1;
@@ -584,7 +590,7 @@ fn parse_physical_column_id(column_id: &ColumnId) -> Result<u64> {
         .as_str()
         .strip_prefix('c')
         .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0 && *value <= i64::MAX as u64)
+        .filter(|value| *value > 0 && *value <= MAX_PHYSICAL_COLUMN_ID)
         .ok_or_else(|| corrupt(format!("codec: malformed physical column ID {column_id:?}")))
 }
 
@@ -1109,6 +1115,29 @@ mod tests {
 
         let error = read_column_value(&raw, &table.columns[0]).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::CorruptData);
+    }
+
+    #[test]
+    fn physical_column_ids_beyond_i64_max_are_rejected() {
+        // Header deltas accumulate, so two maximal deltas name a column ID
+        // above MAX_PHYSICAL_COLUMN_ID. Re-encoding such an ID would shed its
+        // top bit in the `delta << 1` header, producing bytes the decoder
+        // rejects, so decoding must refuse the ID up front.
+        let mut raw = vec![ROW_CANARY, 2];
+        append_uvarint(&mut raw, (MAX_PHYSICAL_COLUMN_ID << 1) | 1);
+        append_uvarint(&mut raw, (MAX_PHYSICAL_COLUMN_ID << 1) | 1);
+
+        let table = table(vec![column("c1", 1, "id", ScalarType::Text)]);
+        assert_eq!(
+            unmarshal_row(&table, &raw).unwrap_err().kind(),
+            ErrorKind::CorruptData
+        );
+        assert_eq!(
+            remove_column(&raw, &ColumnId::from("c1"))
+                .unwrap_err()
+                .kind(),
+            ErrorKind::CorruptData
+        );
     }
 
     #[test]

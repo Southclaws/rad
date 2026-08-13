@@ -2214,8 +2214,9 @@ impl<'a> Context<'a> {
                     ColumnOption::Default(expression) => {
                         default = default_value(expression, scalar_type)?;
                     }
-                    ColumnOption::ForeignKey(_) => {}
-                    ColumnOption::Check(_) | ColumnOption::Comment(_) => {}
+                    ColumnOption::ForeignKey(_)
+                    | ColumnOption::Check(_)
+                    | ColumnOption::Comment(_) => {}
                     other => {
                         return Err(Error::Unsupported(format!(
                             "column option {other} is not supported"
@@ -2253,8 +2254,7 @@ impl<'a> Context<'a> {
                     columns: index_columns(&unique.columns)?,
                     unique: true,
                 }),
-                TableConstraint::ForeignKey(_) => {}
-                TableConstraint::Check(_) => {}
+                TableConstraint::ForeignKey(_) | TableConstraint::Check(_) => {}
                 other => {
                     return Err(Error::Unsupported(format!(
                         "table constraint {other} is not supported"

@@ -235,7 +235,10 @@ async fn check_in(engine: &Engine, case: &Case) -> TestResult<()> {
     let forced = comparable(forced, case.ordered);
     let nested = comparable(nested, case.ordered);
     let reference = comparable(reference, case.ordered);
-    if chosen != reference || chosen != forced || chosen != nested {
+    if !equivalent(&chosen, &reference)
+        || !equivalent(&chosen, &forced)
+        || !equivalent(&chosen, &nested)
+    {
         return Err(format!(
             "four-way differential mismatch\nchosen: {chosen:?}\nforced: {forced:?}\nnested: {nested:?}\nreference: {reference:?}\nquery: {:#?}",
             case.query
@@ -267,7 +270,11 @@ async fn check_metamorphic_in(engine: &Engine, case: &Case) -> TestResult<()> {
             observe(engine.execute_reference(variant.query.clone()).await)?,
             case.ordered,
         );
-        if chosen != baseline || forced != baseline || nested != baseline || reference != baseline {
+        if !equivalent(&chosen, &baseline)
+            || !equivalent(&forced, &baseline)
+            || !equivalent(&nested, &baseline)
+            || !equivalent(&reference, &baseline)
+        {
             return Err(format!(
                 "metamorphic mismatch for {}\nbaseline: {baseline:?}\nchosen: {chosen:?}\nforced: {forced:?}\nnested: {nested:?}\nreference: {reference:?}\noriginal: {:#?}\nvariant: {:#?}",
                 variant.name, case.query, variant.query
@@ -349,6 +356,19 @@ fn observe(result: rad::engine::exec::Result<Datum>) -> TestResult<Outcome> {
             .map(Outcome::Value)
             .map_err(|error| format!("encode differential result: {error}")),
         Err(error) => Ok(Outcome::Error(error.kind(), error.reason())),
+    }
+}
+
+/// A query holding several latent runtime failures surfaces whichever its
+/// evaluation order reaches first: pull-pipeline segments stream row-major
+/// while materialised and reference execution are operator-major. That order
+/// is not part of the language contract, so runtime failures compare by kind
+/// alone and the surfaced reason stays diagnostic. Every other outcome must
+/// match exactly.
+fn equivalent(left: &Outcome, right: &Outcome) -> bool {
+    match (left, right) {
+        (Outcome::Error(ErrorKind::Runtime, _), Outcome::Error(ErrorKind::Runtime, _)) => true,
+        _ => left == right,
     }
 }
 
