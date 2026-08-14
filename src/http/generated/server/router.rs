@@ -819,7 +819,7 @@ where
 {
     ::axum::Router::new()
         .route("/info", ::axum::routing::get(get_info_handler::<T>))
-        .route("/health", ::axum::routing::get(get_health_handler::<T>))
+        .route("/healthz", ::axum::routing::get(get_healthz_handler::<T>))
         .route("/tables", ::axum::routing::get(table_list_handler::<T>))
         .layer(::axum::extract::DefaultBodyLimit::max(4194304usize))
         .with_state(api)
@@ -832,13 +832,13 @@ where
 {
     ::axum::response::IntoResponse::into_response(api.get_info().await)
 }
-async fn get_health_handler<T>(
+async fn get_healthz_handler<T>(
     ::axum::extract::State(api): ::axum::extract::State<T>,
 ) -> ::axum::response::Response
 where
     T: super::api::MetaApi + Clone + Send + Sync + 'static,
 {
-    ::axum::response::IntoResponse::into_response(api.get_health().await)
+    ::axum::response::IntoResponse::into_response(api.get_healthz().await)
 }
 async fn table_list_handler<T>(
     ::axum::extract::State(api): ::axum::extract::State<T>,
@@ -847,6 +847,42 @@ where
     T: super::api::MetaApi + Clone + Send + Sync + 'static,
 {
     ::axum::response::IntoResponse::into_response(api.table_list().await)
+}
+/// Build an axum::Router for the `ProbesApi` trait.
+pub fn probes_api_router<T>(api: T) -> ::axum::Router
+where
+    T: ProbesApi + Clone + Send + Sync + 'static,
+{
+    ::axum::Router::new()
+        .route("/startupz", ::axum::routing::get(get_startupz_handler::<T>))
+        .route("/readyz", ::axum::routing::get(get_readyz_handler::<T>))
+        .route("/livez", ::axum::routing::get(get_livez_handler::<T>))
+        .layer(::axum::extract::DefaultBodyLimit::max(4194304usize))
+        .with_state(api)
+}
+async fn get_startupz_handler<T>(
+    ::axum::extract::State(api): ::axum::extract::State<T>,
+) -> ::axum::response::Response
+where
+    T: super::api::ProbesApi + Clone + Send + Sync + 'static,
+{
+    ::axum::response::IntoResponse::into_response(api.get_startupz().await)
+}
+async fn get_readyz_handler<T>(
+    ::axum::extract::State(api): ::axum::extract::State<T>,
+) -> ::axum::response::Response
+where
+    T: super::api::ProbesApi + Clone + Send + Sync + 'static,
+{
+    ::axum::response::IntoResponse::into_response(api.get_readyz().await)
+}
+async fn get_livez_handler<T>(
+    ::axum::extract::State(api): ::axum::extract::State<T>,
+) -> ::axum::response::Response
+where
+    T: super::api::ProbesApi + Clone + Send + Sync + 'static,
+{
+    ::axum::response::IntoResponse::into_response(api.get_livez().await)
 }
 /// Build an axum::Router for the `SchemaApi` trait.
 pub fn schema_api_router<T>(api: T) -> ::axum::Router
@@ -941,24 +977,27 @@ where
     };
     ::axum::response::IntoResponse::into_response(api.schema_compatibility(body).await)
 }
-/// Combined router spanning 5 traits: AdministrationApi, CatalogApi, DataApi, MetaApi, SchemaApi.
-pub fn build_router<T1, T2, T3, T4, T5>(
+/// Combined router spanning 6 traits: AdministrationApi, CatalogApi, DataApi, MetaApi, ProbesApi, SchemaApi.
+pub fn build_router<T1, T2, T3, T4, T5, T6>(
     administration_api: T1,
     catalog_api: T2,
     data_api: T3,
     meta_api: T4,
-    schema_api: T5,
+    probes_api: T5,
+    schema_api: T6,
 ) -> ::axum::Router
 where
     T1: AdministrationApi + Clone + Send + Sync + 'static,
     T2: CatalogApi + Clone + Send + Sync + 'static,
     T3: DataApi + Clone + Send + Sync + 'static,
     T4: MetaApi + Clone + Send + Sync + 'static,
-    T5: SchemaApi + Clone + Send + Sync + 'static,
+    T5: ProbesApi + Clone + Send + Sync + 'static,
+    T6: SchemaApi + Clone + Send + Sync + 'static,
 {
     administration_api_router(administration_api)
         .merge(catalog_api_router(catalog_api))
         .merge(data_api_router(data_api))
         .merge(meta_api_router(meta_api))
+        .merge(probes_api_router(probes_api))
         .merge(schema_api_router(schema_api))
 }

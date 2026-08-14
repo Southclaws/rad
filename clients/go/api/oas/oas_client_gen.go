@@ -70,14 +70,15 @@ type Invoker interface {
 	//
 	// POST /execute
 	Execute(ctx context.Context, request Program, params ExecuteParams) (ExecuteRes, error)
-	// GetHealth invokes GetHealth operation.
+	// GetHealthz invokes GetHealthz operation.
 	//
-	// A cheap liveness probe that touches no storage. It always returns `200` with a small status body
-	// while the process is serving, so it is safe to use as a readiness check or a `rad://` reachability
-	// test before opening a connection.
+	// A cheap check that touches no storage. It always returns `200` with a small status body while the
+	// process is serving, so it is safe to use as a `rad://` reachability test before opening a
+	// connection. It is database metadata, not an orchestrator signal: use `/readyz` and `/livez` for
+	// those.
 	//
-	// GET /health
-	GetHealth(ctx context.Context) (*Health, error)
+	// GET /healthz
+	GetHealthz(ctx context.Context) (*Health, error)
 	// GetInfo invokes GetInfo operation.
 	//
 	// Return stable metadata for the database behind this endpoint. `mode` tells management tools whether
@@ -88,12 +89,47 @@ type Invoker interface {
 	//
 	// GET /info
 	GetInfo(ctx context.Context) (*DatabaseInfo, error)
+	// GetLivez invokes GetLivez operation.
+	//
+	// Succeed while the process serves requests and every critical background task is alive. Storage never
+	// fails this probe: a temporary object-store or network outage must withdraw traffic through `/readyz`
+	// rather than restart a process that would come back to the same outage.
+	//
+	// The reason is `live`, `draining`, or `task_failed`.
+	//
+	// GET /livez
+	GetLivez(ctx context.Context) (GetLivezRes, error)
+	// GetReadyz invokes GetReadyz operation.
+	//
+	// Succeed only while the process can serve the read or write access it was started with. It fails as
+	// soon as shutdown begins, as soon as the writer is fenced, and while storage is failing or has not
+	// been observed within the freshness window. A background task refreshes that observation, so
+	// answering the probe never issues a new object-store request.
+	//
+	// The reason is `starting`, `serving`, `draining`, `fenced`, `storage_unavailable`, or
+	// `storage_stale`.
+	//
+	// GET /readyz
+	GetReadyz(ctx context.Context) (GetReadyzRes, error)
 	// GetSchema invokes GetSchema operation.
 	//
 	// Return the committed canonical schema together with its monotonic version and canonical hash.
 	//
 	// GET /schema
 	GetSchema(ctx context.Context) (*SchemaState, error)
+	// GetStartupz invokes GetStartupz operation.
+	//
+	// Succeed once storage is open, the catalog's identity and mode are validated, and the required
+	// background workers are running. Until then the process answers the probe endpoints and nothing else,
+	// so an orchestrator can bound initial storage startup without restarting a process that is still
+	// opening a slow object store, and no client reaches a partially initialized database.
+	//
+	// A storage preflight monitors the object store while startup is held. The preflight sets the reason
+	// to show the cause of the hold. On success, the reason is `started`. While startup is held, the
+	// reason is `starting`, `storage_bucket_missing`, `storage_unauthorized`, or `storage_unreachable`.
+	//
+	// GET /startupz
+	GetStartupz(ctx context.Context) (GetStartupzRes, error)
 	// IndexCreate invokes IndexCreate operation.
 	//
 	// Register a secondary index and backfill entries for every existing row, atomically: the index never
@@ -585,23 +621,24 @@ func (c *Client) sendExecute(ctx context.Context, request Program, params Execut
 	return result, nil
 }
 
-// GetHealth invokes GetHealth operation.
+// GetHealthz invokes GetHealthz operation.
 //
-// A cheap liveness probe that touches no storage. It always returns `200` with a small status body
-// while the process is serving, so it is safe to use as a readiness check or a `rad://` reachability
-// test before opening a connection.
+// A cheap check that touches no storage. It always returns `200` with a small status body while the
+// process is serving, so it is safe to use as a `rad://` reachability test before opening a
+// connection. It is database metadata, not an orchestrator signal: use `/readyz` and `/livez` for
+// those.
 //
-// GET /health
-func (c *Client) GetHealth(ctx context.Context) (*Health, error) {
-	res, err := c.sendGetHealth(ctx)
+// GET /healthz
+func (c *Client) GetHealthz(ctx context.Context) (*Health, error) {
+	res, err := c.sendGetHealthz(ctx)
 	return res, err
 }
 
-func (c *Client) sendGetHealth(ctx context.Context) (res *Health, err error) {
+func (c *Client) sendGetHealthz(ctx context.Context) (res *Health, err error) {
 
 	u := uri.Clone(c.requestURL(ctx))
 	var pathParts [1]string
-	pathParts[0] = "/health"
+	pathParts[0] = "/healthz"
 	uri.AddPathParts(u, pathParts[:]...)
 
 	r, err := ht.NewRequest(ctx, "GET", u)
@@ -622,7 +659,7 @@ func (c *Client) sendGetHealth(ctx context.Context) (res *Health, err error) {
 		_ = body.Close()
 	}()
 
-	result, err := decodeGetHealthResponse(resp)
+	result, err := decodeGetHealthzResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -677,6 +714,102 @@ func (c *Client) sendGetInfo(ctx context.Context) (res *DatabaseInfo, err error)
 	return result, nil
 }
 
+// GetLivez invokes GetLivez operation.
+//
+// Succeed while the process serves requests and every critical background task is alive. Storage never
+// fails this probe: a temporary object-store or network outage must withdraw traffic through `/readyz`
+// rather than restart a process that would come back to the same outage.
+//
+// The reason is `live`, `draining`, or `task_failed`.
+//
+// GET /livez
+func (c *Client) GetLivez(ctx context.Context) (GetLivezRes, error) {
+	res, err := c.sendGetLivez(ctx)
+	return res, err
+}
+
+func (c *Client) sendGetLivez(ctx context.Context) (res GetLivezRes, err error) {
+
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/livez"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	result, err := decodeGetLivezResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetReadyz invokes GetReadyz operation.
+//
+// Succeed only while the process can serve the read or write access it was started with. It fails as
+// soon as shutdown begins, as soon as the writer is fenced, and while storage is failing or has not
+// been observed within the freshness window. A background task refreshes that observation, so
+// answering the probe never issues a new object-store request.
+//
+// The reason is `starting`, `serving`, `draining`, `fenced`, `storage_unavailable`, or
+// `storage_stale`.
+//
+// GET /readyz
+func (c *Client) GetReadyz(ctx context.Context) (GetReadyzRes, error) {
+	res, err := c.sendGetReadyz(ctx)
+	return res, err
+}
+
+func (c *Client) sendGetReadyz(ctx context.Context) (res GetReadyzRes, err error) {
+
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/readyz"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	result, err := decodeGetReadyzResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetSchema invokes GetSchema operation.
 //
 // Return the committed canonical schema together with its monotonic version and canonical hash.
@@ -713,6 +846,56 @@ func (c *Client) sendGetSchema(ctx context.Context) (res *SchemaState, err error
 	}()
 
 	result, err := decodeGetSchemaResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetStartupz invokes GetStartupz operation.
+//
+// Succeed once storage is open, the catalog's identity and mode are validated, and the required
+// background workers are running. Until then the process answers the probe endpoints and nothing else,
+// so an orchestrator can bound initial storage startup without restarting a process that is still
+// opening a slow object store, and no client reaches a partially initialized database.
+//
+// A storage preflight monitors the object store while startup is held. The preflight sets the reason
+// to show the cause of the hold. On success, the reason is `started`. While startup is held, the
+// reason is `starting`, `storage_bucket_missing`, `storage_unauthorized`, or `storage_unreachable`.
+//
+// GET /startupz
+func (c *Client) GetStartupz(ctx context.Context) (GetStartupzRes, error) {
+	res, err := c.sendGetStartupz(ctx)
+	return res, err
+}
+
+func (c *Client) sendGetStartupz(ctx context.Context) (res GetStartupzRes, err error) {
+
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/startupz"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	result, err := decodeGetStartupzResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

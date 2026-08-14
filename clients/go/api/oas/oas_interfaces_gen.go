@@ -17,6 +17,18 @@ type ExecuteRes interface {
 	executeRes()
 }
 
+type GetLivezRes interface {
+	getLivezRes()
+}
+
+type GetReadyzRes interface {
+	getReadyzRes()
+}
+
+type GetStartupzRes interface {
+	getStartupzRes()
+}
+
 type IndexCreateRes interface {
 	indexCreateRes()
 }

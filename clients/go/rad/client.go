@@ -140,7 +140,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	if err := c.ensureSchema(ctx); err != nil {
 		return err
 	}
-	_, err := c.oas.GetHealth(ctx)
+	_, err := c.oas.GetHealthz(ctx)
 	return transportError(err)
 }
 

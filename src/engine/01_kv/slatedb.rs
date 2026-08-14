@@ -8,8 +8,8 @@ use slate_db::object_store::{ObjectStore, memory::InMemory};
 use tokio::sync::{Mutex as AsyncMutex, Notify, OnceCell};
 
 use super::{
-    DataPosition, Entry, Error, ErrorKind, IsolationLevel, KeyRange, Kv, KvIterator, Result,
-    Transaction, TransactionalKv,
+    Closure, DataPosition, Entry, Error, ErrorKind, IsolationLevel, KeyRange, Kv, KvIterator,
+    Result, Transaction, TransactionalKv,
 };
 
 pub struct Store {
@@ -441,7 +441,20 @@ impl KvIterator for SlateIterator {
 }
 
 fn map_operation_error(error: slate_db::Error) -> Error {
-    Error::source(operation_error_kind(&error), error.to_string(), error)
+    match error.kind() {
+        slate_db::ErrorKind::Closed(reason) => {
+            Error::closed(map_close_reason(reason), error.to_string(), error)
+        }
+        _ => Error::source(operation_error_kind(&error), error.to_string(), error),
+    }
+}
+
+fn map_close_reason(reason: slate_db::CloseReason) -> Closure {
+    match reason {
+        slate_db::CloseReason::Fenced => Closure::Fenced,
+        slate_db::CloseReason::Panic => Closure::Panicked,
+        _ => Closure::Clean,
+    }
 }
 
 fn map_close_error(error: slate_db::Error) -> Result<()> {

@@ -4,10 +4,12 @@ use axum::http::StatusCode;
 
 use super::generated::server::{DataApi, ExecuteResponse};
 use super::generated::types::Program;
+use super::probes::Probes;
 use super::{generated, problem, result, validation};
 use crate::engine::catalog::model::Mode;
 use crate::engine::exec::{CatalogPolicy, Engine, Error, ErrorKind, ErrorReason, ProgramOptions};
 use crate::engine::frontend;
+use crate::health::Health;
 use crate::protocol::generated::pir;
 use crate::service::error::{Failure, InvalidFailure, InvalidReason, Stage};
 
@@ -52,17 +54,36 @@ pub fn router(engine: Arc<Engine>, mode: Mode) -> axum::Router {
     router_with_location(engine, mode, "")
 }
 
+/// Build the API router for an engine with no separate runtime reporting its
+/// health, such as an embedded or in-process server. The probe endpoints then
+/// answer from a health record that is already serving.
 pub fn router_with_location(
     engine: Arc<Engine>,
     mode: Mode,
     location: impl Into<Arc<str>>,
 ) -> axum::Router {
+    router_with_health(engine, mode, location, Health::serving())
+}
+
+pub fn router_with_health(
+    engine: Arc<Engine>,
+    mode: Mode,
+    location: impl Into<Arc<str>>,
+    health: Arc<Health>,
+) -> axum::Router {
     let api = Api::with_location(engine, mode, location);
-    generated::server::build_router(api.clone(), api.clone(), api.clone(), api.clone(), api)
-        .layer(axum::middleware::map_response(
-            validation::normalize_generated_rejection,
-        ))
-        .layer(axum::middleware::from_fn(super::cors::allow_admin_origin))
+    generated::server::build_router(
+        api.clone(),
+        api.clone(),
+        api.clone(),
+        api.clone(),
+        Probes::new(health),
+        api,
+    )
+    .layer(axum::middleware::map_response(
+        validation::normalize_generated_rejection,
+    ))
+    .layer(axum::middleware::from_fn(super::cors::allow_admin_origin))
 }
 
 #[async_trait::async_trait]

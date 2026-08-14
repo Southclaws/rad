@@ -6,7 +6,7 @@ pub mod slatedb;
 use async_trait::async_trait;
 use bytes::Bytes;
 
-pub use error::{Error, ErrorKind, Result};
+pub use error::{Closure, Error, ErrorKind, Result};
 
 /// The isolation guarantees requested from a transaction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

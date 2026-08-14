@@ -173,7 +173,7 @@ export const adminAPI = {
 
 export const publicAPI = {
   info: () => publicRequest<DatabaseInfo>("/info"),
-  health: () => publicRequest<Health>("/health"),
+  health: () => publicRequest<Health>("/healthz"),
   tables: () => publicRequest<{ tables: TableInfo[] }>("/tables"),
   createTable: (table: TableInfo) =>
     publicRequest<TableInfo>("/tables", json("POST", table)),

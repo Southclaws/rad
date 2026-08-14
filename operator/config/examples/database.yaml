@@ -1,0 +1,18 @@
+apiVersion: radengine.dev/v1alpha1
+kind: Database
+metadata:
+  name: example
+spec:
+  storage:
+    bucket: example-rad
+    prefix: rad
+    region: us-east-1
+    authentication:
+      credentialsSecretRef:
+        name: example-rad-s3
+  catalogMode: schema
+  route:
+    hostname: example.radengine.dev
+    scheme: https
+  deletionPolicy: Retain
+  terminationGracePeriodSeconds: 120

@@ -166,7 +166,9 @@ impl Handler for App {
         crate::process::serve(
             Config {
                 address: crate::process::normalize_address(&args.addr),
+                admin_address: crate::process::admin_address_from_env(),
                 catalog_mode,
+                close_timeout: crate::process::close_timeout_from_env()?,
                 frontend: args.frontend.map(|frontend| match frontend {
                     ServeFrontend::Postgres => crate::process::Frontend::Postgres,
                 }),
@@ -176,6 +178,7 @@ impl Handler for App {
                     ServeRole::Read => Role::Read,
                     ServeRole::Write => Role::Write,
                 },
+                shutdown_drain: crate::process::shutdown_drain_from_env()?,
                 storage,
             },
             crate::process::shutdown_signal(),

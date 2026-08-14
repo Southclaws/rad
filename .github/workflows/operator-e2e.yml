@@ -1,0 +1,90 @@
+# Outside-in operator qualification on a real kind cluster: generated CRD and
+# RBAC, the released container layout, real RustFS storage, and real kubelet
+# probe behaviour. The Rad image is a release build, so this runs on operator
+# and process changes rather than on every push.
+name: operator-e2e
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "operator/**"
+      - "src/process.rs"
+      - "src/health.rs"
+      - "src/http/**"
+      - "Dockerfile"
+      - ".github/workflows/operator-e2e.yml"
+  pull_request:
+    paths:
+      - "operator/**"
+      - "src/process.rs"
+      - "src/health.rs"
+      - "src/http/**"
+      - "Dockerfile"
+      - ".github/workflows/operator-e2e.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: operator-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: kind end-to-end
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.2
+          cache: false
+
+      - name: Build container images
+        run: |
+          docker build --tag ghcr.io/southclaws/rad:e2e .
+          docker build --tag ghcr.io/southclaws/rad-operator:e2e operator
+
+      - name: Create kind cluster
+        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: rad-e2e
+
+      - name: Load images into the cluster
+        run: |
+          kind load docker-image ghcr.io/southclaws/rad:e2e --name rad-e2e
+          kind load docker-image ghcr.io/southclaws/rad-operator:e2e --name rad-e2e
+
+      - name: Install the operator
+        working-directory: operator
+        run: |
+          kubectl apply -k config/install/crd
+          kubectl kustomize config/install \
+            | sed -e 's|ghcr.io/southclaws/rad-operator:edge|ghcr.io/southclaws/rad-operator:e2e|' \
+                  -e 's|--rad-image=ghcr.io/southclaws/rad:edge|--rad-image=ghcr.io/southclaws/rad:e2e|' \
+            | kubectl -n default apply -f -
+          kubectl -n default rollout status deployment/rad-operator --timeout=180s
+
+      - name: Run the outside-in suite
+        working-directory: operator
+        env:
+          RAD_E2E: "1"
+          E2E_NAMESPACE: default
+        run: go test -tags=e2e -count=1 -timeout 45m -v ./test/e2e
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          kubectl -n default get raddatabase,statefulset,pods,leases -o wide || true
+          kubectl -n default describe raddatabase || true
+          kubectl -n default logs deployment/rad-operator --tail=200 || true
+          kubectl -n default get events --sort-by=.lastTimestamp | tail -60 || true

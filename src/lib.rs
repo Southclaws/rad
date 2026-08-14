@@ -2,6 +2,7 @@ pub mod admin;
 pub mod cli;
 pub mod codegen;
 pub mod engine;
+pub mod health;
 pub mod http;
 pub mod postgres;
 pub mod protocol;
