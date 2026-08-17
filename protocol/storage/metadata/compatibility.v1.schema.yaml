@@ -1,0 +1,44 @@
+# Storage contract for the database compatibility manifest, stored under
+# the storage_manifest keyspace.
+# Released properties are permanent; see protocol/README.md for the
+# storage-schema compatibility rules.
+$schema: https://json-schema.org/draft/2020-12/schema
+title: metadata/compatibility.v1
+description: >-
+  What this database requires of binaries that open it. The manifest is
+  separate from the specification revision: it carries capability floors
+  and enabled storage features, validated before a process serves requests.
+  A binary must read the existing storage world before it may enable or
+  write a new storage feature.
+type: object
+additionalProperties: false
+required: [format, record]
+properties:
+  format:
+    description: Payload serialization format discriminator.
+    type: integer
+    enum: [1]
+  record:
+    description: The database's compatibility requirements.
+    type: object
+    additionalProperties: false
+    required: [min_reader, min_writer]
+    properties:
+      min_reader:
+        description: >-
+          Lowest storage capability a binary needs to read this database.
+          A process whose capability is lower fails closed at startup.
+        type: integer
+      min_writer:
+        description: >-
+          Lowest storage capability a binary needs to write this database.
+          Read-only processes ignore this floor.
+        type: integer
+      features:
+        description: >-
+          Storage features enabled in this database. A binary that does not
+          know a listed feature fails closed at startup.
+        type: array
+        items:
+          description: One enabled storage feature name.
+          type: string

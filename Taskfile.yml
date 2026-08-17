@@ -29,6 +29,7 @@ tasks:
     cmds:
       - cargo fmt --all -- --check
       - cargo clippy --locked --all-targets -- -D warnings
+      - cargo clippy --locked --package keyform --all-targets -- -D warnings
       - >-
         cargo clippy --locked --lib --bins --
         -D warnings
@@ -154,6 +155,17 @@ tasks:
     cmds:
       - cargo test --release --locked --test s3_http_benchmark -- --ignored --nocapture --test-threads=1 {{.CLI_ARGS}}
 
+  generate:storage:
+    desc: Regenerate storage format artifacts from the normative keyform specification
+    cmds:
+      - cargo run --locked --package keyform -- --spec protocol/storage.keyform --root .
+      - go run ./tools/storagedoc -schemas protocol/storage -keyspaces home/public/schema/storage-keyspaces.json -output home/content/docs/reference/storage.mdx
+
+  check:storage:
+    desc: Check storage format artifacts for keyform generation drift
+    cmds:
+      - cargo run --locked --package keyform -- --spec protocol/storage.keyform --root . --check
+
   generate:http:
     desc: Regenerate server and Go client HTTP bindings from the normative OpenAPI specification
     cmds:
@@ -193,6 +205,7 @@ tasks:
       - go run ./tools/openapidoc -input api/openapi.yaml -output home/content/docs/reference/http-api.mdx
       - go run ./tools/jsonschemadoc -input protocol/lir.schema.yaml -profile lir -output home/content/docs/reference/lir-schema.mdx
       - go run ./tools/jsonschemadoc -input protocol/pir.schema.yaml -profile pir -output home/content/docs/reference/pir-schema.mdx
+      - go run ./tools/storagedoc -schemas protocol/storage -keyspaces home/public/schema/storage-keyspaces.json -output home/content/docs/reference/storage.mdx
 
   check:http:
     desc: Check HTTP bindings for OpenAPI generation drift

@@ -28,6 +28,8 @@ box-drawing bars in comments.
 ## Architecture
 
 Rad is one Cargo package with a reusable library and a thin process binary.
+The workspace also contains `tools/keyform`, the compiler for the storage
+format specification.
 Keep the numbered engine directory ladder and its downward dependency flow:
 
 ```text
@@ -46,9 +48,19 @@ src/engine/06_frontend
   engine under `src/http`.
 - `src/process.rs` owns configuration, dependency construction, scheduler
   lifecycle, listener lifecycle, and orderly storage close.
-- `protocol/lir.schema.yaml`, `protocol/pir.schema.yaml`, and
-  `api/openapi.yaml` are normative. Generated wire and HTTP types are never
-  edited by hand.
+- `protocol/lir.schema.yaml`, `protocol/pir.schema.yaml`,
+  `protocol/storage.keyform`, the storage schemas under `protocol/storage/`,
+  and `api/openapi.yaml` are normative. `protocol/storage.allocations` is the
+  permanent allocation registry; keyform maintains it and rejects edits that
+  change a released durable meaning. Never edit generated artifacts by hand
+  (`src/engine/01_kv/manifest.rs`, `src/engine/01_kv/keyspace.rs`,
+  `src/engine/01_kv/keys.rs`, `src/engine/05_exec/key_describe.rs`,
+  `tests/storage_spec.rs`); regenerate with `task generate:storage`.
+- Never assemble a durable storage key by hand. Build and parse keys through
+  `engine::kv::keys` (or the `exec::codec` wrappers above it). A persisted
+  encoding's meaning is immutable once released: new functionality adds new
+  schemas, codecs, keyspaces, or physical generations, and never
+  reinterprets existing bytes.
 
 ## Verification
 

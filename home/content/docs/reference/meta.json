@@ -10,6 +10,8 @@
     "lir-schema",
     "pir-schema",
     "---HTTP---",
-    "http-api"
+    "http-api",
+    "---Storage---",
+    "storage"
   ]
 }

@@ -863,6 +863,7 @@ mod tests {
             definition_generation: DefinitionGeneration::ZERO,
             existence_generation: ExistenceGeneration::ZERO,
             write_protocol_generation: WriteProtocolGeneration::ZERO,
+            storage_generation: crate::engine::catalog::identity::StorageGeneration::INITIAL,
             columns: ["id", "board_id", "status"]
                 .into_iter()
                 .enumerate()
@@ -931,7 +932,7 @@ mod tests {
             let primary_key = codec::encode_row_tuple(&row, &table.primary_key).unwrap();
             Kv::put(
                 store,
-                Bytes::from(codec::data_key(table, &primary_key)),
+                Bytes::from(codec::data_key(table, &primary_key).unwrap()),
                 Bytes::from(codec::marshal_row(table, &row).unwrap()),
             )
             .await
@@ -947,12 +948,9 @@ mod tests {
             .unwrap();
             Kv::put(
                 store,
-                Bytes::from(codec::index_key(
-                    table,
-                    &table.indexes[0].id,
-                    &indexed,
-                    &primary_key,
-                )),
+                Bytes::from(
+                    codec::index_key(table, &table.indexes[0].id, &indexed, &primary_key).unwrap(),
+                ),
                 Bytes::from(primary_key),
             )
             .await
@@ -1079,7 +1077,7 @@ mod tests {
         seed(&store, &table).await;
         let view = CountingView {
             store,
-            data_prefix: codec::data_prefix(&table),
+            data_prefix: codec::data_prefix(&table).unwrap(),
             data_gets: AtomicUsize::new(0),
             scan_nexts: Arc::new(AtomicUsize::new(0)),
         };

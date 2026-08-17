@@ -304,13 +304,13 @@ async fn assert_exact_index(engine: &Engine, table_name: &str, index_name: &str)
             let primary_key = codec::encode_row_tuple(row, &table.primary_key).unwrap();
             let tuple = codec::encode_row_tuple(row, &index.columns).unwrap();
             (
-                codec::index_key(&table, &index.id, &tuple, &primary_key),
+                codec::index_key(&table, &index.id, &tuple, &primary_key).unwrap(),
                 primary_key,
             )
         })
         .collect::<BTreeMap<_, _>>();
 
-    let prefix = codec::index_prefix(&table, &index.id);
+    let prefix = codec::index_prefix(&table, &index.id).unwrap();
     let mut iterator = view
         .scan(KeyRange {
             start: Some(Bytes::from(prefix.clone())),
@@ -1307,12 +1307,16 @@ async fn table_column_and_index_reclamation_is_bounded_and_preserves_old_snapsho
     let table_reclamation = reclamation_by_kind(&engine, ReclamationKind::Table).await;
     finish_reclamation(&engine, &table_reclamation, 1).await;
     assert_eq!(
-        count_prefix(&engine, codec::data_prefix(&retired_table)).await,
+        count_prefix(&engine, codec::data_prefix(&retired_table).unwrap()).await,
         0
     );
     for index in &retired_table.indexes {
         assert_eq!(
-            count_prefix(&engine, codec::index_prefix(&retired_table, &index.id)).await,
+            count_prefix(
+                &engine,
+                codec::index_prefix(&retired_table, &index.id).unwrap()
+            )
+            .await,
             0
         );
     }
@@ -1410,7 +1414,7 @@ async fn table_column_and_index_reclamation_is_bounded_and_preserves_old_snapsho
         .index("retired_index_value_idx")
         .unwrap()
         .clone();
-    let index_prefix = codec::index_prefix(&index_table, &retired_index.id);
+    let index_prefix = codec::index_prefix(&index_table, &retired_index.id).unwrap();
     let index_snapshot = kv.begin(IsolationLevel::Snapshot).await.unwrap();
     catalog
         .delete_index("retired_index", "retired_index_value_idx")
@@ -1860,7 +1864,7 @@ async fn retention_pin_overtaking_a_staged_reclamation_prevents_physical_deletio
             .find(|value| value.transition_id == transition.id)
             .unwrap()
     };
-    let prefix = codec::index_prefix(&table, &transition.index.id);
+    let prefix = codec::index_prefix(&table, &transition.index.id).unwrap();
     assert_eq!(count_prefix(&bootstrap, prefix.clone()).await, 1);
 
     let hook = Arc::new(BlockingHook::new(Boundary::ReclamationPhysicalBatch));
@@ -2013,7 +2017,7 @@ async fn reclamation_owner_takeover_rolls_back_the_old_owners_staged_deletes() {
             .find(|value| value.transition_id == transition.id)
             .unwrap()
     };
-    let prefix = codec::index_prefix(&table, &transition.index.id);
+    let prefix = codec::index_prefix(&table, &transition.index.id).unwrap();
     assert_eq!(count_prefix(&bootstrap, prefix.clone()).await, 2);
 
     let hook = Arc::new(BlockingHook::new(Boundary::ReclamationPhysicalBatch));

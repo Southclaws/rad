@@ -6,16 +6,13 @@ use crate::engine::catalog::identity::{
 };
 use crate::engine::catalog::model::{Reclamation, ReclamationKind, ReclamationState, Timestamp};
 use crate::engine::catalog::{Error, ErrorKind, Result};
-use crate::engine::kv::KvView;
+use crate::engine::kv::{KvView, keys};
 
 use super::durable_json::{decode, encode};
 use super::{map_kv, prefix_range};
 
-const RECLAMATION_PREFIX: &str = "/rad/catalog/reclamation/";
-const RECLAMATION_WAKE_KEY: &[u8] = b"/rad/catalog/meta/reclamation_seen";
-
 fn reclamation_key(id: &ReclamationId) -> Vec<u8> {
-    format!("{RECLAMATION_PREFIX}{id}").into_bytes()
+    keys::catalog_reclamation_key(id.as_str())
 }
 
 pub async fn queue_reclamation<V: KvView + ?Sized>(
@@ -56,7 +53,7 @@ pub async fn queue_reclamation<V: KvView + ?Sized>(
         .await
         .map_err(map_kv)?;
     view.put(
-        Bytes::from_static(RECLAMATION_WAKE_KEY),
+        Bytes::from(keys::catalog_meta_reclamation_seen_key()),
         Bytes::from_static(&[1]),
     )
     .await
@@ -65,7 +62,7 @@ pub async fn queue_reclamation<V: KvView + ?Sized>(
 
 pub async fn has_reclamation_history<V: KvView + ?Sized>(view: &mut V) -> Result<bool> {
     Ok(view
-        .get(RECLAMATION_WAKE_KEY)
+        .get(&keys::catalog_meta_reclamation_seen_key())
         .await
         .map_err(map_kv)?
         .is_some())
@@ -96,13 +93,13 @@ pub async fn get_reclamation<V: KvView + ?Sized>(
 }
 
 pub async fn list_reclamations<V: KvView + ?Sized>(view: &mut V) -> Result<Vec<Reclamation>> {
-    let prefix = RECLAMATION_PREFIX.as_bytes();
-    let mut iterator = view.scan(prefix_range(prefix)).await.map_err(map_kv)?;
+    let prefix = keys::catalog_reclamation_prefix();
+    let mut iterator = view.scan(prefix_range(&prefix)).await.map_err(map_kv)?;
     let mut values = Vec::new();
     while let Some(entry) = iterator.next().await.map_err(map_kv)? {
         let id = entry
             .key
-            .strip_prefix(prefix)
+            .strip_prefix(&prefix[..])
             .and_then(|value| std::str::from_utf8(value).ok())
             .ok_or_else(|| {
                 Error::message(

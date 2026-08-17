@@ -1,0 +1,13 @@
+[package]
+name = "keyform"
+version = "0.1.0"
+edition = "2024"
+description = "Compiler for the normative storage format specification"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+serde_json = "1.0.140"
+serde_yaml = "0.9.34"
+sha2 = "0.10.9"

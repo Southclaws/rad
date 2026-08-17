@@ -1,3 +1,4 @@
+mod compatibility;
 mod durable_json;
 mod definitions;
 mod fences;
@@ -13,6 +14,7 @@ mod transition_violations;
 mod transitions;
 mod write_protocol_canonical;
 
+pub use compatibility::*;
 pub use definitions::*;
 pub use fences::*;
 pub use mode::*;
@@ -53,4 +55,15 @@ pub(crate) fn parse_u64(kind: &str, id: Option<&str>, raw: &[u8]) -> Result<u64>
 
 pub(crate) fn map_kv(error: kv::Error) -> Error {
     error.into()
+}
+
+pub(crate) fn physical_transition_number(
+    id: &crate::engine::catalog::identity::TransitionId,
+) -> Result<u64> {
+    id.physical_number("tr").ok_or_else(|| {
+        Error::message(
+            ErrorKind::CatalogCorrupt,
+            format!("catalog: malformed transition identity {id:?}"),
+        )
+    })
 }

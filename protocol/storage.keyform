@@ -1,0 +1,641 @@
+# Normative specification of Rad's durable storage formats: the ordered key
+# scalar encoding, the compact row cell payloads, the row body record, and
+# the binary keyspace. keyform compiles this file into the format manifest,
+# the keyspace registry, the typed key constructors and parsers, the key
+# renderer, and the conformance suite that binds every vector and law below
+# to the implementation. keyform also maintains the permanent allocation
+# registry (protocol/storage.allocations).
+#
+# The governing rule: a persisted encoding's meaning is immutable once
+# released. New functionality introduces new schemas, codecs, keyspaces, or
+# physical generations; it does not change what existing durable bytes
+# mean. Fundamental storage changes are side-by-side transitions with an
+# atomic authority switch, not in-place rewrites. The storage generation in
+# data keys and the physical index identity in index keys exist for those
+# transitions.
+#
+# Two codec families exist. Do not mix them. `ordered_scalar` (and its
+# exec-layer refinement `semantic_scalar`) preserves semantic order in raw
+# byte order and is used inside keys. `compact_payload` is the length-framed
+# cell encoding inside row bodies and preserves only the value. Text and
+# int64 encode differently in each family.
+#
+# Key tuples are permanently self-describing: every scalar carries its type
+# tag, and the cross-type tag order (null < bool < int64 < float64 < text)
+# is fixed. A future scalar type takes the next free tag and sorts after
+# every existing type; existing tags never reorder. The allocation registry
+# enforces this.
+
+format storage v1
+
+domain scalar {
+  comparator "rad::engine::lir::Value::compare"
+  cases null bool int64 float64 text
+}
+
+# Base-128 varint, least-significant group first, continuation high bit.
+# At most ten bytes; the tenth byte carries only bit 63 so values fit u64.
+# Exactly one encoding per value: a non-final zero continuation byte is
+# corrupt, so every decodable varint re-encodes to the same bytes.
+codec uvarint {
+  value "u64"
+  kernel encode "rad::engine::exec::codec::append_uvarint" convention append
+  kernel decode "rad::engine::exec::codec::read_uvarint" convention positional
+  law round_trip
+  law canonical_bytes
+  vectors {
+    accept x"00" = int 0
+    accept x"7f" = int 127
+    accept x"80 01" = int 128
+    accept x"ff 7f" = int 16383
+    accept x"80 80 01" = int 16384
+    accept x"ff ff ff ff ff ff ff ff ff 01" = int 18446744073709551615 "ten bytes, bit 63 set"
+    reject x"" "truncated varint"
+    reject x"80" "truncated continuation"
+    reject x"80 00" "non-canonical: trailing zero group"
+    reject x"ff ff ff ff ff ff ff ff ff 02" "overflows 64 bits"
+  }
+}
+
+# Order-preserving scalar encoding for keys. One tag byte defines the
+# cross-type order; payloads are constructed so unsigned byte comparison
+# equals the per-type total order. Nulls are untyped in bytes and take their
+# scalar type from schema context at decode.
+codec ordered_scalar {
+  value "scalar"
+  kernel module "rad::engine::kv::key_encoding"
+  law order_preserving comparator per_type_total
+  note "int64 flips the sign bit then writes big-endian"
+  note "float64 folds the sign: negative values are bitwise NOT, others set the top bit; NaN is unencodable"
+  note "text escapes 0x00 as 0x00 0xff and terminates with 0x00 0x01, so byte order equals UTF-8 lexicographic order and values self-delimit"
+  case null {
+    tag x"01"
+    const "TAG_NULL"
+    encoder "encode_null" form array
+  }
+  case bool {
+    tag x"02"
+    const "TAG_BOOL"
+    encoder "encode_bool" form array
+    payload "one byte, 0x00 false, 0x01 true"
+  }
+  case int64 {
+    tag x"03"
+    const "TAG_I64"
+    encoder "encode_i64" form array
+    payload "8 bytes big-endian with the sign bit flipped"
+  }
+  case float64 {
+    tag x"04"
+    const "TAG_F64"
+    encoder "encode_f64" form option_array
+    payload "8 bytes big-endian, sign-folded IEEE 754 bits"
+  }
+  case text {
+    tag x"05"
+    const "TAG_TEXT"
+    encoder "encode_text" form vec
+    escape x"00" -> x"00 ff"
+    terminator x"00 01"
+  }
+  vectors {
+    accept x"01" = null
+    accept x"02 00" = false
+    accept x"02 01" = true
+    accept x"03 80 00 00 00 00 00 00 00" = int 0
+    accept x"04 7f ff ff ff ff ff ff ff" = float -0.0 "the key layer distinguishes the zero signs; the semantic layer above erases them"
+    accept x"05 00 01" = text ""
+    accept x"05 61 00 ff 62 00 01" = text "a\0b"
+    order null < false < true
+    order int -1 < int 0 < int 1
+    order float -0.0 < float 0.0
+    order float -1.7976931348623157e308 < float -1.5 < float 1.5 < float 1.7976931348623157e308
+    order text "" < text "a" < text "a\0" < text "a\0b" < text "app" < text "apple" < text "b"
+    order null < false < int 9223372036854775807 < float -1.7976931348623157e308 < text ""
+  }
+}
+
+# The exec-layer refinement of ordered_scalar used for key tuples: only
+# finite floats encode, the zero signs collapse to one canonical +0.0
+# encoding, and decode rejects every byte string encode cannot produce.
+codec semantic_scalar {
+  value "scalar"
+  refines ordered_scalar
+  kernel encode "rad::engine::exec::codec::encode_value" convention value_bytes
+  kernel decode "rad::engine::exec::codec::decode_value" convention consumed
+  law round_trip
+  law canonical_bytes
+  law self_delimiting
+  law order_preserving comparator semantic
+  rule "float64 -0.0 encodes as +0.0: semantic key identity agrees with numeric equality"
+  rule "non-finite float64 does not encode and its byte patterns do not decode"
+  vectors {
+    accept x"01" = null
+    accept x"02 00" = false
+    accept x"02 01" = true
+    accept x"03 80 00 00 00 00 00 00 00" = int 0
+    accept x"03 7f ff ff ff ff ff ff ff" = int -1
+    accept x"03 00 00 00 00 00 00 00 00" = int -9223372036854775808
+    accept x"03 ff ff ff ff ff ff ff ff" = int 9223372036854775807
+    accept x"04 80 00 00 00 00 00 00 00" = float 0.0
+    accept x"04 bf f8 00 00 00 00 00 00" = float 1.5
+    accept x"04 3f ff ff ff ff ff ff ff" = float -2.0
+    accept x"05 00 01" = text ""
+    accept x"05 61 00 01" = text "a"
+    accept x"05 61 00 ff 62 00 01" = text "a\0b"
+    reject x"" "truncated encoded value"
+    reject x"ff" "unknown tag"
+    reject x"02" "truncated bool"
+    reject x"02 02" "malformed bool"
+    reject x"03 00" "truncated int64"
+    reject x"04 7f ff ff ff ff ff ff ff" "-0.0 is not a canonical key"
+    reject x"04 ff f8 00 00 00 00 00 00" "NaN never decodes"
+    reject x"04 ff f0 00 00 00 00 00 00" "infinity never decodes"
+    reject x"05 61" "unterminated text"
+    reject x"05 61 00" "truncated text escape"
+    reject x"05 61 00 02" "malformed text escape"
+  }
+}
+
+# Key tuples are plain concatenations of semantic scalars; every element is
+# self-delimiting, so the sequence needs no length framing.
+codec key_tuple {
+  value "sequence of scalar"
+  kernel encode "rad::engine::exec::codec::encode_tuple" convention slice_bytes
+  kernel decode "rad::engine::exec::codec::decode_tuple" convention whole
+  kernel element_decode "rad::engine::exec::codec::decode_value"
+  law round_trip
+  law concatenation
+}
+
+# Cell payload encoding inside row bodies. Length-framed externally by the
+# row grammar and not order-preserving: a different family from the key
+# encodings above, and the two must never be mixed.
+codec compact_payload {
+  value "scalar, framed by the row body"
+  note "nulls have no payload: the field header carries the null bit"
+  case bool {
+    payload "one byte, 0x00 false, 0x01 true"
+  }
+  case int64 {
+    payload "8 bytes big-endian two's complement, no sign flip"
+  }
+  case float64 {
+    payload "8 bytes big-endian IEEE 754 bits, finite only"
+  }
+  case text {
+    payload "raw UTF-8 bytes, no escaping, no terminator"
+  }
+}
+
+# The conformance schema record laws and vectors run against. The first
+# column is the primary key.
+fixture table fuzz_rows {
+  column c1 1 "id" text
+  column c2 2 "count" int64
+  column c3 3 "ready" bool
+  column c4 4 "score" float64
+}
+
+# One stored row. Physical column IDs are `c` followed by a positive decimal
+# at most i64::MAX; the cap keeps every header delta representable, so every
+# decodable body re-encodes to identical bytes. Absent columns are not
+# explicit nulls: absent cells decode through the column's missing-value
+# default (or a typed null), while an explicit null is stored as a header
+# bit. Cell operations preserve unknown column IDs byte-identically.
+#
+# Physical column IDs are never reused, and the scalar type bound to a
+# column ID never changes in place: schema-directed decoding means the bytes
+# under an ID are only meaningful under one type. Retyping requires a new
+# physical column identity (online column replacement) or a table storage
+# generation transition. Renames, additions, removals, and ordering changes
+# need no row rewrite; there is deliberately no per-row format version.
+record row_body {
+  magic x"52"
+  field count uvarint "number of stored fields"
+  bound "count <= remaining bytes"
+  repeat fields count {
+    field header uvarint
+    let delta "header >> 1"
+    let is_null "header & 1"
+    guard "delta != 0, so column IDs strictly ascend and never repeat"
+    let id "previous id + delta, starting from zero"
+    guard "id <= 0x7fffffffffffffff, so re-encoding never sheds a header bit"
+    when "is_null == 0" {
+      field length uvarint
+      field payload bytes "length bytes of compact_payload for the column's scalar type"
+    }
+  }
+  eof
+  kernel encode "rad::engine::exec::codec::marshal_row"
+  kernel decode "rad::engine::exec::codec::unmarshal_row"
+  kernel set "rad::engine::exec::codec::set_column_value"
+  kernel read "rad::engine::exec::codec::read_column_value"
+  kernel remove "rad::engine::exec::codec::remove_column"
+  law round_trip
+  law cell_ops
+  fixture fuzz_rows
+  vectors {
+    accept x"52 04 02 01 61 02 08 00 00 00 00 00 00 00 07 02 01 01 02 08 3f f8 00 00 00 00 00 00" = row { id = text "a", count = int 7, ready = true, score = float 1.5 } "canonical layout: every column stored"
+    accept x"52 02 02 01 61 03" = row { id = text "a" } "explicit null count, absent ready and score: all three decode as typed nulls here because the fixture has no missing-value defaults"
+    accept x"52 00" = row { } "the empty body decodes to all nulls"
+    reject x"" "missing canary"
+    reject x"58 00" "wrong canary"
+    reject x"52" "truncated field count"
+    reject x"52 ff ff ff ff ff ff ff ff ff 01" "field count exceeds remaining bytes"
+    reject x"52 01 80 00" "non-canonical header varint"
+    reject x"52 01 00" "zero delta: duplicate or non-ascending column ID"
+    reject x"52 01 02 04 61" "payload truncated"
+    reject x"52 00 ff" "trailing bytes"
+    reject x"52 01 02 01 ff" "invalid UTF-8 text payload"
+    reject x"52 01 04 01 07" "int64 payload must be 8 bytes"
+    reject x"52 01 06 01 02" "malformed bool payload"
+    reject x"52 01 08 08 7f f0 00 00 00 00 00 00" "non-finite float64 payload"
+    reject x"52 02 ff ff ff ff ff ff ff ff ff 01 ff ff ff ff ff ff ff ff ff 01" "column ID beyond i64::MAX"
+    reject x"52 04 02 02 52 04 02 08 32 f8 fd 04 08 04 52 04 ff ff ff ff ff ff ff ff ff 01 ff ff ff 47" "fuzz find: an ID past the cap loses its top header bit when re-encoded"
+    reject x"52 03 02 01 ff ff ff ff ff ff ff ff ff 01 55" "fuzz find: same family, maximal single delta"
+  }
+}
+
+# Every durable keyspace. Keys are binary: the permanent root magic 0x7237,
+# one permanently allocated tag byte, then the space's typed segments.
+# Allocated tags never change meaning; a removed space leaves its tag
+# reserved forever, and the allocation registry enforces both. Numeric
+# identities ("t42", "i7", "c9", "tr5") encode their number as a uvarint.
+# Uvarints are prefix-free, so every segment boundary is unambiguous. The
+# segments that ordered range scans traverse (definition generations, delta
+# sequences, revision versions) are fixed-width big-endian so byte order
+# equals numeric order. Uvarint segments carry no cross-value byte ordering;
+# no scan depends on it. Structured string identities (reclamation and pin
+# ids, table names) are terminal raw UTF-8 tails.
+keyspace rad {
+  magic x"72 37"
+
+  # Authoritative table rows. The storage generation sits between logical
+  # table identity and row identity so a future physical representation can
+  # be built side by side and switched atomically; the catalog holds each
+  # table's authoritative generation, and every table starts at 1.
+  space data {
+    tag x"01"
+    key {
+      table physical_id "t"
+      generation uvarint
+      primary_key tuple
+    }
+    value record row_body
+    vectors {
+      key { table 42, generation 1, primary_key x"05 61 00 01" } = x"72 37 01 2a 01 05 61 00 01"
+      key { table 1, generation 1, primary_key x"" } = x"72 37 01 01 01" "zero-length tuples are valid prefixes"
+      key { table 18446744073709551615, generation 1, primary_key x"01" } = x"72 37 01 ff ff ff ff ff ff ff ff ff 01 01 01" "maximum table number"
+    }
+  }
+
+  # Secondary index entries. The index id is already one physical
+  # incarnation: rebuilds allocate a fresh "i{n}" from the shared identity
+  # counter (the stable logical identity is the separate "ix{n}"), so a new
+  # physical representation is always constructed beside the authoritative
+  # one and no generation segment is needed. Both tuples self-delimit
+  # per scalar; splitting them needs the index arity from the schema.
+  space index {
+    tag x"02"
+    key {
+      table physical_id "t"
+      index physical_id "i"
+      indexed tuple
+      primary_key tuple
+    }
+    value "encoded primary-key tuple bytes"
+    invariant "a row with a null in any indexed column has no entry"
+    vectors {
+      key { table 42, index 7, indexed x"03 80 00 00 00 00 00 00 00", primary_key x"05 61 00 01" } = x"72 37 02 2a 07 03 80 00 00 00 00 00 00 00 05 61 00 01"
+    }
+  }
+
+  # Immutable published table definitions, one per definition generation.
+  space catalog_table_object {
+    tag x"10"
+    key {
+      schema be32
+      generation be64
+    }
+    value json schema "catalog/table.v1"
+    invariant "immutable once written: publishing different contents under an existing key is a conflict"
+    vectors {
+      key { schema 7, generation 3 } = x"72 37 10 00 00 00 07 00 00 00 00 00 00 00 03"
+    }
+  }
+
+  # Current head pointer per schema identity.
+  space catalog_table_head {
+    tag x"11"
+    key {
+      schema be32
+    }
+    value "text {catalog_version}:{definition_generation}"
+    vectors {
+      key { schema 7 } = x"72 37 11 00 00 00 07"
+    }
+  }
+
+  # Live physical table entries.
+  space catalog_table {
+    tag x"12"
+    key {
+      table physical_id "t"
+    }
+    value json schema "catalog/table.v1"
+    vectors {
+      key { table 42 } = x"72 37 12 2a"
+    }
+  }
+
+  # Name to physical table id. Names are user text and mutable; the mapping
+  # is derived state over the immutable identities.
+  space catalog_table_name {
+    tag x"13"
+    key {
+      name text
+    }
+    value "table id text"
+    vectors {
+      key { name "users" } = x"72 37 13 75 73 65 72 73"
+    }
+  }
+
+  # Immutable schema revisions, scanned in version order.
+  space catalog_schema_revision {
+    tag x"14"
+    key {
+      version be64
+    }
+    value json schema "catalog/revision.v1"
+    vectors {
+      key { version 12 } = x"72 37 14 00 00 00 00 00 00 00 0c"
+    }
+  }
+
+  # Immutable write-protocol definitions per table, one per generation.
+  space catalog_write_protocol_object {
+    tag x"15"
+    key {
+      table physical_id "t"
+      generation be64
+    }
+    value json schema "catalog/write_protocol.v1"
+    vectors {
+      key { table 42, generation 3 } = x"72 37 15 2a 00 00 00 00 00 00 00 03"
+    }
+  }
+
+  # Current write-protocol generation fence per table.
+  space catalog_write_protocol_fence {
+    tag x"16"
+    key {
+      table physical_id "t"
+    }
+    value "write protocol generation text"
+    vectors {
+      key { table 42 } = x"72 37 16 2a"
+    }
+  }
+
+  space catalog_fence_table_existence {
+    tag x"17"
+    key {
+      table physical_id "t"
+    }
+    value "generation text"
+    vectors {
+      key { table 42 } = x"72 37 17 2a"
+    }
+  }
+
+  space catalog_fence_column_value {
+    tag x"18"
+    key {
+      table physical_id "t"
+      column physical_id "c"
+    }
+    value "generation text"
+    vectors {
+      key { table 42, column 9 } = x"72 37 18 2a 09"
+    }
+  }
+
+  space catalog_fence_index_access {
+    tag x"19"
+    key {
+      table physical_id "t"
+      index physical_id "i"
+    }
+    value "generation text"
+    vectors {
+      key { table 42, index 7 } = x"72 37 19 2a 07"
+    }
+  }
+
+  space catalog_transition {
+    tag x"1a"
+    key {
+      transition physical_id "tr"
+    }
+    value json schema "catalog/transition.v1"
+    vectors {
+      key { transition 5 } = x"72 37 1a 05"
+    }
+  }
+
+  # Ordered delta log per transition.
+  space catalog_transition_delta {
+    tag x"1b"
+    key {
+      transition physical_id "tr"
+      sequence be64
+    }
+    value json schema "catalog/index_delta.v1"
+    vectors {
+      key { transition 5, sequence 12 } = x"72 37 1b 05 00 00 00 00 00 00 00 0c"
+    }
+  }
+
+  space catalog_transition_delta_sequence {
+    tag x"1c"
+    key {
+      transition physical_id "tr"
+    }
+    value "next sequence decimal text"
+    vectors {
+      key { transition 5 } = x"72 37 1c 05"
+    }
+  }
+
+  space catalog_transition_delta_applied {
+    tag x"1d"
+    key {
+      transition physical_id "tr"
+    }
+    value "applied sequence decimal text"
+    vectors {
+      key { transition 5 } = x"72 37 1d 05"
+    }
+  }
+
+  # Unique-claim keys carry the indexed tuple length-framed so the claim
+  # tuple and primary key split without schema knowledge.
+  space catalog_transition_unique_claim {
+    tag x"1e"
+    key {
+      transition physical_id "tr"
+      indexed len_bytes
+      primary_key bytes
+    }
+    value json schema "catalog/unique_claim.v1"
+    vectors {
+      key { transition 5, indexed x"03 80 00 00 00 00 00 00 07", primary_key x"05 61 00 01" } = x"72 37 1e 05 09 03 80 00 00 00 00 00 00 07 05 61 00 01"
+    }
+  }
+
+  space catalog_transition_unique_violation {
+    tag x"1f"
+    key {
+      transition physical_id "tr"
+      indexed bytes
+    }
+    value "indexed tuple bytes"
+    vectors {
+      key { transition 5, indexed x"03 80 00 00 00 00 00 00 07" } = x"72 37 1f 05 03 80 00 00 00 00 00 00 07"
+    }
+  }
+
+  space catalog_transition_violation {
+    tag x"20"
+    key {
+      transition physical_id "tr"
+      row_identity bytes
+    }
+    value "cause text"
+    vectors {
+      key { transition 5, row_identity x"aa bb" } = x"72 37 20 05 aa bb"
+    }
+  }
+
+  # Pin and reclamation identities are structured strings derived from what
+  # they protect ("table-t1", "column-t1-c2"), so they stay text tails.
+  space catalog_retention_pin {
+    tag x"21"
+    key {
+      pin text
+    }
+    value json schema "catalog/retention_pin.v1"
+    vectors {
+      key { pin "p1" } = x"72 37 21 70 31"
+    }
+  }
+
+  space catalog_reclamation {
+    tag x"22"
+    key {
+      reclamation text
+    }
+    value json schema "catalog/reclamation.v1"
+    vectors {
+      key { reclamation "table-t1" } = x"72 37 22 74 61 62 6c 65 2d 74 31"
+    }
+  }
+
+  space catalog_meta_mode {
+    tag x"30"
+    key { }
+    value "catalog mode text: direct or schema"
+    vectors {
+      key { } = x"72 37 30"
+    }
+  }
+
+  space catalog_meta_next_id {
+    tag x"31"
+    key { }
+    value "next physical identity decimal text"
+    vectors {
+      key { } = x"72 37 31"
+    }
+  }
+
+  space catalog_meta_schema_version {
+    tag x"32"
+    key { }
+    value "current schema version decimal text"
+    vectors {
+      key { } = x"72 37 32"
+    }
+  }
+
+  space catalog_meta_catalog_generation {
+    tag x"33"
+    key { }
+    value "catalog generation decimal text"
+    vectors {
+      key { } = x"72 37 33"
+    }
+  }
+
+  space catalog_meta_compacted_through {
+    tag x"34"
+    key { }
+    value "compacted-through version decimal text"
+    vectors {
+      key { } = x"72 37 34"
+    }
+  }
+
+  space catalog_meta_transition_seen {
+    tag x"35"
+    key { }
+    value "wake byte 0x01"
+    vectors {
+      key { } = x"72 37 35"
+    }
+  }
+
+  space catalog_meta_reclamation_seen {
+    tag x"36"
+    key { }
+    value "wake byte 0x01"
+    vectors {
+      key { } = x"72 37 36"
+    }
+  }
+
+  space runtime_writer_fence {
+    tag x"40"
+    key { }
+    value "opaque writer fence token"
+    vectors {
+      key { } = x"72 37 40"
+    }
+  }
+
+  # Database-level compatibility state, validated before serving requests.
+  # Distinct from the specification revision: the manifest carries what this
+  # database requires of its readers and writers.
+  space storage_manifest {
+    tag x"41"
+    key { }
+    value json schema "metadata/compatibility.v1"
+    vectors {
+      key { } = x"72 37 41"
+    }
+  }
+
+  reserved x"00" "never allocated: guards zero-initialised or truncated keys"
+
+  scan {
+    kernel "rad::engine::kv::key_encoding::prefix_end"
+    law smallest_exclusive_bound
+    bound x"01" -> x"02"
+    bound x"61 62 ff" -> x"61 63"
+    bound x"ab cd" -> x"ab ce"
+    bound x"ff" -> none
+    bound x"" -> none
+  }
+}

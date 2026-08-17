@@ -1,0 +1,433 @@
+---
+title: Storage format
+description: The durable keyspaces and stored-value contracts of the storage engine.
+---
+
+Every durable key starts with the root magic `0x7237` followed by
+one permanently allocated keyspace tag. The normative byte-level
+specification is [`protocol/storage.keyform`](https://github.com/Southclaws/rad/blob/main/protocol/storage.keyform);
+this page documents the keyspaces and the structured values they store.
+
+Structured values are JSON inside an envelope:
+
+```json
+{ "format": 1, "record": { ... } }
+```
+
+The `format` discriminator names the payload serialization explicitly. The
+field tables below document the `record` member of each contract.
+
+## Keyspaces
+
+| Tag | Keyspace | Key layout | Value |
+| --- | --- | --- | --- |
+| `01` | `data` | `table:physical_id(t) generation:uvarint primary_key:tuple` | record row_body |
+| `02` | `index` | `table:physical_id(t) index:physical_id(i) indexed:tuple primary_key:tuple` | encoded primary-key tuple bytes. Invariant: a row with a null in any indexed column has no entry |
+| `10` | `catalog_table_object` | `schema:be32 generation:be64` | [`catalog/table.v1`](#catalogtablev1). Invariant: immutable once written: publishing different contents under an existing key is a conflict |
+| `11` | `catalog_table_head` | `schema:be32` | text {catalog_version}:{definition_generation} |
+| `12` | `catalog_table` | `table:physical_id(t)` | [`catalog/table.v1`](#catalogtablev1) |
+| `13` | `catalog_table_name` | `name:text` | table id text |
+| `14` | `catalog_schema_revision` | `version:be64` | [`catalog/revision.v1`](#catalogrevisionv1) |
+| `15` | `catalog_write_protocol_object` | `table:physical_id(t) generation:be64` | [`catalog/write_protocol.v1`](#catalogwrite_protocolv1) |
+| `16` | `catalog_write_protocol_fence` | `table:physical_id(t)` | write protocol generation text |
+| `17` | `catalog_fence_table_existence` | `table:physical_id(t)` | generation text |
+| `18` | `catalog_fence_column_value` | `table:physical_id(t) column:physical_id(c)` | generation text |
+| `19` | `catalog_fence_index_access` | `table:physical_id(t) index:physical_id(i)` | generation text |
+| `1a` | `catalog_transition` | `transition:physical_id(tr)` | [`catalog/transition.v1`](#catalogtransitionv1) |
+| `1b` | `catalog_transition_delta` | `transition:physical_id(tr) sequence:be64` | [`catalog/index_delta.v1`](#catalogindex_deltav1) |
+| `1c` | `catalog_transition_delta_sequence` | `transition:physical_id(tr)` | next sequence decimal text |
+| `1d` | `catalog_transition_delta_applied` | `transition:physical_id(tr)` | applied sequence decimal text |
+| `1e` | `catalog_transition_unique_claim` | `transition:physical_id(tr) indexed:len_bytes primary_key:bytes` | [`catalog/unique_claim.v1`](#catalogunique_claimv1) |
+| `1f` | `catalog_transition_unique_violation` | `transition:physical_id(tr) indexed:bytes` | indexed tuple bytes |
+| `20` | `catalog_transition_violation` | `transition:physical_id(tr) row_identity:bytes` | cause text |
+| `21` | `catalog_retention_pin` | `pin:text` | [`catalog/retention_pin.v1`](#catalogretention_pinv1) |
+| `22` | `catalog_reclamation` | `reclamation:text` | [`catalog/reclamation.v1`](#catalogreclamationv1) |
+| `30` | `catalog_meta_mode` | `(the tag is the whole key)` | catalog mode text: direct or schema |
+| `31` | `catalog_meta_next_id` | `(the tag is the whole key)` | next physical identity decimal text |
+| `32` | `catalog_meta_schema_version` | `(the tag is the whole key)` | current schema version decimal text |
+| `33` | `catalog_meta_catalog_generation` | `(the tag is the whole key)` | catalog generation decimal text |
+| `34` | `catalog_meta_compacted_through` | `(the tag is the whole key)` | compacted-through version decimal text |
+| `35` | `catalog_meta_transition_seen` | `(the tag is the whole key)` | wake byte 0x01 |
+| `36` | `catalog_meta_reclamation_seen` | `(the tag is the whole key)` | wake byte 0x01 |
+| `40` | `runtime_writer_fence` | `(the tag is the whole key)` | opaque writer fence token |
+| `41` | `storage_manifest` | `(the tag is the whole key)` | [`metadata/compatibility.v1`](#metadatacompatibilityv1) |
+
+Tag `00` is permanently reserved: never allocated: guards zero-initialised or truncated keys
+
+## `catalog/index_delta.v1`
+
+One captured write against an index under construction. Writers append deltas in sequence order while the build scans existing rows; the build applies them during catch-up so the finished index reflects every concurrent write.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | Yes | Delta identity, `{transition_id}:{sequence:020}`. Redundant with the key; decode verifies the two agree. |
+| `operation` | `put \| delete` | Yes | Whether the write put or deleted the index entry. |
+| `pk` | `string` | Yes | Base64 primary-key tuple bytes of the written row. |
+| `sequence` | `integer` | Yes | Position in the transition's durable capture order. The order is the catch-up application order. |
+| `tuple` | `string` | Yes | Base64 indexed tuple bytes of the written row. |
+
+## `catalog/reclamation.v1`
+
+One durable garbage-collection work item. Replaced definitions, retired physical structures, and finished transition state queue a reclamation; the schema worker sweeps each one in bounded batches, honouring retention pins, until the resource is reclaimed.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `batch_id` | `integer` |  | Count of durable batches the sweep has completed. |
+| `column_id` | `string` |  | Physical column identity, for column-scoped kinds. Empty when not applicable. |
+| `compacted_at` | `string` | Yes | RFC 3339 timestamp of terminal compaction. The zero timestamp means not compacted. |
+| `created_at` | `string` | Yes | RFC 3339 timestamp the reclamation was queued. |
+| `cursor` | `string` |  | Base64 scan cursor: the last key the sweep processed. Empty before the first batch. |
+| `definition_generation` | `integer` |  | Definition generation to reclaim, for definition kinds. Absent means zero. |
+| `generation` | `integer` | Yes | Monotonic checkpoint counter. Every durable step advances it, so a stale checkpoint can never overwrite a newer one. |
+| `id` | `string` | Yes | Reclamation identity, a structured string derived from the reclaimed resource, for example `table-t1` or `column-t1-c2`. |
+| `index_id` | `string` |  | Physical index identity, for index-scoped kinds. Empty when not applicable. |
+| `index_ids` | `array of string` |  | Physical index identities, for kinds that reclaim several indexes in one sweep. |
+| `items_reclaimed` | `integer` |  | Count of keys the sweep has removed. |
+| `kind` | `table \| column \| index \| table_definition \| write_protocol_definition \| transition_deltas \| cancelled_index \| failed_index \| replaced_column \| cancelled_replacement \| failed_replacement \| constraint_validation` | Yes | The kind of resource the sweep reclaims. |
+| `last_error` | `string` |  | Message of the most recent failure. Empty when none. |
+| `owner_epoch` | `integer` | Yes | Epoch of the schema worker that owns the sweep. A claim with a newer epoch fences a stale worker's writes. |
+| `phase` | `string` |  | Position in the multi-phase sweep, for kinds that reclaim several keyspaces in order. Empty before the first phase. |
+| `retired_catalog_version` | `integer` |  | Catalog version from which the resource is no longer current. The sweep waits until retention allows removal at this version. Absent means zero. |
+| `state` | `pending \| reclaiming \| reclaimed \| failed` | Yes | Sweep lifecycle state. |
+| `table_id` | `string` |  | Physical table identity, for table-scoped kinds. Empty when not applicable. |
+| `table_schema_id` | `integer` |  | Logical schema identity of the table. Absent when not applicable. |
+| `transition_id` | `string` |  | Transition identity, for kinds that reclaim transition state. Empty when not applicable. |
+| `updated_at` | `string` | Yes | RFC 3339 timestamp of the most recent checkpoint. |
+| `write_protocol_generation` | `integer` |  | Write-protocol generation to reclaim, for write-protocol kinds. Absent means zero. |
+
+## `catalog/retention_pin.v1`
+
+One consumer's hold on a retained storage resource. Reclamation never removes a resource while a pin covers it, so pinned plans, snapshots, and workers keep reading definitions and data that the catalog has already replaced.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `created_at` | `string` | Yes | RFC 3339 timestamp the pin was taken. |
+| `id` | `string` | Yes | Pin identity, a structured string derived from the owner and the pinned resource. |
+| `owner_id` | `string` | Yes | Identity of the owning consumer within its kind. |
+| `owner_kind` | `prepared_plan \| data_snapshot \| replica \| cdc \| schema_transition \| schema_worker \| physical_reader` | Yes | The kind of consumer holding the pin. |
+| `resource` | `object` | Yes | The retained resource the pin covers. |
+| `resource.column_id` | `string` |  | Physical column identity, for column-scoped resources. Empty when not applicable. |
+| `resource.data_position` | `string` |  | Opaque KV position, for snapshot resources. Empty when not applicable. |
+| `resource.definition_generation` | `integer` |  | Pinned definition generation, for definition resources. Absent means zero. |
+| `resource.index_id` | `string` |  | Physical index identity, for index-scoped resources. Empty when not applicable. |
+| `resource.kind` | `table_definition \| write_protocol_definition \| data_snapshot \| transition_deltas \| physical_table \| physical_column \| physical_index \| transition_diagnostics` | Yes | The kind of retained resource. |
+| `resource.table_id` | `string` |  | Physical table identity, for resources scoped to a table. Empty when not applicable. |
+| `resource.table_schema_id` | `integer` |  | Logical schema identity of the table. Absent when not applicable. |
+| `resource.transition_id` | `string` |  | Transition identity, for transition-scoped resources. Empty when not applicable. |
+| `resource.write_protocol_generation` | `integer` |  | Pinned write-protocol generation, for write-protocol resources. Absent means zero. |
+
+## `catalog/revision.v1`
+
+One immutable logical schema revision. Every published catalog change appends a revision holding the canonical logical schema and its hash, so clients and migrations diff schema history without reading physical state.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `created_at` | `string` | Yes | RFC 3339 timestamp the revision was published. |
+| `hash` | `string` | Yes | Canonical schema hash, `sha256:` plus the hex digest of the canonical JSON encoding of `schema`. |
+| `schema` | `object` | Yes | Canonical logical catalog shape. Physical identities and operational state never appear here, so equal logical schemas hash equally across databases. |
+| `schema.tables` | `array of object` |  | Logical table definitions in schema-identity order. |
+| `schema.tables[].columns` | `array of object` |  | Logical column definitions in declaration order. |
+| `schema.tables[].columns[].default` | `object` |  | Default declared for the column. |
+| `schema.tables[].columns[].default.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `schema.tables[].columns[].default.float64` | `number` |  | Literal used when the column type is float64. |
+| `schema.tables[].columns[].default.func` | `uuid \| now_ms` |  | Generator function for per-row defaults. |
+| `schema.tables[].columns[].default.int64` | `integer` |  | Literal used when the column type is int64. |
+| `schema.tables[].columns[].default.text` | `string` |  | Literal used when the column type is text. |
+| `schema.tables[].columns[].format` | `string` |  | Authored format annotation; not interpreted by storage. |
+| `schema.tables[].columns[].id` | `integer` | Yes | Logical schema identity of the column. Never reused. |
+| `schema.tables[].columns[].name` | `string` | Yes | Column name at this revision. |
+| `schema.tables[].columns[].nullable` | `boolean` |  | Whether the column accepts null. Absent means false. |
+| `schema.tables[].columns[].type` | `text \| int64 \| float64 \| bool` | Yes | Scalar type of the column. |
+| `schema.tables[].foreign_keys` | `array of object` |  | Logical foreign-key definitions, sorted canonically. |
+| `schema.tables[].foreign_keys[].columns` | `array of string` |  | Referencing column names on this table. |
+| `schema.tables[].foreign_keys[].name` | `string` | Yes | Foreign-key name at this revision. |
+| `schema.tables[].foreign_keys[].ref_columns` | `array of string` |  | Referenced column names on the target table. |
+| `schema.tables[].foreign_keys[].ref_table` | `string` | Yes | Name of the referenced table at this revision. |
+| `schema.tables[].id` | `integer` | Yes | Logical schema identity of the table. Never reused. |
+| `schema.tables[].indexes` | `array of object` |  | Logical index definitions, sorted canonically by name, columns, and uniqueness. |
+| `schema.tables[].indexes[].columns` | `array of string` |  | Indexed column names in index order. |
+| `schema.tables[].indexes[].name` | `string` | Yes | Index name at this revision. |
+| `schema.tables[].indexes[].unique` | `boolean` |  | Whether the index enforces uniqueness. Absent means false. |
+| `schema.tables[].name` | `string` | Yes | Table name at this revision. |
+| `schema.tables[].primary_key` | `array of string` |  | Primary-key column names in key order. |
+| `version` | `integer` | Yes | Catalog version of this revision. Versions are dense and monotonic; the catalog_meta_schema_version key names the current one. |
+
+## `catalog/table.v1`
+
+One physical table: its permanent identities, its columns and their physical representations, and the derived structures writes must maintain. The catalog_table keyspace holds the live record per physical table; the catalog_table_object keyspace holds one immutable copy per definition generation.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `columns` | `array of object` |  | The table's columns in declaration order. |
+| `columns[].format` | `string` |  | Authored format annotation, for example `uuid`. Carried for clients and generators; storage does not interpret it. |
+| `columns[].id` | `string` | Yes | Permanent physical column identity, `c` plus a decimal. Never reused, and the scalar type bound to it never changes in place: row bodies address cells by this identity. |
+| `columns[].insert_default` | `object` |  | Default applied when an insert omits the column. |
+| `columns[].insert_default.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `columns[].insert_default.float64` | `number` |  | Literal used when the column type is float64. |
+| `columns[].insert_default.func` | `uuid \| now_ms` |  | Generator function. Present when the default is generated per row instead of a literal. |
+| `columns[].insert_default.int64` | `integer` |  | Literal used when the column type is int64. |
+| `columns[].insert_default.text` | `string` |  | Literal used when the column type is text. |
+| `columns[].missing_value` | `object` |  | Literal supplied for cells absent from stored rows, so column addition never rewrites rows. Absent columns decode as null when no missing value is declared. Generator functions are not permitted here. |
+| `columns[].missing_value.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `columns[].missing_value.float64` | `number` |  | Literal used when the column type is float64. |
+| `columns[].missing_value.func` | `uuid \| now_ms` |  | Generator function. Never valid for missing values; present in the shape because the default-value form is shared. |
+| `columns[].missing_value.int64` | `integer` |  | Literal used when the column type is int64. |
+| `columns[].missing_value.text` | `string` |  | Literal used when the column type is text. |
+| `columns[].name` | `string` | Yes | Current column name. Mutable, never identity. |
+| `columns[].nullable` | `boolean` | Yes | Whether stored cells may be null. |
+| `columns[].schema_id` | `integer` | Yes | Logical schema identity of the column. Never reused. |
+| `columns[].type` | `text \| int64 \| float64 \| bool` | Yes | Scalar type of every stored cell in this column. |
+| `columns[].value_generation` | `integer` |  | Generation checked by the column-value fence. Advancing it invalidates pinned work that assumed the column's stored values kept their meaning. Absent means zero. |
+| `constraints` | `array of object` |  | Declared constraints and their validation states. |
+| `constraints[].column_ids` | `array of string` |  | Physical column identities the constraint covers. |
+| `constraints[].definition_generation` | `integer` | Yes | Definition generation that introduced the constraint. |
+| `constraints[].id` | `string` | Yes | Permanent constraint identity, `ct` plus a decimal. Never reused. |
+| `constraints[].kind` | `not_null` | Yes | Constraint family. |
+| `constraints[].name` | `string` | Yes | Current constraint name. Mutable, never identity. |
+| `constraints[].state` | `declared \| enforcing_new_writes \| validating_existing_data \| valid \| failed \| cancelled` | Yes | Validation lifecycle state. `valid` constraints are enforced and proven; `enforcing_new_writes` and `validating_existing_data` constraints reject new violations while existing rows are checked. |
+| `definition_generation` | `integer` |  | Monotonic generation of this table's definition. Advances on every published definition change. Absent means zero. |
+| `existence_generation` | `integer` |  | Generation checked by the table-existence fence. Advancing it invalidates pinned work that assumed the table still exists. Absent means zero. |
+| `foreign_keys` | `array of object` |  | Foreign keys declared on this table. |
+| `foreign_keys[].columns` | `array of string` |  | Referencing column names on this table. |
+| `foreign_keys[].id` | `string` | Yes | Permanent foreign-key identity, `fk` plus a decimal. Never reused. |
+| `foreign_keys[].name` | `string` | Yes | Current foreign-key name. Mutable, never identity. |
+| `foreign_keys[].ref_columns` | `array of string` |  | Referenced column names on the target table. |
+| `foreign_keys[].ref_table_id` | `string` | Yes | Physical identity of the referenced table. |
+| `id` | `string` | Yes | Permanent physical table identity, `t` plus a decimal from the shared identity counter. Never reused. |
+| `indexes` | `array of object` |  | The table's secondary indexes. |
+| `indexes[].access_generation` | `integer` |  | Generation checked by the index-access fence. Advancing it invalidates pinned plans that read the index. Absent means zero. |
+| `indexes[].column_ids` | `array of string` |  | Physical column identities matching `columns` by position, so renames never break the index definition. |
+| `indexes[].columns` | `array of string` |  | Indexed column names in index order. |
+| `indexes[].definition_generation` | `integer` |  | Monotonic generation of the index definition. Absent means zero. |
+| `indexes[].id` | `string` | Yes | Physical index incarnation, `i` plus a decimal. Every build allocates a fresh one, so a replacement index is always constructed beside the authoritative one. |
+| `indexes[].logical_id` | `string` |  | Stable logical index identity, `ix` plus a decimal. Survives rebuilds; names the index across physical incarnations. |
+| `indexes[].name` | `string` | Yes | Current index name. Mutable, never identity. |
+| `indexes[].state` | `"" \| building \| catching_up \| validating \| ready \| deleting \| failed \| cancelled` |  | Build lifecycle state. The empty string and `ready` are both readable states; every other state belongs to an index under construction or removal. |
+| `indexes[].unique` | `boolean` | Yes | Whether the index enforces uniqueness. |
+| `name` | `string` | Yes | Current user-visible table name. Mutable, never identity. |
+| `primary_key` | `array of string` |  | Column names forming the primary key, in key order. The encoded key tuple is the row's identity inside the data keyspace. |
+| `schema_id` | `integer` | Yes | Logical schema identity from the authored schema. Never reused; survives physical replacement of the table. |
+| `storage_generation` | `integer` |  | Authoritative physical storage generation for this table's rows. Data keys embed it between table identity and row identity so a replacement physical representation is built beside the authoritative one and activated with one catalog switch. Absent means generation 1. |
+| `write_protocol_generation` | `integer` |  | Generation of the write protocol this table's writers must follow. Matches the catalog_write_protocol_fence value. Absent means zero. |
+
+## `catalog/transition.v1`
+
+One online schema transition and its durable progress state. A transition builds an index, replaces a column, or validates a constraint beside live traffic; every checkpoint persists here so a schema worker resumes after any interruption.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `affected_column_schema_ids` | `array of integer` |  | Logical column identities the transition changes or proves. |
+| `applied_delta` | `integer` |  | Highest captured-delta sequence applied to the index. |
+| `barrier_position` | `string` |  | Opaque KV position of the validation barrier. Empty until the transition reaches validation. |
+| `base_position` | `string` | Yes | Opaque KV position captured when the transition started. The backfill scans rows at this position; writes after it reach the transition as deltas. |
+| `batch_id` | `integer` |  | Count of durable batches the transition has completed. |
+| `column_replacement` | `object` |  | The resolved source and target columns a column-replacement transition converts between. |
+| `column_replacement.conversion` | `strict_builtin` | Yes | Deterministic conversion applied to source cells. |
+| `column_replacement.source` | `object` | Yes | The column being replaced. |
+| `column_replacement.source.format` | `string` |  | Authored format annotation; not interpreted by storage. |
+| `column_replacement.source.id` | `string` | Yes | Permanent physical column identity, `c` plus a decimal. |
+| `column_replacement.source.insert_default` | `object` |  | Default applied when an insert omits the column. |
+| `column_replacement.source.insert_default.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacement.source.insert_default.float64` | `number` |  | Literal used when the column type is float64. |
+| `column_replacement.source.insert_default.func` | `uuid \| now_ms` |  | Generator function for per-row defaults. |
+| `column_replacement.source.insert_default.int64` | `integer` |  | Literal used when the column type is int64. |
+| `column_replacement.source.insert_default.text` | `string` |  | Literal used when the column type is text. |
+| `column_replacement.source.missing_value` | `object` |  | Literal supplied for cells absent from stored rows. |
+| `column_replacement.source.missing_value.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacement.source.missing_value.float64` | `number` |  | Literal used when the column type is float64. |
+| `column_replacement.source.missing_value.func` | `uuid \| now_ms` |  | Generator function. Never valid for missing values; present because the default-value form is shared. |
+| `column_replacement.source.missing_value.int64` | `integer` |  | Literal used when the column type is int64. |
+| `column_replacement.source.missing_value.text` | `string` |  | Literal used when the column type is text. |
+| `column_replacement.source.name` | `string` | Yes | Current column name. |
+| `column_replacement.source.nullable` | `boolean` | Yes | Whether stored cells may be null. |
+| `column_replacement.source.schema_id` | `integer` | Yes | Logical schema identity of the column. |
+| `column_replacement.source.type` | `text \| int64 \| float64 \| bool` | Yes | Scalar type of every stored cell. |
+| `column_replacement.source.value_generation` | `integer` |  | Generation checked by the column-value fence. Absent means zero. |
+| `column_replacement.target` | `object` | Yes | The replacement column receiving converted cells. |
+| `column_replacement.target.format` | `string` |  | Authored format annotation; not interpreted by storage. |
+| `column_replacement.target.id` | `string` | Yes | Permanent physical column identity, `c` plus a decimal. |
+| `column_replacement.target.insert_default` | `object` |  | Default applied when an insert omits the column. |
+| `column_replacement.target.insert_default.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacement.target.insert_default.float64` | `number` |  | Literal used when the column type is float64. |
+| `column_replacement.target.insert_default.func` | `uuid \| now_ms` |  | Generator function for per-row defaults. |
+| `column_replacement.target.insert_default.int64` | `integer` |  | Literal used when the column type is int64. |
+| `column_replacement.target.insert_default.text` | `string` |  | Literal used when the column type is text. |
+| `column_replacement.target.missing_value` | `object` |  | Literal supplied for cells absent from stored rows. |
+| `column_replacement.target.missing_value.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacement.target.missing_value.float64` | `number` |  | Literal used when the column type is float64. |
+| `column_replacement.target.missing_value.func` | `uuid \| now_ms` |  | Generator function. Never valid for missing values; present because the default-value form is shared. |
+| `column_replacement.target.missing_value.int64` | `integer` |  | Literal used when the column type is int64. |
+| `column_replacement.target.missing_value.text` | `string` |  | Literal used when the column type is text. |
+| `column_replacement.target.name` | `string` | Yes | Current column name. |
+| `column_replacement.target.nullable` | `boolean` | Yes | Whether stored cells may be null. |
+| `column_replacement.target.schema_id` | `integer` | Yes | Logical schema identity of the column. |
+| `column_replacement.target.type` | `text \| int64 \| float64 \| bool` | Yes | Scalar type of every stored cell. |
+| `column_replacement.target.value_generation` | `integer` |  | Generation checked by the column-value fence. Absent means zero. |
+| `column_replacement_request` | `object` |  | The authored request a column-replacement transition executes. |
+| `column_replacement_request.column_schema_id` | `integer` | Yes | Logical identity of the column to replace. |
+| `column_replacement_request.conversion` | `strict_builtin` | Yes | Deterministic conversion applied to source cells. |
+| `column_replacement_request.default` | `object` |  | Default declared for the replacement column. |
+| `column_replacement_request.default.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacement_request.default.float64` | `number` |  | Literal used when the column type is float64. |
+| `column_replacement_request.default.func` | `uuid \| now_ms` |  | Generator function for per-row defaults. |
+| `column_replacement_request.default.int64` | `integer` |  | Literal used when the column type is int64. |
+| `column_replacement_request.default.text` | `string` |  | Literal used when the column type is text. |
+| `column_replacement_request.format` | `string` |  | Authored format annotation for the replacement column. |
+| `column_replacement_request.nullable` | `boolean` | Yes | Whether the replacement column accepts null. |
+| `column_replacement_request.type` | `text \| int64 \| float64 \| bool` | Yes | Scalar type of the replacement column. |
+| `compacted_at` | `string` | Yes | RFC 3339 timestamp of terminal compaction. The zero timestamp means not compacted. |
+| `constraint` | `object` |  | The constraint a constraint-validation transition proves. |
+| `constraint.column_ids` | `array of string` |  | Physical column identities the constraint covers. |
+| `constraint.definition_generation` | `integer` | Yes | Definition generation that introduced the constraint. |
+| `constraint.id` | `string` | Yes | Permanent constraint identity, `ct` plus a decimal. |
+| `constraint.kind` | `not_null` | Yes | Constraint family. |
+| `constraint.name` | `string` | Yes | Current constraint name. |
+| `constraint.state` | `declared \| enforcing_new_writes \| validating_existing_data \| valid \| failed \| cancelled` | Yes | Validation lifecycle state. |
+| `constraint_validation_request` | `object` |  | The authored request a constraint-validation transition executes. |
+| `constraint_validation_request.column_schema_id` | `integer` | Yes | Logical identity of the constrained column. |
+| `constraint_validation_request.constraint_id` | `string` | Yes | Identity of the constraint to validate. |
+| `created_at` | `string` | Yes | RFC 3339 timestamp of admission. |
+| `cursor` | `string` |  | Base64 scan cursor: the last row key the backfill processed. Empty before the first batch. |
+| `delta_hard_limit` | `integer` |  | Retained-delta lag at which writers are gated until the transition catches up. Zero means no gate. |
+| `delta_high_water` | `integer` |  | Highest delta sequence captured by writers. |
+| `delta_soft_limit` | `integer` |  | Retained-delta lag at which the transition reports degraded work state. Zero means no soft limit. |
+| `gate_table_ids` | `array of string` |  | Tables whose schema finalization waits on this transition through their write-protocol finalization gates. |
+| `generation` | `integer` | Yes | Monotonic checkpoint counter. Every durable step advances it, so a stale checkpoint can never overwrite a newer one. |
+| `id` | `string` | Yes | Permanent transition identity, `tr` plus a decimal. Never reused. |
+| `index` | `object` | Yes | The index under construction. Index-build transitions fill every field; other kinds carry an empty placeholder. |
+| `index.access_generation` | `integer` |  | Generation checked by the index-access fence. Absent means zero. |
+| `index.column_ids` | `array of string` |  | Physical column identities matching `columns` by position. |
+| `index.columns` | `array of string` |  | Indexed column names in index order. |
+| `index.definition_generation` | `integer` |  | Monotonic generation of the index definition. Absent means zero. |
+| `index.id` | `string` | Yes | Physical index incarnation, `i` plus a decimal. |
+| `index.logical_id` | `string` |  | Stable logical index identity, `ix` plus a decimal. |
+| `index.name` | `string` | Yes | Current index name. |
+| `index.state` | `"" \| building \| catching_up \| validating \| ready \| deleting \| failed \| cancelled` |  | Build lifecycle state of the index itself. |
+| `index.unique` | `boolean` | Yes | Whether the index enforces uniqueness. |
+| `index_build_request` | `object` |  | The authored request an index-build transition executes. |
+| `index_build_request.column_schema_ids` | `array of integer` |  | Logical column identities to index, in index order. |
+| `index_build_request.logical_id` | `string` | Yes | Stable logical identity of the new index. |
+| `index_build_request.name` | `string` | Yes | Requested index name. |
+| `index_build_request.physical_id` | `string` | Yes | Physical incarnation allocated for the new index. |
+| `index_build_request.unique` | `boolean` | Yes | Whether the new index enforces uniqueness. |
+| `kind` | `index_build \| column_replacement \| constraint_validation` | Yes | The transition family. |
+| `last_error` | `string` |  | Message of the most recent failure. Empty when none. |
+| `object_id` | `string` |  | Logical identity of the object under construction. Empty for records that identify the object through `index`. |
+| `owner_epoch` | `integer` | Yes | Epoch of the schema worker that owns the transition. A claim with a newer epoch fences a stale worker's writes. |
+| `prerequisites` | `array of string` |  | Transitions that must reach a terminal state first. |
+| `rows_scanned` | `integer` |  | Count of rows the backfill has scanned. |
+| `source_catalog_version` | `integer` | Yes | Catalog version the transition was admitted against. |
+| `state` | `waiting \| building \| catching_up \| validating \| ready \| failed \| cancelled` | Yes | Lifecycle state. `ready`, `failed`, and `cancelled` are terminal; a terminal transition is compacted and later reclaimed. |
+| `table_id` | `string` | Yes | Physical identity of the table the transition works on. |
+| `table_schema_id` | `integer` | Yes | Logical schema identity of that table. |
+| `updated_at` | `string` | Yes | RFC 3339 timestamp of the most recent checkpoint. |
+| `work_state` | `"" \| normal \| degraded \| write_gated` |  | Backpressure classification derived from delta lag. The empty string means unclassified. |
+
+## `catalog/unique_claim.v1`
+
+One uniqueness claim over an indexed tuple, recorded while a unique index builds. Two claims on one tuple from different rows are a violation the build surfaces before the index can publish.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `pk` | `string` | Yes | Base64 primary-key tuple bytes of the claiming row. |
+| `tuple` | `string` | Yes | Base64 indexed tuple bytes the claim covers. |
+
+## `catalog/write_protocol.v1`
+
+The write obligations for one table at one generation: the indexes every write maintains, the delta sinks capturing writes for indexes under construction, the dual-writes for column replacements, and the constraint checks applied to new writes. Definitions are immutable per generation; the catalog_write_protocol_fence keyspace names the current generation.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `column_replacements` | `array of object` |  | Online column retypings in progress. Writes store both the source and the converted target cell. |
+| `column_replacements[].replacement` | `object` | Yes | The source column, target column, and conversion. |
+| `column_replacements[].replacement.conversion` | `strict_builtin` | Yes | Deterministic conversion applied to source cells. |
+| `column_replacements[].replacement.source` | `object` | Yes | The column being replaced. |
+| `column_replacements[].replacement.source.format` | `string` |  | Authored format annotation; not interpreted by storage. |
+| `column_replacements[].replacement.source.id` | `string` | Yes | Permanent physical column identity, `c` plus a decimal. |
+| `column_replacements[].replacement.source.insert_default` | `object` |  | Default applied when an insert omits the column. |
+| `column_replacements[].replacement.source.insert_default.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacements[].replacement.source.insert_default.float64` | `number` |  | Literal used when the column type is float64. |
+| `column_replacements[].replacement.source.insert_default.func` | `uuid \| now_ms` |  | Generator function for per-row defaults. |
+| `column_replacements[].replacement.source.insert_default.int64` | `integer` |  | Literal used when the column type is int64. |
+| `column_replacements[].replacement.source.insert_default.text` | `string` |  | Literal used when the column type is text. |
+| `column_replacements[].replacement.source.missing_value` | `object` |  | Literal supplied for cells absent from stored rows. |
+| `column_replacements[].replacement.source.missing_value.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacements[].replacement.source.missing_value.float64` | `number` |  | Literal used when the column type is float64. |
+| `column_replacements[].replacement.source.missing_value.func` | `uuid \| now_ms` |  | Generator function. Never valid for missing values; present because the default-value form is shared. |
+| `column_replacements[].replacement.source.missing_value.int64` | `integer` |  | Literal used when the column type is int64. |
+| `column_replacements[].replacement.source.missing_value.text` | `string` |  | Literal used when the column type is text. |
+| `column_replacements[].replacement.source.name` | `string` | Yes | Current column name. |
+| `column_replacements[].replacement.source.nullable` | `boolean` | Yes | Whether stored cells may be null. |
+| `column_replacements[].replacement.source.schema_id` | `integer` | Yes | Logical schema identity of the column. |
+| `column_replacements[].replacement.source.type` | `text \| int64 \| float64 \| bool` | Yes | Scalar type of every stored cell. |
+| `column_replacements[].replacement.source.value_generation` | `integer` |  | Generation checked by the column-value fence. Absent means zero. |
+| `column_replacements[].replacement.target` | `object` | Yes | The replacement column receiving converted cells. |
+| `column_replacements[].replacement.target.format` | `string` |  | Authored format annotation; not interpreted by storage. |
+| `column_replacements[].replacement.target.id` | `string` | Yes | Permanent physical column identity, `c` plus a decimal. |
+| `column_replacements[].replacement.target.insert_default` | `object` |  | Default applied when an insert omits the column. |
+| `column_replacements[].replacement.target.insert_default.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacements[].replacement.target.insert_default.float64` | `number` |  | Literal used when the column type is float64. |
+| `column_replacements[].replacement.target.insert_default.func` | `uuid \| now_ms` |  | Generator function for per-row defaults. |
+| `column_replacements[].replacement.target.insert_default.int64` | `integer` |  | Literal used when the column type is int64. |
+| `column_replacements[].replacement.target.insert_default.text` | `string` |  | Literal used when the column type is text. |
+| `column_replacements[].replacement.target.missing_value` | `object` |  | Literal supplied for cells absent from stored rows. |
+| `column_replacements[].replacement.target.missing_value.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacements[].replacement.target.missing_value.float64` | `number` |  | Literal used when the column type is float64. |
+| `column_replacements[].replacement.target.missing_value.func` | `uuid \| now_ms` |  | Generator function. Never valid for missing values; present because the default-value form is shared. |
+| `column_replacements[].replacement.target.missing_value.int64` | `integer` |  | Literal used when the column type is int64. |
+| `column_replacements[].replacement.target.missing_value.text` | `string` |  | Literal used when the column type is text. |
+| `column_replacements[].replacement.target.name` | `string` | Yes | Current column name. |
+| `column_replacements[].replacement.target.nullable` | `boolean` | Yes | Whether stored cells may be null. |
+| `column_replacements[].replacement.target.schema_id` | `integer` | Yes | Logical schema identity of the column. |
+| `column_replacements[].replacement.target.type` | `text \| int64 \| float64 \| bool` | Yes | Scalar type of every stored cell. |
+| `column_replacements[].replacement.target.value_generation` | `integer` |  | Generation checked by the column-value fence. Absent means zero. |
+| `column_replacements[].transition_id` | `string` | Yes | The column-replacement transition backfilling the target. |
+| `constraint_checks` | `array of object` |  | Constraints enforced on new writes while existing data validates. |
+| `constraint_checks[].constraint` | `object` | Yes | The constraint to enforce on new writes. |
+| `constraint_checks[].constraint.column_ids` | `array of string` |  | Physical column identities the constraint covers. |
+| `constraint_checks[].constraint.definition_generation` | `integer` | Yes | Definition generation that introduced the constraint. |
+| `constraint_checks[].constraint.id` | `string` | Yes | Permanent constraint identity, `ct` plus a decimal. |
+| `constraint_checks[].constraint.kind` | `not_null` | Yes | Constraint family. |
+| `constraint_checks[].constraint.name` | `string` | Yes | Current constraint name. |
+| `constraint_checks[].constraint.state` | `declared \| enforcing_new_writes \| validating_existing_data \| valid \| failed \| cancelled` | Yes | Validation lifecycle state. |
+| `constraint_checks[].transition_id` | `string` | Yes | The constraint-validation transition proving existing data. |
+| `delta_sinks` | `array of object` |  | Indexes under construction. Writes are captured as ordered deltas in the catalog_transition_delta keyspace and applied by the build. |
+| `delta_sinks[].columns` | `array of string` |  | Column names the sink indexes, resolved when the protocol was published, so renames never change what writers capture. |
+| `delta_sinks[].delta_hard_limit` | `integer` |  | Retained-delta lag at which writes are gated until the build catches up. Zero or absent means no gate. |
+| `delta_sinks[].index` | `object` | Yes | The index under construction. |
+| `delta_sinks[].index.access_generation` | `integer` |  | Generation checked by the index-access fence. Absent means zero. |
+| `delta_sinks[].index.column_ids` | `array of string` |  | Physical column identities matching `columns` by position. |
+| `delta_sinks[].index.columns` | `array of string` |  | Indexed column names in index order. |
+| `delta_sinks[].index.definition_generation` | `integer` |  | Monotonic generation of the index definition. Absent means zero. |
+| `delta_sinks[].index.id` | `string` | Yes | Physical index incarnation, `i` plus a decimal. |
+| `delta_sinks[].index.logical_id` | `string` |  | Stable logical index identity, `ix` plus a decimal. |
+| `delta_sinks[].index.name` | `string` | Yes | Current index name. |
+| `delta_sinks[].index.state` | `"" \| building \| catching_up \| validating \| ready \| deleting \| failed \| cancelled` |  | Build lifecycle state. |
+| `delta_sinks[].index.unique` | `boolean` | Yes | Whether the index enforces uniqueness. |
+| `delta_sinks[].transition_id` | `string` | Yes | The index-build transition consuming the deltas. |
+| `finalization_gate` | `object` |  | Blocks schema finalization for this table until the named transition reaches a terminal state. |
+| `finalization_gate.kind` | `index_build \| column_replacement \| constraint_validation` | Yes | The transition family holding the gate. |
+| `finalization_gate.object_id` | `string` | Yes | Logical identity of the object the transition builds. |
+| `finalization_gate.transition_id` | `string` | Yes | The transition that must finish first. |
+| `generation` | `integer` | Yes | Write-protocol generation. Writers admit their cached protocol against the fence before every write, so a published change fences stale writers. |
+| `ready_indexes` | `array of object` |  | Indexes every write must maintain directly. |
+| `ready_indexes[].access_generation` | `integer` |  | Generation checked by the index-access fence. Absent means zero. |
+| `ready_indexes[].column_ids` | `array of string` |  | Physical column identities matching `columns` by position. |
+| `ready_indexes[].columns` | `array of string` |  | Indexed column names in index order. |
+| `ready_indexes[].definition_generation` | `integer` |  | Monotonic generation of the index definition. Absent means zero. |
+| `ready_indexes[].id` | `string` | Yes | Physical index incarnation, `i` plus a decimal. |
+| `ready_indexes[].logical_id` | `string` |  | Stable logical index identity, `ix` plus a decimal. |
+| `ready_indexes[].name` | `string` | Yes | Current index name. |
+| `ready_indexes[].state` | `"" \| building \| catching_up \| validating \| ready \| deleting \| failed \| cancelled` |  | Build lifecycle state. The empty string and `ready` are both readable states. |
+| `ready_indexes[].unique` | `boolean` | Yes | Whether the index enforces uniqueness. |
+| `table_id` | `string` | Yes | Physical identity of the table this protocol governs. |
+
+## `metadata/compatibility.v1`
+
+What this database requires of binaries that open it. The manifest is separate from the specification revision: it carries capability floors and enabled storage features, validated before a process serves requests. A binary must read the existing storage world before it may enable or write a new storage feature.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `features` | `array of string` |  | Storage features enabled in this database. A binary that does not know a listed feature fails closed at startup. |
+| `min_reader` | `integer` | Yes | Lowest storage capability a binary needs to read this database. A process whose capability is lower fails closed at startup. |
+| `min_writer` | `integer` | Yes | Lowest storage capability a binary needs to write this database. Read-only processes ignore this floor. |

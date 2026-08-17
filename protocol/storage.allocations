@@ -1,0 +1,514 @@
+# Permanent durable-format allocations, maintained by keyform.
+# Never edit by hand. Allocated meanings are immutable: a removed
+# keyspace becomes a `reserved` line forever, released vectors are
+# normative, and released schema versions are structurally frozen.
+root 7237
+space 01 data
+space 02 index
+space 10 catalog_table_object
+space 11 catalog_table_head
+space 12 catalog_table
+space 13 catalog_table_name
+space 14 catalog_schema_revision
+space 15 catalog_write_protocol_object
+space 16 catalog_write_protocol_fence
+space 17 catalog_fence_table_existence
+space 18 catalog_fence_column_value
+space 19 catalog_fence_index_access
+space 1a catalog_transition
+space 1b catalog_transition_delta
+space 1c catalog_transition_delta_sequence
+space 1d catalog_transition_delta_applied
+space 1e catalog_transition_unique_claim
+space 1f catalog_transition_unique_violation
+space 20 catalog_transition_violation
+space 21 catalog_retention_pin
+space 22 catalog_reclamation
+space 30 catalog_meta_mode
+space 31 catalog_meta_next_id
+space 32 catalog_meta_schema_version
+space 33 catalog_meta_catalog_generation
+space 34 catalog_meta_compacted_through
+space 35 catalog_meta_transition_seen
+space 36 catalog_meta_reclamation_seen
+space 40 runtime_writer_fence
+space 41 storage_manifest
+reserved 00 never allocated: guards zero-initialised or truncated keys
+scalar ordered_scalar.bool 02
+scalar ordered_scalar.float64 04
+scalar ordered_scalar.int64 03
+scalar ordered_scalar.null 01
+scalar ordered_scalar.text 05
+record row_body 52
+vector catalog_fence_column_value 4d26c3d1fbe7bc94
+vector catalog_fence_index_access 84930c9ea1f23dd4
+vector catalog_fence_table_existence da4e31aa86b3b3ed
+vector catalog_meta_catalog_generation 26486a7126318d46
+vector catalog_meta_compacted_through 0b9126124d27a757
+vector catalog_meta_mode d317bbbc39e4ff77
+vector catalog_meta_next_id 2ce668d82fb49e64
+vector catalog_meta_reclamation_seen f492ace56fc76339
+vector catalog_meta_schema_version b5ddfe59776f0e47
+vector catalog_meta_transition_seen ed79623c40a6b264
+vector catalog_reclamation 9bfa6f637814df83
+vector catalog_retention_pin de5bb318e6729a77
+vector catalog_schema_revision dc043ea1b9d16066
+vector catalog_table 8b2a1d40c293c51c
+vector catalog_table_head 9b6645685a6f71e9
+vector catalog_table_name cb5116e98e428d5b
+vector catalog_table_object 75765b545dc398f4
+vector catalog_transition 82d726c4a2cb500e
+vector catalog_transition_delta ec27738936ebae3f
+vector catalog_transition_delta_applied 1da54e1d2ec7b1b2
+vector catalog_transition_delta_sequence 418d653467a0b9f7
+vector catalog_transition_unique_claim 13ffa24be6ead8bc
+vector catalog_transition_unique_violation 2b5ea09f7742fe88
+vector catalog_transition_violation 4541d46c0e4c4f79
+vector catalog_write_protocol_fence eca7a181907514f8
+vector catalog_write_protocol_object 63638d13207b1105
+vector data 12971bf63c41dae6
+vector data 3fda940d2303ab29
+vector data cd232e74ab6c72e3
+vector index 2294d71170c12ab7
+vector ordered_scalar 177a5137aa24becf
+vector ordered_scalar 268c501a75e6c756
+vector ordered_scalar 529600e6f334d968
+vector ordered_scalar 6248be331ad178b1
+vector ordered_scalar 6486a0573a0d2d61
+vector ordered_scalar 7da3f65a61e03d45
+vector ordered_scalar b6b3dd7092830c12
+vector ordered_scalar bf6c7f97bd1461b5
+vector ordered_scalar c8fc19f77719a60a
+vector ordered_scalar cb83cb956c9d76d4
+vector ordered_scalar dfd77001d0fec8c4
+vector ordered_scalar ef4906b7cbdebf28
+vector ordered_scalar fc3e00186d81295b
+vector row_body 2616fbefaefdf4d5
+vector row_body 2ff3a874081ae8f4
+vector row_body 3bb0eb5e903a851b
+vector row_body 3fe69532f1e189d9
+vector row_body 618f6f3ed6ac58aa
+vector row_body 6767444f7b38ab4c
+vector row_body 726a2382dd3043c6
+vector row_body 73bf81f52e65686a
+vector row_body 7d752e86f7097ea2
+vector row_body 7e734d9e71f30961
+vector row_body 97baac9abab1d453
+vector row_body b32d7b7f4e388e37
+vector row_body c22b39c90315fc36
+vector row_body c6ceb6f139b73006
+vector row_body c7b58e0b8d2f5172
+vector row_body dcb5ba0384f313ee
+vector row_body e2f1cd16b9fa1f49
+vector row_body e69db5531863f831
+vector runtime_writer_fence 7bafecf90949d2ad
+vector scan 191f86543e27d0e4
+vector scan b0b2066d4f0f4ea5
+vector scan c35ad3102caf51fc
+vector scan ded5271c8a155e80
+vector scan e399759e8fdea969
+vector semantic_scalar 144e1867b7108c81
+vector semantic_scalar 1497b09b5c380e55
+vector semantic_scalar 177a5137aa24becf
+vector semantic_scalar 19002d3196b3e92b
+vector semantic_scalar 268c501a75e6c756
+vector semantic_scalar 36524418e10b3b6b
+vector semantic_scalar 3876d3be0868872e
+vector semantic_scalar 3c8087745752d319
+vector semantic_scalar 423f0ab2ee39ab3a
+vector semantic_scalar 529600e6f334d968
+vector semantic_scalar 593286cd99e698d6
+vector semantic_scalar 6b50c7c5eb308a8d
+vector semantic_scalar 74a45b6cab218836
+vector semantic_scalar 8c73cad9cd7e467b
+vector semantic_scalar 97baac9abab1d453
+vector semantic_scalar 982c310439a81a46
+vector semantic_scalar 9e1acdfc0c8dcb91
+vector semantic_scalar af188a9631b021f3
+vector semantic_scalar b6b3dd7092830c12
+vector semantic_scalar bee57bd0f1962ccb
+vector semantic_scalar cb83cb956c9d76d4
+vector semantic_scalar dc88e8b8da7421d3
+vector semantic_scalar e6d3190a733f4247
+vector semantic_scalar fc3e00186d81295b
+vector storage_manifest 10a2508510963de9
+vector uvarint 0abc4dfd9c618f1b
+vector uvarint 1d96a71b17be3300
+vector uvarint 27fa1dc8050a32b9
+vector uvarint 28dba8fc0d14ddfc
+vector uvarint 5cdcd753f80743cd
+vector uvarint 6d9b4e46c582b4b5
+vector uvarint 97baac9abab1d453
+vector uvarint adeba7a73f1d01dd
+vector uvarint b7b6857117cbf499
+vector uvarint ffb6c845b3b3f104
+schema catalog/index_delta.v1 format integer required enum:1
+schema catalog/index_delta.v1 record object required
+schema catalog/index_delta.v1 record.id string required
+schema catalog/index_delta.v1 record.operation string required enum:put|delete
+schema catalog/index_delta.v1 record.pk string required
+schema catalog/index_delta.v1 record.sequence integer required
+schema catalog/index_delta.v1 record.tuple string required
+schema catalog/reclamation.v1 format integer required enum:1
+schema catalog/reclamation.v1 record object required
+schema catalog/reclamation.v1 record.batch_id integer optional
+schema catalog/reclamation.v1 record.column_id string optional
+schema catalog/reclamation.v1 record.compacted_at string required
+schema catalog/reclamation.v1 record.created_at string required
+schema catalog/reclamation.v1 record.cursor string optional
+schema catalog/reclamation.v1 record.definition_generation integer optional
+schema catalog/reclamation.v1 record.generation integer required
+schema catalog/reclamation.v1 record.id string required
+schema catalog/reclamation.v1 record.index_id string optional
+schema catalog/reclamation.v1 record.index_ids array optional
+schema catalog/reclamation.v1 record.index_ids[] string optional
+schema catalog/reclamation.v1 record.items_reclaimed integer optional
+schema catalog/reclamation.v1 record.kind string required enum:table|column|index|table_definition|write_protocol_definition|transition_deltas|cancelled_index|failed_index|replaced_column|cancelled_replacement|failed_replacement|constraint_validation
+schema catalog/reclamation.v1 record.last_error string optional
+schema catalog/reclamation.v1 record.owner_epoch integer required
+schema catalog/reclamation.v1 record.phase string optional
+schema catalog/reclamation.v1 record.retired_catalog_version integer optional
+schema catalog/reclamation.v1 record.state string required enum:pending|reclaiming|reclaimed|failed
+schema catalog/reclamation.v1 record.table_id string optional
+schema catalog/reclamation.v1 record.table_schema_id integer optional
+schema catalog/reclamation.v1 record.transition_id string optional
+schema catalog/reclamation.v1 record.updated_at string required
+schema catalog/reclamation.v1 record.write_protocol_generation integer optional
+schema catalog/retention_pin.v1 format integer required enum:1
+schema catalog/retention_pin.v1 record object required
+schema catalog/retention_pin.v1 record.created_at string required
+schema catalog/retention_pin.v1 record.id string required
+schema catalog/retention_pin.v1 record.owner_id string required
+schema catalog/retention_pin.v1 record.owner_kind string required enum:prepared_plan|data_snapshot|replica|cdc|schema_transition|schema_worker|physical_reader
+schema catalog/retention_pin.v1 record.resource object required
+schema catalog/retention_pin.v1 record.resource.column_id string optional
+schema catalog/retention_pin.v1 record.resource.data_position string optional
+schema catalog/retention_pin.v1 record.resource.definition_generation integer optional
+schema catalog/retention_pin.v1 record.resource.index_id string optional
+schema catalog/retention_pin.v1 record.resource.kind string required enum:table_definition|write_protocol_definition|data_snapshot|transition_deltas|physical_table|physical_column|physical_index|transition_diagnostics
+schema catalog/retention_pin.v1 record.resource.table_id string optional
+schema catalog/retention_pin.v1 record.resource.table_schema_id integer optional
+schema catalog/retention_pin.v1 record.resource.transition_id string optional
+schema catalog/retention_pin.v1 record.resource.write_protocol_generation integer optional
+schema catalog/revision.v1 format integer required enum:1
+schema catalog/revision.v1 record object required
+schema catalog/revision.v1 record.created_at string required
+schema catalog/revision.v1 record.hash string required
+schema catalog/revision.v1 record.schema object required
+schema catalog/revision.v1 record.schema.tables array optional
+schema catalog/revision.v1 record.schema.tables[] object optional
+schema catalog/revision.v1 record.schema.tables[].columns array optional
+schema catalog/revision.v1 record.schema.tables[].columns[] object optional
+schema catalog/revision.v1 record.schema.tables[].columns[].default object optional
+schema catalog/revision.v1 record.schema.tables[].columns[].default.bool boolean optional
+schema catalog/revision.v1 record.schema.tables[].columns[].default.float64 number optional
+schema catalog/revision.v1 record.schema.tables[].columns[].default.func string optional enum:uuid|now_ms
+schema catalog/revision.v1 record.schema.tables[].columns[].default.int64 integer optional
+schema catalog/revision.v1 record.schema.tables[].columns[].default.text string optional
+schema catalog/revision.v1 record.schema.tables[].columns[].format string optional
+schema catalog/revision.v1 record.schema.tables[].columns[].id integer required
+schema catalog/revision.v1 record.schema.tables[].columns[].name string required
+schema catalog/revision.v1 record.schema.tables[].columns[].nullable boolean optional
+schema catalog/revision.v1 record.schema.tables[].columns[].type string required enum:text|int64|float64|bool
+schema catalog/revision.v1 record.schema.tables[].foreign_keys array optional
+schema catalog/revision.v1 record.schema.tables[].foreign_keys[] object optional
+schema catalog/revision.v1 record.schema.tables[].foreign_keys[].columns array optional
+schema catalog/revision.v1 record.schema.tables[].foreign_keys[].columns[] string optional
+schema catalog/revision.v1 record.schema.tables[].foreign_keys[].name string required
+schema catalog/revision.v1 record.schema.tables[].foreign_keys[].ref_columns array optional
+schema catalog/revision.v1 record.schema.tables[].foreign_keys[].ref_columns[] string optional
+schema catalog/revision.v1 record.schema.tables[].foreign_keys[].ref_table string required
+schema catalog/revision.v1 record.schema.tables[].id integer required
+schema catalog/revision.v1 record.schema.tables[].indexes array optional
+schema catalog/revision.v1 record.schema.tables[].indexes[] object optional
+schema catalog/revision.v1 record.schema.tables[].indexes[].columns array optional
+schema catalog/revision.v1 record.schema.tables[].indexes[].columns[] string optional
+schema catalog/revision.v1 record.schema.tables[].indexes[].name string required
+schema catalog/revision.v1 record.schema.tables[].indexes[].unique boolean optional
+schema catalog/revision.v1 record.schema.tables[].name string required
+schema catalog/revision.v1 record.schema.tables[].primary_key array optional
+schema catalog/revision.v1 record.schema.tables[].primary_key[] string optional
+schema catalog/revision.v1 record.version integer required
+schema catalog/table.v1 format integer required enum:1
+schema catalog/table.v1 record object required
+schema catalog/table.v1 record.columns array optional
+schema catalog/table.v1 record.columns[] object optional
+schema catalog/table.v1 record.columns[].format string optional
+schema catalog/table.v1 record.columns[].id string required
+schema catalog/table.v1 record.columns[].insert_default object optional
+schema catalog/table.v1 record.columns[].insert_default.bool boolean optional
+schema catalog/table.v1 record.columns[].insert_default.float64 number optional
+schema catalog/table.v1 record.columns[].insert_default.func string optional enum:uuid|now_ms
+schema catalog/table.v1 record.columns[].insert_default.int64 integer optional
+schema catalog/table.v1 record.columns[].insert_default.text string optional
+schema catalog/table.v1 record.columns[].missing_value object optional
+schema catalog/table.v1 record.columns[].missing_value.bool boolean optional
+schema catalog/table.v1 record.columns[].missing_value.float64 number optional
+schema catalog/table.v1 record.columns[].missing_value.func string optional enum:uuid|now_ms
+schema catalog/table.v1 record.columns[].missing_value.int64 integer optional
+schema catalog/table.v1 record.columns[].missing_value.text string optional
+schema catalog/table.v1 record.columns[].name string required
+schema catalog/table.v1 record.columns[].nullable boolean required
+schema catalog/table.v1 record.columns[].schema_id integer required
+schema catalog/table.v1 record.columns[].type string required enum:text|int64|float64|bool
+schema catalog/table.v1 record.columns[].value_generation integer optional
+schema catalog/table.v1 record.constraints array optional
+schema catalog/table.v1 record.constraints[] object optional
+schema catalog/table.v1 record.constraints[].column_ids array optional
+schema catalog/table.v1 record.constraints[].column_ids[] string optional
+schema catalog/table.v1 record.constraints[].definition_generation integer required
+schema catalog/table.v1 record.constraints[].id string required
+schema catalog/table.v1 record.constraints[].kind string required enum:not_null
+schema catalog/table.v1 record.constraints[].name string required
+schema catalog/table.v1 record.constraints[].state string required enum:declared|enforcing_new_writes|validating_existing_data|valid|failed|cancelled
+schema catalog/table.v1 record.definition_generation integer optional
+schema catalog/table.v1 record.existence_generation integer optional
+schema catalog/table.v1 record.foreign_keys array optional
+schema catalog/table.v1 record.foreign_keys[] object optional
+schema catalog/table.v1 record.foreign_keys[].columns array optional
+schema catalog/table.v1 record.foreign_keys[].columns[] string optional
+schema catalog/table.v1 record.foreign_keys[].id string required
+schema catalog/table.v1 record.foreign_keys[].name string required
+schema catalog/table.v1 record.foreign_keys[].ref_columns array optional
+schema catalog/table.v1 record.foreign_keys[].ref_columns[] string optional
+schema catalog/table.v1 record.foreign_keys[].ref_table_id string required
+schema catalog/table.v1 record.id string required
+schema catalog/table.v1 record.indexes array optional
+schema catalog/table.v1 record.indexes[] object optional
+schema catalog/table.v1 record.indexes[].access_generation integer optional
+schema catalog/table.v1 record.indexes[].column_ids array optional
+schema catalog/table.v1 record.indexes[].column_ids[] string optional
+schema catalog/table.v1 record.indexes[].columns array optional
+schema catalog/table.v1 record.indexes[].columns[] string optional
+schema catalog/table.v1 record.indexes[].definition_generation integer optional
+schema catalog/table.v1 record.indexes[].id string required
+schema catalog/table.v1 record.indexes[].logical_id string optional
+schema catalog/table.v1 record.indexes[].name string required
+schema catalog/table.v1 record.indexes[].state string optional enum:|building|catching_up|validating|ready|deleting|failed|cancelled
+schema catalog/table.v1 record.indexes[].unique boolean required
+schema catalog/table.v1 record.name string required
+schema catalog/table.v1 record.primary_key array optional
+schema catalog/table.v1 record.primary_key[] string optional
+schema catalog/table.v1 record.schema_id integer required
+schema catalog/table.v1 record.storage_generation integer optional
+schema catalog/table.v1 record.write_protocol_generation integer optional
+schema catalog/transition.v1 format integer required enum:1
+schema catalog/transition.v1 record object required
+schema catalog/transition.v1 record.affected_column_schema_ids array optional
+schema catalog/transition.v1 record.affected_column_schema_ids[] integer optional
+schema catalog/transition.v1 record.applied_delta integer optional
+schema catalog/transition.v1 record.barrier_position string optional
+schema catalog/transition.v1 record.base_position string required
+schema catalog/transition.v1 record.batch_id integer optional
+schema catalog/transition.v1 record.column_replacement object optional
+schema catalog/transition.v1 record.column_replacement.conversion string required enum:strict_builtin
+schema catalog/transition.v1 record.column_replacement.source object required
+schema catalog/transition.v1 record.column_replacement.source.format string optional
+schema catalog/transition.v1 record.column_replacement.source.id string required
+schema catalog/transition.v1 record.column_replacement.source.insert_default object optional
+schema catalog/transition.v1 record.column_replacement.source.insert_default.bool boolean optional
+schema catalog/transition.v1 record.column_replacement.source.insert_default.float64 number optional
+schema catalog/transition.v1 record.column_replacement.source.insert_default.func string optional enum:uuid|now_ms
+schema catalog/transition.v1 record.column_replacement.source.insert_default.int64 integer optional
+schema catalog/transition.v1 record.column_replacement.source.insert_default.text string optional
+schema catalog/transition.v1 record.column_replacement.source.missing_value object optional
+schema catalog/transition.v1 record.column_replacement.source.missing_value.bool boolean optional
+schema catalog/transition.v1 record.column_replacement.source.missing_value.float64 number optional
+schema catalog/transition.v1 record.column_replacement.source.missing_value.func string optional enum:uuid|now_ms
+schema catalog/transition.v1 record.column_replacement.source.missing_value.int64 integer optional
+schema catalog/transition.v1 record.column_replacement.source.missing_value.text string optional
+schema catalog/transition.v1 record.column_replacement.source.name string required
+schema catalog/transition.v1 record.column_replacement.source.nullable boolean required
+schema catalog/transition.v1 record.column_replacement.source.schema_id integer required
+schema catalog/transition.v1 record.column_replacement.source.type string required enum:text|int64|float64|bool
+schema catalog/transition.v1 record.column_replacement.source.value_generation integer optional
+schema catalog/transition.v1 record.column_replacement.target object required
+schema catalog/transition.v1 record.column_replacement.target.format string optional
+schema catalog/transition.v1 record.column_replacement.target.id string required
+schema catalog/transition.v1 record.column_replacement.target.insert_default object optional
+schema catalog/transition.v1 record.column_replacement.target.insert_default.bool boolean optional
+schema catalog/transition.v1 record.column_replacement.target.insert_default.float64 number optional
+schema catalog/transition.v1 record.column_replacement.target.insert_default.func string optional enum:uuid|now_ms
+schema catalog/transition.v1 record.column_replacement.target.insert_default.int64 integer optional
+schema catalog/transition.v1 record.column_replacement.target.insert_default.text string optional
+schema catalog/transition.v1 record.column_replacement.target.missing_value object optional
+schema catalog/transition.v1 record.column_replacement.target.missing_value.bool boolean optional
+schema catalog/transition.v1 record.column_replacement.target.missing_value.float64 number optional
+schema catalog/transition.v1 record.column_replacement.target.missing_value.func string optional enum:uuid|now_ms
+schema catalog/transition.v1 record.column_replacement.target.missing_value.int64 integer optional
+schema catalog/transition.v1 record.column_replacement.target.missing_value.text string optional
+schema catalog/transition.v1 record.column_replacement.target.name string required
+schema catalog/transition.v1 record.column_replacement.target.nullable boolean required
+schema catalog/transition.v1 record.column_replacement.target.schema_id integer required
+schema catalog/transition.v1 record.column_replacement.target.type string required enum:text|int64|float64|bool
+schema catalog/transition.v1 record.column_replacement.target.value_generation integer optional
+schema catalog/transition.v1 record.column_replacement_request object optional
+schema catalog/transition.v1 record.column_replacement_request.column_schema_id integer required
+schema catalog/transition.v1 record.column_replacement_request.conversion string required enum:strict_builtin
+schema catalog/transition.v1 record.column_replacement_request.default object optional
+schema catalog/transition.v1 record.column_replacement_request.default.bool boolean optional
+schema catalog/transition.v1 record.column_replacement_request.default.float64 number optional
+schema catalog/transition.v1 record.column_replacement_request.default.func string optional enum:uuid|now_ms
+schema catalog/transition.v1 record.column_replacement_request.default.int64 integer optional
+schema catalog/transition.v1 record.column_replacement_request.default.text string optional
+schema catalog/transition.v1 record.column_replacement_request.format string optional
+schema catalog/transition.v1 record.column_replacement_request.nullable boolean required
+schema catalog/transition.v1 record.column_replacement_request.type string required enum:text|int64|float64|bool
+schema catalog/transition.v1 record.compacted_at string required
+schema catalog/transition.v1 record.constraint object optional
+schema catalog/transition.v1 record.constraint.column_ids array optional
+schema catalog/transition.v1 record.constraint.column_ids[] string optional
+schema catalog/transition.v1 record.constraint.definition_generation integer required
+schema catalog/transition.v1 record.constraint.id string required
+schema catalog/transition.v1 record.constraint.kind string required enum:not_null
+schema catalog/transition.v1 record.constraint.name string required
+schema catalog/transition.v1 record.constraint.state string required enum:declared|enforcing_new_writes|validating_existing_data|valid|failed|cancelled
+schema catalog/transition.v1 record.constraint_validation_request object optional
+schema catalog/transition.v1 record.constraint_validation_request.column_schema_id integer required
+schema catalog/transition.v1 record.constraint_validation_request.constraint_id string required
+schema catalog/transition.v1 record.created_at string required
+schema catalog/transition.v1 record.cursor string optional
+schema catalog/transition.v1 record.delta_hard_limit integer optional
+schema catalog/transition.v1 record.delta_high_water integer optional
+schema catalog/transition.v1 record.delta_soft_limit integer optional
+schema catalog/transition.v1 record.gate_table_ids array optional
+schema catalog/transition.v1 record.gate_table_ids[] string optional
+schema catalog/transition.v1 record.generation integer required
+schema catalog/transition.v1 record.id string required
+schema catalog/transition.v1 record.index object required
+schema catalog/transition.v1 record.index.access_generation integer optional
+schema catalog/transition.v1 record.index.column_ids array optional
+schema catalog/transition.v1 record.index.column_ids[] string optional
+schema catalog/transition.v1 record.index.columns array optional
+schema catalog/transition.v1 record.index.columns[] string optional
+schema catalog/transition.v1 record.index.definition_generation integer optional
+schema catalog/transition.v1 record.index.id string required
+schema catalog/transition.v1 record.index.logical_id string optional
+schema catalog/transition.v1 record.index.name string required
+schema catalog/transition.v1 record.index.state string optional enum:|building|catching_up|validating|ready|deleting|failed|cancelled
+schema catalog/transition.v1 record.index.unique boolean required
+schema catalog/transition.v1 record.index_build_request object optional
+schema catalog/transition.v1 record.index_build_request.column_schema_ids array optional
+schema catalog/transition.v1 record.index_build_request.column_schema_ids[] integer optional
+schema catalog/transition.v1 record.index_build_request.logical_id string required
+schema catalog/transition.v1 record.index_build_request.name string required
+schema catalog/transition.v1 record.index_build_request.physical_id string required
+schema catalog/transition.v1 record.index_build_request.unique boolean required
+schema catalog/transition.v1 record.kind string required enum:index_build|column_replacement|constraint_validation
+schema catalog/transition.v1 record.last_error string optional
+schema catalog/transition.v1 record.object_id string optional
+schema catalog/transition.v1 record.owner_epoch integer required
+schema catalog/transition.v1 record.prerequisites array optional
+schema catalog/transition.v1 record.prerequisites[] string optional
+schema catalog/transition.v1 record.rows_scanned integer optional
+schema catalog/transition.v1 record.source_catalog_version integer required
+schema catalog/transition.v1 record.state string required enum:waiting|building|catching_up|validating|ready|failed|cancelled
+schema catalog/transition.v1 record.table_id string required
+schema catalog/transition.v1 record.table_schema_id integer required
+schema catalog/transition.v1 record.updated_at string required
+schema catalog/transition.v1 record.work_state string optional enum:|normal|degraded|write_gated
+schema catalog/unique_claim.v1 format integer required enum:1
+schema catalog/unique_claim.v1 record object required
+schema catalog/unique_claim.v1 record.pk string required
+schema catalog/unique_claim.v1 record.tuple string required
+schema catalog/write_protocol.v1 format integer required enum:1
+schema catalog/write_protocol.v1 record object required
+schema catalog/write_protocol.v1 record.column_replacements array optional
+schema catalog/write_protocol.v1 record.column_replacements[] object optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement object required
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.conversion string required enum:strict_builtin
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source object required
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.format string optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.id string required
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.insert_default object optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.insert_default.bool boolean optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.insert_default.float64 number optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.insert_default.func string optional enum:uuid|now_ms
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.insert_default.int64 integer optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.insert_default.text string optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.missing_value object optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.missing_value.bool boolean optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.missing_value.float64 number optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.missing_value.func string optional enum:uuid|now_ms
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.missing_value.int64 integer optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.missing_value.text string optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.name string required
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.nullable boolean required
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.schema_id integer required
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.type string required enum:text|int64|float64|bool
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.value_generation integer optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target object required
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.format string optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.id string required
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.insert_default object optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.insert_default.bool boolean optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.insert_default.float64 number optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.insert_default.func string optional enum:uuid|now_ms
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.insert_default.int64 integer optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.insert_default.text string optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.missing_value object optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.missing_value.bool boolean optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.missing_value.float64 number optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.missing_value.func string optional enum:uuid|now_ms
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.missing_value.int64 integer optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.missing_value.text string optional
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.name string required
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.nullable boolean required
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.schema_id integer required
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.type string required enum:text|int64|float64|bool
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.value_generation integer optional
+schema catalog/write_protocol.v1 record.column_replacements[].transition_id string required
+schema catalog/write_protocol.v1 record.constraint_checks array optional
+schema catalog/write_protocol.v1 record.constraint_checks[] object optional
+schema catalog/write_protocol.v1 record.constraint_checks[].constraint object required
+schema catalog/write_protocol.v1 record.constraint_checks[].constraint.column_ids array optional
+schema catalog/write_protocol.v1 record.constraint_checks[].constraint.column_ids[] string optional
+schema catalog/write_protocol.v1 record.constraint_checks[].constraint.definition_generation integer required
+schema catalog/write_protocol.v1 record.constraint_checks[].constraint.id string required
+schema catalog/write_protocol.v1 record.constraint_checks[].constraint.kind string required enum:not_null
+schema catalog/write_protocol.v1 record.constraint_checks[].constraint.name string required
+schema catalog/write_protocol.v1 record.constraint_checks[].constraint.state string required enum:declared|enforcing_new_writes|validating_existing_data|valid|failed|cancelled
+schema catalog/write_protocol.v1 record.constraint_checks[].transition_id string required
+schema catalog/write_protocol.v1 record.delta_sinks array optional
+schema catalog/write_protocol.v1 record.delta_sinks[] object optional
+schema catalog/write_protocol.v1 record.delta_sinks[].columns array optional
+schema catalog/write_protocol.v1 record.delta_sinks[].columns[] string optional
+schema catalog/write_protocol.v1 record.delta_sinks[].delta_hard_limit integer optional
+schema catalog/write_protocol.v1 record.delta_sinks[].index object required
+schema catalog/write_protocol.v1 record.delta_sinks[].index.access_generation integer optional
+schema catalog/write_protocol.v1 record.delta_sinks[].index.column_ids array optional
+schema catalog/write_protocol.v1 record.delta_sinks[].index.column_ids[] string optional
+schema catalog/write_protocol.v1 record.delta_sinks[].index.columns array optional
+schema catalog/write_protocol.v1 record.delta_sinks[].index.columns[] string optional
+schema catalog/write_protocol.v1 record.delta_sinks[].index.definition_generation integer optional
+schema catalog/write_protocol.v1 record.delta_sinks[].index.id string required
+schema catalog/write_protocol.v1 record.delta_sinks[].index.logical_id string optional
+schema catalog/write_protocol.v1 record.delta_sinks[].index.name string required
+schema catalog/write_protocol.v1 record.delta_sinks[].index.state string optional enum:|building|catching_up|validating|ready|deleting|failed|cancelled
+schema catalog/write_protocol.v1 record.delta_sinks[].index.unique boolean required
+schema catalog/write_protocol.v1 record.delta_sinks[].transition_id string required
+schema catalog/write_protocol.v1 record.finalization_gate object optional
+schema catalog/write_protocol.v1 record.finalization_gate.kind string required enum:index_build|column_replacement|constraint_validation
+schema catalog/write_protocol.v1 record.finalization_gate.object_id string required
+schema catalog/write_protocol.v1 record.finalization_gate.transition_id string required
+schema catalog/write_protocol.v1 record.generation integer required
+schema catalog/write_protocol.v1 record.ready_indexes array optional
+schema catalog/write_protocol.v1 record.ready_indexes[] object optional
+schema catalog/write_protocol.v1 record.ready_indexes[].access_generation integer optional
+schema catalog/write_protocol.v1 record.ready_indexes[].column_ids array optional
+schema catalog/write_protocol.v1 record.ready_indexes[].column_ids[] string optional
+schema catalog/write_protocol.v1 record.ready_indexes[].columns array optional
+schema catalog/write_protocol.v1 record.ready_indexes[].columns[] string optional
+schema catalog/write_protocol.v1 record.ready_indexes[].definition_generation integer optional
+schema catalog/write_protocol.v1 record.ready_indexes[].id string required
+schema catalog/write_protocol.v1 record.ready_indexes[].logical_id string optional
+schema catalog/write_protocol.v1 record.ready_indexes[].name string required
+schema catalog/write_protocol.v1 record.ready_indexes[].state string optional enum:|building|catching_up|validating|ready|deleting|failed|cancelled
+schema catalog/write_protocol.v1 record.ready_indexes[].unique boolean required
+schema catalog/write_protocol.v1 record.table_id string required
+schema metadata/compatibility.v1 format integer required enum:1
+schema metadata/compatibility.v1 record object required
+schema metadata/compatibility.v1 record.features array optional
+schema metadata/compatibility.v1 record.features[] string optional
+schema metadata/compatibility.v1 record.min_reader integer required
+schema metadata/compatibility.v1 record.min_writer integer required

@@ -1,0 +1,225 @@
+{
+  "keyspaces": [
+    {
+      "invariants": [],
+      "key": "table:physical_id(t) generation:uvarint primary_key:tuple",
+      "name": "data",
+      "tag": "01",
+      "value": "record row_body"
+    },
+    {
+      "invariants": [
+        "a row with a null in any indexed column has no entry"
+      ],
+      "key": "table:physical_id(t) index:physical_id(i) indexed:tuple primary_key:tuple",
+      "name": "index",
+      "tag": "02",
+      "value": "encoded primary-key tuple bytes"
+    },
+    {
+      "invariants": [
+        "immutable once written: publishing different contents under an existing key is a conflict"
+      ],
+      "key": "schema:be32 generation:be64",
+      "name": "catalog_table_object",
+      "tag": "10",
+      "value": "json schema catalog/table.v1"
+    },
+    {
+      "invariants": [],
+      "key": "schema:be32",
+      "name": "catalog_table_head",
+      "tag": "11",
+      "value": "text {catalog_version}:{definition_generation}"
+    },
+    {
+      "invariants": [],
+      "key": "table:physical_id(t)",
+      "name": "catalog_table",
+      "tag": "12",
+      "value": "json schema catalog/table.v1"
+    },
+    {
+      "invariants": [],
+      "key": "name:text",
+      "name": "catalog_table_name",
+      "tag": "13",
+      "value": "table id text"
+    },
+    {
+      "invariants": [],
+      "key": "version:be64",
+      "name": "catalog_schema_revision",
+      "tag": "14",
+      "value": "json schema catalog/revision.v1"
+    },
+    {
+      "invariants": [],
+      "key": "table:physical_id(t) generation:be64",
+      "name": "catalog_write_protocol_object",
+      "tag": "15",
+      "value": "json schema catalog/write_protocol.v1"
+    },
+    {
+      "invariants": [],
+      "key": "table:physical_id(t)",
+      "name": "catalog_write_protocol_fence",
+      "tag": "16",
+      "value": "write protocol generation text"
+    },
+    {
+      "invariants": [],
+      "key": "table:physical_id(t)",
+      "name": "catalog_fence_table_existence",
+      "tag": "17",
+      "value": "generation text"
+    },
+    {
+      "invariants": [],
+      "key": "table:physical_id(t) column:physical_id(c)",
+      "name": "catalog_fence_column_value",
+      "tag": "18",
+      "value": "generation text"
+    },
+    {
+      "invariants": [],
+      "key": "table:physical_id(t) index:physical_id(i)",
+      "name": "catalog_fence_index_access",
+      "tag": "19",
+      "value": "generation text"
+    },
+    {
+      "invariants": [],
+      "key": "transition:physical_id(tr)",
+      "name": "catalog_transition",
+      "tag": "1a",
+      "value": "json schema catalog/transition.v1"
+    },
+    {
+      "invariants": [],
+      "key": "transition:physical_id(tr) sequence:be64",
+      "name": "catalog_transition_delta",
+      "tag": "1b",
+      "value": "json schema catalog/index_delta.v1"
+    },
+    {
+      "invariants": [],
+      "key": "transition:physical_id(tr)",
+      "name": "catalog_transition_delta_sequence",
+      "tag": "1c",
+      "value": "next sequence decimal text"
+    },
+    {
+      "invariants": [],
+      "key": "transition:physical_id(tr)",
+      "name": "catalog_transition_delta_applied",
+      "tag": "1d",
+      "value": "applied sequence decimal text"
+    },
+    {
+      "invariants": [],
+      "key": "transition:physical_id(tr) indexed:len_bytes primary_key:bytes",
+      "name": "catalog_transition_unique_claim",
+      "tag": "1e",
+      "value": "json schema catalog/unique_claim.v1"
+    },
+    {
+      "invariants": [],
+      "key": "transition:physical_id(tr) indexed:bytes",
+      "name": "catalog_transition_unique_violation",
+      "tag": "1f",
+      "value": "indexed tuple bytes"
+    },
+    {
+      "invariants": [],
+      "key": "transition:physical_id(tr) row_identity:bytes",
+      "name": "catalog_transition_violation",
+      "tag": "20",
+      "value": "cause text"
+    },
+    {
+      "invariants": [],
+      "key": "pin:text",
+      "name": "catalog_retention_pin",
+      "tag": "21",
+      "value": "json schema catalog/retention_pin.v1"
+    },
+    {
+      "invariants": [],
+      "key": "reclamation:text",
+      "name": "catalog_reclamation",
+      "tag": "22",
+      "value": "json schema catalog/reclamation.v1"
+    },
+    {
+      "invariants": [],
+      "key": "",
+      "name": "catalog_meta_mode",
+      "tag": "30",
+      "value": "catalog mode text: direct or schema"
+    },
+    {
+      "invariants": [],
+      "key": "",
+      "name": "catalog_meta_next_id",
+      "tag": "31",
+      "value": "next physical identity decimal text"
+    },
+    {
+      "invariants": [],
+      "key": "",
+      "name": "catalog_meta_schema_version",
+      "tag": "32",
+      "value": "current schema version decimal text"
+    },
+    {
+      "invariants": [],
+      "key": "",
+      "name": "catalog_meta_catalog_generation",
+      "tag": "33",
+      "value": "catalog generation decimal text"
+    },
+    {
+      "invariants": [],
+      "key": "",
+      "name": "catalog_meta_compacted_through",
+      "tag": "34",
+      "value": "compacted-through version decimal text"
+    },
+    {
+      "invariants": [],
+      "key": "",
+      "name": "catalog_meta_transition_seen",
+      "tag": "35",
+      "value": "wake byte 0x01"
+    },
+    {
+      "invariants": [],
+      "key": "",
+      "name": "catalog_meta_reclamation_seen",
+      "tag": "36",
+      "value": "wake byte 0x01"
+    },
+    {
+      "invariants": [],
+      "key": "",
+      "name": "runtime_writer_fence",
+      "tag": "40",
+      "value": "opaque writer fence token"
+    },
+    {
+      "invariants": [],
+      "key": "",
+      "name": "storage_manifest",
+      "tag": "41",
+      "value": "json schema metadata/compatibility.v1"
+    }
+  ],
+  "reserved": [
+    {
+      "reason": "never allocated: guards zero-initialised or truncated keys",
+      "tag": "00"
+    }
+  ],
+  "root_magic": "7237"
+}

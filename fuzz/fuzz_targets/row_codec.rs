@@ -2,7 +2,8 @@
 
 use libfuzzer_sys::fuzz_target;
 use rad::engine::catalog::identity::{
-    DefinitionGeneration, ExistenceGeneration, SchemaId, ValueGeneration, WriteProtocolGeneration,
+    DefinitionGeneration, ExistenceGeneration, SchemaId, StorageGeneration, ValueGeneration,
+    WriteProtocolGeneration,
 };
 use rad::engine::catalog::model::{Column, ScalarType, Table};
 use rad::engine::exec::codec::{
@@ -86,6 +87,7 @@ fn table() -> Table {
         definition_generation: DefinitionGeneration::ZERO,
         existence_generation: ExistenceGeneration::ZERO,
         write_protocol_generation: WriteProtocolGeneration::ZERO,
+        storage_generation: StorageGeneration::INITIAL,
         columns: vec![
             column("c1", 1, "id", ScalarType::Text),
             column("c2", 2, "count", ScalarType::Int64),

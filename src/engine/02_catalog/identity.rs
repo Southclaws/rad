@@ -22,6 +22,19 @@ macro_rules! string_identity {
             pub fn is_empty(&self) -> bool {
                 self.0.is_empty()
             }
+
+            /// The numeric part of a `<kind><decimal>` physical identity.
+            /// Storage keys carry only this number; the keyspace tag implies
+            /// the kind. Only the canonical decimal form is accepted: a
+            /// non-canonical spelling ("t01", "t+1") must not alias the
+            /// canonical identity's storage key. Returns `None` when the
+            /// identity does not have the given kind prefix followed by a
+            /// canonical positive decimal.
+            pub fn physical_number(&self, kind: &str) -> Option<u64> {
+                let digits = self.0.strip_prefix(kind)?;
+                let value = digits.parse::<u64>().ok().filter(|value| *value > 0)?;
+                (value.to_string() == digits).then_some(value)
+            }
         }
 
         impl From<&str> for $name {
@@ -110,6 +123,48 @@ generation!(AccessGeneration);
 generation!(TransitionGeneration);
 generation!(OwnerEpoch);
 
+/// Physical storage generation of a table's authoritative rows. Data keys
+/// embed it between table identity and row identity, so a replacement
+/// physical representation is built beside the authoritative one and
+/// activated with one catalog switch. Every table starts at generation 1.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct StorageGeneration(pub u64);
+
+impl StorageGeneration {
+    pub const INITIAL: Self = Self(1);
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+
+    pub fn is_initial(&self) -> bool {
+        *self == Self::INITIAL
+    }
+
+    pub fn next(self) -> Self {
+        Self(self.0.checked_add(1).expect("storage generation overflow"))
+    }
+}
+
+impl Default for StorageGeneration {
+    fn default() -> Self {
+        Self::INITIAL
+    }
+}
+
+impl From<u64> for StorageGeneration {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl fmt::Display for StorageGeneration {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 pub const MAX_SCHEMA_ID: u32 = (1 << 31) - 1;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -175,5 +230,21 @@ mod tests {
             serde_json::to_string(&CatalogVersion::from(7)).unwrap(),
             "7"
         );
+    }
+
+    #[test]
+    fn physical_numbers_accept_only_the_canonical_decimal_form() {
+        assert_eq!(TableId::from("t1").physical_number("t"), Some(1));
+        assert_eq!(
+            TableId::from("t18446744073709551615").physical_number("t"),
+            Some(u64::MAX)
+        );
+        for alias in ["t01", "t+1", "t 1", "t0", "t", "x1", "t1x", "t-1"] {
+            assert_eq!(
+                TableId::from(alias).physical_number("t"),
+                None,
+                "{alias:?} must not alias a canonical identity"
+            );
+        }
     }
 }

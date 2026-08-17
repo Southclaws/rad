@@ -1,0 +1,30 @@
+# Storage contract for one persisted unique-index claim, stored under the
+# catalog_transition_unique_claim keyspace.
+# Released properties are permanent; see protocol/README.md for the
+# storage-schema compatibility rules.
+$schema: https://json-schema.org/draft/2020-12/schema
+title: catalog/unique_claim.v1
+description: >-
+  One uniqueness claim over an indexed tuple, recorded while a unique index
+  builds. Two claims on one tuple from different rows are a violation the
+  build surfaces before the index can publish.
+type: object
+additionalProperties: false
+required: [format, record]
+properties:
+  format:
+    description: Payload serialization format discriminator.
+    type: integer
+    enum: [1]
+  record:
+    description: One uniqueness claim over an indexed tuple.
+    type: object
+    additionalProperties: false
+    required: [tuple, pk]
+    properties:
+      tuple:
+        description: Base64 indexed tuple bytes the claim covers.
+        type: string
+      pk:
+        description: Base64 primary-key tuple bytes of the claiming row.
+        type: string

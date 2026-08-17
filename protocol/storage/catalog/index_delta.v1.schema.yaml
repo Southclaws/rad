@@ -1,0 +1,45 @@
+# Storage contract for one persisted index delta, stored under the
+# catalog_transition_delta keyspace.
+# Released properties are permanent; see protocol/README.md for the
+# storage-schema compatibility rules.
+$schema: https://json-schema.org/draft/2020-12/schema
+title: catalog/index_delta.v1
+description: >-
+  One captured write against an index under construction. Writers append
+  deltas in sequence order while the build scans existing rows; the build
+  applies them during catch-up so the finished index reflects every
+  concurrent write.
+type: object
+additionalProperties: false
+required: [format, record]
+properties:
+  format:
+    description: Payload serialization format discriminator.
+    type: integer
+    enum: [1]
+  record:
+    description: One captured write against an index under construction.
+    type: object
+    additionalProperties: false
+    required: [id, sequence, operation, pk, tuple]
+    properties:
+      id:
+        description: >-
+          Delta identity, `{transition_id}:{sequence:020}`. Redundant with
+          the key; decode verifies the two agree.
+        type: string
+      sequence:
+        description: >-
+          Position in the transition's durable capture order. The order is
+          the catch-up application order.
+        type: integer
+      operation:
+        description: Whether the write put or deleted the index entry.
+        type: string
+        enum: [put, delete]
+      pk:
+        description: Base64 primary-key tuple bytes of the written row.
+        type: string
+      tuple:
+        description: Base64 indexed tuple bytes of the written row.
+        type: string

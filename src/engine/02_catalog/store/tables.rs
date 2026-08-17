@@ -3,21 +3,26 @@ use bytes::Bytes;
 use crate::engine::catalog::identity::{DefinitionGeneration, SchemaId, TableId};
 use crate::engine::catalog::model::{Schema, Table};
 use crate::engine::catalog::{Error, ErrorKind, Result};
-use crate::engine::kv::KvView;
+use crate::engine::kv::{KvView, keys};
 
 use super::durable_json::{decode, encode};
 use super::{map_kv, parse_u64, prefix_range};
 
-const NEXT_ID_KEY: &[u8] = b"/rad/catalog/meta/next_id";
-const TABLE_PREFIX: &str = "/rad/catalog/table/";
-const TABLE_NAME_PREFIX: &str = "/rad/catalog/table_name/";
+pub(crate) fn physical_table_number(id: &TableId) -> Result<u64> {
+    id.physical_number("t").ok_or_else(|| {
+        Error::message(
+            ErrorKind::CatalogCorrupt,
+            format!("catalog: malformed table identity {id:?}"),
+        )
+    })
+}
 
-pub fn table_key(id: &TableId) -> Vec<u8> {
-    format!("{TABLE_PREFIX}{id}").into_bytes()
+pub fn table_key(id: &TableId) -> Result<Vec<u8>> {
+    Ok(keys::catalog_table_key(physical_table_number(id)?))
 }
 
 pub fn table_name_key(name: &str) -> Vec<u8> {
-    format!("{TABLE_NAME_PREFIX}{name}").into_bytes()
+    keys::catalog_table_name_key(name)
 }
 
 /// Publish a mutable logical-name lookup without making it a compatibility
@@ -41,7 +46,7 @@ pub async fn delete_table_name<V: KvView + ?Sized>(view: &V, name: &str) -> Resu
 }
 
 pub async fn delete_table_metadata<V: KvView + ?Sized>(view: &V, id: &TableId) -> Result<()> {
-    let key = table_key(id);
+    let key = table_key(id)?;
     view.untrack_write(&key).map_err(map_kv)?;
     view.delete(&key).await.map_err(map_kv)
 }
@@ -61,7 +66,12 @@ pub async fn get_table<V: KvView + ?Sized>(view: &V, name: &str) -> Result<Optio
 }
 
 pub async fn get_table_by_id<V: KvView + ?Sized>(view: &V, id: &TableId) -> Result<Option<Table>> {
-    let Some(raw) = view.get(&table_key(id)).await.map_err(map_kv)? else {
+    // Lookups take caller-supplied identities: an identity no allocator can
+    // produce is absent, not corrupt.
+    let Ok(key) = table_key(id) else {
+        return Ok(None);
+    };
+    let Some(raw) = view.get(&key).await.map_err(map_kv)? else {
         return Ok(None);
     };
     let table: Table = decode("table entry", id.as_str(), &raw)?;
@@ -101,21 +111,20 @@ pub async fn get_table_by_schema_id<V: KvView + ?Sized>(
 }
 
 pub async fn list_tables<V: KvView + ?Sized>(view: &mut V) -> Result<Vec<Table>> {
-    let prefix = TABLE_PREFIX.as_bytes();
-    let mut iterator = view.scan(prefix_range(prefix)).await.map_err(map_kv)?;
+    let prefix = keys::catalog_table_prefix();
+    let mut iterator = view.scan(prefix_range(&prefix)).await.map_err(map_kv)?;
     let mut tables = Vec::new();
     while let Some(entry) = iterator.next().await.map_err(map_kv)? {
-        let key_id = entry
-            .key
-            .strip_prefix(prefix)
-            .and_then(|value| std::str::from_utf8(value).ok())
+        let key_number = keys::decode_catalog_table_key(&entry.key)
             .ok_or_else(|| {
                 Error::message(
                     ErrorKind::CatalogCorrupt,
                     format!("catalog: malformed table key {:?}", entry.key),
                 )
-            })?;
-        let table: Table = decode("table entry", key_id, &entry.value)?;
+            })?
+            .table;
+        let key_id = format!("t{key_number}");
+        let table: Table = decode("table entry", &key_id, &entry.value)?;
         if table.id.as_str() != key_id {
             return Err(Error::message(
                 ErrorKind::CatalogCorrupt,
@@ -136,7 +145,7 @@ pub async fn read_schema<V: KvView + ?Sized>(view: &mut V) -> Result<Schema> {
 }
 
 pub async fn save_table<V: KvView + ?Sized>(view: &mut V, table: &mut Table) -> Result<()> {
-    let key = table_key(&table.id);
+    let key = table_key(&table.id)?;
     if let Some(raw) = view.get(&key).await.map_err(map_kv)? {
         let current: Table = decode("table entry", table.id.as_str(), &raw)?;
         if table.definition_generation <= current.definition_generation {
@@ -153,7 +162,8 @@ pub async fn save_table<V: KvView + ?Sized>(view: &mut V, table: &mut Table) -> 
 }
 
 pub async fn next_physical_id<V: KvView + ?Sized>(view: &mut V, kind: &str) -> Result<String> {
-    let next = match view.get(NEXT_ID_KEY).await.map_err(map_kv)? {
+    let key = keys::catalog_meta_next_id_key();
+    let next = match view.get(&key).await.map_err(map_kv)? {
         Some(raw) => parse_u64("next_id", None, &raw)?
             .checked_add(1)
             .ok_or_else(|| {
@@ -161,19 +171,16 @@ pub async fn next_physical_id<V: KvView + ?Sized>(view: &mut V, kind: &str) -> R
             })?,
         None => 1,
     };
-    view.put(
-        Bytes::from_static(NEXT_ID_KEY),
-        Bytes::from(next.to_string()),
-    )
-    .await
-    .map_err(map_kv)?;
+    view.put(Bytes::from(key), Bytes::from(next.to_string()))
+        .await
+        .map_err(map_kv)?;
     Ok(format!("{kind}{next}"))
 }
 
 #[cfg(test)]
 mod tests {
     use crate::engine::catalog::identity::{
-        ExistenceGeneration, ValueGeneration, WriteProtocolGeneration,
+        ExistenceGeneration, StorageGeneration, ValueGeneration, WriteProtocolGeneration,
     };
     use crate::engine::catalog::model::{Column, ScalarType};
     use crate::engine::kv::slatedb;
@@ -189,6 +196,7 @@ mod tests {
             definition_generation: DefinitionGeneration::ZERO,
             existence_generation: ExistenceGeneration::from(1),
             write_protocol_generation: WriteProtocolGeneration::from(1),
+            storage_generation: StorageGeneration::INITIAL,
             columns: vec![Column {
                 id: "c1".into(),
                 schema_id: SchemaId::new(1).unwrap(),
@@ -237,7 +245,7 @@ mod tests {
         let raw = encode("table", table.id.as_str(), &table).unwrap();
         Kv::put(
             &database,
-            Bytes::from(table_key(&TableId::from("alias"))),
+            Bytes::from(table_key(&TableId::from("t9")).unwrap()),
             Bytes::from(raw),
         )
         .await

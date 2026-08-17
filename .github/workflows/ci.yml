@@ -143,6 +143,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Check storage format artifacts
+        run: cargo run --locked --package keyform -- --check
+
       - name: Run Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 

@@ -932,7 +932,7 @@ async fn audit_cancelled_index(
         .await?;
     let remaining = scan_prefix(
         store.as_ref(),
-        rad::engine::exec::codec::index_prefix(&table, &transition.index.id),
+        rad::engine::exec::codec::index_prefix(&table, &transition.index.id).unwrap(),
     )
     .await?;
     if !remaining.is_empty() {
@@ -969,7 +969,7 @@ async fn audit_cancelled_replacement(
         .ok_or("cancelled replacement scenario lost its physical target")?;
     for (_, raw) in scan_prefix(
         store.as_ref(),
-        rad::engine::exec::codec::data_prefix(&table),
+        rad::engine::exec::codec::data_prefix(&table).unwrap(),
     )
     .await?
     {
@@ -1040,7 +1040,7 @@ async fn audit_ready_index(
         .iter()
         .find(|index| index.name == index_name)
         .ok_or_else(|| format!("{index_name} was not published"))?;
-    let data_prefix = rad::engine::exec::codec::data_prefix(&table);
+    let data_prefix = rad::engine::exec::codec::data_prefix(&table).unwrap();
     let data = scan_prefix(store.as_ref(), data_prefix.clone()).await?;
     let mut expected = BTreeMap::new();
     for (key, raw) in data {
@@ -1056,13 +1056,13 @@ async fn audit_ready_index(
         }
         let tuple = rad::engine::exec::codec::encode_row_tuple(&row, &index.columns)?;
         expected.insert(
-            rad::engine::exec::codec::index_key(&table, &index.id, &tuple, &primary_key),
+            rad::engine::exec::codec::index_key(&table, &index.id, &tuple, &primary_key).unwrap(),
             primary_key,
         );
     }
     let actual = scan_prefix(
         store.as_ref(),
-        rad::engine::exec::codec::index_prefix(&table, &index.id),
+        rad::engine::exec::codec::index_prefix(&table, &index.id).unwrap(),
     )
     .await?
     .into_iter()
@@ -1094,7 +1094,7 @@ async fn audit_replaced_column(store: Arc<Store>) -> turmoil::Result<()> {
     }
     for (_, raw) in scan_prefix(
         store.as_ref(),
-        rad::engine::exec::codec::data_prefix(&table),
+        rad::engine::exec::codec::data_prefix(&table).unwrap(),
     )
     .await?
     {
@@ -1118,7 +1118,7 @@ async fn audit_not_null_constraint(store: Arc<Store>) -> turmoil::Result<()> {
     }
     for (_, raw) in scan_prefix(
         store.as_ref(),
-        rad::engine::exec::codec::data_prefix(&table),
+        rad::engine::exec::codec::data_prefix(&table).unwrap(),
     )
     .await?
     {

@@ -4444,6 +4444,7 @@ mod tests {
             definition_generation: DefinitionGeneration::default(),
             existence_generation: ExistenceGeneration::default(),
             write_protocol_generation: WriteProtocolGeneration::default(),
+            storage_generation: crate::engine::catalog::identity::StorageGeneration::INITIAL,
             columns: vec![
                 Column {
                     id: ColumnId::new("users-id"),

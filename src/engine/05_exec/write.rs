@@ -27,7 +27,7 @@ pub(super) async fn backfill_index_entry(
     }
     let tuple = codec::encode_index_tuple(table, index, row)?;
     view.put(
-        Bytes::from(codec::index_key(table, &index.id, &tuple, &primary_key)),
+        Bytes::from(codec::index_key(table, &index.id, &tuple, &primary_key)?),
         Bytes::from(primary_key),
     )
     .await?;
@@ -45,14 +45,14 @@ pub(super) async fn insert(
     apply_constraint_checks(view, table, &protocol, row, primary_key).await?;
     raw = apply_column_replacements(view, table, &protocol, row, primary_key, raw).await?;
     view.put(
-        Bytes::from(codec::data_key(table, primary_key)),
+        Bytes::from(codec::data_key(table, primary_key)?),
         Bytes::from(raw),
     )
     .await?;
     for index in &protocol.ready_indexes {
         let tuple = codec::encode_index_tuple(table, index, row)?;
         view.put(
-            Bytes::from(codec::index_key(table, &index.id, &tuple, primary_key)),
+            Bytes::from(codec::index_key(table, &index.id, &tuple, primary_key)?),
             Bytes::copy_from_slice(primary_key),
         )
         .await?;
@@ -72,7 +72,7 @@ pub(super) async fn replace(
     apply_constraint_checks(view, table, &protocol, after, primary_key).await?;
     raw = apply_column_replacements(view, table, &protocol, after, primary_key, raw).await?;
     view.put(
-        Bytes::from(codec::data_key(table, primary_key)),
+        Bytes::from(codec::data_key(table, primary_key)?),
         Bytes::from(raw),
     )
     .await?;
@@ -82,10 +82,15 @@ pub(super) async fn replace(
         if old_tuple == new_tuple {
             continue;
         }
-        view.delete(&codec::index_key(table, &index.id, &old_tuple, primary_key))
-            .await?;
+        view.delete(&codec::index_key(
+            table,
+            &index.id,
+            &old_tuple,
+            primary_key,
+        )?)
+        .await?;
         view.put(
-            Bytes::from(codec::index_key(table, &index.id, &new_tuple, primary_key)),
+            Bytes::from(codec::index_key(table, &index.id, &new_tuple, primary_key)?),
             Bytes::copy_from_slice(primary_key),
         )
         .await?;
@@ -102,10 +107,10 @@ pub(super) async fn delete(
     let protocol = admit(view, table).await?;
     for index in &protocol.ready_indexes {
         let tuple = codec::encode_index_tuple(table, index, row)?;
-        view.delete(&codec::index_key(table, &index.id, &tuple, primary_key))
+        view.delete(&codec::index_key(table, &index.id, &tuple, primary_key)?)
             .await?;
     }
-    view.delete(&codec::data_key(table, primary_key)).await?;
+    view.delete(&codec::data_key(table, primary_key)?).await?;
     clear_transition_violations(view, &protocol, primary_key).await?;
     emit_delete_deltas(view, table, &protocol, row, primary_key).await
 }

@@ -2,17 +2,19 @@ use bytes::Bytes;
 
 use crate::engine::catalog::identity::CatalogVersion;
 use crate::engine::catalog::{Error, ErrorKind, Result};
-use crate::engine::kv::KvView;
+use crate::engine::kv::{KvView, keys};
 
 use super::revisions::{current_revision, revision_key};
 use super::{map_kv, parse_u64};
 
-const COMPACTED_THROUGH_KEY: &[u8] = b"/rad/catalog/meta/schema_revision_compacted_through";
-
 pub async fn revision_compacted_through<V: KvView + ?Sized>(
     view: &mut V,
 ) -> Result<CatalogVersion> {
-    let Some(raw) = view.get(COMPACTED_THROUGH_KEY).await.map_err(map_kv)? else {
+    let Some(raw) = view
+        .get(&keys::catalog_meta_compacted_through_key())
+        .await
+        .map_err(map_kv)?
+    else {
         return Ok(CatalogVersion::ZERO);
     };
     parse_u64("compacted revision horizon", None, &raw).map(Into::into)
@@ -66,7 +68,7 @@ pub async fn compact_revision_history_batch<V: KvView + ?Sized>(
     }
     if deleted != 0 {
         view.put(
-            Bytes::from_static(COMPACTED_THROUGH_KEY),
+            Bytes::from(keys::catalog_meta_compacted_through_key()),
             Bytes::from(compacted.to_string()),
         )
         .await
@@ -99,6 +101,7 @@ mod tests {
             definition_generation: DefinitionGeneration::ZERO,
             existence_generation: ExistenceGeneration::from(1),
             write_protocol_generation: WriteProtocolGeneration::from(1),
+            storage_generation: crate::engine::catalog::identity::StorageGeneration::INITIAL,
             columns: Vec::new(),
             primary_key: Vec::new(),
             indexes: Vec::new(),

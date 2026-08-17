@@ -1,0 +1,169 @@
+# Storage contract for one persisted schema revision, stored under the
+# catalog_schema_revision keyspace.
+# Released properties are permanent; see protocol/README.md for the
+# storage-schema compatibility rules.
+$schema: https://json-schema.org/draft/2020-12/schema
+title: catalog/revision.v1
+description: >-
+  One immutable logical schema revision. Every published catalog change
+  appends a revision holding the canonical logical schema and its hash, so
+  clients and migrations diff schema history without reading physical state.
+type: object
+additionalProperties: false
+required: [format, record]
+properties:
+  format:
+    description: Payload serialization format discriminator.
+    type: integer
+    enum: [1]
+  record:
+    description: One immutable logical schema revision.
+    type: object
+    additionalProperties: false
+    required: [version, created_at, hash, schema]
+    properties:
+      version:
+        description: >-
+          Catalog version of this revision. Versions are dense and
+          monotonic; the catalog_meta_schema_version key names the current
+          one.
+        type: integer
+      created_at:
+        description: RFC 3339 timestamp the revision was published.
+        type: string
+      hash:
+        description: >-
+          Canonical schema hash, `sha256:` plus the hex digest of the
+          canonical JSON encoding of `schema`.
+        type: string
+      schema:
+        description: >-
+          Canonical logical catalog shape. Physical identities and
+          operational state never appear here, so equal logical schemas hash
+          equally across databases.
+        type: object
+        additionalProperties: false
+        properties:
+          tables:
+            description: Logical table definitions in schema-identity order.
+            type: array
+            items:
+              description: One logical table definition.
+              type: object
+              additionalProperties: false
+              required: [id, name]
+              properties:
+                id:
+                  description: Logical schema identity of the table. Never reused.
+                  type: integer
+                name:
+                  description: Table name at this revision.
+                  type: string
+                columns:
+                  description: Logical column definitions in declaration order.
+                  type: array
+                  items:
+                    description: One logical column definition.
+                    type: object
+                    additionalProperties: false
+                    required: [id, name, type]
+                    properties:
+                      id:
+                        description: Logical schema identity of the column. Never reused.
+                        type: integer
+                      name:
+                        description: Column name at this revision.
+                        type: string
+                      type:
+                        description: Scalar type of the column.
+                        type: string
+                        enum: [text, int64, float64, bool]
+                      nullable:
+                        description: >-
+                          Whether the column accepts null. Absent means
+                          false.
+                        type: boolean
+                      format:
+                        description: >-
+                          Authored format annotation; not interpreted by
+                          storage.
+                        type: string
+                      default:
+                        description: Default declared for the column.
+                        type: object
+                        additionalProperties: false
+                        properties:
+                          func:
+                            description: Generator function for per-row defaults.
+                            type: string
+                            enum: [uuid, now_ms]
+                          text:
+                            description: Literal used when the column type is text.
+                            type: string
+                          int64:
+                            description: Literal used when the column type is int64.
+                            type: integer
+                          float64:
+                            description: Literal used when the column type is float64.
+                            type: number
+                          bool:
+                            description: Literal used when the column type is bool.
+                            type: boolean
+                primary_key:
+                  description: Primary-key column names in key order.
+                  type: array
+                  items:
+                    description: One primary-key column name.
+                    type: string
+                indexes:
+                  description: >-
+                    Logical index definitions, sorted canonically by name,
+                    columns, and uniqueness.
+                  type: array
+                  items:
+                    description: One logical index definition.
+                    type: object
+                    additionalProperties: false
+                    required: [name]
+                    properties:
+                      name:
+                        description: Index name at this revision.
+                        type: string
+                      columns:
+                        description: Indexed column names in index order.
+                        type: array
+                        items:
+                          description: One indexed column name.
+                          type: string
+                      unique:
+                        description: >-
+                          Whether the index enforces uniqueness. Absent
+                          means false.
+                        type: boolean
+                foreign_keys:
+                  description: Logical foreign-key definitions, sorted canonically.
+                  type: array
+                  items:
+                    description: One logical foreign-key definition.
+                    type: object
+                    additionalProperties: false
+                    required: [name, ref_table]
+                    properties:
+                      name:
+                        description: Foreign-key name at this revision.
+                        type: string
+                      columns:
+                        description: Referencing column names on this table.
+                        type: array
+                        items:
+                          description: One referencing column name.
+                          type: string
+                      ref_table:
+                        description: Name of the referenced table at this revision.
+                        type: string
+                      ref_columns:
+                        description: Referenced column names on the target table.
+                        type: array
+                        items:
+                          description: One referenced column name.
+                          type: string

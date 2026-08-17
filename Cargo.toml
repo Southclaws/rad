@@ -1,3 +1,7 @@
+[workspace]
+members = ["tools/keyform"]
+exclude = ["fuzz"]
+
 [package]
 name = "rad"
 version = "0.1.0"
