@@ -54,6 +54,9 @@ tokio-postgres = "0.7.15"
 tower = { version = "0.5", features = ["util"] }
 turmoil = "0.7.2"
 
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dev-dependencies]
 fastrand = "2.3.0"
 mad-turmoil = { git = "https://github.com/s2-streamstore/mad-turmoil.git", rev = "f2dc7556f60497dacb54dfb23c00af7eac487069" }

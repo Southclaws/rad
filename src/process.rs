@@ -771,7 +771,22 @@ pub(crate) async fn shutdown_signal() {
             () = terminate => {},
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // CTRL_BREAK is the only console signal a supervisor can deliver to
+        // one specific process group, so orderly shutdown on Windows must
+        // accept it alongside CTRL_C.
+        let terminate = async {
+            if let Ok(mut signal) = tokio::signal::windows::ctrl_break() {
+                signal.recv().await;
+            }
+        };
+        tokio::select! {
+            () = interrupt => {},
+            () = terminate => {},
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     interrupt.await;
 }
 

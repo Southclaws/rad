@@ -15,6 +15,22 @@ pub struct RadProcess {
     client: Client,
 }
 
+/// On Windows the child leads its own process group so `terminate` can
+/// deliver CTRL_BREAK to it alone; `Child::kill` would `TerminateProcess`
+/// and forfeit the orderly-shutdown exit status this suite asserts.
+fn rad_command() -> Command {
+    let command = Command::new(env!("CARGO_BIN_EXE_rad"));
+    #[cfg(windows)]
+    let command = {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        let mut command = command;
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        command
+    };
+    command
+}
+
 impl RadProcess {
     pub async fn start_s3(config: &S3Config, endpoint: &str, prefix: &str) -> TestResult<Self> {
         Self::start_s3_role(config, endpoint, prefix, "write").await
@@ -37,7 +53,7 @@ impl RadProcess {
         let (port, public, admin) = reserve_port_pair()?;
         drop((public, admin));
 
-        let child = Command::new(env!("CARGO_BIN_EXE_rad"))
+        let child = rad_command()
             .args([
                 "serve",
                 "--addr",
@@ -88,7 +104,7 @@ impl RadProcess {
     ) -> TestResult<Self> {
         let (port, public, admin) = reserve_port_pair()?;
         drop((public, admin));
-        let child = Command::new(env!("CARGO_BIN_EXE_rad"))
+        let child = rad_command()
             .args([
                 "serve",
                 "--addr",
@@ -289,7 +305,26 @@ fn terminate(child: &mut Child) -> TestResult {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn terminate(child: &mut Child) -> TestResult {
+    let delivered = unsafe {
+        windows_sys::Win32::System::Console::GenerateConsoleCtrlEvent(
+            windows_sys::Win32::System::Console::CTRL_BREAK_EVENT,
+            child.id(),
+        )
+    };
+    if delivered == 0 {
+        return Err(format!(
+            "failed to signal Rad process {}: {}",
+            child.id(),
+            std::io::Error::last_os_error()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn terminate(child: &mut Child) -> TestResult {
     child.kill()?;
     Ok(())
