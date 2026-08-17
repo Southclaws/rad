@@ -305,7 +305,12 @@ fn terminate(child: &mut Child) -> TestResult {
     }
 }
 
+// The one sanctioned `unsafe` block in the package (`unsafe_code = "deny"`
+// in Cargo.toml documents the carve-out): `GenerateConsoleCtrlEvent` has no
+// safe wrapper, takes two scalar arguments, and carries no memory-safety
+// obligations.
 #[cfg(windows)]
+#[allow(unsafe_code)]
 fn terminate(child: &mut Child) -> TestResult {
     let delivered = unsafe {
         windows_sys::Win32::System::Console::GenerateConsoleCtrlEvent(

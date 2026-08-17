@@ -8,7 +8,10 @@ version = "0.1.0"
 edition = "2024"
 
 [lints.rust]
-unsafe_code = "forbid"
+# deny, not forbid: forbid cannot be relaxed by an attribute, and the test
+# harness carries one sanctioned `unsafe` block (Windows console signal
+# delivery). Every other unsafe block remains an error.
+unsafe_code = "deny"
 
 [lints.clippy]
 large_futures = "warn"
