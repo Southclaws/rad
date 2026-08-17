@@ -14,6 +14,7 @@ pub fn table() -> Table {
         definition_generation: DefinitionGeneration::ZERO,
         existence_generation: ExistenceGeneration::from(2),
         write_protocol_generation: WriteProtocolGeneration::ZERO,
+        storage_generation: crate::engine::catalog::identity::StorageGeneration::INITIAL,
         columns: ["id", "board_id", "status"]
             .into_iter()
             .enumerate()

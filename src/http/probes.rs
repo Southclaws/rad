@@ -7,12 +7,12 @@ use super::generated::types::ProbeStatus;
 use crate::health::Health;
 
 #[derive(Clone)]
-pub struct Probes {
+pub(super) struct Probes {
     health: Arc<Health>,
 }
 
 impl Probes {
-    pub fn new(health: Arc<Health>) -> Self {
+    pub(super) fn new(health: Arc<Health>) -> Self {
         Self { health }
     }
 }

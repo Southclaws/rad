@@ -8,15 +8,13 @@ use crate::engine::catalog::model::{
     RetentionResource, RetentionResourceKind, Timestamp,
 };
 use crate::engine::catalog::{Error, ErrorKind, Result};
-use crate::engine::kv::KvView;
+use crate::engine::kv::{KvView, keys};
 
 use super::durable_json::{decode, encode};
 use super::{map_kv, prefix_range};
 
-const RETENTION_PIN_PREFIX: &str = "/rad/catalog/retention_pin/";
-
 fn retention_pin_key(id: &RetentionPinId) -> Vec<u8> {
-    format!("{RETENTION_PIN_PREFIX}{id}").into_bytes()
+    keys::catalog_retention_pin_key(id.as_str())
 }
 
 pub async fn save_retention_pin<V: KvView + ?Sized>(
@@ -76,13 +74,13 @@ pub async fn get_retention_pin<V: KvView + ?Sized>(
 }
 
 pub async fn list_retention_pins<V: KvView + ?Sized>(view: &mut V) -> Result<Vec<RetentionPin>> {
-    let prefix = RETENTION_PIN_PREFIX.as_bytes();
-    let mut iterator = view.scan(prefix_range(prefix)).await.map_err(map_kv)?;
+    let prefix = keys::catalog_retention_pin_prefix();
+    let mut iterator = view.scan(prefix_range(&prefix)).await.map_err(map_kv)?;
     let mut pins = Vec::new();
     while let Some(entry) = iterator.next().await.map_err(map_kv)? {
         let id = entry
             .key
-            .strip_prefix(prefix)
+            .strip_prefix(&prefix[..])
             .and_then(|value| std::str::from_utf8(value).ok())
             .ok_or_else(|| {
                 Error::message(

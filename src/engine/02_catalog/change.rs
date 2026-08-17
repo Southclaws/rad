@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use super::identity::{
     AccessGeneration, DefinitionGeneration, ExistenceGeneration, LogicalIndexId, ReclamationId,
-    SchemaId, TableId, ValueGeneration, WriteProtocolGeneration,
+    SchemaId, StorageGeneration, TableId, ValueGeneration, WriteProtocolGeneration,
 };
 use super::model::{
     Column, DefaultFunction, ForeignKey, Index, IndexDef, IndexState, Mode, Reclamation,
@@ -174,6 +174,7 @@ impl<'a> Mutation<'a> {
             definition_generation: DefinitionGeneration::ZERO,
             existence_generation: ExistenceGeneration::ZERO,
             write_protocol_generation: WriteProtocolGeneration::ZERO,
+            storage_generation: StorageGeneration::INITIAL,
             columns: Vec::with_capacity(definition.columns.len()),
             primary_key: Vec::new(),
             indexes: Vec::with_capacity(definition.indexes.len()),

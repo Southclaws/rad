@@ -420,7 +420,7 @@ async fn corrupt_job_is_quarantined_without_starving_independent_reclamation() {
         .unwrap();
     Kv::put(
         &*store,
-        Bytes::from(crate::engine::catalog::store::delta_key(&transition_id, 1)),
+        Bytes::from(crate::engine::catalog::store::delta_key(&transition_id, 1).unwrap()),
         Bytes::from_static(b"{"),
     )
     .await
@@ -449,7 +449,7 @@ async fn corrupt_job_is_quarantined_without_starving_independent_reclamation() {
         &retired.primary_key,
     )
     .unwrap();
-    let retired_key = codec::data_key(&retired, &primary_key);
+    let retired_key = codec::data_key(&retired, &primary_key).unwrap();
     catalog.delete_table("quarantine_reclaim").await.unwrap();
 
     let runner = SchemaJobRunner::start(

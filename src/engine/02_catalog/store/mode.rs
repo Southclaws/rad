@@ -4,18 +4,20 @@ use bytes::Bytes;
 
 use crate::engine::catalog::model::Mode;
 use crate::engine::catalog::{Error, ErrorKind, Result};
-use crate::engine::kv::KvView;
+use crate::engine::kv::{KvView, keys};
 
 use super::map_kv;
-
-const MODE_KEY: &[u8] = b"/rad/catalog/meta/mode";
 
 pub async fn read_mode<V: KvView + ?Sized>(view: &mut V) -> Result<Mode> {
     Ok(read_stored_mode(view).await?.unwrap_or(Mode::Direct))
 }
 
 pub async fn read_stored_mode<V: KvView + ?Sized>(view: &mut V) -> Result<Option<Mode>> {
-    let Some(raw) = view.get(MODE_KEY).await.map_err(map_kv)? else {
+    let Some(raw) = view
+        .get(&keys::catalog_meta_mode_key())
+        .await
+        .map_err(map_kv)?
+    else {
         return Ok(None);
     };
     let value = std::str::from_utf8(&raw).map_err(|error| {
@@ -39,7 +41,7 @@ pub async fn set_mode<V: KvView + ?Sized>(view: &mut V, mode: Mode) -> Result<()
         Mode::Schema => "schema",
     };
     view.put(
-        Bytes::from_static(MODE_KEY),
+        Bytes::from(keys::catalog_meta_mode_key()),
         Bytes::from_static(value.as_bytes()),
     )
     .await

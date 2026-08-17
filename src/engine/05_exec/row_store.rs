@@ -29,7 +29,7 @@ pub(super) async fn get_columns(
         ));
     }
     let primary_key = codec::encode_row_tuple(key, &table.primary_key)?;
-    view.get(&codec::data_key(table, &primary_key))
+    view.get(&codec::data_key(table, &primary_key)?)
         .await?
         .map(|raw| codec::unmarshal_row_columns(table, columns, &raw))
         .transpose()
@@ -81,7 +81,7 @@ pub(super) async fn scan_raw_table_batch(
     cursor: &[u8],
     limit: usize,
 ) -> Result<Vec<RawBatchRow>> {
-    let prefix = codec::data_prefix(table);
+    let prefix = codec::data_prefix(table)?;
     let mut start = prefix.clone();
     if !cursor.is_empty() {
         start = cursor.to_vec();
@@ -126,7 +126,7 @@ pub(super) async fn scan_table<'a>(
     table: &Table,
     columns: &[Column],
 ) -> Result<Box<dyn RowIterator + 'a>> {
-    let prefix = codec::data_prefix(table);
+    let prefix = codec::data_prefix(table)?;
     let iterator = view
         .scan(KeyRange {
             start: Some(Bytes::from(prefix.clone())),
@@ -203,7 +203,7 @@ pub(super) async fn scan_index_range<'a>(
     range: Option<Range<'_>>,
     columns: &[Column],
 ) -> Result<Box<dyn RowIterator + 'a>> {
-    let mut prefix = codec::index_prefix(table, &index.id);
+    let mut prefix = codec::index_prefix(table, &index.id)?;
     prefix.extend_from_slice(&codec::encode_tuple(equality_prefix)?);
     let mut start = prefix.clone();
     let mut end = prefix_end(&prefix);
@@ -272,7 +272,7 @@ impl RowIterator for IndexIterator<'_> {
         let Some(entry) = self.iterator.next().await? else {
             return Ok(None);
         };
-        let key = codec::data_key(&self.table, &entry.value);
+        let key = codec::data_key(&self.table, &entry.value)?;
         let raw = self.view.get(&key).await?.ok_or_else(|| {
             Error::message(
                 ErrorKind::CorruptData,

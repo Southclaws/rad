@@ -7,6 +7,7 @@ use crate::engine::catalog::model::{
     Column, ColumnConversion, DefaultValue, Index, ScalarType, Table,
 };
 use crate::engine::kv::key_encoding;
+use crate::engine::kv::keys;
 use crate::engine::lir::{Row, Value};
 
 use super::{Error, ErrorKind, Result};
@@ -17,41 +18,73 @@ const ROW_CANARY: u8 = b'R';
 /// `delta << 1` encoding; decoders reject anything larger as corrupt.
 const MAX_PHYSICAL_COLUMN_ID: u64 = i64::MAX as u64;
 
-pub fn data_prefix(table: &Table) -> Vec<u8> {
-    data_prefix_for(&table.id)
+pub(crate) fn physical_table_number(
+    table_id: &crate::engine::catalog::identity::TableId,
+) -> Result<u64> {
+    table_id
+        .physical_number("t")
+        .ok_or_else(|| corrupt(format!("codec: malformed table identity {table_id:?}")))
 }
 
-pub(crate) fn data_prefix_for(table_id: &crate::engine::catalog::identity::TableId) -> Vec<u8> {
-    format!("/rad/data/{table_id}/primary/").into_bytes()
+pub(crate) fn physical_index_number(
+    index_id: &crate::engine::catalog::identity::IndexId,
+) -> Result<u64> {
+    index_id
+        .physical_number("i")
+        .ok_or_else(|| corrupt(format!("codec: malformed index identity {index_id:?}")))
 }
 
-pub fn data_key(table: &Table, primary_key: &[u8]) -> Vec<u8> {
-    let mut key = data_prefix(table);
-    key.extend_from_slice(primary_key);
-    key
+pub fn data_prefix(table: &Table) -> Result<Vec<u8>> {
+    Ok(keys::data_prefix_generation(
+        physical_table_number(&table.id)?,
+        table.storage_generation.get(),
+    ))
 }
 
-pub fn index_prefix(table: &Table, index_id: &impl std::fmt::Display) -> Vec<u8> {
+/// Prefix over every storage generation of one table, for reclamation.
+pub(crate) fn data_prefix_for(
+    table_id: &crate::engine::catalog::identity::TableId,
+) -> Result<Vec<u8>> {
+    Ok(keys::data_prefix_table(physical_table_number(table_id)?))
+}
+
+pub fn data_key(table: &Table, primary_key: &[u8]) -> Result<Vec<u8>> {
+    Ok(keys::data_key(
+        physical_table_number(&table.id)?,
+        table.storage_generation.get(),
+        primary_key,
+    ))
+}
+
+pub fn index_prefix(
+    table: &Table,
+    index_id: &crate::engine::catalog::identity::IndexId,
+) -> Result<Vec<u8>> {
     index_prefix_for(&table.id, index_id)
 }
 
 pub(crate) fn index_prefix_for(
     table_id: &crate::engine::catalog::identity::TableId,
-    index_id: &impl std::fmt::Display,
-) -> Vec<u8> {
-    format!("/rad/index/{table_id}/{index_id}/").into_bytes()
+    index_id: &crate::engine::catalog::identity::IndexId,
+) -> Result<Vec<u8>> {
+    Ok(keys::index_prefix_index(
+        physical_table_number(table_id)?,
+        physical_index_number(index_id)?,
+    ))
 }
 
 pub fn index_key(
     table: &Table,
-    index_id: &impl std::fmt::Display,
+    index_id: &crate::engine::catalog::identity::IndexId,
     indexed: &[u8],
     primary_key: &[u8],
-) -> Vec<u8> {
-    let mut key = index_prefix(table, index_id);
-    key.extend_from_slice(indexed);
-    key.extend_from_slice(primary_key);
-    key
+) -> Result<Vec<u8>> {
+    Ok(keys::index_key(
+        physical_table_number(&table.id)?,
+        physical_index_number(index_id)?,
+        indexed,
+        primary_key,
+    ))
 }
 
 pub fn encode_value(value: &Value) -> Result<Vec<u8>> {
@@ -639,12 +672,9 @@ fn decode_payload(value_type: ScalarType, payload: &[u8]) -> Result<Value> {
     }
 }
 
-fn append_uvarint(output: &mut Vec<u8>, mut value: u64) {
-    while value >= 0x80 {
-        output.push((value as u8) | 0x80);
-        value >>= 7;
-    }
-    output.push(value as u8);
+/// Appends the canonical (minimal-length) varint encoding of `value`.
+pub fn append_uvarint(output: &mut Vec<u8>, value: u64) {
+    key_encoding::append_uvarint(output, value);
 }
 
 fn validate_field_count(count: u64, remaining: usize) -> Result<()> {
@@ -654,25 +684,9 @@ fn validate_field_count(count: u64, remaining: usize) -> Result<()> {
     Ok(())
 }
 
-fn read_uvarint(input: &[u8], position: &mut usize) -> Result<u64> {
-    let mut value = 0_u64;
-    for shift in (0..70).step_by(7) {
-        let byte = *input
-            .get(*position)
-            .ok_or_else(|| corrupt("codec: truncated varint"))?;
-        *position += 1;
-        if shift == 63 && byte > 1 {
-            return Err(corrupt("codec: overflowing varint"));
-        }
-        value |= u64::from(byte & 0x7f) << shift;
-        if byte < 0x80 {
-            if shift != 0 && byte == 0 {
-                return Err(corrupt("codec: non-canonical varint"));
-            }
-            return Ok(value);
-        }
-    }
-    Err(corrupt("codec: overflowing varint"))
+/// Reads one canonical varint at `position`, advancing it past the encoding.
+pub fn read_uvarint(input: &[u8], position: &mut usize) -> Result<u64> {
+    key_encoding::read_uvarint(input, position).ok_or_else(|| corrupt("codec: malformed varint"))
 }
 
 fn corrupt(message: impl Into<String>) -> Error {
@@ -711,6 +725,7 @@ mod tests {
             definition_generation: DefinitionGeneration::ZERO,
             existence_generation: ExistenceGeneration::ZERO,
             write_protocol_generation: WriteProtocolGeneration::ZERO,
+            storage_generation: crate::engine::catalog::identity::StorageGeneration::INITIAL,
             columns,
             primary_key: vec!["id".into()],
             indexes: Vec::new(),

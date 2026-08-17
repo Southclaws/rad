@@ -35,7 +35,7 @@ async fn fixture(name: &str) -> Fixture {
     let primary_key = codec::encode_row_tuple(&row, &table.primary_key).unwrap();
     let ready = ready_index();
     let tuple = codec::encode_row_tuple(&row, &ready.columns).unwrap();
-    let ready_index_key = codec::index_key(&table, &ready.id, &tuple, &primary_key);
+    let ready_index_key = codec::index_key(&table, &ready.id, &tuple, &primary_key).unwrap();
     store::save_write_protocol(
         &mut store,
         WriteProtocol {
@@ -43,7 +43,7 @@ async fn fixture(name: &str) -> Fixture {
             generation: table.write_protocol_generation,
             ready_indexes: vec![ready],
             delta_sinks: vec![IndexDeltaSink {
-                transition_id: "tr-build".into(),
+                transition_id: "tr9".into(),
                 index: building_index(),
                 columns: vec!["score".into()],
                 delta_hard_limit: 100,
@@ -67,12 +67,13 @@ async fn fixture(name: &str) -> Fixture {
 
 fn table() -> Table {
     Table {
-        id: "table".into(),
+        id: "t1".into(),
         schema_id: SchemaId::new(1).unwrap(),
         name: "samples".into(),
         definition_generation: DefinitionGeneration::from(1),
         existence_generation: ExistenceGeneration::ZERO,
         write_protocol_generation: WriteProtocolGeneration::from(1),
+        storage_generation: crate::engine::catalog::identity::StorageGeneration::INITIAL,
         columns: vec![
             Column {
                 id: "c1".into(),
@@ -105,11 +106,11 @@ fn table() -> Table {
 }
 
 fn ready_index() -> Index {
-    index("ready", "ready", IndexState::Ready)
+    index("i1", "ready", IndexState::Ready)
 }
 
 fn building_index() -> Index {
-    index("building", "building", IndexState::Building)
+    index("i2", "building", IndexState::Building)
 }
 
 fn index(id: &str, name: &str, state: IndexState) -> Index {
@@ -178,14 +179,14 @@ async fn insert_orders_base_row_ready_index_and_delta_append() {
     let (result, transaction) = insert_through(&fixture, controller.clone()).await;
     result.unwrap();
 
-    let data_key = codec::data_key(&fixture.table, &fixture.primary_key);
+    let data_key = codec::data_key(&fixture.table, &fixture.primary_key).unwrap();
     assert_eq!(
         started_keys(&controller, Operation::TransactionPut),
         vec![
             data_key.clone(),
             fixture.ready_index_key.clone(),
-            store::delta_key(&"tr-build".into(), 1),
-            b"/rad/catalog/transition_delta_sequence/tr-build".to_vec(),
+            store::delta_key(&"tr9".into(), 1).unwrap(),
+            crate::engine::kv::keys::catalog_transition_delta_sequence_key(9),
         ]
     );
     transaction.commit().await.unwrap();
@@ -217,7 +218,7 @@ async fn insert_failure_at_every_write_boundary_rolls_back_everything() {
         assert_eq!(result.unwrap_err().kind(), ErrorKind::Storage);
         transaction.rollback();
 
-        let data_key = codec::data_key(&fixture.table, &fixture.primary_key);
+        let data_key = codec::data_key(&fixture.table, &fixture.primary_key).unwrap();
         assert!(
             Kv::get(fixture.store.as_ref(), &data_key)
                 .await
@@ -233,7 +234,7 @@ async fn insert_failure_at_every_write_boundary_rolls_back_everything() {
         assert!(
             Kv::get(
                 fixture.store.as_ref(),
-                &store::delta_key(&"tr-build".into(), 1)
+                &store::delta_key(&"tr9".into(), 1).unwrap()
             )
             .await
             .unwrap()
@@ -258,7 +259,8 @@ async fn replace_and_delete_preserve_index_then_delta_order() {
         &ready_index().id,
         &new_tuple,
         &fixture.primary_key,
-    );
+    )
+    .unwrap();
     let replace_controller = FaultController::default();
     let replace_inner: Arc<dyn TransactionalKv> = fixture.store.clone();
     let replace_store = FaultingKv::new(replace_inner, replace_controller.clone());
@@ -285,12 +287,12 @@ async fn replace_and_delete_preserve_index_then_delta_order() {
     assert_eq!(
         started_keys(&replace_controller, Operation::TransactionPut),
         vec![
-            codec::data_key(&fixture.table, &fixture.primary_key),
+            codec::data_key(&fixture.table, &fixture.primary_key).unwrap(),
             new_index_key.clone(),
-            store::delta_key(&"tr-build".into(), 2),
-            b"/rad/catalog/transition_delta_sequence/tr-build".to_vec(),
-            store::delta_key(&"tr-build".into(), 3),
-            b"/rad/catalog/transition_delta_sequence/tr-build".to_vec(),
+            store::delta_key(&"tr9".into(), 2).unwrap(),
+            crate::engine::kv::keys::catalog_transition_delta_sequence_key(9),
+            store::delta_key(&"tr9".into(), 3).unwrap(),
+            crate::engine::kv::keys::catalog_transition_delta_sequence_key(9),
         ]
     );
     replace_transaction.commit().await.unwrap();
@@ -312,14 +314,14 @@ async fn replace_and_delete_preserve_index_then_delta_order() {
         started_keys(&delete_controller, Operation::TransactionDelete),
         vec![
             new_index_key,
-            codec::data_key(&fixture.table, &fixture.primary_key),
+            codec::data_key(&fixture.table, &fixture.primary_key).unwrap(),
         ]
     );
     assert_eq!(
         started_keys(&delete_controller, Operation::TransactionPut),
         vec![
-            store::delta_key(&"tr-build".into(), 4),
-            b"/rad/catalog/transition_delta_sequence/tr-build".to_vec(),
+            store::delta_key(&"tr9".into(), 4).unwrap(),
+            crate::engine::kv::keys::catalog_transition_delta_sequence_key(9),
         ]
     );
     delete_transaction.rollback();

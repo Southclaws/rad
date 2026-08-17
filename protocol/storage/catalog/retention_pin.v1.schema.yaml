@@ -1,0 +1,105 @@
+# Storage contract for one persisted retention pin, stored under the
+# catalog_retention_pin keyspace.
+# Released properties are permanent; see protocol/README.md for the
+# storage-schema compatibility rules.
+$schema: https://json-schema.org/draft/2020-12/schema
+title: catalog/retention_pin.v1
+description: >-
+  One consumer's hold on a retained storage resource. Reclamation never
+  removes a resource while a pin covers it, so pinned plans, snapshots, and
+  workers keep reading definitions and data that the catalog has already
+  replaced.
+type: object
+additionalProperties: false
+required: [format, record]
+properties:
+  format:
+    description: Payload serialization format discriminator.
+    type: integer
+    enum: [1]
+  record:
+    description: One consumer's hold on a retained storage resource.
+    type: object
+    additionalProperties: false
+    required: [id, owner_kind, owner_id, resource, created_at]
+    properties:
+      id:
+        description: >-
+          Pin identity, a structured string derived from the owner and the
+          pinned resource.
+        type: string
+      owner_kind:
+        description: The kind of consumer holding the pin.
+        type: string
+        enum:
+          - prepared_plan
+          - data_snapshot
+          - replica
+          - cdc
+          - schema_transition
+          - schema_worker
+          - physical_reader
+      owner_id:
+        description: Identity of the owning consumer within its kind.
+        type: string
+      resource:
+        description: The retained resource the pin covers.
+        type: object
+        additionalProperties: false
+        required: [kind]
+        properties:
+          kind:
+            description: The kind of retained resource.
+            type: string
+            enum:
+              - table_definition
+              - write_protocol_definition
+              - data_snapshot
+              - transition_deltas
+              - physical_table
+              - physical_column
+              - physical_index
+              - transition_diagnostics
+          table_id:
+            description: >-
+              Physical table identity, for resources scoped to a table.
+              Empty when not applicable.
+            type: string
+          table_schema_id:
+            description: >-
+              Logical schema identity of the table. Absent when not
+              applicable.
+            type: integer
+          column_id:
+            description: >-
+              Physical column identity, for column-scoped resources. Empty
+              when not applicable.
+            type: string
+          index_id:
+            description: >-
+              Physical index identity, for index-scoped resources. Empty
+              when not applicable.
+            type: string
+          definition_generation:
+            description: >-
+              Pinned definition generation, for definition resources. Absent
+              means zero.
+            type: integer
+          write_protocol_generation:
+            description: >-
+              Pinned write-protocol generation, for write-protocol
+              resources. Absent means zero.
+            type: integer
+          transition_id:
+            description: >-
+              Transition identity, for transition-scoped resources. Empty
+              when not applicable.
+            type: string
+          data_position:
+            description: >-
+              Opaque KV position, for snapshot resources. Empty when not
+              applicable.
+            type: string
+      created_at:
+        description: RFC 3339 timestamp the pin was taken.
+        type: string

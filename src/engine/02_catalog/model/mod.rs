@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::identity::{
     AccessGeneration, CatalogVersion, ColumnId, DefinitionGeneration, ExistenceGeneration, IndexId,
-    LogicalIndexId, SchemaId, TableId, ValueGeneration, WriteProtocolGeneration,
+    LogicalIndexId, SchemaId, StorageGeneration, TableId, ValueGeneration, WriteProtocolGeneration,
 };
 use super::{Error, ErrorKind, Result};
 
@@ -132,6 +132,8 @@ pub struct Table {
     pub existence_generation: ExistenceGeneration,
     #[serde(default, skip_serializing_if = "WriteProtocolGeneration::is_zero")]
     pub write_protocol_generation: WriteProtocolGeneration,
+    #[serde(default, skip_serializing_if = "StorageGeneration::is_initial")]
+    pub storage_generation: StorageGeneration,
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub columns: Vec<Column>,
     #[serde(default, deserialize_with = "deserialize_null_default")]
@@ -394,6 +396,7 @@ mod tests {
             definition_generation: 1.into(),
             existence_generation: 1.into(),
             write_protocol_generation: 1.into(),
+            storage_generation: crate::engine::catalog::identity::StorageGeneration::INITIAL,
             columns: vec![Column {
                 id: "c1".into(),
                 schema_id: sid(1),

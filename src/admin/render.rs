@@ -3,8 +3,8 @@ use std::fmt::Write as _;
 
 use crate::engine::catalog;
 use crate::engine::catalog::model::Table;
-use crate::engine::exec::codec;
-use crate::engine::kv::{IsolationLevel, TransactionView, TransactionalKv};
+use crate::engine::exec::{codec, key_describe};
+use crate::engine::kv::{IsolationLevel, TransactionView, TransactionalKv, keys};
 use crate::engine::lir::Value;
 
 #[derive(Default)]
@@ -32,41 +32,37 @@ impl KeyDecoder {
         }
     }
 
+    /// Renders a durable key through the generated parser, with catalog
+    /// names added where the catalog still knows the identity.
     pub(super) fn key(&self, key: &[u8]) -> String {
-        if let Some(rest) = key.strip_prefix(b"/rad/data/")
-            && let Some((table_id, tuple)) = split_once(rest, b"/primary/")
-            && let Ok(table_id) = std::str::from_utf8(table_id)
-        {
+        if let Some(parts) = keys::decode_data_key(key) {
             return format!(
-                "/rad/data/{}/primary/{}",
-                self.table_label(table_id),
-                render_tuple(tuple)
+                "data/table={}/generation={}/primary_key={}",
+                self.table_label(parts.table),
+                parts.generation,
+                render_tuple(&parts.primary_key)
             );
         }
-        if let Some(rest) = key.strip_prefix(b"/rad/index/")
-            && let Some((table_id, rest)) = split_once(rest, b"/")
-            && let Some((index_id, tuple)) = split_once(rest, b"/")
-            && let (Ok(table_id), Ok(index_id)) =
-                (std::str::from_utf8(table_id), std::str::from_utf8(index_id))
-        {
+        if let Some(parts) = keys::decode_index_key(key) {
             return format!(
-                "/rad/index/{}/{}/{}",
-                self.table_label(table_id),
-                self.index_label(table_id, index_id),
-                self.render_index_tuple(table_id, index_id, tuple)
+                "index/table={}/index={}/{}",
+                self.table_label(parts.table),
+                self.index_label(parts.table, parts.index),
+                self.render_index_tuple(parts.table, parts.index, &parts.tuple_rest)
             );
+        }
+        if let Some(text) = key_describe::describe_key(key) {
+            return text;
         }
         printable(key)
     }
 
     pub(super) fn value(&self, key: &[u8], value: &[u8]) -> String {
-        if key.starts_with(b"/rad/index/") {
+        if keys::decode_index_key(key).is_some() {
             return render_tuple(value);
         }
-        if let Some(rest) = key.strip_prefix(b"/rad/data/") {
-            if let Some((table_id, _)) = split_once(rest, b"/primary/")
-                && let Ok(table_id) = std::str::from_utf8(table_id)
-                && let Some(table) = self.tables.get(table_id)
+        if let Some(parts) = keys::decode_data_key(key) {
+            if let Some(table) = self.tables.get(&format!("t{}", parts.table))
                 && let Ok(row) = codec::unmarshal_row(table, value)
             {
                 let fields = table
@@ -89,34 +85,37 @@ impl KeyDecoder {
         printable(value)
     }
 
-    fn table_label(&self, table_id: &str) -> String {
-        self.tables.get(table_id).map_or_else(
-            || table_id.to_owned(),
+    fn table_label(&self, table: u64) -> String {
+        let table_id = format!("t{table}");
+        self.tables.get(&table_id).map_or_else(
+            || table_id.clone(),
             |table| format!("{table_id}[{}]", table.name),
         )
     }
 
-    fn index_label(&self, table_id: &str, index_id: &str) -> String {
+    fn index_label(&self, table: u64, index: u64) -> String {
+        let index_id = format!("i{index}");
         self.tables
-            .get(table_id)
+            .get(&format!("t{table}"))
             .and_then(|table| {
                 table
                     .indexes
                     .iter()
-                    .find(|index| index.id.to_string() == index_id)
+                    .find(|index| index.id.as_str() == index_id)
             })
             .map_or_else(
-                || index_id.to_owned(),
+                || index_id.clone(),
                 |index| format!("{index_id}[{}]", index.name),
             )
     }
 
-    fn render_index_tuple(&self, table_id: &str, index_id: &str, bytes: &[u8]) -> String {
-        let Some(index) = self.tables.get(table_id).and_then(|table| {
+    fn render_index_tuple(&self, table: u64, index: u64, bytes: &[u8]) -> String {
+        let index_id = format!("i{index}");
+        let Some(index) = self.tables.get(&format!("t{table}")).and_then(|table| {
             table
                 .indexes
                 .iter()
-                .find(|index| index.id.to_string() == index_id)
+                .find(|index| index.id.as_str() == index_id)
         }) else {
             return render_tuple(bytes);
         };
@@ -136,13 +135,6 @@ impl KeyDecoder {
             format!("{indexed}+{}", render_tuple(rest))
         }
     }
-}
-
-fn split_once<'a>(value: &'a [u8], delimiter: &[u8]) -> Option<(&'a [u8], &'a [u8])> {
-    let position = value
-        .windows(delimiter.len())
-        .position(|window| window == delimiter)?;
-    Some((&value[..position], &value[position + delimiter.len()..]))
 }
 
 fn render_tuple(bytes: &[u8]) -> String {

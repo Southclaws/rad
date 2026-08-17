@@ -3,17 +3,17 @@ use bytes::Bytes;
 use crate::engine::catalog::identity::CatalogVersion;
 use crate::engine::catalog::model::{Revision, Schema, Timestamp};
 use crate::engine::catalog::{Error, ErrorKind, Result};
-use crate::engine::kv::KvView;
+use crate::engine::kv::{KvView, keys};
 
 use super::durable_json::{decode, encode};
 use super::{list_tables, map_kv, parse_u64, prefix_range, publish_definitions};
 
-const SCHEMA_VERSION_KEY: &[u8] = b"/rad/catalog/meta/schema_version";
-const CATALOG_GENERATION_KEY: &[u8] = b"/rad/catalog/meta/catalog_generation";
-const SCHEMA_REVISION_PREFIX: &str = "/rad/catalog/meta/schema_revision/";
-
 pub(crate) async fn bump_catalog_generation<V: KvView + ?Sized>(view: &mut V) -> Result<u64> {
-    let current = match view.get(CATALOG_GENERATION_KEY).await.map_err(map_kv)? {
+    let current = match view
+        .get(&keys::catalog_meta_catalog_generation_key())
+        .await
+        .map_err(map_kv)?
+    {
         Some(raw) => parse_u64("catalog_generation", None, &raw)?,
         None => 0,
     };
@@ -24,7 +24,7 @@ pub(crate) async fn bump_catalog_generation<V: KvView + ?Sized>(view: &mut V) ->
         )
     })?;
     view.put(
-        Bytes::from_static(CATALOG_GENERATION_KEY),
+        Bytes::from(keys::catalog_meta_catalog_generation_key()),
         Bytes::from(next.to_string()),
     )
     .await
@@ -33,7 +33,11 @@ pub(crate) async fn bump_catalog_generation<V: KvView + ?Sized>(view: &mut V) ->
 }
 
 pub async fn current_revision<V: KvView + ?Sized>(view: &mut V) -> Result<Revision> {
-    let Some(raw) = view.get(SCHEMA_VERSION_KEY).await.map_err(map_kv)? else {
+    let Some(raw) = view
+        .get(&keys::catalog_meta_schema_version_key())
+        .await
+        .map_err(map_kv)?
+    else {
         let schema = Schema::default();
         return Ok(Revision {
             version: CatalogVersion::ZERO,
@@ -67,7 +71,7 @@ pub async fn bump_revision<V: KvView + ?Sized>(view: &mut V, now: Timestamp) -> 
         .await
         .map_err(map_kv)?;
     view.put(
-        Bytes::from_static(SCHEMA_VERSION_KEY),
+        Bytes::from(keys::catalog_meta_schema_version_key()),
         Bytes::from(next.version.to_string()),
     )
     .await
@@ -77,18 +81,15 @@ pub async fn bump_revision<V: KvView + ?Sized>(view: &mut V, now: Timestamp) -> 
 }
 
 pub async fn revisions<V: KvView + ?Sized>(view: &mut V) -> Result<Vec<Revision>> {
-    let prefix = SCHEMA_REVISION_PREFIX.as_bytes();
-    let mut iterator = view.scan(prefix_range(prefix)).await.map_err(map_kv)?;
+    let prefix = keys::catalog_schema_revision_prefix();
+    let mut iterator = view.scan(prefix_range(&prefix)).await.map_err(map_kv)?;
     let mut values = Vec::new();
     while let Some(entry) = iterator.next().await.map_err(map_kv)? {
-        let key_version = entry
-            .key
-            .strip_prefix(prefix)
-            .and_then(|value| std::str::from_utf8(value).ok())
-            .and_then(|value| value.parse::<u64>().ok())
+        let key_version = keys::decode_catalog_schema_revision_key(&entry.key)
             .ok_or_else(|| {
                 Error::message(ErrorKind::CatalogCorrupt, "catalog: malformed revision key")
-            })?;
+            })?
+            .version;
         let revision: Revision = decode("schema revision", &key_version.to_string(), &entry.value)?;
         if revision.version.get() != key_version {
             return Err(Error::message(
@@ -144,7 +145,7 @@ fn validate_revision(revision: &Revision) -> Result<()> {
 }
 
 pub(crate) fn revision_key(version: CatalogVersion) -> Vec<u8> {
-    format!("{SCHEMA_REVISION_PREFIX}{:020}", version.get()).into_bytes()
+    keys::catalog_schema_revision_key(version.get())
 }
 
 #[cfg(test)]
@@ -172,7 +173,7 @@ mod tests {
 
         Kv::put(
             &database,
-            Bytes::from_static(SCHEMA_VERSION_KEY),
+            Bytes::from(keys::catalog_meta_schema_version_key()),
             Bytes::from_static(b"not-a-version"),
         )
         .await
@@ -194,6 +195,7 @@ mod tests {
             definition_generation: DefinitionGeneration::ZERO,
             existence_generation: ExistenceGeneration::from(1),
             write_protocol_generation: WriteProtocolGeneration::from(1),
+            storage_generation: crate::engine::catalog::identity::StorageGeneration::INITIAL,
             columns: Vec::new(),
             primary_key: Vec::new(),
             indexes: Vec::new(),

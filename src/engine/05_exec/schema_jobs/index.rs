@@ -132,7 +132,7 @@ async fn scan_build_batch(
                 &transition.index.id,
                 &tuple,
                 &row.primary_key,
-            )),
+            )?),
             Bytes::copy_from_slice(&row.primary_key),
         )
         .await?;
@@ -152,8 +152,8 @@ async fn apply_delta_batch(
     finalizing: bool,
     now: crate::engine::catalog::model::Timestamp,
 ) -> Result<usize> {
-    let (_, end) = store::delta_range(&transition.id);
-    let start = store::delta_key(&transition.id, transition.applied_delta.saturating_add(1));
+    let (_, end) = store::delta_range(&transition.id)?;
+    let start = store::delta_key(&transition.id, transition.applied_delta.saturating_add(1))?;
     let mut iterator = view
         .scan(KeyRange::new(Bytes::from(start), Bytes::from(end)))
         .await?;
@@ -170,7 +170,7 @@ async fn apply_delta_batch(
     }
     drop(iterator);
     for delta in &deltas {
-        let key = codec::index_key(table, &transition.index.id, &delta.tuple, &delta.pk);
+        let key = codec::index_key(table, &transition.index.id, &delta.tuple, &delta.pk)?;
         match delta.operation {
             IndexDeltaOperation::Put => {
                 view.put(Bytes::from(key), Bytes::copy_from_slice(&delta.pk))

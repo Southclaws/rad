@@ -206,6 +206,7 @@ mod tests {
             definition_generation: DefinitionGeneration::ZERO,
             existence_generation: ExistenceGeneration::ZERO,
             write_protocol_generation: WriteProtocolGeneration::ZERO,
+            storage_generation: crate::engine::catalog::identity::StorageGeneration::INITIAL,
             columns: vec![Column {
                 id: format!("c{schema_id}").into(),
                 schema_id: sid(1),

@@ -20,11 +20,6 @@ use crate::engine::kv::{Closure, ErrorKind as KvErrorKind, Kv, TransactionalKv};
 use crate::health::{Health, StartupHold};
 use crate::scheduler::schema_jobs::{SchemaJobConfig, SchemaJobRunner};
 
-/// The key a writer rewrites to hold the storage location, and that a reader
-/// reads to observe that storage still answers. It is runtime state and carries
-/// no catalog or application data.
-const RUNTIME_FENCE_KEY: &[u8] = b"/rad/runtime/writer-fence";
-
 pub type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -360,6 +355,9 @@ async fn start_runtime(config: &Config, health: &Arc<Health>) -> Result<Runtime>
 async fn open_runtime(config: &Config, built: &BuiltObjects) -> Result<Runtime> {
     let opened = open_storage(built, config.role, config.reader_poll_interval).await?;
     let store = opened.store;
+    if let Err(error) = admit_storage_compatibility(store.as_ref(), config.role).await {
+        return close_after_error(store.as_ref(), config.close_timeout, error).await;
+    }
     let catalog = Arc::new(Catalog::new(store.clone()));
     let mode = match open_catalog_mode(&catalog, config.catalog_mode, config.role).await {
         Ok(mode) => mode,
@@ -601,13 +599,17 @@ async fn monitor_runtime(
                     )
                     .await;
                 }
+                // The fence key holds runtime state only: a writer rewrites
+                // it to hold the storage location, and a reader reads it to
+                // observe that storage still answers.
+                let fence_key = crate::engine::kv::keys::runtime_writer_fence_key();
                 let observation = match &writer {
                     Some(writer) => Kv::put(
                         writer.as_ref(),
-                        Bytes::from_static(RUNTIME_FENCE_KEY),
+                        Bytes::from(fence_key),
                         token.clone(),
                     ).await,
-                    None => Kv::get(store.as_ref(), RUNTIME_FENCE_KEY).await.map(|_| ()),
+                    None => Kv::get(store.as_ref(), &fence_key).await.map(|_| ()),
                 };
                 let Err(error) = observation else {
                     health.observe_storage();
@@ -646,6 +648,30 @@ async fn stop_after_drain(
     tokio::time::sleep(drain).await;
     let _ = stop_sender.send(true);
     Err(std::io::Error::other(message))
+}
+
+async fn admit_storage_compatibility(
+    store: &dyn TransactionalKv,
+    role: Role,
+) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use crate::engine::kv::{IsolationLevel, TransactionView};
+    let transaction = store.begin(IsolationLevel::Snapshot).await?;
+    let writes = role == Role::Write;
+    let result = {
+        let mut view = TransactionView(&*transaction);
+        crate::engine::catalog::store::admit_storage_compatibility(&mut view, writes).await
+    };
+    match result {
+        Ok(()) if writes => transaction.commit().await.map_err(Into::into),
+        Ok(()) => {
+            transaction.rollback();
+            Ok(())
+        }
+        Err(error) => {
+            transaction.rollback();
+            Err(Box::new(error).into())
+        }
+    }
 }
 
 async fn close_after_error<T>(

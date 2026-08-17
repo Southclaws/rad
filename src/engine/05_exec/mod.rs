@@ -5,6 +5,7 @@ mod engine;
 mod error;
 mod events;
 mod frames;
+pub mod key_describe;
 mod pipeline;
 mod program;
 mod query;

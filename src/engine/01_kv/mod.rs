@@ -1,6 +1,9 @@
 mod error;
 pub mod fault;
 pub mod key_encoding;
+pub mod keys;
+pub mod keyspace;
+pub mod manifest;
 pub mod slatedb;
 
 use async_trait::async_trait;

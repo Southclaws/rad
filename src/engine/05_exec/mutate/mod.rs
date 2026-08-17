@@ -36,7 +36,7 @@ pub(super) async fn create(
             ));
         }
         if view
-            .get(&codec::data_key(table, &primary_key))
+            .get(&codec::data_key(table, &primary_key)?)
             .await?
             .is_some()
         {

@@ -5,30 +5,21 @@ use bytes::Bytes;
 use crate::engine::catalog::identity::{CatalogVersion, DefinitionGeneration, SchemaId};
 use crate::engine::catalog::model::{Reclamation, ReclamationKind, Schema, Table, Timestamp};
 use crate::engine::catalog::{Error, ErrorKind, Result};
-use crate::engine::kv::KvView;
+use crate::engine::kv::{KvView, keys};
 
 use super::durable_json::encode;
 use super::{map_kv, parse_u64, prefix_bounds, queue_reclamation, table_definition_reclamation_id};
 
-const TABLE_DEFINITION_PREFIX: &str = "/rad/catalog/object/table/";
-const TABLE_HEAD_PREFIX: &str = "/rad/catalog/head/table/";
-
 pub fn table_definition_key(id: SchemaId, generation: DefinitionGeneration) -> Vec<u8> {
-    format!(
-        "{TABLE_DEFINITION_PREFIX}{:010}/definition/{:020}",
-        id.get(),
-        generation.get()
-    )
-    .into_bytes()
+    keys::catalog_table_object_key(id.get(), generation.get())
 }
 
 pub fn table_definition_range(id: SchemaId) -> (Vec<u8>, Vec<u8>) {
-    let start = format!("{TABLE_DEFINITION_PREFIX}{:010}/definition/", id.get()).into_bytes();
-    prefix_bounds(start)
+    prefix_bounds(keys::catalog_table_object_prefix_schema(id.get()))
 }
 
 pub fn table_head_key(id: SchemaId) -> Vec<u8> {
-    format!("{TABLE_HEAD_PREFIX}{:010}", id.get()).into_bytes()
+    keys::catalog_table_head_key(id.get())
 }
 
 pub async fn publish_definitions<V: KvView + ?Sized>(
@@ -145,6 +136,7 @@ mod tests {
             definition_generation: generation.into(),
             existence_generation: ExistenceGeneration::from(1),
             write_protocol_generation: WriteProtocolGeneration::from(1),
+            storage_generation: crate::engine::catalog::identity::StorageGeneration::INITIAL,
             columns: Vec::new(),
             primary_key: Vec::new(),
             indexes: Vec::new(),

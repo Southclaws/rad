@@ -58,6 +58,36 @@ pub fn encode_bool(value: bool) -> [u8; 2] {
     [TAG_BOOL, u8::from(value)]
 }
 
+/// Appends the canonical (minimal-length) varint encoding of `value`.
+pub fn append_uvarint(output: &mut Vec<u8>, mut value: u64) {
+    while value >= 0x80 {
+        output.push((value as u8) | 0x80);
+        value >>= 7;
+    }
+    output.push(value as u8);
+}
+
+/// Reads one canonical varint at `position`, advancing it past the encoding.
+/// Returns `None` for truncated, non-canonical, or overflowing input.
+pub fn read_uvarint(input: &[u8], position: &mut usize) -> Option<u64> {
+    let mut value = 0_u64;
+    for shift in (0..70).step_by(7) {
+        let byte = *input.get(*position)?;
+        *position += 1;
+        if shift == 63 && byte > 1 {
+            return None;
+        }
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte < 0x80 {
+            if shift != 0 && byte == 0 {
+                return None;
+            }
+            return Some(value);
+        }
+    }
+    None
+}
+
 /// Returns the exclusive upper bound for all keys beginning with `prefix`.
 pub fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     let mut end = prefix.to_vec();

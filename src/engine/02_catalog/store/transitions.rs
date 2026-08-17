@@ -1,11 +1,11 @@
-use bytes::{BufMut, Bytes};
+use bytes::Bytes;
 
 use crate::engine::catalog::identity::{TableId, TransitionId, WriteProtocolGeneration};
 use crate::engine::catalog::model::{
     IndexDelta, SchemaTransition, UniqueIndexClaim, WriteProtocol,
 };
 use crate::engine::catalog::{Error, ErrorKind, Result};
-use crate::engine::kv::{KeyRange, KvView};
+use crate::engine::kv::{KeyRange, KvView, keys};
 
 use super::durable_json::{decode, encode};
 use super::write_protocol_canonical::canonical_write_protocol;
@@ -16,34 +16,26 @@ use super::{
 use crate::engine::catalog::model::Timestamp;
 use crate::engine::catalog::model::{Reclamation, ReclamationKind, Table};
 
-const WRITE_PROTOCOL_PREFIX: &str = "/rad/catalog/fence/table/";
-const WRITE_PROTOCOL_DEFINITION_PREFIX: &str = "/rad/catalog/object/write_protocol/";
-const TRANSITION_PREFIX: &str = "/rad/catalog/transition/";
-const TRANSITION_WAKE_KEY: &[u8] = b"/rad/catalog/meta/transition_seen";
-const DELTA_PREFIX: &str = "/rad/catalog/transition_delta/";
-const DELTA_SEQUENCE_PREFIX: &str = "/rad/catalog/transition_delta_sequence/";
-const DELTA_APPLIED_PREFIX: &str = "/rad/catalog/transition_delta_applied/";
-const UNIQUE_CLAIM_PREFIX: &str = "/rad/catalog/transition_unique_claim/";
-const UNIQUE_VIOLATION_PREFIX: &str = "/rad/catalog/transition_unique_violation/";
-
-pub fn write_protocol_key(table_id: &TableId) -> Vec<u8> {
-    format!("{WRITE_PROTOCOL_PREFIX}{table_id}/write_protocol").into_bytes()
+pub fn write_protocol_key(table_id: &TableId) -> Result<Vec<u8>> {
+    Ok(keys::catalog_write_protocol_fence_key(
+        super::physical_table_number(table_id)?,
+    ))
 }
 
 pub fn write_protocol_definition_key(
     table_id: &TableId,
     generation: WriteProtocolGeneration,
-) -> Vec<u8> {
-    format!(
-        "{WRITE_PROTOCOL_DEFINITION_PREFIX}{table_id}/definition/{:020}",
-        generation.get()
-    )
-    .into_bytes()
+) -> Result<Vec<u8>> {
+    Ok(keys::catalog_write_protocol_object_key(
+        super::physical_table_number(table_id)?,
+        generation.get(),
+    ))
 }
 
-pub fn write_protocol_definition_range(table_id: &TableId) -> (Vec<u8>, Vec<u8>) {
-    let start = format!("{WRITE_PROTOCOL_DEFINITION_PREFIX}{table_id}/definition/").into_bytes();
-    prefix_bounds(start)
+pub fn write_protocol_definition_range(table_id: &TableId) -> Result<(Vec<u8>, Vec<u8>)> {
+    Ok(prefix_bounds(
+        keys::catalog_write_protocol_object_prefix_table(super::physical_table_number(table_id)?),
+    ))
 }
 
 pub async fn write_protocol_generation<V: KvView + ?Sized>(
@@ -51,7 +43,7 @@ pub async fn write_protocol_generation<V: KvView + ?Sized>(
     table_id: &TableId,
 ) -> Result<Option<WriteProtocolGeneration>> {
     let Some(raw) = view
-        .get(&write_protocol_key(table_id))
+        .get(&write_protocol_key(table_id)?)
         .await
         .map_err(map_kv)?
     else {
@@ -98,7 +90,7 @@ pub async fn read_write_protocol<V: KvView + ?Sized>(
             ),
         ));
     }
-    let key = write_protocol_definition_key(&table.id, generation);
+    let key = write_protocol_definition_key(&table.id, generation)?;
     let Some(raw) = view.get(&key).await.map_err(map_kv)? else {
         return Err(Error::message(
             ErrorKind::CatalogCorrupt,
@@ -155,7 +147,7 @@ pub async fn save_write_protocol<V: KvView + ?Sized>(
         reclamation.write_protocol_generation = current;
         queue_reclamation(view, reclamation, now).await?;
     }
-    let definition_key = write_protocol_definition_key(&protocol.table_id, protocol.generation);
+    let definition_key = write_protocol_definition_key(&protocol.table_id, protocol.generation)?;
     if let Some(existing) = view.get(&definition_key).await.map_err(map_kv)? {
         if existing.as_ref() != raw.as_slice() {
             return Err(Error::message(
@@ -172,15 +164,17 @@ pub async fn save_write_protocol<V: KvView + ?Sized>(
             .map_err(map_kv)?;
     }
     view.put(
-        Bytes::from(write_protocol_key(&protocol.table_id)),
+        Bytes::from(write_protocol_key(&protocol.table_id)?),
         Bytes::from(protocol.generation.to_string()),
     )
     .await
     .map_err(map_kv)
 }
 
-fn transition_key(id: &TransitionId) -> Vec<u8> {
-    format!("{TRANSITION_PREFIX}{id}").into_bytes()
+fn transition_key(id: &TransitionId) -> Result<Vec<u8>> {
+    Ok(keys::catalog_transition_key(
+        super::physical_transition_number(id)?,
+    ))
 }
 
 pub async fn save_transition<V: KvView + ?Sized>(
@@ -190,7 +184,7 @@ pub async fn save_transition<V: KvView + ?Sized>(
     validate_transition(transition)?;
     let raw = encode("transition", transition.id.as_str(), transition)?;
     view.put(
-        Bytes::from(transition_key(&transition.id)),
+        Bytes::from(transition_key(&transition.id)?),
         Bytes::from(raw),
     )
     .await
@@ -209,7 +203,7 @@ pub async fn create_transition<V: KvView + ?Sized>(
 ) -> Result<()> {
     save_transition(view, transition).await?;
     view.put(
-        Bytes::from_static(TRANSITION_WAKE_KEY),
+        Bytes::from(keys::catalog_meta_transition_seen_key()),
         Bytes::from_static(&[1]),
     )
     .await
@@ -218,7 +212,7 @@ pub async fn create_transition<V: KvView + ?Sized>(
 
 pub async fn has_transition_history<V: KvView + ?Sized>(view: &mut V) -> Result<bool> {
     Ok(view
-        .get(TRANSITION_WAKE_KEY)
+        .get(&keys::catalog_meta_transition_seen_key())
         .await
         .map_err(map_kv)?
         .is_some())
@@ -228,28 +222,31 @@ pub async fn get_transition<V: KvView + ?Sized>(
     view: &mut V,
     id: &TransitionId,
 ) -> Result<Option<SchemaTransition>> {
-    let Some(raw) = view.get(&transition_key(id)).await.map_err(map_kv)? else {
+    // Lookups take caller-supplied identities: an identity no allocator can
+    // produce is absent, not corrupt.
+    let Ok(key) = transition_key(id) else {
+        return Ok(None);
+    };
+    let Some(raw) = view.get(&key).await.map_err(map_kv)? else {
         return Ok(None);
     };
     decode_transition(id.as_str(), &raw).map(Some)
 }
 
 pub async fn list_transitions<V: KvView + ?Sized>(view: &mut V) -> Result<Vec<SchemaTransition>> {
-    let prefix = TRANSITION_PREFIX.as_bytes();
-    let mut iterator = view.scan(prefix_range(prefix)).await.map_err(map_kv)?;
+    let prefix = keys::catalog_transition_prefix();
+    let mut iterator = view.scan(prefix_range(&prefix)).await.map_err(map_kv)?;
     let mut transitions = Vec::new();
     while let Some(entry) = iterator.next().await.map_err(map_kv)? {
-        let id = entry
-            .key
-            .strip_prefix(prefix)
-            .and_then(|value| std::str::from_utf8(value).ok())
+        let number = keys::decode_catalog_transition_key(&entry.key)
             .ok_or_else(|| {
                 Error::message(
                     ErrorKind::CatalogCorrupt,
                     "catalog: malformed transition key",
                 )
-            })?;
-        transitions.push(decode_transition(id, &entry.value)?);
+            })?
+            .transition;
+        transitions.push(decode_transition(&format!("tr{number}"), &entry.value)?);
     }
     Ok(transitions)
 }
@@ -314,29 +311,39 @@ fn validate_transition(value: &SchemaTransition) -> Result<()> {
     Ok(())
 }
 
-fn delta_sequence_key(id: &TransitionId) -> Vec<u8> {
-    format!("{DELTA_SEQUENCE_PREFIX}{id}").into_bytes()
+fn delta_sequence_key(id: &TransitionId) -> Result<Vec<u8>> {
+    Ok(keys::catalog_transition_delta_sequence_key(
+        super::physical_transition_number(id)?,
+    ))
 }
 
-fn delta_applied_key(id: &TransitionId) -> Vec<u8> {
-    format!("{DELTA_APPLIED_PREFIX}{id}").into_bytes()
+fn delta_applied_key(id: &TransitionId) -> Result<Vec<u8>> {
+    Ok(keys::catalog_transition_delta_applied_key(
+        super::physical_transition_number(id)?,
+    ))
 }
 
-pub fn delta_key(id: &TransitionId, sequence: u64) -> Vec<u8> {
-    format!("{DELTA_PREFIX}{id}/{sequence:020}").into_bytes()
+pub fn delta_key(id: &TransitionId, sequence: u64) -> Result<Vec<u8>> {
+    Ok(keys::catalog_transition_delta_key(
+        super::physical_transition_number(id)?,
+        sequence,
+    ))
 }
 
-pub fn delta_range(id: &TransitionId) -> (Vec<u8>, Vec<u8>) {
-    let start = format!("{DELTA_PREFIX}{id}/").into_bytes();
-    prefix_bounds(start)
+pub fn delta_range(id: &TransitionId) -> Result<(Vec<u8>, Vec<u8>)> {
+    Ok(prefix_bounds(
+        keys::catalog_transition_delta_prefix_transition(super::physical_transition_number(id)?),
+    ))
 }
 
 pub async fn delete_delta_metadata<V: KvView + ?Sized>(
     view: &mut V,
     id: &TransitionId,
 ) -> Result<()> {
-    view.delete(&delta_sequence_key(id)).await.map_err(map_kv)?;
-    view.delete(&delta_applied_key(id)).await.map_err(map_kv)
+    view.delete(&delta_sequence_key(id)?)
+        .await
+        .map_err(map_kv)?;
+    view.delete(&delta_applied_key(id)?).await.map_err(map_kv)
 }
 
 pub async fn append_index_delta<V: KvView + ?Sized>(
@@ -351,7 +358,7 @@ pub async fn append_index_delta<V: KvView + ?Sized>(
     // delta that becomes visible later. Keep the contention explicit until a
     // replacement protocol supplies commit-ordered identities or rescans a
     // safely fenced frontier.
-    let key = delta_sequence_key(transition_id);
+    let key = delta_sequence_key(transition_id)?;
     let sequence = match view.get(&key).await.map_err(map_kv)? {
         Some(raw) => parse_u64("delta sequence", Some(transition_id.as_str()), &raw)?,
         None => 0,
@@ -377,7 +384,7 @@ pub async fn append_index_delta<V: KvView + ?Sized>(
     delta.sequence = sequence;
     let raw = encode("index delta", &delta.id, &delta)?;
     view.put(
-        Bytes::from(delta_key(transition_id, sequence)),
+        Bytes::from(delta_key(transition_id, sequence)?),
         Bytes::from(raw),
     )
     .await
@@ -389,7 +396,7 @@ pub async fn append_index_delta<V: KvView + ?Sized>(
 }
 
 async fn delta_applied<V: KvView + ?Sized>(view: &mut V, id: &TransitionId) -> Result<u64> {
-    let Some(raw) = view.get(&delta_applied_key(id)).await.map_err(map_kv)? else {
+    let Some(raw) = view.get(&delta_applied_key(id)?).await.map_err(map_kv)? else {
         return Ok(0);
     };
     parse_u64("applied delta", Some(id.as_str()), &raw)
@@ -401,7 +408,7 @@ pub async fn save_delta_applied<V: KvView + ?Sized>(
     sequence: u64,
 ) -> Result<()> {
     view.put(
-        Bytes::from(delta_applied_key(id)),
+        Bytes::from(delta_applied_key(id)?),
         Bytes::from(sequence.to_string()),
     )
     .await
@@ -409,7 +416,7 @@ pub async fn save_delta_applied<V: KvView + ?Sized>(
 }
 
 pub async fn delta_high_water<V: KvView + ?Sized>(view: &mut V, id: &TransitionId) -> Result<u64> {
-    let Some(raw) = view.get(&delta_sequence_key(id)).await.map_err(map_kv)? else {
+    let Some(raw) = view.get(&delta_sequence_key(id)?).await.map_err(map_kv)? else {
         return Ok(0);
     };
     parse_u64("delta sequence", Some(id.as_str()), &raw)
@@ -420,33 +427,19 @@ pub fn decode_index_delta(
     key: &[u8],
     raw: &[u8],
 ) -> Result<IndexDelta> {
-    let prefix = format!("{DELTA_PREFIX}{transition_id}/");
-    let Some(encoded) = key.strip_prefix(prefix.as_bytes()) else {
+    let parts = keys::decode_catalog_transition_delta_key(key).ok_or_else(|| {
+        Error::message(
+            ErrorKind::CatalogCorrupt,
+            "catalog: invalid index delta key",
+        )
+    })?;
+    if parts.transition != super::physical_transition_number(transition_id)? {
         return Err(Error::message(
             ErrorKind::CatalogCorrupt,
             format!("catalog: index delta key {key:?} is outside transition {transition_id:?}"),
         ));
-    };
-    let encoded = std::str::from_utf8(encoded).map_err(|error| {
-        Error::source(
-            ErrorKind::CatalogCorrupt,
-            "catalog: invalid index delta key",
-            error,
-        )
-    })?;
-    let sequence = encoded.parse::<u64>().map_err(|error| {
-        Error::source(
-            ErrorKind::CatalogCorrupt,
-            "catalog: invalid index delta key",
-            error,
-        )
-    })?;
-    if encoded != format!("{sequence:020}") {
-        return Err(Error::message(
-            ErrorKind::CatalogCorrupt,
-            "catalog: non-canonical index delta key",
-        ));
     }
+    let sequence = parts.sequence;
     let delta: IndexDelta = decode("index delta", &String::from_utf8_lossy(key), raw)?;
     let expected_id = format!("{transition_id}:{sequence:020}");
     if delta.sequence != sequence || delta.id != expected_id {
@@ -461,35 +454,42 @@ pub fn decode_index_delta(
     Ok(delta)
 }
 
-fn unique_claim_tuple_prefix(id: &TransitionId, tuple: &[u8]) -> Vec<u8> {
-    let mut key = format!("{UNIQUE_CLAIM_PREFIX}{id}/").into_bytes();
-    key.put_u64(tuple.len() as u64);
-    key.extend_from_slice(tuple);
-    key.push(b'/');
-    key
+fn unique_claim_tuple_prefix(id: &TransitionId, tuple: &[u8]) -> Result<Vec<u8>> {
+    Ok(keys::catalog_transition_unique_claim_prefix_indexed(
+        super::physical_transition_number(id)?,
+        tuple,
+    ))
 }
 
-fn unique_claim_key(id: &TransitionId, tuple: &[u8], pk: &[u8]) -> Vec<u8> {
-    let mut key = unique_claim_tuple_prefix(id, tuple);
-    key.extend_from_slice(pk);
-    key
+fn unique_claim_key(id: &TransitionId, tuple: &[u8], pk: &[u8]) -> Result<Vec<u8>> {
+    Ok(keys::catalog_transition_unique_claim_key(
+        super::physical_transition_number(id)?,
+        tuple,
+        pk,
+    ))
 }
 
-pub fn unique_claim_range(id: &TransitionId) -> (Vec<u8>, Vec<u8>) {
-    let start = format!("{UNIQUE_CLAIM_PREFIX}{id}/").into_bytes();
-    prefix_bounds(start)
+pub fn unique_claim_range(id: &TransitionId) -> Result<(Vec<u8>, Vec<u8>)> {
+    Ok(prefix_bounds(
+        keys::catalog_transition_unique_claim_prefix_transition(super::physical_transition_number(
+            id,
+        )?),
+    ))
 }
 
-pub fn unique_violation_range(id: &TransitionId) -> (Vec<u8>, Vec<u8>) {
-    let start = format!("{UNIQUE_VIOLATION_PREFIX}{id}/").into_bytes();
-    prefix_bounds(start)
+pub fn unique_violation_range(id: &TransitionId) -> Result<(Vec<u8>, Vec<u8>)> {
+    Ok(prefix_bounds(
+        keys::catalog_transition_unique_violation_prefix_transition(
+            super::physical_transition_number(id)?,
+        ),
+    ))
 }
 
-fn unique_violation_key(id: &TransitionId, tuple: &[u8]) -> Vec<u8> {
-    let mut key = format!("{UNIQUE_VIOLATION_PREFIX}{id}/").into_bytes();
-    key.put_u64(tuple.len() as u64);
-    key.extend_from_slice(tuple);
-    key
+fn unique_violation_key(id: &TransitionId, tuple: &[u8]) -> Result<Vec<u8>> {
+    Ok(keys::catalog_transition_unique_violation_key(
+        super::physical_transition_number(id)?,
+        tuple,
+    ))
 }
 
 pub async fn put_unique_claim<V: KvView + ?Sized>(
@@ -503,7 +503,7 @@ pub async fn put_unique_claim<V: KvView + ?Sized>(
         pk: pk.to_vec(),
     };
     let raw = encode("unique index claim", "", &claim)?;
-    let prefix = unique_claim_tuple_prefix(transition_id, tuple);
+    let prefix = unique_claim_tuple_prefix(transition_id, tuple)?;
     let mut duplicate = false;
     {
         let mut iterator = view.scan(prefix_range(&prefix)).await.map_err(map_kv)?;
@@ -524,7 +524,7 @@ pub async fn put_unique_claim<V: KvView + ?Sized>(
             }
         }
     }
-    let key = unique_claim_key(transition_id, tuple, pk);
+    let key = unique_claim_key(transition_id, tuple, pk)?;
     if let Some(existing) = view.get(&key).await.map_err(map_kv)?
         && existing.as_ref() != raw.as_slice()
     {
@@ -538,7 +538,7 @@ pub async fn put_unique_claim<V: KvView + ?Sized>(
         .map_err(map_kv)?;
     if duplicate {
         view.put(
-            Bytes::from(unique_violation_key(transition_id, tuple)),
+            Bytes::from(unique_violation_key(transition_id, tuple)?),
             Bytes::copy_from_slice(tuple),
         )
         .await
@@ -553,10 +553,10 @@ pub async fn delete_unique_claim<V: KvView + ?Sized>(
     tuple: &[u8],
     pk: &[u8],
 ) -> Result<()> {
-    view.delete(&unique_claim_key(transition_id, tuple, pk))
+    view.delete(&unique_claim_key(transition_id, tuple, pk)?)
         .await
         .map_err(map_kv)?;
-    let prefix = unique_claim_tuple_prefix(transition_id, tuple);
+    let prefix = unique_claim_tuple_prefix(transition_id, tuple)?;
     let remaining = {
         let mut iterator = view.scan(prefix_range(&prefix)).await.map_err(map_kv)?;
         let mut remaining = 0;
@@ -582,13 +582,13 @@ pub async fn delete_unique_claim<V: KvView + ?Sized>(
     };
     if remaining > 1 {
         view.put(
-            Bytes::from(unique_violation_key(transition_id, tuple)),
+            Bytes::from(unique_violation_key(transition_id, tuple)?),
             Bytes::copy_from_slice(tuple),
         )
         .await
         .map_err(map_kv)
     } else {
-        view.delete(&unique_violation_key(transition_id, tuple))
+        view.delete(&unique_violation_key(transition_id, tuple)?)
             .await
             .map_err(map_kv)
     }
@@ -598,7 +598,7 @@ pub async fn first_unique_violation<V: KvView + ?Sized>(
     view: &mut V,
     transition_id: &TransitionId,
 ) -> Result<Option<Bytes>> {
-    let (start, end) = unique_violation_range(transition_id);
+    let (start, end) = unique_violation_range(transition_id)?;
     let mut iterator = view
         .scan(KeyRange::new(Bytes::from(start), Bytes::from(end)))
         .await
@@ -688,6 +688,7 @@ mod tests {
             definition_generation: DefinitionGeneration::from(1),
             existence_generation: ExistenceGeneration::from(1),
             write_protocol_generation: WriteProtocolGeneration::from(1),
+            storage_generation: crate::engine::catalog::identity::StorageGeneration::INITIAL,
             columns: vec![Column {
                 id: "c1".into(),
                 schema_id: SchemaId::new(1).unwrap(),
@@ -734,7 +735,7 @@ mod tests {
         let raw = encode("transition", "tr1", &value).unwrap();
         Kv::put(
             &database,
-            Bytes::from(transition_key(&TransitionId::from("alias"))),
+            Bytes::from(transition_key(&TransitionId::from("tr9")).unwrap()),
             Bytes::from(raw),
         )
         .await
@@ -762,7 +763,7 @@ mod tests {
         });
         Kv::put(
             &database,
-            Bytes::from(transition_key(&TransitionId::from("tr2"))),
+            Bytes::from(transition_key(&TransitionId::from("tr2")).unwrap()),
             Bytes::from(serde_json::to_vec(&malformed).unwrap()),
         )
         .await
@@ -913,12 +914,12 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(sequence, 1);
-        let raw = Kv::get(&database, &delta_key(&id, 1))
+        let raw = Kv::get(&database, &delta_key(&id, 1).unwrap())
             .await
             .unwrap()
             .unwrap();
         assert_eq!(
-            decode_index_delta(&id, &delta_key(&id, 1), &raw)
+            decode_index_delta(&id, &delta_key(&id, 1).unwrap(), &raw)
                 .unwrap()
                 .sequence,
             1
@@ -945,9 +946,13 @@ mod tests {
         assert_eq!(delta_high_water(&mut database, &id).await.unwrap(), 1);
 
         assert_eq!(
-            decode_index_delta(&TransitionId::from("tr-other"), &delta_key(&id, 1), &raw)
-                .unwrap_err()
-                .kind(),
+            decode_index_delta(
+                &TransitionId::from("tr8"),
+                &delta_key(&id, 1).unwrap(),
+                &raw
+            )
+            .unwrap_err()
+            .kind(),
             ErrorKind::CatalogCorrupt
         );
         assert_eq!(
@@ -956,12 +961,12 @@ mod tests {
                 .kind(),
             ErrorKind::CatalogCorrupt
         );
-        let mut tampered = decode_index_delta(&id, &delta_key(&id, 1), &raw).unwrap();
+        let mut tampered = decode_index_delta(&id, &delta_key(&id, 1).unwrap(), &raw).unwrap();
         tampered.sequence = 2;
         assert_eq!(
             decode_index_delta(
                 &id,
-                &delta_key(&id, 1),
+                &delta_key(&id, 1).unwrap(),
                 &serde_json::to_vec(&tampered).unwrap()
             )
             .unwrap_err()
@@ -971,7 +976,7 @@ mod tests {
 
         Kv::put(
             &database,
-            Bytes::from(delta_sequence_key(&id)),
+            Bytes::from(delta_sequence_key(&id).unwrap()),
             Bytes::from(u64::MAX.to_string()),
         )
         .await
@@ -1081,7 +1086,7 @@ mod tests {
                 .is_none()
         );
 
-        let key = unique_claim_key(&id, b"same", b"pk1");
+        let key = unique_claim_key(&id, b"same", b"pk1").unwrap();
         let tampered = UniqueIndexClaim {
             tuple: b"same".to_vec(),
             pk: b"other-pk".to_vec(),

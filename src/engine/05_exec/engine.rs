@@ -907,7 +907,7 @@ mod tests {
         let primary_key = codec::encode_row_tuple(&row, &table.primary_key).unwrap();
         Kv::put(
             &*store,
-            Bytes::from(codec::data_key(&table, &primary_key)),
+            Bytes::from(codec::data_key(&table, &primary_key).unwrap()),
             Bytes::from(codec::marshal_row(&table, &row).unwrap()),
         )
         .await
@@ -1755,7 +1755,7 @@ mod tests {
         for (id, email) in [("a", "b@example.com"), ("b", "a@example.com")] {
             let key = Row::from([("id".into(), Value::Text(id.into()))]);
             let primary_key = codec::encode_row_tuple(&key, &table.primary_key).unwrap();
-            let raw = Kv::get(&*store, &codec::data_key(&table, &primary_key))
+            let raw = Kv::get(&*store, &codec::data_key(&table, &primary_key).unwrap())
                 .await
                 .unwrap()
                 .unwrap();
@@ -1765,7 +1765,7 @@ mod tests {
             assert_eq!(
                 Kv::get(
                     &*store,
-                    &codec::index_key(&table, &table.indexes[0].id, &tuple, &primary_key)
+                    &codec::index_key(&table, &table.indexes[0].id, &tuple, &primary_key).unwrap()
                 )
                 .await
                 .unwrap(),
@@ -1859,7 +1859,7 @@ mod tests {
         assert_eq!(error.kind(), super::super::ErrorKind::ConstraintViolation);
         let key = codec::encode_tuple(&[Value::Text("p1".into())]).unwrap();
         assert!(
-            Kv::get(&*store, &codec::data_key(&parents, &key))
+            Kv::get(&*store, &codec::data_key(&parents, &key).unwrap())
                 .await
                 .unwrap()
                 .is_some()
@@ -1878,7 +1878,7 @@ mod tests {
         assert_eq!(error.kind(), super::super::ErrorKind::ConstraintViolation);
         let key = codec::encode_tuple(&[Value::Text("dupe".into())]).unwrap();
         assert!(
-            Kv::get(&*store, &codec::data_key(&parents, &key))
+            Kv::get(&*store, &codec::data_key(&parents, &key).unwrap())
                 .await
                 .unwrap()
                 .is_none()
@@ -2035,7 +2035,7 @@ mod tests {
 
         let current = catalog.get_table("replaced").await.unwrap().unwrap();
         let key = codec::encode_tuple(&[Value::Text("r1".into())]).unwrap();
-        let raw = Kv::get(&*store, &codec::data_key(&current, &key))
+        let raw = Kv::get(&*store, &codec::data_key(&current, &key).unwrap())
             .await
             .unwrap()
             .unwrap();
@@ -2120,7 +2120,7 @@ mod tests {
         let current = catalog.get_table("items").await.unwrap().unwrap();
         let key = codec::encode_tuple(&[Value::Text("i1".into())]).unwrap();
         assert!(
-            Kv::get(&*store, &codec::data_key(&current, &key))
+            Kv::get(&*store, &codec::data_key(&current, &key).unwrap())
                 .await
                 .unwrap()
                 .is_none()

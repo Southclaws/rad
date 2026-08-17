@@ -1,0 +1,138 @@
+# Storage contract for one persisted reclamation record, stored under the
+# catalog_reclamation keyspace.
+# Released properties are permanent; see protocol/README.md for the
+# storage-schema compatibility rules.
+$schema: https://json-schema.org/draft/2020-12/schema
+title: catalog/reclamation.v1
+description: >-
+  One durable garbage-collection work item. Replaced definitions, retired
+  physical structures, and finished transition state queue a reclamation;
+  the schema worker sweeps each one in bounded batches, honouring retention
+  pins, until the resource is reclaimed.
+type: object
+additionalProperties: false
+required: [format, record]
+properties:
+  format:
+    description: Payload serialization format discriminator.
+    type: integer
+    enum: [1]
+  record:
+    description: One durable garbage-collection work item.
+    type: object
+    additionalProperties: false
+    required: [id, kind, state, generation, owner_epoch, created_at, updated_at, compacted_at]
+    properties:
+      id:
+        description: >-
+          Reclamation identity, a structured string derived from the
+          reclaimed resource, for example `table-t1` or `column-t1-c2`.
+        type: string
+      kind:
+        description: The kind of resource the sweep reclaims.
+        type: string
+        enum:
+          - table
+          - column
+          - index
+          - table_definition
+          - write_protocol_definition
+          - transition_deltas
+          - cancelled_index
+          - failed_index
+          - replaced_column
+          - cancelled_replacement
+          - failed_replacement
+          - constraint_validation
+      state:
+        description: Sweep lifecycle state.
+        type: string
+        enum: [pending, reclaiming, reclaimed, failed]
+      generation:
+        description: >-
+          Monotonic checkpoint counter. Every durable step advances it, so a
+          stale checkpoint can never overwrite a newer one.
+        type: integer
+      owner_epoch:
+        description: >-
+          Epoch of the schema worker that owns the sweep. A claim with a
+          newer epoch fences a stale worker's writes.
+        type: integer
+      retired_catalog_version:
+        description: >-
+          Catalog version from which the resource is no longer current. The
+          sweep waits until retention allows removal at this version. Absent
+          means zero.
+        type: integer
+      table_id:
+        description: >-
+          Physical table identity, for table-scoped kinds. Empty when not
+          applicable.
+        type: string
+      table_schema_id:
+        description: >-
+          Logical schema identity of the table. Absent when not applicable.
+        type: integer
+      column_id:
+        description: >-
+          Physical column identity, for column-scoped kinds. Empty when not
+          applicable.
+        type: string
+      index_id:
+        description: >-
+          Physical index identity, for index-scoped kinds. Empty when not
+          applicable.
+        type: string
+      index_ids:
+        description: >-
+          Physical index identities, for kinds that reclaim several indexes
+          in one sweep.
+        type: array
+        items:
+          description: One physical index identity.
+          type: string
+      definition_generation:
+        description: >-
+          Definition generation to reclaim, for definition kinds. Absent
+          means zero.
+        type: integer
+      write_protocol_generation:
+        description: >-
+          Write-protocol generation to reclaim, for write-protocol kinds.
+          Absent means zero.
+        type: integer
+      transition_id:
+        description: >-
+          Transition identity, for kinds that reclaim transition state.
+          Empty when not applicable.
+        type: string
+      phase:
+        description: >-
+          Position in the multi-phase sweep, for kinds that reclaim several
+          keyspaces in order. Empty before the first phase.
+        type: string
+      cursor:
+        description: >-
+          Base64 scan cursor: the last key the sweep processed. Empty before
+          the first batch.
+        type: string
+      batch_id:
+        description: Count of durable batches the sweep has completed.
+        type: integer
+      items_reclaimed:
+        description: Count of keys the sweep has removed.
+        type: integer
+      last_error:
+        description: Message of the most recent failure. Empty when none.
+        type: string
+      created_at:
+        description: RFC 3339 timestamp the reclamation was queued.
+        type: string
+      updated_at:
+        description: RFC 3339 timestamp of the most recent checkpoint.
+        type: string
+      compacted_at:
+        description: >-
+          RFC 3339 timestamp of terminal compaction. The zero timestamp
+          means not compacted.
+        type: string

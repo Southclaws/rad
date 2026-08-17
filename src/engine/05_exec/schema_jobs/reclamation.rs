@@ -420,7 +420,7 @@ async fn apply_batch(
             reclaim_prefix(
                 view,
                 value,
-                codec::index_prefix_for(&value.table_id, &value.index_id),
+                codec::index_prefix_for(&value.table_id, &value.index_id)?,
                 limit,
             )
             .await
@@ -443,7 +443,7 @@ async fn apply_batch(
                 store::write_protocol_definition_key(
                     &value.table_id,
                     value.write_protocol_generation,
-                ),
+                )?,
             )
             .await
         }
@@ -455,7 +455,7 @@ async fn apply_batch(
         | ReclamationKind::CancelledReplacement
         | ReclamationKind::FailedReplacement => reclaim_replacement(view, value, limit).await,
         ReclamationKind::ConstraintValidation => {
-            let (start, end) = store::transition_violation_range(&value.transition_id);
+            let (start, end) = store::transition_violation_range(&value.transition_id)?;
             reclaim_range(view, value, start, Some(end), limit).await
         }
     }
@@ -471,7 +471,7 @@ async fn reclaim_table(
     }
     if value.phase == "data" {
         let result =
-            reclaim_prefix(view, value, codec::data_prefix_for(&value.table_id), limit).await?;
+            reclaim_prefix(view, value, codec::data_prefix_for(&value.table_id)?, limit).await?;
         if result.1 {
             value.phase = "index:0".into();
             value.cursor.clear();
@@ -493,7 +493,7 @@ async fn reclaim_table(
         let result = reclaim_prefix(
             view,
             value,
-            codec::index_prefix_for(&value.table_id, &value.index_ids[position]),
+            codec::index_prefix_for(&value.table_id, &value.index_ids[position])?,
             limit,
         )
         .await?;
@@ -517,7 +517,7 @@ async fn reclaim_table(
         return Ok((result.0, false));
     }
     if value.phase == "write_protocols" {
-        let (start, end) = store::write_protocol_definition_range(&value.table_id);
+        let (start, end) = store::write_protocol_definition_range(&value.table_id)?;
         return reclaim_range(view, value, start, Some(end), limit).await;
     }
     Err(Error::message(
@@ -531,8 +531,9 @@ async fn reclaim_column(
     value: &mut Reclamation,
     limit: usize,
 ) -> Result<(usize, bool)> {
-    let prefix = codec::data_prefix_for(&value.table_id);
-    let entries = scan_batch(view, value, prefix, None, limit).await?;
+    let prefix = codec::data_prefix_for(&value.table_id)?;
+    let end = prefix_end(&prefix);
+    let entries = scan_batch(view, value, prefix, end, limit).await?;
     for (key, raw) in &entries {
         let (cleaned, changed) = codec::remove_column(raw, &value.column_id)?;
         if changed {
@@ -560,7 +561,7 @@ async fn reclaim_replacement(
         return Ok((result.0, false));
     }
     if value.phase == "violations" {
-        let (start, end) = store::transition_violation_range(&value.transition_id);
+        let (start, end) = store::transition_violation_range(&value.transition_id)?;
         return reclaim_range(view, value, start, Some(end), limit).await;
     }
     Err(Error::message(
@@ -580,20 +581,20 @@ async fn reclaim_transition(
     }
     let (start, end, next) = match value.phase.as_str() {
         "index" => {
-            let start = codec::index_prefix_for(&value.table_id, &value.index_id);
+            let start = codec::index_prefix_for(&value.table_id, &value.index_id)?;
             let end = prefix_end(&start);
             (start, end, "claims")
         }
         "claims" => {
-            let (start, end) = store::unique_claim_range(&value.transition_id);
+            let (start, end) = store::unique_claim_range(&value.transition_id)?;
             (start, Some(end), "violations")
         }
         "violations" => {
-            let (start, end) = store::unique_violation_range(&value.transition_id);
+            let (start, end) = store::unique_violation_range(&value.transition_id)?;
             (start, Some(end), "deltas")
         }
         "deltas" => {
-            let (start, end) = store::delta_range(&value.transition_id);
+            let (start, end) = store::delta_range(&value.transition_id)?;
             let result = reclaim_range(view, value, start, Some(end), limit).await?;
             if result.1 {
                 store::delete_delta_metadata(view, &value.transition_id).await?;

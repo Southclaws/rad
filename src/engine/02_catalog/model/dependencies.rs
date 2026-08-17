@@ -197,6 +197,7 @@ mod tests {
             definition_generation: 2.into(),
             existence_generation: 6.into(),
             write_protocol_generation: 7.into(),
+            storage_generation: crate::engine::catalog::identity::StorageGeneration::INITIAL,
             columns: vec![column],
             primary_key: vec!["id".into()],
             indexes: vec![index.clone()],

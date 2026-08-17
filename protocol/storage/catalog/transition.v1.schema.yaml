@@ -1,0 +1,469 @@
+# Storage contract for a persisted schema transition, stored under the
+# catalog_transition keyspace.
+# Released properties are permanent; see protocol/README.md for the
+# storage-schema compatibility rules.
+$schema: https://json-schema.org/draft/2020-12/schema
+title: catalog/transition.v1
+description: >-
+  One online schema transition and its durable progress state. A transition
+  builds an index, replaces a column, or validates a constraint beside live
+  traffic; every checkpoint persists here so a schema worker resumes after
+  any interruption.
+type: object
+additionalProperties: false
+required: [format, record]
+properties:
+  format:
+    description: Payload serialization format discriminator.
+    type: integer
+    enum: [1]
+  record:
+    description: One online schema transition and its durable progress state.
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - kind
+      - state
+      - generation
+      - owner_epoch
+      - source_catalog_version
+      - base_position
+      - table_id
+      - table_schema_id
+      - index
+      - created_at
+      - updated_at
+      - compacted_at
+    properties:
+      id:
+        description: >-
+          Permanent transition identity, `tr` plus a decimal. Never reused.
+        type: string
+      kind:
+        description: The transition family.
+        type: string
+        enum: [index_build, column_replacement, constraint_validation]
+      object_id:
+        description: >-
+          Logical identity of the object under construction. Empty for
+          records that identify the object through `index`.
+        type: string
+      state:
+        description: >-
+          Lifecycle state. `ready`, `failed`, and `cancelled` are terminal;
+          a terminal transition is compacted and later reclaimed.
+        type: string
+        enum: [waiting, building, catching_up, validating, ready, failed, cancelled]
+      generation:
+        description: >-
+          Monotonic checkpoint counter. Every durable step advances it, so a
+          stale checkpoint can never overwrite a newer one.
+        type: integer
+      owner_epoch:
+        description: >-
+          Epoch of the schema worker that owns the transition. A claim with
+          a newer epoch fences a stale worker's writes.
+        type: integer
+      source_catalog_version:
+        description: Catalog version the transition was admitted against.
+        type: integer
+      base_position:
+        description: >-
+          Opaque KV position captured when the transition started. The
+          backfill scans rows at this position; writes after it reach the
+          transition as deltas.
+        type: string
+      barrier_position:
+        description: >-
+          Opaque KV position of the validation barrier. Empty until the
+          transition reaches validation.
+        type: string
+      table_id:
+        description: Physical identity of the table the transition works on.
+        type: string
+      table_schema_id:
+        description: Logical schema identity of that table.
+        type: integer
+      affected_column_schema_ids:
+        description: Logical column identities the transition changes or proves.
+        type: array
+        items:
+          description: One logical column identity.
+          type: integer
+      index:
+        description: >-
+          The index under construction. Index-build transitions fill every
+          field; other kinds carry an empty placeholder.
+        type: object
+        additionalProperties: false
+        required: [id, name, unique]
+        properties:
+          id:
+            description: Physical index incarnation, `i` plus a decimal.
+            type: string
+          logical_id:
+            description: Stable logical index identity, `ix` plus a decimal.
+            type: string
+          definition_generation:
+            description: >-
+              Monotonic generation of the index definition. Absent means
+              zero.
+            type: integer
+          access_generation:
+            description: >-
+              Generation checked by the index-access fence. Absent means
+              zero.
+            type: integer
+          state:
+            description: Build lifecycle state of the index itself.
+            type: string
+            enum: ["", building, catching_up, validating, ready, deleting, failed, cancelled]
+          name:
+            description: Current index name.
+            type: string
+          columns:
+            description: Indexed column names in index order.
+            type: array
+            items:
+              description: One indexed column name.
+              type: string
+          column_ids:
+            description: Physical column identities matching `columns` by position.
+            type: array
+            items:
+              description: One physical column identity.
+              type: string
+          unique:
+            description: Whether the index enforces uniqueness.
+            type: boolean
+      index_build_request:
+        description: The authored request an index-build transition executes.
+        type: object
+        additionalProperties: false
+        required: [physical_id, logical_id, name, unique]
+        properties:
+          physical_id:
+            description: Physical incarnation allocated for the new index.
+            type: string
+          logical_id:
+            description: Stable logical identity of the new index.
+            type: string
+          name:
+            description: Requested index name.
+            type: string
+          column_schema_ids:
+            description: Logical column identities to index, in index order.
+            type: array
+            items:
+              description: One logical column identity.
+              type: integer
+          unique:
+            description: Whether the new index enforces uniqueness.
+            type: boolean
+      column_replacement:
+        description: >-
+          The resolved source and target columns a column-replacement
+          transition converts between.
+        type: object
+        additionalProperties: false
+        required: [source, target, conversion]
+        properties:
+          source:
+            description: The column being replaced.
+            type: object
+            additionalProperties: false
+            required: [id, schema_id, name, type, nullable]
+            properties:
+              id:
+                description: Permanent physical column identity, `c` plus a decimal.
+                type: string
+              schema_id:
+                description: Logical schema identity of the column.
+                type: integer
+              name:
+                description: Current column name.
+                type: string
+              value_generation:
+                description: >-
+                  Generation checked by the column-value fence. Absent means
+                  zero.
+                type: integer
+              type:
+                description: Scalar type of every stored cell.
+                type: string
+                enum: [text, int64, float64, bool]
+              nullable:
+                description: Whether stored cells may be null.
+                type: boolean
+              format:
+                description: Authored format annotation; not interpreted by storage.
+                type: string
+              insert_default:
+                description: Default applied when an insert omits the column.
+                type: object
+                additionalProperties: false
+                properties:
+                  func:
+                    description: Generator function for per-row defaults.
+                    type: string
+                    enum: [uuid, now_ms]
+                  text:
+                    description: Literal used when the column type is text.
+                    type: string
+                  int64:
+                    description: Literal used when the column type is int64.
+                    type: integer
+                  float64:
+                    description: Literal used when the column type is float64.
+                    type: number
+                  bool:
+                    description: Literal used when the column type is bool.
+                    type: boolean
+              missing_value:
+                description: Literal supplied for cells absent from stored rows.
+                type: object
+                additionalProperties: false
+                properties:
+                  func:
+                    description: >-
+                      Generator function. Never valid for missing values;
+                      present because the default-value form is shared.
+                    type: string
+                    enum: [uuid, now_ms]
+                  text:
+                    description: Literal used when the column type is text.
+                    type: string
+                  int64:
+                    description: Literal used when the column type is int64.
+                    type: integer
+                  float64:
+                    description: Literal used when the column type is float64.
+                    type: number
+                  bool:
+                    description: Literal used when the column type is bool.
+                    type: boolean
+          target:
+            description: The replacement column receiving converted cells.
+            type: object
+            additionalProperties: false
+            required: [id, schema_id, name, type, nullable]
+            properties:
+              id:
+                description: Permanent physical column identity, `c` plus a decimal.
+                type: string
+              schema_id:
+                description: Logical schema identity of the column.
+                type: integer
+              name:
+                description: Current column name.
+                type: string
+              value_generation:
+                description: >-
+                  Generation checked by the column-value fence. Absent means
+                  zero.
+                type: integer
+              type:
+                description: Scalar type of every stored cell.
+                type: string
+                enum: [text, int64, float64, bool]
+              nullable:
+                description: Whether stored cells may be null.
+                type: boolean
+              format:
+                description: Authored format annotation; not interpreted by storage.
+                type: string
+              insert_default:
+                description: Default applied when an insert omits the column.
+                type: object
+                additionalProperties: false
+                properties:
+                  func:
+                    description: Generator function for per-row defaults.
+                    type: string
+                    enum: [uuid, now_ms]
+                  text:
+                    description: Literal used when the column type is text.
+                    type: string
+                  int64:
+                    description: Literal used when the column type is int64.
+                    type: integer
+                  float64:
+                    description: Literal used when the column type is float64.
+                    type: number
+                  bool:
+                    description: Literal used when the column type is bool.
+                    type: boolean
+              missing_value:
+                description: Literal supplied for cells absent from stored rows.
+                type: object
+                additionalProperties: false
+                properties:
+                  func:
+                    description: >-
+                      Generator function. Never valid for missing values;
+                      present because the default-value form is shared.
+                    type: string
+                    enum: [uuid, now_ms]
+                  text:
+                    description: Literal used when the column type is text.
+                    type: string
+                  int64:
+                    description: Literal used when the column type is int64.
+                    type: integer
+                  float64:
+                    description: Literal used when the column type is float64.
+                    type: number
+                  bool:
+                    description: Literal used when the column type is bool.
+                    type: boolean
+          conversion:
+            description: Deterministic conversion applied to source cells.
+            type: string
+            enum: [strict_builtin]
+      column_replacement_request:
+        description: The authored request a column-replacement transition executes.
+        type: object
+        additionalProperties: false
+        required: [column_schema_id, type, nullable, conversion]
+        properties:
+          column_schema_id:
+            description: Logical identity of the column to replace.
+            type: integer
+          type:
+            description: Scalar type of the replacement column.
+            type: string
+            enum: [text, int64, float64, bool]
+          nullable:
+            description: Whether the replacement column accepts null.
+            type: boolean
+          format:
+            description: Authored format annotation for the replacement column.
+            type: string
+          default:
+            description: Default declared for the replacement column.
+            type: object
+            additionalProperties: false
+            properties:
+              func:
+                description: Generator function for per-row defaults.
+                type: string
+                enum: [uuid, now_ms]
+              text:
+                description: Literal used when the column type is text.
+                type: string
+              int64:
+                description: Literal used when the column type is int64.
+                type: integer
+              float64:
+                description: Literal used when the column type is float64.
+                type: number
+              bool:
+                description: Literal used when the column type is bool.
+                type: boolean
+          conversion:
+            description: Deterministic conversion applied to source cells.
+            type: string
+            enum: [strict_builtin]
+      constraint:
+        description: The constraint a constraint-validation transition proves.
+        type: object
+        additionalProperties: false
+        required: [id, definition_generation, name, kind, state]
+        properties:
+          id:
+            description: Permanent constraint identity, `ct` plus a decimal.
+            type: string
+          definition_generation:
+            description: Definition generation that introduced the constraint.
+            type: integer
+          name:
+            description: Current constraint name.
+            type: string
+          kind:
+            description: Constraint family.
+            type: string
+            enum: [not_null]
+          state:
+            description: Validation lifecycle state.
+            type: string
+            enum: [declared, enforcing_new_writes, validating_existing_data, valid, failed, cancelled]
+          column_ids:
+            description: Physical column identities the constraint covers.
+            type: array
+            items:
+              description: One physical column identity.
+              type: string
+      constraint_validation_request:
+        description: The authored request a constraint-validation transition executes.
+        type: object
+        additionalProperties: false
+        required: [constraint_id, column_schema_id]
+        properties:
+          constraint_id:
+            description: Identity of the constraint to validate.
+            type: string
+          column_schema_id:
+            description: Logical identity of the constrained column.
+            type: integer
+      prerequisites:
+        description: Transitions that must reach a terminal state first.
+        type: array
+        items:
+          description: One prerequisite transition identity.
+          type: string
+      gate_table_ids:
+        description: >-
+          Tables whose schema finalization waits on this transition through
+          their write-protocol finalization gates.
+        type: array
+        items:
+          description: One physical table identity.
+          type: string
+      cursor:
+        description: >-
+          Base64 scan cursor: the last row key the backfill processed. Empty
+          before the first batch.
+        type: string
+      batch_id:
+        description: Count of durable batches the transition has completed.
+        type: integer
+      applied_delta:
+        description: Highest captured-delta sequence applied to the index.
+        type: integer
+      delta_high_water:
+        description: Highest delta sequence captured by writers.
+        type: integer
+      delta_soft_limit:
+        description: >-
+          Retained-delta lag at which the transition reports degraded work
+          state. Zero means no soft limit.
+        type: integer
+      delta_hard_limit:
+        description: >-
+          Retained-delta lag at which writers are gated until the transition
+          catches up. Zero means no gate.
+        type: integer
+      work_state:
+        description: >-
+          Backpressure classification derived from delta lag. The empty
+          string means unclassified.
+        type: string
+        enum: ["", normal, degraded, write_gated]
+      rows_scanned:
+        description: Count of rows the backfill has scanned.
+        type: integer
+      last_error:
+        description: Message of the most recent failure. Empty when none.
+        type: string
+      created_at:
+        description: RFC 3339 timestamp of admission.
+        type: string
+      updated_at:
+        description: RFC 3339 timestamp of the most recent checkpoint.
+        type: string
+      compacted_at:
+        description: >-
+          RFC 3339 timestamp of terminal compaction. The zero timestamp
+          means not compacted.
+        type: string

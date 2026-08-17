@@ -55,8 +55,19 @@ async fn check_foreign_key(
         return Ok(());
     }
     let tuple = codec::encode_tuple(&values)?;
-    let mut key = format!("/rad/data/{}/primary/", foreign_key.ref_table_id).into_bytes();
-    key.extend_from_slice(&tuple);
+    let referenced = store::get_table_by_id(view, &foreign_key.ref_table_id)
+        .await
+        .map_err(Error::from)?
+        .ok_or_else(|| {
+            Error::message(
+                ErrorKind::CorruptData,
+                format!(
+                    "exec: foreign key {:?} references missing table {:?}",
+                    foreign_key.name, foreign_key.ref_table_id
+                ),
+            )
+        })?;
+    let key = codec::data_key(&referenced, &tuple)?;
     if view.get(&key).await?.is_none() {
         return Err(Error::message(
             ErrorKind::ConstraintViolation,
@@ -111,7 +122,7 @@ pub(crate) async fn check_unique_index(
         return Ok(());
     }
     let tuple = codec::encode_index_tuple(table, index, row)?;
-    let mut prefix = codec::index_prefix(table, &index.id);
+    let mut prefix = codec::index_prefix(table, &index.id)?;
     prefix.extend_from_slice(&tuple);
     let mut iterator = view
         .scan(KeyRange {
@@ -185,7 +196,7 @@ async fn any_row_matching(
             continue;
         }
         let tuple = codec::encode_row_tuple(wanted, columns)?;
-        let mut prefix = codec::index_prefix(table, &index.id);
+        let mut prefix = codec::index_prefix(table, &index.id)?;
         prefix.extend_from_slice(&tuple);
         let mut iterator = view
             .scan(KeyRange {
