@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 
+	"text/template"
+
 	"github.com/Southclaws/rad/tools/internal/docgen"
 	yaml "github.com/goccy/go-yaml"
 )
@@ -103,22 +105,22 @@ field tables below document the ` + "`record`" + ` member of each contract.
 | Tag | Keyspace | Key layout | Value |
 | --- | --- | --- | --- |
 {{- range .Keyspaces }}
-| {{ code .Tag }} | {{ code .Name }} | {{ code .Key }} | {{ table .Value }} |
+| {{ code .Tag }} | {{ code .Name }} | {{ code .Key }} | {{ mdx (table .Value) }} |
 {{- end }}
 {{- range .Reserved }}
 
-Tag {{ code .Tag }} is permanently reserved: {{ table .Reason }}
+Tag {{ code .Tag }} is permanently reserved: {{ mdx (table .Reason) }}
 {{- end }}
 {{- range .Schemas }}
 
 ## {{ code .Name }}
 
-{{ .Description }}
+{{ mdx .Description }}
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 {{- range .Fields }}
-| {{ code .Path }} | {{ .Type }} | {{ .Required }} | {{ table .Description }} |
+| {{ code .Path }} | {{ .Type }} | {{ .Required }} | {{ mdx (table .Description) }} |
 {{- end }}
 {{- end }}
 `
@@ -218,7 +220,24 @@ func render(registrySource []byte, documents map[string][]byte) ([]byte, error) 
 		}
 		result.Schemas = append(result.Schemas, document)
 	}
-	return docgen.Render("storage", pageTemplate, result, nil)
+	return docgen.Render("storage", pageTemplate, result, template.FuncMap{"mdx": escapeMDX})
+}
+
+// escapeMDX escapes JSX-active characters in prose so MDX cannot parse
+// authored text such as "{catalog_version}" as an expression. Inline-code
+// spans keep their exact content: code renders literally in MDX.
+func escapeMDX(value string) string {
+	var out strings.Builder
+	inCode := false
+	for _, r := range value {
+		if r == '`' {
+			inCode = !inCode
+		} else if !inCode && (r == '{' || r == '}' || r == '<') {
+			out.WriteRune('\\')
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
 }
 
 func valueText(entry keyspaceEntry) string {

@@ -10,7 +10,8 @@ func TestRender(t *testing.T) {
 		"root_magic": "7237",
 		"keyspaces": [
 			{"name": "data", "tag": "01", "key": "table:physical_id(t) primary_key:tuple", "value": "record row_body", "invariants": []},
-			{"name": "catalog_table", "tag": "12", "key": "table:physical_id(t)", "value": "json schema catalog/table.v1", "invariants": []}
+			{"name": "catalog_table", "tag": "12", "key": "table:physical_id(t)", "value": "json schema catalog/table.v1", "invariants": []},
+			{"name": "catalog_table_head", "tag": "11", "key": "schema:be32", "value": "text {catalog_version}:{definition_generation}", "invariants": []}
 		],
 		"reserved": [{"tag": "00", "reason": "guards truncated keys"}]
 	}`)
@@ -30,7 +31,7 @@ properties:
     required: [id]
     properties:
       id:
-        description: Permanent physical table identity.
+        description: Permanent physical table identity, "`+"`{kind}{number}`"+`" with {number} decimal.
         type: string
       columns:
         description: The table's columns.
@@ -59,8 +60,9 @@ properties:
 		"[`catalog/table.v1`](#catalogtablev1)",
 		"Tag `00` is permanently reserved",
 		"## `catalog/table.v1`",
-		"| `id` | `string` | Yes | Permanent physical table identity. |",
+		"| `id` | `string` | Yes | Permanent physical table identity, \"`{kind}{number}`\" with \\{number\\} decimal. |",
 		"| `columns[].type` | `text \\| int64` | Yes |",
+		"text \\{catalog_version\\}:\\{definition_generation\\}",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("generated page does not contain %q\n%s", want, got)
