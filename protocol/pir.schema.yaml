@@ -536,9 +536,9 @@ $defs:
       The logical column retains its stable schema ID and current name. Rad
       allocates a distinct target physical ID and never decodes source bytes as
       the target type. `strict_builtin` is deterministic and deliberately
-      rejects lossy or locale-dependent conversions. V1 rejects replacement of
-      columns used by primary keys, indexes, or foreign keys until their
-      physical access paths can participate in the same transition.
+      rejects lossy or locale-dependent conversions. Replacement of columns
+      used by primary keys, indexes, or foreign keys is rejected, because
+      their physical access paths cannot participate in the same transition.
 
       `prerequisites` are older transition identities recorded as a durable
       acyclic dependency graph. Ready prerequisites permit immediate
@@ -579,7 +579,7 @@ $defs:
       enforcement conflict, and every later affected writer must obey the rule
       while historical rows are scanned.
 
-      V1 supports a single-column `not_null` constraint. A successful
+      The only constraint kind is a single-column `not_null`. A successful
       validation atomically publishes canonical non-nullability. Historical
       validation failure explicitly removes foreground enforcement while
       retaining failed constraint and transition diagnostics; it never leaves

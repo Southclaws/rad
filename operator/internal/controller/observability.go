@@ -91,9 +91,9 @@ func (r *DatabaseReconciler) setDependencyCondition(
 	r.event(database, corev1.EventTypeWarning, reason, "%s", message)
 }
 
-// Conditions the reconcile establishes in order; when one fails, the ones
-// after it were not evaluated this pass and must not keep asserting a state
-// the controller no longer knows.
+// Conditions the reconcile establishes in order. When one fails, the
+// reconcile did not evaluate the ones after it, so they must not keep
+// asserting a state the controller no longer knows.
 var conditionOrder = []string{
 	radv1alpha1.ConditionClaimsAccepted,
 	radv1alpha1.ConditionCredentialsReady,
