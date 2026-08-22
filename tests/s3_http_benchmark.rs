@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 mod support;
 
+use support::access_paths;
 use support::benchmark::{self, Manifest, QueryCase};
 use support::commerce;
 use support::http_process::RadProcess;
@@ -49,7 +50,19 @@ async fn threaded_posts_workload_records_recursive_relation_s3_measurements() ->
     run_workload(manifest, schema, queries, fixture_hash, dataset).await
 }
 
+#[tokio::test]
+#[ignore = "requires a Docker daemon; emits measurements rather than enforcing timing thresholds"]
+async fn access_paths_workload_records_statistics_and_plan_measurements() -> TestResult {
+    let manifest = access_paths::load_benchmark()?;
+    let dataset = Dataset::AccessPaths(access_paths::rows(&manifest)?);
+    let schema = access_paths::schema(&manifest)?;
+    let queries = access_paths::queries(&manifest)?;
+    let fixture_hash = access_paths::fixture_hash(&manifest)?;
+    run_workload(manifest, schema, queries, fixture_hash, dataset).await
+}
+
 enum Dataset {
+    AccessPaths(usize),
     Commerce(commerce::Counts),
     ThreadedPosts(DatasetShape),
 }
@@ -73,6 +86,9 @@ async fn run_workload(
     let traffic_before = traffic(&proxy.metrics().await?, &proxy.name)?;
     let write_started = Instant::now();
     let load = match dataset {
+        Dataset::AccessPaths(rows) => {
+            access_paths::load_dataset(&server, rows, benchmark.batch_rows).await?
+        }
         Dataset::Commerce(counts) => {
             commerce::load_dataset(&server, counts, benchmark.batch_rows).await?
         }
@@ -98,19 +114,31 @@ async fn run_workload(
     let reopen_started = Instant::now();
     let server = RadProcess::start_s3(&rustfs.config, &proxy.endpoint, &prefix).await?;
     let reopen_ms = millis(reopen_started.elapsed());
+    let statistics_preparation_ms = prepare_statistics(&server, &benchmark).await?;
     let mut query_reports = Vec::new();
     for query in queries {
         query_reports.push(run_query(&server, &query).await?);
     }
+    let (statistics, statistics_settled) = settled_statistics(&server).await?;
     server.stop().await?;
 
     let write_seconds = durable_write_elapsed.as_secs_f64();
     let report = json!({
-        "format": "rad-s3-http-benchmark-result-v1",
+        "format": benchmark::RESULT_FORMAT,
         "workload": benchmark.name,
         "description": benchmark.description,
         "fixture_hash": fixture_hash,
-        "source_revision": env::var("RAD_SOURCE_REVISION").ok(),
+        "run": {
+            "id": env::var("RAD_BENCHMARK_RUN_ID").ok(),
+            "pair_id": env::var("RAD_BENCHMARK_PAIR_ID").ok(),
+            "source_revision": env::var("RAD_SOURCE_REVISION").ok(),
+            "runner": env::var("RAD_BENCHMARK_RUNNER").ok(),
+            "build_profile": if cfg!(debug_assertions) { "debug" } else { "release" }
+        },
+        "planner": {
+            "mode": "current",
+            "plan_capture": "dry_run"
+        },
         "target": {
             "os": env::consts::OS,
             "architecture": env::consts::ARCH,
@@ -120,6 +148,7 @@ async fn run_workload(
         },
         "schema_migration_ms": migration_ms,
         "reopen_ms": reopen_ms,
+        "statistics_preparation_ms": statistics_preparation_ms,
         "writes": {
             "rows": load.rows,
             "batches": load.batches,
@@ -132,7 +161,11 @@ async fn run_workload(
             "s3_downloaded_bytes": write_traffic.downloaded,
             "network_write_amplification": ratio(write_traffic.uploaded, load.logical_bytes)
         },
-        "queries": query_reports
+        "queries": query_reports,
+        "statistics": {
+            "settled": statistics_settled,
+            "snapshot": statistics
+        }
     });
     let encoded = serde_json::to_vec_pretty(&report)?;
     println!("{}", String::from_utf8_lossy(&encoded));
@@ -151,12 +184,38 @@ async fn run_query(server: &RadProcess, query: &QueryCase) -> TestResult<Value> 
         let response = server.execute(&query.program).await?;
         verify_rows(query, &response)?;
     }
+    let plan_started = Instant::now();
+    let plan_response = server.plan(&query.program).await?;
+    let plan_capture_http_us = plan_started.elapsed().as_micros() as u64;
+    let plan = plan_response
+        .get("plan")
+        .filter(|plan| !plan.is_null())
+        .ok_or_else(|| format!("benchmark query {:?} returned no plan", query.name))?;
+    let statements = plan["statements"]
+        .as_array()
+        .ok_or_else(|| format!("benchmark query {:?} returned an invalid plan", query.name))?;
+    if statements.is_empty() {
+        return Err(format!("benchmark query {:?} returned an empty plan", query.name).into());
+    }
     let mut samples = Vec::with_capacity(query.iterations);
+    let mut result_sha256 = None;
     for _ in 0..query.iterations {
         let started = Instant::now();
         let response = server.execute(&query.program).await?;
         samples.push(started.elapsed().as_micros() as u64);
         verify_rows(query, &response)?;
+        let digest = benchmark::result_hash(&response)?;
+        match &result_sha256 {
+            Some(expected) if expected != &digest => {
+                return Err(format!(
+                    "benchmark query {:?} returned different results across measurements",
+                    query.name
+                )
+                .into());
+            }
+            Some(_) => {}
+            None => result_sha256 = Some(digest),
+        }
     }
     samples.sort_unstable();
     Ok(json!({
@@ -165,13 +224,77 @@ async fn run_query(server: &RadProcess, query: &QueryCase) -> TestResult<Value> 
         "warmup": query.warmup,
         "iterations": query.iterations,
         "result_rows": query.expect_rows,
+        "result_sha256": result_sha256,
+        "plan": plan,
+        "plan_capture_http_us": plan_capture_http_us,
+        "cache_preparation": {
+            "mode": "query_warmup",
+            "executions": query.warmup
+        },
         "latency_us": {
+            "samples": samples,
             "min": samples[0],
             "median": percentile(&samples, 50),
             "p95": percentile(&samples, 95),
             "max": samples[samples.len() - 1]
         }
     }))
+}
+
+async fn prepare_statistics(server: &RadProcess, benchmark: &Manifest) -> TestResult<u64> {
+    if benchmark.statistics.required_synopses == 0 {
+        return Ok(0);
+    }
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(benchmark.statistics.timeout_seconds);
+    loop {
+        let statistics = server.statistics().await?;
+        let synopses = statistics["synopses"].as_array().map_or(0, Vec::len);
+        if synopses >= benchmark.statistics.required_synopses {
+            return Ok(millis(started.elapsed()));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "benchmark {:?} received {synopses} statistics synopses, expected at least {}",
+                benchmark.name, benchmark.statistics.required_synopses
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn settled_statistics(server: &RadProcess) -> TestResult<(Value, bool)> {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut previous = None;
+    let mut unchanged_since = Instant::now();
+    loop {
+        let statistics = server.statistics().await?;
+        let marker = statistics_marker(&statistics);
+        if previous.as_ref() == Some(&marker) {
+            if unchanged_since.elapsed() >= Duration::from_millis(1_250) {
+                return Ok((statistics, true));
+            }
+        } else {
+            previous = Some(marker);
+            unchanged_since = Instant::now();
+        }
+        if Instant::now() >= deadline {
+            return Ok((statistics, false));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn statistics_marker(statistics: &Value) -> (u64, u64) {
+    let absorbed = statistics["absorbed"].as_u64().unwrap_or(0);
+    let executions = statistics["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|model| model["retainedExecutions"].as_u64())
+        .fold(0_u64, u64::saturating_add);
+    (absorbed, executions)
 }
 
 fn verify_rows(query: &QueryCase, response: &Value) -> TestResult {
@@ -282,6 +405,62 @@ toxiproxy_proxy_received_bytes_total{direction="upstream",listener="x",proxy="ot
     let parsed = traffic(metrics, "rustfs-benchmark").unwrap();
     assert_eq!(parsed.uploaded, 1200);
     assert_eq!(parsed.downloaded, 3400);
+}
+
+#[test]
+fn statistics_marker_tracks_absorbed_observations_and_retained_executions() {
+    let marker = statistics_marker(&json!({
+        "absorbed": 7,
+        "models": [
+            {"retainedExecutions": 3},
+            {"retainedExecutions": 5},
+            {"kind": "unretained"}
+        ]
+    }));
+    assert_eq!(marker, (7, 8));
+}
+
+#[test]
+fn access_paths_fixture_has_locked_distributions_and_valid_programs() {
+    let benchmark = access_paths::load_benchmark().unwrap();
+    assert_eq!(benchmark.name, "access-paths");
+    assert_eq!(benchmark.batch_rows, 500);
+    assert_eq!(access_paths::rows(&benchmark).unwrap(), 1_000);
+
+    let schema = access_paths::schema(&benchmark).unwrap();
+    let parsed = rad::engine::catalog::schema::parse("schema.yaml", schema.as_bytes()).unwrap();
+    assert_eq!(parsed.tables.len(), 1);
+    assert_eq!(parsed.tables[0].def.columns.len(), 9);
+    assert_eq!(parsed.tables[0].def.indexes.len(), 4);
+
+    let tables = access_paths::dataset(1_000);
+    let rows = &tables[0].rows;
+    assert_eq!(rows.len(), 1_000);
+    assert_eq!(
+        rows.iter().filter(|row| row[2] == json!("hot")).count(),
+        700
+    );
+    assert_eq!(
+        rows.iter().filter(|row| row[2] == json!("needle")).count(),
+        1
+    );
+    assert_eq!(rows.iter().filter(|row| row[5].is_null()).count(), 800);
+    assert!(rows.iter().all(|row| {
+        (row[3] == json!("north") && row[4] == json!("consumer"))
+            || (row[3] == json!("south") && row[4] == json!("business"))
+    }));
+
+    let queries = access_paths::queries(&benchmark).unwrap();
+    assert_eq!(queries.len(), 7);
+    for query in queries {
+        assert!(query.iterations > 0, "{} has no measurements", query.name);
+        serde_json::from_value::<rad::protocol::generated::pir::Program>(query.program)
+            .unwrap_or_else(|error| panic!("{} is not valid PIR: {error}", query.name));
+    }
+    assert_eq!(
+        access_paths::fixture_hash(&benchmark).unwrap(),
+        "954f72691d40c920cb45149aff808effe1f5f6084fe8d03c4d7692db78154cba"
+    );
 }
 
 #[test]

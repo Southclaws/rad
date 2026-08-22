@@ -13,6 +13,7 @@ pub struct PhysicalTelemetryIdentity {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct PhysicalTelemetryCapabilities {
     pub request_latency: bool,
     pub request_bytes: bool,

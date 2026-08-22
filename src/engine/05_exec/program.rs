@@ -381,7 +381,7 @@ pub(super) async fn preflight(
                 let plan = bound.plan.as_ref().expect("plan requested");
                 let mut plan_view = PlanView::new(plan);
                 if let Some(stats) = &statistics {
-                    plan_view.annotate_estimates(stats, bound.estimate, plan);
+                    plan_view.annotate_estimates(stats, bound.estimate, &bound.bound, plan);
                 }
                 plans.push(StatementPlan {
                     name: bound.name.clone(),
@@ -1282,7 +1282,15 @@ mod tests {
                 })
         );
         let json = serde_json::to_value(read_plan).unwrap();
+        assert_eq!(json["statisticsPublishedAtMicros"], 0);
         let estimates = json["estimates"].as_array().unwrap();
+        assert_eq!(
+            estimates
+                .iter()
+                .find(|entry| entry["target"] == "root")
+                .unwrap()["relation"],
+            json["root"]["relation"]
+        );
         assert!(estimates.iter().any(|entry| {
             entry["target"] == "root" && entry["source"] == "synopsis" && entry["cardinality"] == 42
         }));

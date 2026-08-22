@@ -2429,6 +2429,16 @@ fn complete_flush(
     }
 }
 
+async fn finish_publication(sink: &dyn StatisticsSink, mut batch: StatisticsBatch) {
+    while !batch.is_empty() || sink.has_pending_publication() {
+        batch = match sink.publish(batch).await {
+            Ok(()) => StatisticsBatch::default(),
+            Err(returned) if sink.has_pending_publication() => returned,
+            Err(_) => break,
+        };
+    }
+}
+
 /// Background statistics runner: drains the collector channel into the hot
 /// registry and publishes the distilled [`PlannerStats`] snapshot.
 /// What the relay is doing, from this instance's side of it.
@@ -2719,13 +2729,7 @@ impl StatisticsRunner {
                 complete_flush(&mut registry, covered, result);
             }
             if let Some(sink) = &sink {
-                let mut batch = registry.take_batch();
-                while !batch.is_empty() || sink.has_pending_publication() {
-                    batch = match sink.publish(batch).await {
-                        Ok(()) => StatisticsBatch::default(),
-                        Err(returned) => returned,
-                    };
-                }
+                finish_publication(sink.as_ref(), registry.take_batch()).await;
             }
             let stats = Arc::new(distill_with_persisted(
                 &registry,
@@ -3564,6 +3568,10 @@ pub(super) mod tests {
         release: tokio::sync::Semaphore,
     }
 
+    struct RejectingSink {
+        attempts: std::sync::atomic::AtomicUsize,
+    }
+
     struct BlockingSource {
         started: tokio::sync::Notify,
         release: tokio::sync::Semaphore,
@@ -3597,6 +3605,31 @@ pub(super) mod tests {
                 .forget();
             Ok(())
         }
+    }
+
+    #[async_trait::async_trait]
+    impl StatisticsSink for RejectingSink {
+        async fn publish(&self, batch: StatisticsBatch) -> Result<(), StatisticsBatch> {
+            self.attempts.fetch_add(1, Ordering::Relaxed);
+            Err(batch)
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_publication_stops_when_the_sink_returns_the_batch() {
+        let sink = RejectingSink {
+            attempts: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let batch = StatisticsBatch {
+            frequency: vec![(fingerprint(1), 1)],
+            ..StatisticsBatch::default()
+        };
+
+        tokio::time::timeout(Duration::from_secs(1), finish_publication(&sink, batch))
+            .await
+            .expect("shutdown publication did not stop");
+
+        assert_eq!(sink.attempts.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

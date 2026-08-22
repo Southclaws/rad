@@ -1,0 +1,35 @@
+{
+  "name": "ordered_page",
+  "description": "Read a bounded page in reverse order from a composite index.",
+  "warmup": 2,
+  "iterations": 12,
+  "expect_rows": 25,
+  "program": {
+    "statements": [{
+      "name": "ordered_page",
+      "kind": "query",
+      "relation": {
+        "nodes": {
+          "events": { "kind": "scan", "table": "events", "scope": "e" },
+          "selected": {
+            "kind": "filter", "input": "events",
+            "predicate": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "e", "column": "category" },
+              "right": { "kind": "lit", "value": { "type": "text", "value": "hot" } }
+            }
+          },
+          "ordered": {
+            "kind": "order", "input": "selected",
+            "terms": [{
+              "expr": { "kind": "col", "scope": "e", "column": "created_at" },
+              "desc": true
+            }]
+          },
+          "page": { "kind": "slice", "input": "ordered", "limit": 25 }
+        },
+        "root": { "node": "page", "cardinality": "many" }
+      }
+    }]
+  }
+}

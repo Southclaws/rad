@@ -2,6 +2,7 @@
 
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use reqwest::{Client, Response};
@@ -14,6 +15,11 @@ pub struct RadProcess {
     pub base: String,
     client: Client,
 }
+
+const PORT_PAIR_COUNT: usize = 9_000;
+const EXTRA_PORT_COUNT: usize = 10_000;
+static NEXT_PORT_PAIR: AtomicUsize = AtomicUsize::new(0);
+static NEXT_EXTRA_PORT: AtomicUsize = AtomicUsize::new(0);
 
 /// On Windows the child leads its own process group so `terminate` can
 /// deliver CTRL_BREAK to it alone; `Child::kill` would `TerminateProcess`
@@ -279,6 +285,11 @@ impl RadProcess {
         self.post_json("/execute", program).await
     }
 
+    pub async fn plan(&self, program: &Value) -> TestResult<Value> {
+        self.post_json("/execute?show-plan=true&dry-run=true", program)
+            .await
+    }
+
     pub async fn statistics(&self) -> TestResult<Value> {
         self.get_json("/statistics").await
     }
@@ -361,7 +372,9 @@ impl RadProcess {
 /// steps by two, so any port adjacent to a reserved pair is another pair's
 /// public port and would collide as soon as two tests run together.
 pub(crate) fn reserve_extra_port() -> TestResult<(u16, TcpListener)> {
-    for port in 30_000..40_000 {
+    for _ in 0..EXTRA_PORT_COUNT {
+        let offset = NEXT_EXTRA_PORT.fetch_add(1, Ordering::Relaxed) % EXTRA_PORT_COUNT;
+        let port = 30_000 + offset as u16;
         match TcpListener::bind(("127.0.0.1", port)) {
             Ok(listener) => return Ok((port, listener)),
             Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => continue,
@@ -372,7 +385,9 @@ pub(crate) fn reserve_extra_port() -> TestResult<(u16, TcpListener)> {
 }
 
 pub(crate) fn reserve_port_pair() -> TestResult<(u16, TcpListener, TcpListener)> {
-    for port in (12_000..30_000).step_by(2) {
+    for _ in 0..PORT_PAIR_COUNT {
+        let offset = NEXT_PORT_PAIR.fetch_add(1, Ordering::Relaxed) % PORT_PAIR_COUNT;
+        let port = 12_000 + (offset as u16 * 2);
         let public = match TcpListener::bind(("127.0.0.1", port)) {
             Ok(public) => public,
             Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => continue,

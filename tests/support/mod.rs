@@ -1,3 +1,4 @@
+pub mod access_paths;
 pub mod benchmark;
 pub mod commerce;
 pub mod http_process;

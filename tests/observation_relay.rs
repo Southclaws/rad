@@ -7,7 +7,7 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use support::http_process::RadProcess;
+use support::http_process::{RadProcess, reserve_extra_port, reserve_port_pair};
 use support::multi_replica;
 use support::s3::TestResult;
 
@@ -21,6 +21,22 @@ fn total_executions(statistics: &serde_json::Value) -> i64 {
                 .sum()
         })
         .unwrap_or(0)
+}
+
+#[test]
+fn subprocess_port_allocators_advance_after_a_reservation_is_released() -> TestResult {
+    let (first_extra, first_listener) = reserve_extra_port()?;
+    drop(first_listener);
+    let (second_extra, second_listener) = reserve_extra_port()?;
+    drop(second_listener);
+    assert_ne!(first_extra, second_extra);
+
+    let (first_public, first_listener, first_admin) = reserve_port_pair()?;
+    drop((first_listener, first_admin));
+    let (second_public, second_listener, second_admin) = reserve_port_pair()?;
+    drop((second_listener, second_admin));
+    assert_ne!(first_public, second_public);
+    Ok(())
 }
 
 /// The writer already holds evidence from its own seeding, so what qualifies

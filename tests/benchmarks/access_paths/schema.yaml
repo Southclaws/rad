@@ -1,0 +1,18 @@
+tables:
+  - id: 1
+    name: events
+    columns:
+      - { id: 1, name: event_id, type: string, pk: true }
+      - { id: 2, name: tenant_id, type: string }
+      - { id: 3, name: category, type: string }
+      - { id: 4, name: region, type: string }
+      - { id: 5, name: segment, type: string }
+      - { id: 6, name: optional_tag, type: string, nullable: true }
+      - { id: 7, name: score, type: int64 }
+      - { id: 8, name: created_at, type: int64 }
+      - { id: 9, name: payload, type: string }
+    indexes:
+      - { columns: [category, created_at] }
+      - { columns: [score] }
+      - { columns: [region, segment] }
+      - { columns: [optional_tag] }

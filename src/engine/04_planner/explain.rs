@@ -11,25 +11,30 @@ use super::physical::{
     AccessCandidate, BindingPlanKind, BindingStrategy, Node, NodeKind, Plan, RangeSpec,
 };
 
+pub const PLAN_VIEW_FORMAT: &str = "rad-plan-view-v1";
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanView {
+    pub format: &'static str,
+    pub fingerprint: crate::engine::lir::fingerprint::Fingerprint,
     pub cardinality: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<PlanBindingView>,
     pub root: PlanNodeView,
-    /// Cardinality estimates with provenance, present when a model snapshot
-    /// was available at plan time: one entry for the statement root plus one
-    /// per scanned table.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub estimates: Vec<PlanEstimateView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statistics_published_at_micros: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanEstimateView {
-    /// `root`, or `table:<schema id>` for a scanned table.
+    /// `root`, `relation`, or `table:<schema id>`.
     pub target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relation: Option<crate::engine::lir::fingerprint::Fingerprint>,
     #[serde(flatten)]
     pub estimate: super::estimator::Estimate,
 }
@@ -53,6 +58,8 @@ pub struct PlanBindingView {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct PlanNodeView {
     pub op: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relation: Option<crate::engine::lir::fingerprint::Fingerprint>,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub detail: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -77,6 +84,8 @@ enum Render {
 impl PlanView {
     pub fn new(plan: &Plan) -> Self {
         Self {
+            format: PLAN_VIEW_FORMAT,
+            fingerprint: plan.fingerprint(),
             cardinality: plan.cardinality.as_str().into(),
             bindings: plan
                 .bindings
@@ -116,20 +125,25 @@ impl PlanView {
                 .collect(),
             root: view_node(&plan.root),
             estimates: Vec::new(),
+            statistics_published_at_micros: None,
         }
     }
 
-    /// Attach the pre-plan root estimate and table synopsis diagnostics.
     pub fn annotate_estimates(
         &mut self,
         stats: &crate::engine::planner::models::PlannerStats,
         root: Option<super::estimator::Estimate>,
+        query: &crate::engine::lir::bound::Query,
         plan: &Plan,
     ) {
+        self.statistics_published_at_micros =
+            Some(stats.published_at.as_micros().min(u128::from(u64::MAX)) as u64);
         let estimator = super::estimator::Estimator::new(stats);
+        let root_relation = crate::engine::lir::fingerprint::relation_family(&query.root);
         if let Some(estimate) = root {
             self.estimates.push(PlanEstimateView {
                 target: "root".into(),
+                relation: Some(root_relation),
                 estimate,
             });
         }
@@ -147,10 +161,30 @@ impl PlanView {
             {
                 self.estimates.push(PlanEstimateView {
                     target: format!("table:{}", table.schema_id.get()),
+                    relation: None,
                     estimate,
                 });
             }
         });
+
+        let mut relations = std::collections::HashSet::from([root_relation]);
+        let mut add = |relation: &crate::engine::lir::bound::Relation| {
+            let fingerprint = crate::engine::lir::fingerprint::relation_family(relation);
+            if relations.insert(fingerprint) {
+                self.estimates.push(PlanEstimateView {
+                    target: "relation".into(),
+                    relation: Some(fingerprint),
+                    estimate: estimator.bound_relation(relation),
+                });
+            }
+        };
+        crate::engine::lir::inspect::walk_relation(&query.root, &mut add, &mut |_| {});
+        for binding in &query.bindings {
+            crate::engine::lir::inspect::walk_relation(&binding.root, &mut add, &mut |_| {});
+            if let Some(step) = &binding.step {
+                crate::engine::lir::inspect::walk_relation(step, &mut add, &mut |_| {});
+            }
+        }
     }
 
     /// Diagnostic text including non-trivial access alternatives and scores.
@@ -217,6 +251,7 @@ fn plain(
 ) -> PlanNodeView {
     PlanNodeView {
         op: op.into(),
+        relation: None,
         detail,
         access,
         children,
@@ -225,7 +260,7 @@ fn plain(
 }
 
 fn view_node(node: &Node) -> PlanNodeView {
-    match &node.kind {
+    let mut view = match &node.kind {
         NodeKind::PrimaryKeyGet {
             scan, key, access, ..
         } => {
@@ -331,6 +366,7 @@ fn view_node(node: &Node) -> PlanNodeView {
             children.push(input.clone());
             PlanNodeView {
                 op: "Attach".into(),
+                relation: None,
                 detail: String::new(),
                 access: Vec::new(),
                 children,
@@ -354,6 +390,7 @@ fn view_node(node: &Node) -> PlanNodeView {
                 .collect();
             PlanNodeView {
                 op: "Project".into(),
+                relation: None,
                 detail: fields
                     .iter()
                     .map(|field| {
@@ -480,7 +517,9 @@ fn view_node(node: &Node) -> PlanNodeView {
                 vec![view_node(input)],
             )
         }
-    }
+    };
+    view.relation = node.attribution;
+    view
 }
 
 fn write_node(output: &mut String, node: &PlanNodeView, depth: usize, show_access: bool) {
@@ -662,6 +701,12 @@ mod tests {
         }
 
         let json = serde_json::to_value(&view).unwrap();
+        assert_eq!(json["format"], PLAN_VIEW_FORMAT);
+        assert!(
+            json["fingerprint"]
+                .as_str()
+                .is_some_and(|fingerprint| fingerprint.starts_with("c1h1:"))
+        );
         let scan = &json["root"]["children"][0];
         assert_eq!(scan["op"], "IndexRangeScan");
         let candidates = scan["access"].as_array().unwrap();

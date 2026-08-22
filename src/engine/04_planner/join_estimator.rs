@@ -1102,10 +1102,19 @@ mod tests {
             },
         );
         let mut view = crate::engine::planner::explain::PlanView::new(&planned.plan);
-        view.annotate_estimates(&stats, planned.estimate, &planned.plan);
+        view.annotate_estimates(&stats, planned.estimate, &query, &planned.plan);
         let json = serde_json::to_value(view).unwrap();
 
         assert_eq!(json["estimates"][0]["source"], "join");
         assert_eq!(json["estimates"][0]["cardinality"], 50);
+        assert!(
+            json["estimates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|estimate| {
+                    estimate["target"] == "relation" && estimate["relation"].is_string()
+                })
+        );
     }
 }
