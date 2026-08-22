@@ -6,8 +6,8 @@ use crate::engine::lir::{self, SlotId};
 use super::analysis::{self, ConstValue, ScanConstraints};
 use super::dependencies::prepare_catalog_dependencies;
 use super::physical::{
-    AccessCandidate, AccessDecision, AttachSpec, BindingPlan, BindingPlanKind, BindingStrategy,
-    CrossingKind, Node, PhysicalField, Plan, RangeSpec,
+    AccessCandidate, AccessDecision, AccessDecisionBasis, AccessRowWork, AttachSpec, BindingPlan,
+    BindingPlanKind, BindingStrategy, CrossingKind, Node, NodeKind, PhysicalField, Plan, RangeSpec,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -17,10 +17,41 @@ pub struct PlanOptions {
     pub full_scan_only: bool,
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct PlanningContext<'a> {
+    pub statistics: Option<&'a super::models::PlannerStats>,
+}
+
+pub struct PlannedQuery {
+    pub plan: Plan,
+    pub estimate: Option<super::estimator::Estimate>,
+}
+
+pub fn plan_query_with_context(
+    query: &bound::Query,
+    options: PlanOptions,
+    context: PlanningContext<'_>,
+) -> PlannedQuery {
+    let estimate = context
+        .statistics
+        .map(|statistics| super::estimator::for_query(statistics, query));
+    let plan = plan_query_inner(query, options, context.statistics);
+    PlannedQuery { plan, estimate }
+}
+
 pub fn plan_query(query: &bound::Query, options: PlanOptions) -> Plan {
+    plan_query_inner(query, options, None)
+}
+
+fn plan_query_inner(
+    query: &bound::Query,
+    options: PlanOptions,
+    statistics: Option<&super::models::PlannerStats>,
+) -> Plan {
     let mut planner = Planner {
         options,
         next_slot: query.next_slot,
+        statistics,
     };
     let bindings = query
         .bindings
@@ -77,30 +108,46 @@ pub fn plan_query(query: &bound::Query, options: PlanOptions) -> Plan {
 fn reference_counts(plan: &Plan) -> std::collections::HashMap<String, usize> {
     let mut references = std::collections::HashMap::new();
     plan.walk(&mut |node| {
-        if let Node::Reference { binding, .. } = node {
+        if let NodeKind::Reference { binding, .. } = &node.kind {
             *references.entry(binding.clone()).or_default() += 1;
         }
     });
     references
 }
 
-struct Planner {
+struct Planner<'a> {
     options: PlanOptions,
     next_slot: SlotId,
+    statistics: Option<&'a super::models::PlannerStats>,
 }
 
-impl Planner {
+impl Planner<'_> {
     fn allocate_slot(&mut self) -> SlotId {
         let slot = self.next_slot;
         self.next_slot.0 += 1;
         slot
     }
 
+    /// Lower one bound relation. The node returned is the one whose output
+    /// equals this relation's output, which is the only correspondence the
+    /// planner can state: operators fused into an access path below it have
+    /// no logical counterpart and stay unattributed.
     fn plan(
         &mut self,
         relation: &bound::Relation,
         required_order: &[bound::BoundOrderTerm],
     ) -> Node {
+        Node {
+            attribution: Some(lir::fingerprint::relation_family(relation)),
+            kind: self.plan_kind(relation, required_order),
+        }
+    }
+
+    fn plan_kind(
+        &mut self,
+        relation: &bound::Relation,
+        required_order: &[bound::BoundOrderTerm],
+    ) -> NodeKind {
         match &relation.node {
             RelationNode::Scan { .. } => self.choose_access_path(
                 &ScanConstraints {
@@ -109,21 +156,21 @@ impl Planner {
                 },
                 required_order,
             ),
-            RelationNode::Rows { .. } => Node::Rows(relation.clone()),
+            RelationNode::Rows { .. } => NodeKind::Rows(relation.clone()),
             RelationNode::Filter { input, predicate } => {
                 if let Some(predicate) = merged_scan_predicate(relation) {
                     let constraints = analysis::extract_constraints(relation)
                         .expect("a filter chain terminating in a scan has constraints");
-                    let access = self.choose_access_path(&constraints, required_order);
+                    let access = self.choose_access_path(&constraints, required_order).bare();
                     let (predicate, specifications) = self.extract_expr(&predicate);
-                    Node::Filter {
+                    NodeKind::Filter {
                         input: Box::new(attach_wrap(access, specifications)),
                         predicate,
                     }
                 } else {
                     let (predicate, specifications) = self.extract_expr(predicate);
                     let input = self.plan(input, required_order);
-                    Node::Filter {
+                    NodeKind::Filter {
                         input: Box::new(attach_wrap(input, specifications)),
                         predicate,
                     }
@@ -141,10 +188,10 @@ impl Planner {
                     });
                     specifications.append(&mut extracted);
                 }
-                if specifications.is_empty() && satisfies_order(&input, &rewritten) {
-                    input
+                if specifications.is_empty() && satisfies_order(&input.kind, &rewritten) {
+                    input.kind
                 } else {
-                    Node::Sort {
+                    NodeKind::Sort {
                         input: Box::new(attach_wrap(input, specifications)),
                         terms: rewritten,
                     }
@@ -154,7 +201,7 @@ impl Planner {
                 input,
                 offset,
                 limit,
-            } => Node::Slice {
+            } => NodeKind::Slice {
                 input: Box::new(self.plan(input, &[])),
                 offset: *offset,
                 limit: *limit,
@@ -172,7 +219,7 @@ impl Planner {
                     specifications.append(&mut extracted);
                 }
                 let input = self.plan(input, &[]);
-                Node::Project {
+                NodeKind::Project {
                     input: Box::new(attach_wrap(input, specifications)),
                     fields: planned_fields,
                 }
@@ -202,7 +249,7 @@ impl Planner {
                     }
                 }
                 let input = self.plan(input, &[]);
-                Node::Aggregate {
+                NodeKind::Aggregate {
                     input: Box::new(attach_wrap(input, specifications)),
                     groups: planned_groups,
                     terms: planned_terms,
@@ -213,14 +260,14 @@ impl Planner {
                 right,
                 kind,
                 on,
-            } => Node::NestedLoopJoin {
+            } => NodeKind::NestedLoopJoin {
                 left: Box::new(self.plan(left, &[])),
                 right: Box::new(self.plan(right, &[])),
                 kind: *kind,
                 on: on.clone(),
                 right_output: right.output().clone(),
             },
-            RelationNode::Concatenate { inputs, .. } => Node::Concatenate {
+            RelationNode::Concatenate { inputs, .. } => NodeKind::Concatenate {
                 inputs: inputs.iter().map(|input| self.plan(input, &[])).collect(),
                 input_outputs: inputs.iter().map(|input| input.output().clone()).collect(),
                 output: relation.output().clone(),
@@ -230,7 +277,7 @@ impl Planner {
                 right,
                 quantifier,
                 ..
-            } => Node::Intersect {
+            } => NodeKind::Intersect {
                 left: Box::new(self.plan(left, &[])),
                 right: Box::new(self.plan(right, &[])),
                 quantifier: *quantifier,
@@ -243,7 +290,7 @@ impl Planner {
                 right,
                 quantifier,
                 ..
-            } => Node::Except {
+            } => NodeKind::Except {
                 left: Box::new(self.plan(left, &[])),
                 right: Box::new(self.plan(right, &[])),
                 quantifier: *quantifier,
@@ -253,19 +300,19 @@ impl Planner {
             },
             RelationNode::Ref {
                 binding, canonical, ..
-            } => Node::Reference {
+            } => NodeKind::Reference {
                 binding: binding.clone(),
                 output: relation.output().clone(),
                 canonical: canonical.clone(),
             },
             RelationNode::RecursiveRef {
                 binding, canonical, ..
-            } => Node::RecursiveReference {
+            } => NodeKind::RecursiveReference {
                 binding: binding.clone(),
                 output: relation.output().clone(),
                 canonical: canonical.clone(),
             },
-            RelationNode::Distinct(input) => Node::Distinct {
+            RelationNode::Distinct(input) => NodeKind::Distinct {
                 input: Box::new(self.plan(input, &[])),
                 output: relation.output().clone(),
             },
@@ -374,17 +421,17 @@ impl Planner {
         &self,
         constraints: &ScanConstraints,
         required_order: &[bound::BoundOrderTerm],
-    ) -> Node {
+    ) -> NodeKind {
         let table = constraints.scan.scan_table();
         if self.options.full_scan_only {
-            return Node::TableScan {
+            return NodeKind::TableScan {
                 scan: Box::new(constraints.scan.clone()),
                 decode_columns: Vec::new(),
                 access: Default::default(),
             };
         }
         if let Some(key) = pinned_key(constraints, &table.primary_key) {
-            return Node::PrimaryKeyGet {
+            return NodeKind::PrimaryKeyGet {
                 scan: Box::new(constraints.scan.clone()),
                 key,
                 decode_columns: Vec::new(),
@@ -392,24 +439,43 @@ impl Planner {
                     candidates: vec![AccessCandidate {
                         method: "PKGet".into(),
                         score: 0,
+                        estimated_row_work: Some(AccessRowWork {
+                            lower_bound: 0,
+                            upper_bound: Some(1),
+                        }),
+                        decision_basis: None,
                         chosen: true,
                     }],
                 },
             };
         }
 
-        let mut best = Node::TableScan {
+        let mut options = vec![NodeKind::TableScan {
             scan: Box::new(constraints.scan.clone()),
             decode_columns: Vec::new(),
             access: Default::default(),
-        };
-        let mut best_score = score(&best, 0, false, required_order);
+        }];
+        let table_bounds = self
+            .statistics
+            .and_then(|statistics| {
+                super::estimator::Estimator::new(statistics).scan_for_table(table)
+            })
+            .and_then(hard_cardinality_bounds);
+        let table_work = table_bounds.map(|(lower_bound, upper_bound)| AccessRowWork {
+            lower_bound,
+            upper_bound,
+        });
+        let small_table = matches!(table_bounds, Some((_, Some(upper_bound))) if upper_bound <= 1);
+        let mut best_score = score(&options[0], 0, false, required_order);
         let mut candidates = vec![AccessCandidate {
             method: "TableScan".into(),
             score: best_score,
+            estimated_row_work: table_work,
+            decision_basis: None,
             chosen: false,
         }];
         let mut chosen = 0;
+        let mut unique_points = Vec::new();
         for index in table.indexes.iter().filter(|index| index.is_ready()) {
             let column_names = table.index_column_names(index);
             let mut equality_prefix = Vec::new();
@@ -440,7 +506,7 @@ impl Planner {
                 });
             let equality_prefix_len = equality_prefix.len();
             let has_range = range.is_some();
-            let candidate = Node::IndexRangeScan {
+            let candidate = NodeKind::IndexRangeScan {
                 scan: Box::new(constraints.scan.clone()),
                 index: index.clone(),
                 equality_prefix,
@@ -449,21 +515,70 @@ impl Planner {
                 access: Default::default(),
             };
             let candidate_score = score(&candidate, equality_prefix_len, has_range, required_order);
+            let unique_point = index.unique
+                && equality_prefix_len == column_names.len()
+                && !column_names.is_empty();
+            let estimated_row_work = if unique_point {
+                Some(AccessRowWork {
+                    lower_bound: 0,
+                    upper_bound: Some(2),
+                })
+            } else if small_table {
+                Some(AccessRowWork {
+                    lower_bound: 0,
+                    upper_bound: table_bounds
+                        .and_then(|(_, upper_bound)| upper_bound)
+                        .map(|upper_bound| upper_bound.saturating_mul(2)),
+                })
+            } else {
+                None
+            };
+            options.push(candidate);
             candidates.push(AccessCandidate {
                 method: format!("IndexRangeScan {}", index.name),
                 score: candidate_score,
+                estimated_row_work,
+                decision_basis: None,
                 chosen: false,
             });
+            unique_points.push(unique_point);
             if candidate_score > best_score {
-                best = candidate;
                 best_score = candidate_score;
                 chosen = candidates.len() - 1;
             }
         }
+
+        if candidates.len() > 1
+            && (required_order.is_empty() || satisfies_order(&options[0], required_order))
+        {
+            if small_table {
+                chosen = 0;
+                candidates[chosen].decision_basis = Some(AccessDecisionBasis::BoundedRowWork);
+            } else if let Some((table_lower_bound, _)) = table_bounds
+                && table_lower_bound > 2
+                && let Some(candidate_offset) = unique_points
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, unique_point)| **unique_point)
+                    .map(|(offset, _)| offset)
+                    .reduce(|best, offset| {
+                        if candidates[offset + 1].score > candidates[best + 1].score {
+                            offset
+                        } else {
+                            best
+                        }
+                    })
+            {
+                chosen = candidate_offset + 1;
+                candidates[chosen].decision_basis = Some(AccessDecisionBasis::BoundedRowWork);
+            }
+        }
+
         candidates[chosen].chosen = true;
         let decision = AccessDecision { candidates };
+        let mut best = options.swap_remove(chosen);
         match &mut best {
-            Node::TableScan { access, .. } | Node::IndexRangeScan { access, .. } => {
+            NodeKind::TableScan { access, .. } | NodeKind::IndexRangeScan { access, .. } => {
                 *access = decision
             }
             _ => unreachable!(),
@@ -486,10 +601,11 @@ fn attach_wrap(input: Node, specifications: Vec<AttachSpec>) -> Node {
     if specifications.is_empty() {
         input
     } else {
-        Node::Attach {
+        NodeKind::Attach {
             input: Box::new(input),
             specifications,
         }
+        .bare()
     }
 }
 
@@ -520,8 +636,22 @@ fn pinned_key(constraints: &ScanConstraints, columns: &[String]) -> Option<Vec<C
         .collect()
 }
 
+fn hard_cardinality_bounds(estimate: super::estimator::Estimate) -> Option<(u64, Option<u64>)> {
+    use super::estimator::EstimateInterval;
+
+    match estimate.interval {
+        EstimateInterval::Exact => Some((estimate.cardinality, Some(estimate.cardinality))),
+        EstimateInterval::LowerBound { lower_bound } => Some((lower_bound, None)),
+        EstimateInterval::Range {
+            lower_bound,
+            upper_bound,
+        } => Some((lower_bound, Some(upper_bound))),
+        EstimateInterval::Confidence { .. } | EstimateInterval::Unknown => None,
+    }
+}
+
 fn score(
-    node: &Node,
+    node: &NodeKind,
     equality_prefix_len: usize,
     has_range: bool,
     required_order: &[bound::BoundOrderTerm],
@@ -531,7 +661,7 @@ fn score(
         | usize::from(!required_order.is_empty() && satisfies_order(node, required_order))
 }
 
-fn satisfies_order(node: &Node, required: &[bound::BoundOrderTerm]) -> bool {
+fn satisfies_order(node: &NodeKind, required: &[bound::BoundOrderTerm]) -> bool {
     if required.is_empty() {
         return true;
     }
@@ -544,11 +674,11 @@ fn satisfies_order(node: &Node, required: &[bound::BoundOrderTerm]) -> bool {
             }))
 }
 
-fn provided_order(node: &Node) -> (Vec<SlotId>, bool) {
+fn provided_order(node: &NodeKind) -> (Vec<SlotId>, bool) {
     match node {
-        Node::PrimaryKeyGet { .. } => (Vec::new(), true),
-        Node::TableScan { scan, .. } => (primary_key_slots(scan), false),
-        Node::IndexRangeScan {
+        NodeKind::PrimaryKeyGet { .. } => (Vec::new(), true),
+        NodeKind::TableScan { scan, .. } => (primary_key_slots(scan), false),
+        NodeKind::IndexRangeScan {
             scan,
             index,
             equality_prefix,
@@ -564,9 +694,9 @@ fn provided_order(node: &Node) -> (Vec<SlotId>, bool) {
             slots.extend(primary_key_slots(scan));
             (slots, false)
         }
-        Node::Filter { input, .. } | Node::Attach { input, .. } | Node::Slice { input, .. } => {
-            provided_order(input)
-        }
+        NodeKind::Filter { input, .. }
+        | NodeKind::Attach { input, .. }
+        | NodeKind::Slice { input, .. } => provided_order(&input.kind),
         _ => (Vec::new(), false),
     }
 }
@@ -583,9 +713,34 @@ fn primary_key_slots(scan: &bound::Relation) -> Vec<SlotId> {
 #[cfg(test)]
 mod tests {
     use crate::engine::lir::{BinaryOp, Kind, Type, Value};
+    use crate::engine::planner::models::{PlannerStats, SynopsisCoverage, SynopsisModel};
 
     use super::*;
     use crate::engine::planner::test_support::{column, query, scan, table};
+
+    fn complete_stats(
+        table: &crate::engine::catalog::model::Table,
+        observed_rows: u64,
+        changes_since_collection: u64,
+    ) -> PlannerStats {
+        let mut statistics = PlannerStats::empty();
+        statistics.synopsis_models.insert(
+            table.schema_id,
+            SynopsisModel {
+                table: table.schema_id,
+                observed_rows,
+                coverage: SynopsisCoverage::Complete,
+                sample_size: observed_rows,
+                changes_since_collection,
+                table_existence_generation: table.existence_generation.get(),
+                collected_at_unix_micros: 0,
+                catalog_version: 1,
+                columns: Vec::new(),
+                column_groups: Vec::new(),
+            },
+        );
+        statistics
+    }
 
     #[test]
     fn complete_primary_key_equality_uses_point_get_with_residual() {
@@ -603,15 +758,15 @@ mod tests {
         let view = serde_json::to_value(super::super::explain::PlanView::new(&plan)).unwrap();
         assert_eq!(view["root"]["op"], "Filter");
         assert_eq!(view["root"]["children"][0]["op"], "PKGet");
-        let Node::Filter {
+        let NodeKind::Filter {
             input,
             predicate: residual,
-        } = plan.root
+        } = plan.root.kind
         else {
             panic!("expected residual filter")
         };
         assert_eq!(residual, predicate);
-        assert!(matches!(*input, Node::PrimaryKeyGet { .. }));
+        assert!(matches!(input.kind, NodeKind::PrimaryKeyGet { .. }));
         assert_eq!(plan.dependencies.table_existence.len(), 1);
         assert!(plan.dependencies.index_access.is_empty());
     }
@@ -632,14 +787,14 @@ mod tests {
                 bound::Expr::literal(Value::Text("m".into())),
             ),
         );
-        let bound = query(bound::Relation::filter(scan, predicate), 3);
+        let bound = query(bound::Relation::filter(scan, predicate.clone()), 3);
         let chosen = plan_query(&bound, PlanOptions::default());
-        let Node::Filter { input, .. } = &chosen.root else {
+        let NodeKind::Filter { input, .. } = &chosen.root.kind else {
             panic!("expected filter")
         };
         assert!(matches!(
-            &**input,
-            Node::IndexRangeScan {
+            &input.kind,
+            NodeKind::IndexRangeScan {
                 equality_prefix,
                 range: Some(RangeSpec { column, .. }),
                 ..
@@ -653,10 +808,153 @@ mod tests {
                 full_scan_only: true,
             },
         );
-        let Node::Filter { input, .. } = oracle.root else {
+        let NodeKind::Filter { input, .. } = oracle.root.kind else {
             panic!("expected filter")
         };
-        assert!(matches!(*input, Node::TableScan { .. }));
+        assert!(matches!(input.kind, NodeKind::TableScan { .. }));
+    }
+
+    #[test]
+    fn hard_small_table_bound_selects_scan_but_drift_range_keeps_structural_choice() {
+        let scan = scan();
+        let table = scan.scan_table().clone();
+        let predicate = bound::Expr::binary(
+            BinaryOp::Eq,
+            column(&scan, "board_id"),
+            bound::Expr::literal(Value::Text("b1".into())),
+        );
+        let bound = query(bound::Relation::filter(scan, predicate.clone()), 3);
+
+        let exact = complete_stats(&table, 1, 0);
+        let planned = plan_query_with_context(
+            &bound,
+            PlanOptions::default(),
+            PlanningContext {
+                statistics: Some(&exact),
+            },
+        );
+        let NodeKind::Filter {
+            input,
+            predicate: residual,
+        } = &planned.plan.root.kind
+        else {
+            panic!("expected filter")
+        };
+        assert_eq!(residual, &predicate);
+        let NodeKind::TableScan { access, .. } = &input.kind else {
+            panic!("expected table scan")
+        };
+        let winner = access
+            .candidates
+            .iter()
+            .find(|candidate| candidate.chosen)
+            .unwrap();
+        assert_eq!(winner.method, "TableScan");
+        assert_eq!(
+            winner.decision_basis,
+            Some(AccessDecisionBasis::BoundedRowWork)
+        );
+        assert_eq!(
+            winner.estimated_row_work,
+            Some(AccessRowWork {
+                lower_bound: 1,
+                upper_bound: Some(1),
+            })
+        );
+        let rendered = super::super::explain::PlanView::new(&planned.plan).render();
+        assert!(rendered.contains("{rowWork=1..1} ✓ [bounded_row_work]"));
+
+        let drifted = complete_stats(&table, 1, 1);
+        let planned = plan_query_with_context(
+            &bound,
+            PlanOptions::default(),
+            PlanningContext {
+                statistics: Some(&drifted),
+            },
+        );
+        let NodeKind::Filter { input, .. } = &planned.plan.root.kind else {
+            panic!("expected filter")
+        };
+        let NodeKind::IndexRangeScan { access, .. } = &input.kind else {
+            panic!("expected index range scan")
+        };
+        let winner = access
+            .candidates
+            .iter()
+            .find(|candidate| candidate.chosen)
+            .unwrap();
+        assert_eq!(winner.decision_basis, None);
+    }
+
+    #[test]
+    fn unique_point_bound_selects_index_when_scan_lower_bound_is_larger() {
+        let mut table = table();
+        let mut unique_index = table.indexes[0].clone();
+        unique_index.id = "status-unique-index".into();
+        unique_index.logical_id = "status-unique".into();
+        unique_index.name = "tasks_status_unique_idx".into();
+        unique_index.columns = vec!["status".into()];
+        unique_index.column_ids = vec!["column-status".into()];
+        unique_index.unique = true;
+        table.indexes.push(unique_index);
+        let scan = bound::Relation::scan(table.clone(), "t", vec![SlotId(0), SlotId(1), SlotId(2)]);
+        let predicate = bound::Expr::binary(
+            BinaryOp::And,
+            bound::Expr::binary(
+                BinaryOp::Eq,
+                column(&scan, "board_id"),
+                bound::Expr::literal(Value::Text("b1".into())),
+            ),
+            bound::Expr::binary(
+                BinaryOp::Eq,
+                column(&scan, "status"),
+                bound::Expr::literal(Value::Text("open".into())),
+            ),
+        );
+        let bound = query(bound::Relation::filter(scan, predicate), 3);
+        let statistics = complete_stats(&table, 100, 0);
+
+        let structural = plan_query(&bound, PlanOptions::default());
+        let NodeKind::Filter { input, .. } = &structural.root.kind else {
+            panic!("expected filter")
+        };
+        let NodeKind::IndexRangeScan { index, .. } = &input.kind else {
+            panic!("expected index range scan")
+        };
+        assert_eq!(index.name, "tasks_board_status_idx");
+
+        let planned = plan_query_with_context(
+            &bound,
+            PlanOptions::default(),
+            PlanningContext {
+                statistics: Some(&statistics),
+            },
+        );
+        let NodeKind::Filter { input, .. } = &planned.plan.root.kind else {
+            panic!("expected filter")
+        };
+        let NodeKind::IndexRangeScan { index, access, .. } = &input.kind else {
+            panic!("expected index range scan")
+        };
+        assert_eq!(index.name, "tasks_status_unique_idx");
+        let winner = access
+            .candidates
+            .iter()
+            .find(|candidate| candidate.chosen)
+            .unwrap();
+        assert_eq!(
+            winner.decision_basis,
+            Some(AccessDecisionBasis::BoundedRowWork)
+        );
+        assert_eq!(
+            winner.estimated_row_work,
+            Some(AccessRowWork {
+                lower_bound: 0,
+                upper_bound: Some(2),
+            })
+        );
+        let rendered = super::super::explain::PlanView::new(&planned.plan).render();
+        assert!(rendered.contains("{rowWork=0..2} ✓ [bounded_row_work]"));
     }
 
     #[test]
@@ -681,11 +979,11 @@ mod tests {
             }],
         );
         let plan = plan_query(&query(root, 7), PlanOptions::default());
-        let Node::Project { input, fields } = plan.root else {
+        let NodeKind::Project { input, fields } = plan.root.kind else {
             panic!("expected project")
         };
         assert_eq!(fields[0].slot, SlotId(6));
-        let Node::Attach { specifications, .. } = *input else {
+        let NodeKind::Attach { specifications, .. } = input.kind else {
             panic!("expected attach")
         };
         assert_eq!(specifications[0].slot, SlotId(6));

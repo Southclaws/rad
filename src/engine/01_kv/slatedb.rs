@@ -12,9 +12,14 @@ use super::{
     Result, Transaction, TransactionalKv,
 };
 
+mod telemetry;
+
+use telemetry::SlateTelemetry;
+
 pub struct Store {
     db: Arc<slate_db::Db>,
     lifecycle: Arc<Lifecycle>,
+    telemetry: Arc<SlateTelemetry>,
 }
 
 /// A Slate checkpoint reader exposed through Rad's transactional read surface.
@@ -30,6 +35,7 @@ struct ReaderBackend {
     path: slate_db::object_store::path::Path,
     object_store: Arc<dyn ObjectStore>,
     options: slate_db::config::DbReaderOptions,
+    telemetry: Arc<SlateTelemetry>,
     reopen: AsyncMutex<()>,
 }
 
@@ -48,20 +54,20 @@ impl ReaderStore {
                 .max(Duration::from_secs(1)),
             ..Default::default()
         };
-        let db = slate_db::DbReader::open(
-            path.clone(),
-            Arc::clone(&object_store),
-            None,
-            options.clone(),
-        )
-        .await
-        .map_err(map_operation_error)?;
+        let telemetry = SlateTelemetry::new();
+        let db = slate_db::DbReader::builder(path.clone(), Arc::clone(&object_store))
+            .with_options(options.clone())
+            .with_metrics_recorder(telemetry.recorder())
+            .build()
+            .await
+            .map_err(map_operation_error)?;
         Ok(Self {
             reader: Arc::new(ReaderBackend {
                 db: RwLock::new(Arc::new(db)),
                 path,
                 object_store,
                 options,
+                telemetry,
                 reopen: AsyncMutex::new(()),
             }),
             lifecycle: Arc::new(Lifecycle::default()),
@@ -84,13 +90,11 @@ impl ReaderBackend {
             return Ok(current);
         }
         let replacement = Arc::new(
-            slate_db::DbReader::open(
-                self.path.clone(),
-                Arc::clone(&self.object_store),
-                None,
-                self.options.clone(),
-            )
-            .await?,
+            slate_db::DbReader::builder(self.path.clone(), Arc::clone(&self.object_store))
+                .with_options(self.options.clone())
+                .with_metrics_recorder(self.telemetry.recorder())
+                .build()
+                .await?,
         );
         *self.db.write().expect("reader backend lock poisoned") = Arc::clone(&replacement);
         let _ = current.close().await;
@@ -139,12 +143,16 @@ impl Store {
         path: impl Into<slate_db::object_store::path::Path> + Send,
         object_store: Arc<dyn ObjectStore>,
     ) -> Result<Self> {
-        let db = slate_db::Db::open(path, object_store)
+        let telemetry = SlateTelemetry::new();
+        let db = slate_db::Db::builder(path, object_store)
+            .with_metrics_recorder(telemetry.recorder())
+            .build()
             .await
             .map_err(map_operation_error)?;
         Ok(Self {
             db: Arc::new(db),
             lifecycle: Arc::new(Lifecycle::default()),
+            telemetry,
         })
     }
 
@@ -223,6 +231,10 @@ impl TransactionalKv for Store {
         self.lifecycle.finish_close();
         result
     }
+
+    fn physical_telemetry(&self) -> Option<Arc<dyn super::telemetry::PhysicalTelemetry>> {
+        Some(self.telemetry.clone())
+    }
 }
 
 #[async_trait]
@@ -277,6 +289,10 @@ impl TransactionalKv for ReaderStore {
             .clone();
         self.lifecycle.finish_close();
         result
+    }
+
+    fn physical_telemetry(&self) -> Option<Arc<dyn super::telemetry::PhysicalTelemetry>> {
+        Some(self.reader.telemetry.clone())
     }
 }
 

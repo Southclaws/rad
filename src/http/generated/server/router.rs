@@ -820,6 +820,7 @@ where
     ::axum::Router::new()
         .route("/info", ::axum::routing::get(get_info_handler::<T>))
         .route("/healthz", ::axum::routing::get(get_healthz_handler::<T>))
+        .route("/statistics", ::axum::routing::get(get_statistics_handler::<T>))
         .route("/tables", ::axum::routing::get(table_list_handler::<T>))
         .layer(::axum::extract::DefaultBodyLimit::max(4194304usize))
         .with_state(api)
@@ -839,6 +840,14 @@ where
     T: super::api::MetaApi + Clone + Send + Sync + 'static,
 {
     ::axum::response::IntoResponse::into_response(api.get_healthz().await)
+}
+async fn get_statistics_handler<T>(
+    ::axum::extract::State(api): ::axum::extract::State<T>,
+) -> ::axum::response::Response
+where
+    T: super::api::MetaApi + Clone + Send + Sync + 'static,
+{
+    ::axum::response::IntoResponse::into_response(api.get_statistics().await)
 }
 async fn table_list_handler<T>(
     ::axum::extract::State(api): ::axum::extract::State<T>,

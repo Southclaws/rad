@@ -25,6 +25,8 @@ pub struct Engine {
     limits: Limits,
     pub(super) runtime: Arc<dyn RuntimeEffects>,
     pub(super) events: Arc<dyn EngineEventHook>,
+    pub(super) observer: Option<Arc<dyn super::observe::ExecutionObserver>>,
+    pub(super) statistics: Option<Arc<dyn crate::engine::planner::estimator::StatisticsProvider>>,
     catalog_observers: RwLock<Vec<CatalogObserver>>,
 }
 
@@ -40,6 +42,8 @@ impl Engine {
             limits: Limits::default(),
             runtime,
             events: Arc::new(NoopEngineEventHook),
+            observer: None,
+            statistics: None,
             catalog_observers: RwLock::new(Vec::new()),
         }
     }
@@ -79,6 +83,8 @@ impl Engine {
             limits,
             runtime,
             events: Arc::new(NoopEngineEventHook),
+            observer: None,
+            statistics: None,
             catalog_observers: RwLock::new(Vec::new()),
         }
     }
@@ -88,6 +94,45 @@ impl Engine {
     pub fn with_event_hook(mut self, events: Arc<dyn EngineEventHook>) -> Self {
         self.events = events;
         self
+    }
+
+    /// Install an execution observer before sharing the engine. The observer
+    /// receives one statement observation per executed statement; the no-op
+    /// observer disables collection and its fingerprinting cost entirely.
+    pub fn with_observer(mut self, observer: Arc<dyn super::observe::ExecutionObserver>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
+    /// Install the model-snapshot provider consulted when plan views are
+    /// collected. Estimates are advisory EXPLAIN output; plans never change.
+    pub fn with_statistics_provider(
+        mut self,
+        statistics: Arc<dyn crate::engine::planner::estimator::StatisticsProvider>,
+    ) -> Self {
+        self.statistics = Some(statistics);
+        self
+    }
+
+    pub fn observer(&self) -> Option<&Arc<dyn super::observe::ExecutionObserver>> {
+        self.observer.as_ref()
+    }
+
+    pub fn statistics(
+        &self,
+    ) -> Option<&Arc<dyn crate::engine::planner::estimator::StatisticsProvider>> {
+        self.statistics.as_ref()
+    }
+
+    fn observation(&self) -> super::observe::Observation<'_> {
+        super::observe::Observation {
+            observer: self.observer.as_ref(),
+            statistics: self.statistics.as_ref(),
+        }
+    }
+
+    pub fn now_unix_micros(&self) -> u64 {
+        self.runtime.now().timestamp_micros().max(0) as u64
     }
 
     /// Register a process-local latency hint for committed catalog programs.
@@ -141,6 +186,16 @@ impl Engine {
         .await;
         transaction.rollback();
         result
+    }
+
+    pub async fn catalog_revision(&self) -> Result<Revision> {
+        let transaction = self.store.begin(IsolationLevel::Snapshot).await?;
+        let result = {
+            let mut view = TransactionView(transaction.as_ref());
+            catalog::store::current_revision(&mut view).await
+        };
+        transaction.rollback();
+        result.map_err(Into::into)
     }
 
     pub(crate) async fn scan_table_rows(&self, table: &Table) -> Result<Vec<Row>> {
@@ -256,6 +311,7 @@ impl Engine {
             catalog_policy,
             self.limits,
             &self.runtime,
+            self.observation(),
         )
         .await
     }
@@ -320,7 +376,9 @@ impl Engine {
                         options.catalog,
                         options.collect_plan,
                         !reference,
+                        false,
                         &self.runtime,
+                        self.statistics.as_ref().map(|provider| provider.stats()),
                     )
                     .await
                 }
@@ -328,7 +386,7 @@ impl Engine {
             }
         };
         preflight.rollback();
-        let plans = preflight_result?;
+        let plans = preflight_result?.plans;
         if options.dry_run {
             return Ok(ProgramResult {
                 result: Datum::Null,
@@ -366,6 +424,7 @@ impl Engine {
                         options.catalog,
                         self.limits,
                         &self.runtime,
+                        self.observation(),
                     )
                     .await
                 })
@@ -400,6 +459,31 @@ impl Engine {
                 Err(error)
             }
         }
+    }
+
+    pub async fn prepare_program_estimates(
+        &self,
+        program: &Program,
+        statistics: Arc<crate::engine::planner::models::PlannerStats>,
+    ) -> Result<Vec<super::PreparedStatementEstimate>> {
+        let transaction = self.store.begin(IsolationLevel::Snapshot).await?;
+        let result = {
+            let mut view = TransactionView(transaction.as_ref());
+            super::program::preflight(
+                &mut view,
+                program,
+                CatalogPolicy::RevisionPerStatement,
+                false,
+                true,
+                true,
+                &self.runtime,
+                Some(statistics),
+            )
+            .await
+            .map(|preflight| preflight.estimates)
+        };
+        transaction.rollback();
+        result
     }
 
     pub async fn create(&self, table: &str, row: Row) -> Result<Row> {

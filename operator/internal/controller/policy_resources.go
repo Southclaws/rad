@@ -22,10 +22,10 @@ func (r *DatabaseReconciler) reconcilePodDisruptionBudget(ctx context.Context, d
 		if err := r.prepareOwned(database, budget); err != nil {
 			return err
 		}
-		budget.Labels = labelsFor(database)
+		budget.Labels = roleLabelsFor(database, writeRole)
 		budget.Spec = policyv1.PodDisruptionBudgetSpec{
 			MinAvailable: ptr.To(intstr.FromInt32(1)),
-			Selector:     &metav1.LabelSelector{MatchLabels: selectorLabelsFor(database)},
+			Selector:     &metav1.LabelSelector{MatchLabels: roleSelectorLabelsFor(database, writeRole)},
 		}
 		return nil
 	})
@@ -50,16 +50,32 @@ func (r *DatabaseReconciler) reconcileNetworkPolicy(ctx context.Context, databas
 		if r.GatewayPodSelector != nil {
 			peer.PodSelector = r.GatewayPodSelector.DeepCopy()
 		}
+		rules := []networkingv1.NetworkPolicyIngressRule{{
+			From: []networkingv1.NetworkPolicyPeer{peer},
+			Ports: []networkingv1.NetworkPolicyPort{{
+				Protocol: ptr.To(corev1.ProtocolTCP),
+				Port:     ptr.To(intstr.FromInt32(publicPort)),
+			}},
+		}}
+		if relayEnabled(database) {
+			// The internal port is reachable only from this database's own
+			// readers. The gateway rule above deliberately does not cover it.
+			rules = append(rules, networkingv1.NetworkPolicyIngressRule{
+				From: []networkingv1.NetworkPolicyPeer{{
+					PodSelector: &metav1.LabelSelector{
+						MatchLabels: roleSelectorLabelsFor(database, readRole),
+					},
+				}},
+				Ports: []networkingv1.NetworkPolicyPort{{
+					Protocol: ptr.To(corev1.ProtocolTCP),
+					Port:     ptr.To(intstr.FromInt32(internalPort)),
+				}},
+			})
+		}
 		policy.Spec = networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{MatchLabels: selectorLabelsFor(database)},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{{
-				From: []networkingv1.NetworkPolicyPeer{peer},
-				Ports: []networkingv1.NetworkPolicyPort{{
-					Protocol: ptr.To(corev1.ProtocolTCP),
-					Port:     ptr.To(intstr.FromInt32(publicPort)),
-				}},
-			}},
+			Ingress:     rules,
 		}
 		return nil
 	})
@@ -70,6 +86,7 @@ func (r *DatabaseReconciler) quiesceRejectedDatabase(ctx context.Context, databa
 	objects := []client.Object{
 		&networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: resourceName(database.Name), Namespace: database.Namespace}},
 		&appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: resourceName(database.Name), Namespace: database.Namespace}},
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: readerResourceName(database.Name), Namespace: database.Namespace}},
 	}
 	for _, object := range objects {
 		if err := r.deleteOwnedIfPresent(ctx, database, object); err != nil {

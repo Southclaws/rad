@@ -72,6 +72,11 @@ tasks:
         go test -tags=e2e -count=1 -timeout 60m -v ./test/e2e
         -run TestSoakFleetUnderChaosLosesNoAcknowledgedWrite {{.CLI_ARGS}}
 
+  certmanager:install:
+    desc: Install cert-manager so the operator can provision internal TLS
+    cmds:
+      - KUBE_CONTEXT={{.KUBE_CONTEXT}} hack/poc/install-cert-manager.sh
+
   chaos:install:
     desc: Install Chaos Mesh for the soak's network-degradation phase
     cmds:

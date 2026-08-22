@@ -36,15 +36,22 @@ const (
 	finalizerName              = "radengine.dev/runtime"
 	credentialsVersionKey      = "radengine.dev/credentials-version"
 	workloadIdentityVersionKey = "radengine.dev/workload-identity-version"
+	roleLabel                  = "radengine.dev/role"
+	writeRole                  = "write"
+	readRole                   = "read"
 	publicPort                 = 7237
 	adminPort                  = 7238
-	readinessPeriodSeconds     = 5
-	readinessFailureThreshold  = 3
-	defaultRequeueInterval     = time.Duration(2_000_000_000)
-	defaultDependencyInterval  = time.Duration(30_000_000_000)
-	defaultCredentialInterval  = time.Minute
-	defaultMaxConcurrent       = 4
-	reconciliationTimeout      = time.Duration(120_000_000_000)
+	internalPort               = 7239
+	// The unprivileged user the Rad container runs as, and the group that
+	// owns anything mounted for it to read.
+	radRuntimeUser            = 65532
+	readinessPeriodSeconds    = 5
+	readinessFailureThreshold = 3
+	defaultRequeueInterval    = time.Duration(2_000_000_000)
+	defaultDependencyInterval = time.Duration(30_000_000_000)
+	defaultCredentialInterval = time.Minute
+	defaultMaxConcurrent      = 4
+	reconciliationTimeout     = time.Duration(120_000_000_000)
 )
 
 var requiredCredentialKeys = []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}
@@ -66,6 +73,9 @@ type DatabaseReconciler struct {
 	CredentialPollInterval  time.Duration
 	MaxConcurrentReconciles int
 	ClaimIndexAvailable     bool
+	// CertManager answers whether certificates can be requested here. Nil
+	// means they cannot, which is the correct answer for a fake client.
+	CertManager CertManagerPresence
 
 	// Databases whose creation-to-Ready duration was already observed by this
 	// controller instance, keyed by UID.
@@ -75,14 +85,15 @@ type DatabaseReconciler struct {
 // +kubebuilder:rbac:groups=radengine.dev,resources=databases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=radengine.dev,resources=databases/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=radengine.dev,resources=databases/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets;deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses;networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cert-manager.io,resources=issuers;certificates,verbs=get;list;watch;create;update;patch;delete
 
 func (r *DatabaseReconciler) Reconcile(ctx context.Context, request ctrl.Request) (result ctrl.Result, err error) {
 	defer func() {
@@ -146,11 +157,29 @@ func (r *DatabaseReconciler) Reconcile(ctx context.Context, request ctrl.Request
 		return r.waitWithStatus(ctx, database, radv1alpha1.ConditionRouteReady, tlsProblem.reason, tlsProblem.message)
 	}
 
-	if err := r.reconcileResources(ctx, database, authentication); err != nil {
+	transport, err := r.resolveInternalTLS(ctx, database)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	// Required mode must also stop a workload that already serves plaintext.
+	// Returning before reconciliation is sufficient only for a new database.
+	if !transport.ready && internalTLSMode(database) == radv1alpha1.InternalTLSRequired {
+		if err := r.quiesceRejectedDatabase(ctx, database); err != nil {
+			return ctrl.Result{}, err
+		}
+		setCondition(database, radv1alpha1.ConditionInternalTLSReady, metav1.ConditionFalse,
+			"InternalTLSUnavailable", transport.pending)
+		return r.waitWithStatus(ctx, database, radv1alpha1.ConditionInternalTLSReady,
+			"InternalTLSUnavailable", transport.pending)
+	}
+	publishInternalTLSCondition(database, transport)
+
+	if err := r.reconcileResources(ctx, database, authentication, transport); err != nil {
 		setCondition(database, radv1alpha1.ConditionReady, metav1.ConditionFalse, "ReconcileFailed", err.Error())
 		_ = r.patchStatus(ctx, database)
 		return ctrl.Result{}, err
 	}
+	database.Status.InternalTransport = transportStatus(database, transport)
 
 	ready, err := r.observeReadiness(ctx, database)
 	if err != nil {
@@ -173,6 +202,7 @@ func (r *DatabaseReconciler) SetupWithManager(manager ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(manager).
 		For(&radv1alpha1.Database{}).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&networkingv1.Ingress{}).
 		Owns(&networkingv1.NetworkPolicy{}).
@@ -259,6 +289,7 @@ func (r *DatabaseReconciler) reconcileResources(
 	ctx context.Context,
 	database *radv1alpha1.Database,
 	authentication resolvedAuthentication,
+	transport internalTransport,
 ) error {
 	if authentication.secretName != "" {
 		if err := r.reconcileManagedServiceAccount(ctx, database); err != nil {
@@ -283,7 +314,13 @@ func (r *DatabaseReconciler) reconcileResources(
 	if err := r.reconcileNetworkPolicy(ctx, database); err != nil {
 		return err
 	}
-	if err := r.reconcileStatefulSet(ctx, database, authentication); err != nil {
+	if err := r.reconcileRelay(ctx, database); err != nil {
+		return err
+	}
+	if err := r.reconcileStatefulSet(ctx, database, authentication, transport); err != nil {
+		return err
+	}
+	if err := r.reconcileReaders(ctx, database, authentication, transport); err != nil {
 		return err
 	}
 	return r.reconcileIngress(ctx, database)
@@ -332,7 +369,7 @@ func (r *DatabaseReconciler) reconcileHeadlessService(ctx context.Context, datab
 		service.Labels = labelsFor(database)
 		service.Spec.Type = corev1.ServiceTypeClusterIP
 		service.Spec.ClusterIP = corev1.ClusterIPNone
-		service.Spec.Selector = selectorLabelsFor(database)
+		service.Spec.Selector = roleSelectorLabelsFor(database, writeRole)
 		service.Spec.Ports = []corev1.ServicePort{{Name: "http", Port: publicPort, TargetPort: intstrFromInt(publicPort), Protocol: corev1.ProtocolTCP}}
 		return nil
 	})
@@ -347,7 +384,7 @@ func (r *DatabaseReconciler) reconcileFrontendService(ctx context.Context, datab
 		}
 		service.Labels = labelsFor(database)
 		service.Spec.Type = corev1.ServiceTypeClusterIP
-		service.Spec.Selector = selectorLabelsFor(database)
+		service.Spec.Selector = roleSelectorLabelsFor(database, writeRole)
 		service.Spec.Ports = []corev1.ServicePort{{Name: "http", Port: 80, TargetPort: intstrFromInt(publicPort), Protocol: corev1.ProtocolTCP, AppProtocol: ptr.To("http")}}
 		return nil
 	})
@@ -358,72 +395,28 @@ func (r *DatabaseReconciler) reconcileStatefulSet(
 	ctx context.Context,
 	database *radv1alpha1.Database,
 	authentication resolvedAuthentication,
+	transport internalTransport,
 ) error {
 	statefulSet := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: resourceName(database.Name), Namespace: database.Namespace}}
 	operation, err := r.createOrUpdate(ctx, statefulSet, func() error {
 		if err := r.prepareOwned(database, statefulSet); err != nil {
 			return err
 		}
-		statefulSet.Labels = labelsFor(database)
+		statefulSet.Labels = roleLabelsFor(database, writeRole)
 		statefulSet.Spec.Replicas = ptr.To[int32](1)
 		statefulSet.Spec.RevisionHistoryLimit = ptr.To[int32](3)
 		statefulSet.Spec.MinReadySeconds = 5
 		statefulSet.Spec.ServiceName = headlessServiceName(database.Name)
 		statefulSet.Spec.PodManagementPolicy = appsv1.OrderedReadyPodManagement
 		statefulSet.Spec.UpdateStrategy = appsv1.StatefulSetUpdateStrategy{Type: appsv1.RollingUpdateStatefulSetStrategyType}
-		statefulSet.Spec.Selector = &metav1.LabelSelector{MatchLabels: selectorLabelsFor(database)}
+		statefulSet.Spec.Selector = &metav1.LabelSelector{MatchLabels: roleSelectorLabelsFor(database, writeRole)}
 
-		annotations := map[string]string{}
-		if authentication.secretName != "" {
-			annotations[credentialsVersionKey] = authentication.versionAnnotation
-		} else {
-			annotations[workloadIdentityVersionKey] = authentication.versionAnnotation
-		}
-		container := corev1.Container{
-			Name:            "rad",
-			Image:           r.RadImage,
-			ImagePullPolicy: corev1.PullIfNotPresent,
-			Args:            []string{"serve"},
-			// Rad prints its terminal reason (fencing, unusable storage) as
-			// its last log line, and the non-root container cannot write the
-			// kubelet's termination-log file; falling back to the log surfaces
-			// that reason in the container's terminated state.
-			TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
-			Ports:                    []corev1.ContainerPort{{Name: "http", ContainerPort: publicPort, Protocol: corev1.ProtocolTCP}},
-			Env:                      databaseEnvironment(database),
-			Resources:                resourcesFor(database),
-			SecurityContext: &corev1.SecurityContext{
-				AllowPrivilegeEscalation: ptr.To(false),
-				ReadOnlyRootFilesystem:   ptr.To(true),
-				RunAsNonRoot:             ptr.To(true),
-				RunAsUser:                ptr.To[int64](65532),
-				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-			},
-			StartupProbe:   startupProbe(),
-			ReadinessProbe: readinessProbe(),
-			LivenessProbe:  livenessProbe(),
-		}
-		if authentication.secretName != "" {
-			container.Env = append(container.Env, credentialEnvironment(authentication.secretName)...)
-		}
-
-		automountToken := (*bool)(nil)
-		if authentication.secretName != "" {
-			automountToken = ptr.To(false)
-		}
 		statefulSet.Spec.Template = corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{Labels: labelsFor(database), Annotations: annotations},
-			Spec: corev1.PodSpec{
-				ServiceAccountName:            authentication.serviceAccountName,
-				AutomountServiceAccountToken:  automountToken,
-				EnableServiceLinks:            ptr.To(false),
-				TerminationGracePeriodSeconds: ptr.To(terminationGracePeriodSeconds(database)),
-				SecurityContext: &corev1.PodSecurityContext{
-					RunAsNonRoot:   ptr.To(true),
-					SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-				},
-				Containers: []corev1.Container{container},
+			ObjectMeta: metav1.ObjectMeta{
+				Labels:      roleLabelsFor(database, writeRole),
+				Annotations: rolloutAnnotations(authentication),
 			},
+			Spec: r.radPodSpec(database, authentication, transport, writeRole),
 		}
 		return nil
 	})
@@ -431,6 +424,103 @@ func (r *DatabaseReconciler) reconcileStatefulSet(
 		r.event(database, corev1.EventTypeNormal, "WriterUpdated", "Rad writer configuration updated")
 	}
 	return err
+}
+
+// Only the writer serves the internal API, so only the writer declares its
+// port. A reader reaches it; nothing reaches a reader on it.
+func radContainerPorts(database *radv1alpha1.Database, role string) []corev1.ContainerPort {
+	ports := []corev1.ContainerPort{{Name: "http", ContainerPort: publicPort, Protocol: corev1.ProtocolTCP}}
+	if relayEnabled(database) && role == writeRole {
+		ports = append(ports, corev1.ContainerPort{
+			Name: "internal", ContainerPort: internalPort, Protocol: corev1.ProtocolTCP,
+		})
+	}
+	return ports
+}
+
+// Readers address the writer by Service name, which is one of the names the
+// certificate is issued for, so verification succeeds without any reader
+// knowing a pod identity.
+func writerInternalURL(database *radv1alpha1.Database, transport internalTransport) string {
+	scheme := "http"
+	if transport.tls() {
+		scheme = "https"
+	}
+	return fmt.Sprintf(
+		"%s://%s.%s.svc:%d",
+		scheme, relayResourceName(database.Name), database.Namespace, internalPort,
+	)
+}
+
+// A rollout annotation changes whenever the credential source does, so
+// rotating a Secret or a ServiceAccount replaces the pods that read it.
+func rolloutAnnotations(authentication resolvedAuthentication) map[string]string {
+	if authentication.secretName != "" {
+		return map[string]string{credentialsVersionKey: authentication.versionAnnotation}
+	}
+	return map[string]string{workloadIdentityVersionKey: authentication.versionAnnotation}
+}
+
+func (r *DatabaseReconciler) radPodSpec(
+	database *radv1alpha1.Database,
+	authentication resolvedAuthentication,
+	transport internalTransport,
+	role string,
+) corev1.PodSpec {
+	container := corev1.Container{
+		Name:            "rad",
+		Image:           r.RadImage,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Args:            []string{"serve"},
+		// Rad prints its terminal reason (fencing, unusable storage) as
+		// its last log line, and the non-root container cannot write the
+		// kubelet's termination-log file; falling back to the log surfaces
+		// that reason in the container's terminated state.
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
+		Ports:                    radContainerPorts(database, role),
+		Env:                      databaseEnvironment(database, transport, role),
+		Resources:                resourcesFor(database),
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: ptr.To(false),
+			ReadOnlyRootFilesystem:   ptr.To(true),
+			RunAsNonRoot:             ptr.To(true),
+			RunAsUser:                ptr.To[int64](radRuntimeUser),
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		},
+		StartupProbe:   startupProbe(),
+		ReadinessProbe: readinessProbe(),
+		LivenessProbe:  livenessProbe(),
+	}
+	automountToken := (*bool)(nil)
+	if authentication.secretName != "" {
+		container.Env = append(container.Env, credentialEnvironment(authentication.secretName)...)
+		automountToken = ptr.To(false)
+	}
+	var volumes []corev1.Volume
+	if relayEnabled(database) {
+		container.VolumeMounts = append(container.VolumeMounts, relayVolumeMount())
+		volumes = append(volumes, relayVolume(database))
+		if transport.tls() {
+			container.VolumeMounts = append(container.VolumeMounts, relayTLSVolumeMount(role))
+			volumes = append(volumes, relayTLSVolume(transport, role))
+		}
+	}
+	return corev1.PodSpec{
+		Volumes:                       volumes,
+		ServiceAccountName:            authentication.serviceAccountName,
+		AutomountServiceAccountToken:  automountToken,
+		EnableServiceLinks:            ptr.To(false),
+		TerminationGracePeriodSeconds: ptr.To(terminationGracePeriodSeconds(database)),
+		SecurityContext: &corev1.PodSecurityContext{
+			RunAsNonRoot: ptr.To(true),
+			// Mounted Secret files are owned by root. Without a group the
+			// runtime user shares, a non-root process cannot read its own
+			// token however permissive the file mode is.
+			FSGroup:        ptr.To[int64](radRuntimeUser),
+			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+		},
+		Containers: []corev1.Container{container},
+	}
 }
 
 func (r *DatabaseReconciler) reconcileIngress(ctx context.Context, database *radv1alpha1.Database) error {
@@ -472,6 +562,10 @@ func (r *DatabaseReconciler) observeReadiness(ctx context.Context, database *rad
 	}
 	ingress := &networkingv1.Ingress{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: database.Namespace, Name: resourceName(database.Name)}, ingress); err != nil {
+		return false, err
+	}
+
+	if err := r.observeReaders(ctx, database); err != nil {
 		return false, err
 	}
 
@@ -533,13 +627,23 @@ func (r *DatabaseReconciler) reconcileDelete(ctx context.Context, database *radv
 		return ctrl.Result{RequeueAfter: r.requeueInterval()}, nil
 	}
 
-	objects := []client.Object{
+	// Readers go before the writer: read traffic stops first, and a reader
+	// holds nothing that must be drained.
+	objects := readerObjects(database)
+	objects = append(objects, relayObjects(database)...)
+	// Operator-created cert-manager resources are owned and removed. A
+	// user-supplied Secret is never in this list: the operator validated it,
+	// it did not create it.
+	if r.CertManager != nil && r.CertManager.Available(ctx) {
+		objects = append(objects, certManagerObjects(database)...)
+	}
+	objects = append(objects,
 		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: resourceName(database.Name), Namespace: database.Namespace}},
 		&policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: resourceName(database.Name), Namespace: database.Namespace}},
 		&appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: resourceName(database.Name), Namespace: database.Namespace}},
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: resourceName(database.Name), Namespace: database.Namespace}},
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: headlessServiceName(database.Name), Namespace: database.Namespace}},
-	}
+	)
 	for _, object := range objects {
 		done, err := r.deleteOwnedAndWait(ctx, database, object)
 		if err != nil {
@@ -668,12 +772,52 @@ func (r *DatabaseReconciler) patchStatus(ctx context.Context, database *radv1alp
 	return r.Status().Patch(ctx, latest, client.MergeFrom(before))
 }
 
+func publishInternalTLSCondition(database *radv1alpha1.Database, transport internalTransport) {
+	switch {
+	case !relayEnabled(database):
+		setCondition(database, radv1alpha1.ConditionInternalTLSReady, metav1.ConditionTrue,
+			"NotApplicable", "no readers, so no statistics channel to secure")
+	case transport.tls() && transport.ready:
+		setCondition(database, radv1alpha1.ConditionInternalTLSReady, metav1.ConditionTrue,
+			"Available", "the statistics channel is encrypted")
+	case transport.tls():
+		setCondition(database, radv1alpha1.ConditionInternalTLSReady, metav1.ConditionFalse,
+			"Provisioning", transport.pending)
+	default:
+		setCondition(database, radv1alpha1.ConditionInternalTLSReady, metav1.ConditionFalse,
+			"Plaintext", "the statistics channel is authenticated but not encrypted")
+	}
+}
+
+func transportStatus(
+	database *radv1alpha1.Database,
+	transport internalTransport,
+) *radv1alpha1.InternalTransportStatus {
+	if !relayEnabled(database) {
+		return nil
+	}
+	mode := "plaintext"
+	if transport.tls() {
+		mode = "tls"
+	}
+	return &radv1alpha1.InternalTransportStatus{
+		Mode:              mode,
+		Provider:          transport.provider(),
+		CertificateSecret: transport.secret,
+		WriterAddress:     writerInternalURL(database, transport),
+	}
+}
+
 func setQuiescingConditions(database *radv1alpha1.Database, reason, message string) {
 	setCondition(database, radv1alpha1.ConditionWorkloadReady, metav1.ConditionFalse, reason, "writer quiesced: "+message)
 	setCondition(database, radv1alpha1.ConditionRouteReady, metav1.ConditionFalse, reason, "route quiesced: "+message)
 }
 
-func databaseEnvironment(database *radv1alpha1.Database) []corev1.EnvVar {
+func databaseEnvironment(
+	database *radv1alpha1.Database,
+	transport internalTransport,
+	role string,
+) []corev1.EnvVar {
 	values := map[string]string{
 		"RAD_ADDR": fmt.Sprintf("0.0.0.0:%d", publicPort),
 		// Loopback keeps the admin surface off the pod network; it stays
@@ -682,12 +826,30 @@ func databaseEnvironment(database *radv1alpha1.Database) []corev1.EnvVar {
 		"RAD_ADMIN_ADDR":        fmt.Sprintf("127.0.0.1:%d", adminPort),
 		"RAD_CATALOG_MODE":      string(database.Spec.CatalogMode),
 		"RAD_CLOSE_TIMEOUT_MS":  strconv.FormatInt(closeTimeoutMilliseconds(database), 10),
-		"RAD_ROLE":              "write",
+		"RAD_ROLE":              role,
 		"RAD_S3_BUCKET":         database.Spec.Storage.Bucket,
 		"RAD_S3_PREFIX":         database.Spec.Storage.Prefix,
 		"RAD_S3_REGION":         database.Spec.Storage.Region,
 		"RAD_SHUTDOWN_DRAIN_MS": strconv.FormatInt(shutdownDrainMilliseconds(database), 10),
 		"RAD_STORAGE":           "s3",
+	}
+	if relayEnabled(database) {
+		values["RAD_RELAY_TOKEN_FILE"] = relayTokenPath()
+		if role == writeRole {
+			values["RAD_INTERNAL_ADDR"] = fmt.Sprintf("0.0.0.0:%d", internalPort)
+			if transport.tls() {
+				values["RAD_INTERNAL_TLS_CERT"] = relayCertificatePath()
+				values["RAD_INTERNAL_TLS_KEY"] = relayCertificateKeyPath()
+			}
+		} else {
+			values["RAD_RELAY_TARGET"] = writerInternalURL(database, transport)
+			if transport.tls() {
+				values["RAD_RELAY_CA"] = relayAuthorityPath()
+			}
+		}
+	}
+	if database.Spec.CaptureWorkloadCorpus {
+		values["RAD_CAPTURE_WORKLOAD_CORPUS"] = "true"
 	}
 	if database.Spec.Storage.Endpoint != "" {
 		values["RAD_S3_ENDPOINT"] = database.Spec.Storage.Endpoint
@@ -834,6 +996,21 @@ func selectorLabelsFor(database *radv1alpha1.Database) map[string]string {
 	}
 }
 
+// Pod selectors must name a role. Two workloads share the database labels, and
+// a selector that matched both would let each workload's controller act on the
+// other's pods.
+func roleSelectorLabelsFor(database *radv1alpha1.Database, role string) map[string]string {
+	labels := selectorLabelsFor(database)
+	labels[roleLabel] = role
+	return labels
+}
+
+func roleLabelsFor(database *radv1alpha1.Database, role string) map[string]string {
+	labels := labelsFor(database)
+	labels[roleLabel] = role
+	return labels
+}
+
 func resourceName(databaseName string) string {
 	const prefix = "rad-"
 	name := prefix + databaseName
@@ -846,8 +1023,19 @@ func resourceName(databaseName string) string {
 }
 
 func headlessServiceName(databaseName string) string {
+	return suffixedResourceName(databaseName, "-headless")
+}
+
+func readerResourceName(databaseName string) string {
+	return suffixedResourceName(databaseName, "-reader")
+}
+
+func relayResourceName(databaseName string) string {
+	return suffixedResourceName(databaseName, "-internal")
+}
+
+func suffixedResourceName(databaseName string, suffix string) string {
 	name := resourceName(databaseName)
-	const suffix = "-headless"
 	if len(name)+len(suffix) <= 63 {
 		return name + suffix
 	}

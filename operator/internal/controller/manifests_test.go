@@ -11,7 +11,11 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-func TestGeneratedRBACCanOnlyGetSecrets(t *testing.T) {
+// The operator reads tenant credential Secrets and owns the relay Secret it
+// generates, so it needs more than get. What it must never gain is the right
+// to read Secrets cluster-wide through a list or watch: those would stream
+// every Secret in every watched namespace into the controller's cache.
+func TestGeneratedRBACCannotListOrWatchSecrets(t *testing.T) {
 	role := &rbacv1.ClusterRole{}
 	readManifest(t, "../../config/install/rbac/role.yaml", role)
 	found := false
@@ -20,12 +24,17 @@ func TestGeneratedRBACCanOnlyGetSecrets(t *testing.T) {
 			continue
 		}
 		found = true
-		if len(rule.Verbs) != 1 || rule.Verbs[0] != "get" {
-			t.Fatalf("Secret permissions = %v, want get only", rule.Verbs)
+		for _, forbidden := range []string{"list", "watch"} {
+			if slices.Contains(rule.Verbs, forbidden) {
+				t.Fatalf("Secret permissions = %v, want no %s", rule.Verbs, forbidden)
+			}
+		}
+		if !slices.Contains(rule.Verbs, "get") {
+			t.Fatalf("Secret permissions = %v, want get", rule.Verbs)
 		}
 	}
 	if !found {
-		t.Fatal("generated RBAC has no Secret get permission")
+		t.Fatal("generated RBAC has no Secret permission")
 	}
 
 	binding := &rbacv1.RoleBinding{}

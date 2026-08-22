@@ -15,6 +15,7 @@ operations = [
   "GetReadyz",
   "GetLivez",
   "GetSchema",
+  "GetStatistics",
   "SchemaDiff",
   "SchemaMigrate",
   "SchemaCompatibility",

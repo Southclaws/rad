@@ -174,6 +174,56 @@ pub fn describe_key(key: &[u8]) -> Option<String> {
             (rest.len() == 1).then(|| "runtime_writer_fence".to_owned())
         }
         keys::STORAGE_MANIFEST_TAG => (rest.len() == 1).then(|| "storage_manifest".to_owned()),
+        keys::STATISTICS_TABLE_CHANGES_TAG => {
+            let parts = keys::decode_statistics_table_changes_key(key)?;
+            Some(format!("statistics_table_changes/schema={}", parts.schema))
+        }
+        keys::STATISTICS_MODEL_TAG => {
+            let parts = keys::decode_statistics_model_key(key)?;
+            Some(format!(
+                "statistics_model/family=0x{}",
+                hex_text(&parts.family)
+            ))
+        }
+        keys::STATISTICS_RELATION_MODEL_TAG => {
+            let parts = keys::decode_statistics_relation_model_key(key)?;
+            Some(format!(
+                "statistics_relation_model/family=0x{}",
+                hex_text(&parts.family)
+            ))
+        }
+        keys::STATISTICS_MODEL_CATALOG_TAG => {
+            (rest.len() == 1).then(|| "statistics_model_catalog".to_owned())
+        }
+        keys::STATISTICS_FREQUENCY_TAG => {
+            let parts = keys::decode_statistics_frequency_key(key)?;
+            Some(format!(
+                "statistics_frequency/family=0x{}",
+                hex_text(&parts.family)
+            ))
+        }
+        keys::STATISTICS_FREQUENCY_EPOCH_TAG => {
+            (rest.len() == 1).then(|| "statistics_frequency_epoch".to_owned())
+        }
+        keys::CORPUS_PROGRAM_TAG => {
+            let parts = keys::decode_corpus_program_key(key)?;
+            Some(format!(
+                "corpus_program/canonical_version={}/content_hash=0x{}",
+                parts.canonical_version,
+                hex_text(&parts.content_hash)
+            ))
+        }
+        keys::CORPUS_EXECUTION_TAG => {
+            let parts = keys::decode_corpus_execution_key(key)?;
+            Some(format!(
+                "corpus_execution/at={}/sequence={}",
+                parts.at, parts.sequence
+            ))
+        }
+        keys::STATISTICS_SYNOPSIS_TAG => {
+            let parts = keys::decode_statistics_synopsis_key(key)?;
+            Some(format!("statistics_synopsis/schema={}", parts.schema))
+        }
         _ => None,
     }
 }

@@ -287,6 +287,19 @@ pub struct StatementPlan {
     pub plan: PlanView,
 }
 
+#[derive(Clone, Debug)]
+pub struct PreparedStatementEstimate {
+    pub name: String,
+    pub query: crate::engine::lir::bound::Query,
+    pub plan: crate::engine::planner::physical::Plan,
+    pub active: crate::engine::planner::estimator::Estimate,
+}
+
+pub(super) struct PreflightResult {
+    pub plans: Vec<StatementPlan>,
+    pub estimates: Vec<PreparedStatementEstimate>,
+}
+
 pub(super) fn validate(program: &Program, policy: CatalogPolicy) -> Result<Option<String>> {
     if program.statements.is_empty() {
         return Err(input("exec: a program needs at least one statement"));
@@ -337,20 +350,25 @@ pub(super) fn validate(program: &Program, policy: CatalogPolicy) -> Result<Optio
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn preflight(
     view: &mut dyn KvView,
     program: &Program,
     policy: CatalogPolicy,
     collect_plan: bool,
     physical: bool,
+    collect_estimates: bool,
     runtime: &Arc<dyn RuntimeEffects>,
-) -> Result<Vec<StatementPlan>> {
+    statistics: Option<Arc<crate::engine::planner::models::PlannerStats>>,
+) -> Result<PreflightResult> {
     let names = relational_names(program);
     let mut binder = ProgramBinder::new(names)?;
+    binder.set_statistics(statistics.clone());
     let mut transitions = HashMap::new();
     let mut catalog_changed = false;
     let mut schema_changed = false;
     let mut plans = Vec::new();
+    let mut estimates = Vec::new();
     for statement in &program.statements {
         if let Some(binding) = statement.binder_statement() {
             let catalog = super::engine::ViewCatalog { view: &*view };
@@ -360,9 +378,24 @@ pub(super) async fn preflight(
                 binder.bind_reference(&catalog, binding).await?
             };
             if collect_plan {
+                let plan = bound.plan.as_ref().expect("plan requested");
+                let mut plan_view = PlanView::new(plan);
+                if let Some(stats) = &statistics {
+                    plan_view.annotate_estimates(stats, bound.estimate, plan);
+                }
                 plans.push(StatementPlan {
                     name: bound.name.clone(),
-                    plan: PlanView::new(bound.plan.as_ref().expect("plan requested")),
+                    plan: plan_view,
+                });
+            }
+            if collect_estimates
+                && let (Some(plan), Some(active)) = (bound.plan.clone(), bound.estimate)
+            {
+                estimates.push(PreparedStatementEstimate {
+                    name: bound.name.clone(),
+                    query: bound.bound.clone(),
+                    plan,
+                    active,
                 });
             }
         } else {
@@ -386,7 +419,7 @@ pub(super) async fn preflight(
             catalog::store::bump_revision(view, runtime.now().into()).await?;
         }
     }
-    Ok(plans)
+    Ok(PreflightResult { plans, estimates })
 }
 
 pub(super) async fn run(
@@ -396,6 +429,7 @@ pub(super) async fn run(
     policy: CatalogPolicy,
     limits: Limits,
     runtime: &Arc<dyn RuntimeEffects>,
+    observation: super::observe::Observation<'_>,
 ) -> Result<ProgramResult> {
     run_with_path(
         view,
@@ -405,6 +439,7 @@ pub(super) async fn run(
         limits,
         ExecutionPath::Production,
         runtime,
+        observation,
     )
     .await
 }
@@ -425,10 +460,12 @@ pub(super) async fn run_reference(
         limits,
         ExecutionPath::Reference,
         runtime,
+        super::observe::Observation::default(),
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_with_path(
     view: &mut dyn KvView,
     program: &Program,
@@ -437,6 +474,7 @@ async fn run_with_path(
     limits: Limits,
     path: ExecutionPath,
     runtime: &Arc<dyn RuntimeEffects>,
+    observation: super::observe::Observation<'_>,
 ) -> Result<ProgramResult> {
     let mut binder = ProgramBinder::new(relational_names(program))?;
     let mut bindings = HashMap::<String, Vec<Env>>::new();
@@ -457,6 +495,7 @@ async fn run_with_path(
         &mut summaries,
         &mut result,
         runtime,
+        observation,
     )
     .await?;
     Ok(ProgramResult {
@@ -500,27 +539,102 @@ async fn run_statements(
     summaries: &mut Vec<StatementResult>,
     result: &mut Datum,
     runtime: &Arc<dyn RuntimeEffects>,
+    observation: super::observe::Observation<'_>,
 ) -> Result<()> {
     let mut catalog_changed = false;
     let mut schema_changed = false;
+    let observing = matches!(path, ExecutionPath::Production) && observation.enabled();
+    let stats = observing
+        .then(|| observation.statistics.map(|provider| provider.stats()))
+        .flatten();
+    binder.set_statistics(stats.clone());
     for statement in &program.statements {
         if let Some(binding) = statement.binder_statement() {
             let catalog = super::engine::ViewCatalog { view: &*view };
+            let bind_started = observing.then(|| runtime.monotonic());
             let bound = match path {
                 ExecutionPath::Production => binder.bind(&catalog, binding).await?,
                 ExecutionPath::Reference => binder.bind_reference(&catalog, binding).await?,
             };
-            let frames = run_relational(
-                view,
-                statement,
-                &bound,
-                bindings,
-                limits,
-                path,
-                runtime.as_ref(),
-            )
-            .await?;
+            let bind = bind_started.map(|started| runtime.monotonic().saturating_sub(started));
+            let execute_started = observing.then(|| runtime.monotonic());
+            let counters = observing.then(super::observe::KvCounters::default);
+            let mut binding_rows = Vec::new();
+            let mut measured = Vec::new();
+            let frames = if let Some(counters) = &counters {
+                let mut observed = super::observe::ObservedView::new(&*view, counters);
+                run_relational(
+                    &mut observed,
+                    statement,
+                    &bound,
+                    bindings,
+                    limits,
+                    path,
+                    runtime.as_ref(),
+                    observing,
+                    &mut binding_rows,
+                    &mut measured,
+                )
+                .await?
+            } else {
+                run_relational(
+                    view,
+                    statement,
+                    &bound,
+                    bindings,
+                    limits,
+                    path,
+                    runtime.as_ref(),
+                    observing,
+                    &mut binding_rows,
+                    &mut measured,
+                )
+                .await?
+            };
             let affected = frames.len();
+            if let Some(observer) = observation.observer {
+                let execute = execute_started
+                    .map(|started| runtime.monotonic().saturating_sub(started))
+                    .unwrap_or_default();
+                let fingerprints = crate::engine::lir::fingerprint::query(&bound.bound);
+                let stamp = bound.plan.as_ref().map_or_else(
+                    crate::engine::planner::models::DependencyStamp::default,
+                    |plan| crate::engine::planner::models::DependencyStamp::of(&plan.dependencies),
+                );
+                let estimate = bound.estimate;
+                let relations = measured
+                    .iter()
+                    .map(|(family, rows)| super::observe::RelationObservation {
+                        family: *family,
+                        rows: *rows,
+                        estimate: stats.as_ref().map(|stats| {
+                            crate::engine::planner::estimator::Estimator::new(stats)
+                                .relation(family, None, stamp)
+                        }),
+                    })
+                    .collect();
+                observer.statement(super::observe::StatementObservation {
+                    query: fingerprints,
+                    estimate,
+                    stamp,
+                    relations,
+                    plan: bound
+                        .plan
+                        .as_ref()
+                        .map(crate::engine::planner::physical::Plan::fingerprint),
+                    phase: super::observe::PhaseTimings {
+                        bind: bind.unwrap_or_default(),
+                        execute,
+                    },
+                    rows: frames.len() as u64,
+                    affected: affected as u64,
+                    mutated: bound.target.as_ref().map(|table| table.schema_id),
+                    kv: counters
+                        .map(|counters| counters.snapshot())
+                        .unwrap_or_default(),
+                    failure: None,
+                });
+            }
             if result_name == Some(statement.name()) {
                 *result = shape_frames(bound.result_cardinality, &bound.result_output, &frames)?;
             }
@@ -560,6 +674,7 @@ async fn run_statements(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_relational(
     view: &mut dyn KvView,
     statement: &Statement,
@@ -568,6 +683,9 @@ async fn run_relational(
     limits: Limits,
     path: ExecutionPath,
     runtime: &dyn RuntimeEffects,
+    measure_relations: bool,
+    binding_rows: &mut Vec<(String, u64)>,
+    measured: &mut Vec<(crate::engine::lir::fingerprint::Fingerprint, u64)>,
 ) -> Result<Vec<Env>> {
     let input = match path {
         ExecutionPath::Production => {
@@ -576,8 +694,18 @@ async fn run_relational(
                 .as_ref()
                 .expect("production program binding has a physical plan");
             let mut executor = Executor::new(&*view, limits);
+            if measure_relations {
+                executor.enable_measurements();
+            }
             executor.seed_bindings(bindings.clone());
-            executor.run_frames(plan).await?
+            let frames = executor.run_frames(plan).await?;
+            for binding in &plan.bindings {
+                if let Some(rows) = executor.binding_cardinality(&binding.name) {
+                    binding_rows.push((binding.name.clone(), rows));
+                }
+            }
+            measured.extend_from_slice(executor.measured());
+            frames
         }
         ExecutionPath::Reference => {
             let mut executor = ReferenceExecutor::new(&*view, limits);
@@ -1014,6 +1142,512 @@ mod tests {
                 },
             ])
         );
+    }
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        observations: std::sync::Mutex<Vec<super::super::observe::StatementObservation>>,
+    }
+
+    impl super::super::observe::ExecutionObserver for RecordingObserver {
+        fn statement(&self, observation: super::super::observe::StatementObservation) {
+            self.observations.lock().unwrap().push(observation);
+        }
+    }
+
+    #[tokio::test]
+    async fn production_statements_emit_observations_with_fingerprints() {
+        let (store, _engine, catalog) = setup("pir-observe").await;
+        catalog.create_table(tasks_table()).await.unwrap();
+        let observer = Arc::new(RecordingObserver::default());
+        let engine = Engine::new(store).with_observer(observer.clone());
+
+        let program = |id: &str| Program {
+            statements: vec![
+                Statement::Create {
+                    name: "created".into(),
+                    relation: rows(&[(id, "new")]),
+                    table: "tasks".into(),
+                },
+                Statement::Query {
+                    name: "read".into(),
+                    relation: result_ref("created"),
+                },
+            ],
+            result: Some("read".into()),
+        };
+        engine
+            .execute_program(program("a"), CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+
+        let first: Vec<_> = observer.observations.lock().unwrap().drain(..).collect();
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].rows, 1);
+        assert_eq!(first[0].affected, 1);
+        assert!(first[0].plan.is_some());
+        assert!(first[1].plan.is_some());
+        assert!(
+            first[0].kv.puts >= 1,
+            "create must charge KV writes: {:?}",
+            first[0].kv
+        );
+        assert_ne!(first[0].query.exact, first[1].query.exact);
+        let created_tables: Vec<u32> = first[0].query.tables.iter().map(|id| id.get()).collect();
+        assert_eq!(created_tables, Vec::<u32>::new());
+
+        engine
+            .execute_program(program("b"), CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        let second: Vec<_> = observer.observations.lock().unwrap().drain(..).collect();
+        assert_eq!(second.len(), 2);
+        assert_ne!(first[0].query.exact, second[0].query.exact);
+        assert_eq!(first[0].query.family, second[0].query.family);
+        assert_eq!(first[1].query.exact, second[1].query.exact);
+        assert_eq!(first[1].plan, second[1].plan);
+    }
+
+    struct FixedStats(Arc<crate::engine::planner::models::PlannerStats>);
+
+    impl crate::engine::planner::estimator::StatisticsProvider for FixedStats {
+        fn stats(&self) -> Arc<crate::engine::planner::models::PlannerStats> {
+            self.0.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn collected_plans_carry_estimates_when_models_exist() {
+        use crate::engine::planner::models::{PlannerStats, SynopsisCoverage, SynopsisModel};
+
+        let (store, _engine, catalog) = setup("pir-plan-estimates").await;
+        let catalog_table = catalog.create_table(tasks_table()).await.unwrap();
+
+        let table = SchemaId::new(1).unwrap();
+        let mut stats = PlannerStats::empty();
+        stats.synopsis_models.insert(
+            table,
+            SynopsisModel {
+                table,
+                observed_rows: 42,
+                coverage: SynopsisCoverage::Complete,
+                sample_size: 42,
+                changes_since_collection: 0,
+                table_existence_generation: catalog_table.existence_generation.get(),
+                collected_at_unix_micros: 0,
+                catalog_version: 1,
+                columns: Vec::new(),
+                column_groups: Vec::new(),
+            },
+        );
+        let engine =
+            Engine::new(store).with_statistics_provider(Arc::new(FixedStats(Arc::new(stats))));
+
+        let result = engine
+            .execute_program_with_options(
+                Program {
+                    statements: vec![
+                        Statement::Create {
+                            name: "created".into(),
+                            relation: rows(&[("a", "new")]),
+                            table: "tasks".into(),
+                        },
+                        Statement::Query {
+                            name: "read".into(),
+                            relation: scan("tasks"),
+                        },
+                    ],
+                    result: Some("read".into()),
+                },
+                ProgramOptions {
+                    collect_plan: true,
+                    ..ProgramOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let read_plan = &result.plans[1].plan;
+        let created_plan = serde_json::to_value(&result.plans[0].plan).unwrap();
+        assert!(
+            created_plan["estimates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| {
+                    entry["target"] == "root"
+                        && entry["source"] == "structural"
+                        && entry["cardinality"] == 1
+                        && entry["interval"]["kind"] == "exact"
+                })
+        );
+        let json = serde_json::to_value(read_plan).unwrap();
+        let estimates = json["estimates"].as_array().unwrap();
+        assert!(estimates.iter().any(|entry| {
+            entry["target"] == "root" && entry["source"] == "synopsis" && entry["cardinality"] == 42
+        }));
+        assert!(estimates.iter().any(|entry| {
+            entry["target"] == "table:1"
+                && entry["interval"]["kind"] == "exact"
+                && entry["sampleSize"] == 42
+        }));
+    }
+
+    #[tokio::test]
+    async fn observations_pair_the_estimate_with_the_actual_row_count() {
+        use crate::engine::planner::models::{
+            PlannerStats, SynopsisCoverage, SynopsisModel, q_error_x100,
+        };
+
+        let (store, _engine, catalog) = setup("pir-estimate-actual").await;
+        let catalog_table = catalog.create_table(tasks_table()).await.unwrap();
+
+        let table = SchemaId::new(1).unwrap();
+        let mut stats = PlannerStats::empty();
+        stats.synopsis_models.insert(
+            table,
+            SynopsisModel {
+                table,
+                observed_rows: 900,
+                coverage: SynopsisCoverage::Complete,
+                sample_size: 900,
+                changes_since_collection: 0,
+                table_existence_generation: catalog_table.existence_generation.get(),
+                collected_at_unix_micros: 0,
+                catalog_version: 1,
+                columns: Vec::new(),
+                column_groups: Vec::new(),
+            },
+        );
+        let observer = Arc::new(RecordingObserver::default());
+        let engine = Engine::new(store)
+            .with_observer(observer.clone())
+            .with_statistics_provider(Arc::new(FixedStats(Arc::new(stats))));
+
+        engine
+            .execute_program(
+                Program {
+                    statements: vec![
+                        Statement::Create {
+                            name: "created".into(),
+                            relation: rows(&[("a", "new")]),
+                            table: "tasks".into(),
+                        },
+                        Statement::Query {
+                            name: "read".into(),
+                            relation: scan("tasks"),
+                        },
+                    ],
+                    result: Some("read".into()),
+                },
+                CatalogPolicy::Forbidden,
+            )
+            .await
+            .unwrap();
+
+        let observations: Vec<_> = observer.observations.lock().unwrap().drain(..).collect();
+        let read = observations
+            .iter()
+            .find(|observation| observation.plan.is_some() && observation.mutated.is_none())
+            .expect("the read statement was observed");
+        assert_eq!(read.rows, 1);
+        let estimate = read.estimate.expect("a synopsis was installed");
+        assert_eq!(estimate.cardinality, 900);
+        assert_eq!(
+            estimate.source,
+            crate::engine::planner::estimator::EstimateSource::Synopsis
+        );
+        assert_eq!(q_error_x100(estimate.cardinality, read.rows), 90_000);
+    }
+
+    #[tokio::test]
+    async fn a_relation_measured_as_a_binding_is_recognised_elsewhere() {
+        let (store, _engine, catalog) = setup("pir-relation-attribution").await;
+        catalog.create_table(tasks_table()).await.unwrap();
+        let observer = Arc::new(RecordingObserver::default());
+        let engine = Engine::new(store).with_observer(observer.clone());
+
+        engine
+            .execute_program(
+                Program {
+                    statements: vec![Statement::Create {
+                        name: "seed".into(),
+                        relation: rows(&[("a", "open"), ("b", "open"), ("c", "done")]),
+                        table: "tasks".into(),
+                    }],
+                    result: None,
+                },
+                CatalogPolicy::Forbidden,
+            )
+            .await
+            .unwrap();
+        observer.observations.lock().unwrap().clear();
+
+        // One statement defines the scan as a named binding; a second
+        // reaches the same relation inline through its root.
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "everything".into(),
+            Relation::Scan {
+                table: "tasks".into(),
+                scope: "s".into(),
+            },
+        );
+        // Two references make the binding worth materializing; a single
+        // reference is replayed and therefore has no count to report.
+        let via_binding = crate::engine::lir::Query {
+            root: Relation::Order {
+                input: Box::new(Relation::Concatenate {
+                    scope: "both".into(),
+                    inputs: vec![
+                        Relation::Ref {
+                            binding: "everything".into(),
+                            scope: "first".into(),
+                        },
+                        Relation::Ref {
+                            binding: "everything".into(),
+                            scope: "second".into(),
+                        },
+                    ],
+                }),
+                terms: vec![crate::engine::lir::OrderTerm {
+                    expression: crate::engine::lir::Expr::Column {
+                        scope: "both".into(),
+                        name: "id".into(),
+                    },
+                    descending: false,
+                }],
+            },
+            cardinality: RootCardinality::Many,
+            bindings,
+        };
+        engine
+            .execute_program(
+                Program {
+                    statements: vec![Statement::Query {
+                        name: "read".into(),
+                        relation: via_binding,
+                    }],
+                    result: Some("read".into()),
+                },
+                CatalogPolicy::Forbidden,
+            )
+            .await
+            .unwrap();
+
+        let observations: Vec<_> = observer.observations.lock().unwrap().drain(..).collect();
+        let statement = observations
+            .iter()
+            .find(|observation| !observation.relations.is_empty())
+            .expect("attributed nodes were measured");
+        // The scan of the seeded table is one of the attributed nodes and
+        // produced every seeded row.
+        let measured = statement
+            .relations
+            .iter()
+            .find(|relation| relation.rows == 3)
+            .expect("the scan produced every seeded row");
+
+        // The same relation, fingerprinted from a query that never used a
+        // binding, carries the identity the measurement was filed under.
+        let inline = crate::engine::lir::Query {
+            root: Relation::Order {
+                input: Box::new(Relation::Scan {
+                    table: "tasks".into(),
+                    scope: "elsewhere".into(),
+                }),
+                terms: vec![crate::engine::lir::OrderTerm {
+                    expression: crate::engine::lir::Expr::Column {
+                        scope: "elsewhere".into(),
+                        name: "id".into(),
+                    },
+                    descending: false,
+                }],
+            },
+            cardinality: RootCardinality::Many,
+            bindings: HashMap::new(),
+        };
+        engine
+            .execute_program(
+                Program {
+                    statements: vec![Statement::Query {
+                        name: "read".into(),
+                        relation: inline,
+                    }],
+                    result: Some("read".into()),
+                },
+                CatalogPolicy::Forbidden,
+            )
+            .await
+            .unwrap();
+        let later: Vec<_> = observer.observations.lock().unwrap().drain(..).collect();
+        let inline_subtrees = &later[0].query.subtrees;
+        assert!(
+            inline_subtrees
+                .iter()
+                .any(|digests| digests.family == measured.family),
+            "the scan measured inside the binding must be the same family inline"
+        );
+    }
+
+    #[tokio::test]
+    async fn nested_relations_are_measured_and_truncated_ones_are_withheld() {
+        let (store, _engine, catalog) = setup("pir-nested-attribution").await;
+        catalog.create_table(tasks_table()).await.unwrap();
+        let observer = Arc::new(RecordingObserver::default());
+        let engine = Engine::new(store).with_observer(observer.clone());
+
+        engine
+            .execute_program(
+                Program {
+                    statements: vec![Statement::Create {
+                        name: "seed".into(),
+                        relation: rows(&[("a", "open"), ("b", "open"), ("c", "done")]),
+                        table: "tasks".into(),
+                    }],
+                    result: None,
+                },
+                CatalogPolicy::Forbidden,
+            )
+            .await
+            .unwrap();
+
+        let ordered_scan = || Relation::Order {
+            input: Box::new(Relation::Scan {
+                table: "tasks".into(),
+                scope: "t".into(),
+            }),
+            terms: vec![crate::engine::lir::OrderTerm {
+                expression: crate::engine::lir::Expr::Column {
+                    scope: "t".into(),
+                    name: "id".into(),
+                },
+                descending: true,
+            }],
+        };
+        let run = |root: Relation| {
+            let engine = &engine;
+            let observer = observer.clone();
+            async move {
+                observer.observations.lock().unwrap().clear();
+                engine
+                    .execute_program(
+                        Program {
+                            statements: vec![Statement::Query {
+                                name: "read".into(),
+                                relation: crate::engine::lir::Query {
+                                    root,
+                                    cardinality: RootCardinality::Many,
+                                    bindings: HashMap::new(),
+                                },
+                            }],
+                            result: Some("read".into()),
+                        },
+                        CatalogPolicy::Forbidden,
+                    )
+                    .await
+                    .unwrap();
+                observer
+                    .observations
+                    .lock()
+                    .unwrap()
+                    .drain(..)
+                    .next()
+                    .unwrap()
+            }
+        };
+
+        // Nothing downstream cuts the stream short, so every attributed
+        // relation in the chain reports what it produced.
+        let whole = run(ordered_scan()).await;
+        assert!(
+            whole.relations.len() >= 2,
+            "stacked relations each get their own measurement: {:?}",
+            whole.relations
+        );
+        assert!(
+            whole.relations.iter().all(|relation| relation.rows == 3),
+            "every relation in the chain saw all three rows: {:?}",
+            whole.relations
+        );
+        for relation in &whole.relations {
+            assert!(
+                whole
+                    .query
+                    .subtrees
+                    .iter()
+                    .any(|digests| digests.family == relation.family),
+                "a measured family must be a subtree of the statement"
+            );
+        }
+
+        // A limit abandons the operators beneath it part-way, so their row
+        // counts are not their cardinality and are withheld entirely.
+        let limited = run(Relation::Slice {
+            input: Box::new(ordered_scan()),
+            offset: 0,
+            limit: Some(2),
+        })
+        .await;
+        // The sort must drain its input before it can emit, so the scan
+        // beneath it is exhausted and trustworthy; the sort itself is
+        // abandoned once the slice has two rows, so it reports nothing.
+        let mut rows: Vec<u64> = limited
+            .relations
+            .iter()
+            .map(|relation| relation.rows)
+            .collect();
+        rows.sort_unstable();
+        assert_eq!(
+            rows,
+            vec![2, 3],
+            "the slice and the exhausted scan report; the abandoned sort does not: {:?}",
+            limited.relations
+        );
+    }
+
+    #[tokio::test]
+    async fn observation_never_changes_results() {
+        let program = || Program {
+            statements: vec![
+                Statement::Create {
+                    name: "created".into(),
+                    relation: rows(&[("a", "new")]),
+                    table: "tasks".into(),
+                },
+                Statement::Query {
+                    name: "read".into(),
+                    relation: scan("tasks"),
+                },
+            ],
+            result: Some("read".into()),
+        };
+
+        let (_store, engine, catalog) = setup("pir-observe-off").await;
+        catalog.create_table(tasks_table()).await.unwrap();
+        let unobserved = engine
+            .execute_program(program(), CatalogPolicy::Forbidden)
+            .await;
+
+        let (store, _engine, catalog) = setup("pir-observe-on").await;
+        catalog.create_table(tasks_table()).await.unwrap();
+        let engine = Engine::new(store).with_observer(Arc::new(RecordingObserver::default()));
+        let observed = engine
+            .execute_program(program(), CatalogPolicy::Forbidden)
+            .await;
+
+        match (unobserved, observed) {
+            (Ok(unobserved), Ok(observed)) => {
+                assert_eq!(unobserved.result, observed.result);
+                assert_eq!(unobserved.statements, observed.statements);
+            }
+            (Err(unobserved), Err(observed)) => {
+                assert_eq!(format!("{unobserved:?}"), format!("{observed:?}"));
+            }
+            (unobserved, observed) => {
+                panic!("outcomes diverged: {unobserved:?} vs {observed:?}")
+            }
+        }
     }
 
     #[tokio::test]

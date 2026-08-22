@@ -982,7 +982,7 @@ fn row_body_cell_operations_form_an_algebra() {
 #[test]
 fn keyspace_registry_is_coherent() {
     let spaces = rad::engine::kv::keyspace::KEYSPACES;
-    assert_eq!(spaces.len(), 30);
+    assert_eq!(spaces.len(), 39);
     for space in spaces {
         assert!(!space.value.is_empty());
         assert!(
@@ -1371,6 +1371,157 @@ fn runtime_writer_fence_key_vectors() {
 fn storage_manifest_key_vectors() {
     let key = rad::engine::kv::keys::storage_manifest_key();
     assert_eq!(key, &[0x72, 0x37, 0x41]);
+    assert!(rad::engine::exec::key_describe::describe_key(&key).is_some());
+}
+
+#[test]
+fn statistics_table_changes_key_vectors() {
+    let key = rad::engine::kv::keys::statistics_table_changes_key(7);
+    assert_eq!(key, &[0x72, 0x37, 0x50, 0x00, 0x00, 0x00, 0x07]);
+    let parts =
+        rad::engine::kv::keys::decode_statistics_table_changes_key(&key).expect("vector decodes");
+    assert_eq!(parts.schema, 7);
+    assert!(rad::engine::exec::key_describe::describe_key(&key).is_some());
+}
+
+#[test]
+fn statistics_model_key_vectors() {
+    let key = rad::engine::kv::keys::statistics_model_key(&[
+        0x01, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+        0x0d, 0x0e, 0x0f,
+    ]);
+    assert_eq!(
+        key,
+        &[
+            0x72, 0x37, 0x51, 0x01, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+        ]
+    );
+    let parts = rad::engine::kv::keys::decode_statistics_model_key(&key).expect("vector decodes");
+    assert_eq!(
+        parts.family,
+        vec![
+            0x01, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+            0x0c, 0x0d, 0x0e, 0x0f
+        ]
+    );
+    assert!(rad::engine::exec::key_describe::describe_key(&key).is_some());
+}
+
+#[test]
+fn statistics_relation_model_key_vectors() {
+    let key = rad::engine::kv::keys::statistics_relation_model_key(&[
+        0x01, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+        0x0d, 0x0e, 0x0f,
+    ]);
+    assert_eq!(
+        key,
+        &[
+            0x72, 0x37, 0x55, 0x01, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+        ]
+    );
+    let parts =
+        rad::engine::kv::keys::decode_statistics_relation_model_key(&key).expect("vector decodes");
+    assert_eq!(
+        parts.family,
+        vec![
+            0x01, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+            0x0c, 0x0d, 0x0e, 0x0f
+        ]
+    );
+    assert!(rad::engine::exec::key_describe::describe_key(&key).is_some());
+}
+
+#[test]
+fn statistics_model_catalog_key_vectors() {
+    let key = rad::engine::kv::keys::statistics_model_catalog_key();
+    assert_eq!(key, &[0x72, 0x37, 0x56]);
+    assert!(rad::engine::exec::key_describe::describe_key(&key).is_some());
+}
+
+#[test]
+fn statistics_frequency_key_vectors() {
+    let key = rad::engine::kv::keys::statistics_frequency_key(&[
+        0x01, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+        0x0d, 0x0e, 0x0f,
+    ]);
+    assert_eq!(
+        key,
+        &[
+            0x72, 0x37, 0x57, 0x01, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+        ]
+    );
+    let parts =
+        rad::engine::kv::keys::decode_statistics_frequency_key(&key).expect("vector decodes");
+    assert_eq!(
+        parts.family,
+        vec![
+            0x01, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+            0x0c, 0x0d, 0x0e, 0x0f
+        ]
+    );
+    assert!(rad::engine::exec::key_describe::describe_key(&key).is_some());
+}
+
+#[test]
+fn statistics_frequency_epoch_key_vectors() {
+    let key = rad::engine::kv::keys::statistics_frequency_epoch_key();
+    assert_eq!(key, &[0x72, 0x37, 0x58]);
+    assert!(rad::engine::exec::key_describe::describe_key(&key).is_some());
+}
+
+#[test]
+fn corpus_program_key_vectors() {
+    let key = rad::engine::kv::keys::corpus_program_key(
+        1,
+        &[
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f,
+        ],
+    );
+    assert_eq!(
+        key,
+        &[
+            0x72, 0x37, 0x52, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+            0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+        ]
+    );
+    let parts = rad::engine::kv::keys::decode_corpus_program_key(&key).expect("vector decodes");
+    assert_eq!(parts.canonical_version, 1);
+    assert_eq!(
+        parts.content_hash,
+        vec![
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f
+        ]
+    );
+    assert!(rad::engine::exec::key_describe::describe_key(&key).is_some());
+}
+
+#[test]
+fn corpus_execution_key_vectors() {
+    let key = rad::engine::kv::keys::corpus_execution_key(1000000, 0);
+    assert_eq!(
+        key,
+        &[
+            0x72, 0x37, 0x53, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x42, 0x40, 0x00
+        ]
+    );
+    let parts = rad::engine::kv::keys::decode_corpus_execution_key(&key).expect("vector decodes");
+    assert_eq!(parts.at, 1000000);
+    assert_eq!(parts.sequence, 0);
+    assert!(rad::engine::exec::key_describe::describe_key(&key).is_some());
+}
+
+#[test]
+fn statistics_synopsis_key_vectors() {
+    let key = rad::engine::kv::keys::statistics_synopsis_key(7);
+    assert_eq!(key, &[0x72, 0x37, 0x54, 0x00, 0x00, 0x00, 0x07]);
+    let parts =
+        rad::engine::kv::keys::decode_statistics_synopsis_key(&key).expect("vector decodes");
+    assert_eq!(parts.schema, 7);
     assert!(rad::engine::exec::key_describe::describe_key(&key).is_some());
 }
 

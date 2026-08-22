@@ -896,3 +896,251 @@ pub fn storage_manifest_prefix() -> Vec<u8> {
 pub fn storage_manifest_key() -> Vec<u8> {
     storage_manifest_prefix()
 }
+
+pub const STATISTICS_TABLE_CHANGES_TAG: u8 = 0x50;
+
+/// The `statistics_table_changes` space prefix: root magic plus tag.
+pub fn statistics_table_changes_prefix() -> Vec<u8> {
+    vec![0x72, 0x37, STATISTICS_TABLE_CHANGES_TAG]
+}
+
+pub fn statistics_table_changes_key(schema: u32) -> Vec<u8> {
+    let mut key = statistics_table_changes_prefix();
+    key.extend_from_slice(&schema.to_be_bytes());
+    key
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct StatisticsTableChangesKeyParts {
+    pub schema: u32,
+}
+
+pub fn decode_statistics_table_changes_key(key: &[u8]) -> Option<StatisticsTableChangesKeyParts> {
+    let rest = key.strip_prefix(&[0x72, 0x37, STATISTICS_TABLE_CHANGES_TAG][..])?;
+    let mut position = 0;
+    let schema = u32::from_be_bytes(rest.get(position..position + 4)?.try_into().ok()?);
+    position += 4;
+    if position != rest.len() {
+        return None;
+    }
+    Some(StatisticsTableChangesKeyParts { schema })
+}
+
+pub const STATISTICS_MODEL_TAG: u8 = 0x51;
+
+/// The `statistics_model` space prefix: root magic plus tag.
+pub fn statistics_model_prefix() -> Vec<u8> {
+    vec![0x72, 0x37, STATISTICS_MODEL_TAG]
+}
+
+pub fn statistics_model_key(family: &[u8]) -> Vec<u8> {
+    let mut key = statistics_model_prefix();
+    key.extend_from_slice(family);
+    key
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct StatisticsModelKeyParts {
+    pub family: Vec<u8>,
+}
+
+pub fn decode_statistics_model_key(key: &[u8]) -> Option<StatisticsModelKeyParts> {
+    let rest = key.strip_prefix(&[0x72, 0x37, STATISTICS_MODEL_TAG][..])?;
+    let mut position = 0;
+    let family = rest[position..].to_vec();
+    position = rest.len();
+    if position != rest.len() {
+        return None;
+    }
+    Some(StatisticsModelKeyParts { family })
+}
+
+pub const STATISTICS_RELATION_MODEL_TAG: u8 = 0x55;
+
+/// The `statistics_relation_model` space prefix: root magic plus tag.
+pub fn statistics_relation_model_prefix() -> Vec<u8> {
+    vec![0x72, 0x37, STATISTICS_RELATION_MODEL_TAG]
+}
+
+pub fn statistics_relation_model_key(family: &[u8]) -> Vec<u8> {
+    let mut key = statistics_relation_model_prefix();
+    key.extend_from_slice(family);
+    key
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct StatisticsRelationModelKeyParts {
+    pub family: Vec<u8>,
+}
+
+pub fn decode_statistics_relation_model_key(key: &[u8]) -> Option<StatisticsRelationModelKeyParts> {
+    let rest = key.strip_prefix(&[0x72, 0x37, STATISTICS_RELATION_MODEL_TAG][..])?;
+    let mut position = 0;
+    let family = rest[position..].to_vec();
+    position = rest.len();
+    if position != rest.len() {
+        return None;
+    }
+    Some(StatisticsRelationModelKeyParts { family })
+}
+
+pub const STATISTICS_MODEL_CATALOG_TAG: u8 = 0x56;
+
+/// The `statistics_model_catalog` space prefix: root magic plus tag.
+pub fn statistics_model_catalog_prefix() -> Vec<u8> {
+    vec![0x72, 0x37, STATISTICS_MODEL_CATALOG_TAG]
+}
+
+pub fn statistics_model_catalog_key() -> Vec<u8> {
+    statistics_model_catalog_prefix()
+}
+
+pub const STATISTICS_FREQUENCY_TAG: u8 = 0x57;
+
+/// The `statistics_frequency` space prefix: root magic plus tag.
+pub fn statistics_frequency_prefix() -> Vec<u8> {
+    vec![0x72, 0x37, STATISTICS_FREQUENCY_TAG]
+}
+
+pub fn statistics_frequency_key(family: &[u8]) -> Vec<u8> {
+    let mut key = statistics_frequency_prefix();
+    key.extend_from_slice(family);
+    key
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct StatisticsFrequencyKeyParts {
+    pub family: Vec<u8>,
+}
+
+pub fn decode_statistics_frequency_key(key: &[u8]) -> Option<StatisticsFrequencyKeyParts> {
+    let rest = key.strip_prefix(&[0x72, 0x37, STATISTICS_FREQUENCY_TAG][..])?;
+    let mut position = 0;
+    let family = rest[position..].to_vec();
+    position = rest.len();
+    if position != rest.len() {
+        return None;
+    }
+    Some(StatisticsFrequencyKeyParts { family })
+}
+
+pub const STATISTICS_FREQUENCY_EPOCH_TAG: u8 = 0x58;
+
+/// The `statistics_frequency_epoch` space prefix: root magic plus tag.
+pub fn statistics_frequency_epoch_prefix() -> Vec<u8> {
+    vec![0x72, 0x37, STATISTICS_FREQUENCY_EPOCH_TAG]
+}
+
+pub fn statistics_frequency_epoch_key() -> Vec<u8> {
+    statistics_frequency_epoch_prefix()
+}
+
+pub const CORPUS_PROGRAM_TAG: u8 = 0x52;
+
+/// The `corpus_program` space prefix: root magic plus tag.
+pub fn corpus_program_prefix() -> Vec<u8> {
+    vec![0x72, 0x37, CORPUS_PROGRAM_TAG]
+}
+
+/// Scan prefix covering every `corpus_program` key through `canonical_version`.
+pub fn corpus_program_prefix_canonical_version(canonical_version: u64) -> Vec<u8> {
+    let mut key = corpus_program_prefix();
+    append_uvarint(&mut key, canonical_version);
+    key
+}
+
+pub fn corpus_program_key(canonical_version: u64, content_hash: &[u8]) -> Vec<u8> {
+    let mut key = corpus_program_prefix();
+    append_uvarint(&mut key, canonical_version);
+    key.extend_from_slice(content_hash);
+    key
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct CorpusProgramKeyParts {
+    pub canonical_version: u64,
+    pub content_hash: Vec<u8>,
+}
+
+pub fn decode_corpus_program_key(key: &[u8]) -> Option<CorpusProgramKeyParts> {
+    let rest = key.strip_prefix(&[0x72, 0x37, CORPUS_PROGRAM_TAG][..])?;
+    let mut position = 0;
+    let canonical_version = read_uvarint(rest, &mut position)?;
+    let content_hash = rest[position..].to_vec();
+    position = rest.len();
+    if position != rest.len() {
+        return None;
+    }
+    Some(CorpusProgramKeyParts {
+        canonical_version,
+        content_hash,
+    })
+}
+
+pub const CORPUS_EXECUTION_TAG: u8 = 0x53;
+
+/// The `corpus_execution` space prefix: root magic plus tag.
+pub fn corpus_execution_prefix() -> Vec<u8> {
+    vec![0x72, 0x37, CORPUS_EXECUTION_TAG]
+}
+
+/// Scan prefix covering every `corpus_execution` key through `at`.
+pub fn corpus_execution_prefix_at(at: u64) -> Vec<u8> {
+    let mut key = corpus_execution_prefix();
+    key.extend_from_slice(&at.to_be_bytes());
+    key
+}
+
+pub fn corpus_execution_key(at: u64, sequence: u64) -> Vec<u8> {
+    let mut key = corpus_execution_prefix();
+    key.extend_from_slice(&at.to_be_bytes());
+    append_uvarint(&mut key, sequence);
+    key
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct CorpusExecutionKeyParts {
+    pub at: u64,
+    pub sequence: u64,
+}
+
+pub fn decode_corpus_execution_key(key: &[u8]) -> Option<CorpusExecutionKeyParts> {
+    let rest = key.strip_prefix(&[0x72, 0x37, CORPUS_EXECUTION_TAG][..])?;
+    let mut position = 0;
+    let at = u64::from_be_bytes(rest.get(position..position + 8)?.try_into().ok()?);
+    position += 8;
+    let sequence = read_uvarint(rest, &mut position)?;
+    if position != rest.len() {
+        return None;
+    }
+    Some(CorpusExecutionKeyParts { at, sequence })
+}
+
+pub const STATISTICS_SYNOPSIS_TAG: u8 = 0x54;
+
+/// The `statistics_synopsis` space prefix: root magic plus tag.
+pub fn statistics_synopsis_prefix() -> Vec<u8> {
+    vec![0x72, 0x37, STATISTICS_SYNOPSIS_TAG]
+}
+
+pub fn statistics_synopsis_key(schema: u32) -> Vec<u8> {
+    let mut key = statistics_synopsis_prefix();
+    key.extend_from_slice(&schema.to_be_bytes());
+    key
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct StatisticsSynopsisKeyParts {
+    pub schema: u32,
+}
+
+pub fn decode_statistics_synopsis_key(key: &[u8]) -> Option<StatisticsSynopsisKeyParts> {
+    let rest = key.strip_prefix(&[0x72, 0x37, STATISTICS_SYNOPSIS_TAG][..])?;
+    let mut position = 0;
+    let schema = u32::from_be_bytes(rest.get(position..position + 4)?.try_into().ok()?);
+    position += 4;
+    if position != rest.len() {
+        return None;
+    }
+    Some(StatisticsSynopsisKeyParts { schema })
+}

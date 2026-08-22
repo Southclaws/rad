@@ -152,6 +152,36 @@ paths:
         "200": { $ref: "#/components/responses/ProbePassed" }
         "503": { $ref: "#/components/responses/ProbeFailed" }
 
+  /statistics:
+    get:
+      operationId: GetStatistics
+      summary: Return the query-planner statistics this instance holds.
+      description: |
+        Return the distilled model repository the planner estimates from: one
+        entry per relation family, with observed row counts, estimate quality,
+        execution latency, and the physical plans seen for it.
+
+        These are query-planner statistics, not operational metrics or
+        tracing. They are advisory: deleting them changes no query result, and
+        they are gathered best-effort, so a value may be missing after process
+        failure or backpressure.
+
+        Several fields are deliberately approximate and named accordingly. A
+        field ending `UpperBound` is a histogram bucket bound rather than an
+        exact quantile, so it overstates; the matching exact maximum is
+        reported beside it. Read the field descriptions before comparing
+        numbers.
+
+        A process that runs no collector — a reader instance gathers
+        statistics only for its own planner and a writer is the only
+        publisher — returns 404 rather than an empty body, so "this instance
+        does not collect" is distinguishable from "nothing observed yet".
+      tags: [meta]
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/GetStatisticsOK" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /schema:
     get:
       operationId: GetSchema
@@ -657,6 +687,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/DatabaseInfo" }
+    GetStatisticsOK:
+      description: The planner statistics this instance currently holds.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Statistics" }
     GetSchemaOK:
       description: The current accepted schema and identity.
       content:
@@ -1264,6 +1299,796 @@ components:
         tables:
           type: array
           items: { $ref: "#/components/schemas/TableDef" }
+
+    StatisticsRelay:
+      type: object
+      additionalProperties: false
+      required: [received, receivedAlreadyApplied, receivedRejected, receivedSaturated, receivedCorpusOversize, sources, mergedObservations, corpusAdopted, refusedStaleFamilies]
+      description: |
+        The observation relay, as this instance sees it. An instance that
+        cannot publish to storage hands its evidence to one that can; the
+        channel is advisory, so every loss here is counted rather than
+        signalled as a failure.
+
+        The sending fields are absent on an instance that publishes to storage
+        rather than to a peer. The receiving fields are always present,
+        because every instance can receive; zero means nothing has arrived.
+      properties:
+        state:
+          type: string
+          enum: [connected, retrying, losing, idle]
+          description: |
+            The sending side in one word. `retrying` means a batch is held for
+            another attempt and no evidence has been lost yet. `losing` means
+            a batch was abandoned or refused, so evidence was dropped, and it
+            stays reported until a later attempt succeeds. Absent on an
+            instance that does not send.
+        sent:
+          type: integer
+          format: int64
+          description: Batches this instance successfully handed to a peer.
+        abandoned:
+          type: integer
+          format: int64
+          description: |
+            Batches given up on after exhausting their retry budget. Each one
+            is evidence permanently lost, which costs the fleet planner
+            accuracy and nothing else.
+        rejected:
+          type: integer
+          format: int64
+          description: |
+            Batches a peer understood and refused, most often a wire-format
+            mismatch during a rolling upgrade. Retrying cannot help, so these
+            are not retried.
+        holding:
+          type: boolean
+          description: Whether a batch is currently awaiting another attempt.
+        corpusSent:
+          type: integer
+          format: int64
+          description: |
+            Workload-corpus documents carried to a peer. These contain the
+            literal values of the programs that ran, unlike the aggregate
+            evidence beside them, so they travel only over a transport shown to
+            be confidential — encrypted *and* verified.
+        corpusWithheld:
+          type: integer
+          format: int64
+          description: |
+            Corpus documents dropped because the transport could not be shown
+            confidential. An instance that cannot publish has nowhere else to
+            put them. A non-zero value with corpus capture requested means the
+            channel is not encrypted.
+        received:
+          type: integer
+          format: int64
+          description: Batches accepted from a peer and queued to be merged.
+        receivedAlreadyApplied:
+          type: integer
+          format: int64
+          description: |
+            Batches whose sequence this instance had already applied. Delivery
+            is at-least-once and the accounting is idempotent, so a repeat is
+            expected traffic rather than a fault.
+        receivedRejected:
+          type: integer
+          format: int64
+          description: Batches refused because they use a different wire format.
+        receivedSaturated:
+          type: integer
+          format: int64
+          description: |
+            Batches refused because the merge queue was full. The sender is
+            asked to retry and nothing is recorded as applied, so a saturated
+            receiver costs latency rather than evidence.
+        receivedCorpusOversize:
+          type: integer
+          format: int64
+          description: Batches refused because one corpus document exceeded 1 MiB.
+        sources:
+          type: integer
+          format: int64
+          description: |
+            Peers whose applied sequence this instance remembers. A peer that
+            falls out of that bounded set is re-admitted on its next batch.
+        mergedObservations:
+          type: integer
+          format: int64
+          description: Observations folded in from peers.
+        corpusAdopted:
+          type: integer
+          format: int64
+          description: |
+            Corpus documents adopted from peers. Content addressing makes a
+            duplicate harmless, so this counts documents received rather than
+            documents newly stored.
+        refusedStaleFamilies:
+          type: integer
+          format: int64
+          description: |
+            Relayed families discarded because they described a different
+            catalog generation than this instance observed. A peer lagging a
+            catalog change must never displace newer local evidence.
+
+    Statistics:
+      type: object
+      additionalProperties: false
+      required: [absorbed, dropped, evicted, shed, corpus, relay, trackedFamilies, models, synopses]
+      properties:
+        absorbed:
+          type: integer
+          format: int64
+          description: Observations folded into the models since this process started.
+        dropped:
+          type: integer
+          format: int64
+          description: |
+            Observations discarded because the collection queue was full.
+            Execution never blocks to record statistics, so a busy instance
+            sheds observations rather than slowing queries.
+        evicted:
+          type: integer
+          format: int64
+          description: |
+            Models discarded to keep the working set bounded. The frequency
+            sketch keeps counting an evicted family, so a family that stays
+            active is re-admitted.
+        shed:
+          type: integer
+          format: int64
+          description: |
+            Unpublished evidence discarded to keep the pending set bounded.
+            Evidence already published is unaffected: what reaches the store
+            accumulates there.
+        corpus:
+          $ref: "#/components/schemas/StatisticsCorpus"
+        relay:
+          $ref: "#/components/schemas/StatisticsRelay"
+        trackedFamilies:
+          type: integer
+          description: Relation families currently modelled.
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/StatisticsModel" }
+          description: One entry per modelled family, most measured first.
+        synopses:
+          type: array
+          items: { $ref: "#/components/schemas/StatisticsSynopsis" }
+          description: Current table survey results, ordered by table identity.
+        physicalCost:
+          $ref: "#/components/schemas/StatisticsPhysicalCost"
+
+    StatisticsCorpus:
+      type: object
+      additionalProperties: false
+      required: [enabled, captured, skippedOversize, droppedQueue, shedPending]
+      properties:
+        enabled:
+          type: boolean
+          description: Whether this process captures canonical workload programs.
+        captured:
+          type: integer
+          format: int64
+          description: Programs admitted to the local statistics queue.
+        skippedOversize:
+          type: integer
+          format: int64
+          description: Programs not captured because one canonical document exceeded the capture limit.
+        droppedQueue:
+          type: integer
+          format: int64
+          description: Programs not captured because the collection queue was full.
+        shedPending:
+          type: integer
+          format: int64
+          description: Captured programs removed from the bounded unpublished queue.
+        maintenance:
+          allOf:
+            - $ref: "#/components/schemas/StatisticsCorpusMaintenance"
+          description: |
+            Storage maintenance data. This field is absent when this process
+            does not own corpus storage.
+
+    StatisticsCorpusMaintenance:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          expiredExecutions,
+          prunedExecutions,
+          invalidExecutions,
+          prunedPrograms,
+          invalidPrograms,
+          erasedExecutions,
+          erasedPrograms,
+          retainedExecutions,
+          retainedPrograms,
+          retainedProgramBytes,
+        ]
+      description: |
+        Cumulative maintenance counters and current retained corpus gauges.
+        Counters start when the storage owner process starts.
+      properties:
+        expiredExecutions:
+          type: integer
+          format: int64
+          description: Execution records removed because the maximum age elapsed.
+        prunedExecutions:
+          type: integer
+          format: int64
+          description: Execution records removed to enforce the count or byte limit.
+        invalidExecutions:
+          type: integer
+          format: int64
+          description: Execution records removed because their key, value, or program reference was invalid.
+        prunedPrograms:
+          type: integer
+          format: int64
+          description: Canonical programs removed because no retained execution referenced them.
+        invalidPrograms:
+          type: integer
+          format: int64
+          description: Canonical programs removed because their storage key was invalid.
+        erasedExecutions:
+          type: integer
+          format: int64
+          description: Execution records removed by explicit corpus erasure.
+        erasedPrograms:
+          type: integer
+          format: int64
+          description: Canonical programs removed by explicit corpus erasure.
+        retainedExecutions:
+          type: integer
+          format: int64
+          description: Execution records currently retained.
+        retainedPrograms:
+          type: integer
+          format: int64
+          description: Unique canonical programs currently retained.
+        retainedProgramBytes:
+          type: integer
+          format: int64
+          description: Bytes in retained canonical programs. This excludes execution records and storage overhead.
+
+    StatisticsSynopsis:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          table,
+          observedRows,
+          coverage,
+          sampleSize,
+          changesSinceCollection,
+          tableExistenceGeneration,
+          collectedAtUnixMicros,
+          catalogVersion,
+          columns,
+          columnGroups,
+        ]
+      properties:
+        table:
+          type: integer
+          format: int64
+          description: Stable table schema identity.
+        observedRows:
+          type: integer
+          format: int64
+          description: Rows read by the survey.
+        coverage:
+          type: string
+          enum: [complete, prefixLimit]
+          description: Whether the survey read the complete table or a bounded prefix.
+        sampleSize:
+          type: integer
+          format: int64
+          description: Rows used to build the synopsis.
+        changesSinceCollection:
+          type: integer
+          format: int64
+          description: Rows affected by writes after collection.
+        tableExistenceGeneration:
+          type: integer
+          format: int64
+          description: Table generation that this synopsis describes.
+        collectedAtUnixMicros:
+          type: integer
+          format: int64
+          description: Collection wall time in microseconds since the Unix epoch.
+        catalogVersion:
+          type: integer
+          format: int64
+          description: Catalog version read by the survey.
+        columns:
+          type: array
+          items: { $ref: "#/components/schemas/StatisticsColumnSynopsis" }
+        columnGroups:
+          type: array
+          items: { $ref: "#/components/schemas/StatisticsColumnGroupSynopsis" }
+          description: Bounded joint statistics for primary-key prefixes, ready multi-column index prefixes, and composite foreign keys.
+
+    StatisticsColumnSynopsis:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          column,
+          valueGeneration,
+          nullFraction,
+          nullCount,
+          distinct,
+          distinctIsExact,
+          averageWidth,
+          mostCommonValues,
+        ]
+      properties:
+        column:
+          type: integer
+          format: int64
+          description: Stable column schema identity.
+        valueGeneration:
+          type: integer
+          format: int64
+          description: Column value generation that this synopsis describes.
+        nullFraction:
+          type: number
+          format: double
+          description: Fraction of observed rows that contained null.
+        nullCount:
+          type: integer
+          format: int64
+          description: Observed rows that contained null.
+        distinct:
+          type: integer
+          format: int64
+          description: Exact or approximate observed distinct non-null values.
+        distinctIsExact:
+          type: boolean
+          description: Whether distinct is exact.
+        averageWidth:
+          type: integer
+          format: int64
+          description: Average encoded width of observed non-null values.
+        minimum:
+          type: string
+          description: Rendered minimum non-null value.
+        maximum:
+          type: string
+          description: Rendered maximum non-null value.
+        mostCommonValues:
+          type: array
+          items: { $ref: "#/components/schemas/StatisticsMostCommonValue" }
+          description: Bounded heavy hitters, ordered by decreasing observed frequency.
+
+    StatisticsMostCommonValue:
+      type: object
+      additionalProperties: false
+      required: [value, frequency, lowerFrequency, maximumError]
+      properties:
+        value:
+          type: string
+          description: Rendered typed value.
+        frequency:
+          type: integer
+          format: int64
+          description: Space-Saving frequency upper bound.
+        lowerFrequency:
+          type: integer
+          format: int64
+          description: Guaranteed observed frequency lower bound.
+        maximumError:
+          type: integer
+          format: int64
+          description: Maximum Space-Saving overcount.
+
+    StatisticsColumnGroupSynopsis:
+      type: object
+      additionalProperties: false
+      required:
+        [columns, valueGenerations, nullCount, distinct, distinctIsExact, mostCommonValues]
+      properties:
+        columns:
+          type: array
+          items:
+            type: integer
+            format: int64
+          description: Stable column schema identities in canonical order.
+        valueGenerations:
+          type: array
+          items:
+            type: integer
+            format: int64
+          description: Column value generations in the same order as columns.
+        nullCount:
+          type: integer
+          format: int64
+          description: Observed rows where one or more group columns contained null.
+        distinct:
+          type: integer
+          format: int64
+          description: Exact or approximate observed distinct non-null value combinations.
+        distinctIsExact:
+          type: boolean
+          description: Whether distinct is exact.
+        mostCommonValues:
+          type: array
+          items: { $ref: "#/components/schemas/StatisticsMostCommonColumnGroup" }
+          description: Bounded common value combinations, ordered by decreasing observed frequency.
+
+    StatisticsMostCommonColumnGroup:
+      type: object
+      additionalProperties: false
+      required: [values, frequency, lowerFrequency, maximumError]
+      properties:
+        values:
+          type: array
+          items:
+            type: string
+          description: Rendered typed values in the column order.
+        frequency:
+          type: integer
+          format: int64
+          description: Space-Saving frequency upper bound.
+        lowerFrequency:
+          type: integer
+          format: int64
+          description: Guaranteed observed frequency lower bound.
+        maximumError:
+          type: integer
+          format: int64
+          description: Maximum Space-Saving overcount.
+
+    StatisticsModel:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          kind,
+          family,
+          exactVariants,
+          frequency,
+          retainedExecutions,
+          executionsWithEstimate,
+          rowsP50UpperBound,
+          rowsP95UpperBound,
+          rowsMax,
+          qErrorP50UpperBound,
+          qErrorP95UpperBound,
+          qErrorMax,
+          plans,
+        ]
+      properties:
+        kind:
+          type: string
+          description: |
+            `relation` contains logical relation cardinality feedback.
+            `statement` contains complete statement performance and plan data.
+        family:
+          type: string
+          description: |
+            Family fingerprint: the relation shape with every literal replaced
+            by a typed placeholder, so the same shape run with different
+            parameters shares one entry. Carries the canonicalization version
+            and hash algorithm that produced it.
+        exactVariants:
+          type: integer
+          format: int64
+          description: |
+            Approximate distinct literal-specific instances seen within this
+            family. A fixed-size mergeable sketch produces this value. One
+            means an effectively constant query. A large value means a
+            parameterised query.
+        frequency:
+          type: integer
+          format: int64
+          description: |
+            Approximate number of times this family appeared anywhere in an
+            executed query tree, from a count-min sketch. It over-counts on
+            hash collision and halves periodically, so it reflects recent
+            workload weight rather than a lifetime total. Expect it to exceed
+            `retainedExecutions`: a family is counted once per appearance as a
+            subtree but measured only where a plan boundary exposes its rows.
+        retainedExecutions:
+          type: integer
+          format: int64
+          description: Times this family was itself measured.
+        executionsWithEstimate:
+          type: integer
+          format: int64
+          description: |
+            Of those, how many carried a planner estimate to score against the
+            actual row count. Zero means nothing has scored this family yet.
+        rowsP50UpperBound:
+          type: integer
+          format: int64
+          description: |
+            Upper bound on the median row count: the bound of the histogram
+            bucket holding it, never above `rowsMax`. Not an exact quantile.
+        rowsP95UpperBound:
+          type: integer
+          format: int64
+          description: Upper bound on the 95th-percentile row count.
+        rowsMax:
+          type: integer
+          format: int64
+          description: Largest row count observed, exactly.
+        qErrorP50UpperBound:
+          type: number
+          description: |
+            Upper bound on the median estimate error, symmetric and
+            multiplicative: 1.0 is a perfect estimate and 10.0 is wrong by a
+            factor of ten in either direction. A bucket bound, never above
+            `qErrorMax`.
+        qErrorP95UpperBound:
+          type: number
+          description: Upper bound on the 95th-percentile estimate error.
+        qErrorMax:
+          type: number
+          description: Largest estimate error observed, exactly.
+        executeMicrosP50UpperBound:
+          type: integer
+          format: int64
+          description: |
+            Upper bound on median execution time in microseconds. Absent when
+            this family was measured only as a relation inside a statement,
+            which records rows but not durations.
+        executeMicrosP95UpperBound:
+          type: integer
+          format: int64
+          description: Upper bound on 95th-percentile execution time in microseconds.
+        durationEwmaMicros:
+          type: integer
+          format: int64
+          description: |
+            Exponentially weighted mean execution time, a recent-trend signal
+            rather than a distribution. Absent alongside the latency bounds.
+        plans:
+          type: array
+          items: { $ref: "#/components/schemas/StatisticsPlan" }
+          description: Physical plans observed for this family, with how often each ran.
+        planningValue:
+          $ref: "#/components/schemas/StatisticsPlanningValue"
+        resourceCost:
+          $ref: "#/components/schemas/StatisticsResourceCost"
+
+    StatisticsPlan:
+      type: object
+      additionalProperties: false
+      required: [plan, executions]
+      properties:
+        plan:
+          type: string
+          description: |
+            Structural fingerprint of the physical plan: operator shapes,
+            access paths, join order, and binding strategies, excluding
+            literal values.
+        executions:
+          type: integer
+          format: int64
+          description: Times this plan ran for this family.
+
+    StatisticsResourceMetric:
+      type: object
+      additionalProperties: false
+      required: [p50UpperBound, p95UpperBound, maximum]
+      properties:
+        p50UpperBound:
+          type: integer
+          format: int64
+          description: Upper bound on the median value.
+        p95UpperBound:
+          type: integer
+          format: int64
+          description: Upper bound on the 95th-percentile value.
+        maximum:
+          type: integer
+          format: int64
+          description: Largest observed value, exactly.
+
+    StatisticsResourceCost:
+      type: object
+      additionalProperties: false
+      required: [basis, observedExecutions, gets, puts, deletes, scans, iterated, bytesRead, bytesWritten]
+      description: |
+        Observed logical KV work for complete statement executions. This is
+        not CPU, memory, object-request, or remote-I/O cost. A relation model
+        has no resource cost because shared statement work cannot be assigned
+        to one relation without an operator measurement boundary.
+      properties:
+        basis:
+          type: string
+          enum: [logical_kv_work]
+        observedExecutions:
+          type: integer
+          format: int64
+          description: Complete statement executions in these distributions.
+        gets:
+          $ref: "#/components/schemas/StatisticsResourceMetric"
+        puts:
+          $ref: "#/components/schemas/StatisticsResourceMetric"
+        deletes:
+          $ref: "#/components/schemas/StatisticsResourceMetric"
+        scans:
+          $ref: "#/components/schemas/StatisticsResourceMetric"
+        iterated:
+          $ref: "#/components/schemas/StatisticsResourceMetric"
+        bytesRead:
+          $ref: "#/components/schemas/StatisticsResourceMetric"
+        bytesWritten:
+          $ref: "#/components/schemas/StatisticsResourceMetric"
+
+    StatisticsPhysicalCostMetric:
+      type: object
+      additionalProperties: false
+      required: [p50UpperBound, p95UpperBound, maximumUpperBound]
+      properties:
+        p50UpperBound:
+          type: integer
+          format: int64
+          description: Upper bound on the median value.
+        p95UpperBound:
+          type: integer
+          format: int64
+          description: Upper bound on the 95th-percentile value.
+        maximumUpperBound:
+          type: integer
+          format: int64
+          description: Upper bound on the largest value in the retained buckets.
+
+    StatisticsPhysicalTelemetryCapabilities:
+      type: object
+      additionalProperties: false
+      required: [requestLatency, requestBytes, requestConcurrency, cacheTiers, accessLocality]
+      properties:
+        requestLatency:
+          type: boolean
+        requestBytes:
+          type: boolean
+        requestConcurrency:
+          type: boolean
+        cacheTiers:
+          type: boolean
+        accessLocality:
+          type: boolean
+
+    StatisticsPhysicalRequestCost:
+      type: object
+      additionalProperties: false
+      required: [class, observedRequests, errors]
+      properties:
+        class:
+          type: string
+          enum: [read, range_read, metadata_read, write, delete, list]
+        observedRequests:
+          type: integer
+          format: int64
+        errors:
+          type: integer
+          format: int64
+        latencyMicros:
+          $ref: "#/components/schemas/StatisticsPhysicalCostMetric"
+        bytes:
+          $ref: "#/components/schemas/StatisticsPhysicalCostMetric"
+        sizeUpperBound:
+          type: integer
+          format: int64
+          description: Request-size bucket upper bound for this conditional model.
+        concurrencyUpperBound:
+          type: integer
+          format: int64
+          description: Active-request bucket upper bound for this conditional model.
+        serviceTier:
+          type: string
+          enum: [memory, local, remote]
+          description: Service tier for this conditional model.
+
+    StatisticsPhysicalCacheCost:
+      type: object
+      additionalProperties: false
+      required: [tier, accesses, hits, hitRatePpm]
+      properties:
+        tier:
+          type: string
+          enum: [memory, local]
+        accesses:
+          type: integer
+          format: int64
+        hits:
+          type: integer
+          format: int64
+        hitRatePpm:
+          type: integer
+          format: int64
+
+    StatisticsPhysicalCost:
+      type: object
+      additionalProperties: false
+      required: [basis, backend, telemetryFormat, capabilities, requests, caches]
+      description: |
+        Instance-local physical storage calibration. Backend adapters convert
+        their native metrics to this common model. A missing capability is
+        false and its measurements are absent. The model is not assigned to
+        one statement or relation.
+      properties:
+        basis:
+          type: string
+          enum: [backend_physical_telemetry]
+        backend:
+          type: string
+        telemetryFormat:
+          type: integer
+          format: int64
+        capabilities:
+          $ref: "#/components/schemas/StatisticsPhysicalTelemetryCapabilities"
+        requests:
+          type: array
+          items: { $ref: "#/components/schemas/StatisticsPhysicalRequestCost" }
+        caches:
+          type: array
+          items: { $ref: "#/components/schemas/StatisticsPhysicalCacheCost" }
+
+    StatisticsPlanningValue:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          score,
+          frequency,
+          uncertaintyPpm,
+          observedPlanVariationPpm,
+          costDifferenceMicros,
+          comparableExecutions,
+          rowCountClassUpperBound,
+          minimumExecutions,
+          basis,
+        ]
+      description: |
+        Observational priority proxy. It is present only when at least two
+        plans have enough execution evidence in the same access generation
+        and row-count class. It does not claim that an estimate caused a plan
+        change. A future counterfactual optimizer can replace the observed
+        A counterfactual optimizer replaces the observed plan-variation
+        component without changing the other components.
+      properties:
+        score:
+          type: integer
+          format: int64
+          description: |
+            Frequency multiplied by normalized uncertainty, observed plan
+            variation, and the median execution-time difference. The two
+            normalized components use parts per million.
+        frequency:
+          type: integer
+          format: int64
+          description: Recent workload frequency used by the score.
+        uncertaintyPpm:
+          type: integer
+          format: int64
+          description: Normalized p95 q-error excess in parts per million.
+        observedPlanVariationPpm:
+          type: integer
+          format: int64
+          description: Non-dominant comparable plan executions in parts per million.
+        costDifferenceMicros:
+          type: integer
+          format: int64
+          description: Difference between the fastest and slowest comparable median execution times.
+        comparableExecutions:
+          type: integer
+          format: int64
+          description: Executions represented by the comparable plan group.
+        rowCountClassUpperBound:
+          type: integer
+          format: int64
+          description: Median row-count histogram bound shared by the plan group.
+        minimumExecutions:
+          type: integer
+          format: int64
+          description: Minimum estimates and per-plan executions required for admission.
+        basis:
+          type: string
+          description: Stable identifier for the score method.
 
     SchemaState:
       type: object

@@ -98,7 +98,7 @@ async fn wait_for_row(reader: &RadProcess, id: &str) -> TestResult {
     }
 }
 
-fn insert_program(id: &str) -> Value {
+pub fn insert_program(id: &str) -> Value {
     json!({
         "statements": [{
             "name": "insert-user",
@@ -119,7 +119,7 @@ fn insert_program(id: &str) -> Value {
     })
 }
 
-fn query_program() -> Value {
+pub fn query_program() -> Value {
     json!({
         "statements": [{
             "name": "list-users",

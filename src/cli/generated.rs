@@ -195,7 +195,8 @@ pass --catalog-mode schema when rad.schema.yaml should own all catalog
 changes. Catalog mode is immutable after database initialization.
 
 The public API uses --addr (default port 7237). The administration UI uses
-the following port (default 7238).
+the following port (default 7238). Pass --frontend postgres to also expose
+the PostgreSQL wire protocol on port 5432.
 
 Documentation: https://www.radengine.dev/docs/cli#rad-serve
 ",
@@ -578,6 +579,57 @@ pub struct ServeArgs {
     )]
     pub reader_poll_interval_ms: i64,
     #[arg(
+        id = r"internal-addr",
+        long = r"internal-addr",
+        help = r"Listen address for the instance-to-instance API; requires --relay-token-file.",
+        env = r"RAD_INTERNAL_ADDR"
+    )]
+    pub internal_addr: Option<String>,
+    #[arg(
+        id = r"relay-target",
+        long = r"relay-target",
+        help = r"Base URL of the instance this one reports statistics to.",
+        env = r"RAD_RELAY_TARGET"
+    )]
+    pub relay_target: Option<String>,
+    #[arg(
+        id = r"relay-token-file",
+        long = r"relay-token-file",
+        help = r"File holding the shared secret for the instance-to-instance API.",
+        env = r"RAD_RELAY_TOKEN_FILE"
+    )]
+    pub relay_token_file: Option<std::path::PathBuf>,
+    #[arg(
+        id = r"internal-tls-cert",
+        long = r"internal-tls-cert",
+        help = r"Certificate the instance-to-instance API serves; requires --internal-tls-key.",
+        env = r"RAD_INTERNAL_TLS_CERT"
+    )]
+    pub internal_tls_cert: Option<std::path::PathBuf>,
+    #[arg(
+        id = r"internal-tls-key",
+        long = r"internal-tls-key",
+        help = r"Private key for the instance-to-instance certificate.",
+        env = r"RAD_INTERNAL_TLS_KEY"
+    )]
+    pub internal_tls_key: Option<std::path::PathBuf>,
+    #[arg(
+        id = r"relay-ca",
+        long = r"relay-ca",
+        help = r"Certificate authority that the reported-to instance must chain to.",
+        env = r"RAD_RELAY_CA"
+    )]
+    pub relay_ca: Option<std::path::PathBuf>,
+    #[arg(
+        id = r"instance-id",
+        long = r"instance-id",
+        help = r"Name this instance reports itself as; defaults to the hostname.",
+        env = r"RAD_INSTANCE_ID"
+    )]
+    pub instance_id: Option<String>,
+    #[arg(id = r"capture-workload-corpus", long = r"capture-workload-corpus", help = r"Record canonical programs with user values for bounded offline replay.", env = r"RAD_CAPTURE_WORKLOAD_CORPUS", default_value = r"false", action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    pub capture_workload_corpus: bool,
+    #[arg(
         id = r"storage",
         long = r"storage",
         help = r"Storage backend for SlateDB data.",
@@ -662,6 +714,14 @@ impl std::fmt::Debug for ServeArgs {
         debug.field("addr", &self.addr);
         debug.field("role", &self.role);
         debug.field("reader_poll_interval_ms", &self.reader_poll_interval_ms);
+        debug.field("internal_addr", &self.internal_addr);
+        debug.field("relay_target", &self.relay_target);
+        debug.field("relay_token_file", &self.relay_token_file);
+        debug.field("internal_tls_cert", &self.internal_tls_cert);
+        debug.field("internal_tls_key", &self.internal_tls_key);
+        debug.field("relay_ca", &self.relay_ca);
+        debug.field("instance_id", &self.instance_id);
+        debug.field("capture_workload_corpus", &self.capture_workload_corpus);
         debug.field("storage", &self.storage);
         debug.field("db", &self.db);
         debug.field("storage_path", &self.storage_path);

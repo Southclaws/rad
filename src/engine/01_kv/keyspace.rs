@@ -197,6 +197,60 @@ pub const KEYSPACES: &[Keyspace] = &[
         key: "",
         value: "json schema metadata/compatibility.v1",
     },
+    Keyspace {
+        name: "statistics_table_changes",
+        tag: 0x50,
+        key: "schema:be32",
+        value: "modification count decimal text",
+    },
+    Keyspace {
+        name: "statistics_model",
+        tag: 0x51,
+        key: "family:bytes",
+        value: "json feedback model document",
+    },
+    Keyspace {
+        name: "statistics_relation_model",
+        tag: 0x55,
+        key: "family:bytes",
+        value: "json relation feedback model document",
+    },
+    Keyspace {
+        name: "statistics_model_catalog",
+        tag: 0x56,
+        key: "",
+        value: "json statistics model catalog document",
+    },
+    Keyspace {
+        name: "statistics_frequency",
+        tag: 0x57,
+        key: "family:bytes",
+        value: "json schema statistics/frequency.v1",
+    },
+    Keyspace {
+        name: "statistics_frequency_epoch",
+        tag: 0x58,
+        key: "",
+        value: "decay epoch decimal text",
+    },
+    Keyspace {
+        name: "corpus_program",
+        tag: 0x52,
+        key: "canonical_version:uvarint content_hash:bytes",
+        value: "canonical PIR document bytes",
+    },
+    Keyspace {
+        name: "corpus_execution",
+        tag: 0x53,
+        key: "at:be64 sequence:uvarint",
+        value: "json execution observation document",
+    },
+    Keyspace {
+        name: "statistics_synopsis",
+        tag: 0x54,
+        key: "schema:be32",
+        value: "json synopsis model document",
+    },
 ];
 
 /// Tags permanently reserved and never allocated.

@@ -11,6 +11,7 @@ spec:
       credentialsSecretRef:
         name: example-rad-s3
   catalogMode: schema
+  readers: 2
   route:
     hostname: example.radengine.dev
     scheme: https

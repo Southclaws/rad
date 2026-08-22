@@ -7,7 +7,9 @@ use serde::Serialize;
 use crate::engine::lir::format::print_expression;
 
 use super::analysis::{ConstValue, Correlation, CorrelationKind};
-use super::physical::{AccessCandidate, BindingPlanKind, BindingStrategy, Node, Plan, RangeSpec};
+use super::physical::{
+    AccessCandidate, BindingPlanKind, BindingStrategy, Node, NodeKind, Plan, RangeSpec,
+};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,6 +18,20 @@ pub struct PlanView {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<PlanBindingView>,
     pub root: PlanNodeView,
+    /// Cardinality estimates with provenance, present when a model snapshot
+    /// was available at plan time: one entry for the statement root plus one
+    /// per scanned table.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub estimates: Vec<PlanEstimateView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanEstimateView {
+    /// `root`, or `table:<schema id>` for a scanned table.
+    pub target: String,
+    #[serde(flatten)]
+    pub estimate: super::estimator::Estimate,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -99,7 +115,42 @@ impl PlanView {
                 })
                 .collect(),
             root: view_node(&plan.root),
+            estimates: Vec::new(),
         }
+    }
+
+    /// Attach the pre-plan root estimate and table synopsis diagnostics.
+    pub fn annotate_estimates(
+        &mut self,
+        stats: &crate::engine::planner::models::PlannerStats,
+        root: Option<super::estimator::Estimate>,
+        plan: &Plan,
+    ) {
+        let estimator = super::estimator::Estimator::new(stats);
+        if let Some(estimate) = root {
+            self.estimates.push(PlanEstimateView {
+                target: "root".into(),
+                estimate,
+            });
+        }
+        let mut tables = std::collections::HashSet::new();
+        plan.walk(&mut |node| {
+            let scan = match &node.kind {
+                NodeKind::PrimaryKeyGet { scan, .. }
+                | NodeKind::TableScan { scan, .. }
+                | NodeKind::IndexRangeScan { scan, .. } => scan,
+                _ => return,
+            };
+            let table = scan.scan_table();
+            if tables.insert(table.schema_id)
+                && let Some(estimate) = estimator.scan_for_table(table)
+            {
+                self.estimates.push(PlanEstimateView {
+                    target: format!("table:{}", table.schema_id.get()),
+                    estimate,
+                });
+            }
+        });
     }
 
     /// Diagnostic text including non-trivial access alternatives and scores.
@@ -174,8 +225,8 @@ fn plain(
 }
 
 fn view_node(node: &Node) -> PlanNodeView {
-    match node {
-        Node::PrimaryKeyGet {
+    match &node.kind {
+        NodeKind::PrimaryKeyGet {
             scan, key, access, ..
         } => {
             let table = scan.scan_table();
@@ -190,13 +241,13 @@ fn view_node(node: &Node) -> PlanNodeView {
                 Vec::new(),
             )
         }
-        Node::TableScan { scan, access, .. } => plain(
+        NodeKind::TableScan { scan, access, .. } => plain(
             "TableScan",
             scan.scan_table().name.clone(),
             access.candidates.clone(),
             Vec::new(),
         ),
-        Node::Rows(relation) => {
+        NodeKind::Rows(relation) => {
             let crate::engine::lir::bound::RelationNode::Rows { scope, values } = &relation.node
             else {
                 unreachable!()
@@ -208,7 +259,7 @@ fn view_node(node: &Node) -> PlanNodeView {
                 Vec::new(),
             )
         }
-        Node::IndexRangeScan {
+        NodeKind::IndexRangeScan {
             scan,
             index,
             equality_prefix,
@@ -240,17 +291,19 @@ fn view_node(node: &Node) -> PlanNodeView {
                 Vec::new(),
             )
         }
-        Node::Filter { input, predicate } => plain(
+        NodeKind::Filter { input, predicate } => plain(
             "Filter",
             print_expression(predicate),
             Vec::new(),
             vec![view_node(input)],
         ),
-        Node::Reference { binding, .. } => plain("Ref", binding.clone(), Vec::new(), Vec::new()),
-        Node::RecursiveReference { binding, .. } => {
+        NodeKind::Reference { binding, .. } => {
+            plain("Ref", binding.clone(), Vec::new(), Vec::new())
+        }
+        NodeKind::RecursiveReference { binding, .. } => {
             plain("RecursiveRef", binding.clone(), Vec::new(), Vec::new())
         }
-        Node::Attach {
+        NodeKind::Attach {
             input,
             specifications,
         } => {
@@ -287,7 +340,7 @@ fn view_node(node: &Node) -> PlanNodeView {
                 },
             }
         }
-        Node::Project { input, fields } => {
+        NodeKind::Project { input, fields } => {
             let lines = fields
                 .iter()
                 .map(|field| {
@@ -318,7 +371,7 @@ fn view_node(node: &Node) -> PlanNodeView {
                 render: Render::Lines(lines),
             }
         }
-        Node::Sort { input, terms } => plain(
+        NodeKind::Sort { input, terms } => plain(
             "Sort",
             terms
                 .iter()
@@ -334,7 +387,7 @@ fn view_node(node: &Node) -> PlanNodeView {
             Vec::new(),
             vec![view_node(input)],
         ),
-        Node::Slice {
+        NodeKind::Slice {
             input,
             offset,
             limit,
@@ -347,7 +400,7 @@ fn view_node(node: &Node) -> PlanNodeView {
             Vec::new(),
             vec![view_node(input)],
         ),
-        Node::NestedLoopJoin {
+        NodeKind::NestedLoopJoin {
             left,
             right,
             kind,
@@ -359,13 +412,13 @@ fn view_node(node: &Node) -> PlanNodeView {
             Vec::new(),
             vec![view_node(left), view_node(right)],
         ),
-        Node::Concatenate { inputs, .. } => plain(
+        NodeKind::Concatenate { inputs, .. } => plain(
             "Concatenate",
             String::new(),
             Vec::new(),
             inputs.iter().map(view_node).collect(),
         ),
-        Node::Intersect {
+        NodeKind::Intersect {
             left,
             right,
             quantifier,
@@ -376,7 +429,7 @@ fn view_node(node: &Node) -> PlanNodeView {
             Vec::new(),
             vec![view_node(left), view_node(right)],
         ),
-        Node::Except {
+        NodeKind::Except {
             left,
             right,
             quantifier,
@@ -387,13 +440,13 @@ fn view_node(node: &Node) -> PlanNodeView {
             Vec::new(),
             vec![view_node(left), view_node(right)],
         ),
-        Node::Distinct { input, .. } => plain(
+        NodeKind::Distinct { input, .. } => plain(
             "Distinct",
             String::new(),
             Vec::new(),
             vec![view_node(input)],
         ),
-        Node::Aggregate {
+        NodeKind::Aggregate {
             input,
             groups,
             terms,
@@ -474,10 +527,27 @@ fn access_line(candidates: &[AccessCandidate]) -> Option<String> {
             .iter()
             .map(|candidate| {
                 let chosen = if candidate.chosen { " ✓" } else { "" };
+                let basis = candidate
+                    .decision_basis
+                    .map(|basis| format!(" [{}]", basis.label()))
+                    .unwrap_or_default();
+                let row_work = candidate
+                    .estimated_row_work
+                    .map(|work| {
+                        let upper_bound = work
+                            .upper_bound
+                            .map(|upper_bound| upper_bound.to_string())
+                            .unwrap_or_else(|| "unbounded".into());
+                        format!(" {{rowWork={}..{upper_bound}}}", work.lower_bound)
+                    })
+                    .unwrap_or_default();
                 if candidate.method == "PKGet" {
-                    format!("{}{chosen}", candidate.method)
+                    format!("{}{row_work}{chosen}{basis}", candidate.method)
                 } else {
-                    format!("{}({}){chosen}", candidate.method, candidate.score)
+                    format!(
+                        "{}({}){row_work}{chosen}{basis}",
+                        candidate.method, candidate.score
+                    )
                 }
             })
             .collect::<Vec<_>>()

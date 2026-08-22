@@ -82,6 +82,21 @@ func TestAPIServerDefaultsAndPermitsAuthenticationRotation(t *testing.T) {
 	if observed.Spec.Route.Scheme != "https" || observed.Spec.DeletionPolicy != radv1alpha1.DeletionPolicyRetain || observed.Spec.TerminationGracePeriodSeconds != 120 {
 		t.Fatalf("route/lifecycle defaults = %#v", observed.Spec)
 	}
+	// A database serves from its writer until readers are asked for.
+	if observed.Spec.Readers != 0 {
+		t.Fatalf("readers default = %d, want none", observed.Spec.Readers)
+	}
+
+	tooManyReaders := envtestDatabase("too-many-readers", namespace, "readers-bucket", "readers.rad.example", secret.Name)
+	tooManyReaders.Spec.Readers = 33
+	if err := kubernetesClient.Create(ctx, tooManyReaders); !apierrors.IsInvalid(err) {
+		t.Fatalf("reader count above the bound error = %v, want Invalid", err)
+	}
+	negativeReaders := envtestDatabase("negative-readers", namespace, "negative-bucket", "negative.rad.example", secret.Name)
+	negativeReaders.Spec.Readers = -1
+	if err := kubernetesClient.Create(ctx, negativeReaders); !apierrors.IsInvalid(err) {
+		t.Fatalf("negative reader count error = %v, want Invalid", err)
+	}
 
 	serviceAccount := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "tenant-workload", Namespace: namespace}}
 	if err := kubernetesClient.Create(ctx, serviceAccount); err != nil {

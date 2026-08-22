@@ -391,6 +391,9 @@ jobs:
       - name: Compare same-seed process traces
         run: cargo test --locked --test schema_scheduler_determinism identical_seed_and_boundary_produce_identical_traces -- --exact --ignored --nocapture
 
+      - name: Compare same-seed statistics traces
+        run: cargo test --locked --test statistics_simulation statistics_collection_replays_identically_for_the_same_seed -- --exact --ignored --nocapture
+
       - name: Retain deterministic replay evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

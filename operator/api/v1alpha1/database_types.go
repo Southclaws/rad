@@ -5,12 +5,29 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// InternalTransportStatus is the observed shape of the reader-to-writer
+// channel.
+type InternalTransportStatus struct {
+	// Mode is tls or plaintext.
+	Mode string `json:"mode,omitempty"`
+	// Provider names what issued the certificate: cert-manager, user, or none.
+	Provider string `json:"provider,omitempty"`
+	// CertificateSecret holds the serving certificate, when there is one.
+	CertificateSecret string `json:"certificateSecret,omitempty"`
+	// WriterAddress is the URL readers are configured to report to.
+	WriterAddress string `json:"writerAddress,omitempty"`
+}
+
 const (
 	ConditionClaimsAccepted   = "ClaimsAccepted"
 	ConditionCredentialsReady = "CredentialsReady"
 	ConditionWorkloadReady    = "WorkloadReady"
 	ConditionRouteReady       = "RouteReady"
 	ConditionReady            = "Ready"
+	// ConditionInternalTLSReady reports the statistics channel's transport
+	// security. It is deliberately separate from Ready: losing the channel
+	// costs the fleet a better planner, not availability.
+	ConditionInternalTLSReady = "InternalTLSReady"
 )
 
 // CatalogMode is the immutable catalog authority selected when Rad first opens
@@ -96,6 +113,54 @@ type Route struct {
 	TLSSecretName string `json:"tlsSecretName,omitempty"`
 }
 
+// InternalTLSMode selects how the instance-to-instance channel is secured.
+// +kubebuilder:validation:Enum=auto;required;disabled
+type InternalTLSMode string
+
+const (
+	// InternalTLSAuto uses a supplied certificate, else provisions one through
+	// cert-manager when it is installed, else serves plain HTTP.
+	InternalTLSAuto InternalTLSMode = "auto"
+	// InternalTLSRequired refuses to serve the channel unencrypted, holding
+	// the database unready rather than falling back.
+	InternalTLSRequired InternalTLSMode = "required"
+	// InternalTLSDisabled serves plain HTTP whatever is installed.
+	InternalTLSDisabled InternalTLSMode = "disabled"
+)
+
+// IssuerReference names an existing cert-manager issuer, for a deployment with
+// its own certificate authority.
+type IssuerReference struct {
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// +kubebuilder:default=Issuer
+	// +kubebuilder:validation:Enum=Issuer;ClusterIssuer
+	Kind string `json:"kind,omitempty"`
+
+	// +kubebuilder:default=cert-manager.io
+	Group string `json:"group,omitempty"`
+}
+
+// InternalTLS configures transport security for the channel readers use to
+// report statistics to the writer. It never affects client traffic.
+// +kubebuilder:validation:XValidation:rule="!(has(self.secretName) && has(self.issuerRef))",message="secretName and issuerRef are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="!(self.mode == 'disabled' && (has(self.secretName) || has(self.issuerRef)))",message="disabled internal TLS cannot also name a certificate source"
+type InternalTLS struct {
+	// +kubebuilder:default=auto
+	Mode InternalTLSMode `json:"mode,omitempty"`
+
+	// SecretName is a kubernetes.io/tls Secret holding tls.crt, tls.key, and
+	// ca.crt. The operator validates it but never owns or modifies it.
+	// +optional
+	SecretName string `json:"secretName,omitempty"`
+
+	// IssuerRef delegates issuance to an existing cert-manager issuer instead
+	// of the per-database authority the operator would otherwise create.
+	// +optional
+	IssuerRef *IssuerReference `json:"issuerRef,omitempty"`
+}
+
 // DatabaseSpec is the desired state for one Rad process and one physical S3
 // bucket.
 type DatabaseSpec struct {
@@ -110,8 +175,30 @@ type DatabaseSpec struct {
 
 	Route Route `json:"route"`
 
-	// Resources applies to the single Rad container. Empty resources use the
-	// controller's conservative defaults.
+	// Readers is the number of read-only Rad instances. A Rad instance holds no
+	// data: every instance reads the same S3 objects, so a reader adds read
+	// capacity rather than a copy of the database. Readers are addressable
+	// through their own Service; the published route always reaches the writer,
+	// because a client that reads immediately after writing would otherwise
+	// observe reader lag.
+	// +kubebuilder:default=0
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=32
+	Readers int32 `json:"readers,omitempty"`
+
+	// CaptureWorkloadCorpus records canonical programs with literal values for
+	// bounded offline replay. The writer and each reader apply the same policy.
+	// +kubebuilder:default=false
+	CaptureWorkloadCorpus bool `json:"captureWorkloadCorpus,omitempty"`
+
+	// InternalTLS secures the reader-to-writer statistics channel. It has no
+	// effect while no readers exist, because the channel does not exist.
+	// +optional
+	// +kubebuilder:default={mode: auto}
+	InternalTLS InternalTLS `json:"internalTLS,omitempty"`
+
+	// Resources applies to every Rad container, writer and reader alike. Empty
+	// resources use the controller's conservative defaults.
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 
@@ -138,6 +225,15 @@ type DatabaseStatus struct {
 	ReadyReplicas      int32  `json:"readyReplicas,omitempty"`
 	DesiredImage       string `json:"desiredImage,omitempty"`
 	ObservedImage      string `json:"observedImage,omitempty"`
+	// ReaderServiceName is empty while no readers are requested.
+	ReaderServiceName string `json:"readerServiceName,omitempty"`
+	DesiredReaders    int32  `json:"desiredReaders,omitempty"`
+	ReadyReaders      int32  `json:"readyReaders,omitempty"`
+
+	// InternalTransport describes how readers reach the writer, so an operator
+	// can see whether the channel is encrypted without inspecting pods.
+	// +optional
+	InternalTransport *InternalTransportStatus `json:"internalTransport,omitempty"`
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
@@ -149,6 +245,7 @@ type DatabaseStatus struct {
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
 // +kubebuilder:printcolumn:name="Bucket",type="string",JSONPath=".spec.storage.bucket"
+// +kubebuilder:printcolumn:name="Readers",type="integer",JSONPath=".status.readyReaders"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 type Database struct {
 	metav1.TypeMeta   `json:",inline"`

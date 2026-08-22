@@ -521,7 +521,7 @@ func testReconciler(t *testing.T, objects ...client.Object) (*DatabaseReconciler
 	}
 	kubernetesClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&radv1alpha1.Database{}, &appsv1.StatefulSet{}, &networkingv1.Ingress{}).
+		WithStatusSubresource(&radv1alpha1.Database{}, &appsv1.StatefulSet{}, &appsv1.Deployment{}, &networkingv1.Ingress{}).
 		WithObjects(objects...).
 		Build()
 	return &DatabaseReconciler{

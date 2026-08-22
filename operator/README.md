@@ -28,13 +28,20 @@ when a separate namespace needs an independent control plane.
 
 For a `Database` named `example`, the controller creates:
 
-- a single-replica `rad-example` StatefulSet;
+- a single-replica `rad-example` StatefulSet, the writer;
 - `rad-example` and `rad-example-headless` ClusterIP Services;
 - a `rad-example` Ingress with the requested hostname and optional TLS;
 - a `rad-example` PodDisruptionBudget;
 - storage and hostname claim Leases;
-- an optional ingress NetworkPolicy; and
-- a tokenless `rad-example` ServiceAccount when static credentials are used.
+- an optional ingress NetworkPolicy;
+- a tokenless `rad-example` ServiceAccount when static credentials are used; and
+- a `rad-example-reader` Deployment, Service, and PodDisruptionBudget while
+  `spec.readers` is above zero.
+
+Every pod carries `radengine.dev/role`, either `write` or `read`, and every
+Service, StatefulSet, Deployment, and PodDisruptionBudget selector names one
+role. Selectors that matched both would let each workload's controller act on
+the other's pods.
 
 No tenant Service has type `LoadBalancer`. Every Ingress uses the configured
 shared IngressClass, so all hostnames converge on the same entrypoint.
@@ -139,6 +146,148 @@ The controller validates that the referenced Secret is a non-empty
 `tlsSecretName` when HTTPS terminates before the cluster Ingress. Set
 `scheme: http` only for local development.
 
+## One writer, many readers
+
+A Rad instance holds no data. Every instance reads the same S3 objects through
+Slate, so a reader adds read capacity rather than a copy of the database:
+
+```yaml
+spec:
+  readers: 3
+```
+
+Readers run with `RAD_ROLE=read`, take no Slate writer lease, and are reached
+in-cluster through `rad-example-reader`. `status.readerServiceName`,
+`status.desiredReaders`, and `status.readyReaders` report them.
+
+The published route always reaches the writer. Sending reads through the
+external hostname would answer a client that read immediately after writing
+from an instance that has not yet observed the write, so choosing a reader is
+explicit: address the reader Service. A reader observes a commit once it polls
+the Slate manifest, bounded by `RAD_READER_POLL_INTERVAL_MS`.
+
+Readers do not gate the `Ready` condition. A database whose writer and route
+are healthy is available; readers that are still starting reduce read capacity,
+not availability. Their rollout surges before terminating, and their
+PodDisruptionBudget allows one voluntary eviction at a time, because a reader
+holds nothing a drain could lose. Setting `readers` back to zero removes the
+Deployment, Service, and budget.
+
+### Readers contribute statistics back
+
+A reader observes most of the read workload, so what its planner learns is
+worth more than the writer's own sample. With readers present the operator
+provisions an instance-to-instance channel for that evidence:
+
+```text
+Secret   rad-example-internal          one database-scoped shared secret
+Service  rad-example-internal          the writer, port 7239
+```
+
+The writer serves `POST /internal/statistics/observations` on 7239 and readers
+report to it. The secret is generated once and adopted thereafter — rotating it
+on every reconcile would restart every reader on every loop — and is mounted as
+a read-only file rather than passed in the environment, since argv and
+environment blocks leak in ways a mounted file does not. Both ends refuse to
+start with only half the configuration, so the port is never served
+unauthenticated.
+
+The channel carries fingerprints and counters, never user values, and no
+failure of it can affect a query result or a reader's readiness. Scaling
+`readers` to zero removes the Secret and Service with the readers.
+
+#### Encrypting the channel
+
+The shared secret answers *may this caller submit evidence*. TLS answers *am I
+talking to the actual writer*. They are separate mechanisms and rotating one is
+not a change to the other.
+
+```yaml
+spec:
+  internalTLS:
+    mode: auto # auto | required | disabled
+```
+
+`auto` uses a certificate you supply; failing that it provisions one through
+cert-manager when cert-manager's API is served; failing that it runs the
+channel authenticated but unencrypted. `required` refuses that last fallback
+and holds `InternalTLSReady` false with a reason rather than downgrading.
+`disabled` never encrypts.
+
+cert-manager is detected by asking whether the cluster serves
+`cert-manager.io/v1`, not by looking for a Deployment, so it can be installed
+anywhere under any name. The answer is cached, since it changes only when
+somebody installs or removes it.
+
+When the operator provisions, it builds a certificate authority **per
+database**, namespace-scoped:
+
+```text
+Issuer      rad-example-internal-selfsigned    bootstrap
+Certificate rad-example-internal-ca            the authority
+Issuer      rad-example-internal-ca            signs from it
+Certificate rad-example-internal               the writer, four Service SANs
+Secret      rad-example-internal-tls           cert-manager writes it
+```
+
+A cluster-wide issuer would let one database's certificate authenticate as
+another's. A deployment with its own PKI points at an existing issuer instead,
+and no authority is created:
+
+```yaml
+spec:
+  internalTLS:
+    issuerRef:
+      name: corporate-pki
+      kind: ClusterIssuer
+```
+
+Or supplies the certificate directly, in which case the operator validates the
+Secret holds `tls.crt`, `tls.key`, and `ca.crt` and otherwise never touches it:
+
+```yaml
+spec:
+  internalTLS:
+    mode: required
+    secretName: rad-prod-internal-tls
+```
+
+The writer mounts only `tls.crt` and `tls.key`; a reader mounts only `ca.crt`,
+so a reader never holds the private key of the identity it exists to verify.
+Rad re-reads the certificate files periodically, so a cert-manager renewal
+takes effect on the next connection without restarting the writer.
+
+`status.internalTransport` reports the mode, the provider, the Secret, and the
+address readers use. `InternalTLSReady` is a condition of its own and never
+gates `Ready`: an unencrypted or unprovisioned statistics channel costs the
+fleet a better planner, not availability.
+
+The authority lives five years and renews a year out; the writer's certificate
+lives ninety days and renews thirty days out. An authority that rotated on the
+same cadence as the certificates it signs would make every verifying instance
+track it for no benefit. Readers re-read the authority when it changes, so
+rotating either one needs no restart.
+
+For production, set `mode: required`. The `auto` default permits an unencrypted
+channel when cert-manager is absent — reported as `InternalTLSReady` with reason
+`Plaintext`, but not refused.
+
+The operator never installs cert-manager. For a development cluster,
+`task certmanager:install` does.
+
+### The workload corpus
+
+Every instance that can store its statistics records the canonical program
+behind each execution, so a candidate query planner can be scored offline
+against real traffic. There is no switch: the documents go into the store whose
+data those same programs read and wrote, and the corpus is statistics.
+
+A reader is the one exception, and not for policy reasons — it has no store of
+its own, so its documents exist only to be relayed. It captures them when the
+channel to the writer is confidential and skips the work otherwise, logging the
+reason. Aggregate evidence still flows either way; `relay.corpusWithheld` on
+`GET /statistics` counts anything dropped.
+
 An optional NetworkPolicy restricts direct tenant-pod ingress to a gateway
 namespace and, optionally, selected gateway pods:
 
@@ -147,15 +296,19 @@ namespace and, optionally, selected gateway pods:
 --gateway-pod-selector=app.kubernetes.io/name=traefik
 ```
 
+When readers exist, the policy also admits port 7239 from this database's own
+reader pods and from nothing else; the gateway rule never covers it.
+
 Without `--gateway-namespace`, the operator does not manage a NetworkPolicy.
 Cluster ingress authentication, authorization, certificates, and public DNS
 remain deployment responsibilities.
 
 ## Lifecycle and failure handling
 
-The StatefulSet has a hardened container security context, resource defaults,
-and a configurable graceful termination window.
-`spec.terminationGracePeriodSeconds` defaults to 120.
+Writer and reader pods are built from one pod specification, so both have the
+same hardened container security context, resource defaults, probes, and
+graceful termination window. `spec.terminationGracePeriodSeconds` defaults to
+120, and `spec.resources` applies to every Rad container.
 
 Each probe asks Rad a different question, so Kubernetes can tell a process that
 needs restarting from a healthy one that should temporarily receive no traffic.
@@ -174,8 +327,8 @@ for `RAD_SHUTDOWN_DRAIN_MS`, and only then stops listening. The operator sets
 that window to one readiness cycle, capped at half the grace period, so the
 endpoints controller has moved traffic before requests can fail.
 
-Deletion removes the route and route claim first, drains deletion through the
-single writer, then removes Services and the storage claim. The finalizer never
+Deletion removes the route and route claim first, then readers, then drains
+deletion through the writer, then removes Services and the storage claim. The finalizer never
 deletes the S3 bucket or its objects; `v1alpha1` supports `Retain` only.
 Create/update conflicts use bounded Kubernetes retries. Reconciliation is
 concurrency-limited, and the operator indexes claim Leases by database UID so

@@ -54,11 +54,38 @@ pub struct AccessDecision {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AccessCandidate {
     pub method: String,
     pub score: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_row_work: Option<AccessRowWork>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_basis: Option<AccessDecisionBasis>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub chosen: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessDecisionBasis {
+    BoundedRowWork,
+}
+
+impl AccessDecisionBasis {
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::BoundedRowWork => "bounded_row_work",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessRowWork {
+    pub lower_bound: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upper_bound: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -103,8 +130,34 @@ pub struct RangeSpec {
     pub upper: Option<RangeBound>,
 }
 
+/// A physical operator plus the logical relation it implements, when the
+/// planner can state that unambiguously. Attribution is inert: it never
+/// affects planning, execution shape, or which path runs, so a plan is
+/// identical whether or not anything is measuring it.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Node {
+pub struct Node {
+    pub attribution: Option<lir::fingerprint::Fingerprint>,
+    pub kind: NodeKind,
+}
+
+impl From<NodeKind> for Node {
+    fn from(kind: NodeKind) -> Self {
+        Self {
+            attribution: None,
+            kind,
+        }
+    }
+}
+
+impl NodeKind {
+    /// This operator with no logical counterpart recorded.
+    pub fn bare(self) -> Node {
+        Node::from(self)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum NodeKind {
     PrimaryKeyGet {
         scan: Box<bound::Relation>,
         key: Vec<ConstValue>,
@@ -223,22 +276,272 @@ impl Plan {
     }
 }
 
+impl Plan {
+    /// Canonical structural identity of the chosen physical plan: operator
+    /// shapes, access paths, join order, and binding strategies. Literal
+    /// values (keys, range bounds) are excluded — plan identity is the shape
+    /// that executed, not the parameters it ran with.
+    pub fn fingerprint(&self) -> lir::fingerprint::Fingerprint {
+        use lir::fingerprint as fp;
+
+        let positions: std::collections::HashMap<&str, u32> = self
+            .bindings
+            .iter()
+            .enumerate()
+            .map(|(position, binding)| (binding.name.as_str(), position as u32))
+            .collect();
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(self.bindings.len() as u64).to_be_bytes());
+        for binding in &self.bindings {
+            match &binding.kind {
+                BindingPlanKind::Derived { plan, strategy } => {
+                    payload.push(1);
+                    payload.push(match strategy {
+                        BindingStrategy::Materialize => 1,
+                        BindingStrategy::Replay => 2,
+                    });
+                    encode_plan_node(plan, &positions, &mut payload);
+                }
+                BindingPlanKind::Recursive {
+                    anchor,
+                    step,
+                    accumulation,
+                    ..
+                } => {
+                    payload.push(2);
+                    payload.push(fp::accumulation_byte(*accumulation));
+                    encode_plan_node(anchor, &positions, &mut payload);
+                    encode_plan_node(step, &positions, &mut payload);
+                }
+            }
+        }
+        encode_plan_node(&self.root, &positions, &mut payload);
+        payload.push(fp::cardinality_byte(self.cardinality));
+        fp::finish(fp::DOMAIN_PLAN, &payload)
+    }
+}
+
+pub(super) fn scan_schema_id(scan: &bound::Relation) -> u32 {
+    match &scan.node {
+        bound::RelationNode::Scan { table, .. } => table.schema_id.get(),
+        _ => 0,
+    }
+}
+
+impl Plan {
+    /// The table this plan reads, when it reads exactly one. An estimate
+    /// for a single-table plan can be grounded by that table's synopsis;
+    /// a multi-table plan cannot without join estimation.
+    pub fn sole_scanned_table(&self) -> Option<crate::engine::catalog::identity::SchemaId> {
+        match self.root.scanned_tables().as_slice() {
+            [table] => crate::engine::catalog::identity::SchemaId::new(*table).ok(),
+            _ => None,
+        }
+    }
+}
+
+impl Node {
+    /// Stable logical identities of every table this plan subtree scans.
+    pub(super) fn scanned_tables(&self) -> Vec<u32> {
+        let mut tables = Vec::new();
+        self.walk(&mut |node| {
+            let scan = match &node.kind {
+                NodeKind::PrimaryKeyGet { scan, .. }
+                | NodeKind::TableScan { scan, .. }
+                | NodeKind::IndexRangeScan { scan, .. } => Some(scan),
+                _ => None,
+            };
+            if let Some(scan) = scan {
+                let schema = scan_schema_id(scan);
+                if schema != 0 && !tables.contains(&schema) {
+                    tables.push(schema);
+                }
+            }
+        });
+        tables
+    }
+}
+
+fn encode_str(value: &str, payload: &mut Vec<u8>) {
+    payload.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    payload.extend_from_slice(value.as_bytes());
+}
+
+fn encode_plan_node(
+    node: &Node,
+    positions: &std::collections::HashMap<&str, u32>,
+    payload: &mut Vec<u8>,
+) {
+    use lir::fingerprint as fp;
+
+    match &node.kind {
+        NodeKind::PrimaryKeyGet { scan, key, .. } => {
+            payload.push(1);
+            payload.extend_from_slice(&scan_schema_id(scan).to_be_bytes());
+            payload.extend_from_slice(&(key.len() as u64).to_be_bytes());
+        }
+        NodeKind::TableScan { scan, .. } => {
+            payload.push(2);
+            payload.extend_from_slice(&scan_schema_id(scan).to_be_bytes());
+        }
+        NodeKind::Rows(relation) => {
+            payload.push(3);
+            payload.extend_from_slice(&(relation.output().fields.len() as u64).to_be_bytes());
+        }
+        NodeKind::IndexRangeScan {
+            scan,
+            index,
+            equality_prefix,
+            range,
+            ..
+        } => {
+            payload.push(4);
+            payload.extend_from_slice(&scan_schema_id(scan).to_be_bytes());
+            encode_str(index.logical_id.as_str(), payload);
+            payload.extend_from_slice(&(equality_prefix.len() as u64).to_be_bytes());
+            match range {
+                Some(range) => {
+                    payload.push(1);
+                    encode_str(&range.column, payload);
+                    payload.push(u8::from(range.lower.is_some()));
+                    payload.push(u8::from(range.upper.is_some()));
+                }
+                None => payload.push(0),
+            }
+        }
+        NodeKind::Filter { input, .. } => {
+            payload.push(5);
+            encode_plan_node(input, positions, payload);
+        }
+        NodeKind::Attach {
+            input,
+            specifications,
+        } => {
+            payload.push(6);
+            payload.extend_from_slice(&(specifications.len() as u64).to_be_bytes());
+            for specification in specifications {
+                payload.push(match specification.kind {
+                    CrossingKind::Exists => 1,
+                    CrossingKind::First => 2,
+                    CrossingKind::Scalar => 3,
+                    CrossingKind::Array => 4,
+                });
+                encode_plan_node(&specification.plan, positions, payload);
+            }
+            encode_plan_node(input, positions, payload);
+        }
+        NodeKind::Project { input, fields } => {
+            payload.push(7);
+            payload.extend_from_slice(&(fields.len() as u64).to_be_bytes());
+            encode_plan_node(input, positions, payload);
+        }
+        NodeKind::Sort { input, terms } => {
+            payload.push(8);
+            payload.extend_from_slice(&(terms.len() as u64).to_be_bytes());
+            for term in terms {
+                payload.push(u8::from(term.descending));
+            }
+            encode_plan_node(input, positions, payload);
+        }
+        NodeKind::Slice {
+            input,
+            offset,
+            limit,
+        } => {
+            payload.push(9);
+            payload.extend_from_slice(&(*offset as u64).to_be_bytes());
+            match limit {
+                Some(limit) => {
+                    payload.push(1);
+                    payload.extend_from_slice(&(*limit as u64).to_be_bytes());
+                }
+                None => payload.push(0),
+            }
+            encode_plan_node(input, positions, payload);
+        }
+        NodeKind::Reference { binding, .. } => {
+            payload.push(10);
+            let position = positions.get(binding.as_str()).copied().unwrap_or(u32::MAX);
+            payload.extend_from_slice(&position.to_be_bytes());
+        }
+        NodeKind::RecursiveReference { binding, .. } => {
+            payload.push(11);
+            let position = positions.get(binding.as_str()).copied().unwrap_or(u32::MAX);
+            payload.extend_from_slice(&position.to_be_bytes());
+        }
+        NodeKind::Distinct { input, .. } => {
+            payload.push(12);
+            encode_plan_node(input, positions, payload);
+        }
+        NodeKind::NestedLoopJoin {
+            left, right, kind, ..
+        } => {
+            payload.push(13);
+            payload.push(fp::join_byte(*kind));
+            encode_plan_node(left, positions, payload);
+            encode_plan_node(right, positions, payload);
+        }
+        NodeKind::Concatenate { inputs, .. } => {
+            payload.push(14);
+            payload.extend_from_slice(&(inputs.len() as u64).to_be_bytes());
+            for input in inputs {
+                encode_plan_node(input, positions, payload);
+            }
+        }
+        NodeKind::Intersect {
+            left,
+            right,
+            quantifier,
+            ..
+        } => {
+            payload.push(15);
+            payload.push(fp::quantifier_byte(*quantifier));
+            encode_plan_node(left, positions, payload);
+            encode_plan_node(right, positions, payload);
+        }
+        NodeKind::Except {
+            left,
+            right,
+            quantifier,
+            ..
+        } => {
+            payload.push(16);
+            payload.push(fp::quantifier_byte(*quantifier));
+            encode_plan_node(left, positions, payload);
+            encode_plan_node(right, positions, payload);
+        }
+        NodeKind::Aggregate {
+            input,
+            groups,
+            terms,
+        } => {
+            payload.push(17);
+            payload.extend_from_slice(&(groups.len() as u64).to_be_bytes());
+            payload.extend_from_slice(&(terms.len() as u64).to_be_bytes());
+            for term in terms {
+                payload.push(fp::aggregate_byte(term.function));
+            }
+            encode_plan_node(input, positions, payload);
+        }
+    }
+}
+
 impl Node {
     pub fn children(&self) -> Vec<&Self> {
-        match self {
-            Self::PrimaryKeyGet { .. }
-            | Self::TableScan { .. }
-            | Self::Rows(_)
-            | Self::IndexRangeScan { .. }
-            | Self::Reference { .. }
-            | Self::RecursiveReference { .. } => Vec::new(),
-            Self::Filter { input, .. }
-            | Self::Project { input, .. }
-            | Self::Sort { input, .. }
-            | Self::Slice { input, .. }
-            | Self::Distinct { input, .. }
-            | Self::Aggregate { input, .. } => vec![input],
-            Self::Attach {
+        match &self.kind {
+            NodeKind::PrimaryKeyGet { .. }
+            | NodeKind::TableScan { .. }
+            | NodeKind::Rows(_)
+            | NodeKind::IndexRangeScan { .. }
+            | NodeKind::Reference { .. }
+            | NodeKind::RecursiveReference { .. } => Vec::new(),
+            NodeKind::Filter { input, .. }
+            | NodeKind::Project { input, .. }
+            | NodeKind::Sort { input, .. }
+            | NodeKind::Slice { input, .. }
+            | NodeKind::Distinct { input, .. }
+            | NodeKind::Aggregate { input, .. } => vec![input],
+            NodeKind::Attach {
                 input,
                 specifications,
             } => specifications
@@ -246,10 +549,10 @@ impl Node {
                 .map(|specification| &specification.plan)
                 .chain(std::iter::once(&**input))
                 .collect(),
-            Self::NestedLoopJoin { left, right, .. }
-            | Self::Intersect { left, right, .. }
-            | Self::Except { left, right, .. } => vec![left, right],
-            Self::Concatenate { inputs, .. } => inputs.iter().collect(),
+            NodeKind::NestedLoopJoin { left, right, .. }
+            | NodeKind::Intersect { left, right, .. }
+            | NodeKind::Except { left, right, .. } => vec![left, right],
+            NodeKind::Concatenate { inputs, .. } => inputs.iter().collect(),
         }
     }
 
@@ -261,20 +564,20 @@ impl Node {
     }
 
     fn children_mut(&mut self) -> Vec<&mut Self> {
-        match self {
-            Self::PrimaryKeyGet { .. }
-            | Self::TableScan { .. }
-            | Self::Rows(_)
-            | Self::IndexRangeScan { .. }
-            | Self::Reference { .. }
-            | Self::RecursiveReference { .. } => Vec::new(),
-            Self::Filter { input, .. }
-            | Self::Project { input, .. }
-            | Self::Sort { input, .. }
-            | Self::Slice { input, .. }
-            | Self::Distinct { input, .. }
-            | Self::Aggregate { input, .. } => vec![input],
-            Self::Attach {
+        match &mut self.kind {
+            NodeKind::PrimaryKeyGet { .. }
+            | NodeKind::TableScan { .. }
+            | NodeKind::Rows(_)
+            | NodeKind::IndexRangeScan { .. }
+            | NodeKind::Reference { .. }
+            | NodeKind::RecursiveReference { .. } => Vec::new(),
+            NodeKind::Filter { input, .. }
+            | NodeKind::Project { input, .. }
+            | NodeKind::Sort { input, .. }
+            | NodeKind::Slice { input, .. }
+            | NodeKind::Distinct { input, .. }
+            | NodeKind::Aggregate { input, .. } => vec![input],
+            NodeKind::Attach {
                 input,
                 specifications,
             } => std::iter::once(&mut **input)
@@ -284,10 +587,10 @@ impl Node {
                         .map(|specification| &mut specification.plan),
                 )
                 .collect(),
-            Self::NestedLoopJoin { left, right, .. }
-            | Self::Intersect { left, right, .. }
-            | Self::Except { left, right, .. } => vec![left, right],
-            Self::Concatenate { inputs, .. } => inputs.iter_mut().collect(),
+            NodeKind::NestedLoopJoin { left, right, .. }
+            | NodeKind::Intersect { left, right, .. }
+            | NodeKind::Except { left, right, .. } => vec![left, right],
+            NodeKind::Concatenate { inputs, .. } => inputs.iter_mut().collect(),
         }
     }
 
@@ -301,18 +604,48 @@ impl Node {
 
 #[cfg(test)]
 mod tests {
-    use crate::engine::lir::{RootCardinality, SlotId};
+    use crate::engine::lir::{BinaryOp, RootCardinality, SlotId, Value};
     use crate::engine::planner::analysis::{Correlation, CorrelationKind};
-    use crate::engine::planner::test_support::scan;
+    use crate::engine::planner::test_support::{column, query, scan};
+    use crate::engine::planner::{PlanOptions, plan_query};
 
     use super::*;
 
+    #[test]
+    fn plan_fingerprint_tracks_shape_and_access_path_not_literals() {
+        let filtered = |value: &str| {
+            let scan = scan();
+            let predicate = bound::Expr::binary(
+                BinaryOp::Eq,
+                column(&scan, "board_id"),
+                bound::Expr::literal(Value::Text(value.into())),
+            );
+            query(bound::Relation::filter(scan, predicate), 3)
+        };
+
+        let indexed = plan_query(&filtered("b1"), PlanOptions::default());
+        let repeated = plan_query(&filtered("b1"), PlanOptions::default());
+        assert_eq!(indexed.fingerprint(), repeated.fingerprint());
+
+        let other_literal = plan_query(&filtered("b2"), PlanOptions::default());
+        assert_eq!(indexed.fingerprint(), other_literal.fingerprint());
+
+        let forced_scan = plan_query(
+            &filtered("b1"),
+            PlanOptions {
+                full_scan_only: true,
+            },
+        );
+        assert_ne!(indexed.fingerprint(), forced_scan.fingerprint());
+    }
+
     fn leaf(scan: &bound::Relation) -> Node {
-        Node::TableScan {
+        NodeKind::TableScan {
             scan: Box::new(scan.clone()),
             decode_columns: Vec::new(),
             access: AccessDecision::default(),
         }
+        .bare()
     }
 
     #[test]
@@ -329,7 +662,7 @@ mod tests {
                     strategy: BindingStrategy::Replay,
                 },
             }],
-            root: Node::Attach {
+            root: NodeKind::Attach {
                 input: Box::new(leaf(&scan)),
                 specifications: vec![AttachSpec {
                     slot: SlotId(3),
@@ -341,7 +674,8 @@ mod tests {
                     plan: leaf(&scan),
                     output: output.clone(),
                 }],
-            },
+            }
+            .bare(),
             cardinality: RootCardinality::Many,
             output,
             dependencies: CatalogDependencies::default(),

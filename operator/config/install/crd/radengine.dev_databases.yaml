@@ -26,6 +26,9 @@ spec:
     - jsonPath: .spec.storage.bucket
       name: Bucket
       type: string
+    - jsonPath: .status.readyReaders
+      name: Readers
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -55,6 +58,12 @@ spec:
               DatabaseSpec is the desired state for one Rad process and one physical S3
               bucket.
             properties:
+              captureWorkloadCorpus:
+                default: false
+                description: |-
+                  CaptureWorkloadCorpus records canonical programs with literal values for
+                  bounded offline replay. The writer and each reader apply the same policy.
+                type: boolean
               catalogMode:
                 default: schema
                 description: CatalogMode is immutable after the database is initialized.
@@ -73,10 +82,70 @@ spec:
                 enum:
                 - Retain
                 type: string
+              internalTLS:
+                default:
+                  mode: auto
+                description: |-
+                  InternalTLS secures the reader-to-writer statistics channel. It has no
+                  effect while no readers exist, because the channel does not exist.
+                properties:
+                  issuerRef:
+                    description: |-
+                      IssuerRef delegates issuance to an existing cert-manager issuer instead
+                      of the per-database authority the operator would otherwise create.
+                    properties:
+                      group:
+                        default: cert-manager.io
+                        type: string
+                      kind:
+                        default: Issuer
+                        enum:
+                        - Issuer
+                        - ClusterIssuer
+                        type: string
+                      name:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  mode:
+                    default: auto
+                    description: InternalTLSMode selects how the instance-to-instance
+                      channel is secured.
+                    enum:
+                    - auto
+                    - required
+                    - disabled
+                    type: string
+                  secretName:
+                    description: |-
+                      SecretName is a kubernetes.io/tls Secret holding tls.crt, tls.key, and
+                      ca.crt. The operator validates it but never owns or modifies it.
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: secretName and issuerRef are mutually exclusive
+                  rule: '!(has(self.secretName) && has(self.issuerRef))'
+                - message: disabled internal TLS cannot also name a certificate source
+                  rule: '!(self.mode == ''disabled'' && (has(self.secretName) || has(self.issuerRef)))'
+              readers:
+                default: 0
+                description: |-
+                  Readers is the number of read-only Rad instances. A Rad instance holds no
+                  data: every instance reads the same S3 objects, so a reader adds read
+                  capacity rather than a copy of the database. Readers are addressable
+                  through their own Service; the published route always reaches the writer,
+                  because a client that reads immediately after writing would otherwise
+                  observe reader lag.
+                format: int32
+                maximum: 32
+                minimum: 0
+                type: integer
               resources:
                 description: |-
-                  Resources applies to the single Rad container. Empty resources use the
-                  controller's conservative defaults.
+                  Resources applies to every Rad container, writer and reader alike. Empty
+                  resources use the controller's conservative defaults.
                 properties:
                   claims:
                     description: |-
@@ -317,11 +386,41 @@ spec:
                 x-kubernetes-list-type: map
               desiredImage:
                 type: string
+              desiredReaders:
+                format: int32
+                type: integer
+              internalTransport:
+                description: |-
+                  InternalTransport describes how readers reach the writer, so an operator
+                  can see whether the channel is encrypted without inspecting pods.
+                properties:
+                  certificateSecret:
+                    description: CertificateSecret holds the serving certificate,
+                      when there is one.
+                    type: string
+                  mode:
+                    description: Mode is tls or plaintext.
+                    type: string
+                  provider:
+                    description: 'Provider names what issued the certificate: cert-manager,
+                      user, or none.'
+                    type: string
+                  writerAddress:
+                    description: WriterAddress is the URL readers are configured to
+                      report to.
+                    type: string
+                type: object
               observedGeneration:
                 format: int64
                 type: integer
               observedImage:
                 type: string
+              readerServiceName:
+                description: ReaderServiceName is empty while no readers are requested.
+                type: string
+              readyReaders:
+                format: int32
+                type: integer
               readyReplicas:
                 format: int32
                 type: integer

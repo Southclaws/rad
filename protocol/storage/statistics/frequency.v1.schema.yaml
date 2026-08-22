@@ -1,0 +1,28 @@
+# Storage contract for one recent workload-frequency score.
+$schema: https://json-schema.org/draft/2020-12/schema
+title: statistics/frequency.v1
+description: >-
+  A bounded query-tree-family workload score at one durable decay epoch.
+type: object
+additionalProperties: false
+required: [format, record]
+properties:
+  format:
+    description: Payload serialization format discriminator.
+    type: integer
+    enum: [1]
+  record:
+    description: The score and the epoch at which it has this value.
+    type: object
+    additionalProperties: false
+    required: [count, epoch]
+    properties:
+      count:
+        description: Saturating recent appearance score.
+        type: integer
+        minimum: 0
+        maximum: 4294967295
+      epoch:
+        description: Durable decay epoch for this score.
+        type: integer
+        minimum: 0

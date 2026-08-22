@@ -104,6 +104,16 @@ impl RadProcess {
     ) -> TestResult<Self> {
         let (port, public, admin) = reserve_port_pair()?;
         drop((public, admin));
+        Self::spawn_file(directory, prefix, role, port, &[]).await
+    }
+
+    async fn spawn_file(
+        directory: &std::path::Path,
+        prefix: &str,
+        role: &str,
+        port: u16,
+        extra: &[&str],
+    ) -> TestResult<Self> {
         let child = rad_command()
             .args([
                 "serve",
@@ -122,6 +132,7 @@ impl RadProcess {
                 "--reader-poll-interval-ms",
                 "100",
             ])
+            .args(extra)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()?;
@@ -132,6 +143,80 @@ impl RadProcess {
         };
         process.wait_until_ready().await?;
         Ok(process)
+    }
+
+    /// A writer that also serves the instance-to-instance API, and a reader
+    /// that reports its statistics to it.
+    pub async fn start_file_relay_pair(
+        directory: &std::path::Path,
+        prefix: &str,
+        token_file: &std::path::Path,
+    ) -> TestResult<(Self, Self, String)> {
+        let (writer_port, public, admin) = reserve_port_pair()?;
+        let (internal_port, internal) = reserve_extra_port()?;
+        drop((public, admin, internal));
+        let internal_address = format!("127.0.0.1:{internal_port}");
+        let token = token_file
+            .to_str()
+            .ok_or("temporary path is not UTF-8")?
+            .to_owned();
+
+        let writer = Self::spawn_file(
+            directory,
+            prefix,
+            "write",
+            writer_port,
+            &[
+                "--internal-addr",
+                &internal_address,
+                "--relay-token-file",
+                &token,
+            ],
+        )
+        .await?;
+
+        let (reader_port, public, admin) = reserve_port_pair()?;
+        drop((public, admin));
+        let target = format!("http://{internal_address}");
+        let reader = Self::spawn_file(
+            directory,
+            prefix,
+            "read",
+            reader_port,
+            &[
+                "--relay-target",
+                &target,
+                "--relay-token-file",
+                &token,
+                "--instance-id",
+                "relay-reader",
+            ],
+        )
+        .await?;
+        Ok((writer, reader, target))
+    }
+
+    /// A reader that reports to a target which may or may not answer.
+    pub async fn start_file_reader_relaying(
+        directory: &std::path::Path,
+        prefix: &str,
+        target: &str,
+        token_file: &std::path::Path,
+    ) -> TestResult<Self> {
+        let (port, public, admin) = reserve_port_pair()?;
+        drop((public, admin));
+        let token = token_file
+            .to_str()
+            .ok_or("temporary path is not UTF-8")?
+            .to_owned();
+        Self::spawn_file(
+            directory,
+            prefix,
+            "read",
+            port,
+            &["--relay-target", target, "--relay-token-file", &token],
+        )
+        .await
     }
 
     pub async fn migrate(&self, schema: &str) -> TestResult<Value> {
@@ -194,6 +279,20 @@ impl RadProcess {
         self.post_json("/execute", program).await
     }
 
+    pub async fn statistics(&self) -> TestResult<Value> {
+        self.get_json("/statistics").await
+    }
+
+    pub async fn get_status(&self, path: &str) -> TestResult<u16> {
+        Ok(self
+            .client
+            .get(format!("{}{path}", self.base))
+            .send()
+            .await?
+            .status()
+            .as_u16())
+    }
+
     pub async fn post_response(&self, path: &str, body: &Value) -> TestResult<Response> {
         Ok(self
             .client
@@ -254,6 +353,22 @@ impl RadProcess {
         }
         Err("Rad did not become ready".into())
     }
+}
+
+/// A port for a listener that is not part of the public/admin pair.
+///
+/// Drawn from a range the pair allocator never touches: the pair allocator
+/// steps by two, so any port adjacent to a reserved pair is another pair's
+/// public port and would collide as soon as two tests run together.
+pub(crate) fn reserve_extra_port() -> TestResult<(u16, TcpListener)> {
+    for port in 30_000..40_000 {
+        match TcpListener::bind(("127.0.0.1", port)) {
+            Ok(listener) => return Ok((port, listener)),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err("could not reserve a port outside the public and admin pair range".into())
 }
 
 pub(crate) fn reserve_port_pair() -> TestResult<(u16, TcpListener, TcpListener)> {

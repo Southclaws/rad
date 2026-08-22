@@ -130,6 +130,25 @@ type Invoker interface {
 	//
 	// GET /startupz
 	GetStartupz(ctx context.Context) (GetStartupzRes, error)
+	// GetStatistics invokes GetStatistics operation.
+	//
+	// Return the distilled model repository the planner estimates from: one entry per relation family,
+	// with observed row counts, estimate quality, execution latency, and the physical plans seen for it.
+	//
+	// These are query-planner statistics, not operational metrics or tracing. They are advisory: deleting
+	// them changes no query result, and they are gathered best-effort, so a value may be missing after
+	// process failure or backpressure.
+	//
+	// Several fields are deliberately approximate and named accordingly. A field ending `UpperBound` is a
+	// histogram bucket bound rather than an exact quantile, so it overstates; the matching exact maximum
+	// is reported beside it. Read the field descriptions before comparing numbers.
+	//
+	// A process that runs no collector — a reader instance gathers statistics only for its own planner
+	// and a writer is the only publisher — returns 404 rather than an empty body, so "this instance does
+	// not collect" is distinguishable from "nothing observed yet".
+	//
+	// GET /statistics
+	GetStatistics(ctx context.Context) (GetStatisticsRes, error)
 	// IndexCreate invokes IndexCreate operation.
 	//
 	// Register a secondary index and backfill entries for every existing row, atomically: the index never
@@ -896,6 +915,62 @@ func (c *Client) sendGetStartupz(ctx context.Context) (res GetStartupzRes, err e
 	}()
 
 	result, err := decodeGetStartupzResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetStatistics invokes GetStatistics operation.
+//
+// Return the distilled model repository the planner estimates from: one entry per relation family,
+// with observed row counts, estimate quality, execution latency, and the physical plans seen for it.
+//
+// These are query-planner statistics, not operational metrics or tracing. They are advisory: deleting
+// them changes no query result, and they are gathered best-effort, so a value may be missing after
+// process failure or backpressure.
+//
+// Several fields are deliberately approximate and named accordingly. A field ending `UpperBound` is a
+// histogram bucket bound rather than an exact quantile, so it overstates; the matching exact maximum
+// is reported beside it. Read the field descriptions before comparing numbers.
+//
+// A process that runs no collector — a reader instance gathers statistics only for its own planner
+// and a writer is the only publisher — returns 404 rather than an empty body, so "this instance does
+// not collect" is distinguishable from "nothing observed yet".
+//
+// GET /statistics
+func (c *Client) GetStatistics(ctx context.Context) (GetStatisticsRes, error) {
+	res, err := c.sendGetStatistics(ctx)
+	return res, err
+}
+
+func (c *Client) sendGetStatistics(ctx context.Context) (res GetStatisticsRes, err error) {
+
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/statistics"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	result, err := decodeGetStatisticsResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

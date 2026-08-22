@@ -4,6 +4,9 @@
 //! boundary covers values that would otherwise be read from process-global
 //! state and therefore could not be replayed by deterministic simulation.
 
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -15,6 +18,19 @@ use uuid::Uuid;
 pub trait RuntimeEffects: Send + Sync {
     fn now(&self) -> DateTime<Utc>;
     fn new_uuid(&self) -> Uuid;
+
+    /// Wall time since the Unix epoch. Durable recency fields use this value.
+    fn unix_time(&self) -> Duration {
+        Duration::from_micros(self.now().timestamp_micros().max(0) as u64)
+    }
+
+    /// Monotonic reading since an arbitrary fixed origin, for measuring
+    /// elapsed intervals. Statistics timing must use this seam, never the
+    /// process clock directly. The default returns zero so deterministic
+    /// runtimes observe zero durations and replay identically.
+    fn monotonic(&self) -> Duration {
+        Duration::ZERO
+    }
 }
 
 /// Production effects backed by the process clock and UUID implementation.
@@ -28,5 +44,10 @@ impl RuntimeEffects for SystemRuntime {
 
     fn new_uuid(&self) -> Uuid {
         Uuid::new_v4()
+    }
+
+    fn monotonic(&self) -> Duration {
+        static ORIGIN: OnceLock<Instant> = OnceLock::new();
+        ORIGIN.get_or_init(Instant::now).elapsed()
     }
 }
