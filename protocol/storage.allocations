@@ -33,6 +33,15 @@ space 35 catalog_meta_transition_seen
 space 36 catalog_meta_reclamation_seen
 space 40 runtime_writer_fence
 space 41 storage_manifest
+space 50 statistics_table_changes
+space 51 statistics_model
+space 52 corpus_program
+space 53 corpus_execution
+space 54 statistics_synopsis
+space 55 statistics_relation_model
+space 56 statistics_model_catalog
+space 57 statistics_frequency
+space 58 statistics_frequency_epoch
 reserved 00 never allocated: guards zero-initialised or truncated keys
 scalar ordered_scalar.bool 02
 scalar ordered_scalar.float64 04
@@ -66,6 +75,8 @@ vector catalog_transition_unique_violation 2b5ea09f7742fe88
 vector catalog_transition_violation 4541d46c0e4c4f79
 vector catalog_write_protocol_fence eca7a181907514f8
 vector catalog_write_protocol_object 63638d13207b1105
+vector corpus_execution e4f3be77546cfa70
+vector corpus_program c44bbb68af115396
 vector data 12971bf63c41dae6
 vector data 3fda940d2303ab29
 vector data cd232e74ab6c72e3
@@ -131,6 +142,13 @@ vector semantic_scalar cb83cb956c9d76d4
 vector semantic_scalar dc88e8b8da7421d3
 vector semantic_scalar e6d3190a733f4247
 vector semantic_scalar fc3e00186d81295b
+vector statistics_frequency e8539f390f1e5b80
+vector statistics_frequency_epoch 2676980474b466ec
+vector statistics_model 4fa2f3fb453160bd
+vector statistics_model_catalog b81f5f341a8ce94c
+vector statistics_relation_model 423e93ad2b44fcec
+vector statistics_synopsis a2deea5f119f7a37
+vector statistics_table_changes cdd6631ee5c0ec66
 vector storage_manifest 10a2508510963de9
 vector uvarint 0abc4dfd9c618f1b
 vector uvarint 1d96a71b17be3300
@@ -512,3 +530,7 @@ schema metadata/compatibility.v1 record.features array optional
 schema metadata/compatibility.v1 record.features[] string optional
 schema metadata/compatibility.v1 record.min_reader integer required
 schema metadata/compatibility.v1 record.min_writer integer required
+schema statistics/frequency.v1 format integer required enum:1
+schema statistics/frequency.v1 record object required
+schema statistics/frequency.v1 record.count integer required
+schema statistics/frequency.v1 record.epoch integer required

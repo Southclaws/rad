@@ -20,7 +20,7 @@ use rad::engine::catalog::model::{
 };
 use rad::engine::catalog::store;
 use rad::engine::kv::slatedb::Store;
-use rad::engine::kv::{KeyRange, Kv, TransactionalKv, keys, keyspace};
+use rad::engine::kv::{IsolationLevel, KeyRange, Kv, TransactionalKv, keys, keyspace};
 
 fn timestamp() -> Timestamp {
     Timestamp::from(DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp"))
@@ -220,6 +220,14 @@ async fn seed(database: &mut Store) {
     store::queue_reclamation(database, reclamation, timestamp())
         .await
         .unwrap();
+    let transaction = database.begin(IsolationLevel::Snapshot).await.unwrap();
+    transaction
+        .put(
+            keys::statistics_frequency_key(&[1; 20]).into(),
+            Bytes::from_static(br#"{"format":1,"record":{"count":40,"epoch":2}}"#),
+        )
+        .unwrap();
+    transaction.commit().await.unwrap();
 }
 
 fn schema_validators() -> BTreeMap<String, jsonschema::Validator> {

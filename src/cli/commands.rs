@@ -163,26 +163,41 @@ impl Handler for App {
             .ok()
             .filter(|value| *value > 0)
             .ok_or("--reader-poll-interval-ms must be greater than zero")?;
-        crate::process::serve(
-            Config {
-                address: crate::process::normalize_address(&args.addr),
-                admin_address: crate::process::admin_address_from_env(),
-                catalog_mode,
-                close_timeout: crate::process::close_timeout_from_env()?,
-                frontend: args.frontend.map(|frontend| match frontend {
-                    ServeFrontend::Postgres => crate::process::Frontend::Postgres,
-                }),
-                postgres_address: crate::process::normalize_address(&args.postgres_addr),
-                reader_poll_interval: Duration::from_millis(reader_poll_interval_ms),
-                role: match args.role {
-                    ServeRole::Read => Role::Read,
-                    ServeRole::Write => Role::Write,
-                },
-                shutdown_drain: crate::process::shutdown_drain_from_env()?,
-                storage,
+        let config = Config {
+            address: crate::process::normalize_address(&args.addr),
+            admin_address: crate::process::admin_address_from_env(),
+            catalog_mode,
+            capture_workload_corpus: args.capture_workload_corpus,
+            close_timeout: crate::process::close_timeout_from_env()?,
+            frontend: args.frontend.map(|frontend| match frontend {
+                ServeFrontend::Postgres => crate::process::Frontend::Postgres,
+            }),
+            instance_id: args.instance_id,
+            internal_address: args
+                .internal_addr
+                .as_deref()
+                .map(crate::process::normalize_address),
+            internal_tls_certificate: args.internal_tls_cert,
+            internal_tls_key: args.internal_tls_key,
+            postgres_address: crate::process::normalize_address(&args.postgres_addr),
+            reader_poll_interval: Duration::from_millis(reader_poll_interval_ms),
+            relay_authority: args.relay_ca,
+            relay_target: args.relay_target,
+            relay_token_file: args.relay_token_file,
+            role: match args.role {
+                ServeRole::Read => Role::Read,
+                ServeRole::Write => Role::Write,
             },
+            shutdown_drain: crate::process::shutdown_drain_from_env()?,
+            storage,
+        };
+        config.validate()?;
+        // Boxed so the whole serve future does not sit inline in the command
+        // dispatch enum, which every other subcommand's stack frame carries.
+        Box::pin(crate::process::serve(
+            config,
             crate::process::shutdown_signal(),
-        )
+        ))
         .await
     }
 

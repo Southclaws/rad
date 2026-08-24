@@ -311,6 +311,57 @@ impl IntoResponse for GetSchemaResponse {
         }
     }
 }
+/// Response for `GET /statistics` (operationId `GetStatistics`).
+pub enum GetStatisticsResponse {
+    Ok(Statistics),
+    NotFound(Problem),
+    Default(StatusCode, Problem),
+}
+impl IntoResponse for GetStatisticsResponse {
+    fn into_response(self) -> ::axum::response::Response {
+        match self {
+            Self::Ok(body) => {
+                let mut response = (StatusCode::OK, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::NotFound(body) => {
+                let mut response = (StatusCode::NOT_FOUND, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Default(status, body) => {
+                if !(true) {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+                let mut response = (status, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+        }
+    }
+}
 /// Response for `POST /schema/diff` (operationId `SchemaDiff`).
 pub enum SchemaDiffResponse {
     Ok(SchemaDiffResult),

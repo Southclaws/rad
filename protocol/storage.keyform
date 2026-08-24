@@ -627,6 +627,135 @@ keyspace rad {
     }
   }
 
+  # Query-planner statistics. Advisory, reconstructible state: deleting
+  # every statistics key never affects correctness, and these encodings
+  # version independently of the row formats above. Operational metrics
+  # and tracing are a separate concern and store nothing here. The
+  # workload corpus holds canonical programs verbatim, so it carries
+  # data-plane sensitivity.
+
+  # Logical per-table modification count, maintained asynchronously from the
+  # observation stream. Approximate by design: a crash loses at most the
+  # unflushed window.
+  space statistics_table_changes {
+    tag x"50"
+    key {
+      schema be32
+    }
+    value "modification count decimal text"
+    vectors {
+      key { schema 7 } = x"72 37 50 00 00 00 07"
+    }
+  }
+
+  # Complete-statement performance model. The key is the 18-byte fingerprint:
+  # canonicalization version, hash algorithm, 16-byte digest.
+  space statistics_model {
+    tag x"51"
+    key {
+      family bytes
+    }
+    value "json feedback model document"
+    vectors {
+      key { family x"01 01 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f" } = x"72 37 51 01 01 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f"
+    }
+  }
+
+  # Distilled relation-cardinality feedback. This is separate from complete
+  # statement performance because a root relation and its statement can have
+  # the same fingerprint but carry different evidence.
+  space statistics_relation_model {
+    tag x"55"
+    key {
+      family bytes
+    }
+    value "json relation feedback model document"
+    vectors {
+      key { family x"01 01 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f" } = x"72 37 55 01 01 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f"
+    }
+  }
+
+  # Bounded index of retained statement and relation models. Readers use
+  # point reads from this index instead of scanning all model keys.
+  space statistics_model_catalog {
+    tag x"56"
+    key { }
+    value "json statistics model catalog document"
+    vectors {
+      key { } = x"72 37 56"
+    }
+  }
+
+  # Recent workload score for one retained query-tree family. The global epoch
+  # ages every score without rewriting untouched keys. A score is normalized
+  # to the current epoch before new evidence is added.
+  space statistics_frequency {
+    tag x"57"
+    key {
+      family bytes
+    }
+    value json schema "statistics/frequency.v1"
+    vectors {
+      key { family x"01 01 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f" } = x"72 37 57 01 01 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f"
+    }
+  }
+
+  # Current decay epoch for durable workload scores.
+  space statistics_frequency_epoch {
+    tag x"58"
+    key { }
+    value "decay epoch decimal text"
+    vectors {
+      key { } = x"72 37 58"
+    }
+  }
+
+  # Workload corpus content store: one canonical PIR document per
+  # canonicalization version and content hash, written once, immutable.
+  # Capture is disabled by default. The runtime retains at most seven days,
+  # 10,000 execution records, and 64 MiB of unique program documents. It
+  # deletes unreferenced documents. A writer administration operation erases
+  # both spaces.
+  space corpus_program {
+    tag x"52"
+    key {
+      canonical_version uvarint
+      content_hash bytes
+    }
+    value "canonical PIR document bytes"
+    invariant "immutable once written: a different document under an existing key is corruption"
+    vectors {
+      key { canonical_version 1, content_hash x"00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f" } = x"72 37 52 01 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f"
+    }
+  }
+
+  # Workload corpus execution log, scanned in time order. The sequence
+  # disambiguates executions sharing one timestamp.
+  space corpus_execution {
+    tag x"53"
+    key {
+      at be64
+      sequence uvarint
+    }
+    value "json execution observation document"
+    vectors {
+      key { at 1000000, sequence 0 } = x"72 37 53 00 00 00 00 00 0f 42 40 00"
+    }
+  }
+
+  # Per-table synopsis produced by a survey: population counts and
+  # per-column distributions, keyed by stable logical identity.
+  space statistics_synopsis {
+    tag x"54"
+    key {
+      schema be32
+    }
+    value "json synopsis model document"
+    vectors {
+      key { schema 7 } = x"72 37 54 00 00 00 07"
+    }
+  }
+
   reserved x"00" "never allocated: guards zero-initialised or truncated keys"
 
   scan {

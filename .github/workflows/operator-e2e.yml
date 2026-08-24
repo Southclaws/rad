@@ -14,6 +14,8 @@ on:
       - "src/process.rs"
       - "src/health.rs"
       - "src/http/**"
+      - "src/internal/**"
+      - "src/scheduler/relay.rs"
       - "Dockerfile"
       - ".github/workflows/operator-e2e.yml"
   pull_request:
@@ -22,6 +24,8 @@ on:
       - "src/process.rs"
       - "src/health.rs"
       - "src/http/**"
+      - "src/internal/**"
+      - "src/scheduler/relay.rs"
       - "Dockerfile"
       - ".github/workflows/operator-e2e.yml"
 
@@ -76,6 +80,14 @@ jobs:
             --set controller.extraArgs.publish-status-address=localhost \
             --wait --timeout 5m
 
+      - name: Install cert-manager
+        run: |
+          kubectl apply -f \
+            https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml
+          for deployment in cert-manager cert-manager-webhook cert-manager-cainjector; do
+            kubectl -n cert-manager rollout status "deployment/$deployment" --timeout=300s
+          done
+
       - name: Install the operator
         working-directory: operator
         run: |
@@ -96,7 +108,10 @@ jobs:
       - name: Dump cluster state on failure
         if: failure()
         run: |
-          kubectl -n default get raddatabase,statefulset,pods,leases -o wide || true
-          kubectl -n default describe raddatabase || true
+          kubectl -n default get database,statefulset,deployment,pods,leases -o wide || true
+          kubectl -n default describe database || true
+          kubectl -n default get issuers,certificates -o wide || true
+          kubectl -n default describe certificates || true
           kubectl -n default logs deployment/rad-operator --tail=200 || true
+          kubectl -n cert-manager logs deployment/cert-manager --tail=100 || true
           kubectl -n default get events --sort-by=.lastTimestamp | tail -60 || true

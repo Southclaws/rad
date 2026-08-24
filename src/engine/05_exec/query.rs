@@ -22,7 +22,7 @@ use crate::engine::lir::{
 };
 use crate::engine::planner::analysis::{ConstValue, CorrelationKind};
 use crate::engine::planner::physical::{
-    AttachSpec, BindingPlan, BindingPlanKind, BindingStrategy, CrossingKind, Node, Plan,
+    AttachSpec, BindingPlan, BindingPlanKind, BindingStrategy, CrossingKind, Node, NodeKind, Plan,
 };
 
 use super::codec;
@@ -56,6 +56,11 @@ pub struct Executor<'a> {
     bindings: HashMap<String, Vec<Env>>,
     frontier: HashMap<String, Vec<Env>>,
     plans: HashMap<String, BindingPlan>,
+    measure: bool,
+    /// Rows produced by each attributed node, in completion order. Only
+    /// nodes the planner could attribute appear, and only where execution
+    /// already materializes their output.
+    measured: Vec<(crate::engine::lir::fingerprint::Fingerprint, u64)>,
 }
 
 struct SetPlan<'a> {
@@ -77,7 +82,18 @@ impl<'a> Executor<'a> {
             bindings: HashMap::new(),
             frontier: HashMap::new(),
             plans: HashMap::new(),
+            measure: false,
+            measured: Vec::new(),
         }
+    }
+
+    pub fn enable_measurements(&mut self) {
+        self.measure = true;
+    }
+
+    /// Row counts charged to the logical relations they implement.
+    pub fn measured(&self) -> &[(crate::engine::lir::fingerprint::Fingerprint, u64)] {
+        &self.measured
     }
 
     /// Test seam proving key-correlated batching and nested evaluation agree.
@@ -88,6 +104,12 @@ impl<'a> Executor<'a> {
     /// Program execution uses this to expose earlier statement results.
     pub fn seed_bindings(&mut self, bindings: HashMap<String, Vec<Env>>) {
         self.bindings = bindings;
+    }
+
+    /// Rows a materialized binding produced. Replayed bindings never
+    /// accumulate a full result, so they have no count to report.
+    pub fn binding_cardinality(&self, name: &str) -> Option<u64> {
+        self.bindings.get(name).map(|frames| frames.len() as u64)
     }
 
     pub async fn run_frames(&mut self, plan: &Plan) -> Result<Vec<Env>> {
@@ -140,10 +162,28 @@ impl<'a> Executor<'a> {
     #[async_recursion]
     async fn execute_node(&mut self, node: &Node, outer: &Env) -> Result<Vec<Env>> {
         if super::pipeline::supports(node) {
-            return super::pipeline::execute(self.view, node, outer).await;
+            return self.execute_kind(node, outer).await;
         }
-        match node {
-            Node::PrimaryKeyGet {
+        let frames = self.execute_kind(node, outer).await?;
+        if self.measure
+            && let Some(attribution) = node.attribution
+        {
+            self.measured.push((attribution, frames.len() as u64));
+        }
+        Ok(frames)
+    }
+
+    #[async_recursion]
+    async fn execute_kind(&mut self, node: &Node, outer: &Env) -> Result<Vec<Env>> {
+        if super::pipeline::supports(node) {
+            return if self.measure {
+                super::pipeline::execute_measured(self.view, node, outer, &mut self.measured).await
+            } else {
+                super::pipeline::execute(self.view, node, outer).await
+            };
+        }
+        match &node.kind {
+            NodeKind::PrimaryKeyGet {
                 scan,
                 key,
                 decode_columns,
@@ -165,7 +205,7 @@ impl<'a> Executor<'a> {
                         .unwrap_or_default(),
                 )
             }
-            Node::TableScan {
+            NodeKind::TableScan {
                 scan,
                 decode_columns,
                 ..
@@ -176,7 +216,7 @@ impl<'a> Executor<'a> {
                     .map(|row| row_to_frame(scan, row, outer))
                     .collect(),
             ),
-            Node::IndexRangeScan {
+            NodeKind::IndexRangeScan {
                 scan,
                 index,
                 equality_prefix,
@@ -214,7 +254,7 @@ impl<'a> Executor<'a> {
                 .map(|row| row_to_frame(scan, row, outer))
                 .collect())
             }
-            Node::Rows(relation) => {
+            NodeKind::Rows(relation) => {
                 let RelationNode::Rows { values, .. } = &relation.node else {
                     unreachable!()
                 };
@@ -229,7 +269,7 @@ impl<'a> Executor<'a> {
                     })
                     .collect())
             }
-            Node::Filter { input, predicate } => Ok(self
+            NodeKind::Filter { input, predicate } => Ok(self
                 .execute_node(input, outer)
                 .await?
                 .into_iter()
@@ -241,7 +281,7 @@ impl<'a> Executor<'a> {
                 .into_iter()
                 .filter_map(|(frame, keep)| keep.then_some(frame))
                 .collect()),
-            Node::Attach {
+            NodeKind::Attach {
                 input,
                 specifications,
             } => {
@@ -251,7 +291,7 @@ impl<'a> Executor<'a> {
                 }
                 Ok(frames)
             }
-            Node::Project { input, fields } => self
+            NodeKind::Project { input, fields } => self
                 .execute_node(input, outer)
                 .await?
                 .into_iter()
@@ -263,12 +303,12 @@ impl<'a> Executor<'a> {
                     Ok(output)
                 })
                 .collect(),
-            Node::Sort { input, terms } => {
+            NodeKind::Sort { input, terms } => {
                 let mut frames = self.execute_node(input, outer).await?;
                 sort(&mut frames, terms)?;
                 Ok(frames)
             }
-            Node::Slice {
+            NodeKind::Slice {
                 input,
                 offset,
                 limit,
@@ -279,7 +319,7 @@ impl<'a> Executor<'a> {
                 .skip(*offset)
                 .take(limit.unwrap_or(usize::MAX))
                 .collect()),
-            Node::NestedLoopJoin {
+            NodeKind::NestedLoopJoin {
                 left,
                 right,
                 kind,
@@ -308,7 +348,7 @@ impl<'a> Executor<'a> {
                 }
                 Ok(output)
             }
-            Node::Concatenate {
+            NodeKind::Concatenate {
                 inputs,
                 input_outputs,
                 output,
@@ -324,7 +364,7 @@ impl<'a> Executor<'a> {
                 }
                 Ok(frames)
             }
-            Node::Intersect {
+            NodeKind::Intersect {
                 left,
                 right,
                 quantifier,
@@ -346,7 +386,7 @@ impl<'a> Executor<'a> {
                 )
                 .await
             }
-            Node::Except {
+            NodeKind::Except {
                 left,
                 right,
                 quantifier,
@@ -368,7 +408,7 @@ impl<'a> Executor<'a> {
                 )
                 .await
             }
-            Node::Distinct { input, output } => {
+            NodeKind::Distinct { input, output } => {
                 let mut seen = CanonicalRowSet::new(output.fields.clone());
                 Ok(self
                     .execute_node(input, outer)
@@ -377,12 +417,12 @@ impl<'a> Executor<'a> {
                     .filter(|frame| seen.insert(frame))
                     .collect())
             }
-            Node::Aggregate {
+            NodeKind::Aggregate {
                 input,
                 groups,
                 terms,
             } => self.execute_aggregate(input, groups, terms, outer).await,
-            Node::Reference {
+            NodeKind::Reference {
                 binding,
                 output,
                 canonical,
@@ -409,7 +449,7 @@ impl<'a> Executor<'a> {
                     .map(|frame| remap_canonical(output, canonical, frame, outer))
                     .collect())
             }
-            Node::RecursiveReference {
+            NodeKind::RecursiveReference {
                 binding,
                 output,
                 canonical,
@@ -769,21 +809,21 @@ pub(super) fn resolve_constant(value: &ConstValue, outer: &Env) -> Result<Value>
 }
 
 fn scan_column_type(node: &Node, name: &str) -> crate::engine::catalog::model::ScalarType {
-    match node {
-        Node::PrimaryKeyGet { scan, .. }
-        | Node::TableScan { scan, .. }
-        | Node::IndexRangeScan { scan, .. } => scan
+    match &node.kind {
+        NodeKind::PrimaryKeyGet { scan, .. }
+        | NodeKind::TableScan { scan, .. }
+        | NodeKind::IndexRangeScan { scan, .. } => scan
             .scan_table()
             .column(name)
             .map(|column| column.scalar_type)
             .unwrap_or(crate::engine::catalog::model::ScalarType::Text),
-        Node::Filter { input, .. }
-        | Node::Project { input, .. }
-        | Node::Sort { input, .. }
-        | Node::Slice { input, .. }
-        | Node::Distinct { input, .. }
-        | Node::Aggregate { input, .. }
-        | Node::Attach { input, .. } => scan_column_type(input, name),
+        NodeKind::Filter { input, .. }
+        | NodeKind::Project { input, .. }
+        | NodeKind::Sort { input, .. }
+        | NodeKind::Slice { input, .. }
+        | NodeKind::Distinct { input, .. }
+        | NodeKind::Aggregate { input, .. }
+        | NodeKind::Attach { input, .. } => scan_column_type(input, name),
         _ => crate::engine::catalog::model::ScalarType::Text,
     }
 }
@@ -1094,7 +1134,7 @@ mod tests {
             &query(Relation::slice(filtered, 0, Some(1)), 3),
             PlanOptions::default(),
         );
-        assert!(matches!(plan.root, Node::Slice { .. }));
+        assert!(matches!(plan.root.kind, NodeKind::Slice { .. }));
 
         let frames = Executor::new(&view, Limits::default())
             .run_frames(&plan)

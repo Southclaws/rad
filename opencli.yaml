@@ -125,6 +125,36 @@ commands:
         type: integer
         envVar: RAD_READER_POLL_INTERVAL_MS
         default: 1000
+      - name: internal-addr
+        description: Listen address for the instance-to-instance API; requires --relay-token-file.
+        envVar: RAD_INTERNAL_ADDR
+      - name: relay-target
+        description: Base URL of the instance this one reports statistics to.
+        envVar: RAD_RELAY_TARGET
+      - name: relay-token-file
+        description: File holding the shared secret for the instance-to-instance API.
+        type: path
+        envVar: RAD_RELAY_TOKEN_FILE
+      - name: internal-tls-cert
+        description: Certificate the instance-to-instance API serves; requires --internal-tls-key.
+        type: path
+        envVar: RAD_INTERNAL_TLS_CERT
+      - name: internal-tls-key
+        description: Private key for the instance-to-instance certificate.
+        type: path
+        envVar: RAD_INTERNAL_TLS_KEY
+      - name: relay-ca
+        description: Certificate authority that the reported-to instance must chain to.
+        type: path
+        envVar: RAD_RELAY_CA
+      - name: instance-id
+        description: Name this instance reports itself as; defaults to the hostname.
+        envVar: RAD_INSTANCE_ID
+      - name: capture-workload-corpus
+        description: Record canonical programs with user values for bounded offline replay.
+        type: boolean
+        envVar: RAD_CAPTURE_WORKLOAD_CORPUS
+        default: false
       - name: storage
         description: Storage backend for SlateDB data.
         envVar: RAD_STORAGE

@@ -17,6 +17,7 @@ Liveness and schema introspection.
 | --- | --- | --- |
 | `GET` | `/healthz` | Check that the server is alive. |
 | `GET` | `/info` | Describe this database. |
+| `GET` | `/statistics` | Return the query-planner statistics this instance holds. |
 | `GET` | `/tables` | List the tables in the database. |
 
 #### `GET` `/healthz`
@@ -49,6 +50,36 @@ development and administrative tooling.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `DatabaseInfo` | Metadata about the database behind this endpoint. |
+| `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
+
+#### `GET` `/statistics`
+
+Return the distilled model repository the planner estimates from: one
+entry per relation family, with observed row counts, estimate quality,
+execution latency, and the physical plans seen for it.
+
+These are query-planner statistics, not operational metrics or
+tracing. They are advisory: deleting them changes no query result, and
+they are gathered best-effort, so a value may be missing after process
+failure or backpressure.
+
+Several fields are deliberately approximate and named accordingly. A
+field ending `UpperBound` is a histogram bucket bound rather than an
+exact quantile, so it overstates; the matching exact maximum is
+reported beside it. Read the field descriptions before comparing
+numbers.
+
+A process that runs no collector; a reader instance gathers
+statistics only for its own planner and a writer is the only
+publisher; returns 404 rather than an empty body, so "this instance
+does not collect" is distinguishable from "nothing observed yet".
+
+**Responses**
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| `200` | application/json `Statistics` | The planner statistics this instance currently holds. |
+| `404` | application/problem+json `Problem` | The addressed resource, such as a transaction, does not exist. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
 
 #### `GET` `/tables`
@@ -962,6 +993,301 @@ statements omit it.
 | `name` | `string` | Yes |  |
 | `affected` | `integer` | Yes | For relational statements, the number of rows produced, created, updated, or deleted. A successful immediate catalog or transition start reports one affected object. |
 | `control` | `value` | Yes | A typed non-relational result. Transition-start controls contain `kind: transition`, durable identities, lifecycle state and generation, retained-work health, advisory progress/lag, and terminal diagnostics. Worker ownership epochs and physical storage positions are internal and are not exposed. Statements without a control result emit JSON null. This namespace is not a LIR relation and cannot be referenced by a PIR `ref`. |
+
+#### `Statistics`
+
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `absorbed` | `integer` | Yes | Observations folded into the models since this process started. Format: int64. |
+| `dropped` | `integer` | Yes | Observations discarded because the collection queue was full. Execution never blocks to record statistics, so a busy instance sheds observations rather than slowing queries. Format: int64. |
+| `evicted` | `integer` | Yes | Models discarded to keep the working set bounded. The frequency sketch keeps counting an evicted family, so a family that stays active is re-admitted. Format: int64. |
+| `shed` | `integer` | Yes | Unpublished evidence discarded to keep the pending set bounded. Evidence already published is unaffected: what reaches the store accumulates there. Format: int64. |
+| `corpus` | `StatisticsCorpus` | Yes |  |
+| `relay` | `StatisticsRelay` | Yes |  |
+| `trackedFamilies` | `integer` | Yes | Relation families currently modelled. |
+| `models` | `array of StatisticsModel` | Yes | One entry per modelled family, most measured first. |
+| `synopses` | `array of StatisticsSynopsis` | Yes | Current table survey results, ordered by table identity. |
+| `physicalCost` | `StatisticsPhysicalCost` |  |  |
+
+#### `StatisticsColumnGroupSynopsis`
+
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `columns` | `array of integer` | Yes | Stable column schema identities in canonical order. |
+| `valueGenerations` | `array of integer` | Yes | Column value generations in the same order as columns. |
+| `nullCount` | `integer` | Yes | Observed rows where one or more group columns contained null. Format: int64. |
+| `distinct` | `integer` | Yes | Exact or approximate observed distinct non-null value combinations. Format: int64. |
+| `distinctIsExact` | `boolean` | Yes | Whether distinct is exact. |
+| `mostCommonValues` | `array of StatisticsMostCommonColumnGroup` | Yes | Bounded common value combinations, ordered by decreasing observed frequency. |
+
+#### `StatisticsColumnSynopsis`
+
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `column` | `integer` | Yes | Stable column schema identity. Format: int64. |
+| `valueGeneration` | `integer` | Yes | Column value generation that this synopsis describes. Format: int64. |
+| `nullFraction` | `number` | Yes | Fraction of observed rows that contained null. Format: double. |
+| `nullCount` | `integer` | Yes | Observed rows that contained null. Format: int64. |
+| `distinct` | `integer` | Yes | Exact or approximate observed distinct non-null values. Format: int64. |
+| `distinctIsExact` | `boolean` | Yes | Whether distinct is exact. |
+| `averageWidth` | `integer` | Yes | Average encoded width of observed non-null values. Format: int64. |
+| `minimum` | `string` |  | Rendered minimum non-null value. |
+| `maximum` | `string` |  | Rendered maximum non-null value. |
+| `mostCommonValues` | `array of StatisticsMostCommonValue` | Yes | Bounded heavy hitters, ordered by decreasing observed frequency. |
+
+#### `StatisticsCorpus`
+
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `enabled` | `boolean` | Yes | Whether this process captures canonical workload programs. |
+| `captured` | `integer` | Yes | Programs admitted to the local statistics queue. Format: int64. |
+| `skippedOversize` | `integer` | Yes | Programs not captured because one canonical document exceeded the capture limit. Format: int64. |
+| `droppedQueue` | `integer` | Yes | Programs not captured because the collection queue was full. Format: int64. |
+| `shedPending` | `integer` | Yes | Captured programs removed from the bounded unpublished queue. Format: int64. |
+| `maintenance` | `value` |  | Storage maintenance data. This field is absent when this process does not own corpus storage. |
+
+#### `StatisticsCorpusMaintenance`
+
+Cumulative maintenance counters and current retained corpus gauges.
+Counters start when the storage owner process starts.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `expiredExecutions` | `integer` | Yes | Execution records removed because the maximum age elapsed. Format: int64. |
+| `prunedExecutions` | `integer` | Yes | Execution records removed to enforce the count or byte limit. Format: int64. |
+| `invalidExecutions` | `integer` | Yes | Execution records removed because their key, value, or program reference was invalid. Format: int64. |
+| `prunedPrograms` | `integer` | Yes | Canonical programs removed because no retained execution referenced them. Format: int64. |
+| `invalidPrograms` | `integer` | Yes | Canonical programs removed because their storage key was invalid. Format: int64. |
+| `erasedExecutions` | `integer` | Yes | Execution records removed by explicit corpus erasure. Format: int64. |
+| `erasedPrograms` | `integer` | Yes | Canonical programs removed by explicit corpus erasure. Format: int64. |
+| `retainedExecutions` | `integer` | Yes | Execution records currently retained. Format: int64. |
+| `retainedPrograms` | `integer` | Yes | Unique canonical programs currently retained. Format: int64. |
+| `retainedProgramBytes` | `integer` | Yes | Bytes in retained canonical programs. This excludes execution records and storage overhead. Format: int64. |
+
+#### `StatisticsModel`
+
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `string` | Yes | `relation` contains logical relation cardinality feedback. `statement` contains complete statement performance and plan data. |
+| `family` | `string` | Yes | Family fingerprint: the relation shape with every literal replaced by a typed placeholder, so the same shape run with different parameters shares one entry. Carries the canonicalization version and hash algorithm that produced it. |
+| `exactVariants` | `integer` | Yes | Approximate distinct literal-specific instances seen within this family. A fixed-size mergeable sketch produces this value. One means an effectively constant query. A large value means a parameterised query. Format: int64. |
+| `frequency` | `integer` | Yes | Approximate number of times this family appeared anywhere in an executed query tree, from a count-min sketch. It over-counts on hash collision and halves periodically, so it reflects recent workload weight rather than a lifetime total. Expect it to exceed `retainedExecutions`: a family is counted once per appearance as a subtree but measured only where a plan boundary exposes its rows. Format: int64. |
+| `retainedExecutions` | `integer` | Yes | Times this family was itself measured. Format: int64. |
+| `executionsWithEstimate` | `integer` | Yes | Of those, how many carried a planner estimate to score against the actual row count. Zero means nothing has scored this family yet. Format: int64. |
+| `rowsP50UpperBound` | `integer` | Yes | Upper bound on the median row count: the bound of the histogram bucket holding it, never above `rowsMax`. Not an exact quantile. Format: int64. |
+| `rowsP95UpperBound` | `integer` | Yes | Upper bound on the 95th-percentile row count. Format: int64. |
+| `rowsMax` | `integer` | Yes | Largest row count observed, exactly. Format: int64. |
+| `qErrorP50UpperBound` | `number` | Yes | Upper bound on the median estimate error, symmetric and multiplicative: 1.0 is a perfect estimate and 10.0 is wrong by a factor of ten in either direction. A bucket bound, never above `qErrorMax`. |
+| `qErrorP95UpperBound` | `number` | Yes | Upper bound on the 95th-percentile estimate error. |
+| `qErrorMax` | `number` | Yes | Largest estimate error observed, exactly. |
+| `executeMicrosP50UpperBound` | `integer` |  | Upper bound on median execution time in microseconds. Absent when this family was measured only as a relation inside a statement, which records rows but not durations. Format: int64. |
+| `executeMicrosP95UpperBound` | `integer` |  | Upper bound on 95th-percentile execution time in microseconds. Format: int64. |
+| `durationEwmaMicros` | `integer` |  | Exponentially weighted mean execution time, a recent-trend signal rather than a distribution. Absent alongside the latency bounds. Format: int64. |
+| `plans` | `array of StatisticsPlan` | Yes | Physical plans observed for this family, with how often each ran. |
+| `planningValue` | `StatisticsPlanningValue` |  |  |
+| `resourceCost` | `StatisticsResourceCost` |  |  |
+
+#### `StatisticsMostCommonColumnGroup`
+
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `values` | `array of string` | Yes | Rendered typed values in the column order. |
+| `frequency` | `integer` | Yes | Space-Saving frequency upper bound. Format: int64. |
+| `lowerFrequency` | `integer` | Yes | Guaranteed observed frequency lower bound. Format: int64. |
+| `maximumError` | `integer` | Yes | Maximum Space-Saving overcount. Format: int64. |
+
+#### `StatisticsMostCommonValue`
+
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `value` | `string` | Yes | Rendered typed value. |
+| `frequency` | `integer` | Yes | Space-Saving frequency upper bound. Format: int64. |
+| `lowerFrequency` | `integer` | Yes | Guaranteed observed frequency lower bound. Format: int64. |
+| `maximumError` | `integer` | Yes | Maximum Space-Saving overcount. Format: int64. |
+
+#### `StatisticsPhysicalCacheCost`
+
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `tier` | `memory \| local` | Yes |  |
+| `accesses` | `integer` | Yes | Format: int64. |
+| `hits` | `integer` | Yes | Format: int64. |
+| `hitRatePpm` | `integer` | Yes | Format: int64. |
+
+#### `StatisticsPhysicalCost`
+
+Instance-local physical storage calibration. Backend adapters convert
+their native metrics to this common model. A missing capability is
+false and its measurements are absent. The model is not assigned to
+one statement or relation.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `basis` | `backend_physical_telemetry` | Yes |  |
+| `backend` | `string` | Yes |  |
+| `telemetryFormat` | `integer` | Yes | Format: int64. |
+| `capabilities` | `StatisticsPhysicalTelemetryCapabilities` | Yes |  |
+| `requests` | `array of StatisticsPhysicalRequestCost` | Yes |  |
+| `caches` | `array of StatisticsPhysicalCacheCost` | Yes |  |
+
+#### `StatisticsPhysicalCostMetric`
+
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `p50UpperBound` | `integer` | Yes | Upper bound on the median value. Format: int64. |
+| `p95UpperBound` | `integer` | Yes | Upper bound on the 95th-percentile value. Format: int64. |
+| `maximumUpperBound` | `integer` | Yes | Upper bound on the largest value in the retained buckets. Format: int64. |
+
+#### `StatisticsPhysicalRequestCost`
+
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `class` | `read \| range_read \| metadata_read \| write \| delete \| list` | Yes |  |
+| `observedRequests` | `integer` | Yes | Format: int64. |
+| `errors` | `integer` | Yes | Format: int64. |
+| `latencyMicros` | `StatisticsPhysicalCostMetric` |  |  |
+| `bytes` | `StatisticsPhysicalCostMetric` |  |  |
+| `sizeUpperBound` | `integer` |  | Request-size bucket upper bound for this conditional model. Format: int64. |
+| `concurrencyUpperBound` | `integer` |  | Active-request bucket upper bound for this conditional model. Format: int64. |
+| `serviceTier` | `memory \| local \| remote` |  | Service tier for this conditional model. |
+
+#### `StatisticsPhysicalTelemetryCapabilities`
+
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `requestLatency` | `boolean` | Yes |  |
+| `requestBytes` | `boolean` | Yes |  |
+| `requestConcurrency` | `boolean` | Yes |  |
+| `cacheTiers` | `boolean` | Yes |  |
+| `accessLocality` | `boolean` | Yes |  |
+
+#### `StatisticsPlan`
+
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `plan` | `string` | Yes | Structural fingerprint of the physical plan: operator shapes, access paths, join order, and binding strategies, excluding literal values. |
+| `executions` | `integer` | Yes | Times this plan ran for this family. Format: int64. |
+
+#### `StatisticsPlanningValue`
+
+Observational priority proxy. It is present only when at least two
+plans have enough execution evidence in the same access generation
+and row-count class. It does not claim that an estimate caused a plan
+change. A future counterfactual optimizer can replace the observed
+A counterfactual optimizer replaces the observed plan-variation
+component without changing the other components.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `score` | `integer` | Yes | Frequency multiplied by normalized uncertainty, observed plan variation, and the median execution-time difference. The two normalized components use parts per million. Format: int64. |
+| `frequency` | `integer` | Yes | Recent workload frequency used by the score. Format: int64. |
+| `uncertaintyPpm` | `integer` | Yes | Normalized p95 q-error excess in parts per million. Format: int64. |
+| `observedPlanVariationPpm` | `integer` | Yes | Non-dominant comparable plan executions in parts per million. Format: int64. |
+| `costDifferenceMicros` | `integer` | Yes | Difference between the fastest and slowest comparable median execution times. Format: int64. |
+| `comparableExecutions` | `integer` | Yes | Executions represented by the comparable plan group. Format: int64. |
+| `rowCountClassUpperBound` | `integer` | Yes | Median row-count histogram bound shared by the plan group. Format: int64. |
+| `minimumExecutions` | `integer` | Yes | Minimum estimates and per-plan executions required for admission. Format: int64. |
+| `basis` | `string` | Yes | Stable identifier for the score method. |
+
+#### `StatisticsRelay`
+
+The observation relay, as this instance sees it. An instance that
+cannot publish to storage hands its evidence to one that can; the
+channel is advisory, so every loss here is counted rather than
+signalled as a failure.
+
+The sending fields are absent on an instance that publishes to storage
+rather than to a peer. The receiving fields are always present,
+because every instance can receive; zero means nothing has arrived.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `state` | `connected \| retrying \| losing \| idle` |  | The sending side in one word. `retrying` means a batch is held for another attempt and no evidence has been lost yet. `losing` means a batch was abandoned or refused, so evidence was dropped, and it stays reported until a later attempt succeeds. Absent on an instance that does not send. |
+| `sent` | `integer` |  | Batches this instance successfully handed to a peer. Format: int64. |
+| `abandoned` | `integer` |  | Batches given up on after exhausting their retry budget. Each one is evidence permanently lost, which costs the fleet planner accuracy and nothing else. Format: int64. |
+| `rejected` | `integer` |  | Batches a peer understood and refused, most often a wire-format mismatch during a rolling upgrade. Retrying cannot help, so these are not retried. Format: int64. |
+| `holding` | `boolean` |  | Whether a batch is currently awaiting another attempt. |
+| `corpusSent` | `integer` |  | Workload-corpus documents carried to a peer. These contain the literal values of the programs that ran, unlike the aggregate evidence beside them, so they travel only over a transport shown to be confidential; encrypted *and* verified. Format: int64. |
+| `corpusWithheld` | `integer` |  | Corpus documents dropped because the transport could not be shown confidential. An instance that cannot publish has nowhere else to put them. A non-zero value with corpus capture requested means the channel is not encrypted. Format: int64. |
+| `received` | `integer` | Yes | Batches accepted from a peer and queued to be merged. Format: int64. |
+| `receivedAlreadyApplied` | `integer` | Yes | Batches whose sequence this instance had already applied. Delivery is at-least-once and the accounting is idempotent, so a repeat is expected traffic rather than a fault. Format: int64. |
+| `receivedRejected` | `integer` | Yes | Batches refused because they use a different wire format. Format: int64. |
+| `receivedSaturated` | `integer` | Yes | Batches refused because the merge queue was full. The sender is asked to retry and nothing is recorded as applied, so a saturated receiver costs latency rather than evidence. Format: int64. |
+| `receivedCorpusOversize` | `integer` | Yes | Batches refused because one corpus document exceeded 1 MiB. Format: int64. |
+| `sources` | `integer` | Yes | Peers whose applied sequence this instance remembers. A peer that falls out of that bounded set is re-admitted on its next batch. Format: int64. |
+| `mergedObservations` | `integer` | Yes | Observations folded in from peers. Format: int64. |
+| `corpusAdopted` | `integer` | Yes | Corpus documents adopted from peers. Content addressing makes a duplicate harmless, so this counts documents received rather than documents newly stored. Format: int64. |
+| `refusedStaleFamilies` | `integer` | Yes | Relayed families discarded because they described a different catalog generation than this instance observed. A peer lagging a catalog change must never displace newer local evidence. Format: int64. |
+
+#### `StatisticsResourceCost`
+
+Observed logical KV work for complete statement executions. This is
+not CPU, memory, object-request, or remote-I/O cost. A relation model
+has no resource cost because shared statement work cannot be assigned
+to one relation without an operator measurement boundary.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `basis` | `logical_kv_work` | Yes |  |
+| `observedExecutions` | `integer` | Yes | Complete statement executions in these distributions. Format: int64. |
+| `gets` | `StatisticsResourceMetric` | Yes |  |
+| `puts` | `StatisticsResourceMetric` | Yes |  |
+| `deletes` | `StatisticsResourceMetric` | Yes |  |
+| `scans` | `StatisticsResourceMetric` | Yes |  |
+| `iterated` | `StatisticsResourceMetric` | Yes |  |
+| `bytesRead` | `StatisticsResourceMetric` | Yes |  |
+| `bytesWritten` | `StatisticsResourceMetric` | Yes |  |
+
+#### `StatisticsResourceMetric`
+
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `p50UpperBound` | `integer` | Yes | Upper bound on the median value. Format: int64. |
+| `p95UpperBound` | `integer` | Yes | Upper bound on the 95th-percentile value. Format: int64. |
+| `maximum` | `integer` | Yes | Largest observed value, exactly. Format: int64. |
+
+#### `StatisticsSynopsis`
+
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `table` | `integer` | Yes | Stable table schema identity. Format: int64. |
+| `observedRows` | `integer` | Yes | Rows read by the survey. Format: int64. |
+| `coverage` | `complete \| prefixLimit` | Yes | Whether the survey read the complete table or a bounded prefix. |
+| `sampleSize` | `integer` | Yes | Rows used to build the synopsis. Format: int64. |
+| `changesSinceCollection` | `integer` | Yes | Rows affected by writes after collection. Format: int64. |
+| `tableExistenceGeneration` | `integer` | Yes | Table generation that this synopsis describes. Format: int64. |
+| `collectedAtUnixMicros` | `integer` | Yes | Collection wall time in microseconds since the Unix epoch. Format: int64. |
+| `catalogVersion` | `integer` | Yes | Catalog version read by the survey. Format: int64. |
+| `columns` | `array of StatisticsColumnSynopsis` | Yes |  |
+| `columnGroups` | `array of StatisticsColumnGroupSynopsis` | Yes | Bounded joint statistics for primary-key prefixes, ready multi-column index prefixes, and composite foreign keys. |
 
 #### `TableDef`
 

@@ -81,6 +81,18 @@ impl TextPattern {
     pub fn comparison(&self) -> TextComparison {
         self.comparison
     }
+
+    pub fn leading(&self) -> bool {
+        self.leading
+    }
+
+    pub fn trailing(&self) -> bool {
+        self.trailing
+    }
+
+    pub fn segments(&self) -> &[String] {
+        &self.segments
+    }
 }
 
 trait SegmentUnits<T> {

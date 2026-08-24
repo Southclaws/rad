@@ -2750,6 +2750,328 @@ func (o OptSchemaRequest) Or(d SchemaRequest) SchemaRequest {
 	return d
 }
 
+// NewOptStatisticsCorpusMaintenance returns new OptStatisticsCorpusMaintenance with value set to v.
+func NewOptStatisticsCorpusMaintenance(v StatisticsCorpusMaintenance) OptStatisticsCorpusMaintenance {
+	return OptStatisticsCorpusMaintenance{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptStatisticsCorpusMaintenance is optional StatisticsCorpusMaintenance.
+type OptStatisticsCorpusMaintenance struct {
+	Value StatisticsCorpusMaintenance
+	Set   bool
+}
+
+// IsSet returns true if OptStatisticsCorpusMaintenance was set.
+func (o OptStatisticsCorpusMaintenance) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptStatisticsCorpusMaintenance) Reset() {
+	var v StatisticsCorpusMaintenance
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptStatisticsCorpusMaintenance) SetTo(v StatisticsCorpusMaintenance) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptStatisticsCorpusMaintenance) Get() (v StatisticsCorpusMaintenance, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptStatisticsCorpusMaintenance) Or(d StatisticsCorpusMaintenance) StatisticsCorpusMaintenance {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptStatisticsPhysicalCost returns new OptStatisticsPhysicalCost with value set to v.
+func NewOptStatisticsPhysicalCost(v StatisticsPhysicalCost) OptStatisticsPhysicalCost {
+	return OptStatisticsPhysicalCost{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptStatisticsPhysicalCost is optional StatisticsPhysicalCost.
+type OptStatisticsPhysicalCost struct {
+	Value StatisticsPhysicalCost
+	Set   bool
+}
+
+// IsSet returns true if OptStatisticsPhysicalCost was set.
+func (o OptStatisticsPhysicalCost) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptStatisticsPhysicalCost) Reset() {
+	var v StatisticsPhysicalCost
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptStatisticsPhysicalCost) SetTo(v StatisticsPhysicalCost) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptStatisticsPhysicalCost) Get() (v StatisticsPhysicalCost, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptStatisticsPhysicalCost) Or(d StatisticsPhysicalCost) StatisticsPhysicalCost {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptStatisticsPhysicalCostMetric returns new OptStatisticsPhysicalCostMetric with value set to v.
+func NewOptStatisticsPhysicalCostMetric(v StatisticsPhysicalCostMetric) OptStatisticsPhysicalCostMetric {
+	return OptStatisticsPhysicalCostMetric{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptStatisticsPhysicalCostMetric is optional StatisticsPhysicalCostMetric.
+type OptStatisticsPhysicalCostMetric struct {
+	Value StatisticsPhysicalCostMetric
+	Set   bool
+}
+
+// IsSet returns true if OptStatisticsPhysicalCostMetric was set.
+func (o OptStatisticsPhysicalCostMetric) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptStatisticsPhysicalCostMetric) Reset() {
+	var v StatisticsPhysicalCostMetric
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptStatisticsPhysicalCostMetric) SetTo(v StatisticsPhysicalCostMetric) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptStatisticsPhysicalCostMetric) Get() (v StatisticsPhysicalCostMetric, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptStatisticsPhysicalCostMetric) Or(d StatisticsPhysicalCostMetric) StatisticsPhysicalCostMetric {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptStatisticsPhysicalRequestCostServiceTier returns new OptStatisticsPhysicalRequestCostServiceTier with value set to v.
+func NewOptStatisticsPhysicalRequestCostServiceTier(v StatisticsPhysicalRequestCostServiceTier) OptStatisticsPhysicalRequestCostServiceTier {
+	return OptStatisticsPhysicalRequestCostServiceTier{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptStatisticsPhysicalRequestCostServiceTier is optional StatisticsPhysicalRequestCostServiceTier.
+type OptStatisticsPhysicalRequestCostServiceTier struct {
+	Value StatisticsPhysicalRequestCostServiceTier
+	Set   bool
+}
+
+// IsSet returns true if OptStatisticsPhysicalRequestCostServiceTier was set.
+func (o OptStatisticsPhysicalRequestCostServiceTier) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptStatisticsPhysicalRequestCostServiceTier) Reset() {
+	var v StatisticsPhysicalRequestCostServiceTier
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptStatisticsPhysicalRequestCostServiceTier) SetTo(v StatisticsPhysicalRequestCostServiceTier) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptStatisticsPhysicalRequestCostServiceTier) Get() (v StatisticsPhysicalRequestCostServiceTier, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptStatisticsPhysicalRequestCostServiceTier) Or(d StatisticsPhysicalRequestCostServiceTier) StatisticsPhysicalRequestCostServiceTier {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptStatisticsPlanningValue returns new OptStatisticsPlanningValue with value set to v.
+func NewOptStatisticsPlanningValue(v StatisticsPlanningValue) OptStatisticsPlanningValue {
+	return OptStatisticsPlanningValue{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptStatisticsPlanningValue is optional StatisticsPlanningValue.
+type OptStatisticsPlanningValue struct {
+	Value StatisticsPlanningValue
+	Set   bool
+}
+
+// IsSet returns true if OptStatisticsPlanningValue was set.
+func (o OptStatisticsPlanningValue) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptStatisticsPlanningValue) Reset() {
+	var v StatisticsPlanningValue
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptStatisticsPlanningValue) SetTo(v StatisticsPlanningValue) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptStatisticsPlanningValue) Get() (v StatisticsPlanningValue, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptStatisticsPlanningValue) Or(d StatisticsPlanningValue) StatisticsPlanningValue {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptStatisticsRelayState returns new OptStatisticsRelayState with value set to v.
+func NewOptStatisticsRelayState(v StatisticsRelayState) OptStatisticsRelayState {
+	return OptStatisticsRelayState{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptStatisticsRelayState is optional StatisticsRelayState.
+type OptStatisticsRelayState struct {
+	Value StatisticsRelayState
+	Set   bool
+}
+
+// IsSet returns true if OptStatisticsRelayState was set.
+func (o OptStatisticsRelayState) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptStatisticsRelayState) Reset() {
+	var v StatisticsRelayState
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptStatisticsRelayState) SetTo(v StatisticsRelayState) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptStatisticsRelayState) Get() (v StatisticsRelayState, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptStatisticsRelayState) Or(d StatisticsRelayState) StatisticsRelayState {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptStatisticsResourceCost returns new OptStatisticsResourceCost with value set to v.
+func NewOptStatisticsResourceCost(v StatisticsResourceCost) OptStatisticsResourceCost {
+	return OptStatisticsResourceCost{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptStatisticsResourceCost is optional StatisticsResourceCost.
+type OptStatisticsResourceCost struct {
+	Value StatisticsResourceCost
+	Set   bool
+}
+
+// IsSet returns true if OptStatisticsResourceCost was set.
+func (o OptStatisticsResourceCost) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptStatisticsResourceCost) Reset() {
+	var v StatisticsResourceCost
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptStatisticsResourceCost) SetTo(v StatisticsResourceCost) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptStatisticsResourceCost) Get() (v StatisticsResourceCost, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptStatisticsResourceCost) Or(d StatisticsResourceCost) StatisticsResourceCost {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptString returns new OptString with value set to v.
 func NewOptString(v string) OptString {
 	return OptString{
@@ -3145,6 +3467,7 @@ func NewInternalProblemProblem(v InternalProblem) Problem {
 	return s
 }
 
+func (*Problem) getStatisticsRes()       {}
 func (*Problem) schemaCompatibilityRes() {}
 func (*Problem) schemaDiffRes()          {}
 func (*Problem) schemaTransitionGetRes() {}
@@ -3900,6 +4223,2144 @@ func (s *StatementResult) SetAffected(val int) {
 // SetControl sets the value of Control.
 func (s *StatementResult) SetControl(val Value) {
 	s.Control = val
+}
+
+// Ref: #/components/schemas/Statistics
+type Statistics struct {
+	// Observations folded into the models since this process started.
+	Absorbed int64 `json:"absorbed"`
+	// Observations discarded because the collection queue was full. Execution never blocks to record
+	// statistics, so a busy instance sheds observations rather than slowing queries.
+	Dropped int64 `json:"dropped"`
+	// Models discarded to keep the working set bounded. The frequency sketch keeps counting an evicted
+	// family, so a family that stays active is re-admitted.
+	Evicted int64 `json:"evicted"`
+	// Unpublished evidence discarded to keep the pending set bounded. Evidence already published is
+	// unaffected: what reaches the store accumulates there.
+	Shed   int64            `json:"shed"`
+	Corpus StatisticsCorpus `json:"corpus"`
+	Relay  StatisticsRelay  `json:"relay"`
+	// Relation families currently modelled.
+	TrackedFamilies int `json:"trackedFamilies"`
+	// One entry per modelled family, most measured first.
+	Models []StatisticsModel `json:"models"`
+	// Current table survey results, ordered by table identity.
+	Synopses     []StatisticsSynopsis      `json:"synopses"`
+	PhysicalCost OptStatisticsPhysicalCost `json:"physicalCost"`
+}
+
+// GetAbsorbed returns the value of Absorbed.
+func (s *Statistics) GetAbsorbed() int64 {
+	return s.Absorbed
+}
+
+// GetDropped returns the value of Dropped.
+func (s *Statistics) GetDropped() int64 {
+	return s.Dropped
+}
+
+// GetEvicted returns the value of Evicted.
+func (s *Statistics) GetEvicted() int64 {
+	return s.Evicted
+}
+
+// GetShed returns the value of Shed.
+func (s *Statistics) GetShed() int64 {
+	return s.Shed
+}
+
+// GetCorpus returns the value of Corpus.
+func (s *Statistics) GetCorpus() StatisticsCorpus {
+	return s.Corpus
+}
+
+// GetRelay returns the value of Relay.
+func (s *Statistics) GetRelay() StatisticsRelay {
+	return s.Relay
+}
+
+// GetTrackedFamilies returns the value of TrackedFamilies.
+func (s *Statistics) GetTrackedFamilies() int {
+	return s.TrackedFamilies
+}
+
+// GetModels returns the value of Models.
+func (s *Statistics) GetModels() []StatisticsModel {
+	return s.Models
+}
+
+// GetSynopses returns the value of Synopses.
+func (s *Statistics) GetSynopses() []StatisticsSynopsis {
+	return s.Synopses
+}
+
+// GetPhysicalCost returns the value of PhysicalCost.
+func (s *Statistics) GetPhysicalCost() OptStatisticsPhysicalCost {
+	return s.PhysicalCost
+}
+
+// SetAbsorbed sets the value of Absorbed.
+func (s *Statistics) SetAbsorbed(val int64) {
+	s.Absorbed = val
+}
+
+// SetDropped sets the value of Dropped.
+func (s *Statistics) SetDropped(val int64) {
+	s.Dropped = val
+}
+
+// SetEvicted sets the value of Evicted.
+func (s *Statistics) SetEvicted(val int64) {
+	s.Evicted = val
+}
+
+// SetShed sets the value of Shed.
+func (s *Statistics) SetShed(val int64) {
+	s.Shed = val
+}
+
+// SetCorpus sets the value of Corpus.
+func (s *Statistics) SetCorpus(val StatisticsCorpus) {
+	s.Corpus = val
+}
+
+// SetRelay sets the value of Relay.
+func (s *Statistics) SetRelay(val StatisticsRelay) {
+	s.Relay = val
+}
+
+// SetTrackedFamilies sets the value of TrackedFamilies.
+func (s *Statistics) SetTrackedFamilies(val int) {
+	s.TrackedFamilies = val
+}
+
+// SetModels sets the value of Models.
+func (s *Statistics) SetModels(val []StatisticsModel) {
+	s.Models = val
+}
+
+// SetSynopses sets the value of Synopses.
+func (s *Statistics) SetSynopses(val []StatisticsSynopsis) {
+	s.Synopses = val
+}
+
+// SetPhysicalCost sets the value of PhysicalCost.
+func (s *Statistics) SetPhysicalCost(val OptStatisticsPhysicalCost) {
+	s.PhysicalCost = val
+}
+
+func (*Statistics) getStatisticsRes() {}
+
+// Ref: #/components/schemas/StatisticsColumnGroupSynopsis
+type StatisticsColumnGroupSynopsis struct {
+	// Stable column schema identities in canonical order.
+	Columns []int64 `json:"columns"`
+	// Column value generations in the same order as columns.
+	ValueGenerations []int64 `json:"valueGenerations"`
+	// Observed rows where one or more group columns contained null.
+	NullCount int64 `json:"nullCount"`
+	// Exact or approximate observed distinct non-null value combinations.
+	Distinct int64 `json:"distinct"`
+	// Whether distinct is exact.
+	DistinctIsExact bool `json:"distinctIsExact"`
+	// Bounded common value combinations, ordered by decreasing observed frequency.
+	MostCommonValues []StatisticsMostCommonColumnGroup `json:"mostCommonValues"`
+}
+
+// GetColumns returns the value of Columns.
+func (s *StatisticsColumnGroupSynopsis) GetColumns() []int64 {
+	return s.Columns
+}
+
+// GetValueGenerations returns the value of ValueGenerations.
+func (s *StatisticsColumnGroupSynopsis) GetValueGenerations() []int64 {
+	return s.ValueGenerations
+}
+
+// GetNullCount returns the value of NullCount.
+func (s *StatisticsColumnGroupSynopsis) GetNullCount() int64 {
+	return s.NullCount
+}
+
+// GetDistinct returns the value of Distinct.
+func (s *StatisticsColumnGroupSynopsis) GetDistinct() int64 {
+	return s.Distinct
+}
+
+// GetDistinctIsExact returns the value of DistinctIsExact.
+func (s *StatisticsColumnGroupSynopsis) GetDistinctIsExact() bool {
+	return s.DistinctIsExact
+}
+
+// GetMostCommonValues returns the value of MostCommonValues.
+func (s *StatisticsColumnGroupSynopsis) GetMostCommonValues() []StatisticsMostCommonColumnGroup {
+	return s.MostCommonValues
+}
+
+// SetColumns sets the value of Columns.
+func (s *StatisticsColumnGroupSynopsis) SetColumns(val []int64) {
+	s.Columns = val
+}
+
+// SetValueGenerations sets the value of ValueGenerations.
+func (s *StatisticsColumnGroupSynopsis) SetValueGenerations(val []int64) {
+	s.ValueGenerations = val
+}
+
+// SetNullCount sets the value of NullCount.
+func (s *StatisticsColumnGroupSynopsis) SetNullCount(val int64) {
+	s.NullCount = val
+}
+
+// SetDistinct sets the value of Distinct.
+func (s *StatisticsColumnGroupSynopsis) SetDistinct(val int64) {
+	s.Distinct = val
+}
+
+// SetDistinctIsExact sets the value of DistinctIsExact.
+func (s *StatisticsColumnGroupSynopsis) SetDistinctIsExact(val bool) {
+	s.DistinctIsExact = val
+}
+
+// SetMostCommonValues sets the value of MostCommonValues.
+func (s *StatisticsColumnGroupSynopsis) SetMostCommonValues(val []StatisticsMostCommonColumnGroup) {
+	s.MostCommonValues = val
+}
+
+// Ref: #/components/schemas/StatisticsColumnSynopsis
+type StatisticsColumnSynopsis struct {
+	// Stable column schema identity.
+	Column int64 `json:"column"`
+	// Column value generation that this synopsis describes.
+	ValueGeneration int64 `json:"valueGeneration"`
+	// Fraction of observed rows that contained null.
+	NullFraction float64 `json:"nullFraction"`
+	// Observed rows that contained null.
+	NullCount int64 `json:"nullCount"`
+	// Exact or approximate observed distinct non-null values.
+	Distinct int64 `json:"distinct"`
+	// Whether distinct is exact.
+	DistinctIsExact bool `json:"distinctIsExact"`
+	// Average encoded width of observed non-null values.
+	AverageWidth int64 `json:"averageWidth"`
+	// Rendered minimum non-null value.
+	Minimum OptString `json:"minimum"`
+	// Rendered maximum non-null value.
+	Maximum OptString `json:"maximum"`
+	// Bounded heavy hitters, ordered by decreasing observed frequency.
+	MostCommonValues []StatisticsMostCommonValue `json:"mostCommonValues"`
+}
+
+// GetColumn returns the value of Column.
+func (s *StatisticsColumnSynopsis) GetColumn() int64 {
+	return s.Column
+}
+
+// GetValueGeneration returns the value of ValueGeneration.
+func (s *StatisticsColumnSynopsis) GetValueGeneration() int64 {
+	return s.ValueGeneration
+}
+
+// GetNullFraction returns the value of NullFraction.
+func (s *StatisticsColumnSynopsis) GetNullFraction() float64 {
+	return s.NullFraction
+}
+
+// GetNullCount returns the value of NullCount.
+func (s *StatisticsColumnSynopsis) GetNullCount() int64 {
+	return s.NullCount
+}
+
+// GetDistinct returns the value of Distinct.
+func (s *StatisticsColumnSynopsis) GetDistinct() int64 {
+	return s.Distinct
+}
+
+// GetDistinctIsExact returns the value of DistinctIsExact.
+func (s *StatisticsColumnSynopsis) GetDistinctIsExact() bool {
+	return s.DistinctIsExact
+}
+
+// GetAverageWidth returns the value of AverageWidth.
+func (s *StatisticsColumnSynopsis) GetAverageWidth() int64 {
+	return s.AverageWidth
+}
+
+// GetMinimum returns the value of Minimum.
+func (s *StatisticsColumnSynopsis) GetMinimum() OptString {
+	return s.Minimum
+}
+
+// GetMaximum returns the value of Maximum.
+func (s *StatisticsColumnSynopsis) GetMaximum() OptString {
+	return s.Maximum
+}
+
+// GetMostCommonValues returns the value of MostCommonValues.
+func (s *StatisticsColumnSynopsis) GetMostCommonValues() []StatisticsMostCommonValue {
+	return s.MostCommonValues
+}
+
+// SetColumn sets the value of Column.
+func (s *StatisticsColumnSynopsis) SetColumn(val int64) {
+	s.Column = val
+}
+
+// SetValueGeneration sets the value of ValueGeneration.
+func (s *StatisticsColumnSynopsis) SetValueGeneration(val int64) {
+	s.ValueGeneration = val
+}
+
+// SetNullFraction sets the value of NullFraction.
+func (s *StatisticsColumnSynopsis) SetNullFraction(val float64) {
+	s.NullFraction = val
+}
+
+// SetNullCount sets the value of NullCount.
+func (s *StatisticsColumnSynopsis) SetNullCount(val int64) {
+	s.NullCount = val
+}
+
+// SetDistinct sets the value of Distinct.
+func (s *StatisticsColumnSynopsis) SetDistinct(val int64) {
+	s.Distinct = val
+}
+
+// SetDistinctIsExact sets the value of DistinctIsExact.
+func (s *StatisticsColumnSynopsis) SetDistinctIsExact(val bool) {
+	s.DistinctIsExact = val
+}
+
+// SetAverageWidth sets the value of AverageWidth.
+func (s *StatisticsColumnSynopsis) SetAverageWidth(val int64) {
+	s.AverageWidth = val
+}
+
+// SetMinimum sets the value of Minimum.
+func (s *StatisticsColumnSynopsis) SetMinimum(val OptString) {
+	s.Minimum = val
+}
+
+// SetMaximum sets the value of Maximum.
+func (s *StatisticsColumnSynopsis) SetMaximum(val OptString) {
+	s.Maximum = val
+}
+
+// SetMostCommonValues sets the value of MostCommonValues.
+func (s *StatisticsColumnSynopsis) SetMostCommonValues(val []StatisticsMostCommonValue) {
+	s.MostCommonValues = val
+}
+
+// Ref: #/components/schemas/StatisticsCorpus
+type StatisticsCorpus struct {
+	// Whether this process captures canonical workload programs.
+	Enabled bool `json:"enabled"`
+	// Programs admitted to the local statistics queue.
+	Captured int64 `json:"captured"`
+	// Programs not captured because one canonical document exceeded the capture limit.
+	SkippedOversize int64 `json:"skippedOversize"`
+	// Programs not captured because the collection queue was full.
+	DroppedQueue int64 `json:"droppedQueue"`
+	// Captured programs removed from the bounded unpublished queue.
+	ShedPending int64 `json:"shedPending"`
+	// Storage maintenance data. This field is absent when this process does not own corpus storage.
+	Maintenance OptStatisticsCorpusMaintenance `json:"maintenance"`
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *StatisticsCorpus) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetCaptured returns the value of Captured.
+func (s *StatisticsCorpus) GetCaptured() int64 {
+	return s.Captured
+}
+
+// GetSkippedOversize returns the value of SkippedOversize.
+func (s *StatisticsCorpus) GetSkippedOversize() int64 {
+	return s.SkippedOversize
+}
+
+// GetDroppedQueue returns the value of DroppedQueue.
+func (s *StatisticsCorpus) GetDroppedQueue() int64 {
+	return s.DroppedQueue
+}
+
+// GetShedPending returns the value of ShedPending.
+func (s *StatisticsCorpus) GetShedPending() int64 {
+	return s.ShedPending
+}
+
+// GetMaintenance returns the value of Maintenance.
+func (s *StatisticsCorpus) GetMaintenance() OptStatisticsCorpusMaintenance {
+	return s.Maintenance
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *StatisticsCorpus) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetCaptured sets the value of Captured.
+func (s *StatisticsCorpus) SetCaptured(val int64) {
+	s.Captured = val
+}
+
+// SetSkippedOversize sets the value of SkippedOversize.
+func (s *StatisticsCorpus) SetSkippedOversize(val int64) {
+	s.SkippedOversize = val
+}
+
+// SetDroppedQueue sets the value of DroppedQueue.
+func (s *StatisticsCorpus) SetDroppedQueue(val int64) {
+	s.DroppedQueue = val
+}
+
+// SetShedPending sets the value of ShedPending.
+func (s *StatisticsCorpus) SetShedPending(val int64) {
+	s.ShedPending = val
+}
+
+// SetMaintenance sets the value of Maintenance.
+func (s *StatisticsCorpus) SetMaintenance(val OptStatisticsCorpusMaintenance) {
+	s.Maintenance = val
+}
+
+// Cumulative maintenance counters and current retained corpus gauges. Counters start when the storage
+// owner process starts.
+// Ref: #/components/schemas/StatisticsCorpusMaintenance
+type StatisticsCorpusMaintenance struct {
+	// Execution records removed because the maximum age elapsed.
+	ExpiredExecutions int64 `json:"expiredExecutions"`
+	// Execution records removed to enforce the count or byte limit.
+	PrunedExecutions int64 `json:"prunedExecutions"`
+	// Execution records removed because their key, value, or program reference was invalid.
+	InvalidExecutions int64 `json:"invalidExecutions"`
+	// Canonical programs removed because no retained execution referenced them.
+	PrunedPrograms int64 `json:"prunedPrograms"`
+	// Canonical programs removed because their storage key was invalid.
+	InvalidPrograms int64 `json:"invalidPrograms"`
+	// Execution records removed by explicit corpus erasure.
+	ErasedExecutions int64 `json:"erasedExecutions"`
+	// Canonical programs removed by explicit corpus erasure.
+	ErasedPrograms int64 `json:"erasedPrograms"`
+	// Execution records currently retained.
+	RetainedExecutions int64 `json:"retainedExecutions"`
+	// Unique canonical programs currently retained.
+	RetainedPrograms int64 `json:"retainedPrograms"`
+	// Bytes in retained canonical programs. This excludes execution records and storage overhead.
+	RetainedProgramBytes int64 `json:"retainedProgramBytes"`
+}
+
+// GetExpiredExecutions returns the value of ExpiredExecutions.
+func (s *StatisticsCorpusMaintenance) GetExpiredExecutions() int64 {
+	return s.ExpiredExecutions
+}
+
+// GetPrunedExecutions returns the value of PrunedExecutions.
+func (s *StatisticsCorpusMaintenance) GetPrunedExecutions() int64 {
+	return s.PrunedExecutions
+}
+
+// GetInvalidExecutions returns the value of InvalidExecutions.
+func (s *StatisticsCorpusMaintenance) GetInvalidExecutions() int64 {
+	return s.InvalidExecutions
+}
+
+// GetPrunedPrograms returns the value of PrunedPrograms.
+func (s *StatisticsCorpusMaintenance) GetPrunedPrograms() int64 {
+	return s.PrunedPrograms
+}
+
+// GetInvalidPrograms returns the value of InvalidPrograms.
+func (s *StatisticsCorpusMaintenance) GetInvalidPrograms() int64 {
+	return s.InvalidPrograms
+}
+
+// GetErasedExecutions returns the value of ErasedExecutions.
+func (s *StatisticsCorpusMaintenance) GetErasedExecutions() int64 {
+	return s.ErasedExecutions
+}
+
+// GetErasedPrograms returns the value of ErasedPrograms.
+func (s *StatisticsCorpusMaintenance) GetErasedPrograms() int64 {
+	return s.ErasedPrograms
+}
+
+// GetRetainedExecutions returns the value of RetainedExecutions.
+func (s *StatisticsCorpusMaintenance) GetRetainedExecutions() int64 {
+	return s.RetainedExecutions
+}
+
+// GetRetainedPrograms returns the value of RetainedPrograms.
+func (s *StatisticsCorpusMaintenance) GetRetainedPrograms() int64 {
+	return s.RetainedPrograms
+}
+
+// GetRetainedProgramBytes returns the value of RetainedProgramBytes.
+func (s *StatisticsCorpusMaintenance) GetRetainedProgramBytes() int64 {
+	return s.RetainedProgramBytes
+}
+
+// SetExpiredExecutions sets the value of ExpiredExecutions.
+func (s *StatisticsCorpusMaintenance) SetExpiredExecutions(val int64) {
+	s.ExpiredExecutions = val
+}
+
+// SetPrunedExecutions sets the value of PrunedExecutions.
+func (s *StatisticsCorpusMaintenance) SetPrunedExecutions(val int64) {
+	s.PrunedExecutions = val
+}
+
+// SetInvalidExecutions sets the value of InvalidExecutions.
+func (s *StatisticsCorpusMaintenance) SetInvalidExecutions(val int64) {
+	s.InvalidExecutions = val
+}
+
+// SetPrunedPrograms sets the value of PrunedPrograms.
+func (s *StatisticsCorpusMaintenance) SetPrunedPrograms(val int64) {
+	s.PrunedPrograms = val
+}
+
+// SetInvalidPrograms sets the value of InvalidPrograms.
+func (s *StatisticsCorpusMaintenance) SetInvalidPrograms(val int64) {
+	s.InvalidPrograms = val
+}
+
+// SetErasedExecutions sets the value of ErasedExecutions.
+func (s *StatisticsCorpusMaintenance) SetErasedExecutions(val int64) {
+	s.ErasedExecutions = val
+}
+
+// SetErasedPrograms sets the value of ErasedPrograms.
+func (s *StatisticsCorpusMaintenance) SetErasedPrograms(val int64) {
+	s.ErasedPrograms = val
+}
+
+// SetRetainedExecutions sets the value of RetainedExecutions.
+func (s *StatisticsCorpusMaintenance) SetRetainedExecutions(val int64) {
+	s.RetainedExecutions = val
+}
+
+// SetRetainedPrograms sets the value of RetainedPrograms.
+func (s *StatisticsCorpusMaintenance) SetRetainedPrograms(val int64) {
+	s.RetainedPrograms = val
+}
+
+// SetRetainedProgramBytes sets the value of RetainedProgramBytes.
+func (s *StatisticsCorpusMaintenance) SetRetainedProgramBytes(val int64) {
+	s.RetainedProgramBytes = val
+}
+
+// Ref: #/components/schemas/StatisticsModel
+type StatisticsModel struct {
+	// `relation` contains logical relation cardinality feedback. `statement` contains complete statement
+	// performance and plan data.
+	Kind string `json:"kind"`
+	// Family fingerprint: the relation shape with every literal replaced by a typed placeholder, so the
+	// same shape run with different parameters shares one entry. Carries the canonicalization version and
+	// hash algorithm that produced it.
+	Family string `json:"family"`
+	// Approximate distinct literal-specific instances seen within this family. A fixed-size mergeable
+	// sketch produces this value. One means an effectively constant query. A large value means a
+	// parameterised query.
+	ExactVariants int64 `json:"exactVariants"`
+	// Approximate number of times this family appeared anywhere in an executed query tree, from a
+	// count-min sketch. It over-counts on hash collision and halves periodically, so it reflects recent
+	// workload weight rather than a lifetime total. Expect it to exceed `retainedExecutions`: a family is
+	// counted once per appearance as a subtree but measured only where a plan boundary exposes its rows.
+	Frequency int64 `json:"frequency"`
+	// Times this family was itself measured.
+	RetainedExecutions int64 `json:"retainedExecutions"`
+	// Of those, how many carried a planner estimate to score against the actual row count. Zero means
+	// nothing has scored this family yet.
+	ExecutionsWithEstimate int64 `json:"executionsWithEstimate"`
+	// Upper bound on the median row count: the bound of the histogram bucket holding it, never above
+	// `rowsMax`. Not an exact quantile.
+	RowsP50UpperBound int64 `json:"rowsP50UpperBound"`
+	// Upper bound on the 95th-percentile row count.
+	RowsP95UpperBound int64 `json:"rowsP95UpperBound"`
+	// Largest row count observed, exactly.
+	RowsMax int64 `json:"rowsMax"`
+	// Upper bound on the median estimate error, symmetric and multiplicative: 1.0 is a perfect estimate
+	// and 10.0 is wrong by a factor of ten in either direction. A bucket bound, never above `qErrorMax`.
+	QErrorP50UpperBound float64 `json:"qErrorP50UpperBound"`
+	// Upper bound on the 95th-percentile estimate error.
+	QErrorP95UpperBound float64 `json:"qErrorP95UpperBound"`
+	// Largest estimate error observed, exactly.
+	QErrorMax float64 `json:"qErrorMax"`
+	// Upper bound on median execution time in microseconds. Absent when this family was measured only as a
+	// relation inside a statement, which records rows but not durations.
+	ExecuteMicrosP50UpperBound OptInt64 `json:"executeMicrosP50UpperBound"`
+	// Upper bound on 95th-percentile execution time in microseconds.
+	ExecuteMicrosP95UpperBound OptInt64 `json:"executeMicrosP95UpperBound"`
+	// Exponentially weighted mean execution time, a recent-trend signal rather than a distribution. Absent
+	// alongside the latency bounds.
+	DurationEwmaMicros OptInt64 `json:"durationEwmaMicros"`
+	// Physical plans observed for this family, with how often each ran.
+	Plans         []StatisticsPlan           `json:"plans"`
+	PlanningValue OptStatisticsPlanningValue `json:"planningValue"`
+	ResourceCost  OptStatisticsResourceCost  `json:"resourceCost"`
+}
+
+// GetKind returns the value of Kind.
+func (s *StatisticsModel) GetKind() string {
+	return s.Kind
+}
+
+// GetFamily returns the value of Family.
+func (s *StatisticsModel) GetFamily() string {
+	return s.Family
+}
+
+// GetExactVariants returns the value of ExactVariants.
+func (s *StatisticsModel) GetExactVariants() int64 {
+	return s.ExactVariants
+}
+
+// GetFrequency returns the value of Frequency.
+func (s *StatisticsModel) GetFrequency() int64 {
+	return s.Frequency
+}
+
+// GetRetainedExecutions returns the value of RetainedExecutions.
+func (s *StatisticsModel) GetRetainedExecutions() int64 {
+	return s.RetainedExecutions
+}
+
+// GetExecutionsWithEstimate returns the value of ExecutionsWithEstimate.
+func (s *StatisticsModel) GetExecutionsWithEstimate() int64 {
+	return s.ExecutionsWithEstimate
+}
+
+// GetRowsP50UpperBound returns the value of RowsP50UpperBound.
+func (s *StatisticsModel) GetRowsP50UpperBound() int64 {
+	return s.RowsP50UpperBound
+}
+
+// GetRowsP95UpperBound returns the value of RowsP95UpperBound.
+func (s *StatisticsModel) GetRowsP95UpperBound() int64 {
+	return s.RowsP95UpperBound
+}
+
+// GetRowsMax returns the value of RowsMax.
+func (s *StatisticsModel) GetRowsMax() int64 {
+	return s.RowsMax
+}
+
+// GetQErrorP50UpperBound returns the value of QErrorP50UpperBound.
+func (s *StatisticsModel) GetQErrorP50UpperBound() float64 {
+	return s.QErrorP50UpperBound
+}
+
+// GetQErrorP95UpperBound returns the value of QErrorP95UpperBound.
+func (s *StatisticsModel) GetQErrorP95UpperBound() float64 {
+	return s.QErrorP95UpperBound
+}
+
+// GetQErrorMax returns the value of QErrorMax.
+func (s *StatisticsModel) GetQErrorMax() float64 {
+	return s.QErrorMax
+}
+
+// GetExecuteMicrosP50UpperBound returns the value of ExecuteMicrosP50UpperBound.
+func (s *StatisticsModel) GetExecuteMicrosP50UpperBound() OptInt64 {
+	return s.ExecuteMicrosP50UpperBound
+}
+
+// GetExecuteMicrosP95UpperBound returns the value of ExecuteMicrosP95UpperBound.
+func (s *StatisticsModel) GetExecuteMicrosP95UpperBound() OptInt64 {
+	return s.ExecuteMicrosP95UpperBound
+}
+
+// GetDurationEwmaMicros returns the value of DurationEwmaMicros.
+func (s *StatisticsModel) GetDurationEwmaMicros() OptInt64 {
+	return s.DurationEwmaMicros
+}
+
+// GetPlans returns the value of Plans.
+func (s *StatisticsModel) GetPlans() []StatisticsPlan {
+	return s.Plans
+}
+
+// GetPlanningValue returns the value of PlanningValue.
+func (s *StatisticsModel) GetPlanningValue() OptStatisticsPlanningValue {
+	return s.PlanningValue
+}
+
+// GetResourceCost returns the value of ResourceCost.
+func (s *StatisticsModel) GetResourceCost() OptStatisticsResourceCost {
+	return s.ResourceCost
+}
+
+// SetKind sets the value of Kind.
+func (s *StatisticsModel) SetKind(val string) {
+	s.Kind = val
+}
+
+// SetFamily sets the value of Family.
+func (s *StatisticsModel) SetFamily(val string) {
+	s.Family = val
+}
+
+// SetExactVariants sets the value of ExactVariants.
+func (s *StatisticsModel) SetExactVariants(val int64) {
+	s.ExactVariants = val
+}
+
+// SetFrequency sets the value of Frequency.
+func (s *StatisticsModel) SetFrequency(val int64) {
+	s.Frequency = val
+}
+
+// SetRetainedExecutions sets the value of RetainedExecutions.
+func (s *StatisticsModel) SetRetainedExecutions(val int64) {
+	s.RetainedExecutions = val
+}
+
+// SetExecutionsWithEstimate sets the value of ExecutionsWithEstimate.
+func (s *StatisticsModel) SetExecutionsWithEstimate(val int64) {
+	s.ExecutionsWithEstimate = val
+}
+
+// SetRowsP50UpperBound sets the value of RowsP50UpperBound.
+func (s *StatisticsModel) SetRowsP50UpperBound(val int64) {
+	s.RowsP50UpperBound = val
+}
+
+// SetRowsP95UpperBound sets the value of RowsP95UpperBound.
+func (s *StatisticsModel) SetRowsP95UpperBound(val int64) {
+	s.RowsP95UpperBound = val
+}
+
+// SetRowsMax sets the value of RowsMax.
+func (s *StatisticsModel) SetRowsMax(val int64) {
+	s.RowsMax = val
+}
+
+// SetQErrorP50UpperBound sets the value of QErrorP50UpperBound.
+func (s *StatisticsModel) SetQErrorP50UpperBound(val float64) {
+	s.QErrorP50UpperBound = val
+}
+
+// SetQErrorP95UpperBound sets the value of QErrorP95UpperBound.
+func (s *StatisticsModel) SetQErrorP95UpperBound(val float64) {
+	s.QErrorP95UpperBound = val
+}
+
+// SetQErrorMax sets the value of QErrorMax.
+func (s *StatisticsModel) SetQErrorMax(val float64) {
+	s.QErrorMax = val
+}
+
+// SetExecuteMicrosP50UpperBound sets the value of ExecuteMicrosP50UpperBound.
+func (s *StatisticsModel) SetExecuteMicrosP50UpperBound(val OptInt64) {
+	s.ExecuteMicrosP50UpperBound = val
+}
+
+// SetExecuteMicrosP95UpperBound sets the value of ExecuteMicrosP95UpperBound.
+func (s *StatisticsModel) SetExecuteMicrosP95UpperBound(val OptInt64) {
+	s.ExecuteMicrosP95UpperBound = val
+}
+
+// SetDurationEwmaMicros sets the value of DurationEwmaMicros.
+func (s *StatisticsModel) SetDurationEwmaMicros(val OptInt64) {
+	s.DurationEwmaMicros = val
+}
+
+// SetPlans sets the value of Plans.
+func (s *StatisticsModel) SetPlans(val []StatisticsPlan) {
+	s.Plans = val
+}
+
+// SetPlanningValue sets the value of PlanningValue.
+func (s *StatisticsModel) SetPlanningValue(val OptStatisticsPlanningValue) {
+	s.PlanningValue = val
+}
+
+// SetResourceCost sets the value of ResourceCost.
+func (s *StatisticsModel) SetResourceCost(val OptStatisticsResourceCost) {
+	s.ResourceCost = val
+}
+
+// Ref: #/components/schemas/StatisticsMostCommonColumnGroup
+type StatisticsMostCommonColumnGroup struct {
+	// Rendered typed values in the column order.
+	Values []string `json:"values"`
+	// Space-Saving frequency upper bound.
+	Frequency int64 `json:"frequency"`
+	// Guaranteed observed frequency lower bound.
+	LowerFrequency int64 `json:"lowerFrequency"`
+	// Maximum Space-Saving overcount.
+	MaximumError int64 `json:"maximumError"`
+}
+
+// GetValues returns the value of Values.
+func (s *StatisticsMostCommonColumnGroup) GetValues() []string {
+	return s.Values
+}
+
+// GetFrequency returns the value of Frequency.
+func (s *StatisticsMostCommonColumnGroup) GetFrequency() int64 {
+	return s.Frequency
+}
+
+// GetLowerFrequency returns the value of LowerFrequency.
+func (s *StatisticsMostCommonColumnGroup) GetLowerFrequency() int64 {
+	return s.LowerFrequency
+}
+
+// GetMaximumError returns the value of MaximumError.
+func (s *StatisticsMostCommonColumnGroup) GetMaximumError() int64 {
+	return s.MaximumError
+}
+
+// SetValues sets the value of Values.
+func (s *StatisticsMostCommonColumnGroup) SetValues(val []string) {
+	s.Values = val
+}
+
+// SetFrequency sets the value of Frequency.
+func (s *StatisticsMostCommonColumnGroup) SetFrequency(val int64) {
+	s.Frequency = val
+}
+
+// SetLowerFrequency sets the value of LowerFrequency.
+func (s *StatisticsMostCommonColumnGroup) SetLowerFrequency(val int64) {
+	s.LowerFrequency = val
+}
+
+// SetMaximumError sets the value of MaximumError.
+func (s *StatisticsMostCommonColumnGroup) SetMaximumError(val int64) {
+	s.MaximumError = val
+}
+
+// Ref: #/components/schemas/StatisticsMostCommonValue
+type StatisticsMostCommonValue struct {
+	// Rendered typed value.
+	Value string `json:"value"`
+	// Space-Saving frequency upper bound.
+	Frequency int64 `json:"frequency"`
+	// Guaranteed observed frequency lower bound.
+	LowerFrequency int64 `json:"lowerFrequency"`
+	// Maximum Space-Saving overcount.
+	MaximumError int64 `json:"maximumError"`
+}
+
+// GetValue returns the value of Value.
+func (s *StatisticsMostCommonValue) GetValue() string {
+	return s.Value
+}
+
+// GetFrequency returns the value of Frequency.
+func (s *StatisticsMostCommonValue) GetFrequency() int64 {
+	return s.Frequency
+}
+
+// GetLowerFrequency returns the value of LowerFrequency.
+func (s *StatisticsMostCommonValue) GetLowerFrequency() int64 {
+	return s.LowerFrequency
+}
+
+// GetMaximumError returns the value of MaximumError.
+func (s *StatisticsMostCommonValue) GetMaximumError() int64 {
+	return s.MaximumError
+}
+
+// SetValue sets the value of Value.
+func (s *StatisticsMostCommonValue) SetValue(val string) {
+	s.Value = val
+}
+
+// SetFrequency sets the value of Frequency.
+func (s *StatisticsMostCommonValue) SetFrequency(val int64) {
+	s.Frequency = val
+}
+
+// SetLowerFrequency sets the value of LowerFrequency.
+func (s *StatisticsMostCommonValue) SetLowerFrequency(val int64) {
+	s.LowerFrequency = val
+}
+
+// SetMaximumError sets the value of MaximumError.
+func (s *StatisticsMostCommonValue) SetMaximumError(val int64) {
+	s.MaximumError = val
+}
+
+// Ref: #/components/schemas/StatisticsPhysicalCacheCost
+type StatisticsPhysicalCacheCost struct {
+	Tier       StatisticsPhysicalCacheCostTier `json:"tier"`
+	Accesses   int64                           `json:"accesses"`
+	Hits       int64                           `json:"hits"`
+	HitRatePpm int64                           `json:"hitRatePpm"`
+}
+
+// GetTier returns the value of Tier.
+func (s *StatisticsPhysicalCacheCost) GetTier() StatisticsPhysicalCacheCostTier {
+	return s.Tier
+}
+
+// GetAccesses returns the value of Accesses.
+func (s *StatisticsPhysicalCacheCost) GetAccesses() int64 {
+	return s.Accesses
+}
+
+// GetHits returns the value of Hits.
+func (s *StatisticsPhysicalCacheCost) GetHits() int64 {
+	return s.Hits
+}
+
+// GetHitRatePpm returns the value of HitRatePpm.
+func (s *StatisticsPhysicalCacheCost) GetHitRatePpm() int64 {
+	return s.HitRatePpm
+}
+
+// SetTier sets the value of Tier.
+func (s *StatisticsPhysicalCacheCost) SetTier(val StatisticsPhysicalCacheCostTier) {
+	s.Tier = val
+}
+
+// SetAccesses sets the value of Accesses.
+func (s *StatisticsPhysicalCacheCost) SetAccesses(val int64) {
+	s.Accesses = val
+}
+
+// SetHits sets the value of Hits.
+func (s *StatisticsPhysicalCacheCost) SetHits(val int64) {
+	s.Hits = val
+}
+
+// SetHitRatePpm sets the value of HitRatePpm.
+func (s *StatisticsPhysicalCacheCost) SetHitRatePpm(val int64) {
+	s.HitRatePpm = val
+}
+
+type StatisticsPhysicalCacheCostTier string
+
+const (
+	StatisticsPhysicalCacheCostTierMemory StatisticsPhysicalCacheCostTier = "memory"
+	StatisticsPhysicalCacheCostTierLocal  StatisticsPhysicalCacheCostTier = "local"
+)
+
+// AllValues returns all StatisticsPhysicalCacheCostTier values.
+func (StatisticsPhysicalCacheCostTier) AllValues() []StatisticsPhysicalCacheCostTier {
+	return []StatisticsPhysicalCacheCostTier{
+		StatisticsPhysicalCacheCostTierMemory,
+		StatisticsPhysicalCacheCostTierLocal,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s StatisticsPhysicalCacheCostTier) MarshalText() ([]byte, error) {
+	switch s {
+	case StatisticsPhysicalCacheCostTierMemory:
+		return []byte(s), nil
+	case StatisticsPhysicalCacheCostTierLocal:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *StatisticsPhysicalCacheCostTier) UnmarshalText(data []byte) error {
+	switch StatisticsPhysicalCacheCostTier(data) {
+	case StatisticsPhysicalCacheCostTierMemory:
+		*s = StatisticsPhysicalCacheCostTierMemory
+		return nil
+	case StatisticsPhysicalCacheCostTierLocal:
+		*s = StatisticsPhysicalCacheCostTierLocal
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Instance-local physical storage calibration. Backend adapters convert their native metrics to this
+// common model. A missing capability is false and its measurements are absent. The model is not
+// assigned to one statement or relation.
+// Ref: #/components/schemas/StatisticsPhysicalCost
+type StatisticsPhysicalCost struct {
+	Basis           StatisticsPhysicalCostBasis             `json:"basis"`
+	Backend         string                                  `json:"backend"`
+	TelemetryFormat int64                                   `json:"telemetryFormat"`
+	Capabilities    StatisticsPhysicalTelemetryCapabilities `json:"capabilities"`
+	Requests        []StatisticsPhysicalRequestCost         `json:"requests"`
+	Caches          []StatisticsPhysicalCacheCost           `json:"caches"`
+}
+
+// GetBasis returns the value of Basis.
+func (s *StatisticsPhysicalCost) GetBasis() StatisticsPhysicalCostBasis {
+	return s.Basis
+}
+
+// GetBackend returns the value of Backend.
+func (s *StatisticsPhysicalCost) GetBackend() string {
+	return s.Backend
+}
+
+// GetTelemetryFormat returns the value of TelemetryFormat.
+func (s *StatisticsPhysicalCost) GetTelemetryFormat() int64 {
+	return s.TelemetryFormat
+}
+
+// GetCapabilities returns the value of Capabilities.
+func (s *StatisticsPhysicalCost) GetCapabilities() StatisticsPhysicalTelemetryCapabilities {
+	return s.Capabilities
+}
+
+// GetRequests returns the value of Requests.
+func (s *StatisticsPhysicalCost) GetRequests() []StatisticsPhysicalRequestCost {
+	return s.Requests
+}
+
+// GetCaches returns the value of Caches.
+func (s *StatisticsPhysicalCost) GetCaches() []StatisticsPhysicalCacheCost {
+	return s.Caches
+}
+
+// SetBasis sets the value of Basis.
+func (s *StatisticsPhysicalCost) SetBasis(val StatisticsPhysicalCostBasis) {
+	s.Basis = val
+}
+
+// SetBackend sets the value of Backend.
+func (s *StatisticsPhysicalCost) SetBackend(val string) {
+	s.Backend = val
+}
+
+// SetTelemetryFormat sets the value of TelemetryFormat.
+func (s *StatisticsPhysicalCost) SetTelemetryFormat(val int64) {
+	s.TelemetryFormat = val
+}
+
+// SetCapabilities sets the value of Capabilities.
+func (s *StatisticsPhysicalCost) SetCapabilities(val StatisticsPhysicalTelemetryCapabilities) {
+	s.Capabilities = val
+}
+
+// SetRequests sets the value of Requests.
+func (s *StatisticsPhysicalCost) SetRequests(val []StatisticsPhysicalRequestCost) {
+	s.Requests = val
+}
+
+// SetCaches sets the value of Caches.
+func (s *StatisticsPhysicalCost) SetCaches(val []StatisticsPhysicalCacheCost) {
+	s.Caches = val
+}
+
+type StatisticsPhysicalCostBasis string
+
+const (
+	StatisticsPhysicalCostBasisBackendPhysicalTelemetry StatisticsPhysicalCostBasis = "backend_physical_telemetry"
+)
+
+// AllValues returns all StatisticsPhysicalCostBasis values.
+func (StatisticsPhysicalCostBasis) AllValues() []StatisticsPhysicalCostBasis {
+	return []StatisticsPhysicalCostBasis{
+		StatisticsPhysicalCostBasisBackendPhysicalTelemetry,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s StatisticsPhysicalCostBasis) MarshalText() ([]byte, error) {
+	switch s {
+	case StatisticsPhysicalCostBasisBackendPhysicalTelemetry:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *StatisticsPhysicalCostBasis) UnmarshalText(data []byte) error {
+	switch StatisticsPhysicalCostBasis(data) {
+	case StatisticsPhysicalCostBasisBackendPhysicalTelemetry:
+		*s = StatisticsPhysicalCostBasisBackendPhysicalTelemetry
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/StatisticsPhysicalCostMetric
+type StatisticsPhysicalCostMetric struct {
+	// Upper bound on the median value.
+	P50UpperBound int64 `json:"p50UpperBound"`
+	// Upper bound on the 95th-percentile value.
+	P95UpperBound int64 `json:"p95UpperBound"`
+	// Upper bound on the largest value in the retained buckets.
+	MaximumUpperBound int64 `json:"maximumUpperBound"`
+}
+
+// GetP50UpperBound returns the value of P50UpperBound.
+func (s *StatisticsPhysicalCostMetric) GetP50UpperBound() int64 {
+	return s.P50UpperBound
+}
+
+// GetP95UpperBound returns the value of P95UpperBound.
+func (s *StatisticsPhysicalCostMetric) GetP95UpperBound() int64 {
+	return s.P95UpperBound
+}
+
+// GetMaximumUpperBound returns the value of MaximumUpperBound.
+func (s *StatisticsPhysicalCostMetric) GetMaximumUpperBound() int64 {
+	return s.MaximumUpperBound
+}
+
+// SetP50UpperBound sets the value of P50UpperBound.
+func (s *StatisticsPhysicalCostMetric) SetP50UpperBound(val int64) {
+	s.P50UpperBound = val
+}
+
+// SetP95UpperBound sets the value of P95UpperBound.
+func (s *StatisticsPhysicalCostMetric) SetP95UpperBound(val int64) {
+	s.P95UpperBound = val
+}
+
+// SetMaximumUpperBound sets the value of MaximumUpperBound.
+func (s *StatisticsPhysicalCostMetric) SetMaximumUpperBound(val int64) {
+	s.MaximumUpperBound = val
+}
+
+// Ref: #/components/schemas/StatisticsPhysicalRequestCost
+type StatisticsPhysicalRequestCost struct {
+	Class            StatisticsPhysicalRequestCostClass `json:"class"`
+	ObservedRequests int64                              `json:"observedRequests"`
+	Errors           int64                              `json:"errors"`
+	LatencyMicros    OptStatisticsPhysicalCostMetric    `json:"latencyMicros"`
+	Bytes            OptStatisticsPhysicalCostMetric    `json:"bytes"`
+	// Request-size bucket upper bound for this conditional model.
+	SizeUpperBound OptInt64 `json:"sizeUpperBound"`
+	// Active-request bucket upper bound for this conditional model.
+	ConcurrencyUpperBound OptInt64 `json:"concurrencyUpperBound"`
+	// Service tier for this conditional model.
+	ServiceTier OptStatisticsPhysicalRequestCostServiceTier `json:"serviceTier"`
+}
+
+// GetClass returns the value of Class.
+func (s *StatisticsPhysicalRequestCost) GetClass() StatisticsPhysicalRequestCostClass {
+	return s.Class
+}
+
+// GetObservedRequests returns the value of ObservedRequests.
+func (s *StatisticsPhysicalRequestCost) GetObservedRequests() int64 {
+	return s.ObservedRequests
+}
+
+// GetErrors returns the value of Errors.
+func (s *StatisticsPhysicalRequestCost) GetErrors() int64 {
+	return s.Errors
+}
+
+// GetLatencyMicros returns the value of LatencyMicros.
+func (s *StatisticsPhysicalRequestCost) GetLatencyMicros() OptStatisticsPhysicalCostMetric {
+	return s.LatencyMicros
+}
+
+// GetBytes returns the value of Bytes.
+func (s *StatisticsPhysicalRequestCost) GetBytes() OptStatisticsPhysicalCostMetric {
+	return s.Bytes
+}
+
+// GetSizeUpperBound returns the value of SizeUpperBound.
+func (s *StatisticsPhysicalRequestCost) GetSizeUpperBound() OptInt64 {
+	return s.SizeUpperBound
+}
+
+// GetConcurrencyUpperBound returns the value of ConcurrencyUpperBound.
+func (s *StatisticsPhysicalRequestCost) GetConcurrencyUpperBound() OptInt64 {
+	return s.ConcurrencyUpperBound
+}
+
+// GetServiceTier returns the value of ServiceTier.
+func (s *StatisticsPhysicalRequestCost) GetServiceTier() OptStatisticsPhysicalRequestCostServiceTier {
+	return s.ServiceTier
+}
+
+// SetClass sets the value of Class.
+func (s *StatisticsPhysicalRequestCost) SetClass(val StatisticsPhysicalRequestCostClass) {
+	s.Class = val
+}
+
+// SetObservedRequests sets the value of ObservedRequests.
+func (s *StatisticsPhysicalRequestCost) SetObservedRequests(val int64) {
+	s.ObservedRequests = val
+}
+
+// SetErrors sets the value of Errors.
+func (s *StatisticsPhysicalRequestCost) SetErrors(val int64) {
+	s.Errors = val
+}
+
+// SetLatencyMicros sets the value of LatencyMicros.
+func (s *StatisticsPhysicalRequestCost) SetLatencyMicros(val OptStatisticsPhysicalCostMetric) {
+	s.LatencyMicros = val
+}
+
+// SetBytes sets the value of Bytes.
+func (s *StatisticsPhysicalRequestCost) SetBytes(val OptStatisticsPhysicalCostMetric) {
+	s.Bytes = val
+}
+
+// SetSizeUpperBound sets the value of SizeUpperBound.
+func (s *StatisticsPhysicalRequestCost) SetSizeUpperBound(val OptInt64) {
+	s.SizeUpperBound = val
+}
+
+// SetConcurrencyUpperBound sets the value of ConcurrencyUpperBound.
+func (s *StatisticsPhysicalRequestCost) SetConcurrencyUpperBound(val OptInt64) {
+	s.ConcurrencyUpperBound = val
+}
+
+// SetServiceTier sets the value of ServiceTier.
+func (s *StatisticsPhysicalRequestCost) SetServiceTier(val OptStatisticsPhysicalRequestCostServiceTier) {
+	s.ServiceTier = val
+}
+
+type StatisticsPhysicalRequestCostClass string
+
+const (
+	StatisticsPhysicalRequestCostClassRead         StatisticsPhysicalRequestCostClass = "read"
+	StatisticsPhysicalRequestCostClassRangeRead    StatisticsPhysicalRequestCostClass = "range_read"
+	StatisticsPhysicalRequestCostClassMetadataRead StatisticsPhysicalRequestCostClass = "metadata_read"
+	StatisticsPhysicalRequestCostClassWrite        StatisticsPhysicalRequestCostClass = "write"
+	StatisticsPhysicalRequestCostClassDelete       StatisticsPhysicalRequestCostClass = "delete"
+	StatisticsPhysicalRequestCostClassList         StatisticsPhysicalRequestCostClass = "list"
+)
+
+// AllValues returns all StatisticsPhysicalRequestCostClass values.
+func (StatisticsPhysicalRequestCostClass) AllValues() []StatisticsPhysicalRequestCostClass {
+	return []StatisticsPhysicalRequestCostClass{
+		StatisticsPhysicalRequestCostClassRead,
+		StatisticsPhysicalRequestCostClassRangeRead,
+		StatisticsPhysicalRequestCostClassMetadataRead,
+		StatisticsPhysicalRequestCostClassWrite,
+		StatisticsPhysicalRequestCostClassDelete,
+		StatisticsPhysicalRequestCostClassList,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s StatisticsPhysicalRequestCostClass) MarshalText() ([]byte, error) {
+	switch s {
+	case StatisticsPhysicalRequestCostClassRead:
+		return []byte(s), nil
+	case StatisticsPhysicalRequestCostClassRangeRead:
+		return []byte(s), nil
+	case StatisticsPhysicalRequestCostClassMetadataRead:
+		return []byte(s), nil
+	case StatisticsPhysicalRequestCostClassWrite:
+		return []byte(s), nil
+	case StatisticsPhysicalRequestCostClassDelete:
+		return []byte(s), nil
+	case StatisticsPhysicalRequestCostClassList:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *StatisticsPhysicalRequestCostClass) UnmarshalText(data []byte) error {
+	switch StatisticsPhysicalRequestCostClass(data) {
+	case StatisticsPhysicalRequestCostClassRead:
+		*s = StatisticsPhysicalRequestCostClassRead
+		return nil
+	case StatisticsPhysicalRequestCostClassRangeRead:
+		*s = StatisticsPhysicalRequestCostClassRangeRead
+		return nil
+	case StatisticsPhysicalRequestCostClassMetadataRead:
+		*s = StatisticsPhysicalRequestCostClassMetadataRead
+		return nil
+	case StatisticsPhysicalRequestCostClassWrite:
+		*s = StatisticsPhysicalRequestCostClassWrite
+		return nil
+	case StatisticsPhysicalRequestCostClassDelete:
+		*s = StatisticsPhysicalRequestCostClassDelete
+		return nil
+	case StatisticsPhysicalRequestCostClassList:
+		*s = StatisticsPhysicalRequestCostClassList
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Service tier for this conditional model.
+type StatisticsPhysicalRequestCostServiceTier string
+
+const (
+	StatisticsPhysicalRequestCostServiceTierMemory StatisticsPhysicalRequestCostServiceTier = "memory"
+	StatisticsPhysicalRequestCostServiceTierLocal  StatisticsPhysicalRequestCostServiceTier = "local"
+	StatisticsPhysicalRequestCostServiceTierRemote StatisticsPhysicalRequestCostServiceTier = "remote"
+)
+
+// AllValues returns all StatisticsPhysicalRequestCostServiceTier values.
+func (StatisticsPhysicalRequestCostServiceTier) AllValues() []StatisticsPhysicalRequestCostServiceTier {
+	return []StatisticsPhysicalRequestCostServiceTier{
+		StatisticsPhysicalRequestCostServiceTierMemory,
+		StatisticsPhysicalRequestCostServiceTierLocal,
+		StatisticsPhysicalRequestCostServiceTierRemote,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s StatisticsPhysicalRequestCostServiceTier) MarshalText() ([]byte, error) {
+	switch s {
+	case StatisticsPhysicalRequestCostServiceTierMemory:
+		return []byte(s), nil
+	case StatisticsPhysicalRequestCostServiceTierLocal:
+		return []byte(s), nil
+	case StatisticsPhysicalRequestCostServiceTierRemote:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *StatisticsPhysicalRequestCostServiceTier) UnmarshalText(data []byte) error {
+	switch StatisticsPhysicalRequestCostServiceTier(data) {
+	case StatisticsPhysicalRequestCostServiceTierMemory:
+		*s = StatisticsPhysicalRequestCostServiceTierMemory
+		return nil
+	case StatisticsPhysicalRequestCostServiceTierLocal:
+		*s = StatisticsPhysicalRequestCostServiceTierLocal
+		return nil
+	case StatisticsPhysicalRequestCostServiceTierRemote:
+		*s = StatisticsPhysicalRequestCostServiceTierRemote
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/StatisticsPhysicalTelemetryCapabilities
+type StatisticsPhysicalTelemetryCapabilities struct {
+	RequestLatency     bool `json:"requestLatency"`
+	RequestBytes       bool `json:"requestBytes"`
+	RequestConcurrency bool `json:"requestConcurrency"`
+	CacheTiers         bool `json:"cacheTiers"`
+	AccessLocality     bool `json:"accessLocality"`
+}
+
+// GetRequestLatency returns the value of RequestLatency.
+func (s *StatisticsPhysicalTelemetryCapabilities) GetRequestLatency() bool {
+	return s.RequestLatency
+}
+
+// GetRequestBytes returns the value of RequestBytes.
+func (s *StatisticsPhysicalTelemetryCapabilities) GetRequestBytes() bool {
+	return s.RequestBytes
+}
+
+// GetRequestConcurrency returns the value of RequestConcurrency.
+func (s *StatisticsPhysicalTelemetryCapabilities) GetRequestConcurrency() bool {
+	return s.RequestConcurrency
+}
+
+// GetCacheTiers returns the value of CacheTiers.
+func (s *StatisticsPhysicalTelemetryCapabilities) GetCacheTiers() bool {
+	return s.CacheTiers
+}
+
+// GetAccessLocality returns the value of AccessLocality.
+func (s *StatisticsPhysicalTelemetryCapabilities) GetAccessLocality() bool {
+	return s.AccessLocality
+}
+
+// SetRequestLatency sets the value of RequestLatency.
+func (s *StatisticsPhysicalTelemetryCapabilities) SetRequestLatency(val bool) {
+	s.RequestLatency = val
+}
+
+// SetRequestBytes sets the value of RequestBytes.
+func (s *StatisticsPhysicalTelemetryCapabilities) SetRequestBytes(val bool) {
+	s.RequestBytes = val
+}
+
+// SetRequestConcurrency sets the value of RequestConcurrency.
+func (s *StatisticsPhysicalTelemetryCapabilities) SetRequestConcurrency(val bool) {
+	s.RequestConcurrency = val
+}
+
+// SetCacheTiers sets the value of CacheTiers.
+func (s *StatisticsPhysicalTelemetryCapabilities) SetCacheTiers(val bool) {
+	s.CacheTiers = val
+}
+
+// SetAccessLocality sets the value of AccessLocality.
+func (s *StatisticsPhysicalTelemetryCapabilities) SetAccessLocality(val bool) {
+	s.AccessLocality = val
+}
+
+// Ref: #/components/schemas/StatisticsPlan
+type StatisticsPlan struct {
+	// Structural fingerprint of the physical plan: operator shapes, access paths, join order, and binding
+	// strategies, excluding literal values.
+	Plan string `json:"plan"`
+	// Times this plan ran for this family.
+	Executions int64 `json:"executions"`
+}
+
+// GetPlan returns the value of Plan.
+func (s *StatisticsPlan) GetPlan() string {
+	return s.Plan
+}
+
+// GetExecutions returns the value of Executions.
+func (s *StatisticsPlan) GetExecutions() int64 {
+	return s.Executions
+}
+
+// SetPlan sets the value of Plan.
+func (s *StatisticsPlan) SetPlan(val string) {
+	s.Plan = val
+}
+
+// SetExecutions sets the value of Executions.
+func (s *StatisticsPlan) SetExecutions(val int64) {
+	s.Executions = val
+}
+
+// Observational priority proxy. It is present only when at least two plans have enough execution
+// evidence in the same access generation and row-count class. It does not claim that an estimate
+// caused a plan change. A future counterfactual optimizer can replace the observed A counterfactual
+// optimizer replaces the observed plan-variation component without changing the other components.
+// Ref: #/components/schemas/StatisticsPlanningValue
+type StatisticsPlanningValue struct {
+	// Frequency multiplied by normalized uncertainty, observed plan variation, and the median
+	// execution-time difference. The two normalized components use parts per million.
+	Score int64 `json:"score"`
+	// Recent workload frequency used by the score.
+	Frequency int64 `json:"frequency"`
+	// Normalized p95 q-error excess in parts per million.
+	UncertaintyPpm int64 `json:"uncertaintyPpm"`
+	// Non-dominant comparable plan executions in parts per million.
+	ObservedPlanVariationPpm int64 `json:"observedPlanVariationPpm"`
+	// Difference between the fastest and slowest comparable median execution times.
+	CostDifferenceMicros int64 `json:"costDifferenceMicros"`
+	// Executions represented by the comparable plan group.
+	ComparableExecutions int64 `json:"comparableExecutions"`
+	// Median row-count histogram bound shared by the plan group.
+	RowCountClassUpperBound int64 `json:"rowCountClassUpperBound"`
+	// Minimum estimates and per-plan executions required for admission.
+	MinimumExecutions int64 `json:"minimumExecutions"`
+	// Stable identifier for the score method.
+	Basis string `json:"basis"`
+}
+
+// GetScore returns the value of Score.
+func (s *StatisticsPlanningValue) GetScore() int64 {
+	return s.Score
+}
+
+// GetFrequency returns the value of Frequency.
+func (s *StatisticsPlanningValue) GetFrequency() int64 {
+	return s.Frequency
+}
+
+// GetUncertaintyPpm returns the value of UncertaintyPpm.
+func (s *StatisticsPlanningValue) GetUncertaintyPpm() int64 {
+	return s.UncertaintyPpm
+}
+
+// GetObservedPlanVariationPpm returns the value of ObservedPlanVariationPpm.
+func (s *StatisticsPlanningValue) GetObservedPlanVariationPpm() int64 {
+	return s.ObservedPlanVariationPpm
+}
+
+// GetCostDifferenceMicros returns the value of CostDifferenceMicros.
+func (s *StatisticsPlanningValue) GetCostDifferenceMicros() int64 {
+	return s.CostDifferenceMicros
+}
+
+// GetComparableExecutions returns the value of ComparableExecutions.
+func (s *StatisticsPlanningValue) GetComparableExecutions() int64 {
+	return s.ComparableExecutions
+}
+
+// GetRowCountClassUpperBound returns the value of RowCountClassUpperBound.
+func (s *StatisticsPlanningValue) GetRowCountClassUpperBound() int64 {
+	return s.RowCountClassUpperBound
+}
+
+// GetMinimumExecutions returns the value of MinimumExecutions.
+func (s *StatisticsPlanningValue) GetMinimumExecutions() int64 {
+	return s.MinimumExecutions
+}
+
+// GetBasis returns the value of Basis.
+func (s *StatisticsPlanningValue) GetBasis() string {
+	return s.Basis
+}
+
+// SetScore sets the value of Score.
+func (s *StatisticsPlanningValue) SetScore(val int64) {
+	s.Score = val
+}
+
+// SetFrequency sets the value of Frequency.
+func (s *StatisticsPlanningValue) SetFrequency(val int64) {
+	s.Frequency = val
+}
+
+// SetUncertaintyPpm sets the value of UncertaintyPpm.
+func (s *StatisticsPlanningValue) SetUncertaintyPpm(val int64) {
+	s.UncertaintyPpm = val
+}
+
+// SetObservedPlanVariationPpm sets the value of ObservedPlanVariationPpm.
+func (s *StatisticsPlanningValue) SetObservedPlanVariationPpm(val int64) {
+	s.ObservedPlanVariationPpm = val
+}
+
+// SetCostDifferenceMicros sets the value of CostDifferenceMicros.
+func (s *StatisticsPlanningValue) SetCostDifferenceMicros(val int64) {
+	s.CostDifferenceMicros = val
+}
+
+// SetComparableExecutions sets the value of ComparableExecutions.
+func (s *StatisticsPlanningValue) SetComparableExecutions(val int64) {
+	s.ComparableExecutions = val
+}
+
+// SetRowCountClassUpperBound sets the value of RowCountClassUpperBound.
+func (s *StatisticsPlanningValue) SetRowCountClassUpperBound(val int64) {
+	s.RowCountClassUpperBound = val
+}
+
+// SetMinimumExecutions sets the value of MinimumExecutions.
+func (s *StatisticsPlanningValue) SetMinimumExecutions(val int64) {
+	s.MinimumExecutions = val
+}
+
+// SetBasis sets the value of Basis.
+func (s *StatisticsPlanningValue) SetBasis(val string) {
+	s.Basis = val
+}
+
+// The observation relay, as this instance sees it. An instance that cannot publish to storage hands
+// its evidence to one that can; the channel is advisory, so every loss here is counted rather than
+// signalled as a failure.
+//
+// The sending fields are absent on an instance that publishes to storage rather than to a peer. The
+// receiving fields are always present, because every instance can receive; zero means nothing has
+// arrived.
+// Ref: #/components/schemas/StatisticsRelay
+type StatisticsRelay struct {
+	// The sending side in one word. `retrying` means a batch is held for another attempt and no evidence
+	// has been lost yet. `losing` means a batch was abandoned or refused, so evidence was dropped, and it
+	// stays reported until a later attempt succeeds. Absent on an instance that does not send.
+	State OptStatisticsRelayState `json:"state"`
+	// Batches this instance successfully handed to a peer.
+	Sent OptInt64 `json:"sent"`
+	// Batches given up on after exhausting their retry budget. Each one is evidence permanently lost,
+	// which costs the fleet planner accuracy and nothing else.
+	Abandoned OptInt64 `json:"abandoned"`
+	// Batches a peer understood and refused, most often a wire-format mismatch during a rolling upgrade.
+	// Retrying cannot help, so these are not retried.
+	Rejected OptInt64 `json:"rejected"`
+	// Whether a batch is currently awaiting another attempt.
+	Holding OptBool `json:"holding"`
+	// Workload-corpus documents carried to a peer. These contain the literal values of the programs that
+	// ran, unlike the aggregate evidence beside them, so they travel only over a transport shown to be
+	// confidential — encrypted and verified.
+	CorpusSent OptInt64 `json:"corpusSent"`
+	// Corpus documents dropped because the transport could not be shown confidential. An instance that
+	// cannot publish has nowhere else to put them. A non-zero value with corpus capture requested means
+	// the channel is not encrypted.
+	CorpusWithheld OptInt64 `json:"corpusWithheld"`
+	// Batches accepted from a peer and queued to be merged.
+	Received int64 `json:"received"`
+	// Batches whose sequence this instance had already applied. Delivery is at-least-once and the
+	// accounting is idempotent, so a repeat is expected traffic rather than a fault.
+	ReceivedAlreadyApplied int64 `json:"receivedAlreadyApplied"`
+	// Batches refused because they use a different wire format.
+	ReceivedRejected int64 `json:"receivedRejected"`
+	// Batches refused because the merge queue was full. The sender is asked to retry and nothing is
+	// recorded as applied, so a saturated receiver costs latency rather than evidence.
+	ReceivedSaturated int64 `json:"receivedSaturated"`
+	// Batches refused because one corpus document exceeded 1 MiB.
+	ReceivedCorpusOversize int64 `json:"receivedCorpusOversize"`
+	// Peers whose applied sequence this instance remembers. A peer that falls out of that bounded set is
+	// re-admitted on its next batch.
+	Sources int64 `json:"sources"`
+	// Observations folded in from peers.
+	MergedObservations int64 `json:"mergedObservations"`
+	// Corpus documents adopted from peers. Content addressing makes a duplicate harmless, so this counts
+	// documents received rather than documents newly stored.
+	CorpusAdopted int64 `json:"corpusAdopted"`
+	// Relayed families discarded because they described a different catalog generation than this instance
+	// observed. A peer lagging a catalog change must never displace newer local evidence.
+	RefusedStaleFamilies int64 `json:"refusedStaleFamilies"`
+}
+
+// GetState returns the value of State.
+func (s *StatisticsRelay) GetState() OptStatisticsRelayState {
+	return s.State
+}
+
+// GetSent returns the value of Sent.
+func (s *StatisticsRelay) GetSent() OptInt64 {
+	return s.Sent
+}
+
+// GetAbandoned returns the value of Abandoned.
+func (s *StatisticsRelay) GetAbandoned() OptInt64 {
+	return s.Abandoned
+}
+
+// GetRejected returns the value of Rejected.
+func (s *StatisticsRelay) GetRejected() OptInt64 {
+	return s.Rejected
+}
+
+// GetHolding returns the value of Holding.
+func (s *StatisticsRelay) GetHolding() OptBool {
+	return s.Holding
+}
+
+// GetCorpusSent returns the value of CorpusSent.
+func (s *StatisticsRelay) GetCorpusSent() OptInt64 {
+	return s.CorpusSent
+}
+
+// GetCorpusWithheld returns the value of CorpusWithheld.
+func (s *StatisticsRelay) GetCorpusWithheld() OptInt64 {
+	return s.CorpusWithheld
+}
+
+// GetReceived returns the value of Received.
+func (s *StatisticsRelay) GetReceived() int64 {
+	return s.Received
+}
+
+// GetReceivedAlreadyApplied returns the value of ReceivedAlreadyApplied.
+func (s *StatisticsRelay) GetReceivedAlreadyApplied() int64 {
+	return s.ReceivedAlreadyApplied
+}
+
+// GetReceivedRejected returns the value of ReceivedRejected.
+func (s *StatisticsRelay) GetReceivedRejected() int64 {
+	return s.ReceivedRejected
+}
+
+// GetReceivedSaturated returns the value of ReceivedSaturated.
+func (s *StatisticsRelay) GetReceivedSaturated() int64 {
+	return s.ReceivedSaturated
+}
+
+// GetReceivedCorpusOversize returns the value of ReceivedCorpusOversize.
+func (s *StatisticsRelay) GetReceivedCorpusOversize() int64 {
+	return s.ReceivedCorpusOversize
+}
+
+// GetSources returns the value of Sources.
+func (s *StatisticsRelay) GetSources() int64 {
+	return s.Sources
+}
+
+// GetMergedObservations returns the value of MergedObservations.
+func (s *StatisticsRelay) GetMergedObservations() int64 {
+	return s.MergedObservations
+}
+
+// GetCorpusAdopted returns the value of CorpusAdopted.
+func (s *StatisticsRelay) GetCorpusAdopted() int64 {
+	return s.CorpusAdopted
+}
+
+// GetRefusedStaleFamilies returns the value of RefusedStaleFamilies.
+func (s *StatisticsRelay) GetRefusedStaleFamilies() int64 {
+	return s.RefusedStaleFamilies
+}
+
+// SetState sets the value of State.
+func (s *StatisticsRelay) SetState(val OptStatisticsRelayState) {
+	s.State = val
+}
+
+// SetSent sets the value of Sent.
+func (s *StatisticsRelay) SetSent(val OptInt64) {
+	s.Sent = val
+}
+
+// SetAbandoned sets the value of Abandoned.
+func (s *StatisticsRelay) SetAbandoned(val OptInt64) {
+	s.Abandoned = val
+}
+
+// SetRejected sets the value of Rejected.
+func (s *StatisticsRelay) SetRejected(val OptInt64) {
+	s.Rejected = val
+}
+
+// SetHolding sets the value of Holding.
+func (s *StatisticsRelay) SetHolding(val OptBool) {
+	s.Holding = val
+}
+
+// SetCorpusSent sets the value of CorpusSent.
+func (s *StatisticsRelay) SetCorpusSent(val OptInt64) {
+	s.CorpusSent = val
+}
+
+// SetCorpusWithheld sets the value of CorpusWithheld.
+func (s *StatisticsRelay) SetCorpusWithheld(val OptInt64) {
+	s.CorpusWithheld = val
+}
+
+// SetReceived sets the value of Received.
+func (s *StatisticsRelay) SetReceived(val int64) {
+	s.Received = val
+}
+
+// SetReceivedAlreadyApplied sets the value of ReceivedAlreadyApplied.
+func (s *StatisticsRelay) SetReceivedAlreadyApplied(val int64) {
+	s.ReceivedAlreadyApplied = val
+}
+
+// SetReceivedRejected sets the value of ReceivedRejected.
+func (s *StatisticsRelay) SetReceivedRejected(val int64) {
+	s.ReceivedRejected = val
+}
+
+// SetReceivedSaturated sets the value of ReceivedSaturated.
+func (s *StatisticsRelay) SetReceivedSaturated(val int64) {
+	s.ReceivedSaturated = val
+}
+
+// SetReceivedCorpusOversize sets the value of ReceivedCorpusOversize.
+func (s *StatisticsRelay) SetReceivedCorpusOversize(val int64) {
+	s.ReceivedCorpusOversize = val
+}
+
+// SetSources sets the value of Sources.
+func (s *StatisticsRelay) SetSources(val int64) {
+	s.Sources = val
+}
+
+// SetMergedObservations sets the value of MergedObservations.
+func (s *StatisticsRelay) SetMergedObservations(val int64) {
+	s.MergedObservations = val
+}
+
+// SetCorpusAdopted sets the value of CorpusAdopted.
+func (s *StatisticsRelay) SetCorpusAdopted(val int64) {
+	s.CorpusAdopted = val
+}
+
+// SetRefusedStaleFamilies sets the value of RefusedStaleFamilies.
+func (s *StatisticsRelay) SetRefusedStaleFamilies(val int64) {
+	s.RefusedStaleFamilies = val
+}
+
+// The sending side in one word. `retrying` means a batch is held for another attempt and no evidence
+// has been lost yet. `losing` means a batch was abandoned or refused, so evidence was dropped, and it
+// stays reported until a later attempt succeeds. Absent on an instance that does not send.
+type StatisticsRelayState string
+
+const (
+	StatisticsRelayStateConnected StatisticsRelayState = "connected"
+	StatisticsRelayStateRetrying  StatisticsRelayState = "retrying"
+	StatisticsRelayStateLosing    StatisticsRelayState = "losing"
+	StatisticsRelayStateIdle      StatisticsRelayState = "idle"
+)
+
+// AllValues returns all StatisticsRelayState values.
+func (StatisticsRelayState) AllValues() []StatisticsRelayState {
+	return []StatisticsRelayState{
+		StatisticsRelayStateConnected,
+		StatisticsRelayStateRetrying,
+		StatisticsRelayStateLosing,
+		StatisticsRelayStateIdle,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s StatisticsRelayState) MarshalText() ([]byte, error) {
+	switch s {
+	case StatisticsRelayStateConnected:
+		return []byte(s), nil
+	case StatisticsRelayStateRetrying:
+		return []byte(s), nil
+	case StatisticsRelayStateLosing:
+		return []byte(s), nil
+	case StatisticsRelayStateIdle:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *StatisticsRelayState) UnmarshalText(data []byte) error {
+	switch StatisticsRelayState(data) {
+	case StatisticsRelayStateConnected:
+		*s = StatisticsRelayStateConnected
+		return nil
+	case StatisticsRelayStateRetrying:
+		*s = StatisticsRelayStateRetrying
+		return nil
+	case StatisticsRelayStateLosing:
+		*s = StatisticsRelayStateLosing
+		return nil
+	case StatisticsRelayStateIdle:
+		*s = StatisticsRelayStateIdle
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Observed logical KV work for complete statement executions. This is not CPU, memory, object-request,
+// or remote-I/O cost. A relation model has no resource cost because shared statement work cannot be
+// assigned to one relation without an operator measurement boundary.
+// Ref: #/components/schemas/StatisticsResourceCost
+type StatisticsResourceCost struct {
+	Basis StatisticsResourceCostBasis `json:"basis"`
+	// Complete statement executions in these distributions.
+	ObservedExecutions int64                    `json:"observedExecutions"`
+	Gets               StatisticsResourceMetric `json:"gets"`
+	Puts               StatisticsResourceMetric `json:"puts"`
+	Deletes            StatisticsResourceMetric `json:"deletes"`
+	Scans              StatisticsResourceMetric `json:"scans"`
+	Iterated           StatisticsResourceMetric `json:"iterated"`
+	BytesRead          StatisticsResourceMetric `json:"bytesRead"`
+	BytesWritten       StatisticsResourceMetric `json:"bytesWritten"`
+}
+
+// GetBasis returns the value of Basis.
+func (s *StatisticsResourceCost) GetBasis() StatisticsResourceCostBasis {
+	return s.Basis
+}
+
+// GetObservedExecutions returns the value of ObservedExecutions.
+func (s *StatisticsResourceCost) GetObservedExecutions() int64 {
+	return s.ObservedExecutions
+}
+
+// GetGets returns the value of Gets.
+func (s *StatisticsResourceCost) GetGets() StatisticsResourceMetric {
+	return s.Gets
+}
+
+// GetPuts returns the value of Puts.
+func (s *StatisticsResourceCost) GetPuts() StatisticsResourceMetric {
+	return s.Puts
+}
+
+// GetDeletes returns the value of Deletes.
+func (s *StatisticsResourceCost) GetDeletes() StatisticsResourceMetric {
+	return s.Deletes
+}
+
+// GetScans returns the value of Scans.
+func (s *StatisticsResourceCost) GetScans() StatisticsResourceMetric {
+	return s.Scans
+}
+
+// GetIterated returns the value of Iterated.
+func (s *StatisticsResourceCost) GetIterated() StatisticsResourceMetric {
+	return s.Iterated
+}
+
+// GetBytesRead returns the value of BytesRead.
+func (s *StatisticsResourceCost) GetBytesRead() StatisticsResourceMetric {
+	return s.BytesRead
+}
+
+// GetBytesWritten returns the value of BytesWritten.
+func (s *StatisticsResourceCost) GetBytesWritten() StatisticsResourceMetric {
+	return s.BytesWritten
+}
+
+// SetBasis sets the value of Basis.
+func (s *StatisticsResourceCost) SetBasis(val StatisticsResourceCostBasis) {
+	s.Basis = val
+}
+
+// SetObservedExecutions sets the value of ObservedExecutions.
+func (s *StatisticsResourceCost) SetObservedExecutions(val int64) {
+	s.ObservedExecutions = val
+}
+
+// SetGets sets the value of Gets.
+func (s *StatisticsResourceCost) SetGets(val StatisticsResourceMetric) {
+	s.Gets = val
+}
+
+// SetPuts sets the value of Puts.
+func (s *StatisticsResourceCost) SetPuts(val StatisticsResourceMetric) {
+	s.Puts = val
+}
+
+// SetDeletes sets the value of Deletes.
+func (s *StatisticsResourceCost) SetDeletes(val StatisticsResourceMetric) {
+	s.Deletes = val
+}
+
+// SetScans sets the value of Scans.
+func (s *StatisticsResourceCost) SetScans(val StatisticsResourceMetric) {
+	s.Scans = val
+}
+
+// SetIterated sets the value of Iterated.
+func (s *StatisticsResourceCost) SetIterated(val StatisticsResourceMetric) {
+	s.Iterated = val
+}
+
+// SetBytesRead sets the value of BytesRead.
+func (s *StatisticsResourceCost) SetBytesRead(val StatisticsResourceMetric) {
+	s.BytesRead = val
+}
+
+// SetBytesWritten sets the value of BytesWritten.
+func (s *StatisticsResourceCost) SetBytesWritten(val StatisticsResourceMetric) {
+	s.BytesWritten = val
+}
+
+type StatisticsResourceCostBasis string
+
+const (
+	StatisticsResourceCostBasisLogicalKvWork StatisticsResourceCostBasis = "logical_kv_work"
+)
+
+// AllValues returns all StatisticsResourceCostBasis values.
+func (StatisticsResourceCostBasis) AllValues() []StatisticsResourceCostBasis {
+	return []StatisticsResourceCostBasis{
+		StatisticsResourceCostBasisLogicalKvWork,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s StatisticsResourceCostBasis) MarshalText() ([]byte, error) {
+	switch s {
+	case StatisticsResourceCostBasisLogicalKvWork:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *StatisticsResourceCostBasis) UnmarshalText(data []byte) error {
+	switch StatisticsResourceCostBasis(data) {
+	case StatisticsResourceCostBasisLogicalKvWork:
+		*s = StatisticsResourceCostBasisLogicalKvWork
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/StatisticsResourceMetric
+type StatisticsResourceMetric struct {
+	// Upper bound on the median value.
+	P50UpperBound int64 `json:"p50UpperBound"`
+	// Upper bound on the 95th-percentile value.
+	P95UpperBound int64 `json:"p95UpperBound"`
+	// Largest observed value, exactly.
+	Maximum int64 `json:"maximum"`
+}
+
+// GetP50UpperBound returns the value of P50UpperBound.
+func (s *StatisticsResourceMetric) GetP50UpperBound() int64 {
+	return s.P50UpperBound
+}
+
+// GetP95UpperBound returns the value of P95UpperBound.
+func (s *StatisticsResourceMetric) GetP95UpperBound() int64 {
+	return s.P95UpperBound
+}
+
+// GetMaximum returns the value of Maximum.
+func (s *StatisticsResourceMetric) GetMaximum() int64 {
+	return s.Maximum
+}
+
+// SetP50UpperBound sets the value of P50UpperBound.
+func (s *StatisticsResourceMetric) SetP50UpperBound(val int64) {
+	s.P50UpperBound = val
+}
+
+// SetP95UpperBound sets the value of P95UpperBound.
+func (s *StatisticsResourceMetric) SetP95UpperBound(val int64) {
+	s.P95UpperBound = val
+}
+
+// SetMaximum sets the value of Maximum.
+func (s *StatisticsResourceMetric) SetMaximum(val int64) {
+	s.Maximum = val
+}
+
+// Ref: #/components/schemas/StatisticsSynopsis
+type StatisticsSynopsis struct {
+	// Stable table schema identity.
+	Table int64 `json:"table"`
+	// Rows read by the survey.
+	ObservedRows int64 `json:"observedRows"`
+	// Whether the survey read the complete table or a bounded prefix.
+	Coverage StatisticsSynopsisCoverage `json:"coverage"`
+	// Rows used to build the synopsis.
+	SampleSize int64 `json:"sampleSize"`
+	// Rows affected by writes after collection.
+	ChangesSinceCollection int64 `json:"changesSinceCollection"`
+	// Table generation that this synopsis describes.
+	TableExistenceGeneration int64 `json:"tableExistenceGeneration"`
+	// Collection wall time in microseconds since the Unix epoch.
+	CollectedAtUnixMicros int64 `json:"collectedAtUnixMicros"`
+	// Catalog version read by the survey.
+	CatalogVersion int64                      `json:"catalogVersion"`
+	Columns        []StatisticsColumnSynopsis `json:"columns"`
+	// Bounded joint statistics for primary-key prefixes, ready multi-column index prefixes, and composite
+	// foreign keys.
+	ColumnGroups []StatisticsColumnGroupSynopsis `json:"columnGroups"`
+}
+
+// GetTable returns the value of Table.
+func (s *StatisticsSynopsis) GetTable() int64 {
+	return s.Table
+}
+
+// GetObservedRows returns the value of ObservedRows.
+func (s *StatisticsSynopsis) GetObservedRows() int64 {
+	return s.ObservedRows
+}
+
+// GetCoverage returns the value of Coverage.
+func (s *StatisticsSynopsis) GetCoverage() StatisticsSynopsisCoverage {
+	return s.Coverage
+}
+
+// GetSampleSize returns the value of SampleSize.
+func (s *StatisticsSynopsis) GetSampleSize() int64 {
+	return s.SampleSize
+}
+
+// GetChangesSinceCollection returns the value of ChangesSinceCollection.
+func (s *StatisticsSynopsis) GetChangesSinceCollection() int64 {
+	return s.ChangesSinceCollection
+}
+
+// GetTableExistenceGeneration returns the value of TableExistenceGeneration.
+func (s *StatisticsSynopsis) GetTableExistenceGeneration() int64 {
+	return s.TableExistenceGeneration
+}
+
+// GetCollectedAtUnixMicros returns the value of CollectedAtUnixMicros.
+func (s *StatisticsSynopsis) GetCollectedAtUnixMicros() int64 {
+	return s.CollectedAtUnixMicros
+}
+
+// GetCatalogVersion returns the value of CatalogVersion.
+func (s *StatisticsSynopsis) GetCatalogVersion() int64 {
+	return s.CatalogVersion
+}
+
+// GetColumns returns the value of Columns.
+func (s *StatisticsSynopsis) GetColumns() []StatisticsColumnSynopsis {
+	return s.Columns
+}
+
+// GetColumnGroups returns the value of ColumnGroups.
+func (s *StatisticsSynopsis) GetColumnGroups() []StatisticsColumnGroupSynopsis {
+	return s.ColumnGroups
+}
+
+// SetTable sets the value of Table.
+func (s *StatisticsSynopsis) SetTable(val int64) {
+	s.Table = val
+}
+
+// SetObservedRows sets the value of ObservedRows.
+func (s *StatisticsSynopsis) SetObservedRows(val int64) {
+	s.ObservedRows = val
+}
+
+// SetCoverage sets the value of Coverage.
+func (s *StatisticsSynopsis) SetCoverage(val StatisticsSynopsisCoverage) {
+	s.Coverage = val
+}
+
+// SetSampleSize sets the value of SampleSize.
+func (s *StatisticsSynopsis) SetSampleSize(val int64) {
+	s.SampleSize = val
+}
+
+// SetChangesSinceCollection sets the value of ChangesSinceCollection.
+func (s *StatisticsSynopsis) SetChangesSinceCollection(val int64) {
+	s.ChangesSinceCollection = val
+}
+
+// SetTableExistenceGeneration sets the value of TableExistenceGeneration.
+func (s *StatisticsSynopsis) SetTableExistenceGeneration(val int64) {
+	s.TableExistenceGeneration = val
+}
+
+// SetCollectedAtUnixMicros sets the value of CollectedAtUnixMicros.
+func (s *StatisticsSynopsis) SetCollectedAtUnixMicros(val int64) {
+	s.CollectedAtUnixMicros = val
+}
+
+// SetCatalogVersion sets the value of CatalogVersion.
+func (s *StatisticsSynopsis) SetCatalogVersion(val int64) {
+	s.CatalogVersion = val
+}
+
+// SetColumns sets the value of Columns.
+func (s *StatisticsSynopsis) SetColumns(val []StatisticsColumnSynopsis) {
+	s.Columns = val
+}
+
+// SetColumnGroups sets the value of ColumnGroups.
+func (s *StatisticsSynopsis) SetColumnGroups(val []StatisticsColumnGroupSynopsis) {
+	s.ColumnGroups = val
+}
+
+// Whether the survey read the complete table or a bounded prefix.
+type StatisticsSynopsisCoverage string
+
+const (
+	StatisticsSynopsisCoverageComplete    StatisticsSynopsisCoverage = "complete"
+	StatisticsSynopsisCoveragePrefixLimit StatisticsSynopsisCoverage = "prefixLimit"
+)
+
+// AllValues returns all StatisticsSynopsisCoverage values.
+func (StatisticsSynopsisCoverage) AllValues() []StatisticsSynopsisCoverage {
+	return []StatisticsSynopsisCoverage{
+		StatisticsSynopsisCoverageComplete,
+		StatisticsSynopsisCoveragePrefixLimit,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s StatisticsSynopsisCoverage) MarshalText() ([]byte, error) {
+	switch s {
+	case StatisticsSynopsisCoverageComplete:
+		return []byte(s), nil
+	case StatisticsSynopsisCoveragePrefixLimit:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *StatisticsSynopsisCoverage) UnmarshalText(data []byte) error {
+	switch StatisticsSynopsisCoverage(data) {
+	case StatisticsSynopsisCoverageComplete:
+		*s = StatisticsSynopsisCoverageComplete
+		return nil
+	case StatisticsSynopsisCoveragePrefixLimit:
+		*s = StatisticsSynopsisCoveragePrefixLimit
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 type TableCreateConflict Problem

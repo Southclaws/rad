@@ -11,6 +11,7 @@ mod value;
 
 pub mod bound;
 pub mod eval;
+pub mod fingerprint;
 pub mod format;
 pub mod inspect;
 

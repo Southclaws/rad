@@ -16,6 +16,7 @@ const (
 	GetReadyzOperation              OperationName = "GetReadyz"
 	GetSchemaOperation              OperationName = "GetSchema"
 	GetStartupzOperation            OperationName = "GetStartupz"
+	GetStatisticsOperation          OperationName = "GetStatistics"
 	IndexCreateOperation            OperationName = "IndexCreate"
 	IndexDeleteOperation            OperationName = "IndexDelete"
 	SchemaCompatibilityOperation    OperationName = "SchemaCompatibility"

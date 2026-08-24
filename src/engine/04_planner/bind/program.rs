@@ -8,7 +8,9 @@ use crate::engine::lir::{self, RootCardinality, SlotId};
 
 use super::{Binder, Catalog};
 use crate::engine::planner::physical::Plan;
-use crate::engine::planner::{PlanOptions, Reason, Result, plan_query};
+use crate::engine::planner::{
+    PlanOptions, PlanningContext, Reason, Result, plan_query_with_context,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProgramStatement {
@@ -39,6 +41,7 @@ pub struct BoundStatement {
     /// Absent on the independent reference path, which deliberately stops
     /// after logical binding.
     pub plan: Option<Plan>,
+    pub estimate: Option<crate::engine::planner::estimator::Estimate>,
     pub result_output: lir::RowType,
     pub result_cardinality: RootCardinality,
     pub target: Option<Table>,
@@ -52,6 +55,7 @@ pub struct ProgramBinder {
     names: Vec<String>,
     next: usize,
     next_slot: SlotId,
+    statistics: Option<std::sync::Arc<crate::engine::planner::models::PlannerStats>>,
 }
 
 impl ProgramBinder {
@@ -79,7 +83,15 @@ impl ProgramBinder {
             names,
             next: 0,
             next_slot: SlotId(0),
+            statistics: None,
         })
+    }
+
+    pub fn set_statistics(
+        &mut self,
+        statistics: Option<std::sync::Arc<crate::engine::planner::models::PlannerStats>>,
+    ) {
+        self.statistics = statistics;
     }
 
     /// Bind and plan the next relational statement, then publish its result as
@@ -89,7 +101,8 @@ impl ProgramBinder {
         catalog: &dyn Catalog,
         statement: ProgramStatement,
     ) -> Result<BoundStatement> {
-        self.bind_inner(catalog, statement, true).await
+        self.bind_inner(catalog, statement, true, PlanOptions::default())
+            .await
     }
 
     pub async fn bind_reference(
@@ -97,7 +110,8 @@ impl ProgramBinder {
         catalog: &dyn Catalog,
         statement: ProgramStatement,
     ) -> Result<BoundStatement> {
-        self.bind_inner(catalog, statement, false).await
+        self.bind_inner(catalog, statement, false, PlanOptions::default())
+            .await
     }
 
     async fn bind_inner(
@@ -105,6 +119,7 @@ impl ProgramBinder {
         catalog: &dyn Catalog,
         statement: ProgramStatement,
         physical: bool,
+        options: PlanOptions,
     ) -> Result<BoundStatement> {
         let Some(expected) = self.names.get(self.next) else {
             return Err(super::invalid(
@@ -137,7 +152,17 @@ impl ProgramBinder {
         }
         .map_err(|error| error.context(format!("planner: statement {:?}", statement.name)))?;
 
-        let mut plan = physical.then(|| plan_query(&bound, PlanOptions::default()));
+        let planned = physical.then(|| {
+            plan_query_with_context(
+                &bound,
+                options,
+                PlanningContext {
+                    statistics: self.statistics.as_deref(),
+                },
+            )
+        });
+        let estimate = planned.as_ref().and_then(|planned| planned.estimate);
+        let mut plan = planned.map(|planned| planned.plan);
         let (result_root, result_output, result_cardinality, target) = if let Some(mutation) =
             statement.mutation
         {
@@ -187,6 +212,7 @@ impl ProgramBinder {
             name: statement.name,
             bound,
             plan,
+            estimate,
             result_output,
             result_cardinality,
             target,

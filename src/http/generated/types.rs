@@ -190,6 +190,728 @@ pub struct TableInfo {
     pub primary_key: Vec<String>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Statistics {
+    ///Observations folded into the models since this process started.
+    pub absorbed: i64,
+    pub corpus: StatisticsCorpus,
+    /**Observations discarded because the collection queue was full.
+Execution never blocks to record statistics, so a busy instance
+sheds observations rather than slowing queries.
+*/
+    pub dropped: i64,
+    /**Models discarded to keep the working set bounded. The frequency
+sketch keeps counting an evicted family, so a family that stays
+active is re-admitted.
+*/
+    pub evicted: i64,
+    ///One entry per modelled family, most measured first.
+    pub models: Vec<StatisticsModel>,
+    #[serde(rename = "physicalCost", skip_serializing_if = "Option::is_none")]
+    pub physical_cost: Option<StatisticsPhysicalCost>,
+    pub relay: StatisticsRelay,
+    /**Unpublished evidence discarded to keep the pending set bounded.
+Evidence already published is unaffected: what reaches the store
+accumulates there.
+*/
+    pub shed: i64,
+    ///Current table survey results, ordered by table identity.
+    pub synopses: Vec<StatisticsSynopsis>,
+    ///Relation families currently modelled.
+    #[serde(rename = "trackedFamilies")]
+    pub tracked_families: i64,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsSynopsis {
+    ///Catalog version read by the survey.
+    #[serde(rename = "catalogVersion")]
+    pub catalog_version: i64,
+    ///Rows affected by writes after collection.
+    #[serde(rename = "changesSinceCollection")]
+    pub changes_since_collection: i64,
+    ///Collection wall time in microseconds since the Unix epoch.
+    #[serde(rename = "collectedAtUnixMicros")]
+    pub collected_at_unix_micros: i64,
+    ///Bounded joint statistics for primary-key prefixes, ready multi-column index prefixes, and composite foreign keys.
+    #[serde(rename = "columnGroups")]
+    pub column_groups: Vec<StatisticsColumnGroupSynopsis>,
+    pub columns: Vec<StatisticsColumnSynopsis>,
+    ///Whether the survey read the complete table or a bounded prefix.
+    pub coverage: StatisticsSynopsisCoverage,
+    ///Rows read by the survey.
+    #[serde(rename = "observedRows")]
+    pub observed_rows: i64,
+    ///Rows used to build the synopsis.
+    #[serde(rename = "sampleSize")]
+    pub sample_size: i64,
+    ///Stable table schema identity.
+    pub table: i64,
+    ///Table generation that this synopsis describes.
+    #[serde(rename = "tableExistenceGeneration")]
+    pub table_existence_generation: i64,
+}
+///Whether the survey read the complete table or a bounded prefix.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum StatisticsSynopsisCoverage {
+    #[default]
+    #[serde(rename = "complete")]
+    Complete,
+    #[serde(rename = "prefixLimit")]
+    PrefixLimit,
+}
+impl StatisticsSynopsisCoverage {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::PrefixLimit => "prefixLimit",
+        }
+    }
+}
+impl ::std::fmt::Display for StatisticsSynopsisCoverage {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for StatisticsSynopsisCoverage {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsColumnSynopsis {
+    ///Average encoded width of observed non-null values.
+    #[serde(rename = "averageWidth")]
+    pub average_width: i64,
+    ///Stable column schema identity.
+    pub column: i64,
+    ///Exact or approximate observed distinct non-null values.
+    pub distinct: i64,
+    ///Whether distinct is exact.
+    #[serde(rename = "distinctIsExact")]
+    pub distinct_is_exact: bool,
+    ///Rendered maximum non-null value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maximum: Option<String>,
+    ///Rendered minimum non-null value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minimum: Option<String>,
+    ///Bounded heavy hitters, ordered by decreasing observed frequency.
+    #[serde(rename = "mostCommonValues")]
+    pub most_common_values: Vec<StatisticsMostCommonValue>,
+    ///Observed rows that contained null.
+    #[serde(rename = "nullCount")]
+    pub null_count: i64,
+    ///Fraction of observed rows that contained null.
+    #[serde(rename = "nullFraction")]
+    pub null_fraction: f64,
+    ///Column value generation that this synopsis describes.
+    #[serde(rename = "valueGeneration")]
+    pub value_generation: i64,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsMostCommonValue {
+    ///Space-Saving frequency upper bound.
+    pub frequency: i64,
+    ///Guaranteed observed frequency lower bound.
+    #[serde(rename = "lowerFrequency")]
+    pub lower_frequency: i64,
+    ///Maximum Space-Saving overcount.
+    #[serde(rename = "maximumError")]
+    pub maximum_error: i64,
+    ///Rendered typed value.
+    pub value: String,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsColumnGroupSynopsis {
+    ///Stable column schema identities in canonical order.
+    pub columns: Vec<i64>,
+    ///Exact or approximate observed distinct non-null value combinations.
+    pub distinct: i64,
+    ///Whether distinct is exact.
+    #[serde(rename = "distinctIsExact")]
+    pub distinct_is_exact: bool,
+    ///Bounded common value combinations, ordered by decreasing observed frequency.
+    #[serde(rename = "mostCommonValues")]
+    pub most_common_values: Vec<StatisticsMostCommonColumnGroup>,
+    ///Observed rows where one or more group columns contained null.
+    #[serde(rename = "nullCount")]
+    pub null_count: i64,
+    ///Column value generations in the same order as columns.
+    #[serde(rename = "valueGenerations")]
+    pub value_generations: Vec<i64>,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsMostCommonColumnGroup {
+    ///Space-Saving frequency upper bound.
+    pub frequency: i64,
+    ///Guaranteed observed frequency lower bound.
+    #[serde(rename = "lowerFrequency")]
+    pub lower_frequency: i64,
+    ///Maximum Space-Saving overcount.
+    #[serde(rename = "maximumError")]
+    pub maximum_error: i64,
+    ///Rendered typed values in the column order.
+    pub values: Vec<String>,
+}
+/**The observation relay, as this instance sees it. An instance that
+cannot publish to storage hands its evidence to one that can; the
+channel is advisory, so every loss here is counted rather than
+signalled as a failure.
+
+The sending fields are absent on an instance that publishes to storage
+rather than to a peer. The receiving fields are always present,
+because every instance can receive; zero means nothing has arrived.
+*/
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsRelay {
+    /**Batches given up on after exhausting their retry budget. Each one
+is evidence permanently lost, which costs the fleet planner
+accuracy and nothing else.
+*/
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abandoned: Option<i64>,
+    /**Corpus documents adopted from peers. Content addressing makes a
+duplicate harmless, so this counts documents received rather than
+documents newly stored.
+*/
+    #[serde(rename = "corpusAdopted")]
+    pub corpus_adopted: i64,
+    /**Workload-corpus documents carried to a peer. These contain the
+literal values of the programs that ran, unlike the aggregate
+evidence beside them, so they travel only over a transport shown to
+be confidential — encrypted *and* verified.
+*/
+    #[serde(rename = "corpusSent", skip_serializing_if = "Option::is_none")]
+    pub corpus_sent: Option<i64>,
+    /**Corpus documents dropped because the transport could not be shown
+confidential. An instance that cannot publish has nowhere else to
+put them. A non-zero value with corpus capture requested means the
+channel is not encrypted.
+*/
+    #[serde(rename = "corpusWithheld", skip_serializing_if = "Option::is_none")]
+    pub corpus_withheld: Option<i64>,
+    ///Whether a batch is currently awaiting another attempt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holding: Option<bool>,
+    ///Observations folded in from peers.
+    #[serde(rename = "mergedObservations")]
+    pub merged_observations: i64,
+    ///Batches accepted from a peer and queued to be merged.
+    pub received: i64,
+    /**Batches whose sequence this instance had already applied. Delivery
+is at-least-once and the accounting is idempotent, so a repeat is
+expected traffic rather than a fault.
+*/
+    #[serde(rename = "receivedAlreadyApplied")]
+    pub received_already_applied: i64,
+    ///Batches refused because one corpus document exceeded 1 MiB.
+    #[serde(rename = "receivedCorpusOversize")]
+    pub received_corpus_oversize: i64,
+    ///Batches refused because they use a different wire format.
+    #[serde(rename = "receivedRejected")]
+    pub received_rejected: i64,
+    /**Batches refused because the merge queue was full. The sender is
+asked to retry and nothing is recorded as applied, so a saturated
+receiver costs latency rather than evidence.
+*/
+    #[serde(rename = "receivedSaturated")]
+    pub received_saturated: i64,
+    /**Relayed families discarded because they described a different
+catalog generation than this instance observed. A peer lagging a
+catalog change must never displace newer local evidence.
+*/
+    #[serde(rename = "refusedStaleFamilies")]
+    pub refused_stale_families: i64,
+    /**Batches a peer understood and refused, most often a wire-format
+mismatch during a rolling upgrade. Retrying cannot help, so these
+are not retried.
+*/
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rejected: Option<i64>,
+    ///Batches this instance successfully handed to a peer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sent: Option<i64>,
+    /**Peers whose applied sequence this instance remembers. A peer that
+falls out of that bounded set is re-admitted on its next batch.
+*/
+    pub sources: i64,
+    /**The sending side in one word. `retrying` means a batch is held for
+another attempt and no evidence has been lost yet. `losing` means
+a batch was abandoned or refused, so evidence was dropped, and it
+stays reported until a later attempt succeeds. Absent on an
+instance that does not send.
+*/
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<StatisticsRelayState>,
+}
+/**The sending side in one word. `retrying` means a batch is held for
+another attempt and no evidence has been lost yet. `losing` means
+a batch was abandoned or refused, so evidence was dropped, and it
+stays reported until a later attempt succeeds. Absent on an
+instance that does not send.
+*/
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum StatisticsRelayState {
+    #[default]
+    #[serde(rename = "connected")]
+    Connected,
+    #[serde(rename = "retrying")]
+    Retrying,
+    #[serde(rename = "losing")]
+    Losing,
+    #[serde(rename = "idle")]
+    Idle,
+}
+impl StatisticsRelayState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Connected => "connected",
+            Self::Retrying => "retrying",
+            Self::Losing => "losing",
+            Self::Idle => "idle",
+        }
+    }
+}
+impl ::std::fmt::Display for StatisticsRelayState {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for StatisticsRelayState {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+/**Instance-local physical storage calibration. Backend adapters convert
+their native metrics to this common model. A missing capability is
+false and its measurements are absent. The model is not assigned to
+one statement or relation.
+*/
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsPhysicalCost {
+    pub backend: String,
+    pub basis: StatisticsPhysicalCostBasis,
+    pub caches: Vec<StatisticsPhysicalCacheCost>,
+    pub capabilities: StatisticsPhysicalTelemetryCapabilities,
+    pub requests: Vec<StatisticsPhysicalRequestCost>,
+    #[serde(rename = "telemetryFormat")]
+    pub telemetry_format: i64,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsPhysicalTelemetryCapabilities {
+    #[serde(rename = "accessLocality")]
+    pub access_locality: bool,
+    #[serde(rename = "cacheTiers")]
+    pub cache_tiers: bool,
+    #[serde(rename = "requestBytes")]
+    pub request_bytes: bool,
+    #[serde(rename = "requestConcurrency")]
+    pub request_concurrency: bool,
+    #[serde(rename = "requestLatency")]
+    pub request_latency: bool,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsPhysicalRequestCost {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<StatisticsPhysicalCostMetric>,
+    pub class: StatisticsPhysicalRequestCostClass,
+    ///Active-request bucket upper bound for this conditional model.
+    #[serde(rename = "concurrencyUpperBound", skip_serializing_if = "Option::is_none")]
+    pub concurrency_upper_bound: Option<i64>,
+    pub errors: i64,
+    #[serde(rename = "latencyMicros", skip_serializing_if = "Option::is_none")]
+    pub latency_micros: Option<StatisticsPhysicalCostMetric>,
+    #[serde(rename = "observedRequests")]
+    pub observed_requests: i64,
+    ///Service tier for this conditional model.
+    #[serde(rename = "serviceTier", skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<StatisticsPhysicalRequestCostServiceTier>,
+    ///Request-size bucket upper bound for this conditional model.
+    #[serde(rename = "sizeUpperBound", skip_serializing_if = "Option::is_none")]
+    pub size_upper_bound: Option<i64>,
+}
+///Service tier for this conditional model.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum StatisticsPhysicalRequestCostServiceTier {
+    #[default]
+    #[serde(rename = "memory")]
+    Memory,
+    #[serde(rename = "local")]
+    Local,
+    #[serde(rename = "remote")]
+    Remote,
+}
+impl StatisticsPhysicalRequestCostServiceTier {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Memory => "memory",
+            Self::Local => "local",
+            Self::Remote => "remote",
+        }
+    }
+}
+impl ::std::fmt::Display for StatisticsPhysicalRequestCostServiceTier {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for StatisticsPhysicalRequestCostServiceTier {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum StatisticsPhysicalRequestCostClass {
+    #[default]
+    #[serde(rename = "read")]
+    Read,
+    #[serde(rename = "range_read")]
+    RangeRead,
+    #[serde(rename = "metadata_read")]
+    MetadataRead,
+    #[serde(rename = "write")]
+    Write,
+    #[serde(rename = "delete")]
+    Delete,
+    #[serde(rename = "list")]
+    List,
+}
+impl StatisticsPhysicalRequestCostClass {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::RangeRead => "range_read",
+            Self::MetadataRead => "metadata_read",
+            Self::Write => "write",
+            Self::Delete => "delete",
+            Self::List => "list",
+        }
+    }
+}
+impl ::std::fmt::Display for StatisticsPhysicalRequestCostClass {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for StatisticsPhysicalRequestCostClass {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsPhysicalCostMetric {
+    ///Upper bound on the largest value in the retained buckets.
+    #[serde(rename = "maximumUpperBound")]
+    pub maximum_upper_bound: i64,
+    ///Upper bound on the median value.
+    #[serde(rename = "p50UpperBound")]
+    pub p50_upper_bound: i64,
+    ///Upper bound on the 95th-percentile value.
+    #[serde(rename = "p95UpperBound")]
+    pub p95_upper_bound: i64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum StatisticsPhysicalCostBasis {
+    #[default]
+    #[serde(rename = "backend_physical_telemetry")]
+    BackendPhysicalTelemetry,
+}
+impl StatisticsPhysicalCostBasis {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::BackendPhysicalTelemetry => "backend_physical_telemetry",
+        }
+    }
+}
+impl ::std::fmt::Display for StatisticsPhysicalCostBasis {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for StatisticsPhysicalCostBasis {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsPhysicalCacheCost {
+    pub accesses: i64,
+    #[serde(rename = "hitRatePpm")]
+    pub hit_rate_ppm: i64,
+    pub hits: i64,
+    pub tier: StatisticsPhysicalCacheCostTier,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum StatisticsPhysicalCacheCostTier {
+    #[default]
+    #[serde(rename = "memory")]
+    Memory,
+    #[serde(rename = "local")]
+    Local,
+}
+impl StatisticsPhysicalCacheCostTier {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Memory => "memory",
+            Self::Local => "local",
+        }
+    }
+}
+impl ::std::fmt::Display for StatisticsPhysicalCacheCostTier {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for StatisticsPhysicalCacheCostTier {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsModel {
+    /**Exponentially weighted mean execution time, a recent-trend signal
+rather than a distribution. Absent alongside the latency bounds.
+*/
+    #[serde(rename = "durationEwmaMicros", skip_serializing_if = "Option::is_none")]
+    pub duration_ewma_micros: Option<i64>,
+    /**Approximate distinct literal-specific instances seen within this
+family. A fixed-size mergeable sketch produces this value. One
+means an effectively constant query. A large value means a
+parameterised query.
+*/
+    #[serde(rename = "exactVariants")]
+    pub exact_variants: i64,
+    /**Upper bound on median execution time in microseconds. Absent when
+this family was measured only as a relation inside a statement,
+which records rows but not durations.
+*/
+    #[serde(
+        rename = "executeMicrosP50UpperBound",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub execute_micros_p50_upper_bound: Option<i64>,
+    ///Upper bound on 95th-percentile execution time in microseconds.
+    #[serde(
+        rename = "executeMicrosP95UpperBound",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub execute_micros_p95_upper_bound: Option<i64>,
+    /**Of those, how many carried a planner estimate to score against the
+actual row count. Zero means nothing has scored this family yet.
+*/
+    #[serde(rename = "executionsWithEstimate")]
+    pub executions_with_estimate: i64,
+    /**Family fingerprint: the relation shape with every literal replaced
+by a typed placeholder, so the same shape run with different
+parameters shares one entry. Carries the canonicalization version
+and hash algorithm that produced it.
+*/
+    pub family: String,
+    /**Approximate number of times this family appeared anywhere in an
+executed query tree, from a count-min sketch. It over-counts on
+hash collision and halves periodically, so it reflects recent
+workload weight rather than a lifetime total. Expect it to exceed
+`retainedExecutions`: a family is counted once per appearance as a
+subtree but measured only where a plan boundary exposes its rows.
+*/
+    pub frequency: i64,
+    /**`relation` contains logical relation cardinality feedback.
+`statement` contains complete statement performance and plan data.
+*/
+    pub kind: String,
+    #[serde(rename = "planningValue", skip_serializing_if = "Option::is_none")]
+    pub planning_value: Option<StatisticsPlanningValue>,
+    ///Physical plans observed for this family, with how often each ran.
+    pub plans: Vec<StatisticsPlan>,
+    ///Largest estimate error observed, exactly.
+    #[serde(rename = "qErrorMax")]
+    pub q_error_max: f64,
+    /**Upper bound on the median estimate error, symmetric and
+multiplicative: 1.0 is a perfect estimate and 10.0 is wrong by a
+factor of ten in either direction. A bucket bound, never above
+`qErrorMax`.
+*/
+    #[serde(rename = "qErrorP50UpperBound")]
+    pub q_error_p50_upper_bound: f64,
+    ///Upper bound on the 95th-percentile estimate error.
+    #[serde(rename = "qErrorP95UpperBound")]
+    pub q_error_p95_upper_bound: f64,
+    #[serde(rename = "resourceCost", skip_serializing_if = "Option::is_none")]
+    pub resource_cost: Option<StatisticsResourceCost>,
+    ///Times this family was itself measured.
+    #[serde(rename = "retainedExecutions")]
+    pub retained_executions: i64,
+    ///Largest row count observed, exactly.
+    #[serde(rename = "rowsMax")]
+    pub rows_max: i64,
+    /**Upper bound on the median row count: the bound of the histogram
+bucket holding it, never above `rowsMax`. Not an exact quantile.
+*/
+    #[serde(rename = "rowsP50UpperBound")]
+    pub rows_p50_upper_bound: i64,
+    ///Upper bound on the 95th-percentile row count.
+    #[serde(rename = "rowsP95UpperBound")]
+    pub rows_p95_upper_bound: i64,
+}
+/**Observed logical KV work for complete statement executions. This is
+not CPU, memory, object-request, or remote-I/O cost. A relation model
+has no resource cost because shared statement work cannot be assigned
+to one relation without an operator measurement boundary.
+*/
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsResourceCost {
+    pub basis: StatisticsResourceCostBasis,
+    #[serde(rename = "bytesRead")]
+    pub bytes_read: StatisticsResourceMetric,
+    #[serde(rename = "bytesWritten")]
+    pub bytes_written: StatisticsResourceMetric,
+    pub deletes: StatisticsResourceMetric,
+    pub gets: StatisticsResourceMetric,
+    pub iterated: StatisticsResourceMetric,
+    ///Complete statement executions in these distributions.
+    #[serde(rename = "observedExecutions")]
+    pub observed_executions: i64,
+    pub puts: StatisticsResourceMetric,
+    pub scans: StatisticsResourceMetric,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsResourceMetric {
+    ///Largest observed value, exactly.
+    pub maximum: i64,
+    ///Upper bound on the median value.
+    #[serde(rename = "p50UpperBound")]
+    pub p50_upper_bound: i64,
+    ///Upper bound on the 95th-percentile value.
+    #[serde(rename = "p95UpperBound")]
+    pub p95_upper_bound: i64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum StatisticsResourceCostBasis {
+    #[default]
+    #[serde(rename = "logical_kv_work")]
+    LogicalKvWork,
+}
+impl StatisticsResourceCostBasis {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::LogicalKvWork => "logical_kv_work",
+        }
+    }
+}
+impl ::std::fmt::Display for StatisticsResourceCostBasis {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for StatisticsResourceCostBasis {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+/**Observational priority proxy. It is present only when at least two
+plans have enough execution evidence in the same access generation
+and row-count class. It does not claim that an estimate caused a plan
+change. A future counterfactual optimizer can replace the observed
+A counterfactual optimizer replaces the observed plan-variation
+component without changing the other components.
+*/
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsPlanningValue {
+    ///Stable identifier for the score method.
+    pub basis: String,
+    ///Executions represented by the comparable plan group.
+    #[serde(rename = "comparableExecutions")]
+    pub comparable_executions: i64,
+    ///Difference between the fastest and slowest comparable median execution times.
+    #[serde(rename = "costDifferenceMicros")]
+    pub cost_difference_micros: i64,
+    ///Recent workload frequency used by the score.
+    pub frequency: i64,
+    ///Minimum estimates and per-plan executions required for admission.
+    #[serde(rename = "minimumExecutions")]
+    pub minimum_executions: i64,
+    ///Non-dominant comparable plan executions in parts per million.
+    #[serde(rename = "observedPlanVariationPpm")]
+    pub observed_plan_variation_ppm: i64,
+    ///Median row-count histogram bound shared by the plan group.
+    #[serde(rename = "rowCountClassUpperBound")]
+    pub row_count_class_upper_bound: i64,
+    /**Frequency multiplied by normalized uncertainty, observed plan
+variation, and the median execution-time difference. The two
+normalized components use parts per million.
+*/
+    pub score: i64,
+    ///Normalized p95 q-error excess in parts per million.
+    #[serde(rename = "uncertaintyPpm")]
+    pub uncertainty_ppm: i64,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsPlan {
+    ///Times this plan ran for this family.
+    pub executions: i64,
+    /**Structural fingerprint of the physical plan: operator shapes,
+access paths, join order, and binding strategies, excluding
+literal values.
+*/
+    pub plan: String,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsCorpus {
+    ///Programs admitted to the local statistics queue.
+    pub captured: i64,
+    ///Programs not captured because the collection queue was full.
+    #[serde(rename = "droppedQueue")]
+    pub dropped_queue: i64,
+    ///Whether this process captures canonical workload programs.
+    pub enabled: bool,
+    /**Storage maintenance data. This field is absent when this process
+does not own corpus storage.
+*/
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maintenance: Option<StatisticsCorpusMaintenance>,
+    ///Captured programs removed from the bounded unpublished queue.
+    #[serde(rename = "shedPending")]
+    pub shed_pending: i64,
+    ///Programs not captured because one canonical document exceeded the capture limit.
+    #[serde(rename = "skippedOversize")]
+    pub skipped_oversize: i64,
+}
+/**Cumulative maintenance counters and current retained corpus gauges.
+Counters start when the storage owner process starts.
+*/
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatisticsCorpusMaintenance {
+    ///Execution records removed by explicit corpus erasure.
+    #[serde(rename = "erasedExecutions")]
+    pub erased_executions: i64,
+    ///Canonical programs removed by explicit corpus erasure.
+    #[serde(rename = "erasedPrograms")]
+    pub erased_programs: i64,
+    ///Execution records removed because the maximum age elapsed.
+    #[serde(rename = "expiredExecutions")]
+    pub expired_executions: i64,
+    ///Execution records removed because their key, value, or program reference was invalid.
+    #[serde(rename = "invalidExecutions")]
+    pub invalid_executions: i64,
+    ///Canonical programs removed because their storage key was invalid.
+    #[serde(rename = "invalidPrograms")]
+    pub invalid_programs: i64,
+    ///Execution records removed to enforce the count or byte limit.
+    #[serde(rename = "prunedExecutions")]
+    pub pruned_executions: i64,
+    ///Canonical programs removed because no retained execution referenced them.
+    #[serde(rename = "prunedPrograms")]
+    pub pruned_programs: i64,
+    ///Execution records currently retained.
+    #[serde(rename = "retainedExecutions")]
+    pub retained_executions: i64,
+    ///Bytes in retained canonical programs. This excludes execution records and storage overhead.
+    #[serde(rename = "retainedProgramBytes")]
+    pub retained_program_bytes: i64,
+    ///Unique canonical programs currently retained.
+    #[serde(rename = "retainedPrograms")]
+    pub retained_programs: i64,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SchemaMigrateResult {
     pub changes: Vec<SchemaChange>,
     ///Canonical hash of the requested target schema.

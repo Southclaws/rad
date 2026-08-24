@@ -29,6 +29,10 @@ type GetStartupzRes interface {
 	getStartupzRes()
 }
 
+type GetStatisticsRes interface {
+	getStatisticsRes()
+}
+
 type IndexCreateRes interface {
 	indexCreateRes()
 }

@@ -4,6 +4,7 @@
     clippy::collapsible_if,
     clippy::double_must_use,
     clippy::nonminimal_bool,
+    clippy::struct_excessive_bools,
     unused_qualifications
 )]
 #[rustfmt::skip]

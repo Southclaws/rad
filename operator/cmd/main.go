@@ -13,7 +13,9 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -118,10 +120,35 @@ func main() {
 		setupLog.Error(err, "create manager")
 		os.Exit(1)
 	}
+	// Whether certificates can be requested is a question about the API the
+	// cluster serves, not about a Deployment in a known namespace.
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(manager.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "build discovery client")
+		os.Exit(1)
+	}
+	certManager := &databasecontroller.DiscoveredCertManager{
+		Discovery: func() ([]schema.GroupVersion, error) {
+			groups, err := discoveryClient.ServerGroups()
+			if err != nil {
+				return nil, err
+			}
+			var versions []schema.GroupVersion
+			for _, group := range groups.Groups {
+				for _, version := range group.Versions {
+					versions = append(versions, schema.GroupVersion{
+						Group: group.Name, Version: version.Version,
+					})
+				}
+			}
+			return versions, nil
+		},
+	}
 	if err := (&databasecontroller.DatabaseReconciler{
 		Client:                  manager.GetClient(),
 		APIReader:               manager.GetAPIReader(),
 		Scheme:                  manager.GetScheme(),
+		CertManager:             certManager,
 		Recorder:                manager.GetEventRecorderFor("rad-operator"),
 		RadImage:                radImage,
 		IngressClass:            ingressClass,

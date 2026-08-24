@@ -88,6 +88,25 @@ pub struct Config {
     /// forfeits only background housekeeping, never acknowledged data.
     pub close_timeout: Option<Duration>,
     pub reader_poll_interval: Duration,
+    pub capture_workload_corpus: bool,
+    /// Listen address for the instance-to-instance API. Requires
+    /// `relay_token_file`: an unauthenticated port that accepts evidence is
+    /// not a configuration this process will serve.
+    pub internal_address: Option<String>,
+    /// Base URL of the instance this one reports its statistics to.
+    pub relay_target: Option<String>,
+    pub relay_token_file: Option<PathBuf>,
+    /// Certificate and key the internal listener serves. Absent means the
+    /// internal API is plain HTTP, which is the development posture.
+    pub internal_tls_certificate: Option<PathBuf>,
+    pub internal_tls_key: Option<PathBuf>,
+    /// Authority a relaying instance verifies the writer against. Absent means
+    /// the target is plain HTTP.
+    pub relay_authority: Option<PathBuf>,
+    /// What this instance calls itself when it relays. Every instance in a
+    /// database needs a distinct name, or the receiver cannot tell their
+    /// batch sequences apart.
+    pub instance_id: Option<String>,
     pub role: Role,
     /// How long readiness reports unavailable before the listeners stop, so an
     /// orchestrator can move traffic elsewhere while requests still succeed.
@@ -120,6 +139,27 @@ impl Config {
         if reader_poll_interval.is_zero() {
             return Err("RAD_READER_POLL_INTERVAL_MS must be greater than zero".into());
         }
+        let capture_workload_corpus = matches!(
+            env::var("RAD_CAPTURE_WORKLOAD_CORPUS").ok().as_deref(),
+            Some("1" | "true" | "yes")
+        );
+        let internal_address = env::var("RAD_INTERNAL_ADDR")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(|value| normalize_address(&value));
+        let relay_target = env::var("RAD_RELAY_TARGET")
+            .ok()
+            .filter(|value| !value.is_empty());
+        let relay_token_file = env::var("RAD_RELAY_TOKEN_FILE")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let internal_tls_certificate = env_path("RAD_INTERNAL_TLS_CERT");
+        let internal_tls_key = env_path("RAD_INTERNAL_TLS_KEY");
+        let relay_authority = env_path("RAD_RELAY_CA");
+        let instance_id = env::var("RAD_INSTANCE_ID")
+            .ok()
+            .filter(|value| !value.is_empty());
         let role = env_or("RAD_ROLE", "write").parse()?;
         let close_timeout = close_timeout_from_env()?;
         let shutdown_drain = shutdown_drain_from_env()?;
@@ -146,17 +186,69 @@ impl Config {
                 );
             }
         };
-        Ok(Self {
+        let config = Self {
             address,
             admin_address,
             catalog_mode,
+            capture_workload_corpus,
             close_timeout,
             frontend,
+            instance_id,
+            internal_address,
+            internal_tls_certificate,
+            internal_tls_key,
             postgres_address,
             reader_poll_interval,
+            relay_authority,
+            relay_target,
+            relay_token_file,
             role,
             shutdown_drain,
             storage,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Reject a relay configuration that is half-given.
+    ///
+    /// Each half without the other is a mistake with a silent consequence: an
+    /// address alone would serve evidence to anything that could reach the
+    /// port, and a target alone would gather evidence that every attempt to
+    /// send is refused for.
+    pub fn validate(&self) -> Result<()> {
+        if self.internal_address.is_some() && self.relay_token_file.is_none() {
+            return Err(
+                "RAD_INTERNAL_ADDR requires RAD_RELAY_TOKEN_FILE: the internal API is never served unauthenticated"
+                    .into(),
+            );
+        }
+        if self.relay_target.is_some() && self.relay_token_file.is_none() {
+            return Err(
+                "RAD_RELAY_TARGET requires RAD_RELAY_TOKEN_FILE: the receiving instance rejects an unauthenticated batch"
+                    .into(),
+            );
+        }
+        // A certificate without its key, or a key without its certificate,
+        // cannot serve. Failing here rather than at the first handshake keeps
+        // a misconfiguration from looking like a network fault.
+        if self.internal_tls_certificate.is_some() != self.internal_tls_key.is_some() {
+            return Err(
+                "RAD_INTERNAL_TLS_CERT and RAD_INTERNAL_TLS_KEY are given together or not at all"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// The TLS material for the internal listener, if it serves TLS.
+    pub fn internal_tls(&self) -> Option<crate::internal::TlsFiles> {
+        let certificate = self.internal_tls_certificate.clone()?;
+        let key = self.internal_tls_key.clone()?;
+        Some(crate::internal::TlsFiles {
+            certificate,
+            key,
+            authority: self.relay_authority.clone(),
         })
     }
 }
@@ -184,6 +276,20 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
         }
         None => None,
     };
+    let relay_token = match &config.relay_token_file {
+        Some(path) => Some(Arc::new(crate::internal::Token::load(path)?)),
+        None => None,
+    };
+    let internal_listener = match (&config.internal_address, &relay_token) {
+        (Some(address), Some(_)) => Some(tokio::net::TcpListener::bind(address).await?),
+        _ => None,
+    };
+    // Loaded before the listener serves, so unusable material stops the
+    // process rather than surfacing as a handshake failure per connection.
+    let internal_certificate = match config.internal_tls() {
+        Some(files) => Some(crate::internal::RotatingCertificate::load(files)?),
+        None => None,
+    };
 
     let (started_sender, started_receiver) = tokio::sync::watch::channel(false);
     let startup_probes = tokio::spawn(crate::http::serve(
@@ -202,6 +308,7 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
         engine,
         mode,
         jobs,
+        statistics,
     } = started?;
     handover?;
 
@@ -212,6 +319,14 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
         config.role
     );
     eprintln!("admin UI on http://{bound_admin_address}");
+    if let Some(listener) = &internal_listener {
+        let scheme = if internal_certificate.is_some() {
+            "https"
+        } else {
+            "http"
+        };
+        eprintln!("internal API on {scheme}://{}", listener.local_addr()?);
+    }
     if let Some(listener) = &postgres_listener {
         eprintln!("postgres frontend on {}", listener.local_addr()?);
     }
@@ -258,14 +373,32 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
     });
     let admin_store = store.clone();
     let admin_stop = stop_receiver.clone();
+    let admin_statistics = statistics.clone();
     servers.spawn(async move {
         crate::http::serve(
             admin_listener,
-            crate::admin::router(admin_store),
+            crate::admin::router_with_statistics(admin_store, admin_statistics),
             wait_for_stop(admin_stop),
         )
         .await
     });
+    if let Some(listener) = internal_listener
+        && let Some(token) = relay_token
+        && let Some(statistics) = &statistics
+    {
+        let internal_stop = stop_receiver.clone();
+        let internal_ingest = statistics.ingest();
+        let confidential = internal_certificate.is_some();
+        servers.spawn(async move {
+            crate::internal::serve(
+                listener,
+                crate::internal::router(internal_ingest, token, confidential),
+                internal_certificate,
+                wait_for_stop(internal_stop),
+            )
+            .await
+        });
+    }
     if let Some(listener) = postgres_listener {
         let postgres_stop = stop_receiver;
         let postgres = crate::postgres::Server::new(engine, catalog.clone(), mode);
@@ -282,6 +415,9 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
         server_result = combine_servers(server_result, joined_server(result));
     }
     shutdown_task.abort();
+    if let Some(statistics) = statistics {
+        statistics.shutdown().await;
+    }
     let scheduler_result = match jobs {
         Some(jobs) => jobs.shutdown().await,
         None => Ok(()),
@@ -328,6 +464,54 @@ struct Runtime {
     engine: Arc<Engine>,
     mode: Mode,
     jobs: Option<Arc<SchemaJobRunner>>,
+    statistics: Option<Arc<crate::scheduler::statistics::StatisticsRunner>>,
+}
+
+/// Where this instance's own evidence goes.
+///
+/// A writer publishes to storage. A reader cannot, so it hands its evidence to
+/// the instance that can; without a target it keeps observing and its evidence
+/// stays local, which costs the fleet a better planner but nothing else.
+fn statistics_sink(
+    config: &Config,
+    slate: Arc<crate::scheduler::statistics::SlateStatistics>,
+) -> Result<Option<Arc<dyn crate::scheduler::statistics::StatisticsSink>>> {
+    if config.role == Role::Write {
+        return Ok(Some(slate));
+    }
+    let Some(target) = &config.relay_target else {
+        return Ok(None);
+    };
+    let token = crate::internal::Token::load(
+        config
+            .relay_token_file
+            .as_ref()
+            .ok_or("a relay target requires a relay token file")?,
+    )?;
+    let transport = crate::internal::HttpTransport::new(
+        target,
+        token.header_value(),
+        config.relay_authority.as_deref(),
+    )?;
+    Ok(Some(Arc::new(crate::scheduler::relay::RelaySink::new(
+        Arc::new(transport),
+        Arc::new(crate::runtime::SystemRuntime),
+        instance_id(config),
+    ))))
+}
+
+/// What this instance calls itself when it relays. A container runtime sets
+/// `HOSTNAME` to the pod name, which is already distinct per instance.
+///
+/// A duplicate name is survivable rather than silent: a source is identified
+/// by name *and* boot nonce, and the nonce is fresh per process, so two
+/// instances sharing a name still have their sequences counted apart.
+fn instance_id(config: &Config) -> String {
+    config
+        .instance_id
+        .clone()
+        .or_else(|| env::var("HOSTNAME").ok().filter(|value| !value.is_empty()))
+        .unwrap_or_else(|| "rad".into())
 }
 
 /// Any failure closes Slate before returning, so a process that never publishes
@@ -363,10 +547,40 @@ async fn open_runtime(config: &Config, built: &BuiltObjects) -> Result<Runtime> 
         Ok(mode) => mode,
         Err(error) => return close_after_error(store.as_ref(), config.close_timeout, error).await,
     };
-    let engine = Arc::new(match config.role {
+    // Every instance reads published statistics so its planner estimates from
+    // the same evidence. Only a writer can publish, so a reader keeps what it
+    // observes to itself until a channel exists to hand it back.
+    let slate_statistics = Arc::new(crate::scheduler::statistics::SlateStatistics::new(
+        store.clone(),
+    ));
+    let sink = statistics_sink(config, slate_statistics.clone())?;
+    let capture_programs = config.capture_workload_corpus
+        && sink.as_ref().is_some_and(|sink| sink.carries_user_values());
+    if config.capture_workload_corpus && !capture_programs {
+        eprintln!("workload corpus capture is off: the statistics sink cannot carry user values");
+    }
+    let statistics = Some(crate::scheduler::statistics::StatisticsRunner::start(
+        Arc::new(crate::runtime::SystemRuntime),
+        crate::scheduler::statistics::StatisticsConfig {
+            capture_programs,
+            ..Default::default()
+        },
+        Some(slate_statistics.clone()),
+        sink,
+    ));
+    let engine = match config.role {
         Role::Read => Engine::read_only(store.clone()),
         Role::Write => Engine::new(store.clone()),
+    };
+    let engine = Arc::new(match &statistics {
+        Some(statistics) => engine
+            .with_observer(statistics.collector())
+            .with_statistics_provider(statistics.clone()),
+        None => engine,
     });
+    if let Some(statistics) = &statistics {
+        statistics.attach_engine(engine.clone());
+    }
     let jobs = if config.role == Role::Write {
         let jobs = match SchemaJobRunner::start(engine.clone(), SchemaJobConfig::default()) {
             Ok(jobs) => jobs,
@@ -388,6 +602,7 @@ async fn open_runtime(config: &Config, built: &BuiltObjects) -> Result<Runtime> 
         engine,
         mode,
         jobs,
+        statistics,
     })
 }
 
@@ -721,6 +936,13 @@ fn env_or(name: &str, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_owned())
 }
 
+fn env_path(name: &str) -> Option<PathBuf> {
+    env::var(name)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 pub(crate) fn normalize_address(address: &str) -> String {
     address
         .strip_prefix(':')
@@ -801,9 +1023,17 @@ mod tests {
             admin_address: Some("127.0.0.1:0".into()),
             close_timeout: Some(Duration::from_secs(30)),
             catalog_mode: Some(Mode::Schema),
+            capture_workload_corpus: false,
             frontend: Some(Frontend::Postgres),
             postgres_address: "127.0.0.1:0".into(),
+            instance_id: None,
+            internal_address: None,
+            internal_tls_certificate: None,
+            internal_tls_key: None,
             reader_poll_interval: Duration::from_millis(10),
+            relay_authority: None,
+            relay_target: None,
+            relay_token_file: None,
             role: Role::Write,
             shutdown_drain: Duration::ZERO,
             storage: StorageConfig::Memory {
@@ -826,9 +1056,17 @@ mod tests {
                 admin_address: None,
                 close_timeout: None,
                 catalog_mode: Some(Mode::Direct),
+                capture_workload_corpus: false,
                 frontend: None,
                 postgres_address: "127.0.0.1:0".into(),
+                instance_id: None,
+                internal_address: None,
+                internal_tls_certificate: None,
+                internal_tls_key: None,
                 reader_poll_interval: Duration::from_millis(10),
+                relay_authority: None,
+                relay_target: None,
+                relay_token_file: None,
                 role: Role::Write,
                 shutdown_drain: Duration::ZERO,
                 storage: storage.clone(),
@@ -843,9 +1081,17 @@ mod tests {
                 admin_address: None,
                 close_timeout: None,
                 catalog_mode: None,
+                capture_workload_corpus: false,
                 frontend: None,
                 postgres_address: "127.0.0.1:0".into(),
+                instance_id: None,
+                internal_address: None,
+                internal_tls_certificate: None,
+                internal_tls_key: None,
                 reader_poll_interval: Duration::from_millis(10),
+                relay_authority: None,
+                relay_target: None,
+                relay_token_file: None,
                 role: Role::Write,
                 shutdown_drain: Duration::ZERO,
                 storage,
@@ -854,6 +1100,63 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    fn relay_config(internal: Option<&str>, target: Option<&str>, token: Option<&str>) -> Config {
+        Config {
+            address: "127.0.0.1:0".into(),
+            admin_address: None,
+            close_timeout: None,
+            catalog_mode: None,
+            capture_workload_corpus: false,
+            frontend: None,
+            instance_id: None,
+            internal_address: internal.map(str::to_owned),
+            internal_tls_certificate: None,
+            internal_tls_key: None,
+            postgres_address: "127.0.0.1:0".into(),
+            reader_poll_interval: Duration::from_millis(10),
+            relay_authority: None,
+            relay_target: target.map(str::to_owned),
+            relay_token_file: token.map(PathBuf::from),
+            role: Role::Write,
+            shutdown_drain: Duration::ZERO,
+            storage: StorageConfig::Memory {
+                path: "relay-config".into(),
+            },
+        }
+    }
+
+    /// Half a relay configuration is a mistake whose consequence is silent:
+    /// an address alone serves evidence to anything that reaches the port, and
+    /// a target alone gathers evidence every send is refused for. Both are
+    /// refused at boot rather than at the first batch.
+    #[test]
+    fn a_half_configured_relay_is_refused() {
+        assert!(
+            relay_config(Some("127.0.0.1:7239"), None, None)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            relay_config(None, Some("http://writer:7239"), None)
+                .validate()
+                .is_err()
+        );
+
+        assert!(
+            relay_config(Some("127.0.0.1:7239"), None, Some("/run/token"))
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            relay_config(None, Some("http://writer:7239"), Some("/run/token"))
+                .validate()
+                .is_ok()
+        );
+        // Neither half is the ordinary single-instance case, which must not
+        // require a secret it has no use for.
+        assert!(relay_config(None, None, None).validate().is_ok());
     }
 
     #[test]

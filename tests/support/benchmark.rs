@@ -10,6 +10,7 @@ use super::http_process::RadProcess;
 use super::s3::TestResult;
 
 pub const FORMAT: &str = "rad-s3-http-benchmark-v1";
+pub const RESULT_FORMAT: &str = "rad-s3-http-benchmark-result-v2";
 
 #[derive(Debug, Deserialize)]
 pub struct Manifest {
@@ -20,6 +21,16 @@ pub struct Manifest {
     pub batch_rows: usize,
     pub tables: Vec<TableCount>,
     pub queries: Vec<String>,
+    #[serde(default)]
+    pub statistics: StatisticsRequirements,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct StatisticsRequirements {
+    #[serde(default)]
+    pub required_synopses: usize,
+    #[serde(default)]
+    pub timeout_seconds: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,6 +75,9 @@ pub fn load_manifest(root: &Path) -> TestResult<Manifest> {
     }
     if manifest.batch_rows == 0 {
         return Err("benchmark batch_rows must be positive".into());
+    }
+    if manifest.statistics.required_synopses > 0 && manifest.statistics.timeout_seconds == 0 {
+        return Err("benchmark statistics timeout_seconds must be positive".into());
     }
     Ok(manifest)
 }
@@ -153,4 +167,10 @@ pub fn result_rows(response: &Value) -> usize {
         Value::Null => 0,
         _ => 1,
     }
+}
+
+pub fn result_hash(response: &Value) -> TestResult<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(&response["result"])?);
+    Ok(format!("{:x}", hasher.finalize()))
 }

@@ -7,15 +7,36 @@ use serde::Serialize;
 use crate::engine::lir::format::print_expression;
 
 use super::analysis::{ConstValue, Correlation, CorrelationKind};
-use super::physical::{AccessCandidate, BindingPlanKind, BindingStrategy, Node, Plan, RangeSpec};
+use super::physical::{
+    AccessCandidate, BindingPlanKind, BindingStrategy, Node, NodeKind, Plan, RangeSpec,
+};
+
+pub const PLAN_VIEW_FORMAT: &str = "rad-plan-view-v1";
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanView {
+    pub format: &'static str,
+    pub fingerprint: crate::engine::lir::fingerprint::Fingerprint,
     pub cardinality: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<PlanBindingView>,
     pub root: PlanNodeView,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub estimates: Vec<PlanEstimateView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statistics_published_at_micros: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanEstimateView {
+    /// `root`, `relation`, or `table:<schema id>`.
+    pub target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relation: Option<crate::engine::lir::fingerprint::Fingerprint>,
+    #[serde(flatten)]
+    pub estimate: super::estimator::Estimate,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -37,6 +58,8 @@ pub struct PlanBindingView {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct PlanNodeView {
     pub op: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relation: Option<crate::engine::lir::fingerprint::Fingerprint>,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub detail: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -61,6 +84,8 @@ enum Render {
 impl PlanView {
     pub fn new(plan: &Plan) -> Self {
         Self {
+            format: PLAN_VIEW_FORMAT,
+            fingerprint: plan.fingerprint(),
             cardinality: plan.cardinality.as_str().into(),
             bindings: plan
                 .bindings
@@ -99,6 +124,66 @@ impl PlanView {
                 })
                 .collect(),
             root: view_node(&plan.root),
+            estimates: Vec::new(),
+            statistics_published_at_micros: None,
+        }
+    }
+
+    pub fn annotate_estimates(
+        &mut self,
+        stats: &crate::engine::planner::models::PlannerStats,
+        root: Option<super::estimator::Estimate>,
+        query: &crate::engine::lir::bound::Query,
+        plan: &Plan,
+    ) {
+        self.statistics_published_at_micros =
+            Some(stats.published_at.as_micros().min(u128::from(u64::MAX)) as u64);
+        let estimator = super::estimator::Estimator::new(stats);
+        let root_relation = crate::engine::lir::fingerprint::relation_family(&query.root);
+        if let Some(estimate) = root {
+            self.estimates.push(PlanEstimateView {
+                target: "root".into(),
+                relation: Some(root_relation),
+                estimate,
+            });
+        }
+        let mut tables = std::collections::HashSet::new();
+        plan.walk(&mut |node| {
+            let scan = match &node.kind {
+                NodeKind::PrimaryKeyGet { scan, .. }
+                | NodeKind::TableScan { scan, .. }
+                | NodeKind::IndexRangeScan { scan, .. } => scan,
+                _ => return,
+            };
+            let table = scan.scan_table();
+            if tables.insert(table.schema_id)
+                && let Some(estimate) = estimator.scan_for_table(table)
+            {
+                self.estimates.push(PlanEstimateView {
+                    target: format!("table:{}", table.schema_id.get()),
+                    relation: None,
+                    estimate,
+                });
+            }
+        });
+
+        let mut relations = std::collections::HashSet::from([root_relation]);
+        let mut add = |relation: &crate::engine::lir::bound::Relation| {
+            let fingerprint = crate::engine::lir::fingerprint::relation_family(relation);
+            if relations.insert(fingerprint) {
+                self.estimates.push(PlanEstimateView {
+                    target: "relation".into(),
+                    relation: Some(fingerprint),
+                    estimate: estimator.bound_relation(relation),
+                });
+            }
+        };
+        crate::engine::lir::inspect::walk_relation(&query.root, &mut add, &mut |_| {});
+        for binding in &query.bindings {
+            crate::engine::lir::inspect::walk_relation(&binding.root, &mut add, &mut |_| {});
+            if let Some(step) = &binding.step {
+                crate::engine::lir::inspect::walk_relation(step, &mut add, &mut |_| {});
+            }
         }
     }
 
@@ -166,6 +251,7 @@ fn plain(
 ) -> PlanNodeView {
     PlanNodeView {
         op: op.into(),
+        relation: None,
         detail,
         access,
         children,
@@ -174,8 +260,8 @@ fn plain(
 }
 
 fn view_node(node: &Node) -> PlanNodeView {
-    match node {
-        Node::PrimaryKeyGet {
+    let mut view = match &node.kind {
+        NodeKind::PrimaryKeyGet {
             scan, key, access, ..
         } => {
             let table = scan.scan_table();
@@ -190,13 +276,13 @@ fn view_node(node: &Node) -> PlanNodeView {
                 Vec::new(),
             )
         }
-        Node::TableScan { scan, access, .. } => plain(
+        NodeKind::TableScan { scan, access, .. } => plain(
             "TableScan",
             scan.scan_table().name.clone(),
             access.candidates.clone(),
             Vec::new(),
         ),
-        Node::Rows(relation) => {
+        NodeKind::Rows(relation) => {
             let crate::engine::lir::bound::RelationNode::Rows { scope, values } = &relation.node
             else {
                 unreachable!()
@@ -208,7 +294,7 @@ fn view_node(node: &Node) -> PlanNodeView {
                 Vec::new(),
             )
         }
-        Node::IndexRangeScan {
+        NodeKind::IndexRangeScan {
             scan,
             index,
             equality_prefix,
@@ -240,17 +326,19 @@ fn view_node(node: &Node) -> PlanNodeView {
                 Vec::new(),
             )
         }
-        Node::Filter { input, predicate } => plain(
+        NodeKind::Filter { input, predicate } => plain(
             "Filter",
             print_expression(predicate),
             Vec::new(),
             vec![view_node(input)],
         ),
-        Node::Reference { binding, .. } => plain("Ref", binding.clone(), Vec::new(), Vec::new()),
-        Node::RecursiveReference { binding, .. } => {
+        NodeKind::Reference { binding, .. } => {
+            plain("Ref", binding.clone(), Vec::new(), Vec::new())
+        }
+        NodeKind::RecursiveReference { binding, .. } => {
             plain("RecursiveRef", binding.clone(), Vec::new(), Vec::new())
         }
-        Node::Attach {
+        NodeKind::Attach {
             input,
             specifications,
         } => {
@@ -278,6 +366,7 @@ fn view_node(node: &Node) -> PlanNodeView {
             children.push(input.clone());
             PlanNodeView {
                 op: "Attach".into(),
+                relation: None,
                 detail: String::new(),
                 access: Vec::new(),
                 children,
@@ -287,7 +376,7 @@ fn view_node(node: &Node) -> PlanNodeView {
                 },
             }
         }
-        Node::Project { input, fields } => {
+        NodeKind::Project { input, fields } => {
             let lines = fields
                 .iter()
                 .map(|field| {
@@ -301,6 +390,7 @@ fn view_node(node: &Node) -> PlanNodeView {
                 .collect();
             PlanNodeView {
                 op: "Project".into(),
+                relation: None,
                 detail: fields
                     .iter()
                     .map(|field| {
@@ -318,7 +408,7 @@ fn view_node(node: &Node) -> PlanNodeView {
                 render: Render::Lines(lines),
             }
         }
-        Node::Sort { input, terms } => plain(
+        NodeKind::Sort { input, terms } => plain(
             "Sort",
             terms
                 .iter()
@@ -334,7 +424,7 @@ fn view_node(node: &Node) -> PlanNodeView {
             Vec::new(),
             vec![view_node(input)],
         ),
-        Node::Slice {
+        NodeKind::Slice {
             input,
             offset,
             limit,
@@ -347,7 +437,7 @@ fn view_node(node: &Node) -> PlanNodeView {
             Vec::new(),
             vec![view_node(input)],
         ),
-        Node::NestedLoopJoin {
+        NodeKind::NestedLoopJoin {
             left,
             right,
             kind,
@@ -359,13 +449,13 @@ fn view_node(node: &Node) -> PlanNodeView {
             Vec::new(),
             vec![view_node(left), view_node(right)],
         ),
-        Node::Concatenate { inputs, .. } => plain(
+        NodeKind::Concatenate { inputs, .. } => plain(
             "Concatenate",
             String::new(),
             Vec::new(),
             inputs.iter().map(view_node).collect(),
         ),
-        Node::Intersect {
+        NodeKind::Intersect {
             left,
             right,
             quantifier,
@@ -376,7 +466,7 @@ fn view_node(node: &Node) -> PlanNodeView {
             Vec::new(),
             vec![view_node(left), view_node(right)],
         ),
-        Node::Except {
+        NodeKind::Except {
             left,
             right,
             quantifier,
@@ -387,13 +477,13 @@ fn view_node(node: &Node) -> PlanNodeView {
             Vec::new(),
             vec![view_node(left), view_node(right)],
         ),
-        Node::Distinct { input, .. } => plain(
+        NodeKind::Distinct { input, .. } => plain(
             "Distinct",
             String::new(),
             Vec::new(),
             vec![view_node(input)],
         ),
-        Node::Aggregate {
+        NodeKind::Aggregate {
             input,
             groups,
             terms,
@@ -427,7 +517,9 @@ fn view_node(node: &Node) -> PlanNodeView {
                 vec![view_node(input)],
             )
         }
-    }
+    };
+    view.relation = node.attribution;
+    view
 }
 
 fn write_node(output: &mut String, node: &PlanNodeView, depth: usize, show_access: bool) {
@@ -474,10 +566,27 @@ fn access_line(candidates: &[AccessCandidate]) -> Option<String> {
             .iter()
             .map(|candidate| {
                 let chosen = if candidate.chosen { " ✓" } else { "" };
+                let basis = candidate
+                    .decision_basis
+                    .map(|basis| format!(" [{}]", basis.label()))
+                    .unwrap_or_default();
+                let row_work = candidate
+                    .estimated_row_work
+                    .map(|work| {
+                        let upper_bound = work
+                            .upper_bound
+                            .map(|upper_bound| upper_bound.to_string())
+                            .unwrap_or_else(|| "unbounded".into());
+                        format!(" {{rowWork={}..{upper_bound}}}", work.lower_bound)
+                    })
+                    .unwrap_or_default();
                 if candidate.method == "PKGet" {
-                    format!("{}{chosen}", candidate.method)
+                    format!("{}{row_work}{chosen}{basis}", candidate.method)
                 } else {
-                    format!("{}({}){chosen}", candidate.method, candidate.score)
+                    format!(
+                        "{}({}){row_work}{chosen}{basis}",
+                        candidate.method, candidate.score
+                    )
                 }
             })
             .collect::<Vec<_>>()
@@ -592,6 +701,12 @@ mod tests {
         }
 
         let json = serde_json::to_value(&view).unwrap();
+        assert_eq!(json["format"], PLAN_VIEW_FORMAT);
+        assert!(
+            json["fingerprint"]
+                .as_str()
+                .is_some_and(|fingerprint| fingerprint.starts_with("c1h1:"))
+        );
         let scan = &json["root"]["children"][0];
         assert_eq!(scan["op"], "IndexRangeScan");
         let candidates = scan["access"].as_array().unwrap();

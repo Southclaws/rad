@@ -213,6 +213,71 @@
       "name": "storage_manifest",
       "tag": "41",
       "value": "json schema metadata/compatibility.v1"
+    },
+    {
+      "invariants": [],
+      "key": "schema:be32",
+      "name": "statistics_table_changes",
+      "tag": "50",
+      "value": "modification count decimal text"
+    },
+    {
+      "invariants": [],
+      "key": "family:bytes",
+      "name": "statistics_model",
+      "tag": "51",
+      "value": "json feedback model document"
+    },
+    {
+      "invariants": [],
+      "key": "family:bytes",
+      "name": "statistics_relation_model",
+      "tag": "55",
+      "value": "json relation feedback model document"
+    },
+    {
+      "invariants": [],
+      "key": "",
+      "name": "statistics_model_catalog",
+      "tag": "56",
+      "value": "json statistics model catalog document"
+    },
+    {
+      "invariants": [],
+      "key": "family:bytes",
+      "name": "statistics_frequency",
+      "tag": "57",
+      "value": "json schema statistics/frequency.v1"
+    },
+    {
+      "invariants": [],
+      "key": "",
+      "name": "statistics_frequency_epoch",
+      "tag": "58",
+      "value": "decay epoch decimal text"
+    },
+    {
+      "invariants": [
+        "immutable once written: a different document under an existing key is corruption"
+      ],
+      "key": "canonical_version:uvarint content_hash:bytes",
+      "name": "corpus_program",
+      "tag": "52",
+      "value": "canonical PIR document bytes"
+    },
+    {
+      "invariants": [],
+      "key": "at:be64 sequence:uvarint",
+      "name": "corpus_execution",
+      "tag": "53",
+      "value": "json execution observation document"
+    },
+    {
+      "invariants": [],
+      "key": "schema:be32",
+      "name": "statistics_synopsis",
+      "tag": "54",
+      "value": "json synopsis model document"
     }
   ],
   "reserved": [

@@ -108,6 +108,10 @@ pub trait MetaApi: Send + Sync + 'static {
     ///
     /// `GET /healthz`
     async fn get_healthz(&self) -> GetHealthzResponse;
+    /// Return the query-planner statistics this instance holds.
+    ///
+    /// `GET /statistics`
+    async fn get_statistics(&self) -> GetStatisticsResponse;
     /// List the tables in the database.
     ///
     /// `GET /tables`

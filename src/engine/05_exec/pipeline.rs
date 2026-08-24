@@ -7,11 +7,16 @@ use crate::engine::kv::KvView;
 use crate::engine::lir::bound::{self, RelationNode};
 use crate::engine::lir::eval::{CanonicalRowSet, Env, evaluate_datum, evaluate_predicate};
 use crate::engine::lir::{JoinKind, RowType, SetQuantifier, TriBool, Value};
-use crate::engine::planner::physical::{Node, PhysicalField};
+use crate::engine::planner::physical::{Node, NodeKind, PhysicalField};
 
 use super::frames::{
     merge as merge_frames, new_frame, remap_positional, row_to_frame, sort as sort_frames,
 };
+use std::sync::Arc;
+use std::sync::atomic;
+
+use crate::engine::lir::fingerprint::Fingerprint;
+
 use super::query::resolve_constant;
 use super::row_store::{self, RowIterator};
 use super::set;
@@ -23,26 +28,54 @@ trait Operator: Send {
 }
 
 pub(super) fn supports(node: &Node) -> bool {
-    match node {
-        Node::PrimaryKeyGet { .. }
-        | Node::TableScan { .. }
-        | Node::Rows(_)
-        | Node::IndexRangeScan { .. } => true,
-        Node::Filter { input, .. }
-        | Node::Project { input, .. }
-        | Node::Sort { input, .. }
-        | Node::Slice { input, .. }
-        | Node::Distinct { input, .. } => supports(input),
-        Node::NestedLoopJoin { left, right, .. }
-        | Node::Intersect { left, right, .. }
-        | Node::Except { left, right, .. } => supports(left) && supports(right),
-        Node::Concatenate { inputs, .. } => inputs.iter().all(supports),
+    match &node.kind {
+        NodeKind::PrimaryKeyGet { .. }
+        | NodeKind::TableScan { .. }
+        | NodeKind::Rows(_)
+        | NodeKind::IndexRangeScan { .. } => true,
+        NodeKind::Filter { input, .. }
+        | NodeKind::Project { input, .. }
+        | NodeKind::Sort { input, .. }
+        | NodeKind::Slice { input, .. }
+        | NodeKind::Distinct { input, .. } => supports(input),
+        NodeKind::NestedLoopJoin { left, right, .. }
+        | NodeKind::Intersect { left, right, .. }
+        | NodeKind::Except { left, right, .. } => supports(left) && supports(right),
+        NodeKind::Concatenate { inputs, .. } => inputs.iter().all(supports),
         _ => false,
     }
 }
 
+/// Run one fused segment, tallying rows emitted by every node inside it that
+/// carries an attribution.
+pub(super) async fn execute_measured(
+    view: &dyn KvView,
+    node: &Node,
+    outer: &Env,
+    measured: &mut Vec<(Fingerprint, u64)>,
+) -> Result<Vec<Env>> {
+    let mut tallies = Vec::new();
+    let mut operator = build(view, node, outer.clone(), &mut tallies, true).await?;
+    let mut frames = Vec::new();
+    while let Some(frame) = operator.next().await? {
+        frames.push(frame);
+    }
+    drop(operator);
+    // A node a downstream limit abandoned emitted fewer rows than it holds;
+    // reporting that as its cardinality would bias every model beneath a
+    // slice downwards, so only exhausted nodes are reported at all.
+    measured.extend(tallies.into_iter().filter_map(|(family, tally)| {
+        tally
+            .exhausted
+            .load(atomic::Ordering::Relaxed)
+            .then(|| (family, tally.rows.load(atomic::Ordering::Relaxed)))
+    }));
+    Ok(frames)
+}
+
 pub(super) async fn execute(view: &dyn KvView, node: &Node, outer: &Env) -> Result<Vec<Env>> {
-    let mut operator = build(view, node, outer.clone()).await?;
+    let mut tallies = Vec::new();
+    let mut operator = build(view, node, outer.clone(), &mut tallies, false).await?;
     let mut frames = Vec::new();
     while let Some(frame) = operator.next().await? {
         frames.push(frame);
@@ -55,9 +88,11 @@ async fn build<'a>(
     view: &'a dyn KvView,
     node: &'a Node,
     outer: Env,
+    tallies: &mut Vec<(Fingerprint, Tally)>,
+    measure: bool,
 ) -> Result<Box<dyn Operator + 'a>> {
-    let operator: Box<dyn Operator + 'a> = match node {
-        Node::PrimaryKeyGet {
+    let operator: Box<dyn Operator + 'a> = match &node.kind {
+        NodeKind::PrimaryKeyGet {
             scan,
             key,
             decode_columns,
@@ -81,7 +116,7 @@ async fn build<'a>(
                 done: false,
             })
         }
-        Node::TableScan {
+        NodeKind::TableScan {
             scan,
             decode_columns,
             ..
@@ -90,7 +125,7 @@ async fn build<'a>(
             scan: (**scan).clone(),
             outer,
         }),
-        Node::IndexRangeScan {
+        NodeKind::IndexRangeScan {
             scan,
             index,
             equality_prefix,
@@ -129,48 +164,48 @@ async fn build<'a>(
                 outer,
             })
         }
-        Node::Rows(relation) => Box::new(Rows {
+        NodeKind::Rows(relation) => Box::new(Rows {
             relation: relation.clone(),
             outer,
             position: 0,
         }),
-        Node::Filter { input, predicate } => Box::new(Filter {
-            input: build(view, input, outer).await?,
+        NodeKind::Filter { input, predicate } => Box::new(Filter {
+            input: build(view, input, outer, tallies, measure).await?,
             predicate: predicate.clone(),
         }),
-        Node::Project { input, fields } => Box::new(Project {
-            input: build(view, input, outer.clone()).await?,
+        NodeKind::Project { input, fields } => Box::new(Project {
+            input: build(view, input, outer.clone(), tallies, measure).await?,
             fields: fields.clone(),
             outer,
         }),
-        Node::Sort { input, terms } => Box::new(Sort {
-            input: Some(build(view, input, outer).await?),
+        NodeKind::Sort { input, terms } => Box::new(Sort {
+            input: Some(build(view, input, outer, tallies, measure).await?),
             terms: terms.clone(),
             frames: Vec::new(),
             position: 0,
         }),
-        Node::Slice {
+        NodeKind::Slice {
             input,
             offset,
             limit,
         } => Box::new(Slice {
-            input: build(view, input, outer).await?,
+            input: build(view, input, outer, tallies, measure).await?,
             remaining_offset: *offset,
             remaining: *limit,
         }),
-        Node::Distinct { input, output } => Box::new(Distinct {
-            input: build(view, input, outer).await?,
+        NodeKind::Distinct { input, output } => Box::new(Distinct {
+            input: build(view, input, outer, tallies, measure).await?,
             seen: CanonicalRowSet::new(output.fields.clone()),
         }),
-        Node::NestedLoopJoin {
+        NodeKind::NestedLoopJoin {
             left,
             right,
             kind,
             on,
             right_output,
         } => Box::new(NestedLoopJoin {
-            left: build(view, left, outer.clone()).await?,
-            right: Some(build(view, right, outer).await?),
+            left: build(view, left, outer.clone(), tallies, measure).await?,
+            right: Some(build(view, right, outer, tallies, measure).await?),
             kind: *kind,
             predicate: on.clone(),
             right_output: right_output.clone(),
@@ -179,14 +214,14 @@ async fn build<'a>(
             right_position: 0,
             matched: false,
         }),
-        Node::Concatenate {
+        NodeKind::Concatenate {
             inputs,
             input_outputs,
             output,
         } => {
             let mut operators = Vec::with_capacity(inputs.len());
             for input in inputs {
-                operators.push(build(view, input, outer.clone()).await?);
+                operators.push(build(view, input, outer.clone(), tallies, measure).await?);
             }
             Box::new(Concatenate {
                 inputs: operators,
@@ -196,7 +231,7 @@ async fn build<'a>(
                 position: 0,
             })
         }
-        Node::Intersect {
+        NodeKind::Intersect {
             left,
             right,
             quantifier,
@@ -204,8 +239,8 @@ async fn build<'a>(
             right_output,
             output,
         } => Box::new(SetOperator::new(
-            build(view, left, outer.clone()).await?,
-            build(view, right, outer.clone()).await?,
+            build(view, left, outer.clone(), tallies, measure).await?,
+            build(view, right, outer.clone(), tallies, measure).await?,
             *quantifier,
             false,
             left_output.clone(),
@@ -213,7 +248,7 @@ async fn build<'a>(
             output.clone(),
             outer,
         )),
-        Node::Except {
+        NodeKind::Except {
             left,
             right,
             quantifier,
@@ -221,8 +256,8 @@ async fn build<'a>(
             right_output,
             output,
         } => Box::new(SetOperator::new(
-            build(view, left, outer.clone()).await?,
-            build(view, right, outer.clone()).await?,
+            build(view, left, outer.clone(), tallies, measure).await?,
+            build(view, right, outer.clone(), tallies, measure).await?,
             *quantifier,
             true,
             left_output.clone(),
@@ -237,7 +272,45 @@ async fn build<'a>(
             ));
         }
     };
-    Ok(operator)
+    let Some(attribution) = node.attribution.filter(|_| measure) else {
+        return Ok(operator);
+    };
+    let tally = Tally::default();
+    tallies.push((attribution, tally.clone()));
+    Ok(Box::new(Counting {
+        inner: operator,
+        tally,
+    }))
+}
+
+/// Rows a node emitted, and whether it ran out of rows or was abandoned once
+/// a downstream operator had enough.
+#[derive(Clone, Default)]
+struct Tally {
+    rows: Arc<atomic::AtomicU64>,
+    exhausted: Arc<atomic::AtomicBool>,
+}
+
+/// Pass-through that tallies what its input emits. Present only for nodes the
+/// planner attributed, and never a factor in choosing the pipeline: a segment
+/// runs the same operators in the same order either way.
+struct Counting<'a> {
+    inner: Box<dyn Operator + 'a>,
+    tally: Tally,
+}
+
+#[async_trait]
+impl Operator for Counting<'_> {
+    async fn next(&mut self) -> Result<Option<Env>> {
+        let frame = self.inner.next().await?;
+        match &frame {
+            Some(_) => {
+                self.tally.rows.fetch_add(1, atomic::Ordering::Relaxed);
+            }
+            None => self.tally.exhausted.store(true, atomic::Ordering::Relaxed),
+        }
+        Ok(frame)
+    }
 }
 
 struct Empty;

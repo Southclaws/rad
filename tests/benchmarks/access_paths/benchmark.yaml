@@ -1,0 +1,18 @@
+format: rad-s3-http-benchmark-v1
+name: access-paths
+description: A deterministic workload for cardinality evidence and scan-versus-index decisions.
+schema: schema.yaml
+batch_rows: 500
+tables:
+  - { name: events, rows: 1000 }
+statistics:
+  required_synopses: 1
+  timeout_seconds: 45
+queries:
+  - queries/rare_equality.json
+  - queries/common_equality.json
+  - queries/narrow_range.json
+  - queries/broad_range.json
+  - queries/correlated_columns.json
+  - queries/null_heavy.json
+  - queries/ordered_page.json

@@ -5,6 +5,7 @@ pub mod keys;
 pub mod keyspace;
 pub mod manifest;
 pub mod slatedb;
+pub mod telemetry;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -151,6 +152,10 @@ pub trait Transaction: Send + Sync {
 pub trait TransactionalKv: Kv {
     async fn begin(&self, isolation: IsolationLevel) -> Result<Box<dyn Transaction>>;
     async fn close(&self) -> Result<()>;
+
+    fn physical_telemetry(&self) -> Option<std::sync::Arc<dyn telemetry::PhysicalTelemetry>> {
+        None
+    }
 }
 
 #[async_trait]

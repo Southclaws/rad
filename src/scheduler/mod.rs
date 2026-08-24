@@ -4,4 +4,7 @@
 //! correctness state and are deliberately separate from transports and the
 //! numbered engine layers.
 
+pub mod relay;
+pub mod replay;
 pub mod schema_jobs;
+pub mod statistics;

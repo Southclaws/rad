@@ -3,13 +3,13 @@
 use crate::engine::catalog::model::{CatalogDependencies, Column, Table};
 use crate::engine::lir::bound::{self, SlotSet};
 
-use super::physical::{BindingPlanKind, Node, Plan};
+use super::physical::{BindingPlanKind, NodeKind, Plan};
 
 pub(super) fn prepare_catalog_dependencies(plan: &mut Plan) {
     let required = required_slots(plan);
     let mut dependencies = CatalogDependencies::default();
-    plan.walk_mut(&mut |node| match node {
-        Node::PrimaryKeyGet {
+    plan.walk_mut(&mut |node| match &mut node.kind {
+        NodeKind::PrimaryKeyGet {
             scan,
             decode_columns,
             ..
@@ -20,7 +20,7 @@ pub(super) fn prepare_catalog_dependencies(plan: &mut Plan) {
             append_named_columns(&mut columns, table, &table.primary_key);
             dependencies.add_table_read(table, &columns);
         }
-        Node::TableScan {
+        NodeKind::TableScan {
             scan,
             decode_columns,
             ..
@@ -29,7 +29,7 @@ pub(super) fn prepare_catalog_dependencies(plan: &mut Plan) {
             let table = scan.scan_table();
             dependencies.add_table_read(table, decode_columns);
         }
-        Node::IndexRangeScan {
+        NodeKind::IndexRangeScan {
             scan,
             index,
             decode_columns,
@@ -63,35 +63,35 @@ fn required_slots(plan: &Plan) -> SlotSet {
             required = required.union(&SlotSet::new(output.slots()));
         }
     }
-    plan.walk(&mut |node| match node {
-        Node::Filter { predicate, .. } => add_expr(&mut required, predicate),
-        Node::Attach { specifications, .. } => {
+    plan.walk(&mut |node| match &node.kind {
+        NodeKind::Filter { predicate, .. } => add_expr(&mut required, predicate),
+        NodeKind::Attach { specifications, .. } => {
             for specification in specifications {
                 required = required.union(&SlotSet::new(specification.output.slots()));
             }
         }
-        Node::Project { fields, .. } => {
+        NodeKind::Project { fields, .. } => {
             for field in fields {
                 add_expr(&mut required, &field.expression);
             }
         }
-        Node::Sort { terms, .. } => {
+        NodeKind::Sort { terms, .. } => {
             for term in terms {
                 add_expr(&mut required, &term.expression);
             }
         }
-        Node::NestedLoopJoin { on, .. } => add_expr(&mut required, on),
-        Node::Concatenate { input_outputs, .. } => {
+        NodeKind::NestedLoopJoin { on, .. } => add_expr(&mut required, on),
+        NodeKind::Concatenate { input_outputs, .. } => {
             for output in input_outputs {
                 required = required.union(&SlotSet::new(output.slots()));
             }
         }
-        Node::Intersect {
+        NodeKind::Intersect {
             left_output,
             right_output,
             ..
         }
-        | Node::Except {
+        | NodeKind::Except {
             left_output,
             right_output,
             ..
@@ -99,10 +99,10 @@ fn required_slots(plan: &Plan) -> SlotSet {
             required = required.union(&SlotSet::new(left_output.slots()));
             required = required.union(&SlotSet::new(right_output.slots()));
         }
-        Node::Distinct { output, .. } => {
+        NodeKind::Distinct { output, .. } => {
             required = required.union(&SlotSet::new(output.slots()));
         }
-        Node::Aggregate { groups, terms, .. } => {
+        NodeKind::Aggregate { groups, terms, .. } => {
             for group in groups {
                 add_expr(&mut required, &group.expression);
             }
@@ -147,7 +147,7 @@ fn append_named_columns(columns: &mut Vec<Column>, table: &Table, names: &[Strin
 mod tests {
     use crate::engine::lir::bound::{self, BoundAggregateTerm, ProjectField};
     use crate::engine::lir::{AggregateFunction, Kind, SlotId, Type};
-    use crate::engine::planner::physical::Node;
+    use crate::engine::planner::physical::NodeKind;
     use crate::engine::planner::test_support::{column, query, scan};
     use crate::engine::planner::{PlanOptions, plan_query};
 
@@ -175,10 +175,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["status"]
         );
-        let Node::Project { input, .. } = &plan.root else {
+        let NodeKind::Project { input, .. } = &plan.root.kind else {
             panic!("expected project")
         };
-        let Node::TableScan { decode_columns, .. } = &**input else {
+        let NodeKind::TableScan { decode_columns, .. } = &input.kind else {
             panic!("expected table scan")
         };
         assert_eq!(
@@ -207,10 +207,10 @@ mod tests {
 
         assert_eq!(plan.dependencies.table_existence.len(), 1);
         assert!(plan.dependencies.column_values.is_empty());
-        let Node::Aggregate { input, .. } = &plan.root else {
+        let NodeKind::Aggregate { input, .. } = &plan.root.kind else {
             panic!("expected aggregate")
         };
-        let Node::TableScan { decode_columns, .. } = &**input else {
+        let NodeKind::TableScan { decode_columns, .. } = &input.kind else {
             panic!("expected table scan")
         };
         assert!(decode_columns.is_empty());

@@ -54,6 +54,23 @@ type DatabaseSpec struct {
 	// CatalogMode defaults to schema and is immutable after initialization.
 	CatalogMode CatalogMode
 
+	// Readers is the number of read-only instances, zero by default. Readers
+	// serve queries from the same S3 objects as the writer and are reached
+	// through [Database.ReaderService]; the external URL always reaches the
+	// writer.
+	Readers int32
+
+	// InternalTLSMode secures the channel readers use to report statistics to
+	// the writer: "auto" (the default) provisions a certificate through
+	// cert-manager when it is installed and otherwise runs the channel
+	// authenticated but unencrypted, "required" refuses to run it unencrypted,
+	// "disabled" never encrypts it. It has no effect without readers.
+	InternalTLSMode string
+	// InternalTLSSecret supplies a kubernetes.io/tls Secret holding tls.crt,
+	// tls.key, and ca.crt instead of provisioning one. The operator validates
+	// it and never modifies it.
+	InternalTLSSecret string
+
 	// Hostname is the external hostname routed to this database through the
 	// cluster's shared ingress.
 	Hostname string
@@ -89,6 +106,20 @@ type Database struct {
 
 	DesiredImage  string
 	ObservedImage string
+
+	// ReaderService is the in-cluster Service name that addresses the readers,
+	// empty while none are requested. Readers do not gate [Database.Ready]:
+	// they add read capacity rather than availability.
+	ReaderService  string
+	DesiredReaders int32
+	ReadyReaders   int32
+
+	// InternalTransportMode is "tls" or "plaintext", empty without readers.
+	// It describes the statistics channel, never client traffic.
+	InternalTransportMode string
+	// InternalTransportProvider names what issued the certificate:
+	// "cert-manager", "user", or "none".
+	InternalTransportProvider string
 }
 
 // Condition is one controller observation, mirroring the Kubernetes
@@ -214,6 +245,11 @@ func (c *Client) resource(spec DatabaseSpec) (*radv1alpha1.Database, error) {
 				Authentication: authentication,
 			},
 			CatalogMode: radv1alpha1.CatalogMode(spec.CatalogMode),
+			Readers:     spec.Readers,
+			InternalTLS: radv1alpha1.InternalTLS{
+				Mode:       radv1alpha1.InternalTLSMode(spec.InternalTLSMode),
+				SecretName: spec.InternalTLSSecret,
+			},
 			Route: radv1alpha1.Route{
 				Hostname:      spec.Hostname,
 				Scheme:        spec.Scheme,
@@ -225,15 +261,22 @@ func (c *Client) resource(spec DatabaseSpec) (*radv1alpha1.Database, error) {
 
 func databaseView(resource *radv1alpha1.Database) Database {
 	database := Database{
-		Name:          resource.Name,
-		Namespace:     resource.Namespace,
-		Created:       resource.CreationTimestamp.Time,
-		Bucket:        resource.Spec.Storage.Bucket,
-		Endpoint:      resource.Spec.Storage.Endpoint,
-		Hostname:      resource.Spec.Route.Hostname,
-		URL:           resource.Status.URL,
-		DesiredImage:  resource.Status.DesiredImage,
-		ObservedImage: resource.Status.ObservedImage,
+		Name:           resource.Name,
+		Namespace:      resource.Namespace,
+		Created:        resource.CreationTimestamp.Time,
+		Bucket:         resource.Spec.Storage.Bucket,
+		Endpoint:       resource.Spec.Storage.Endpoint,
+		Hostname:       resource.Spec.Route.Hostname,
+		URL:            resource.Status.URL,
+		DesiredImage:   resource.Status.DesiredImage,
+		ObservedImage:  resource.Status.ObservedImage,
+		ReaderService:  resource.Status.ReaderServiceName,
+		DesiredReaders: resource.Status.DesiredReaders,
+		ReadyReaders:   resource.Status.ReadyReaders,
+	}
+	if transport := resource.Status.InternalTransport; transport != nil {
+		database.InternalTransportMode = transport.Mode
+		database.InternalTransportProvider = transport.Provider
 	}
 	for _, condition := range resource.Status.Conditions {
 		database.Conditions = append(database.Conditions, Condition{

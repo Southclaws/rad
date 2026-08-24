@@ -198,7 +198,7 @@ jobs:
         uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2.9
         with:
           baseline-rev: ${{ github.event.pull_request.base.sha }}
-          release-type: minor
+          release-type: ${{ contains(github.event.pull_request.labels.*.name, 'semver-major') && 'major' || 'minor' }}
           rust-toolchain: 1.96.0
 
       - name: Record push policy
@@ -390,6 +390,9 @@ jobs:
 
       - name: Compare same-seed process traces
         run: cargo test --locked --test schema_scheduler_determinism identical_seed_and_boundary_produce_identical_traces -- --exact --ignored --nocapture
+
+      - name: Compare same-seed statistics traces
+        run: cargo test --locked --test statistics_simulation statistics_collection_replays_identically_for_the_same_seed -- --exact --ignored --nocapture
 
       - name: Retain deterministic replay evidence
         if: always()

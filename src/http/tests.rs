@@ -962,3 +962,441 @@ async fn generated_router_serves_over_a_real_tcp_listener_and_shuts_down() {
     stop.send(()).unwrap();
     server.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn statistics_endpoint_reports_no_collector_when_none_is_installed() {
+    let router = test_router("http-statistics-absent", Mode::Direct).await;
+    let response = router
+        .oneshot(Request::get("/statistics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    // Distinct from an empty body: this instance never collects.
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = json_body(response).await;
+    assert_eq!(body["code"], "not_found");
+    assert!(
+        body["detail"]
+            .as_str()
+            .unwrap()
+            .contains("no statistics collector")
+    );
+}
+
+/// An instance that publishes to storage never sends, so its send counters
+/// are absent rather than zero. Reporting zero would read as a relay that is
+/// failing to send, which is a different thing from one that does not exist.
+#[tokio::test]
+async fn statistics_endpoint_distinguishes_a_writer_from_a_failing_relay() {
+    let store = Arc::new(Store::memory("http-statistics-relay-absent").await.unwrap());
+    let runner = crate::scheduler::statistics::StatisticsRunner::start(
+        Arc::new(crate::runtime::SystemRuntime),
+        crate::scheduler::statistics::StatisticsConfig {
+            publish_interval: Duration::from_millis(10),
+            ..Default::default()
+        },
+        None,
+        None,
+    );
+    let engine = Arc::new(
+        Engine::new(store.clone())
+            .with_observer(runner.collector())
+            .with_statistics_provider(runner.clone()),
+    );
+    let response = router(engine, Mode::Direct)
+        .oneshot(
+            Request::builder()
+                .uri("/statistics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+
+    let relay = &body["relay"];
+    for absent in ["state", "sent", "abandoned", "rejected", "holding"] {
+        assert!(
+            relay[absent].is_null(),
+            "an instance that does not relay reported {absent}: {relay}"
+        );
+    }
+    // Receiving is always reported: every instance can receive, and zero is
+    // the answer rather than the absence of one.
+    for present in [
+        "received",
+        "receivedAlreadyApplied",
+        "receivedRejected",
+        "receivedSaturated",
+        "sources",
+        "mergedObservations",
+        "refusedStaleFamilies",
+    ] {
+        assert_eq!(
+            relay[present].as_i64(),
+            Some(0),
+            "{present} was not reported as zero: {relay}"
+        );
+    }
+    assert!(body["corpus"]["maintenance"].is_null());
+    runner.shutdown().await;
+}
+
+#[tokio::test]
+async fn statistics_endpoint_reports_owner_corpus_storage() {
+    use crate::engine::exec::observe::ProgramRecord;
+    use crate::engine::planner::models::{
+        ColumnGroupSynopsis, ColumnSynopsis, MostCommonColumnGroup, MostCommonValue,
+        SynopsisCoverage, SynopsisModel, SynopsisValue,
+    };
+    use crate::scheduler::statistics::{SlateStatistics, StatisticsBatch, StatisticsSink as _};
+
+    let store = Arc::new(
+        Store::memory("http-statistics-corpus-maintenance")
+            .await
+            .unwrap(),
+    );
+    let slate = Arc::new(SlateStatistics::new(store.clone()));
+    let at_unix_micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as u64;
+    assert!(
+        slate
+            .publish(StatisticsBatch {
+                programs: vec![ProgramRecord {
+                    canonical: vec![1, 2, 3],
+                    content_hash: [7; 16],
+                    at_unix_micros,
+                    statements: 1,
+                    outcomes: Vec::new(),
+                }],
+                synopses: vec![SynopsisModel {
+                    table: crate::engine::catalog::identity::SchemaId::new(7).unwrap(),
+                    observed_rows: 10,
+                    coverage: SynopsisCoverage::Complete,
+                    sample_size: 10,
+                    changes_since_collection: 0,
+                    table_existence_generation: 2,
+                    collected_at_unix_micros: at_unix_micros,
+                    catalog_version: 3,
+                    columns: vec![ColumnSynopsis {
+                        column: crate::engine::catalog::identity::SchemaId::new(8).unwrap(),
+                        value_generation: 4,
+                        null_fraction: 0.0,
+                        null_count: 0,
+                        distinct: 2,
+                        distinct_is_exact: true,
+                        average_width: 4,
+                        minimum: Some("\"cold\"".into()),
+                        maximum: Some("\"hot\"".into()),
+                        most_common_values: vec![MostCommonValue {
+                            value: SynopsisValue::Text("hot".into()),
+                            frequency: 8,
+                            maximum_error: 1,
+                        }],
+                    }],
+                    column_groups: vec![ColumnGroupSynopsis {
+                        columns: vec![
+                            crate::engine::catalog::identity::SchemaId::new(8).unwrap(),
+                            crate::engine::catalog::identity::SchemaId::new(9).unwrap(),
+                        ],
+                        value_generations: vec![4, 5],
+                        null_count: 1,
+                        distinct: 3,
+                        distinct_is_exact: true,
+                        most_common_values: vec![MostCommonColumnGroup {
+                            values: vec![
+                                SynopsisValue::Text("hot".into()),
+                                SynopsisValue::Bool(true),
+                            ],
+                            frequency: 6,
+                            maximum_error: 1,
+                        }],
+                    }],
+                }],
+                ..StatisticsBatch::default()
+            })
+            .await
+            .is_ok()
+    );
+    let runner = crate::scheduler::statistics::StatisticsRunner::start(
+        Arc::new(crate::runtime::SystemRuntime),
+        crate::scheduler::statistics::StatisticsConfig {
+            publish_interval: Duration::from_millis(10),
+            capture_programs: true,
+            ..Default::default()
+        },
+        Some(slate.clone()),
+        Some(slate),
+    );
+    let engine = Arc::new(
+        Engine::new(store)
+            .with_observer(runner.collector())
+            .with_statistics_provider(runner.clone()),
+    );
+    let app = router(engine, Mode::Direct);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let response = app
+            .clone()
+            .oneshot(Request::get("/statistics").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = json_body(response).await;
+        let maintenance = &body["corpus"]["maintenance"];
+        if !maintenance.is_null() {
+            assert_eq!(maintenance["retainedExecutions"], 1);
+            assert_eq!(maintenance["retainedPrograms"], 1);
+            assert_eq!(maintenance["retainedProgramBytes"], 3);
+            assert_eq!(maintenance["expiredExecutions"], 0);
+            assert_eq!(maintenance["prunedExecutions"], 0);
+            assert_eq!(body["synopses"][0]["table"], 7);
+            assert_eq!(body["synopses"][0]["coverage"], "complete");
+            assert_eq!(body["synopses"][0]["columns"][0]["valueGeneration"], 4);
+            let common = &body["synopses"][0]["columns"][0]["mostCommonValues"][0];
+            assert_eq!(common["value"], "\"hot\"");
+            assert_eq!(common["frequency"], 8);
+            assert_eq!(common["lowerFrequency"], 7);
+            assert_eq!(common["maximumError"], 1);
+            let group = &body["synopses"][0]["columnGroups"][0];
+            assert_eq!(group["columns"], serde_json::json!([8, 9]));
+            assert_eq!(group["valueGenerations"], serde_json::json!([4, 5]));
+            assert_eq!(group["nullCount"], 1);
+            assert_eq!(group["distinct"], 3);
+            let common = &group["mostCommonValues"][0];
+            assert_eq!(common["values"], serde_json::json!(["\"hot\"", "true"]));
+            assert_eq!(common["frequency"], 6);
+            assert_eq!(common["lowerFrequency"], 5);
+            assert_eq!(common["maximumError"], 1);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "corpus maintenance was not published: {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    runner.shutdown().await;
+}
+
+/// A relaying instance reports what its transport is doing, and a batch that
+/// arrives is visible on the receiving side. Both are the only way an operator
+/// can tell a working channel from one silently losing evidence.
+#[tokio::test]
+async fn statistics_endpoint_reports_both_directions_of_the_relay() {
+    use crate::scheduler::relay::{ObservationBatch, RELAY_FORMAT};
+
+    let store = Arc::new(Store::memory("http-statistics-relay-live").await.unwrap());
+    let runner = crate::scheduler::statistics::StatisticsRunner::start(
+        Arc::new(crate::runtime::SystemRuntime),
+        crate::scheduler::statistics::StatisticsConfig {
+            publish_interval: Duration::from_millis(10),
+            ..Default::default()
+        },
+        None,
+        None,
+    );
+    let engine = Arc::new(
+        Engine::new(store.clone())
+            .with_observer(runner.collector())
+            .with_statistics_provider(runner.clone()),
+    );
+    let router = router(engine, Mode::Direct);
+
+    let batch = ObservationBatch {
+        format: RELAY_FORMAT,
+        instance: "reader-1".into(),
+        boot: "boot-1".into(),
+        sequence: 1,
+        sent_at_micros: 0,
+        families: Vec::new(),
+        frequency: Vec::new(),
+        corpus: Vec::new(),
+    };
+    assert_eq!(
+        runner.ingest().submit(batch.clone()),
+        crate::scheduler::relay::IngestOutcome::Accepted
+    );
+    // The same sequence again: at-least-once delivery makes a repeat ordinary
+    // traffic, and it must be reported as such rather than as a fault.
+    runner.ingest().submit(batch);
+    runner.ingest().submit(ObservationBatch {
+        format: RELAY_FORMAT + 1,
+        instance: "reader-1".into(),
+        boot: "boot-1".into(),
+        sequence: 2,
+        sent_at_micros: 0,
+        families: Vec::new(),
+        frequency: Vec::new(),
+        corpus: Vec::new(),
+    });
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/statistics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+
+    let relay = &body["relay"];
+    assert_eq!(relay["received"].as_i64(), Some(1), "{relay}");
+    assert_eq!(relay["receivedAlreadyApplied"].as_i64(), Some(1), "{relay}");
+    assert_eq!(relay["receivedRejected"].as_i64(), Some(1), "{relay}");
+    assert_eq!(relay["sources"].as_i64(), Some(1), "{relay}");
+    runner.shutdown().await;
+}
+
+#[tokio::test]
+async fn statistics_endpoint_publishes_the_planner_models_it_holds() {
+    let store = Arc::new(Store::memory("http-statistics-live").await.unwrap());
+    let source = Arc::new(crate::scheduler::statistics::SlateStatistics::new(
+        store.clone(),
+    ));
+    let runner = crate::scheduler::statistics::StatisticsRunner::start(
+        Arc::new(crate::runtime::SystemRuntime),
+        crate::scheduler::statistics::StatisticsConfig {
+            publish_interval: Duration::from_millis(10),
+            ..Default::default()
+        },
+        Some(source),
+        None,
+    );
+    let engine = Arc::new(
+        Engine::new(store.clone())
+            .with_observer(runner.collector())
+            .with_statistics_provider(runner.clone()),
+    );
+    let router = router(engine.clone(), Mode::Direct);
+
+    let created = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/tables")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "items",
+                        "columns": [{"name": "id", "type": "text"}],
+                        "primary_key": ["id"],
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+
+    let executed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/execute")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "result": "read",
+                        "statements": [{
+                            "name": "read",
+                            "kind": "query",
+                            "relation": {
+                                "nodes": {
+                                    "s": {"kind": "scan", "table": "items", "scope": "i"},
+                                    "o": {"kind": "order", "input": "s", "terms": [
+                                        {"expr": {"kind": "col", "scope": "i", "column": "id"}}]},
+                                },
+                                "root": {"node": "o", "cardinality": "many"},
+                            },
+                        }],
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(executed.status(), StatusCode::OK);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let response = router
+            .clone()
+            .oneshot(Request::get("/statistics").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        if body["absorbed"].as_i64().unwrap() > 0 && !body["physicalCost"].is_null() {
+            assert_eq!(body["dropped"], 0);
+            let models = body["models"].as_array().unwrap();
+            assert!(!models.is_empty(), "a statement was executed: {body}");
+            let model = &models[0];
+            // The contract's own consistency rules, checked on real output.
+            for entry in models {
+                assert!(
+                    entry["qErrorP50UpperBound"].as_f64().unwrap()
+                        <= entry["qErrorMax"].as_f64().unwrap().max(0.0),
+                    "a quantile bound exceeded the exact maximum: {entry}"
+                );
+                assert!(
+                    entry["rowsP50UpperBound"].as_i64().unwrap()
+                        <= entry["rowsMax"].as_i64().unwrap(),
+                    "a row bound exceeded the exact maximum: {entry}"
+                );
+                assert!(
+                    entry["retainedExecutions"].as_i64().unwrap() >= 1,
+                    "a modelled family was measured at least once: {entry}"
+                );
+                assert!(entry["family"].as_str().unwrap().starts_with('c'));
+            }
+            assert!(model["frequency"].as_i64().unwrap() >= 1);
+            let physical = &body["physicalCost"];
+            assert_eq!(physical["basis"], "backend_physical_telemetry");
+            assert_eq!(physical["backend"], "slatedb");
+            assert_eq!(physical["telemetryFormat"], 1);
+            assert_eq!(physical["capabilities"]["requestLatency"], true);
+            assert_eq!(physical["capabilities"]["requestBytes"], false);
+            assert_eq!(physical["capabilities"]["accessLocality"], false);
+            assert!(!physical["requests"].as_array().unwrap().is_empty());
+            let statement = models
+                .iter()
+                .find(|model| model["kind"] == "statement")
+                .expect("statement model");
+            assert_eq!(statement["resourceCost"]["basis"], "logical_kv_work");
+            assert_eq!(statement["resourceCost"]["observedExecutions"], 1);
+            assert_eq!(statement["resourceCost"]["scans"]["maximum"], 1);
+            assert!(
+                models
+                    .iter()
+                    .filter(|model| model["kind"] == "relation")
+                    .all(|model| model["resourceCost"].is_null())
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "statistics never published"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    runner.shutdown().await;
+    TransactionalKv::close(store.as_ref()).await.unwrap();
+}
