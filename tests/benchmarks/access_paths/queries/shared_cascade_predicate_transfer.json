@@ -1,0 +1,83 @@
+{
+  "name": "shared_cascade_predicate_transfer",
+  "description": "Count a cyclic join that broadcasts one cascade filter to two paths.",
+  "warmup": 1,
+  "iterations": 6,
+  "expect_rows": 1,
+  "expect_result": { "joined_count": 0 },
+  "program": {
+    "statements": [{
+      "name": "shared_cascade_predicate_transfer",
+      "kind": "query",
+      "relation": {
+        "nodes": {
+          "first_rows": {
+            "kind": "rows", "scope": "f",
+            "columns": [{ "name": "join_key", "type": "text" }],
+            "rows": [
+              ["shared"], ["shared"], ["shared"], ["shared"], ["shared"],
+              ["shared"], ["shared"], ["shared"], ["shared"], ["shared"],
+              ["shared"], ["shared"], ["shared"], ["shared"], ["shared"],
+              ["shared"], ["shared"], ["shared"], ["shared"], ["shared"],
+              ["shared"], ["shared"], ["shared"], ["shared"], ["shared"],
+              ["shared"], ["shared"], ["shared"], ["shared"], ["shared"]
+            ]
+          },
+          "second_rows": {
+            "kind": "rows", "scope": "s",
+            "columns": [{ "name": "join_key", "type": "text" }],
+            "rows": [
+              ["shared"], ["shared"], ["shared"], ["shared"], ["shared"],
+              ["shared"], ["shared"], ["shared"], ["shared"], ["shared"],
+              ["shared"], ["shared"], ["shared"], ["shared"], ["shared"],
+              ["shared"], ["shared"], ["shared"], ["shared"], ["shared"],
+              ["shared"], ["shared"], ["shared"], ["shared"], ["shared"],
+              ["shared"], ["shared"], ["shared"], ["shared"], ["shared"]
+            ]
+          },
+          "third_rows": {
+            "kind": "rows", "scope": "t",
+            "columns": [{ "name": "join_key", "type": "text" }],
+            "rows": [
+              ["different"], ["different"], ["different"], ["different"], ["different"],
+              ["different"], ["different"], ["different"], ["different"], ["different"],
+              ["different"], ["different"], ["different"], ["different"], ["different"],
+              ["different"], ["different"], ["different"], ["different"], ["different"],
+              ["different"], ["different"], ["different"], ["different"], ["different"],
+              ["different"], ["different"], ["different"], ["different"], ["different"]
+            ]
+          },
+          "first_second": {
+            "kind": "join", "left": "first_rows", "right": "second_rows", "join": "inner",
+            "on": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "f", "column": "join_key" },
+              "right": { "kind": "col", "scope": "s", "column": "join_key" }
+            }
+          },
+          "joined": {
+            "kind": "join", "left": "first_second", "right": "third_rows", "join": "inner",
+            "on": {
+              "kind": "binary", "op": "and",
+              "left": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "s", "column": "join_key" },
+                "right": { "kind": "col", "scope": "t", "column": "join_key" }
+              },
+              "right": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "f", "column": "join_key" },
+                "right": { "kind": "col", "scope": "t", "column": "join_key" }
+              }
+            }
+          },
+          "counted": {
+            "kind": "aggregate", "input": "joined", "scope": "result",
+            "aggs": [{ "fn": "count", "as": "joined_count" }]
+          }
+        },
+        "root": { "node": "counted", "cardinality": "exactly_one" }
+      }
+    }]
+  }
+}

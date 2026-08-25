@@ -1,11 +1,29 @@
+//! Cardinality estimation for equality joins.
+//!
+//! The central estimate adapts the two-table factorization in Wu et al.,
+//! "FactorJoin: A New Cardinality Estimation Framework for Join Queries,"
+//! SIGMOD 2023: <https://doi.org/10.1145/3588721>. It is an estimate,
+//! not a bound.
+//!
+//! Guaranteed upper bounds use degree statistics from Deeds et al.,
+//! "SafeBound: A Practical System for Generating Cardinality Bounds," SIGMOD
+//! 2023: <https://doi.org/10.1145/3588907>, and the norm inequalities from
+//! Zhang et al., "LpBound: Pessimistic Cardinality Estimation using
+//! l_p-Norms of Degree Sequences," SIGMOD 2025:
+//! <https://doi.org/10.1145/3725321>. The estimator reports a bound only when
+//! complete statistics and current generations make the inequality valid.
+
 use std::time::Duration;
 
 use crate::engine::catalog::model::{Column, Table};
 use crate::engine::lir::bound::{Expr, Relation, RelationNode};
 use crate::engine::lir::{BinaryOp, JoinKind, SlotId};
 
-use super::estimator::{Estimate, EstimateInterval, EstimateSource};
-use super::models::{PlannerStats, SynopsisCoverage, SynopsisModel, SynopsisValue};
+use super::estimator::{Estimate, EstimateBoundSource, EstimateInterval, EstimateSource};
+use super::models::{
+    DEGREE_SEQUENCE_FORMAT_VERSION, DegreeSequenceNorms, DegreeSequenceSynopsis, PlannerStats,
+    SynopsisCoverage, SynopsisModel, SynopsisValue,
+};
 
 struct JoinKey<'a> {
     left: &'a Column,
@@ -18,6 +36,7 @@ struct Distribution {
     distinct: u64,
     distinct_is_exact: bool,
     common: Vec<Frequency>,
+    degree_norms: Option<DegreeSequenceNorms>,
 }
 
 struct Frequency {
@@ -40,6 +59,9 @@ pub(super) fn estimate(
     kind: JoinKind,
     on: &Expr,
 ) -> Option<Estimate> {
+    if let Some(estimate) = super::join_graph_estimator::estimate(stats, left, right, kind, on) {
+        return Some(estimate);
+    }
     let RelationNode::Scan {
         table: left_table, ..
     } = &left.node
@@ -120,19 +142,48 @@ pub(super) fn estimate(
     let left_lower = left_distribution.rows.saturating_sub(left_changes);
     let left_upper = left_distribution.rows.saturating_add(left_changes);
     let right_upper = right_distribution.rows.saturating_add(right_changes);
-    let mut upper = match kind {
-        JoinKind::Inner => multiply(left_upper, right_upper),
-        JoinKind::Left => multiply(left_upper, right_upper.max(1)),
+    let (inner_upper, upper_source) = if right_unique {
+        (left_upper, EstimateBoundSource::KeyConstraint)
+    } else if left_unique {
+        (right_upper, EstimateBoundSource::KeyConstraint)
+    } else {
+        let (collection_upper, source) = if domains_complete {
+            (
+                exact_inner_cardinality(&left_distribution, &right_distribution),
+                EstimateBoundSource::CompleteDomain,
+            )
+        } else if let Some(upper) = degree_sequence_upper(&left_distribution, &right_distribution) {
+            (upper, EstimateBoundSource::DegreeSequenceNorms)
+        } else {
+            (
+                multiply(left_non_null, right_non_null),
+                EstimateBoundSource::CartesianProduct,
+            )
+        };
+        (
+            widen_inner_upper(
+                collection_upper,
+                left_distribution.rows,
+                right_distribution.rows,
+                left_changes,
+                right_changes,
+            ),
+            source,
+        )
     };
-    if kind == JoinKind::Inner && right_unique {
-        upper = upper.min(left_upper);
-    }
-    if kind == JoinKind::Inner && left_unique {
-        upper = upper.min(right_upper);
-    }
-    if kind == JoinKind::Left && right_unique {
-        upper = left_upper;
-    }
+    let (upper, upper_source) = match kind {
+        JoinKind::Inner => (inner_upper, upper_source),
+        JoinKind::Left if right_unique => (left_upper, EstimateBoundSource::KeyConstraint),
+        JoinKind::Left => {
+            let degree_upper = inner_upper.saturating_add(left_upper);
+            let cartesian_upper = multiply(left_upper, right_upper.max(1));
+            if degree_upper < cartesian_upper {
+                (degree_upper, upper_source)
+            } else {
+                (cartesian_upper, EstimateBoundSource::CartesianProduct)
+            }
+        }
+    };
     let lower = if kind == JoinKind::Left {
         left_lower
     } else {
@@ -142,9 +193,21 @@ pub(super) fn estimate(
     let interval = if exact_at_collection && changes == 0 {
         EstimateInterval::Exact
     } else {
-        EstimateInterval::Range {
+        EstimateInterval::AttributedRange {
             lower_bound: lower,
             upper_bound: upper,
+            lower_source: EstimateBoundSource::Structural,
+            central_source: if exact_at_collection {
+                if domains_complete {
+                    EstimateBoundSource::CompleteDomain
+                } else {
+                    EstimateBoundSource::KeyConstraint
+                }
+            } else {
+                EstimateBoundSource::FactorizedDistribution
+            },
+            upper_source,
+            drift_widened: changes > 0,
         }
     };
     Some(Estimate {
@@ -155,6 +218,31 @@ pub(super) fn estimate(
         changes_since_collection: changes,
         age: synopsis_age(stats, left_synopsis).max(synopsis_age(stats, right_synopsis)),
     })
+}
+
+fn degree_sequence_upper(left: &Distribution, right: &Distribution) -> Option<u64> {
+    let left = left.degree_norms?;
+    let right = right.degree_norms?;
+    Some(
+        multiply(left.l1, right.l_infinity)
+            .min(multiply(left.l_infinity, right.l1))
+            .min(multiply(left.l2_upper, right.l2_upper)),
+    )
+}
+
+fn widen_inner_upper(
+    collection_upper: u64,
+    left_rows: u64,
+    right_rows: u64,
+    left_changes: u64,
+    right_changes: u64,
+) -> u64 {
+    collection_upper
+        .saturating_add(multiply(
+            left_changes,
+            right_rows.saturating_add(right_changes),
+        ))
+        .saturating_add(multiply(right_changes, left_rows))
 }
 
 impl Distribution {
@@ -218,6 +306,14 @@ fn distribution(
             distinct: column.distinct.min(non_null),
             distinct_is_exact: column.distinct_is_exact,
             common,
+            degree_norms: valid_degree_norms(
+                column.degree_sequence.as_ref(),
+                &[catalog_column.value_generation.get()],
+                synopsis.observed_rows,
+                non_null,
+                column.distinct,
+                column.distinct_is_exact,
+            ),
         })
     } else {
         let requested: Vec<_> = columns.iter().map(|column| column.schema_id).collect();
@@ -279,8 +375,42 @@ fn distribution(
             distinct: group.distinct.min(non_null),
             distinct_is_exact: group.distinct_is_exact,
             common,
+            degree_norms: valid_degree_norms(
+                group.degree_sequence.as_ref(),
+                &group.value_generations,
+                synopsis.observed_rows,
+                non_null,
+                group.distinct,
+                group.distinct_is_exact,
+            ),
         })
     }
+}
+
+fn valid_degree_norms(
+    sequence: Option<&DegreeSequenceSynopsis>,
+    value_generations: &[u64],
+    rows: u64,
+    non_null_rows: u64,
+    distinct: u64,
+    distinct_is_exact: bool,
+) -> Option<DegreeSequenceNorms> {
+    let sequence = sequence?;
+    let norms = sequence.norms;
+    (sequence.format_version == DEGREE_SEQUENCE_FORMAT_VERSION
+        && sequence.coverage == SynopsisCoverage::Complete
+        && sequence.sample_size == rows
+        && sequence.collected_row_count == rows
+        && sequence.non_null_rows == non_null_rows
+        && sequence.value_generations == value_generations
+        && sequence.distinct_is_exact
+        && distinct_is_exact
+        && sequence.distinct_values == distinct
+        && norms.exact
+        && norms.l1 == non_null_rows
+        && norms.l_infinity <= norms.l2_upper
+        && norms.l2_upper <= norms.l1)
+        .then_some(norms)
 }
 
 fn valid_frequencies(common: &[Frequency], rows: u64) -> bool {
@@ -490,7 +620,8 @@ mod tests {
     use crate::engine::lir::bound;
     use crate::engine::lir::{JoinKind, RootCardinality, SlotId, Type};
     use crate::engine::planner::models::{
-        ColumnGroupSynopsis, ColumnSynopsis, MostCommonColumnGroup, MostCommonValue,
+        ColumnGroupSynopsis, ColumnSynopsis, DEGREE_SEQUENCE_FORMAT_VERSION, DegreeSequenceNorms,
+        DegreeSequenceSegment, DegreeSequenceSynopsis, MostCommonColumnGroup, MostCommonValue,
         SynopsisCoverage, SynopsisModel, SynopsisValue,
     };
 
@@ -597,6 +728,7 @@ mod tests {
             distinct,
             distinct_is_exact: exact,
             average_width: 4,
+            maximum_width: Some(4),
             minimum: None,
             maximum: None,
             most_common_values: common
@@ -607,6 +739,8 @@ mod tests {
                     maximum_error: 0,
                 })
                 .collect(),
+            range_distribution: None,
+            degree_sequence: None,
         }
     }
 
@@ -640,7 +774,63 @@ mod tests {
                     maximum_error: 0,
                 })
                 .collect(),
+            degree_sequence: None,
         }
+    }
+
+    fn degree_synopsis(
+        table: &Table,
+        name: &str,
+        rows: u64,
+        frequencies: &[u64],
+        l2_upper: u64,
+    ) -> DegreeSequenceSynopsis {
+        let column = table.column(name).unwrap();
+        DegreeSequenceSynopsis {
+            format_version: DEGREE_SEQUENCE_FORMAT_VERSION,
+            coverage: SynopsisCoverage::Complete,
+            sample_size: rows,
+            value_generations: vec![column.value_generation.get()],
+            collected_row_count: rows,
+            non_null_rows: rows,
+            distinct_values: frequencies.len() as u64,
+            distinct_is_exact: true,
+            norms: DegreeSequenceNorms {
+                l1: rows,
+                l2_upper,
+                l_infinity: frequencies.first().copied().unwrap_or(0),
+                exact: true,
+            },
+            segments: frequencies
+                .iter()
+                .enumerate()
+                .map(|(rank, frequency)| DegreeSequenceSegment {
+                    rank_start: rank as u64,
+                    rank_end: rank as u64 + 1,
+                    frequency_upper: *frequency,
+                })
+                .collect(),
+        }
+    }
+
+    fn group_degree_synopsis(
+        table: &Table,
+        names: &[&str],
+        rows: u64,
+        frequencies: &[u64],
+        l2_upper: u64,
+    ) -> DegreeSequenceSynopsis {
+        let mut sequence = degree_synopsis(table, names[0], rows, frequencies, l2_upper);
+        let mut columns: Vec<_> = names
+            .iter()
+            .map(|name| table.column(name).unwrap())
+            .collect();
+        columns.sort_by_key(|column| column.schema_id);
+        sequence.value_generations = columns
+            .iter()
+            .map(|column| column.value_generation.get())
+            .collect();
+        sequence
     }
 
     fn synopsis(
@@ -660,6 +850,7 @@ mod tests {
             catalog_version: 1,
             columns,
             column_groups,
+            predicate_conditioned_degrees: Vec::new(),
         }
     }
 
@@ -765,11 +956,158 @@ mod tests {
         assert_eq!(estimate.source, EstimateSource::Join);
         assert_eq!(
             estimate.interval,
-            EstimateInterval::Range {
+            EstimateInterval::AttributedRange {
                 lower_bound: 0,
                 upper_bound: 2_000_000,
+                lower_source: EstimateBoundSource::Structural,
+                central_source: EstimateBoundSource::FactorizedDistribution,
+                upper_source: EstimateBoundSource::CartesianProduct,
+                drift_widened: false,
             }
         );
+    }
+
+    #[test]
+    fn degree_norms_bound_a_heavy_key_join() {
+        let left = table("left", 10, 11);
+        let right = table("right", 20, 21);
+        let mut left_column = column_synopsis(&left, "key", 1_000, 0, 101, true, &[]);
+        left_column.degree_sequence = Some(degree_synopsis(
+            &left,
+            "key",
+            1_000,
+            &[900]
+                .into_iter()
+                .chain(std::iter::repeat_n(1, 100))
+                .collect::<Vec<_>>(),
+            901,
+        ));
+        let mut right_column = column_synopsis(&right, "key", 1_000, 0, 101, true, &[]);
+        right_column.degree_sequence = Some(degree_synopsis(
+            &right,
+            "key",
+            1_000,
+            &[500]
+                .into_iter()
+                .chain(std::iter::repeat_n(5, 100))
+                .collect::<Vec<_>>(),
+            503,
+        ));
+        let mut stats = stats(
+            synopsis(&left, 1_000, vec![left_column], Vec::new()),
+            synopsis(&right, 1_000, vec![right_column], Vec::new()),
+        );
+        let relation = join(left.clone(), right, &[("key", "key")], JoinKind::Inner);
+
+        let estimate =
+            crate::engine::planner::estimator::Estimator::new(&stats).bound_relation(&relation);
+        assert_eq!(estimate.cardinality, 9_900);
+        assert_eq!(
+            estimate.interval,
+            EstimateInterval::AttributedRange {
+                lower_bound: 0,
+                upper_bound: 453_203,
+                lower_source: EstimateBoundSource::Structural,
+                central_source: EstimateBoundSource::FactorizedDistribution,
+                upper_source: EstimateBoundSource::DegreeSequenceNorms,
+                drift_widened: false,
+            }
+        );
+        let json = serde_json::to_value(estimate).unwrap();
+        assert_eq!(
+            json["interval"]["central_source"],
+            "factorized_distribution"
+        );
+        assert_eq!(json["interval"]["upper_source"], "degree_sequence_norms");
+
+        stats
+            .synopsis_models
+            .get_mut(&left.schema_id)
+            .unwrap()
+            .changes_since_collection = 3;
+        let estimate =
+            crate::engine::planner::estimator::Estimator::new(&stats).bound_relation(&relation);
+        assert!(matches!(
+            estimate.interval,
+            EstimateInterval::AttributedRange {
+                upper_bound: 456_203,
+                upper_source: EstimateBoundSource::DegreeSequenceNorms,
+                drift_widened: true,
+                ..
+            }
+        ));
+        stats
+            .synopsis_models
+            .get_mut(&left.schema_id)
+            .unwrap()
+            .changes_since_collection = 0;
+
+        let sequence = stats
+            .synopsis_models
+            .get_mut(&left.schema_id)
+            .unwrap()
+            .columns[0]
+            .degree_sequence
+            .as_mut()
+            .unwrap();
+        sequence.value_generations[0] -= 1;
+        let estimate =
+            crate::engine::planner::estimator::Estimator::new(&stats).bound_relation(&relation);
+        assert!(matches!(
+            estimate.interval,
+            EstimateInterval::AttributedRange {
+                upper_bound: 1_000_000,
+                upper_source: EstimateBoundSource::CartesianProduct,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn self_join_uses_the_same_degree_norm_with_two_scopes() {
+        let table = table("items", 10, 11);
+        let mut column = column_synopsis(&table, "key", 100, 0, 2, true, &[]);
+        column.degree_sequence = Some(degree_synopsis(&table, "key", 100, &[90, 10], 91));
+        let synopsis = synopsis(&table, 100, vec![column], Vec::new());
+        let mut stats = PlannerStats::empty();
+        stats.synopsis_models.insert(table.schema_id, synopsis);
+        let relation = join(table.clone(), table, &[("key", "key")], JoinKind::Inner);
+
+        let estimate =
+            crate::engine::planner::estimator::Estimator::new(&stats).bound_relation(&relation);
+        assert!(matches!(
+            estimate.interval,
+            EstimateInterval::AttributedRange {
+                upper_bound: 8_281,
+                upper_source: EstimateBoundSource::DegreeSequenceNorms,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn complete_disjoint_domains_have_an_exact_zero_join() {
+        let left = table("left", 10, 11);
+        let right = table("right", 20, 21);
+        let stats = stats(
+            synopsis(
+                &left,
+                10,
+                vec![column_synopsis(&left, "key", 10, 0, 1, true, &[("a", 10)])],
+                Vec::new(),
+            ),
+            synopsis(
+                &right,
+                20,
+                vec![column_synopsis(&right, "key", 20, 0, 1, true, &[("b", 20)])],
+                Vec::new(),
+            ),
+        );
+        let relation = join(left, right, &[("key", "key")], JoinKind::Inner);
+        let estimate =
+            crate::engine::planner::estimator::Estimator::new(&stats).bound_relation(&relation);
+        assert_eq!(estimate.cardinality, 0);
+        assert_eq!(estimate.interval, EstimateInterval::Exact);
     }
 
     #[test]
@@ -813,7 +1151,13 @@ mod tests {
             crate::engine::planner::estimator::Estimator::new(&stats).bound_relation(&relation);
         assert_eq!(estimate.cardinality, 13_950);
         assert_eq!(estimate.source, EstimateSource::Join);
-        assert!(matches!(estimate.interval, EstimateInterval::Range { .. }));
+        assert!(matches!(
+            estimate.interval,
+            EstimateInterval::AttributedRange {
+                central_source: EstimateBoundSource::FactorizedDistribution,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -887,6 +1231,50 @@ mod tests {
             crate::engine::planner::estimator::Estimator::new(&stats).bound_relation(&relation);
         assert_eq!(estimate.cardinality, 5_000);
         assert_eq!(estimate.interval, EstimateInterval::Exact);
+    }
+
+    #[test]
+    fn composite_degree_norms_bound_a_join_without_complete_domains() {
+        let left = table("left", 10, 11);
+        let right = table("right", 20, 21);
+        let mut left_group = group_synopsis(&left, &["region", "status"], &[]);
+        left_group.distinct = 2;
+        left_group.degree_sequence = Some(group_degree_synopsis(
+            &left,
+            &["region", "status"],
+            100,
+            &[90, 10],
+            91,
+        ));
+        let mut right_group = group_synopsis(&right, &["region", "status"], &[]);
+        right_group.distinct = 2;
+        right_group.degree_sequence = Some(group_degree_synopsis(
+            &right,
+            &["region", "status"],
+            100,
+            &[50, 50],
+            71,
+        ));
+        let stats = stats(
+            synopsis(&left, 100, Vec::new(), vec![left_group]),
+            synopsis(&right, 100, Vec::new(), vec![right_group]),
+        );
+        let relation = join(
+            left,
+            right,
+            &[("region", "region"), ("status", "status")],
+            JoinKind::Inner,
+        );
+        let estimate =
+            crate::engine::planner::estimator::Estimator::new(&stats).bound_relation(&relation);
+        assert!(matches!(
+            estimate.interval,
+            EstimateInterval::AttributedRange {
+                upper_bound: 5_000,
+                upper_source: EstimateBoundSource::DegreeSequenceNorms,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1014,9 +1402,13 @@ mod tests {
         assert_eq!(estimate.changes_since_collection, 3);
         assert_eq!(
             estimate.interval,
-            EstimateInterval::Range {
+            EstimateInterval::AttributedRange {
                 lower_bound: 0,
-                upper_bound: 10_300,
+                upper_bound: 2_100,
+                lower_source: EstimateBoundSource::Structural,
+                central_source: EstimateBoundSource::CompleteDomain,
+                upper_source: EstimateBoundSource::CompleteDomain,
+                drift_widened: true,
             }
         );
 
@@ -1030,12 +1422,12 @@ mod tests {
             crate::engine::planner::estimator::Estimator::new(&stats)
                 .bound_relation(&relation)
                 .source,
-            EstimateSource::Heuristic
+            EstimateSource::Structural
         );
     }
 
     #[test]
-    fn residual_join_predicates_remain_heuristic() {
+    fn residual_join_predicates_use_a_structural_product_bound() {
         let left = table("left", 10, 11);
         let right = table("right", 20, 21);
         let left_scan = scan(left.clone(), "left", 0);
@@ -1065,7 +1457,7 @@ mod tests {
             crate::engine::planner::estimator::Estimator::new(&stats)
                 .bound_relation(&relation)
                 .source,
-            EstimateSource::Heuristic
+            EstimateSource::Structural
         );
     }
 

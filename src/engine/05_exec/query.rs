@@ -8,10 +8,12 @@
 use std::collections::HashMap;
 
 use async_recursion::async_recursion;
+use bytes::Bytes;
 use num_bigint::BigInt;
 
 use crate::engine::catalog::store::admit_catalog_dependencies;
-use crate::engine::kv::KvView;
+use crate::engine::kv::key_encoding::prefix_end;
+use crate::engine::kv::{KeyRange, KvView};
 use crate::engine::lir::bound::{self, RelationNode};
 use crate::engine::lir::eval::{
     CanonicalRowSet, Env, evaluate, evaluate_datum, evaluate_predicate,
@@ -20,6 +22,7 @@ use crate::engine::lir::{
     AggregateFunction, Datum, Kind, RecursiveAccumulation, RowType, SetQuantifier, SlotId, TriBool,
     Value,
 };
+use crate::engine::planner::analysis::EquiJoinKey;
 use crate::engine::planner::analysis::{ConstValue, CorrelationKind};
 use crate::engine::planner::physical::{
     AttachSpec, BindingPlan, BindingPlanKind, BindingStrategy, CrossingKind, Node, NodeKind, Plan,
@@ -61,6 +64,8 @@ pub struct Executor<'a> {
     /// nodes the planner could attribute appear, and only where execution
     /// already materializes their output.
     measured: Vec<(crate::engine::lir::fingerprint::Fingerprint, u64)>,
+    join_measurements: Vec<super::observe::JoinOperatorMeasurement>,
+    predicate_transfer_inputs: Vec<Vec<Vec<Env>>>,
 }
 
 struct SetPlan<'a> {
@@ -71,6 +76,19 @@ struct SetPlan<'a> {
     left_output: &'a RowType,
     right_output: &'a RowType,
     output: &'a RowType,
+}
+
+#[derive(Default)]
+struct StoragePruningMeasurement {
+    candidates: u64,
+    ranges: u64,
+    scans: u64,
+    empty_scans: u64,
+}
+
+struct StoragePruningDecision {
+    pruning: row_store::ScanPruning,
+    applied_ranges: u64,
 }
 
 impl<'a> Executor<'a> {
@@ -84,6 +102,8 @@ impl<'a> Executor<'a> {
             plans: HashMap::new(),
             measure: false,
             measured: Vec::new(),
+            join_measurements: Vec::new(),
+            predicate_transfer_inputs: Vec::new(),
         }
     }
 
@@ -94,6 +114,10 @@ impl<'a> Executor<'a> {
     /// Row counts charged to the logical relations they implement.
     pub fn measured(&self) -> &[(crate::engine::lir::fingerprint::Fingerprint, u64)] {
         &self.measured
+    }
+
+    pub fn join_measurements(&self) -> &[super::observe::JoinOperatorMeasurement] {
+        &self.join_measurements
     }
 
     /// Test seam proving key-correlated batching and nested evaluation agree.
@@ -173,13 +197,151 @@ impl<'a> Executor<'a> {
         Ok(frames)
     }
 
+    async fn execute_scan_with_pruning(
+        &mut self,
+        node: &Node,
+        outer: &Env,
+        pruning: &row_store::ScanPruning,
+    ) -> Result<Vec<Env>> {
+        let frames = match &node.kind {
+            NodeKind::TableScan {
+                scan,
+                decode_columns,
+                ..
+            } => {
+                let mut iterator = row_store::scan_table_with_pruning(
+                    self.view,
+                    scan.scan_table(),
+                    decode_columns,
+                    Some(pruning),
+                )
+                .await?;
+                let mut frames = Vec::new();
+                while let Some(row) = iterator.next().await? {
+                    frames.push(row_to_frame(scan, &row, outer));
+                }
+                frames
+            }
+            NodeKind::IndexRangeScan {
+                scan,
+                index,
+                equality_prefix,
+                range,
+                decode_columns,
+                ..
+            } => {
+                let equality_prefix = equality_prefix
+                    .iter()
+                    .map(|constant| resolve_constant(constant, outer))
+                    .collect::<Result<Vec<_>>>()?;
+                if equality_prefix.iter().any(Value::is_null) {
+                    Vec::new()
+                } else {
+                    let range = range.as_ref().map(|range| row_store::Range {
+                        lower: range
+                            .lower
+                            .as_ref()
+                            .map(|bound| (&bound.value, bound.inclusive)),
+                        upper: range
+                            .upper
+                            .as_ref()
+                            .map(|bound| (&bound.value, bound.inclusive)),
+                    });
+                    let mut iterator = row_store::scan_index_range_with_pruning(
+                        self.view,
+                        scan.scan_table(),
+                        index,
+                        &equality_prefix,
+                        range,
+                        decode_columns,
+                        Some(pruning),
+                    )
+                    .await?;
+                    let mut frames = Vec::new();
+                    while let Some(row) = iterator.next().await? {
+                        frames.push(row_to_frame(scan, &row, outer));
+                    }
+                    frames
+                }
+            }
+            _ => return self.execute_node(node, outer).await,
+        };
+        if self.measure
+            && let Some(attribution) = node.attribution
+        {
+            self.measured.push((attribution, frames.len() as u64));
+        }
+        Ok(frames)
+    }
+
+    async fn execute_predicate_transfer_inputs(
+        &mut self,
+        inputs: &[Node],
+        schedule: &crate::engine::planner::physical::PredicateTransferSchedule,
+        outer: &Env,
+    ) -> Result<(Vec<Vec<Env>>, StoragePruningMeasurement)> {
+        let mut loaded = vec![None; inputs.len()];
+        let mut ranges = super::predicate_transfer::StorageRangeSchedule::new(inputs.len());
+        let mut measurement = StoragePruningMeasurement::default();
+        for &input in &schedule.forward.order {
+            let Some(node) = inputs.get(input) else {
+                return Err(Error::message(
+                    ErrorKind::Internal,
+                    "exec: invalid predicate transfer input",
+                ));
+            };
+            if loaded[input].is_some() {
+                return Err(Error::message(
+                    ErrorKind::Internal,
+                    "exec: duplicate predicate transfer input",
+                ));
+            }
+            let decision = storage_pruning(node, &schedule.forward, ranges.ranges(input), outer)?;
+            measurement.candidates = measurement
+                .candidates
+                .saturating_add(ranges.ranges(input).len() as u64);
+            let rows = if let Some(decision) = decision {
+                measurement.ranges = measurement.ranges.saturating_add(decision.applied_ranges);
+                measurement.scans = measurement.scans.saturating_add(1);
+                measurement.empty_scans = measurement.empty_scans.saturating_add(u64::from(
+                    matches!(decision.pruning, row_store::ScanPruning::Empty),
+                ));
+                self.execute_scan_with_pruning(node, outer, &decision.pruning)
+                    .await?
+            } else {
+                self.execute_node(node, outer).await?
+            };
+            ranges.observe(input, &rows, &schedule.forward)?;
+            loaded[input] = Some(rows);
+        }
+        for (input, node) in inputs.iter().enumerate() {
+            if loaded[input].is_none() {
+                loaded[input] = Some(self.execute_node(node, outer).await?);
+            }
+        }
+        Ok((
+            loaded
+                .into_iter()
+                .map(|rows| rows.expect("predicate transfer input loaded"))
+                .collect(),
+            measurement,
+        ))
+    }
+
     #[async_recursion]
     async fn execute_kind(&mut self, node: &Node, outer: &Env) -> Result<Vec<Env>> {
         if super::pipeline::supports(node) {
             return if self.measure {
-                super::pipeline::execute_measured(self.view, node, outer, &mut self.measured).await
+                super::pipeline::execute_measured(
+                    self.view,
+                    node,
+                    outer,
+                    &mut self.measured,
+                    &mut self.join_measurements,
+                )
+                .await
             } else {
-                super::pipeline::execute(self.view, node, outer).await
+                super::pipeline::execute(self.view, node, outer, &mut self.join_measurements).await
             };
         }
         match &node.kind {
@@ -325,6 +487,7 @@ impl<'a> Executor<'a> {
                 kind,
                 on,
                 right_output,
+                ..
             } => {
                 let left = self.execute_node(left, outer).await?;
                 let right = self.execute_node(right, outer).await?;
@@ -348,6 +511,127 @@ impl<'a> Executor<'a> {
                 }
                 Ok(output)
             }
+            NodeKind::HashJoin { .. } => {
+                unreachable!("hash joins run in the pull pipeline")
+            }
+            NodeKind::IndexedLookupJoin {
+                left,
+                right,
+                kind,
+                on,
+                keys,
+                right_output,
+                ..
+            } => {
+                let left = self.execute_node(left, outer).await?;
+                let mut output = Vec::new();
+                let mut measurement = super::observe::JoinOperatorMeasurement {
+                    operator: "IndexedLookupJoin",
+                    ..Default::default()
+                };
+                for left in left {
+                    measurement.probe_rows = measurement.probe_rows.saturating_add(1);
+                    let Some(_) = super::pipeline::join_key(&left, keys, true)? else {
+                        if *kind == crate::engine::lir::JoinKind::Left {
+                            output.push(pad_join_left(left, right_output));
+                        }
+                        continue;
+                    };
+                    measurement.lookup_requests = measurement.lookup_requests.saturating_add(1);
+                    let right = self.execute_node(right, &left).await?;
+                    measurement.peak_retained_bytes = measurement.peak_retained_bytes.max(
+                        right
+                            .iter()
+                            .map(super::pipeline::frame_retained_bytes)
+                            .fold(0u64, u64::saturating_add),
+                    );
+                    let mut matched = false;
+                    for right in right {
+                        let merged = merge_frames(&left, &right);
+                        if evaluate_indexed_join_predicate(on, keys, &merged, &mut measurement)?
+                            == TriBool::True
+                        {
+                            matched = true;
+                            output.push(merged);
+                        }
+                    }
+                    if *kind == crate::engine::lir::JoinKind::Left && !matched {
+                        output.push(pad_join_left(left, right_output));
+                    }
+                }
+                if self.measure {
+                    self.join_measurements.push(measurement);
+                }
+                Ok(output)
+            }
+            NodeKind::JoinGraphChoice { input, .. } => self.execute_node(input, outer).await,
+            NodeKind::ShreddedYannakakisJoin {
+                inputs,
+                edges,
+                root_input,
+                memory_limit_bytes,
+                ..
+            } => {
+                let mut input_rows = Vec::with_capacity(inputs.len());
+                for input in inputs {
+                    input_rows.push(self.execute_node(input, outer).await?);
+                }
+                let (output, measurement) = super::shredded_join::execute(
+                    input_rows,
+                    edges,
+                    *root_input,
+                    *memory_limit_bytes,
+                )?;
+                if self.measure {
+                    self.join_measurements.push(measurement);
+                }
+                Ok(output)
+            }
+            NodeKind::PredicateTransferJoin {
+                inputs,
+                schedule,
+                join_plan,
+                bits_per_key,
+                hash_functions,
+                runtime_policy,
+                memory_limit_bytes,
+                ..
+            } => {
+                let (input_rows, storage) = self
+                    .execute_predicate_transfer_inputs(inputs, schedule, outer)
+                    .await?;
+                let (input_rows, mut measurement) = super::predicate_transfer::execute(
+                    input_rows,
+                    schedule,
+                    *bits_per_key,
+                    *hash_functions,
+                    runtime_policy,
+                    *memory_limit_bytes,
+                    self.measure,
+                )?;
+                measurement.filter_storage_range_candidates = storage.candidates;
+                measurement.filter_storage_ranges_applied = storage.ranges;
+                measurement.filter_storage_scans_pruned = storage.scans;
+                measurement.filter_storage_empty_scans = storage.empty_scans;
+                if self.measure {
+                    self.join_measurements.push(measurement);
+                }
+                self.predicate_transfer_inputs.push(input_rows);
+                let result = self.execute_node(join_plan, outer).await;
+                self.predicate_transfer_inputs.pop();
+                result
+            }
+            NodeKind::PredicateTransferInput { input, .. } => self
+                .predicate_transfer_inputs
+                .last()
+                .and_then(|inputs| inputs.get(*input))
+                .cloned()
+                .ok_or_else(|| {
+                    Error::message(
+                        ErrorKind::Internal,
+                        "exec: missing predicate transfer input",
+                    )
+                }),
             NodeKind::Concatenate {
                 inputs,
                 input_outputs,
@@ -701,6 +985,140 @@ impl<'a> Executor<'a> {
     }
 }
 
+fn storage_pruning(
+    node: &Node,
+    pass: &crate::engine::planner::physical::PredicateTransferPass,
+    ranges: &[super::predicate_transfer::StorageRange],
+    outer: &Env,
+) -> Result<Option<StoragePruningDecision>> {
+    if ranges.is_empty() {
+        return Ok(None);
+    }
+    let (scan, storage_columns, prefix) = match &node.kind {
+        NodeKind::TableScan { scan, .. } => (
+            &**scan,
+            scan.scan_table().primary_key.clone(),
+            codec::data_prefix(scan.scan_table())?,
+        ),
+        NodeKind::IndexRangeScan {
+            scan,
+            index,
+            equality_prefix,
+            ..
+        } => {
+            let equality_prefix = equality_prefix
+                .iter()
+                .map(|constant| resolve_constant(constant, outer))
+                .collect::<Result<Vec<_>>>()?;
+            if equality_prefix.iter().any(Value::is_null) {
+                return Ok(None);
+            }
+            let columns = scan
+                .scan_table()
+                .index_column_names(index)
+                .into_iter()
+                .skip(equality_prefix.len())
+                .map(str::to_owned)
+                .collect();
+            let mut prefix = codec::index_prefix(scan.scan_table(), &index.id)?;
+            prefix.extend_from_slice(&codec::encode_tuple(&equality_prefix)?);
+            (&**scan, columns, prefix)
+        }
+        _ => return Ok(None),
+    };
+    let mut selected: Option<KeyRange> = None;
+    let mut empty = false;
+    let mut applied_ranges = 0u64;
+    for range in ranges {
+        let Some(edge) = pass.edges.get(range.edge_index()) else {
+            return Err(Error::message(
+                ErrorKind::Internal,
+                "exec: invalid predicate transfer storage range",
+            ));
+        };
+        let Some(target_columns) = edge_target_columns(scan, edge) else {
+            continue;
+        };
+        if !storage_columns.starts_with(&target_columns) {
+            continue;
+        }
+        applied_ranges = applied_ranges.saturating_add(1);
+        let super::predicate_transfer::StorageRange::Bounded {
+            minimum, maximum, ..
+        } = range
+        else {
+            empty = true;
+            break;
+        };
+        let mut start = prefix.clone();
+        start.extend_from_slice(minimum);
+        let mut end = prefix.clone();
+        end.extend_from_slice(maximum);
+        let range = KeyRange {
+            start: Some(Bytes::from(start)),
+            end: prefix_end(&end).map(Bytes::from),
+        };
+        selected = match selected.take() {
+            Some(selected) => match intersect_key_ranges(selected, range) {
+                Some(range) => Some(range),
+                None => {
+                    empty = true;
+                    break;
+                }
+            },
+            None => Some(range),
+        };
+    }
+    if applied_ranges == 0 {
+        return Ok(None);
+    }
+    Ok(Some(StoragePruningDecision {
+        pruning: if empty {
+            row_store::ScanPruning::Empty
+        } else {
+            row_store::ScanPruning::Range(selected.expect("an applied bounded range"))
+        },
+        applied_ranges,
+    }))
+}
+
+fn edge_target_columns(
+    scan: &bound::Relation,
+    edge: &crate::engine::planner::physical::PredicateTransferEdge,
+) -> Option<Vec<String>> {
+    edge.keys
+        .iter()
+        .map(|key| {
+            scan.output()
+                .fields
+                .iter()
+                .find(|field| field.slot == key.right.slot)
+                .map(|field| field.name.clone())
+        })
+        .collect()
+}
+
+fn intersect_key_ranges(first: KeyRange, second: KeyRange) -> Option<KeyRange> {
+    let start = match (first.start, second.start) {
+        (Some(first), Some(second)) => Some(first.max(second)),
+        (first, second) => first.or(second),
+    };
+    let end = match (first.end, second.end) {
+        (Some(first), Some(second)) => Some(first.min(second)),
+        (Some(end), None) | (None, Some(end)) => Some(end),
+        (None, None) => None,
+    };
+    if start
+        .as_ref()
+        .zip(end.as_ref())
+        .is_some_and(|(start, end)| start >= end)
+    {
+        None
+    } else {
+        Some(KeyRange { start, end })
+    }
+}
+
 #[derive(Default)]
 struct Accumulator {
     count: i64,
@@ -789,6 +1207,46 @@ impl Accumulator {
     }
 }
 
+fn evaluate_indexed_join_predicate(
+    predicate: &bound::Expr,
+    keys: &[EquiJoinKey],
+    frame: &Env,
+    measurement: &mut super::observe::JoinOperatorMeasurement,
+) -> Result<TriBool> {
+    if let bound::Expr::Binary {
+        op: crate::engine::lir::BinaryOp::And,
+        left,
+        right,
+        ..
+    } = predicate
+    {
+        let left = evaluate_indexed_join_predicate(left, keys, frame, measurement)?;
+        if left == TriBool::False {
+            return Ok(TriBool::False);
+        }
+        return Ok(left.and(evaluate_indexed_join_predicate(
+            right,
+            keys,
+            frame,
+            measurement,
+        )?));
+    }
+    if super::pipeline::is_join_key_comparison(predicate, keys) {
+        measurement.key_comparisons = measurement.key_comparisons.saturating_add(1);
+    } else {
+        measurement.residual_predicate_evaluations =
+            measurement.residual_predicate_evaluations.saturating_add(1);
+    }
+    Ok(evaluate_predicate(predicate, frame)?)
+}
+
+fn pad_join_left(mut left: Env, right_output: &RowType) -> Env {
+    for field in &right_output.fields {
+        left.insert(field.slot, Datum::Null);
+    }
+    left
+}
+
 pub(super) fn resolve_constant(value: &ConstValue, outer: &Env) -> Result<Value> {
     match value {
         ConstValue::Literal(value) => Ok(value.clone()),
@@ -848,8 +1306,8 @@ fn project_canonical(output: &RowType, source: &HashMap<String, SlotId>, frame: 
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
     use bytes::Bytes;
@@ -864,7 +1322,13 @@ mod tests {
     use crate::engine::kv::{Entry, KeyRange, Kv, KvIterator, KvView, TransactionalKv};
     use crate::engine::lir::bound::{BoundOrderTerm, Expr, ProjectField, Relation};
     use crate::engine::lir::{BinaryOp, Field, RootCardinality, Type};
-    use crate::engine::planner::{PlanOptions, plan_query};
+    use crate::engine::planner::models::PlannerStats;
+    use crate::engine::planner::physical::{
+        AccessQuantity, PredicateTransferPass, PredicateTransferSchedule,
+    };
+    use crate::engine::planner::{
+        PlanOptions, PlannerMode, PlanningContext, plan_query, plan_query_with_context,
+    };
 
     use super::*;
 
@@ -1038,8 +1502,75 @@ mod tests {
         nexts: Arc<AtomicUsize>,
     }
 
+    struct RecordingView {
+        store: Store,
+        ranges: Mutex<Vec<KeyRange>>,
+        scan_entries: Arc<AtomicUsize>,
+        seek_targets: Arc<Mutex<Vec<Bytes>>>,
+    }
+
+    #[async_trait]
+    impl KvView for RecordingView {
+        async fn get(&self, key: &[u8]) -> crate::engine::kv::Result<Option<Bytes>> {
+            Kv::get(&self.store, key).await
+        }
+
+        async fn put(&self, key: Bytes, value: Bytes) -> crate::engine::kv::Result<()> {
+            Kv::put(&self.store, key, value).await
+        }
+
+        async fn delete(&self, key: &[u8]) -> crate::engine::kv::Result<()> {
+            Kv::delete(&self.store, key).await
+        }
+
+        async fn scan<'a>(
+            &'a self,
+            range: KeyRange,
+        ) -> crate::engine::kv::Result<Box<dyn KvIterator + 'a>> {
+            self.ranges
+                .lock()
+                .expect("recorded range lock poisoned")
+                .push(range.clone());
+            Ok(Box::new(RecordingIterator {
+                inner: Kv::scan(&self.store, range).await?,
+                entries: Arc::clone(&self.scan_entries),
+                seek_targets: Arc::clone(&self.seek_targets),
+            }))
+        }
+    }
+
+    struct RecordingIterator {
+        inner: Box<dyn KvIterator>,
+        entries: Arc<AtomicUsize>,
+        seek_targets: Arc<Mutex<Vec<Bytes>>>,
+    }
+
+    #[async_trait]
+    impl KvIterator for RecordingIterator {
+        async fn seek_forward(&mut self, next_key: &[u8]) -> crate::engine::kv::Result<()> {
+            self.inner.seek_forward(next_key).await?;
+            self.seek_targets
+                .lock()
+                .expect("recorded seek target lock poisoned")
+                .push(Bytes::copy_from_slice(next_key));
+            Ok(())
+        }
+
+        async fn next(&mut self) -> crate::engine::kv::Result<Option<Entry>> {
+            let entry = self.inner.next().await?;
+            if entry.is_some() {
+                self.entries.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+            Ok(entry)
+        }
+    }
+
     #[async_trait]
     impl KvIterator for CountingIterator {
+        async fn seek_forward(&mut self, next_key: &[u8]) -> crate::engine::kv::Result<()> {
+            self.inner.seek_forward(next_key).await
+        }
+
         async fn next(&mut self) -> crate::engine::kv::Result<Option<Entry>> {
             self.nexts.fetch_add(1, AtomicOrdering::Relaxed);
             self.inner.next().await
@@ -1079,6 +1610,7 @@ mod tests {
             &bound,
             PlanOptions {
                 full_scan_only: true,
+                ..PlanOptions::default()
             },
         );
         let chosen_result = {
@@ -1108,6 +1640,46 @@ mod tests {
             Datum::Object(fields)
                 if fields.iter().any(|field| field.name == "id" && field.datum == Datum::scalar(Value::Text("t2".into())))
         ));
+    }
+
+    #[tokio::test]
+    async fn memo_distinct_extraction_matches_structural_and_reference_execution() {
+        let table = table();
+        let store = Store::memory("exec-memo-distinct").await.unwrap();
+        seed(&store, &table).await;
+        let scan = scan(&table, [0, 1, 2], "t");
+        let distinct = Relation::distinct(Relation::distinct(Relation::distinct(scan.clone())));
+        let ordered = Relation::order(
+            distinct,
+            vec![BoundOrderTerm {
+                expression: expression(&scan, "id"),
+                descending: false,
+            }],
+        );
+        let bound = query(ordered, 3);
+        let structural = plan_query(&bound, PlanOptions::default());
+        let cost = plan_query(
+            &bound,
+            PlanOptions {
+                mode: crate::engine::planner::PlannerMode::Cost,
+                ..PlanOptions::default()
+            },
+        );
+        let structural = Executor::new(&store, Limits::default())
+            .execute(&structural)
+            .await
+            .unwrap();
+        let cost = Executor::new(&store, Limits::default())
+            .execute(&cost)
+            .await
+            .unwrap();
+        let reference = ReferenceExecutor::new(&store, Limits::default())
+            .execute(&bound)
+            .await
+            .unwrap();
+        assert_eq!(cost, structural);
+        assert_eq!(cost, reference);
+        store.close().await.unwrap();
     }
 
     #[tokio::test]
@@ -1295,6 +1867,610 @@ mod tests {
                 .map(|value| vec![Value::Int64(*value)])
                 .collect(),
         )
+    }
+
+    fn nullable_int_rows(scope: &str, slot: usize, values: &[Option<i64>]) -> Relation {
+        Relation::rows(
+            scope,
+            vec![Field {
+                name: "n".into(),
+                slot: SlotId(slot),
+                value_type: Type::scalar(Kind::Int64, true),
+            }],
+            values
+                .iter()
+                .map(|value| vec![value.map_or(Value::Null(ScalarType::Int64), Value::Int64)])
+                .collect(),
+        )
+    }
+
+    #[tokio::test]
+    async fn shredded_yannakakis_matches_binary_and_reference_execution() {
+        let input = |scope: &str, slot: usize| {
+            Relation::rows(
+                scope,
+                vec![Field {
+                    name: "key".into(),
+                    slot: SlotId(slot),
+                    value_type: Type::scalar(Kind::Int64, false),
+                }],
+                (0..16).map(|_| vec![Value::Int64(1)]).collect(),
+            )
+        };
+        let equality = |left: usize, right: usize| {
+            Expr::binary(
+                BinaryOp::Eq,
+                Expr::slot(SlotId(left), "key", Type::scalar(Kind::Int64, false)),
+                Expr::slot(SlotId(right), "key", Type::scalar(Kind::Int64, false)),
+            )
+        };
+        let first_second = Relation::join(
+            input("first", 0),
+            input("second", 1),
+            crate::engine::lir::JoinKind::Inner,
+            equality(0, 1),
+        );
+        let joined = Relation::join(
+            first_second,
+            input("third", 2),
+            crate::engine::lir::JoinKind::Inner,
+            equality(1, 2),
+        );
+        let aggregate = Relation::aggregate(
+            joined,
+            Vec::new(),
+            vec![bound::BoundAggregateTerm {
+                function: AggregateFunction::Count,
+                argument: None,
+                name: "count".into(),
+                slot: SlotId(3),
+                value_type: Type::scalar(Kind::Int64, false),
+            }],
+        );
+        let bound = query(aggregate, 4);
+        let statistics = PlannerStats::empty();
+        let structural_plan = plan_query_with_context(
+            &bound,
+            PlanOptions::default(),
+            PlanningContext {
+                statistics: Some(&statistics),
+            },
+        )
+        .plan;
+        let cost_plan = plan_query_with_context(
+            &bound,
+            PlanOptions {
+                mode: PlannerMode::Cost,
+                ..PlanOptions::default()
+            },
+            PlanningContext {
+                statistics: Some(&statistics),
+            },
+        )
+        .plan;
+        let mut selected = false;
+        cost_plan.walk(&mut |node| {
+            selected |= matches!(node.kind, NodeKind::ShreddedYannakakisJoin { .. });
+        });
+        assert!(selected);
+
+        let store = Store::memory("exec-shredded-yannakakis").await.unwrap();
+        let structural = Executor::new(&store, Limits::default())
+            .execute(&structural_plan)
+            .await
+            .unwrap();
+        let mut cost_executor = Executor::new(&store, Limits::default());
+        cost_executor.enable_measurements();
+        let cost = cost_executor.execute(&cost_plan).await.unwrap();
+        let reference = ReferenceExecutor::new(&store, Limits::default())
+            .execute(&bound)
+            .await
+            .unwrap();
+        assert_eq!(cost, structural);
+        assert_eq!(cost, reference);
+        let measurement = cost_executor.join_measurements().last().unwrap();
+        assert_eq!(measurement.operator, "ShreddedYannakakisJoin");
+        assert_eq!(measurement.reduction_passes, 4);
+        assert_eq!(measurement.expanded_rows, 4_096);
+        store.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn predicate_transfer_matches_binary_and_reference_execution() {
+        let input = |scope: &str, slots: [usize; 2], values: [&str; 2]| {
+            Relation::rows(
+                scope,
+                vec![
+                    Field {
+                        name: "first_key".into(),
+                        slot: SlotId(slots[0]),
+                        value_type: Type::scalar(Kind::Text, false),
+                    },
+                    Field {
+                        name: "second_key".into(),
+                        slot: SlotId(slots[1]),
+                        value_type: Type::scalar(Kind::Text, false),
+                    },
+                ],
+                (0..30)
+                    .map(|_| vec![Value::Text(values[0].into()), Value::Text(values[1].into())])
+                    .collect(),
+            )
+        };
+        let equality = |left: usize, right: usize| {
+            Expr::binary(
+                BinaryOp::Eq,
+                Expr::slot(SlotId(left), "join_key", Type::scalar(Kind::Text, false)),
+                Expr::slot(SlotId(right), "join_key", Type::scalar(Kind::Text, false)),
+            )
+        };
+        let first = input("first", [0, 1], ["a", "b"]);
+        let second = input("second", [2, 3], ["b", "c"]);
+        let third = input("third", [4, 5], ["c", "different"]);
+        let first_second = Relation::join(
+            first,
+            second,
+            crate::engine::lir::JoinKind::Inner,
+            equality(1, 2),
+        );
+        let joined = Relation::join(
+            first_second,
+            third,
+            crate::engine::lir::JoinKind::Inner,
+            Expr::binary(BinaryOp::And, equality(3, 4), equality(0, 5)),
+        );
+        let aggregate = Relation::aggregate(
+            joined,
+            Vec::new(),
+            vec![bound::BoundAggregateTerm {
+                function: AggregateFunction::Count,
+                argument: None,
+                name: "count".into(),
+                slot: SlotId(6),
+                value_type: Type::scalar(Kind::Int64, false),
+            }],
+        );
+        let bound = query(aggregate, 7);
+        let statistics = PlannerStats::empty();
+        let structural_plan = plan_query_with_context(
+            &bound,
+            PlanOptions::default(),
+            PlanningContext {
+                statistics: Some(&statistics),
+            },
+        )
+        .plan;
+        let cost_plan = plan_query_with_context(
+            &bound,
+            PlanOptions {
+                mode: PlannerMode::Cost,
+                ..PlanOptions::default()
+            },
+            PlanningContext {
+                statistics: Some(&statistics),
+            },
+        )
+        .plan;
+        let mut selected = false;
+        cost_plan.walk(&mut |node| {
+            selected |= matches!(node.kind, NodeKind::PredicateTransferJoin { .. });
+        });
+        assert!(selected);
+
+        let store = Store::memory("exec-predicate-transfer").await.unwrap();
+        let structural = Executor::new(&store, Limits::default())
+            .execute(&structural_plan)
+            .await
+            .unwrap();
+        let mut cost_executor = Executor::new(&store, Limits::default());
+        cost_executor.enable_measurements();
+        let cost = cost_executor.execute(&cost_plan).await.unwrap();
+        let reference = ReferenceExecutor::new(&store, Limits::default())
+            .execute(&bound)
+            .await
+            .unwrap();
+
+        assert_eq!(cost, structural);
+        assert_eq!(cost, reference);
+        let measurement = cost_executor
+            .join_measurements()
+            .iter()
+            .find(|measurement| measurement.operator == "PredicateTransferJoin")
+            .expect("predicate transfer measurement");
+        assert_eq!(measurement.rows_before_reduction, 90);
+        assert_eq!(measurement.rows_after_reduction, 0);
+        assert_eq!(measurement.filter_rows_skipped, 90);
+        assert_eq!(measurement.filter_input_scans, 6);
+        assert_eq!(measurement.filter_repeated_scans, 3);
+        assert_eq!(measurement.filter_false_positives, 0);
+        assert!(measurement.filter_false_positive_measurement_complete);
+        assert!(measurement.filter_insertions > 0);
+        assert!(measurement.filter_min_max_checks > 0);
+        assert!(measurement.filter_blocks_skipped > 0);
+        assert!(measurement.filter_min_max_rows_skipped > 0);
+        store.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn predicate_transfer_narrows_a_primary_key_scan() {
+        let table = table();
+        let store = Store::memory("exec-predicate-transfer-storage")
+            .await
+            .unwrap();
+        seed(&store, &table).await;
+        let source = Relation::rows(
+            "selected",
+            vec![Field {
+                name: "id".into(),
+                slot: SlotId(0),
+                value_type: Type::scalar(Kind::Text, false),
+            }],
+            vec![vec![Value::Text("t2".into())]],
+        );
+        let target = scan(&table, [1, 2, 3], "target");
+        let on = Expr::binary(
+            BinaryOp::Eq,
+            expression(&source, "id"),
+            expression(&target, "id"),
+        );
+        let joined = Relation::join(
+            source.clone(),
+            target.clone(),
+            crate::engine::lir::JoinKind::Inner,
+            on,
+        );
+        let mut plan = plan_query(&query(joined.clone(), 4), PlanOptions::default());
+        let structural = plan.clone();
+        let NodeKind::NestedLoopJoin {
+            left,
+            right,
+            kind,
+            on,
+            keys,
+            right_output,
+            decision,
+        } = plan.root.kind.clone()
+        else {
+            panic!("expected nested-loop join")
+        };
+        assert!(matches!(&left.kind, NodeKind::Rows(_)));
+        assert!(matches!(&right.kind, NodeKind::TableScan { .. }));
+        let join_plan = NodeKind::NestedLoopJoin {
+            left: Box::new(
+                NodeKind::PredicateTransferInput {
+                    input: 0,
+                    output: source.output().clone(),
+                }
+                .bare(),
+            ),
+            right: Box::new(
+                NodeKind::PredicateTransferInput {
+                    input: 1,
+                    output: target.output().clone(),
+                }
+                .bare(),
+            ),
+            kind,
+            on,
+            keys: keys.clone(),
+            right_output,
+            decision,
+        }
+        .bare();
+        plan.root = NodeKind::PredicateTransferJoin {
+            inputs: vec![*left, *right],
+            schedule: PredicateTransferSchedule {
+                root_input: 1,
+                forward: PredicateTransferPass {
+                    order: vec![0, 1],
+                    edges: vec![crate::engine::planner::physical::PredicateTransferEdge {
+                        source: 0,
+                        target: 1,
+                        keys,
+                    }],
+                },
+                backward: PredicateTransferPass {
+                    order: Vec::new(),
+                    edges: Vec::new(),
+                },
+                pruned_paths: 1,
+            },
+            join_plan: Box::new(join_plan),
+            output: joined.output().clone(),
+            bits_per_key: 20,
+            hash_functions: 7,
+            runtime_policy: crate::engine::planner::predicate_transfer::runtime_policy(),
+            memory_limit_bytes: 1_000_000,
+            logical_row_operations: AccessQuantity::exact(0),
+            estimated_peak_retained_bytes: AccessQuantity::exact(0),
+        }
+        .bare();
+        let view = RecordingView {
+            store,
+            ranges: Mutex::new(Vec::new()),
+            scan_entries: Arc::new(AtomicUsize::new(0)),
+            seek_targets: Arc::new(Mutex::new(Vec::new())),
+        };
+        let structural_rows = Executor::new(&view, Limits::default())
+            .run_frames(&structural)
+            .await
+            .unwrap();
+        let structural_entries = view.scan_entries.swap(0, AtomicOrdering::Relaxed);
+        view.ranges
+            .lock()
+            .expect("recorded range lock poisoned")
+            .clear();
+        let mut executor = Executor::new(&view, Limits::default());
+        executor.enable_measurements();
+        let rows = executor.run_frames(&plan).await.unwrap();
+
+        assert_eq!(rows, structural_rows);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(structural_entries, 3);
+        assert_eq!(view.scan_entries.load(AtomicOrdering::Relaxed), 1);
+        let mut expected_start = codec::data_prefix(&table).unwrap();
+        expected_start.extend_from_slice(&codec::encode_value(&Value::Text("t2".into())).unwrap());
+        let data_prefix = codec::data_prefix(&table).unwrap();
+        let data_ranges = view
+            .ranges
+            .lock()
+            .expect("recorded range lock poisoned")
+            .iter()
+            .filter(|range| {
+                range
+                    .start
+                    .as_deref()
+                    .is_some_and(|start| start.starts_with(&data_prefix))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            data_ranges,
+            vec![KeyRange {
+                start: Some(Bytes::from(data_prefix)),
+                end: prefix_end(&expected_start).map(Bytes::from),
+            }]
+        );
+        assert_eq!(
+            *view
+                .seek_targets
+                .lock()
+                .expect("recorded seek target lock poisoned"),
+            vec![Bytes::from(expected_start)]
+        );
+        let measurement = executor
+            .join_measurements()
+            .iter()
+            .find(|measurement| measurement.operator == "PredicateTransferJoin")
+            .expect("predicate transfer measurement");
+        assert_eq!(measurement.filter_storage_range_candidates, 1);
+        assert_eq!(measurement.filter_storage_ranges_applied, 1);
+        assert_eq!(measurement.filter_storage_scans_pruned, 1);
+        assert_eq!(measurement.filter_storage_empty_scans, 0);
+        view.store.close().await.unwrap();
+    }
+
+    #[test]
+    fn predicate_transfer_maps_the_next_index_prefix() {
+        let table = table();
+        let relation = scan(&table, [0, 1, 2], "target");
+        let target = relation.output().lookup("board_id").unwrap().clone();
+        let source = Field {
+            name: "board_id".into(),
+            slot: SlotId(10),
+            value_type: target.value_type.clone(),
+        };
+        let node = NodeKind::IndexRangeScan {
+            scan: Box::new(relation),
+            index: table.indexes[0].clone(),
+            equality_prefix: Vec::new(),
+            range: None,
+            decode_columns: table.columns.clone(),
+            access: Default::default(),
+        }
+        .bare();
+        let pass = PredicateTransferPass {
+            order: vec![0, 1],
+            edges: vec![crate::engine::planner::physical::PredicateTransferEdge {
+                source: 0,
+                target: 1,
+                keys: vec![EquiJoinKey {
+                    left: source,
+                    right: target,
+                }],
+            }],
+        };
+        let encoded = codec::encode_value(&Value::Text("b1".into())).unwrap();
+        let decision = storage_pruning(
+            &node,
+            &pass,
+            &[
+                crate::engine::exec::predicate_transfer::StorageRange::Bounded {
+                    edge_index: 0,
+                    minimum: encoded.clone(),
+                    maximum: encoded.clone(),
+                },
+            ],
+            &Env::new(),
+        )
+        .unwrap()
+        .expect("index range pruning");
+        let row_store::ScanPruning::Range(range) = decision.pruning else {
+            panic!("expected bounded index range")
+        };
+        let mut start = codec::index_prefix(&table, &table.indexes[0].id).unwrap();
+        start.extend_from_slice(&encoded);
+        assert_eq!(
+            range,
+            KeyRange {
+                start: Some(Bytes::from(start.clone())),
+                end: prefix_end(&start).map(Bytes::from),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn hash_join_matches_nested_and_reference_for_duplicates_nulls_and_left_padding() {
+        for kind in [
+            crate::engine::lir::JoinKind::Inner,
+            crate::engine::lir::JoinKind::Left,
+        ] {
+            let left = nullable_int_rows("left", 0, &[Some(1), Some(2), None]);
+            let right = nullable_int_rows("right", 1, &[Some(1), Some(1), Some(3), None]);
+            let on = Expr::binary(
+                BinaryOp::Eq,
+                Expr::slot(SlotId(0), "left.n", Type::scalar(Kind::Int64, true)),
+                Expr::slot(SlotId(1), "right.n", Type::scalar(Kind::Int64, true)),
+            );
+            let relation = Relation::join(left.clone(), right.clone(), kind, on.clone());
+            let bound = query(relation.clone(), 2);
+            let nested_plan = plan_query(&bound, PlanOptions::default());
+            let NodeKind::NestedLoopJoin {
+                left: planned_left,
+                right: planned_right,
+                keys,
+                right_output,
+                ..
+            } = nested_plan.root.kind.clone()
+            else {
+                panic!("expected nested-loop join")
+            };
+            let mut hash_plan = nested_plan.clone();
+            hash_plan.root.kind = NodeKind::HashJoin {
+                left: planned_left,
+                right: planned_right,
+                kind,
+                on,
+                keys,
+                right_output,
+                memory_limit_bytes: 1024,
+                decision: Default::default(),
+            };
+            let store = Store::memory(&format!("exec-hash-join-{kind:?}"))
+                .await
+                .unwrap();
+            let mut nested = Executor::new(&store, Limits::default());
+            nested.enable_measurements();
+            let nested_result = nested.execute(&nested_plan).await.unwrap();
+            let mut hash = Executor::new(&store, Limits::default());
+            hash.enable_measurements();
+            let hash_result = hash.execute(&hash_plan).await.unwrap();
+            let reference = ReferenceExecutor::new(&store, Limits::default())
+                .execute(&bound)
+                .await
+                .unwrap();
+            assert_eq!(hash_result, nested_result);
+            assert_eq!(hash_result, reference);
+            let hash_measurement = hash.join_measurements().last().unwrap();
+            assert_eq!(hash_measurement.operator, "HashJoin");
+            assert_eq!(hash_measurement.build_rows, 4);
+            assert_eq!(hash_measurement.probe_rows, 3);
+            assert!(hash_measurement.key_comparisons > 0);
+            assert_eq!(hash_measurement.residual_predicate_evaluations, 0);
+            assert!(hash_measurement.peak_retained_bytes > 0);
+            assert_eq!(hash_measurement.spill_bytes, 0);
+            let nested_measurement = nested.join_measurements().last().unwrap();
+            assert_eq!(nested_measurement.build_rows, 4);
+            assert_eq!(nested_measurement.probe_rows, 3);
+            if kind == crate::engine::lir::JoinKind::Inner {
+                let NodeKind::HashJoin {
+                    memory_limit_bytes, ..
+                } = &mut hash_plan.root.kind
+                else {
+                    unreachable!()
+                };
+                *memory_limit_bytes = 1;
+                let error = Executor::new(&store, Limits::default())
+                    .execute(&hash_plan)
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.kind(), ErrorKind::Runtime);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn indexed_lookup_join_matches_nested_and_reports_exact_requests() {
+        let table = table();
+        let left = Relation::rows(
+            "left",
+            vec![Field {
+                name: "id".into(),
+                slot: SlotId(10),
+                value_type: Type::scalar(Kind::Text, true),
+            }],
+            vec![
+                vec![Value::Text("t1".into())],
+                vec![Value::Text("missing".into())],
+                vec![Value::Null(ScalarType::Text)],
+            ],
+        );
+        let right = scan(&table, [20, 21, 22], "right");
+        let on = Expr::binary(
+            BinaryOp::Eq,
+            Expr::slot(SlotId(10), "left.id", Type::scalar(Kind::Text, true)),
+            Expr::slot(SlotId(20), "right.id", Type::scalar(Kind::Text, false)),
+        );
+        let relation = Relation::join(
+            left,
+            right.clone(),
+            crate::engine::lir::JoinKind::Left,
+            on.clone(),
+        );
+        let bound = query(relation, 23);
+        let nested_plan = plan_query(&bound, PlanOptions::default());
+        let NodeKind::NestedLoopJoin {
+            left: planned_left,
+            right: planned_right,
+            keys,
+            right_output,
+            ..
+        } = nested_plan.root.kind.clone()
+        else {
+            panic!("expected nested-loop join")
+        };
+        let NodeKind::TableScan { decode_columns, .. } = planned_right.kind else {
+            panic!("expected table scan")
+        };
+        let lookup = NodeKind::PrimaryKeyGet {
+            scan: Box::new(right),
+            key: vec![ConstValue::Outer(SlotId(10))],
+            decode_columns,
+            access: Default::default(),
+        }
+        .bare();
+        let mut lookup_plan = nested_plan.clone();
+        lookup_plan.root.kind = NodeKind::IndexedLookupJoin {
+            left: planned_left,
+            right: Box::new(lookup),
+            kind: crate::engine::lir::JoinKind::Left,
+            on,
+            keys,
+            right_output,
+            decision: Default::default(),
+        };
+        let store = Store::memory("exec-indexed-lookup-join").await.unwrap();
+        seed(&store, &table).await;
+        let nested = Executor::new(&store, Limits::default())
+            .execute(&nested_plan)
+            .await
+            .unwrap();
+        let mut lookup = Executor::new(&store, Limits::default());
+        lookup.enable_measurements();
+        let lookup_result = lookup.execute(&lookup_plan).await.unwrap();
+        let reference = ReferenceExecutor::new(&store, Limits::default())
+            .execute(&bound)
+            .await
+            .unwrap();
+        assert_eq!(lookup_result, nested);
+        assert_eq!(lookup_result, reference);
+        let measurement = lookup.join_measurements().last().unwrap();
+        assert_eq!(measurement.operator, "IndexedLookupJoin");
+        assert_eq!(measurement.probe_rows, 3);
+        assert_eq!(measurement.lookup_requests, 2);
+        assert_eq!(measurement.key_comparisons, 1);
+        assert_eq!(measurement.residual_predicate_evaluations, 0);
+        assert!(measurement.peak_retained_bytes > 0);
     }
 
     #[tokio::test]

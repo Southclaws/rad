@@ -1,0 +1,40 @@
+{
+  "name": "skewed_range",
+  "description": "Count a range endpoint with seventy percent of the rows.",
+  "warmup": 1,
+  "iterations": 6,
+  "expect_rows": 1,
+  "expect_result": { "event_count": 700 },
+  "program": {
+    "statements": [{
+      "name": "skewed_range",
+      "kind": "query",
+      "relation": {
+        "nodes": {
+          "events": { "kind": "scan", "table": "events", "scope": "e" },
+          "selected": {
+            "kind": "filter", "input": "events",
+            "predicate": {
+              "kind": "binary", "op": "and",
+              "left": {
+                "kind": "binary", "op": "gte",
+                "left": { "kind": "col", "scope": "e", "column": "category" },
+                "right": { "kind": "lit", "value": { "type": "text", "value": "hot" } }
+              },
+              "right": {
+                "kind": "binary", "op": "lte",
+                "left": { "kind": "col", "scope": "e", "column": "category" },
+                "right": { "kind": "lit", "value": { "type": "text", "value": "hot" } }
+              }
+            }
+          },
+          "counted": {
+            "kind": "aggregate", "input": "selected", "scope": "result",
+            "aggs": [{ "fn": "count", "as": "event_count" }]
+          }
+        },
+        "root": { "node": "counted", "cardinality": "exactly_one" }
+      }
+    }]
+  }
+}

@@ -56,6 +56,7 @@ pub struct ProgramBinder {
     next: usize,
     next_slot: SlotId,
     statistics: Option<std::sync::Arc<crate::engine::planner::models::PlannerStats>>,
+    options: PlanOptions,
 }
 
 impl ProgramBinder {
@@ -84,6 +85,7 @@ impl ProgramBinder {
             next: 0,
             next_slot: SlotId(0),
             statistics: None,
+            options: PlanOptions::default(),
         })
     }
 
@@ -94,6 +96,10 @@ impl ProgramBinder {
         self.statistics = statistics;
     }
 
+    pub fn set_plan_options(&mut self, options: PlanOptions) {
+        self.options = options;
+    }
+
     /// Bind and plan the next relational statement, then publish its result as
     /// a binding visible to subsequent statements.
     pub async fn bind(
@@ -101,7 +107,7 @@ impl ProgramBinder {
         catalog: &dyn Catalog,
         statement: ProgramStatement,
     ) -> Result<BoundStatement> {
-        self.bind_inner(catalog, statement, true, PlanOptions::default())
+        self.bind_inner(catalog, statement, true, self.options)
             .await
     }
 

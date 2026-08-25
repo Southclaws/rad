@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::env;
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,6 +19,7 @@ pub struct RadProcess {
 
 const PORT_PAIR_COUNT: usize = 9_000;
 const EXTRA_PORT_COUNT: usize = 10_000;
+const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 180;
 static NEXT_PORT_PAIR: AtomicUsize = AtomicUsize::new(0);
 static NEXT_EXTRA_PORT: AtomicUsize = AtomicUsize::new(0);
 
@@ -39,7 +41,15 @@ fn rad_command() -> Command {
 
 impl RadProcess {
     pub async fn start_s3(config: &S3Config, endpoint: &str, prefix: &str) -> TestResult<Self> {
-        Self::start_s3_role(config, endpoint, prefix, "write").await
+        Self::start_s3_role(config, endpoint, prefix, "write", "structural", false).await
+    }
+
+    pub async fn start_s3_corpus_writer(
+        config: &S3Config,
+        endpoint: &str,
+        prefix: &str,
+    ) -> TestResult<Self> {
+        Self::start_s3_role(config, endpoint, prefix, "write", "structural", true).await
     }
 
     pub async fn start_s3_reader(
@@ -47,7 +57,16 @@ impl RadProcess {
         endpoint: &str,
         prefix: &str,
     ) -> TestResult<Self> {
-        Self::start_s3_role(config, endpoint, prefix, "read").await
+        Self::start_s3_role(config, endpoint, prefix, "read", "structural", false).await
+    }
+
+    pub async fn start_s3_reader_mode(
+        config: &S3Config,
+        endpoint: &str,
+        prefix: &str,
+        planner_mode: &str,
+    ) -> TestResult<Self> {
+        Self::start_s3_role(config, endpoint, prefix, "read", planner_mode, false).await
     }
 
     async fn start_s3_role(
@@ -55,11 +74,14 @@ impl RadProcess {
         endpoint: &str,
         prefix: &str,
         role: &str,
+        planner_mode: &str,
+        capture_workload_corpus: bool,
     ) -> TestResult<Self> {
         let (port, public, admin) = reserve_port_pair()?;
         drop((public, admin));
 
-        let child = rad_command()
+        let mut command = rad_command();
+        command
             .args([
                 "serve",
                 "--addr",
@@ -72,6 +94,8 @@ impl RadProcess {
                 "schema",
                 "--role",
                 role,
+                "--planner-mode",
+                planner_mode,
                 "--reader-poll-interval-ms",
                 "100",
                 "--s3-bucket",
@@ -84,12 +108,15 @@ impl RadProcess {
             .env("AWS_ACCESS_KEY_ID", &config.access_key)
             .env("AWS_SECRET_ACCESS_KEY", &config.secret_key)
             .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()?;
+            .stderr(Stdio::inherit());
+        if capture_workload_corpus {
+            command.env("RAD_CAPTURE_WORKLOAD_CORPUS", "true");
+        }
+        let child = command.spawn()?;
         let mut process = Self {
             child,
             base: format!("http://127.0.0.1:{port}"),
-            client: Client::builder().timeout(Duration::from_secs(60)).build()?,
+            client: benchmark_client()?,
         };
         process.wait_until_ready().await?;
         Ok(process)
@@ -145,7 +172,7 @@ impl RadProcess {
         let mut process = Self {
             child,
             base: format!("http://127.0.0.1:{port}"),
-            client: Client::builder().timeout(Duration::from_secs(60)).build()?,
+            client: benchmark_client()?,
         };
         process.wait_until_ready().await?;
         Ok(process)
@@ -290,8 +317,32 @@ impl RadProcess {
             .await
     }
 
+    pub async fn execute_with_plan(&self, program: &Value) -> TestResult<Value> {
+        self.post_json("/execute?show-plan=true", program).await
+    }
+
     pub async fn statistics(&self) -> TestResult<Value> {
         self.get_json("/statistics").await
+    }
+
+    pub async fn replay_corpus(&self, limit: usize) -> TestResult<Value> {
+        let mut url = reqwest::Url::parse(&self.base)?;
+        let admin_port = url
+            .port_or_known_default()
+            .ok_or("Rad public URL has no port")?
+            .checked_add(1)
+            .ok_or("Rad admin port overflow")?;
+        url.set_port(Some(admin_port))
+            .map_err(|_| "Rad admin URL rejected its port")?;
+        url.set_path("/api/statistics/corpus/replay");
+        decode(
+            self.client
+                .post(url)
+                .json(&json!({"limit": limit}))
+                .send()
+                .await?,
+        )
+        .await
     }
 
     pub async fn get_status(&self, path: &str) -> TestResult<u16> {
@@ -364,6 +415,30 @@ impl RadProcess {
         }
         Err("Rad did not become ready".into())
     }
+}
+
+fn benchmark_client() -> TestResult<Client> {
+    Ok(Client::builder()
+        .timeout(Duration::from_secs(request_timeout_seconds()?))
+        .build()?)
+}
+
+pub(crate) fn request_timeout_seconds() -> TestResult<u64> {
+    let configured = env::var("RAD_BENCHMARK_REQUEST_TIMEOUT_SECONDS").ok();
+    request_timeout_seconds_from(configured.as_deref())
+}
+
+fn request_timeout_seconds_from(configured: Option<&str>) -> TestResult<u64> {
+    let seconds = match configured {
+        Some(value) => value.parse::<u64>().map_err(|error| {
+            format!("RAD_BENCHMARK_REQUEST_TIMEOUT_SECONDS is invalid: {error}")
+        })?,
+        None => DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    };
+    if seconds == 0 {
+        return Err("RAD_BENCHMARK_REQUEST_TIMEOUT_SECONDS must be positive".into());
+    }
+    Ok(seconds)
 }
 
 /// A port for a listener that is not part of the public/admin pair.
@@ -463,4 +538,20 @@ fn terminate(child: &mut Child) -> TestResult {
 fn terminate(child: &mut Child) -> TestResult {
     child.kill()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_timeout_uses_the_default_and_validates_an_override() {
+        assert_eq!(
+            request_timeout_seconds_from(None).unwrap(),
+            DEFAULT_REQUEST_TIMEOUT_SECONDS
+        );
+        assert_eq!(request_timeout_seconds_from(Some("240")).unwrap(), 240);
+        assert!(request_timeout_seconds_from(Some("0")).is_err());
+        assert!(request_timeout_seconds_from(Some("invalid")).is_err());
+    }
 }

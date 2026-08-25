@@ -45,6 +45,8 @@ pub struct EncodedStatementPlan {
     pub name: String,
     pub view: PlanView,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measurement: Option<crate::engine::exec::StatementPlanMeasurement>,
 }
 
 pub fn datum(value: &Datum) -> Result<JsonValue, EncodeError> {
@@ -88,6 +90,7 @@ fn plans(values: &[StatementPlan]) -> PlanEnvelope {
                 name: plan.name.clone(),
                 view: plan.plan.clone(),
                 text: plan.plan.render(),
+                measurement: plan.measurement.clone(),
             })
             .collect(),
     }

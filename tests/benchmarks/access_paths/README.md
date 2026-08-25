@@ -8,7 +8,16 @@ The `events` table contains 1,000 deterministic rows. Category values are
 skewed and follow primary-key order. Score values have a uniform repeated
 range. Region and segment values have full correlation. Optional tags are 80
 percent NULL. The queries select rare and common values, narrow and broad
-ranges, correlated predicates, NULL values, and an ordered page.
+ranges, an empty range, endpoint ranges, the complete domain, a skewed range,
+correlated predicates, NULL values, and an ordered page.
+The join cases include degree bounds, predicate-conditioned multi-way bounds,
+a rare-input-first bushy alternative, acyclic semijoin reduction, and cyclic
+predicate transfer. The shared-cascade case records min-max block pruning and
+one broadcast filter that serves two transfer paths.
+
+The persisted-synopsis transfer case uses three aliases of `events`. It records
+post-filter bounds, transfer-path pruning, and the asymmetric transfer
+schedule.
 
 The manifest, schema, query documents, and `access-paths-dataset-v1` generator
 form the fixture identity. Do not change a distribution in place. A changed

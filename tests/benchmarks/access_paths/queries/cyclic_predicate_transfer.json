@@ -1,0 +1,92 @@
+{
+  "name": "cyclic_predicate_transfer",
+  "description": "Count a cyclic join whose transferred predicates remove all dangling rows.",
+  "warmup": 1,
+  "iterations": 6,
+  "expect_rows": 1,
+  "expect_result": { "joined_count": 0 },
+  "program": {
+    "statements": [{
+      "name": "cyclic_predicate_transfer",
+      "kind": "query",
+      "relation": {
+        "nodes": {
+          "first_rows": {
+            "kind": "rows", "scope": "f",
+            "columns": [
+              { "name": "first_key", "type": "text" },
+              { "name": "second_key", "type": "text" }
+            ],
+            "rows": [
+              ["a", "b"], ["a", "b"], ["a", "b"], ["a", "b"], ["a", "b"],
+              ["a", "b"], ["a", "b"], ["a", "b"], ["a", "b"], ["a", "b"],
+              ["a", "b"], ["a", "b"], ["a", "b"], ["a", "b"], ["a", "b"],
+              ["a", "b"], ["a", "b"], ["a", "b"], ["a", "b"], ["a", "b"],
+              ["a", "b"], ["a", "b"], ["a", "b"], ["a", "b"], ["a", "b"],
+              ["a", "b"], ["a", "b"], ["a", "b"], ["a", "b"], ["a", "b"]
+            ]
+          },
+          "second_rows": {
+            "kind": "rows", "scope": "s",
+            "columns": [
+              { "name": "first_key", "type": "text" },
+              { "name": "second_key", "type": "text" }
+            ],
+            "rows": [
+              ["b", "c"], ["b", "c"], ["b", "c"], ["b", "c"], ["b", "c"],
+              ["b", "c"], ["b", "c"], ["b", "c"], ["b", "c"], ["b", "c"],
+              ["b", "c"], ["b", "c"], ["b", "c"], ["b", "c"], ["b", "c"],
+              ["b", "c"], ["b", "c"], ["b", "c"], ["b", "c"], ["b", "c"],
+              ["b", "c"], ["b", "c"], ["b", "c"], ["b", "c"], ["b", "c"],
+              ["b", "c"], ["b", "c"], ["b", "c"], ["b", "c"], ["b", "c"]
+            ]
+          },
+          "third_rows": {
+            "kind": "rows", "scope": "t",
+            "columns": [
+              { "name": "first_key", "type": "text" },
+              { "name": "second_key", "type": "text" }
+            ],
+            "rows": [
+              ["c", "different"], ["c", "different"], ["c", "different"], ["c", "different"], ["c", "different"],
+              ["c", "different"], ["c", "different"], ["c", "different"], ["c", "different"], ["c", "different"],
+              ["c", "different"], ["c", "different"], ["c", "different"], ["c", "different"], ["c", "different"],
+              ["c", "different"], ["c", "different"], ["c", "different"], ["c", "different"], ["c", "different"],
+              ["c", "different"], ["c", "different"], ["c", "different"], ["c", "different"], ["c", "different"],
+              ["c", "different"], ["c", "different"], ["c", "different"], ["c", "different"], ["c", "different"]
+            ]
+          },
+          "first_second": {
+            "kind": "join", "left": "first_rows", "right": "second_rows", "join": "inner",
+            "on": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "f", "column": "second_key" },
+              "right": { "kind": "col", "scope": "s", "column": "first_key" }
+            }
+          },
+          "joined": {
+            "kind": "join", "left": "first_second", "right": "third_rows", "join": "inner",
+            "on": {
+              "kind": "binary", "op": "and",
+              "left": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "s", "column": "second_key" },
+                "right": { "kind": "col", "scope": "t", "column": "first_key" }
+              },
+              "right": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "f", "column": "first_key" },
+                "right": { "kind": "col", "scope": "t", "column": "second_key" }
+              }
+            }
+          },
+          "counted": {
+            "kind": "aggregate", "input": "joined", "scope": "result",
+            "aggs": [{ "fn": "count", "as": "joined_count" }]
+          }
+        },
+        "root": { "node": "counted", "cardinality": "exactly_one" }
+      }
+    }]
+  }
+}

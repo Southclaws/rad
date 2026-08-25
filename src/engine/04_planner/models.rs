@@ -13,7 +13,7 @@ use crate::engine::lir::fingerprint::Fingerprint;
 /// Four-row count-min sketch over fingerprint digests. Width is a power of
 /// two. Estimates overcount, never undercount, which is the safe direction
 /// for both eviction and cache-admission consumers.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize)]
 pub struct FrequencySketch {
     rows: [Vec<u32>; 4],
     mask: usize,
@@ -789,6 +789,8 @@ pub struct SynopsisModel {
     pub columns: Vec<ColumnSynopsis>,
     #[serde(default)]
     pub column_groups: Vec<ColumnGroupSynopsis>,
+    #[serde(default)]
+    pub predicate_conditioned_degrees: Vec<PredicateConditionedDegreeSynopsis>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -864,11 +866,124 @@ pub struct ColumnSynopsis {
     pub distinct: u64,
     pub distinct_is_exact: bool,
     pub average_width: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum_width: Option<u64>,
     /// Rendered minimum/maximum for diagnostics; absent for all-null columns.
     pub minimum: Option<String>,
     pub maximum: Option<String>,
     #[serde(default)]
     pub most_common_values: Vec<MostCommonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_distribution: Option<RangeDistribution>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degree_sequence: Option<DegreeSequenceSynopsis>,
+}
+
+pub const RANGE_DISTRIBUTION_FORMAT_VERSION: u32 = 1;
+pub const DEGREE_SEQUENCE_FORMAT_VERSION: u32 = 1;
+pub const PREDICATE_CONDITIONED_DEGREE_FORMAT_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DegreeSequenceSynopsis {
+    pub format_version: u32,
+    pub coverage: SynopsisCoverage,
+    pub sample_size: u64,
+    pub value_generations: Vec<u64>,
+    pub collected_row_count: u64,
+    pub non_null_rows: u64,
+    pub distinct_values: u64,
+    pub distinct_is_exact: bool,
+    pub norms: DegreeSequenceNorms,
+    pub segments: Vec<DegreeSequenceSegment>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DegreeSequenceNorms {
+    pub l1: u64,
+    /// This integer is the mathematical ceiling of the l_2 norm.
+    pub l2_upper: u64,
+    pub l_infinity: u64,
+    pub exact: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DegreeSequenceSegment {
+    pub rank_start: u64,
+    pub rank_end: u64,
+    /// This value is an entry-wise upper bound for each rank in the segment.
+    pub frequency_upper: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PredicateConditionedDegreeSynopsis {
+    pub format_version: u32,
+    pub coverage: SynopsisCoverage,
+    pub sample_size: u64,
+    pub join_columns: Vec<SchemaId>,
+    pub join_value_generations: Vec<u64>,
+    pub predicate_column: SchemaId,
+    pub predicate_value_generation: u64,
+    pub values: Vec<PredicateConditionedDegreeValue>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PredicateConditionedDegreeValue {
+    pub predicate_value: SynopsisValue,
+    pub matching_rows: u64,
+    pub non_null_join_rows: u64,
+    pub distinct_join_values: u64,
+    pub norms: DegreeSequenceNorms,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RangeDistribution {
+    pub format_version: u32,
+    pub coverage: SynopsisCoverage,
+    pub sample_size: u64,
+    pub value_generation: u64,
+    pub collected_row_count: u64,
+    pub buckets: Vec<RangeDistributionBucket>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RangeDistributionBucket {
+    pub lower: SynopsisValue,
+    pub upper: SynopsisValue,
+    pub rows: SynopsisCountBounds,
+    pub cumulative_rows: SynopsisCountBounds,
+    pub lower_endpoint_rows: SynopsisCountBounds,
+    pub upper_endpoint_rows: SynopsisCountBounds,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SynopsisCountBounds {
+    pub lower_bound: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upper_bound: Option<u64>,
+}
+
+impl SynopsisCountBounds {
+    pub const fn exact(value: u64) -> Self {
+        Self {
+            lower_bound: value,
+            upper_bound: Some(value),
+        }
+    }
+
+    pub const fn lower(value: u64) -> Self {
+        Self {
+            lower_bound: value,
+            upper_bound: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -891,6 +1006,8 @@ pub struct ColumnGroupSynopsis {
     pub distinct_is_exact: bool,
     #[serde(default)]
     pub most_common_values: Vec<MostCommonColumnGroup>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degree_sequence: Option<DegreeSequenceSynopsis>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -942,6 +1059,23 @@ impl SynopsisValue {
             _ => false,
         }
     }
+
+    pub fn storage_compare(&self, value: &crate::engine::lir::Value) -> Option<std::cmp::Ordering> {
+        self.to_value().compare(value).ok()
+    }
+
+    pub fn compare(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.to_value().compare(&other.to_value()).ok()
+    }
+
+    fn to_value(&self) -> crate::engine::lir::Value {
+        match self {
+            Self::Text(value) => crate::engine::lir::Value::Text(value.clone()),
+            Self::Int64(value) => crate::engine::lir::Value::Int64(*value),
+            Self::Float64(value) => crate::engine::lir::Value::Float64(*value),
+            Self::Bool(value) => crate::engine::lir::Value::Bool(*value),
+        }
+    }
 }
 
 impl std::fmt::Display for SynopsisValue {
@@ -960,6 +1094,8 @@ impl std::fmt::Display for SynopsisValue {
 /// consumers pin an `Arc` at bind time.
 #[derive(Clone)]
 pub struct PlannerStats {
+    pub snapshot_identity: String,
+    pub scope: StatisticsScope,
     /// Actual row distributions for logical relations.
     pub feedback_models: HashMap<Fingerprint, FeedbackModel>,
     /// Outcome and plan distributions for complete statements.
@@ -984,9 +1120,21 @@ pub struct PlannerStats {
     pub published_at: Duration,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatisticsScope {
+    #[default]
+    Empty,
+    Persisted,
+    ReaderDiagnostic,
+    WriterLive,
+}
+
 impl PlannerStats {
     pub fn empty() -> Self {
         Self {
+            snapshot_identity: "empty".into(),
+            scope: StatisticsScope::Empty,
             feedback_models: HashMap::new(),
             statement_models: HashMap::new(),
             synopsis_models: HashMap::new(),
@@ -1237,6 +1385,7 @@ mod tests {
         assert_eq!(model.columns[0].value_generation, 0);
         assert_eq!(model.columns[0].null_count, 0);
         assert!(model.columns[0].most_common_values.is_empty());
+        assert!(model.columns[0].degree_sequence.is_none());
         assert!(model.column_groups.is_empty());
     }
 

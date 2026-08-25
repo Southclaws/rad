@@ -80,7 +80,25 @@ fn required_slots(plan: &Plan) -> SlotSet {
                 add_expr(&mut required, &term.expression);
             }
         }
-        NodeKind::NestedLoopJoin { on, .. } => add_expr(&mut required, on),
+        NodeKind::NestedLoopJoin { on, .. }
+        | NodeKind::HashJoin { on, .. }
+        | NodeKind::IndexedLookupJoin { on, .. } => add_expr(&mut required, on),
+        NodeKind::ShreddedYannakakisJoin { edges, .. } => {
+            for edge in edges {
+                for key in &edge.keys {
+                    required = required.union(&SlotSet::new([key.left.slot, key.right.slot]));
+                }
+            }
+        }
+        NodeKind::PredicateTransferJoin { schedule, .. } => {
+            for pass in [&schedule.forward, &schedule.backward] {
+                for edge in &pass.edges {
+                    for key in &edge.keys {
+                        required = required.union(&SlotSet::new([key.left.slot, key.right.slot]));
+                    }
+                }
+            }
+        }
         NodeKind::Concatenate { input_outputs, .. } => {
             for output in input_outputs {
                 required = required.union(&SlotSet::new(output.slots()));

@@ -9,7 +9,7 @@ use crate::engine::catalog::model::{Revision, Schema, SchemaTransition, Table};
 use crate::engine::kv::{IsolationLevel, KvView, Transaction, TransactionView, TransactionalKv};
 use crate::engine::lir::{self, Datum, Row, RowType};
 use crate::engine::planner::bind;
-use crate::engine::planner::{PlanOptions, plan_query};
+use crate::engine::planner::{PlanOptions, PlannerMode, PlanningContext, plan_query_with_context};
 use crate::runtime::{RuntimeEffects, SystemRuntime};
 
 use super::{
@@ -27,6 +27,7 @@ pub struct Engine {
     pub(super) events: Arc<dyn EngineEventHook>,
     pub(super) observer: Option<Arc<dyn super::observe::ExecutionObserver>>,
     pub(super) statistics: Option<Arc<dyn crate::engine::planner::estimator::StatisticsProvider>>,
+    planner_mode: PlannerMode,
     catalog_observers: RwLock<Vec<CatalogObserver>>,
 }
 
@@ -44,6 +45,7 @@ impl Engine {
             events: Arc::new(NoopEngineEventHook),
             observer: None,
             statistics: None,
+            planner_mode: PlannerMode::Structural,
             catalog_observers: RwLock::new(Vec::new()),
         }
     }
@@ -85,6 +87,7 @@ impl Engine {
             events: Arc::new(NoopEngineEventHook),
             observer: None,
             statistics: None,
+            planner_mode: PlannerMode::Structural,
             catalog_observers: RwLock::new(Vec::new()),
         }
     }
@@ -114,6 +117,11 @@ impl Engine {
         self
     }
 
+    pub fn with_planner_mode(mut self, planner_mode: PlannerMode) -> Self {
+        self.planner_mode = planner_mode;
+        self
+    }
+
     pub fn observer(&self) -> Option<&Arc<dyn super::observe::ExecutionObserver>> {
         self.observer.as_ref()
     }
@@ -127,7 +135,6 @@ impl Engine {
     fn observation(&self) -> super::observe::Observation<'_> {
         super::observe::Observation {
             observer: self.observer.as_ref(),
-            statistics: self.statistics.as_ref(),
         }
     }
 
@@ -221,6 +228,7 @@ impl Engine {
             query,
             PlanOptions {
                 full_scan_only: true,
+                ..PlanOptions::default()
             },
             false,
         )
@@ -258,7 +266,20 @@ impl Engine {
         query: lir::Query,
     ) -> Result<Datum> {
         let view = TransactionView(&*transaction);
-        execute_on_view(&view, query, PlanOptions::default(), false, self.limits).await
+        execute_on_view(
+            &view,
+            query,
+            PlanOptions {
+                mode: self.planner_mode,
+                ..PlanOptions::default()
+            },
+            false,
+            self.limits,
+            self.statistics
+                .as_ref()
+                .map(|provider| provider.planning_stats()),
+        )
+        .await
     }
 
     /// Preflight every statement against a rollback-only transaction, then
@@ -304,6 +325,10 @@ impl Engine {
         }
         let result_name = super::program::validate(program, catalog_policy)?;
         let mut view = TransactionView(&*transaction);
+        let statistics = self
+            .statistics
+            .as_ref()
+            .map(|provider| provider.planning_stats());
         super::program::run(
             &mut view,
             program,
@@ -311,7 +336,15 @@ impl Engine {
             catalog_policy,
             self.limits,
             &self.runtime,
-            self.observation(),
+            super::program::RunContext {
+                observation: self.observation(),
+                statistics,
+                plan_options: PlanOptions {
+                    mode: self.planner_mode,
+                    ..PlanOptions::default()
+                },
+                collect_plan: false,
+            },
         )
         .await
     }
@@ -361,6 +394,14 @@ impl Engine {
             .filter(|statement| !statement.relational())
             .map(|statement| statement.name().to_owned())
             .collect::<Vec<_>>();
+        let statistics = self
+            .statistics
+            .as_ref()
+            .map(|provider| provider.planning_stats());
+        let plan_options = PlanOptions {
+            mode: self.planner_mode,
+            ..PlanOptions::default()
+        };
         let preflight = self
             .store
             .begin(IsolationLevel::SerializableSnapshot)
@@ -378,7 +419,8 @@ impl Engine {
                         !reference,
                         false,
                         &self.runtime,
-                        self.statistics.as_ref().map(|provider| provider.stats()),
+                        statistics.clone(),
+                        plan_options,
                     )
                     .await
                 }
@@ -424,12 +466,19 @@ impl Engine {
                         options.catalog,
                         self.limits,
                         &self.runtime,
-                        self.observation(),
+                        super::program::RunContext {
+                            observation: self.observation(),
+                            statistics: statistics.clone(),
+                            plan_options,
+                            collect_plan: options.collect_plan,
+                        },
                     )
                     .await
                 })
                 .map(|mut result| {
-                    result.plans = plans;
+                    if reference {
+                        result.plans = plans;
+                    }
                     result
                 }),
                 Err(error) => Err(error),
@@ -466,6 +515,16 @@ impl Engine {
         program: &Program,
         statistics: Arc<crate::engine::planner::models::PlannerStats>,
     ) -> Result<Vec<super::PreparedStatementEstimate>> {
+        self.prepare_program_estimates_with_mode(program, statistics, self.planner_mode)
+            .await
+    }
+
+    pub async fn prepare_program_estimates_with_mode(
+        &self,
+        program: &Program,
+        statistics: Arc<crate::engine::planner::models::PlannerStats>,
+        planner_mode: PlannerMode,
+    ) -> Result<Vec<super::PreparedStatementEstimate>> {
         let transaction = self.store.begin(IsolationLevel::Snapshot).await?;
         let result = {
             let mut view = TransactionView(transaction.as_ref());
@@ -478,6 +537,10 @@ impl Engine {
                 true,
                 &self.runtime,
                 Some(statistics),
+                PlanOptions {
+                    mode: planner_mode,
+                    ..PlanOptions::default()
+                },
             )
             .await
             .map(|preflight| preflight.estimates)
@@ -584,7 +647,20 @@ impl Engine {
         let transaction = self.store.begin(IsolationLevel::Snapshot).await?;
         let result = {
             let view = TransactionView(&*transaction);
-            execute_on_view(&view, query, options, force_nested, self.limits).await
+            execute_on_view(
+                &view,
+                query,
+                PlanOptions {
+                    mode: self.planner_mode,
+                    ..options
+                },
+                force_nested,
+                self.limits,
+                self.statistics
+                    .as_ref()
+                    .map(|provider| provider.planning_stats()),
+            )
+            .await
         };
         transaction.rollback();
         result
@@ -664,12 +740,19 @@ async fn execute_on_view(
     options: PlanOptions,
     force_nested: bool,
     limits: Limits,
+    statistics: Option<Arc<crate::engine::planner::models::PlannerStats>>,
 ) -> Result<Datum> {
     let bound = bind::bind(&ViewCatalog { view }, query).await?;
-    let plan = plan_query(&bound, options);
+    let planned = plan_query_with_context(
+        &bound,
+        options,
+        PlanningContext {
+            statistics: statistics.as_deref(),
+        },
+    );
     let mut executor = Executor::new(view, limits);
     executor.set_force_nested(force_nested);
-    executor.execute(&plan).await
+    executor.execute(&planned.plan).await
 }
 
 pub(super) struct ViewCatalog<'a> {

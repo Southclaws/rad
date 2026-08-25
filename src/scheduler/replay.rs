@@ -9,9 +9,13 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::engine::exec::{Engine, PreparedStatementEstimate};
+use crate::engine::planner::PlannerMode;
 use crate::engine::planner::estimator::{Estimate, Estimator};
 use crate::engine::planner::models::{
     DependencyStamp, KvResourceCost, KvResourceDistribution, PlannerStats, q_error_x100,
+};
+use crate::engine::planner::physical::{
+    AccessCandidate, AccessDecisionBasis, JoinCandidate, JoinDecisionBasis, NodeKind, Plan,
 };
 
 use super::statistics::CorpusExecution;
@@ -59,6 +63,7 @@ pub struct CorpusReplayReport {
     pub catalog_version: u64,
     pub catalog_hash: String,
     pub statistics_published_at_micros: u64,
+    pub statistics_snapshot_identity: String,
     pub executions_considered: usize,
     pub executions_scored: usize,
     pub executions_without_actuals: usize,
@@ -74,6 +79,56 @@ pub struct CorpusReplayReport {
     pub observed_plan_regret: ObservedPlanRegretScore,
     pub observed_resource_cost: ObservedResourceCostScore,
     pub physical_cost: Option<crate::engine::planner::models::PhysicalCostModel>,
+    pub planner: PlannerReplayScore,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannerReplayScore {
+    pub statements_compared: usize,
+    pub structural_evidence_coverage: usize,
+    pub cost_evidence_coverage: usize,
+    pub plans_changed: usize,
+    pub cost_dominance_decisions: usize,
+    pub structural_fallback_decisions: usize,
+    pub memo_expressions_changed: usize,
+    pub memo_budget_stops: usize,
+    pub equality_saturation_additional_alternatives: u64,
+    pub structural_predicted_row_work: u64,
+    pub cost_predicted_row_work: u64,
+    pub structural_predicted_workload_regret: u64,
+    pub cost_predicted_workload_regret: u64,
+    pub decisions: Vec<PlannerReplayDecision>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannerReplayDecision {
+    pub statement: String,
+    pub structural_plan: crate::engine::lir::fingerprint::Fingerprint,
+    pub cost_plan: crate::engine::lir::fingerprint::Fingerprint,
+    pub changed: bool,
+    pub structural_row_work: Option<u64>,
+    pub cost_row_work: Option<u64>,
+    pub cost_candidates: Vec<AccessCandidate>,
+    pub cost_join_candidates: Vec<JoinCandidate>,
+    pub structural_memo: MemoReplaySummary,
+    pub cost_memo: MemoReplaySummary,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoReplaySummary {
+    pub groups: u32,
+    pub alternatives: u32,
+    pub rule_applications: u32,
+    pub planning_effort: u32,
+    pub changed_expressions: usize,
+    pub selected_proof_edges: usize,
+    pub directed_alternatives: u64,
+    pub saturated_alternatives: u64,
+    pub additional_saturated_alternatives: u64,
+    pub stop_reason: Option<crate::engine::planner::memo::MemoStopReason>,
 }
 
 #[derive(Debug, Serialize)]
@@ -110,7 +165,8 @@ pub struct ObservedResourceCostScore {
 }
 
 struct PreparedProgram {
-    statements: HashMap<String, PreparedStatementEstimate>,
+    structural: HashMap<String, PreparedStatementEstimate>,
+    cost: HashMap<String, PreparedStatementEstimate>,
 }
 
 pub async fn replay(
@@ -139,6 +195,20 @@ pub async fn replay(
     let mut resource_profiles = KvResourceDistribution::default();
     let mut resource_profiles_considered = 0;
     let mut resource_profiles_with_cost = 0;
+    let mut replayed_plans = HashSet::new();
+    let mut planner_decisions = Vec::new();
+    let mut structural_evidence_coverage = 0;
+    let mut cost_evidence_coverage = 0;
+    let mut plans_changed = 0;
+    let mut cost_dominance_decisions = 0;
+    let mut structural_fallback_decisions = 0;
+    let mut memo_expressions_changed = 0;
+    let mut memo_budget_stops = 0;
+    let mut equality_saturation_additional_alternatives = 0u64;
+    let mut structural_predicted_row_work = 0u64;
+    let mut cost_predicted_row_work = 0u64;
+    let mut structural_predicted_workload_regret = 0u64;
+    let mut cost_predicted_workload_regret = 0u64;
 
     for execution in &executions {
         if execution.outcomes.is_empty() {
@@ -152,15 +222,34 @@ pub async fn replay(
                 .ok()
                 .and_then(|wire| crate::protocol::lower_pir(wire).ok());
             let estimates = match program {
-                Some(program) => engine
-                    .prepare_program_estimates(&program, statistics.clone())
-                    .await
-                    .ok(),
+                Some(program) => {
+                    let structural = engine
+                        .prepare_program_estimates_with_mode(
+                            &program,
+                            statistics.clone(),
+                            PlannerMode::Structural,
+                        )
+                        .await
+                        .ok();
+                    let cost = engine
+                        .prepare_program_estimates_with_mode(
+                            &program,
+                            statistics.clone(),
+                            PlannerMode::Cost,
+                        )
+                        .await
+                        .ok();
+                    structural.zip(cost)
+                }
                 None => None,
             };
-            entry.insert(estimates.map(|estimates| {
+            entry.insert(estimates.map(|(structural, cost)| {
                 PreparedProgram {
-                    statements: estimates
+                    structural: structural
+                        .into_iter()
+                        .map(|estimate| (estimate.name.clone(), estimate))
+                        .collect(),
+                    cost: cost
                         .into_iter()
                         .map(|estimate| (estimate.name.clone(), estimate))
                         .collect(),
@@ -177,10 +266,77 @@ pub async fn replay(
 
         let mut scored = false;
         for outcome in &execution.outcomes {
-            let Some(statement) = program.statements.get(&outcome.name) else {
+            let Some(statement) = program.structural.get(&outcome.name) else {
                 unmatched_statements += 1;
                 continue;
             };
+            let Some(cost_statement) = program.cost.get(&outcome.name) else {
+                unmatched_statements += 1;
+                continue;
+            };
+            if replayed_plans.insert((execution.content_hash, outcome.name.clone())) {
+                let structural_work = predicted_row_work(&statement.plan);
+                let (cost_work, cost_candidates, cost_join_candidates) =
+                    cost_plan_summary(&cost_statement.plan);
+                structural_evidence_coverage += usize::from(structural_work.is_some());
+                cost_evidence_coverage += usize::from(cost_work.is_some());
+                if statement.plan.fingerprint() != cost_statement.plan.fingerprint() {
+                    plans_changed += 1;
+                }
+                let structural_memo = memo_summary(&statement.plan);
+                let cost_memo = memo_summary(&cost_statement.plan);
+                memo_expressions_changed += cost_memo.changed_expressions;
+                memo_budget_stops += usize::from(cost_memo.stop_reason.is_some());
+                equality_saturation_additional_alternatives =
+                    equality_saturation_additional_alternatives
+                        .saturating_add(cost_memo.additional_saturated_alternatives);
+                for candidate in cost_candidates.iter().filter(|candidate| candidate.chosen) {
+                    match candidate.decision_basis {
+                        Some(AccessDecisionBasis::CostDominance) => cost_dominance_decisions += 1,
+                        Some(AccessDecisionBasis::Structural) => structural_fallback_decisions += 1,
+                        _ => {}
+                    }
+                }
+                for candidate in cost_join_candidates
+                    .iter()
+                    .filter(|candidate| candidate.chosen)
+                {
+                    match candidate.decision_basis {
+                        Some(JoinDecisionBasis::CostDominance) => cost_dominance_decisions += 1,
+                        Some(JoinDecisionBasis::Structural) => structural_fallback_decisions += 1,
+                        _ => {}
+                    }
+                }
+                structural_predicted_row_work = structural_predicted_row_work
+                    .saturating_add(structural_work.unwrap_or_default());
+                cost_predicted_row_work =
+                    cost_predicted_row_work.saturating_add(cost_work.unwrap_or_default());
+                if let (Some(structural_work), Some(cost_work)) = (structural_work, cost_work) {
+                    let family = crate::engine::lir::fingerprint::query(&statement.query)
+                        .root
+                        .family;
+                    let weight = u64::from(statistics.frequency(&family)).max(1);
+                    let best = structural_work.min(cost_work);
+                    structural_predicted_workload_regret = structural_predicted_workload_regret
+                        .saturating_add(
+                            structural_work.saturating_sub(best).saturating_mul(weight),
+                        );
+                    cost_predicted_workload_regret = cost_predicted_workload_regret
+                        .saturating_add(cost_work.saturating_sub(best).saturating_mul(weight));
+                }
+                planner_decisions.push(PlannerReplayDecision {
+                    statement: outcome.name.clone(),
+                    structural_plan: statement.plan.fingerprint(),
+                    cost_plan: cost_statement.plan.fingerprint(),
+                    changed: statement.plan.fingerprint() != cost_statement.plan.fingerprint(),
+                    structural_row_work: structural_work,
+                    cost_row_work: cost_work,
+                    cost_candidates,
+                    cost_join_candidates,
+                    structural_memo,
+                    cost_memo,
+                });
+            }
             scored = true;
             let baseline_error = q_error_x100(statement.active.cardinality, outcome.rows);
             let candidate_estimate = candidate.estimate(&statistics, statement);
@@ -226,6 +382,7 @@ pub async fn replay(
         catalog_hash,
         statistics_published_at_micros: u64::try_from(statistics.published_at.as_micros())
             .unwrap_or(u64::MAX),
+        statistics_snapshot_identity: statistics.snapshot_identity.clone(),
         executions_considered: executions.len(),
         executions_scored,
         executions_without_actuals,
@@ -252,7 +409,115 @@ pub async fn replay(
             cost: resource_profiles.cost(),
         },
         physical_cost: statistics.physical_cost.clone(),
+        planner: PlannerReplayScore {
+            statements_compared: planner_decisions.len(),
+            structural_evidence_coverage,
+            cost_evidence_coverage,
+            plans_changed,
+            cost_dominance_decisions,
+            structural_fallback_decisions,
+            memo_expressions_changed,
+            memo_budget_stops,
+            equality_saturation_additional_alternatives,
+            structural_predicted_row_work,
+            cost_predicted_row_work,
+            structural_predicted_workload_regret,
+            cost_predicted_workload_regret,
+            decisions: planner_decisions,
+        },
     }
+}
+
+fn memo_summary(plan: &Plan) -> MemoReplaySummary {
+    let directed_alternatives = plan
+        .memo
+        .roots
+        .iter()
+        .map(|root| u64::from(root.directed_alternatives))
+        .sum::<u64>();
+    let saturated_alternatives = plan
+        .memo
+        .roots
+        .iter()
+        .map(|root| u64::from(root.saturated_alternatives))
+        .sum::<u64>();
+    MemoReplaySummary {
+        groups: plan.memo.usage.groups,
+        alternatives: plan.memo.usage.alternatives,
+        rule_applications: plan.memo.usage.rule_applications,
+        planning_effort: plan.memo.usage.planning_effort,
+        changed_expressions: plan
+            .memo
+            .roots
+            .iter()
+            .filter(|root| root.structural_expression != root.selected_expression)
+            .count(),
+        selected_proof_edges: plan
+            .memo
+            .roots
+            .iter()
+            .map(|root| root.selected_proof.len())
+            .sum(),
+        directed_alternatives,
+        saturated_alternatives,
+        additional_saturated_alternatives: saturated_alternatives
+            .saturating_sub(directed_alternatives),
+        stop_reason: plan.memo.stop_reason,
+    }
+}
+
+fn predicted_row_work(plan: &Plan) -> Option<u64> {
+    let (work, access, joins) = cost_plan_summary(plan);
+    if access.is_empty() && joins.is_empty() {
+        Some(0)
+    } else {
+        work
+    }
+}
+
+fn cost_plan_summary(plan: &Plan) -> (Option<u64>, Vec<AccessCandidate>, Vec<JoinCandidate>) {
+    let mut total = Some(0u64);
+    let mut candidates = Vec::new();
+    let mut join_candidates = Vec::new();
+    plan.walk(&mut |node| {
+        let access = match &node.kind {
+            NodeKind::PrimaryKeyGet { access, .. }
+            | NodeKind::TableScan { access, .. }
+            | NodeKind::IndexRangeScan { access, .. } => Some(access),
+            _ => None,
+        };
+        if let Some(access) = access {
+            candidates.extend(access.candidates.clone());
+            let work = access
+                .candidates
+                .iter()
+                .find(|candidate| candidate.chosen)
+                .and_then(|candidate| candidate.cost)
+                .map(|cost| cost.logical_row_operations.central);
+            total = total
+                .zip(work)
+                .map(|(total, work)| total.saturating_add(work));
+        }
+        let join = match &node.kind {
+            NodeKind::NestedLoopJoin { decision, .. }
+            | NodeKind::HashJoin { decision, .. }
+            | NodeKind::IndexedLookupJoin { decision, .. } => Some(decision),
+            _ => None,
+        };
+        if let Some(join) = join {
+            join_candidates.extend(join.candidates.clone());
+            let work = join
+                .candidates
+                .iter()
+                .find(|candidate| candidate.chosen)
+                .and_then(|candidate| candidate.cost)
+                .map(|cost| cost.logical_row_operations.central);
+            total = total
+                .zip(work)
+                .map(|(total, work)| total.saturating_add(work));
+        }
+    });
+    (total, candidates, join_candidates)
 }
 
 fn active_plan_profile<'a>(
@@ -595,6 +860,17 @@ mod tests {
         assert_eq!(report.observed_plan_regret.slowdown_p50, 4.0);
         assert_eq!(report.observed_resource_cost.plan_profiles_considered, 1);
         assert_eq!(report.observed_resource_cost.plan_profiles_with_cost, 1);
+        assert_eq!(report.planner.structural_evidence_coverage, 1);
+        assert_eq!(report.planner.cost_evidence_coverage, 1);
+        assert_eq!(report.planner.memo_expressions_changed, 1);
+        assert_eq!(report.planner.memo_budget_stops, 0);
+        assert_eq!(report.planner.decisions[0].cost_memo.changed_expressions, 1);
+        assert_eq!(
+            report.planner.decisions[0].cost_memo.selected_proof_edges,
+            1
+        );
+        assert_eq!(report.planner.structural_predicted_workload_regret, 0);
+        assert_eq!(report.planner.cost_predicted_workload_regret, 0);
         let cost = report.observed_resource_cost.cost.expect("resource cost");
         assert_eq!(cost.observed_executions, 3);
         assert_eq!(cost.gets.maximum, 2);

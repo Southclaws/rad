@@ -1,6 +1,6 @@
 //! Executor-facing physical operator tree.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::engine::catalog::model::{CatalogDependencies, Column, Index};
 use crate::engine::lir::bound::{self, BoundAggregateTerm, BoundGroupTerm, BoundOrderTerm};
@@ -8,7 +8,7 @@ use crate::engine::lir::{
     self, RecursiveAccumulation, RootCardinality, RowType, SetQuantifier, SlotId,
 };
 
-use super::analysis::{ConstValue, Correlation, RangeBound};
+use super::analysis::{ConstValue, Correlation, EquiJoinKey, RangeBound};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Plan {
@@ -18,6 +18,7 @@ pub struct Plan {
     pub output: RowType,
     pub dependencies: CatalogDependencies,
     pub next_slot: SlotId,
+    pub memo: super::memo::MemoReport,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,12 +49,15 @@ pub enum BindingPlanKind {
     },
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AccessDecision {
     pub candidates: Vec<AccessCandidate>,
+    #[serde(default)]
+    pub structural_fallback: usize,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccessCandidate {
     pub method: String,
@@ -61,31 +65,279 @@ pub struct AccessCandidate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_row_work: Option<AccessRowWork>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<AccessCost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision_basis: Option<AccessDecisionBasis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_reason: Option<AccessRejectionReason>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub chosen: bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccessDecisionBasis {
     BoundedRowWork,
+    CostDominance,
+    PrimaryKey,
+    Structural,
 }
 
 impl AccessDecisionBasis {
     pub(super) const fn label(self) -> &'static str {
         match self {
             Self::BoundedRowWork => "bounded_row_work",
+            Self::CostDominance => "cost_dominance",
+            Self::PrimaryKey => "primary_key",
+            Self::Structural => "structural",
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccessRowWork {
     pub lower_bound: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upper_bound: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessRejectionReason {
+    InconclusiveEvidence,
+    MoreExpensive,
+    OrderingRegression,
+    OverlappingCost,
+    StructuralFallback,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessCost {
+    pub expected_entries: super::estimator::Estimate,
+    pub point_gets: AccessQuantity,
+    pub range_scans: AccessQuantity,
+    pub logical_row_operations: AccessQuantity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decoded_bytes: Option<AccessQuantity>,
+    pub ordering: AccessOrdering,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessQuantity {
+    pub central: u64,
+    pub lower_bound: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upper_bound: Option<u64>,
+}
+
+impl AccessQuantity {
+    pub const fn exact(value: u64) -> Self {
+        Self {
+            central: value,
+            lower_bound: value,
+            upper_bound: Some(value),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessOrdering {
+    NotRequired,
+    Satisfied,
+    SortRequired,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinDecision {
+    pub candidates: Vec<JoinCandidate>,
+    #[serde(default)]
+    pub structural_fallback: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinCandidate {
+    pub method: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<JoinCost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_basis: Option<JoinDecisionBasis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_reason: Option<JoinRejectionReason>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chosen: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JoinDecisionBasis {
+    CostDominance,
+    Structural,
+}
+
+impl JoinDecisionBasis {
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::CostDominance => "cost_dominance",
+            Self::Structural => "structural",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JoinRejectionReason {
+    MemoryLimit,
+    MissingEvidence,
+    MoreExpensive,
+    OverlappingCost,
+    StructuralFallback,
+    UnsupportedInput,
+    UnsupportedPredicate,
+}
+
+impl JoinRejectionReason {
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::MemoryLimit => "memory_limit",
+            Self::MissingEvidence => "missing_evidence",
+            Self::MoreExpensive => "more_expensive",
+            Self::OverlappingCost => "overlapping_cost",
+            Self::StructuralFallback => "structural_fallback",
+            Self::UnsupportedInput => "unsupported_input",
+            Self::UnsupportedPredicate => "unsupported_predicate",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinCost {
+    pub expected_output_rows: super::estimator::Estimate,
+    pub build_rows: AccessQuantity,
+    pub probe_rows: AccessQuantity,
+    pub lookup_requests: AccessQuantity,
+    pub key_comparisons: AccessQuantity,
+    pub residual_predicate_evaluations: AccessQuantity,
+    pub logical_row_operations: AccessQuantity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_retained_bytes: Option<AccessQuantity>,
+    pub ordering: AccessOrdering,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinGraphDecision {
+    pub classification: JoinGraphClassification,
+    pub input_count: usize,
+    pub edge_count: usize,
+    pub root_input: usize,
+    pub semijoin_passes: u32,
+    pub predicate_transfer_passes: u32,
+    pub candidates: Vec<JoinGraphCandidate>,
+    #[serde(default)]
+    pub structural_fallback: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JoinGraphClassification {
+    Acyclic,
+    Cyclic,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinGraphCandidate {
+    pub method: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<JoinGraphCost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_basis: Option<JoinGraphDecisionBasis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_reason: Option<JoinGraphRejectionReason>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chosen: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinGraphCost {
+    pub logical_row_operations: AccessQuantity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduction_row_operations: Option<AccessQuantity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lookup_row_operations: Option<AccessQuantity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expanded_rows: Option<AccessQuantity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_row_operations: Option<AccessQuantity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filtered_rows: Option<AccessQuantity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_bytes: Option<AccessQuantity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_paths: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_builds: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_filter_paths: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pruned_filter_paths: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_input_scans: Option<AccessQuantity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_schedule_root: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_retained_bytes: Option<AccessQuantity>,
+    pub ordering: AccessOrdering,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JoinGraphDecisionBasis {
+    BoundedNoRegret,
+    Structural,
+}
+
+impl JoinGraphDecisionBasis {
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::BoundedNoRegret => "bounded_no_regret",
+            Self::Structural => "structural",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JoinGraphRejectionReason {
+    CostOverlap,
+    CyclicGraph,
+    MemoryLimit,
+    MissingEvidence,
+    MoreExpensive,
+    OrderingConflict,
+    StructuralFallback,
+}
+
+impl JoinGraphRejectionReason {
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::CostOverlap => "cost_overlap",
+            Self::CyclicGraph => "cyclic_graph",
+            Self::MemoryLimit => "memory_limit",
+            Self::MissingEvidence => "missing_evidence",
+            Self::MoreExpensive => "more_expensive",
+            Self::OrderingConflict => "ordering_conflict",
+            Self::StructuralFallback => "structural_fallback",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,6 +380,44 @@ pub struct RangeSpec {
     pub column: String,
     pub lower: Option<RangeBound>,
     pub upper: Option<RangeBound>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShreddedJoinEdge {
+    pub parent: usize,
+    pub child: usize,
+    pub keys: Vec<EquiJoinKey>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PredicateTransferEdge {
+    pub source: usize,
+    pub target: usize,
+    pub keys: Vec<EquiJoinKey>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PredicateTransferPass {
+    pub order: Vec<usize>,
+    pub edges: Vec<PredicateTransferEdge>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PredicateTransferSchedule {
+    pub root_input: usize,
+    pub forward: PredicateTransferPass,
+    pub backward: PredicateTransferPass,
+    pub pruned_paths: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PredicateTransferRuntimePolicy {
+    pub block_rows: u32,
+    pub build_sample_rows: u64,
+    pub build_selectivity_threshold_bps: u16,
+    pub build_progress_threshold_bps: u16,
+    pub probe_sample_rows: u64,
+    pub probe_stop_threshold_bps: u16,
 }
 
 /// A physical operator plus the logical relation it implements, when the
@@ -218,7 +508,57 @@ pub enum NodeKind {
         right: Box<Node>,
         kind: lir::JoinKind,
         on: bound::Expr,
+        keys: Vec<EquiJoinKey>,
         right_output: RowType,
+        decision: JoinDecision,
+    },
+    HashJoin {
+        left: Box<Node>,
+        right: Box<Node>,
+        kind: lir::JoinKind,
+        on: bound::Expr,
+        keys: Vec<EquiJoinKey>,
+        right_output: RowType,
+        memory_limit_bytes: u64,
+        decision: JoinDecision,
+    },
+    IndexedLookupJoin {
+        left: Box<Node>,
+        right: Box<Node>,
+        kind: lir::JoinKind,
+        on: bound::Expr,
+        keys: Vec<EquiJoinKey>,
+        right_output: RowType,
+        decision: JoinDecision,
+    },
+    JoinGraphChoice {
+        input: Box<Node>,
+        decision: JoinGraphDecision,
+    },
+    ShreddedYannakakisJoin {
+        inputs: Vec<Node>,
+        edges: Vec<ShreddedJoinEdge>,
+        root_input: usize,
+        output: RowType,
+        memory_limit_bytes: u64,
+        logical_row_operations: AccessQuantity,
+        estimated_peak_retained_bytes: AccessQuantity,
+    },
+    PredicateTransferJoin {
+        inputs: Vec<Node>,
+        schedule: PredicateTransferSchedule,
+        join_plan: Box<Node>,
+        output: RowType,
+        bits_per_key: u8,
+        hash_functions: u8,
+        runtime_policy: PredicateTransferRuntimePolicy,
+        memory_limit_bytes: u64,
+        logical_row_operations: AccessQuantity,
+        estimated_peak_retained_bytes: AccessQuantity,
+    },
+    PredicateTransferInput {
+        input: usize,
+        output: RowType,
     },
     Concatenate {
         inputs: Vec<Node>,
@@ -249,7 +589,7 @@ pub enum NodeKind {
 }
 
 impl Plan {
-    pub(super) fn walk(&self, visitor: &mut impl FnMut(&Node)) {
+    pub(crate) fn walk(&self, visitor: &mut impl FnMut(&Node)) {
         for binding in &self.bindings {
             match &binding.kind {
                 BindingPlanKind::Derived { plan, .. } => plan.walk(visitor),
@@ -481,6 +821,108 @@ fn encode_plan_node(
             encode_plan_node(left, positions, payload);
             encode_plan_node(right, positions, payload);
         }
+        NodeKind::HashJoin {
+            left,
+            right,
+            kind,
+            keys,
+            memory_limit_bytes,
+            ..
+        } => {
+            payload.push(18);
+            payload.push(fp::join_byte(*kind));
+            payload.extend_from_slice(&(keys.len() as u64).to_be_bytes());
+            payload.extend_from_slice(&memory_limit_bytes.to_be_bytes());
+            encode_plan_node(left, positions, payload);
+            encode_plan_node(right, positions, payload);
+        }
+        NodeKind::IndexedLookupJoin {
+            left,
+            right,
+            kind,
+            keys,
+            ..
+        } => {
+            payload.push(19);
+            payload.push(fp::join_byte(*kind));
+            payload.extend_from_slice(&(keys.len() as u64).to_be_bytes());
+            encode_plan_node(left, positions, payload);
+            encode_plan_node(right, positions, payload);
+        }
+        NodeKind::JoinGraphChoice { input, decision } => {
+            payload.push(20);
+            payload.extend_from_slice(&(decision.input_count as u64).to_be_bytes());
+            payload.extend_from_slice(&(decision.edge_count as u64).to_be_bytes());
+            payload.extend_from_slice(&(decision.root_input as u64).to_be_bytes());
+            encode_plan_node(input, positions, payload);
+        }
+        NodeKind::ShreddedYannakakisJoin {
+            inputs,
+            edges,
+            root_input,
+            memory_limit_bytes,
+            ..
+        } => {
+            payload.push(21);
+            payload.extend_from_slice(&(inputs.len() as u64).to_be_bytes());
+            payload.extend_from_slice(&(edges.len() as u64).to_be_bytes());
+            payload.extend_from_slice(&(*root_input as u64).to_be_bytes());
+            payload.extend_from_slice(&memory_limit_bytes.to_be_bytes());
+            for edge in edges {
+                payload.extend_from_slice(&(edge.parent as u64).to_be_bytes());
+                payload.extend_from_slice(&(edge.child as u64).to_be_bytes());
+                payload.extend_from_slice(&(edge.keys.len() as u64).to_be_bytes());
+            }
+            for input in inputs {
+                encode_plan_node(input, positions, payload);
+            }
+        }
+        NodeKind::PredicateTransferJoin {
+            inputs,
+            schedule,
+            join_plan,
+            bits_per_key,
+            hash_functions,
+            runtime_policy,
+            memory_limit_bytes,
+            ..
+        } => {
+            payload.push(22);
+            payload.extend_from_slice(&(inputs.len() as u64).to_be_bytes());
+            payload.extend_from_slice(&(schedule.forward.edges.len() as u64).to_be_bytes());
+            payload.extend_from_slice(&(schedule.backward.edges.len() as u64).to_be_bytes());
+            payload.extend_from_slice(&(schedule.pruned_paths as u64).to_be_bytes());
+            payload.extend_from_slice(&(schedule.root_input as u64).to_be_bytes());
+            payload.push(*bits_per_key);
+            payload.push(*hash_functions);
+            payload.extend_from_slice(&runtime_policy.block_rows.to_be_bytes());
+            payload.extend_from_slice(&runtime_policy.build_sample_rows.to_be_bytes());
+            payload
+                .extend_from_slice(&runtime_policy.build_selectivity_threshold_bps.to_be_bytes());
+            payload.extend_from_slice(&runtime_policy.build_progress_threshold_bps.to_be_bytes());
+            payload.extend_from_slice(&runtime_policy.probe_sample_rows.to_be_bytes());
+            payload.extend_from_slice(&runtime_policy.probe_stop_threshold_bps.to_be_bytes());
+            payload.extend_from_slice(&memory_limit_bytes.to_be_bytes());
+            for pass in [&schedule.forward, &schedule.backward] {
+                payload.extend_from_slice(&(pass.order.len() as u64).to_be_bytes());
+                for input in &pass.order {
+                    payload.extend_from_slice(&(*input as u64).to_be_bytes());
+                }
+                for edge in &pass.edges {
+                    payload.extend_from_slice(&(edge.source as u64).to_be_bytes());
+                    payload.extend_from_slice(&(edge.target as u64).to_be_bytes());
+                    payload.extend_from_slice(&(edge.keys.len() as u64).to_be_bytes());
+                }
+            }
+            for input in inputs {
+                encode_plan_node(input, positions, payload);
+            }
+            encode_plan_node(join_plan, positions, payload);
+        }
+        NodeKind::PredicateTransferInput { input, .. } => {
+            payload.push(23);
+            payload.extend_from_slice(&(*input as u64).to_be_bytes());
+        }
         NodeKind::Concatenate { inputs, .. } => {
             payload.push(14);
             payload.extend_from_slice(&(inputs.len() as u64).to_be_bytes());
@@ -534,13 +976,15 @@ impl Node {
             | NodeKind::Rows(_)
             | NodeKind::IndexRangeScan { .. }
             | NodeKind::Reference { .. }
-            | NodeKind::RecursiveReference { .. } => Vec::new(),
+            | NodeKind::RecursiveReference { .. }
+            | NodeKind::PredicateTransferInput { .. } => Vec::new(),
             NodeKind::Filter { input, .. }
             | NodeKind::Project { input, .. }
             | NodeKind::Sort { input, .. }
             | NodeKind::Slice { input, .. }
             | NodeKind::Distinct { input, .. }
-            | NodeKind::Aggregate { input, .. } => vec![input],
+            | NodeKind::Aggregate { input, .. }
+            | NodeKind::JoinGraphChoice { input, .. } => vec![input],
             NodeKind::Attach {
                 input,
                 specifications,
@@ -550,9 +994,13 @@ impl Node {
                 .chain(std::iter::once(&**input))
                 .collect(),
             NodeKind::NestedLoopJoin { left, right, .. }
+            | NodeKind::HashJoin { left, right, .. }
+            | NodeKind::IndexedLookupJoin { left, right, .. }
             | NodeKind::Intersect { left, right, .. }
             | NodeKind::Except { left, right, .. } => vec![left, right],
-            NodeKind::Concatenate { inputs, .. } => inputs.iter().collect(),
+            NodeKind::Concatenate { inputs, .. }
+            | NodeKind::ShreddedYannakakisJoin { inputs, .. }
+            | NodeKind::PredicateTransferJoin { inputs, .. } => inputs.iter().collect(),
         }
     }
 
@@ -570,13 +1018,15 @@ impl Node {
             | NodeKind::Rows(_)
             | NodeKind::IndexRangeScan { .. }
             | NodeKind::Reference { .. }
-            | NodeKind::RecursiveReference { .. } => Vec::new(),
+            | NodeKind::RecursiveReference { .. }
+            | NodeKind::PredicateTransferInput { .. } => Vec::new(),
             NodeKind::Filter { input, .. }
             | NodeKind::Project { input, .. }
             | NodeKind::Sort { input, .. }
             | NodeKind::Slice { input, .. }
             | NodeKind::Distinct { input, .. }
-            | NodeKind::Aggregate { input, .. } => vec![input],
+            | NodeKind::Aggregate { input, .. }
+            | NodeKind::JoinGraphChoice { input, .. } => vec![input],
             NodeKind::Attach {
                 input,
                 specifications,
@@ -588,13 +1038,17 @@ impl Node {
                 )
                 .collect(),
             NodeKind::NestedLoopJoin { left, right, .. }
+            | NodeKind::HashJoin { left, right, .. }
+            | NodeKind::IndexedLookupJoin { left, right, .. }
             | NodeKind::Intersect { left, right, .. }
             | NodeKind::Except { left, right, .. } => vec![left, right],
-            NodeKind::Concatenate { inputs, .. } => inputs.iter_mut().collect(),
+            NodeKind::Concatenate { inputs, .. }
+            | NodeKind::ShreddedYannakakisJoin { inputs, .. }
+            | NodeKind::PredicateTransferJoin { inputs, .. } => inputs.iter_mut().collect(),
         }
     }
 
-    fn walk_mut(&mut self, visitor: &mut impl FnMut(&mut Self)) {
+    pub(super) fn walk_mut(&mut self, visitor: &mut impl FnMut(&mut Self)) {
         visitor(self);
         for child in self.children_mut() {
             child.walk_mut(visitor);
@@ -634,6 +1088,7 @@ mod tests {
             &filtered("b1"),
             PlanOptions {
                 full_scan_only: true,
+                ..PlanOptions::default()
             },
         );
         assert_ne!(indexed.fingerprint(), forced_scan.fingerprint());
@@ -680,6 +1135,7 @@ mod tests {
             output,
             dependencies: CatalogDependencies::default(),
             next_slot: SlotId(4),
+            memo: crate::engine::planner::memo::MemoReport::default(),
         };
 
         let mut immutable = 0;

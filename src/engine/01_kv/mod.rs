@@ -48,6 +48,47 @@ impl DataPosition {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanPurpose {
+    #[default]
+    AccessPath,
+    CascadeRange,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScanRequest {
+    pub range: KeyRange,
+    pub purpose: ScanPurpose,
+}
+
+impl ScanRequest {
+    pub fn access_path(range: KeyRange) -> Self {
+        Self {
+            range,
+            purpose: ScanPurpose::AccessPath,
+        }
+    }
+
+    pub fn cascade_range(range: KeyRange) -> Self {
+        Self {
+            range,
+            purpose: ScanPurpose::CascadeRange,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScanDescriptor {
+    pub request: ScanRequest,
+    pub position: Option<DataPosition>,
+}
+
+pub struct DescribedScan<'a> {
+    pub descriptor: ScanDescriptor,
+    pub iterator: Box<dyn KvIterator + 'a>,
+}
+
 /// An owned, half-open key range: `[start, end)`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct KeyRange {
@@ -91,6 +132,11 @@ pub struct Entry {
 
 #[async_trait]
 pub trait KvIterator: Send {
+    /// Move to the first key at or after `next_key`.
+    ///
+    /// `next_key` must be inside the original scan range and after the last
+    /// returned key.
+    async fn seek_forward(&mut self, next_key: &[u8]) -> Result<()>;
     async fn next(&mut self) -> Result<Option<Entry>>;
 }
 
@@ -120,6 +166,18 @@ pub trait KvView: Send + Sync {
     /// Its shared borrow permits interleaved point reads while preventing the
     /// transaction from being consumed before the cursor is dropped.
     async fn scan<'a>(&'a self, range: KeyRange) -> Result<Box<dyn KvIterator + 'a>>;
+
+    async fn scan_with_request<'a>(&'a self, request: ScanRequest) -> Result<DescribedScan<'a>> {
+        let descriptor = ScanDescriptor {
+            request: request.clone(),
+            position: None,
+        };
+        let iterator = self.scan(request.range).await?;
+        Ok(DescribedScan {
+            descriptor,
+            iterator,
+        })
+    }
 }
 
 /// An ordered byte key-value store.
@@ -143,6 +201,20 @@ pub trait Transaction: Send + Sync {
     fn delete(&self, key: &[u8]) -> Result<()>;
     fn untrack_write(&self, key: &[u8]) -> Result<()>;
     async fn scan<'a>(&'a self, range: KeyRange) -> Result<Box<dyn KvIterator + 'a>>;
+    fn scan_position(&self) -> Option<&DataPosition> {
+        Some(self.begin_position())
+    }
+    async fn scan_with_request<'a>(&'a self, request: ScanRequest) -> Result<DescribedScan<'a>> {
+        let descriptor = ScanDescriptor {
+            request: request.clone(),
+            position: self.scan_position().cloned(),
+        };
+        let iterator = self.scan(request.range).await?;
+        Ok(DescribedScan {
+            descriptor,
+            iterator,
+        })
+    }
     async fn commit(self: Box<Self>) -> Result<()>;
     fn rollback(self: Box<Self>);
 }
@@ -209,5 +281,9 @@ impl KvView for TransactionView<'_> {
 
     async fn scan<'a>(&'a self, range: KeyRange) -> Result<Box<dyn KvIterator + 'a>> {
         self.0.scan(range).await
+    }
+
+    async fn scan_with_request<'a>(&'a self, request: ScanRequest) -> Result<DescribedScan<'a>> {
+        self.0.scan_with_request(request).await
     }
 }

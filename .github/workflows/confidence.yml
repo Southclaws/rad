@@ -181,10 +181,15 @@ jobs:
   benchmark:
     name: stable S3 HTTP benchmark
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 180
     env:
       CARGO_TARGET_DIR: target
       RAD_BENCHMARK_ARTIFACT_DIR: ${{ github.workspace }}/artifacts/benchmark
+      RAD_BENCHMARK_PROFILE: full
+      RAD_BENCHMARK_PAIRS: 12
+      RAD_BENCHMARK_REQUEST_TIMEOUT_SECONDS: 180
+      RAD_BENCHMARK_RUNNER: github-actions-controlled
+      RAD_SOURCE_REVISION: ${{ github.sha }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

@@ -1093,6 +1093,7 @@ async fn statistics_endpoint_reports_owner_corpus_storage() {
                         distinct: 2,
                         distinct_is_exact: true,
                         average_width: 4,
+                        maximum_width: Some(4),
                         minimum: Some("\"cold\"".into()),
                         maximum: Some("\"hot\"".into()),
                         most_common_values: vec![MostCommonValue {
@@ -1100,6 +1101,8 @@ async fn statistics_endpoint_reports_owner_corpus_storage() {
                             frequency: 8,
                             maximum_error: 1,
                         }],
+                        range_distribution: None,
+                        degree_sequence: None,
                     }],
                     column_groups: vec![ColumnGroupSynopsis {
                         columns: vec![
@@ -1118,7 +1121,9 @@ async fn statistics_endpoint_reports_owner_corpus_storage() {
                             frequency: 6,
                             maximum_error: 1,
                         }],
+                        degree_sequence: None,
                     }],
+                    predicate_conditioned_degrees: Vec::new(),
                 }],
                 ..StatisticsBatch::default()
             })

@@ -108,6 +108,7 @@ pub struct Config {
     /// batch sequences apart.
     pub instance_id: Option<String>,
     pub role: Role,
+    pub planner_mode: crate::engine::planner::PlannerMode,
     /// How long readiness reports unavailable before the listeners stop, so an
     /// orchestrator can move traffic elsewhere while requests still succeed.
     pub shutdown_drain: Duration,
@@ -161,6 +162,7 @@ impl Config {
             .ok()
             .filter(|value| !value.is_empty());
         let role = env_or("RAD_ROLE", "write").parse()?;
+        let planner_mode = env_or("RAD_PLANNER_MODE", "structural").parse()?;
         let close_timeout = close_timeout_from_env()?;
         let shutdown_drain = shutdown_drain_from_env()?;
         let path = env_or("RAD_STORAGE_PATH", "rad");
@@ -203,6 +205,7 @@ impl Config {
             relay_target,
             relay_token_file,
             role,
+            planner_mode,
             shutdown_drain,
             storage,
         };
@@ -547,9 +550,8 @@ async fn open_runtime(config: &Config, built: &BuiltObjects) -> Result<Runtime> 
         Ok(mode) => mode,
         Err(error) => return close_after_error(store.as_ref(), config.close_timeout, error).await,
     };
-    // Every instance reads published statistics so its planner estimates from
-    // the same evidence. Only a writer can publish, so a reader keeps what it
-    // observes to itself until a channel exists to hand it back.
+    // Every instance reads published statistics. A reader sends its local
+    // observations to the writer and plans only from stored evidence.
     let slate_statistics = Arc::new(crate::scheduler::statistics::SlateStatistics::new(
         store.clone(),
     ));
@@ -571,7 +573,8 @@ async fn open_runtime(config: &Config, built: &BuiltObjects) -> Result<Runtime> 
     let engine = match config.role {
         Role::Read => Engine::read_only(store.clone()),
         Role::Write => Engine::new(store.clone()),
-    };
+    }
+    .with_planner_mode(config.planner_mode);
     let engine = Arc::new(match &statistics {
         Some(statistics) => engine
             .with_observer(statistics.collector())
@@ -1035,6 +1038,7 @@ mod tests {
             relay_target: None,
             relay_token_file: None,
             role: Role::Write,
+            planner_mode: crate::engine::planner::PlannerMode::Structural,
             shutdown_drain: Duration::ZERO,
             storage: StorageConfig::Memory {
                 path: "process-lifecycle".into(),
@@ -1068,6 +1072,7 @@ mod tests {
                 relay_target: None,
                 relay_token_file: None,
                 role: Role::Write,
+                planner_mode: crate::engine::planner::PlannerMode::Structural,
                 shutdown_drain: Duration::ZERO,
                 storage: storage.clone(),
             },
@@ -1093,6 +1098,7 @@ mod tests {
                 relay_target: None,
                 relay_token_file: None,
                 role: Role::Write,
+                planner_mode: crate::engine::planner::PlannerMode::Structural,
                 shutdown_drain: Duration::ZERO,
                 storage,
             },
@@ -1120,6 +1126,7 @@ mod tests {
             relay_target: target.map(str::to_owned),
             relay_token_file: token.map(PathBuf::from),
             role: Role::Write,
+            planner_mode: crate::engine::planner::PlannerMode::Structural,
             shutdown_drain: Duration::ZERO,
             storage: StorageConfig::Memory {
                 path: "relay-config".into(),

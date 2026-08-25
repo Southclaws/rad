@@ -31,6 +31,69 @@ pub struct ScanConstraints {
     pub columns: HashMap<String, Domain>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EquiJoinKey {
+    pub left: crate::engine::lir::Field,
+    pub right: crate::engine::lir::Field,
+}
+
+pub fn equi_join_keys(
+    left: &bound::Relation,
+    right: &bound::Relation,
+    predicate: &bound::Expr,
+) -> Option<Vec<EquiJoinKey>> {
+    let mut keys = Vec::new();
+    for conjunct in conjuncts(predicate) {
+        let bound::Expr::Binary {
+            op: lir::BinaryOp::Eq,
+            left: first,
+            right: second,
+            ..
+        } = conjunct
+        else {
+            return None;
+        };
+        let (
+            bound::Expr::SlotRef {
+                slot: first_slot, ..
+            },
+            bound::Expr::SlotRef {
+                slot: second_slot, ..
+            },
+        ) = (&**first, &**second)
+        else {
+            return None;
+        };
+        let oriented = [(*first_slot, *second_slot), (*second_slot, *first_slot)]
+            .into_iter()
+            .find_map(|(left_slot, right_slot)| {
+                let left_field = left
+                    .output()
+                    .fields
+                    .iter()
+                    .find(|field| field.slot == left_slot)?;
+                let right_field = right
+                    .output()
+                    .fields
+                    .iter()
+                    .find(|field| field.slot == right_slot)?;
+                (left_field.value_type.kind.is_scalar()
+                    && right_field.value_type.kind.is_scalar()
+                    && left_field.value_type.kind == right_field.value_type.kind)
+                    .then(|| EquiJoinKey {
+                        left: left_field.clone(),
+                        right: right_field.clone(),
+                    })
+            })?;
+        if !keys.iter().any(|key: &EquiJoinKey| {
+            key.left.slot == oriented.left.slot && key.right.slot == oriented.right.slot
+        }) {
+            keys.push(oriented);
+        }
+    }
+    (!keys.is_empty()).then_some(keys)
+}
+
 pub fn underlying_scan(relation: &bound::Relation) -> Option<&bound::Relation> {
     visit_scan_filters(relation, &mut |_| {})
 }

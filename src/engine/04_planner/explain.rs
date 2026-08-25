@@ -8,17 +8,20 @@ use crate::engine::lir::format::print_expression;
 
 use super::analysis::{ConstValue, Correlation, CorrelationKind};
 use super::physical::{
-    AccessCandidate, BindingPlanKind, BindingStrategy, Node, NodeKind, Plan, RangeSpec,
+    AccessCandidate, BindingPlanKind, BindingStrategy, JoinCandidate, JoinGraphCandidate,
+    JoinGraphDecision, Node, NodeKind, Plan, RangeSpec,
 };
 
-pub const PLAN_VIEW_FORMAT: &str = "rad-plan-view-v1";
+pub const PLAN_VIEW_FORMAT: &str = "rad-plan-view-v2";
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanView {
     pub format: &'static str,
     pub fingerprint: crate::engine::lir::fingerprint::Fingerprint,
+    pub planner_mode: String,
     pub cardinality: String,
+    pub memo: super::memo::MemoReport,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<PlanBindingView>,
     pub root: PlanNodeView,
@@ -26,6 +29,10 @@ pub struct PlanView {
     pub estimates: Vec<PlanEstimateView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub statistics_published_at_micros: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statistics_snapshot_identity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statistics_scope: Option<super::models::StatisticsScope>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -65,6 +72,10 @@ pub struct PlanNodeView {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub access: Vec<AccessCandidate>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub join: Vec<JoinCandidate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub join_graph: Option<JoinGraphDecision>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<PlanNodeView>,
     #[serde(skip)]
     render: Render,
@@ -83,10 +94,16 @@ enum Render {
 
 impl PlanView {
     pub fn new(plan: &Plan) -> Self {
+        Self::with_mode(plan, super::PlannerMode::Structural)
+    }
+
+    pub fn with_mode(plan: &Plan, planner_mode: super::PlannerMode) -> Self {
         Self {
             format: PLAN_VIEW_FORMAT,
             fingerprint: plan.fingerprint(),
+            planner_mode: planner_mode.as_str().into(),
             cardinality: plan.cardinality.as_str().into(),
+            memo: plan.memo.clone(),
             bindings: plan
                 .bindings
                 .iter()
@@ -126,6 +143,8 @@ impl PlanView {
             root: view_node(&plan.root),
             estimates: Vec::new(),
             statistics_published_at_micros: None,
+            statistics_snapshot_identity: None,
+            statistics_scope: None,
         }
     }
 
@@ -138,6 +157,8 @@ impl PlanView {
     ) {
         self.statistics_published_at_micros =
             Some(stats.published_at.as_micros().min(u128::from(u64::MAX)) as u64);
+        self.statistics_snapshot_identity = Some(stats.snapshot_identity.clone());
+        self.statistics_scope = Some(stats.scope);
         let estimator = super::estimator::Estimator::new(stats);
         let root_relation = crate::engine::lir::fingerprint::relation_family(&query.root);
         if let Some(estimate) = root {
@@ -195,6 +216,92 @@ impl PlanView {
     fn render_inner(&self, show_access: bool) -> String {
         let mut output = String::new();
         writeln!(output, "Plan card={}", self.cardinality).unwrap();
+        if show_access && !self.memo.roots.is_empty() {
+            let stop = self
+                .memo
+                .stop_reason
+                .map_or_else(|| "complete".into(), |reason| format!("stopped:{reason:?}"));
+            writeln!(
+                output,
+                "  Memo strategy={} groups={} alternatives={} rules={} effort={} {stop}",
+                self.memo.strategy,
+                self.memo.usage.groups,
+                self.memo.usage.alternatives,
+                self.memo.usage.rule_applications,
+                self.memo.usage.planning_effort,
+            )
+            .unwrap();
+            for root in &self.memo.roots {
+                if root.structural_expression != root.selected_expression || !root.proofs.is_empty()
+                {
+                    writeln!(
+                        output,
+                        "    Group {} {} directed={} saturated={} selected={}",
+                        root.group,
+                        root.name,
+                        root.directed_alternatives,
+                        root.saturated_alternatives,
+                        root.selected_expression,
+                    )
+                    .unwrap();
+                    for proof in &root.selected_proof {
+                        writeln!(
+                            output,
+                            "      proof {:?} {} -> {} [{}]",
+                            proof.rule,
+                            proof.from,
+                            proof.to,
+                            proof.preconditions.join(","),
+                        )
+                        .unwrap();
+                    }
+                    if let Some(search) = &root.join_search {
+                        let search_stop = search.stop_reason.map_or_else(
+                            || "complete".into(),
+                            |reason| format!("stopped:{reason:?}"),
+                        );
+                        writeln!(
+                            output,
+                            "      join-search inputs={} edges={} subsets={} partitions={} states={} effort={} {search_stop}",
+                            search.input_count,
+                            search.edge_count,
+                            search.connected_subsets,
+                            search.considered_partitions,
+                            search.retained_states,
+                            search.planning_effort,
+                        )
+                        .unwrap();
+                        for candidate in &root.candidates {
+                            let work = candidate.logical_row_operations.map_or_else(
+                                || "unknown".into(),
+                                |work| {
+                                    format!(
+                                        "{}..{} central={}",
+                                        work.lower, work.upper, work.central
+                                    )
+                                },
+                            );
+                            let regret = candidate
+                                .maximum_regret
+                                .map_or_else(|| "unknown".into(), |regret| regret.to_string());
+                            let decision = if candidate.selected {
+                                candidate.decision_basis.as_deref().unwrap_or("selected")
+                            } else {
+                                candidate.rejection_reason.as_deref().unwrap_or("rejected")
+                            };
+                            writeln!(
+                                output,
+                                "      candidate {} origin={} work={work} maxRegret={regret} tailRegression={} {decision}",
+                                candidate.expression,
+                                candidate.origin.label(),
+                                candidate.tail_regression,
+                            )
+                            .unwrap();
+                        }
+                    }
+                }
+            }
+        }
         for binding in &self.bindings {
             let sensitive = if binding.plan_choice_sensitive {
                 " plan-choice-sensitive"
@@ -254,9 +361,28 @@ fn plain(
         relation: None,
         detail,
         access,
+        join: Vec::new(),
+        join_graph: None,
         children,
         render: Render::Normal,
     }
+}
+
+fn join_node(
+    op: &str,
+    detail: String,
+    join: Vec<JoinCandidate>,
+    left: &Node,
+    right: &Node,
+) -> PlanNodeView {
+    let mut view = plain(
+        op,
+        detail,
+        Vec::new(),
+        vec![view_node(left), view_node(right)],
+    );
+    view.join = join;
+    view
 }
 
 fn view_node(node: &Node) -> PlanNodeView {
@@ -369,6 +495,8 @@ fn view_node(node: &Node) -> PlanNodeView {
                 relation: None,
                 detail: String::new(),
                 access: Vec::new(),
+                join: Vec::new(),
+                join_graph: None,
                 children,
                 render: Render::Attach {
                     specifications: rendered,
@@ -404,6 +532,8 @@ fn view_node(node: &Node) -> PlanNodeView {
                     .collect::<Vec<_>>()
                     .join(", "),
                 access: Vec::new(),
+                join: Vec::new(),
+                join_graph: None,
                 children: vec![view_node(input)],
                 render: Render::Lines(lines),
             }
@@ -442,12 +572,120 @@ fn view_node(node: &Node) -> PlanNodeView {
             right,
             kind,
             on,
+            decision,
             ..
-        } => plain(
+        } => join_node(
             "NestedLoopJoin",
             format!("{} on {}", kind.as_str(), print_expression(on)),
+            decision.candidates.clone(),
+            left,
+            right,
+        ),
+        NodeKind::HashJoin {
+            left,
+            right,
+            kind,
+            on,
+            memory_limit_bytes,
+            decision,
+            ..
+        } => join_node(
+            "HashJoin",
+            format!(
+                "{} on {} memoryLimitBytes={memory_limit_bytes}",
+                kind.as_str(),
+                print_expression(on)
+            ),
+            decision.candidates.clone(),
+            left,
+            right,
+        ),
+        NodeKind::IndexedLookupJoin {
+            left,
+            right,
+            kind,
+            on,
+            decision,
+            ..
+        } => join_node(
+            "IndexedLookupJoin",
+            format!("{} on {}", kind.as_str(), print_expression(on)),
+            decision.candidates.clone(),
+            left,
+            right,
+        ),
+        NodeKind::JoinGraphChoice { input, decision } => {
+            let mut view = plain(
+                "JoinGraphChoice",
+                format!(
+                    "classification={:?} inputs={} edges={} root={}",
+                    decision.classification,
+                    decision.input_count,
+                    decision.edge_count,
+                    decision.root_input
+                ),
+                Vec::new(),
+                vec![view_node(input)],
+            );
+            view.join_graph = Some(decision.clone());
+            view
+        }
+        NodeKind::ShreddedYannakakisJoin {
+            inputs,
+            edges,
+            root_input,
+            memory_limit_bytes,
+            ..
+        } => plain(
+            "ShreddedYannakakisJoin",
+            format!(
+                "inputs={} edges={} root={} memoryLimitBytes={memory_limit_bytes}",
+                inputs.len(),
+                edges.len(),
+                root_input
+            ),
             Vec::new(),
-            vec![view_node(left), view_node(right)],
+            inputs.iter().map(view_node).collect(),
+        ),
+        NodeKind::PredicateTransferJoin {
+            inputs,
+            schedule,
+            join_plan,
+            bits_per_key,
+            hash_functions,
+            runtime_policy,
+            memory_limit_bytes,
+            ..
+        } => plain(
+            "PredicateTransferJoin",
+            format!(
+                "inputs={} schedule=asymmetric root={} forwardEdges={} backwardEdges={} prunedPaths={} forwardOrder={:?} backwardOrder={:?} filter=cascade storagePruning=compatible_ordered_key_prefix blockRows={} bitsPerKey={bits_per_key} hashFunctions={hash_functions} buildSampleRows={} buildSelectivityBps={} buildProgressBps={} probeSampleRows={} probeStopBps={} memoryLimitBytes={memory_limit_bytes}",
+                inputs.len(),
+                schedule.root_input,
+                schedule.forward.edges.len(),
+                schedule.backward.edges.len(),
+                schedule.pruned_paths,
+                schedule.forward.order,
+                schedule.backward.order,
+                runtime_policy.block_rows,
+                runtime_policy.build_sample_rows,
+                runtime_policy.build_selectivity_threshold_bps,
+                runtime_policy.build_progress_threshold_bps,
+                runtime_policy.probe_sample_rows,
+                runtime_policy.probe_stop_threshold_bps,
+            ),
+            Vec::new(),
+            inputs
+                .iter()
+                .map(view_node)
+                .chain(std::iter::once(view_node(join_plan)))
+                .collect(),
+        ),
+        NodeKind::PredicateTransferInput { input, .. } => plain(
+            "PredicateTransferInput",
+            format!("input={input}"),
+            Vec::new(),
+            Vec::new(),
         ),
         NodeKind::Concatenate { inputs, .. } => plain(
             "Concatenate",
@@ -551,6 +789,17 @@ fn write_node(output: &mut String, node: &PlanNodeView, depth: usize, show_acces
     if show_access && let Some(line) = access_line(&node.access) {
         writeln!(output, "{padding}  access: {line}").unwrap();
     }
+    if show_access && let Some(line) = join_line(&node.join) {
+        writeln!(output, "{padding}  join: {line}").unwrap();
+    }
+    if show_access && let Some(decision) = &node.join_graph {
+        writeln!(
+            output,
+            "{padding}  join-graph: {}",
+            join_graph_line(&decision.candidates)
+        )
+        .unwrap();
+    }
     for child in &node.children {
         write_node(output, child, depth + 1, show_access);
     }
@@ -580,11 +829,27 @@ fn access_line(candidates: &[AccessCandidate]) -> Option<String> {
                         format!(" {{rowWork={}..{upper_bound}}}", work.lower_bound)
                     })
                     .unwrap_or_default();
+                let cost = candidate
+                    .cost
+                    .map(|cost| {
+                        let work = cost.logical_row_operations;
+                        let upper = work
+                            .upper_bound
+                            .map_or_else(|| "unbounded".into(), |value| value.to_string());
+                        format!(
+                            " {{cost={}..{upper}, gets={}, scans={}, ordering={:?}}}",
+                            work.lower_bound,
+                            cost.point_gets.central,
+                            cost.range_scans.central,
+                            cost.ordering
+                        )
+                    })
+                    .unwrap_or_default();
                 if candidate.method == "PKGet" {
-                    format!("{}{row_work}{chosen}{basis}", candidate.method)
+                    format!("{}{row_work}{cost}{chosen}{basis}", candidate.method)
                 } else {
                     format!(
-                        "{}({}){row_work}{chosen}{basis}",
+                        "{}({}){row_work}{cost}{chosen}{basis}",
                         candidate.method, candidate.score
                     )
                 }
@@ -592,6 +857,118 @@ fn access_line(candidates: &[AccessCandidate]) -> Option<String> {
             .collect::<Vec<_>>()
             .join(" · "),
     )
+}
+
+fn join_line(candidates: &[JoinCandidate]) -> Option<String> {
+    candidates.iter().find(|candidate| candidate.chosen)?;
+    Some(
+        candidates
+            .iter()
+            .map(|candidate| {
+                let chosen = if candidate.chosen { " ✓" } else { "" };
+                let basis = candidate
+                    .decision_basis
+                    .map(|basis| format!(" [{}]", basis.label()))
+                    .unwrap_or_default();
+                let reason = candidate
+                    .rejection_reason
+                    .map(|reason| format!(" [{}]", reason.label()))
+                    .unwrap_or_default();
+                let cost = candidate.cost.map(|cost| {
+                    let work = cost.logical_row_operations;
+                    let upper = work
+                        .upper_bound
+                        .map_or_else(|| "unbounded".into(), |value| value.to_string());
+                    let memory = cost.peak_retained_bytes.map_or_else(
+                        || "unknown".into(),
+                        |bytes| {
+                            bytes
+                                .upper_bound
+                                .map_or_else(|| "unbounded".into(), |value| value.to_string())
+                        },
+                    );
+                    format!(
+                        " {{cost={}..{upper}, memoryUpper={memory}}}",
+                        work.lower_bound
+                    )
+                });
+                format!(
+                    "{}{}{}{}{}",
+                    candidate.method,
+                    cost.unwrap_or_default(),
+                    chosen,
+                    basis,
+                    reason
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" · "),
+    )
+}
+
+fn join_graph_line(candidates: &[JoinGraphCandidate]) -> String {
+    candidates
+        .iter()
+        .map(|candidate| {
+            let chosen = if candidate.chosen { " ✓" } else { "" };
+            let basis = candidate
+                .decision_basis
+                .map(|basis| format!(" [{}]", basis.label()))
+                .unwrap_or_default();
+            let reason = candidate
+                .rejection_reason
+                .map(|reason| format!(" [{}]", reason.label()))
+                .unwrap_or_default();
+            let cost = candidate.cost.map(|cost| {
+                let work = cost.logical_row_operations;
+                let upper = work
+                    .upper_bound
+                    .map_or_else(|| "unbounded".into(), |value| value.to_string());
+                let memory = cost.peak_retained_bytes.map_or_else(
+                    || "unknown".into(),
+                    |bytes| {
+                        bytes
+                            .upper_bound
+                            .map_or_else(|| "unbounded".into(), |value| value.to_string())
+                    },
+                );
+                let filter = cost
+                    .filter_row_operations
+                    .map_or_else(String::new, |operations| {
+                        let rows = cost
+                            .filtered_rows
+                            .map_or_else(|| "unknown".into(), |rows| rows.central.to_string());
+                        let bytes = cost
+                            .filter_bytes
+                            .map_or_else(|| "unknown".into(), |bytes| bytes.central.to_string());
+                        let builds = cost
+                            .filter_builds
+                            .map_or_else(|| "unknown".into(), |builds| builds.to_string());
+                        let shared = cost.shared_filter_paths.map_or_else(
+                            || "unknown".into(),
+                            |paths| paths.to_string(),
+                        );
+                        format!(
+                            ", filterOps={}, filteredRows={rows}, filterBytes={bytes}, filterBuilds={builds}, sharedPaths={shared}",
+                            operations.central
+                        )
+                    });
+                format!(
+                    " {{cost={}..{upper}, memoryUpper={memory}{filter}}}",
+                    work.lower_bound
+                )
+            });
+            format!(
+                "{}{}{}{}{}",
+                candidate.method,
+                cost.unwrap_or_default(),
+                chosen,
+                basis,
+                reason
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 fn key_equalities<T: AsRef<str>>(columns: &[T], values: &[ConstValue]) -> String {
@@ -667,7 +1044,7 @@ mod tests {
     use crate::engine::lir::bound;
     use crate::engine::lir::{BinaryOp, Value};
     use crate::engine::planner::test_support::{column, query, scan};
-    use crate::engine::planner::{PlanOptions, plan_query};
+    use crate::engine::planner::{PlanOptions, PlannerMode, plan_query};
 
     use super::*;
 
@@ -727,5 +1104,35 @@ mod tests {
     fn uncontested_table_scan_has_no_access_noise() {
         let plan = plan_query(&query(scan(), 3), PlanOptions::default());
         assert!(!PlanView::new(&plan).render().contains("access:"));
+    }
+
+    #[test]
+    fn plan_view_contains_the_selected_memo_proof() {
+        let relation =
+            bound::Relation::distinct(bound::Relation::distinct(bound::Relation::distinct(scan())));
+        let plan = plan_query(
+            &query(relation, 3),
+            PlanOptions {
+                mode: PlannerMode::Cost,
+                ..PlanOptions::default()
+            },
+        );
+        let view = PlanView::with_mode(&plan, PlannerMode::Cost);
+        let rendered = view.render();
+        assert!(rendered.contains("directed=2 saturated=3"));
+        assert_eq!(rendered.matches("proof DistinctIdempotence").count(), 2);
+
+        let json = serde_json::to_value(view).unwrap();
+        assert_eq!(
+            json["memo"]["format"],
+            crate::engine::planner::memo::MEMO_FORMAT
+        );
+        assert_eq!(
+            json["memo"]["roots"][0]["selectedProof"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
     }
 }

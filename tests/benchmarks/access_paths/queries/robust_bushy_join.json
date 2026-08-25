@@ -1,0 +1,66 @@
+{
+  "name": "robust_bushy_join",
+  "description": "Count a three-input join that benefits from joining the rare input first.",
+  "warmup": 1,
+  "iterations": 6,
+  "expect_rows": 1,
+  "expect_result": { "joined_count": 49 },
+  "program": {
+    "statements": [{
+      "name": "robust_bushy_join",
+      "kind": "query",
+      "relation": {
+        "nodes": {
+          "left_events": { "kind": "scan", "table": "events", "scope": "l" },
+          "left_hot": {
+            "kind": "filter", "input": "left_events",
+            "predicate": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "l", "column": "category" },
+              "right": { "kind": "lit", "value": { "type": "text", "value": "hot" } }
+            }
+          },
+          "middle_events": { "kind": "scan", "table": "events", "scope": "m" },
+          "middle_hot": {
+            "kind": "filter", "input": "middle_events",
+            "predicate": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "m", "column": "category" },
+              "right": { "kind": "lit", "value": { "type": "text", "value": "hot" } }
+            }
+          },
+          "rare_events": { "kind": "scan", "table": "events", "scope": "r" },
+          "rare_needle": {
+            "kind": "filter", "input": "rare_events",
+            "predicate": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "r", "column": "category" },
+              "right": { "kind": "lit", "value": { "type": "text", "value": "needle" } }
+            }
+          },
+          "common_join": {
+            "kind": "join", "left": "left_hot", "right": "middle_hot", "join": "inner",
+            "on": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "l", "column": "tenant_id" },
+              "right": { "kind": "col", "scope": "m", "column": "tenant_id" }
+            }
+          },
+          "joined": {
+            "kind": "join", "left": "common_join", "right": "rare_needle", "join": "inner",
+            "on": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "m", "column": "tenant_id" },
+              "right": { "kind": "col", "scope": "r", "column": "tenant_id" }
+            }
+          },
+          "counted": {
+            "kind": "aggregate", "input": "joined", "scope": "result",
+            "aggs": [{ "fn": "count", "as": "joined_count" }]
+          }
+        },
+        "root": { "node": "counted", "cardinality": "exactly_one" }
+      }
+    }]
+  }
+}

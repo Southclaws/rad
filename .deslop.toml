@@ -1,0 +1,15 @@
+[defaults]
+    exclude = [
+        "**/bin/**",
+        "**/obj/**",
+        "**/node_modules/**",
+        "**/target/**",
+        "clients/go/api/oas/**",
+        "src/cli/generated.rs",
+        "fuzz/**",
+        "tests/**",
+        "home/**",
+        "admin/**",
+        "tools/**",
+        "examples/**",
+    ]

@@ -13,6 +13,17 @@ queries:
   - queries/common_equality.json
   - queries/narrow_range.json
   - queries/broad_range.json
+  - queries/empty_range.json
+  - queries/boundary_range.json
+  - queries/full_range.json
+  - queries/skewed_range.json
   - queries/correlated_columns.json
   - queries/null_heavy.json
   - queries/ordered_page.json
+  - queries/degree_bound_join.json
+  - queries/conditioned_multiway_join.json
+  - queries/robust_bushy_join.json
+  - queries/acyclic_shredded_join.json
+  - queries/cyclic_predicate_transfer.json
+  - queries/shared_cascade_predicate_transfer.json
+  - queries/table_synopsis_predicate_transfer.json
