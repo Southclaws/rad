@@ -13,6 +13,7 @@ pub mod generated;
 mod administration;
 mod catalog;
 mod cors;
+mod context;
 mod listener;
 mod meta;
 mod probes;

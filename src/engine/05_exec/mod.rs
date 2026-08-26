@@ -1,6 +1,7 @@
 //! Physical plan execution.
 
 pub mod codec;
+pub mod diagnostic;
 mod engine;
 pub mod observe;
 pub mod survey;

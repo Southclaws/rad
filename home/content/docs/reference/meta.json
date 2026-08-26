@@ -11,6 +11,7 @@
     "pir-schema",
     "---HTTP---",
     "http-api",
+    "program-diagnostics",
     "---Storage---",
     "storage"
   ]

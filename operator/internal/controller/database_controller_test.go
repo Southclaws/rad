@@ -52,9 +52,7 @@ func TestReconcileBuildsOneIsolatedRadRuntime(t *testing.T) {
 		"RAD_S3_REGION":    "us-east-1",
 		"RAD_S3_ENDPOINT":  "http://rustfs:9000",
 		"RAD_CATALOG_MODE": "schema",
-		// Loopback: the admin surface must not be reachable from the pod
-		// network, only through port-forward.
-		"RAD_ADMIN_ADDR": "127.0.0.1:7238",
+		"RAD_ADMIN_ADDR":   "0.0.0.0:7238",
 		// One full readiness cycle, so the endpoints controller observes the
 		// withdrawal before Rad stops listening.
 		"RAD_SHUTDOWN_DRAIN_MS": "15000",
@@ -112,6 +110,12 @@ func TestReconcileBuildsOneIsolatedRadRuntime(t *testing.T) {
 	frontend := getObject(t, kubernetesClient, types.NamespacedName{Namespace: testNamespace, Name: "rad-alpha"}, &corev1.Service{})
 	if frontend.Spec.Type != corev1.ServiceTypeClusterIP || frontend.Spec.ClusterIP == corev1.ClusterIPNone {
 		t.Fatalf("frontend service is not an ordinary ClusterIP: %#v", frontend.Spec)
+	}
+	if len(frontend.Spec.Ports) != 2 || frontend.Spec.Ports[1].Name != "admin" || frontend.Spec.Ports[1].Port != adminPort {
+		t.Fatalf("frontend service ports = %#v, want HTTP and admin ports", frontend.Spec.Ports)
+	}
+	if len(container.Ports) < 2 || container.Ports[1].Name != "admin" || container.Ports[1].ContainerPort != adminPort {
+		t.Fatalf("container ports = %#v, want HTTP and admin ports", container.Ports)
 	}
 	headless := getObject(t, kubernetesClient, types.NamespacedName{Namespace: testNamespace, Name: "rad-alpha-headless"}, &corev1.Service{})
 	if headless.Spec.ClusterIP != corev1.ClusterIPNone {

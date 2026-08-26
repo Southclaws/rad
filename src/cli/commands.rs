@@ -11,9 +11,9 @@ use super::generated::{
     SchemaJsonSchemaArgs, SchemaMigrateArgs, SchemaOptions, SchemaPullArgs, SchemaStatusArgs,
     SchemaTransitionsCancelArgs, SchemaTransitionsGetArgs, SchemaTransitionsListArgs,
     SchemaTransitionsListKind, SchemaTransitionsListState, SchemaTransitionsOptions,
-    SchemaTransitionsWaitArgs, ServeArgs, ServeCatalogMode, ServeFrontend, ServePlannerMode,
-    ServeRole, ServeStorage, SkillsGetArgs, SkillsListArgs, SkillsOptions, SkillsPathArgs,
-    SpecArgs, ValidateArgs,
+    SchemaTransitionsWaitArgs, ServeArgs, ServeCatalogMode, ServeDiagnostics, ServeFrontend,
+    ServeLogFormat, ServeLogLevel, ServeMetrics, ServePlannerMode, ServeRole, ServeStorage,
+    SkillsGetArgs, SkillsListArgs, SkillsOptions, SkillsPathArgs, SpecArgs, ValidateArgs,
 };
 use super::output::{self, CliError};
 use super::project::{Project, read_schema_file};
@@ -139,6 +139,43 @@ impl Handler for App {
     }
 
     async fn serve(&mut self, _globals: &GlobalArgs, args: ServeArgs) -> Result {
+        let cache_size_mib = u64::try_from(args.cache_size_mib)
+            .ok()
+            .filter(|value| *value >= 16)
+            .ok_or("--cache-size-mib must be at least 16")?;
+        let metrics = matches!(args.metrics, ServeMetrics::True);
+        crate::logging::install(crate::logging::Config {
+            level: match args.log_level {
+                ServeLogLevel::Error => crate::logging::Level::Error,
+                ServeLogLevel::Warn => crate::logging::Level::Warn,
+                ServeLogLevel::Info => crate::logging::Level::Info,
+                ServeLogLevel::Debug => crate::logging::Level::Debug,
+            },
+            format: match args.log_format {
+                ServeLogFormat::Text => crate::logging::Format::Text,
+                ServeLogFormat::Json => crate::logging::Format::Json,
+                ServeLogFormat::Logfmt => crate::logging::Format::Logfmt,
+            },
+            programs: args.log_programs,
+            telemetry: crate::telemetry::Config {
+                endpoint: args.otel_endpoint.filter(|value| !value.is_empty()),
+                instance_id: args.instance_id.clone(),
+                role: Some(
+                    match args.role {
+                        ServeRole::Read => "read",
+                        ServeRole::Write => "write",
+                    }
+                    .to_owned(),
+                ),
+                metrics,
+            },
+            diagnostics: match args.diagnostics {
+                ServeDiagnostics::Off => crate::diagnostics::Level::Off,
+                ServeDiagnostics::Summary => crate::diagnostics::Level::Summary,
+                ServeDiagnostics::Detailed => crate::diagnostics::Level::Detailed,
+                ServeDiagnostics::Full => crate::diagnostics::Level::Full,
+            },
+        })?;
         let catalog_mode = args.catalog_mode.map(|mode| match mode {
             ServeCatalogMode::Direct => Mode::Direct,
             ServeCatalogMode::Schema => Mode::Schema,
@@ -169,6 +206,7 @@ impl Handler for App {
             admin_address: crate::process::admin_address_from_env(),
             catalog_mode,
             capture_workload_corpus: args.capture_workload_corpus,
+            cache_size_mib,
             close_timeout: crate::process::close_timeout_from_env()?,
             frontend: args.frontend.map(|frontend| match frontend {
                 ServeFrontend::Postgres => crate::process::Frontend::Postgres,

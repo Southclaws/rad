@@ -19,6 +19,28 @@ pub enum ErrorKind {
     Internal,
 }
 
+impl ErrorKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::InvalidInput => "invalid_input",
+            Self::ConstraintViolation => "constraint_violation",
+            Self::DataLossAcceptance => "data_loss_acceptance",
+            Self::MutationNotFound => "mutation_not_found",
+            Self::MutationAmbiguous => "mutation_ambiguous",
+            Self::TransitionFinalizing => "transition_finalizing",
+            Self::TransitionBackpressure => "transition_backpressure",
+            Self::CommitOutcomeUnknown => "commit_outcome_unknown",
+            Self::Runtime => "runtime",
+            Self::RecursionLimit => "recursion_limit",
+            Self::Conflict => "conflict",
+            Self::Storage => "storage",
+            Self::CorruptData => "corrupt_data",
+            Self::Internal => "internal",
+        }
+    }
+}
+
 /// Stable semantic identity retained across the executor boundary.
 ///
 /// Kinds remain useful for local control flow. Reasons are the product-facing

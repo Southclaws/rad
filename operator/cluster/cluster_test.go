@@ -106,6 +106,63 @@ func TestServiceAccountIdentityIsProjected(t *testing.T) {
 	}
 }
 
+func TestLoggingPolicyIsProjected(t *testing.T) {
+	c := testClient(t)
+	spec := validSpec("logging")
+	spec.LogLevel = LogLevelDebug
+	spec.LogFormat = LogFormatLogfmt
+	spec.LogPrograms = true
+	created, err := c.CreateDatabase(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.LogLevel != LogLevelDebug || created.LogFormat != LogFormatLogfmt || !created.LogPrograms {
+		t.Fatalf("logging view = %+v", created)
+	}
+	resource := &radv1alpha1.Database{}
+	if err := c.kube.Get(context.Background(), types.NamespacedName{Namespace: "tenants", Name: "logging"}, resource); err != nil {
+		t.Fatal(err)
+	}
+	if resource.Spec.Logging.Level != radv1alpha1.LogLevelDebug || resource.Spec.Logging.Format != radv1alpha1.LogFormatLogfmt || !resource.Spec.Logging.Programs {
+		t.Fatalf("logging resource = %+v", resource.Spec.Logging)
+	}
+}
+
+func TestTelemetryPolicyIsProjected(t *testing.T) {
+	c := testClient(t)
+	spec := validSpec("telemetry")
+	spec.OTelEndpoint = "http://collector:4318"
+	spec.Diagnostics = DiagnosticLevelDetailed
+	metrics := false
+	spec.MetricsEnabled = &metrics
+	spec.CacheSizeMiB = 256
+	created, err := c.CreateDatabase(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.OTelEndpoint != spec.OTelEndpoint || created.Diagnostics != DiagnosticLevelDetailed || created.MetricsEnabled || created.CacheSizeMiB != 256 {
+		t.Fatalf("telemetry view = %+v", created)
+	}
+	resource := &radv1alpha1.Database{}
+	if err := c.kube.Get(context.Background(), types.NamespacedName{Namespace: "tenants", Name: "telemetry"}, resource); err != nil {
+		t.Fatal(err)
+	}
+	if resource.Spec.Telemetry.Endpoint != spec.OTelEndpoint || resource.Spec.Telemetry.Diagnostics != radv1alpha1.DiagnosticLevelDetailed || resource.Spec.Telemetry.Metrics == nil || *resource.Spec.Telemetry.Metrics || resource.Spec.Cache.SizeMiB != 256 {
+		t.Fatalf("telemetry resource = %+v", resource.Spec.Telemetry)
+	}
+}
+
+func TestMetricAndCacheDefaultsAreProjected(t *testing.T) {
+	c := testClient(t)
+	created, err := c.CreateDatabase(context.Background(), validSpec("metric-defaults"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.MetricsEnabled || created.CacheSizeMiB != 128 {
+		t.Fatalf("metric and cache defaults = %+v", created)
+	}
+}
+
 func TestListIsNamespaceScoped(t *testing.T) {
 	c := testClient(t)
 	if _, err := c.CreateDatabase(context.Background(), validSpec("one")); err != nil {

@@ -6,10 +6,12 @@
 //! outside this executor.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use async_recursion::async_recursion;
 use bytes::Bytes;
 use num_bigint::BigInt;
+use tracing::Instrument as _;
 
 use crate::engine::catalog::store::admit_catalog_dependencies;
 use crate::engine::kv::key_encoding::prefix_end;
@@ -37,6 +39,40 @@ use super::row_store;
 use super::set;
 use super::{Error, ErrorKind, Result};
 
+const EARLY_RECURSIVE_ITERATION_SPANS: usize = 16;
+
+pub(super) const fn operator_name(kind: &NodeKind) -> &'static str {
+    match kind {
+        NodeKind::PrimaryKeyGet { .. } => "PrimaryKeyGet",
+        NodeKind::TableScan { .. } => "TableScan",
+        NodeKind::Rows(_) => "Rows",
+        NodeKind::IndexRangeScan { .. } => "IndexRangeScan",
+        NodeKind::Filter { .. } => "Filter",
+        NodeKind::Attach { .. } => "Attach",
+        NodeKind::Project { .. } => "Project",
+        NodeKind::Sort { .. } => "Sort",
+        NodeKind::Slice { .. } => "Slice",
+        NodeKind::Reference { .. } => "Reference",
+        NodeKind::RecursiveReference { .. } => "RecursiveReference",
+        NodeKind::Distinct { .. } => "Distinct",
+        NodeKind::NestedLoopJoin { .. } => "NestedLoopJoin",
+        NodeKind::HashJoin { .. } => "HashJoin",
+        NodeKind::IndexedLookupJoin { .. } => "IndexedLookupJoin",
+        NodeKind::JoinGraphChoice { .. } => "JoinGraphChoice",
+        NodeKind::ShreddedYannakakisJoin { .. } => "ShreddedYannakakisJoin",
+        NodeKind::PredicateTransferJoin { .. } => "PredicateTransferJoin",
+        NodeKind::PredicateTransferInput { .. } => "PredicateTransferInput",
+        NodeKind::Concatenate { .. } => "Concatenate",
+        NodeKind::Intersect { .. } => "Intersect",
+        NodeKind::Except { .. } => "Except",
+        NodeKind::Aggregate { .. } => "Aggregate",
+    }
+}
+
+fn duration_micros(duration: std::time::Duration) -> u64 {
+    duration.as_micros().min(u128::from(u64::MAX)) as u64
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
     pub max_iterations: usize,
@@ -60,11 +96,17 @@ pub struct Executor<'a> {
     frontier: HashMap<String, Vec<Env>>,
     plans: HashMap<String, BindingPlan>,
     measure: bool,
+    measure_operators: bool,
     /// Rows produced by each attributed node, in completion order. Only
     /// nodes the planner could attribute appear, and only where execution
     /// already materializes their output.
     measured: Vec<(crate::engine::lir::fingerprint::Fingerprint, u64)>,
     join_measurements: Vec<super::observe::JoinOperatorMeasurement>,
+    operator_measurements: Vec<super::observe::OperatorMeasurement>,
+    kv_counters: Option<&'a super::observe::KvCounters>,
+    next_operator_id: u32,
+    current_operator_id: Option<u32>,
+    current_operator_span: Option<tracing::Span>,
     predicate_transfer_inputs: Vec<Vec<Vec<Env>>>,
 }
 
@@ -76,6 +118,15 @@ struct SetPlan<'a> {
     left_output: &'a RowType,
     right_output: &'a RowType,
     output: &'a RowType,
+}
+
+#[derive(Clone, Copy)]
+struct RecursiveExecution<'a> {
+    binding: &'a BindingPlan,
+    anchor: &'a Node,
+    step: &'a Node,
+    step_output: &'a RowType,
+    accumulation: RecursiveAccumulation,
 }
 
 #[derive(Default)]
@@ -91,6 +142,38 @@ struct StoragePruningDecision {
     applied_ranges: u64,
 }
 
+#[derive(Clone, Copy, Default)]
+struct RecursiveWork {
+    rows_examined: u64,
+    logical_row_operations: u64,
+    storage_reads: u64,
+    storage_bytes: u64,
+}
+
+#[derive(Default)]
+struct RecursiveMeasurement {
+    iterations: usize,
+    output_rows: u64,
+    duplicate_rows: u64,
+    peak_frontier_rows: u64,
+    peak_retained_bytes: u64,
+    anchor_rows: Option<u64>,
+    anchor_duration_us: Option<u64>,
+    anchor_work: RecursiveWork,
+    step_work: RecursiveWork,
+}
+
+impl RecursiveWork {
+    fn add(&mut self, work: Self) {
+        self.rows_examined = self.rows_examined.saturating_add(work.rows_examined);
+        self.logical_row_operations = self
+            .logical_row_operations
+            .saturating_add(work.logical_row_operations);
+        self.storage_reads = self.storage_reads.saturating_add(work.storage_reads);
+        self.storage_bytes = self.storage_bytes.saturating_add(work.storage_bytes);
+    }
+}
+
 impl<'a> Executor<'a> {
     pub fn new(view: &'a dyn KvView, limits: Limits) -> Self {
         Self {
@@ -101,14 +184,61 @@ impl<'a> Executor<'a> {
             frontier: HashMap::new(),
             plans: HashMap::new(),
             measure: false,
+            measure_operators: false,
             measured: Vec::new(),
             join_measurements: Vec::new(),
+            operator_measurements: Vec::new(),
+            kv_counters: None,
+            next_operator_id: 0,
+            current_operator_id: None,
+            current_operator_span: None,
             predicate_transfer_inputs: Vec::new(),
         }
     }
 
     pub fn enable_measurements(&mut self) {
         self.measure = true;
+    }
+
+    pub fn enable_operator_measurements(&mut self) {
+        self.measure_operators = true;
+    }
+
+    pub fn observe_kv_work(&mut self, counters: &'a super::observe::KvCounters) {
+        self.kv_counters = Some(counters);
+    }
+
+    fn kv_work(&self) -> super::observe::KvWork {
+        self.kv_counters
+            .map(super::observe::KvCounters::snapshot)
+            .unwrap_or_default()
+    }
+
+    fn recursive_work_since(
+        &self,
+        operator_start: usize,
+        kv_before: super::observe::KvWork,
+    ) -> RecursiveWork {
+        let operators = &self.operator_measurements[operator_start..];
+        let kv = self.kv_work().delta_since(kv_before);
+        RecursiveWork {
+            rows_examined: operators
+                .iter()
+                .filter(|measurement| {
+                    matches!(
+                        measurement.operator,
+                        "PrimaryKeyGet" | "TableScan" | "IndexRangeScan"
+                    )
+                })
+                .map(|measurement| measurement.output_rows)
+                .fold(0, u64::saturating_add),
+            logical_row_operations: operators
+                .iter()
+                .map(|measurement| measurement.output_rows)
+                .fold(0, u64::saturating_add),
+            storage_reads: kv.gets.saturating_add(kv.iterated),
+            storage_bytes: kv.bytes_read,
+        }
     }
 
     /// Row counts charged to the logical relations they implement.
@@ -118,6 +248,37 @@ impl<'a> Executor<'a> {
 
     pub fn join_measurements(&self) -> &[super::observe::JoinOperatorMeasurement] {
         &self.join_measurements
+    }
+
+    pub fn operator_measurements(&self) -> Vec<super::observe::OperatorMeasurement> {
+        let mut measurements = self.operator_measurements.clone();
+        measurements.sort_by_key(|measurement| measurement.operator_id);
+        let positions = measurements
+            .iter()
+            .enumerate()
+            .map(|(position, measurement)| (measurement.operator_id, position))
+            .collect::<HashMap<_, _>>();
+        for position in 0..measurements.len() {
+            let Some(parent_id) = measurements[position].parent_operator_id else {
+                continue;
+            };
+            let Some(&parent) = positions.get(&parent_id) else {
+                continue;
+            };
+            let child_rows = measurements[position].output_rows;
+            let child_complete = measurements[position].complete;
+            let child_open = measurements[position].open_micros;
+            let child_duration = measurements[position].inclusive_micros;
+            measurements[parent].input_rows =
+                measurements[parent].input_rows.saturating_add(child_rows);
+            measurements[parent].input_complete &= child_complete;
+            measurements[parent].open_micros =
+                measurements[parent].open_micros.saturating_sub(child_open);
+            measurements[parent].exclusive_micros = measurements[parent]
+                .exclusive_micros
+                .saturating_sub(child_duration);
+        }
+        measurements
     }
 
     /// Test seam proving key-correlated batching and nested evaluation agree.
@@ -187,6 +348,52 @@ impl<'a> Executor<'a> {
     async fn execute_node(&mut self, node: &Node, outer: &Env) -> Result<Vec<Env>> {
         if super::pipeline::supports(node) {
             return self.execute_kind(node, outer).await;
+        }
+        if self.measure_operators {
+            let operator_id = self.next_operator_id;
+            self.next_operator_id = self.next_operator_id.saturating_add(1);
+            let parent_operator_id = self.current_operator_id.replace(operator_id);
+            let runtime_span = super::observe::OperatorRuntimeSpan::new(
+                operator_id,
+                parent_operator_id,
+                operator_name(&node.kind),
+                node.attribution,
+                self.current_operator_span.as_ref(),
+            );
+            let operator_span = runtime_span.span().clone();
+            let parent_operator_span = self.current_operator_span.replace(operator_span.clone());
+            let started = Instant::now();
+            let result = self
+                .execute_kind(node, outer)
+                .instrument(operator_span)
+                .await;
+            self.current_operator_id = parent_operator_id;
+            self.current_operator_span = parent_operator_span;
+            let output_rows = result.as_ref().map_or(0, |frames| frames.len() as u64);
+            let inclusive_micros = duration_micros(started.elapsed());
+            let measurement = super::observe::OperatorMeasurement {
+                operator_id,
+                parent_operator_id,
+                operator: operator_name(&node.kind),
+                relation_fingerprint: node.attribution,
+                open_micros: 0,
+                inclusive_micros,
+                exclusive_micros: inclusive_micros,
+                calls: 1,
+                input_rows: 0,
+                output_rows,
+                input_complete: true,
+                complete: result.is_ok(),
+            };
+            runtime_span.record(&measurement, result.is_err());
+            self.operator_measurements.push(measurement);
+            let frames = result?;
+            if self.measure
+                && let Some(attribution) = node.attribution
+            {
+                self.measured.push((attribution, frames.len() as u64));
+            }
+            return Ok(frames);
         }
         let frames = self.execute_kind(node, outer).await?;
         if self.measure
@@ -331,13 +538,17 @@ impl<'a> Executor<'a> {
     #[async_recursion]
     async fn execute_kind(&mut self, node: &Node, outer: &Env) -> Result<Vec<Env>> {
         if super::pipeline::supports(node) {
-            return if self.measure {
+            return if self.measure || self.measure_operators {
                 super::pipeline::execute_measured(
                     self.view,
                     node,
                     outer,
                     &mut self.measured,
                     &mut self.join_measurements,
+                    &mut self.operator_measurements,
+                    &mut self.next_operator_id,
+                    self.current_operator_id,
+                    self.measure_operators,
                 )
                 .await
             } else {
@@ -933,21 +1144,153 @@ impl<'a> Executor<'a> {
         step_output: &RowType,
         accumulation: RecursiveAccumulation,
     ) -> Result<Vec<Env>> {
+        let span = tracing::debug_span!(
+            target: "rad::telemetry",
+            "rad.recursive.execute",
+            otel.name = "rad.recursive.execute",
+            otel.kind = "internal",
+            rad.recursive.binding = %binding.name,
+            rad.recursive.accumulation = ?accumulation,
+            rad.recursive.iterations = tracing::field::Empty,
+            rad.recursive.output_rows = tracing::field::Empty,
+            rad.recursive.duplicate_rows = tracing::field::Empty,
+            rad.recursive.peak_frontier_rows = tracing::field::Empty,
+            rad.recursive.peak_retained_bytes = tracing::field::Empty,
+            rad.recursive.anchor_rows = tracing::field::Empty,
+            rad.recursive.anchor_duration_us = tracing::field::Empty,
+            rad.recursive.anchor_rows_examined = tracing::field::Empty,
+            rad.recursive.anchor_logical_row_operations = tracing::field::Empty,
+            rad.recursive.anchor_storage_reads = tracing::field::Empty,
+            rad.recursive.anchor_storage_bytes = tracing::field::Empty,
+            rad.recursive.step_rows_examined = tracing::field::Empty,
+            rad.recursive.step_logical_row_operations = tracing::field::Empty,
+            rad.recursive.step_storage_reads = tracing::field::Empty,
+            rad.recursive.step_storage_bytes = tracing::field::Empty,
+            rad.status = tracing::field::Empty,
+            otel.status_code = tracing::field::Empty,
+        );
+        let execution = RecursiveExecution {
+            binding,
+            anchor,
+            step,
+            step_output,
+            accumulation,
+        };
+        let mut measurement = RecursiveMeasurement::default();
+        let result = self
+            .commit_recursive_inner(execution, &span, &mut measurement)
+            .instrument(span.clone())
+            .await;
+        self.frontier.remove(&binding.name);
+        record_recursive_measurement(&span, &measurement);
+        span.record(
+            "rad.status",
+            if result.is_ok() { "success" } else { "error" },
+        );
+        if result.is_err() {
+            span.record("otel.status_code", "ERROR");
+        }
+        result
+    }
+
+    async fn commit_recursive_inner(
+        &mut self,
+        execution: RecursiveExecution<'_>,
+        recursive_span: &tracing::Span,
+        measurement: &mut RecursiveMeasurement,
+    ) -> Result<Vec<Env>> {
+        let RecursiveExecution {
+            binding,
+            anchor,
+            step,
+            step_output,
+            accumulation,
+        } = execution;
         let anchor_slots = slots_by_name(&binding.output);
         let step_slots = slots_by_name(step_output);
         let canonical = &binding.output;
         let mut seen = (accumulation == RecursiveAccumulation::New)
             .then(|| CanonicalRowSet::new(canonical.fields.clone()));
+        let diagnostics = !recursive_span.is_disabled();
         let mut result = Vec::new();
         let mut frontier = Vec::new();
-        for frame in self.execute_node(anchor, &Env::new()).await? {
+        let anchor_span = tracing::debug_span!(
+            target: "rad::telemetry",
+            parent: recursive_span,
+            "rad.recursive.anchor",
+            otel.name = "rad.recursive.anchor",
+            otel.kind = "internal",
+            rad.recursive.output_rows = tracing::field::Empty,
+            rad.recursive.rows_examined = tracing::field::Empty,
+            rad.recursive.logical_row_operations = tracing::field::Empty,
+            rad.recursive.storage_reads = tracing::field::Empty,
+            rad.recursive.storage_bytes = tracing::field::Empty,
+            rad.status = tracing::field::Empty,
+            otel.status_code = tracing::field::Empty,
+        );
+        let anchor_operator_start = self.operator_measurements.len();
+        let anchor_kv_before = if diagnostics {
+            self.kv_work()
+        } else {
+            super::observe::KvWork::default()
+        };
+        let anchor_started = diagnostics.then(Instant::now);
+        let anchor_frames = self
+            .execute_node(anchor, &Env::new())
+            .instrument(anchor_span.clone())
+            .await;
+        let anchor_duration = anchor_started.map(|started| started.elapsed());
+        let anchor_work = if diagnostics {
+            self.recursive_work_since(anchor_operator_start, anchor_kv_before)
+        } else {
+            RecursiveWork::default()
+        };
+        record_recursive_work(&anchor_span, anchor_work);
+        if anchor_frames.is_err() {
+            anchor_span.record("rad.status", "error");
+            anchor_span.record("otel.status_code", "ERROR");
+        }
+        if let Some(duration) = anchor_duration {
+            measurement.anchor_duration_us = Some(duration_micros(duration));
+        }
+        measurement.anchor_work = anchor_work;
+        let anchor_frames = anchor_frames?;
+        anchor_span.record("rad.recursive.output_rows", anchor_frames.len() as u64);
+        anchor_span.record("rad.status", "success");
+        measurement.anchor_rows = Some(anchor_frames.len() as u64);
+        let mut duplicate_rows = 0_u64;
+        let mut result_retained_bytes = 0_u64;
+        let mut frontier_retained_bytes = 0_u64;
+        let mut seen_retained_bytes = 0_u64;
+        for frame in anchor_frames {
             let frame = project_canonical(canonical, &anchor_slots, &frame);
             if seen.as_mut().is_none_or(|seen| seen.insert(&frame)) {
+                let retained_bytes = if diagnostics {
+                    super::pipeline::frame_retained_bytes(&frame)
+                } else {
+                    0
+                };
+                result_retained_bytes = result_retained_bytes.saturating_add(retained_bytes);
+                frontier_retained_bytes = frontier_retained_bytes.saturating_add(retained_bytes);
+                if seen.is_some() {
+                    seen_retained_bytes = seen_retained_bytes.saturating_add(retained_bytes);
+                }
                 result.push(frame.clone());
                 frontier.push(frame);
+            } else {
+                duplicate_rows = duplicate_rows.saturating_add(1);
             }
         }
         let mut iteration = 0;
+        let mut peak_frontier_rows = frontier.len() as u64;
+        let mut peak_retained_bytes = result_retained_bytes
+            .saturating_add(frontier_retained_bytes)
+            .saturating_add(seen_retained_bytes);
+        let mut step_work = RecursiveWork::default();
+        measurement.output_rows = result.len() as u64;
+        measurement.duplicate_rows = duplicate_rows;
+        measurement.peak_frontier_rows = peak_frontier_rows;
+        measurement.peak_retained_bytes = peak_retained_bytes;
         while !frontier.is_empty() {
             if iteration >= self.limits.max_iterations {
                 return Err(Error::message(
@@ -959,16 +1302,97 @@ impl<'a> Executor<'a> {
                 ));
             }
             iteration += 1;
+            let input_rows = frontier.len() as u64;
+            measurement.iterations = iteration;
             self.frontier.insert(binding.name.clone(), frontier);
-            let produced = self.execute_node(step, &Env::new()).await?;
+            let iteration_span = if trace_recursive_iteration(iteration) {
+                tracing::debug_span!(
+                    target: "rad::telemetry",
+                    parent: recursive_span,
+                    "rad.recursive.iteration",
+                    otel.name = "rad.recursive.iteration",
+                    otel.kind = "internal",
+                    rad.recursive.iteration = iteration,
+                    rad.recursive.input_rows = input_rows,
+                    rad.recursive.produced_rows = tracing::field::Empty,
+                    rad.recursive.accepted_rows = tracing::field::Empty,
+                    rad.recursive.duplicate_rows = tracing::field::Empty,
+                    rad.recursive.accumulated_rows = tracing::field::Empty,
+                    rad.recursive.rows_examined = tracing::field::Empty,
+                    rad.recursive.logical_row_operations = tracing::field::Empty,
+                    rad.recursive.storage_reads = tracing::field::Empty,
+                    rad.recursive.storage_bytes = tracing::field::Empty,
+                    rad.status = tracing::field::Empty,
+                    otel.status_code = tracing::field::Empty,
+                )
+            } else {
+                tracing::Span::none()
+            };
+            let operator_start = self.operator_measurements.len();
+            let kv_before = if diagnostics {
+                self.kv_work()
+            } else {
+                super::observe::KvWork::default()
+            };
+            let produced = self
+                .execute_node(step, &Env::new())
+                .instrument(iteration_span.clone())
+                .await;
+            let iteration_work = if diagnostics {
+                self.recursive_work_since(operator_start, kv_before)
+            } else {
+                RecursiveWork::default()
+            };
+            step_work.add(iteration_work);
+            record_recursive_work(&iteration_span, iteration_work);
+            measurement.step_work = step_work;
+            if produced.is_err() {
+                iteration_span.record("rad.recursive.accumulated_rows", result.len() as u64);
+                iteration_span.record("rad.status", "error");
+                iteration_span.record("otel.status_code", "ERROR");
+            }
+            let produced = produced?;
+            let produced_rows = produced.len() as u64;
             let mut next = Vec::new();
+            let input_frontier_retained_bytes = frontier_retained_bytes;
+            let mut next_retained_bytes = 0_u64;
             for frame in produced {
                 let frame = project_canonical(canonical, &step_slots, &frame);
                 if seen.as_mut().is_none_or(|seen| seen.insert(&frame)) {
+                    let retained_bytes = if diagnostics {
+                        super::pipeline::frame_retained_bytes(&frame)
+                    } else {
+                        0
+                    };
+                    next_retained_bytes = next_retained_bytes.saturating_add(retained_bytes);
+                    if seen.is_some() {
+                        seen_retained_bytes = seen_retained_bytes.saturating_add(retained_bytes);
+                    }
                     next.push(frame);
                 }
             }
+            let accepted_rows = next.len() as u64;
+            let iteration_duplicates = produced_rows.saturating_sub(accepted_rows);
+            duplicate_rows = duplicate_rows.saturating_add(iteration_duplicates);
+            peak_frontier_rows = peak_frontier_rows.max(accepted_rows);
+            iteration_span.record("rad.recursive.produced_rows", produced_rows);
+            iteration_span.record("rad.recursive.accepted_rows", accepted_rows);
+            iteration_span.record("rad.recursive.duplicate_rows", iteration_duplicates);
             result.extend(next.iter().cloned());
+            result_retained_bytes = result_retained_bytes.saturating_add(next_retained_bytes);
+            peak_retained_bytes = peak_retained_bytes.max(
+                result_retained_bytes
+                    .saturating_add(input_frontier_retained_bytes)
+                    .saturating_add(next_retained_bytes)
+                    .saturating_add(seen_retained_bytes),
+            );
+            frontier_retained_bytes = next_retained_bytes;
+            iteration_span.record("rad.recursive.accumulated_rows", result.len() as u64);
+            iteration_span.record("rad.status", "success");
+            measurement.output_rows = result.len() as u64;
+            measurement.duplicate_rows = duplicate_rows;
+            measurement.peak_frontier_rows = peak_frontier_rows;
+            measurement.peak_retained_bytes = peak_retained_bytes;
             if result.len() > self.limits.max_rows {
                 return Err(Error::message(
                     ErrorKind::RecursionLimit,
@@ -980,9 +1404,64 @@ impl<'a> Executor<'a> {
             }
             frontier = next;
         }
-        self.frontier.remove(&binding.name);
         Ok(result)
     }
+}
+
+fn record_recursive_measurement(span: &tracing::Span, measurement: &RecursiveMeasurement) {
+    span.record("rad.recursive.iterations", measurement.iterations);
+    span.record("rad.recursive.output_rows", measurement.output_rows);
+    span.record("rad.recursive.duplicate_rows", measurement.duplicate_rows);
+    span.record(
+        "rad.recursive.peak_frontier_rows",
+        measurement.peak_frontier_rows,
+    );
+    span.record(
+        "rad.recursive.peak_retained_bytes",
+        measurement.peak_retained_bytes,
+    );
+    if let Some(anchor_rows) = measurement.anchor_rows {
+        span.record("rad.recursive.anchor_rows", anchor_rows);
+    }
+    if let Some(anchor_duration_us) = measurement.anchor_duration_us {
+        span.record("rad.recursive.anchor_duration_us", anchor_duration_us);
+    }
+    record_recursive_anchor_work(span, measurement.anchor_work);
+    record_recursive_step_work(span, measurement.step_work);
+}
+
+fn record_recursive_work(span: &tracing::Span, work: RecursiveWork) {
+    span.record("rad.recursive.rows_examined", work.rows_examined);
+    span.record(
+        "rad.recursive.logical_row_operations",
+        work.logical_row_operations,
+    );
+    span.record("rad.recursive.storage_reads", work.storage_reads);
+    span.record("rad.recursive.storage_bytes", work.storage_bytes);
+}
+
+fn record_recursive_anchor_work(span: &tracing::Span, work: RecursiveWork) {
+    span.record("rad.recursive.anchor_rows_examined", work.rows_examined);
+    span.record(
+        "rad.recursive.anchor_logical_row_operations",
+        work.logical_row_operations,
+    );
+    span.record("rad.recursive.anchor_storage_reads", work.storage_reads);
+    span.record("rad.recursive.anchor_storage_bytes", work.storage_bytes);
+}
+
+fn record_recursive_step_work(span: &tracing::Span, work: RecursiveWork) {
+    span.record("rad.recursive.step_rows_examined", work.rows_examined);
+    span.record(
+        "rad.recursive.step_logical_row_operations",
+        work.logical_row_operations,
+    );
+    span.record("rad.recursive.step_storage_reads", work.storage_reads);
+    span.record("rad.recursive.step_storage_bytes", work.storage_bytes);
+}
+
+fn trace_recursive_iteration(iteration: usize) -> bool {
+    iteration <= EARLY_RECURSIVE_ITERATION_SPANS || iteration.is_power_of_two()
 }
 
 fn storage_pruning(
@@ -1311,6 +1790,12 @@ mod tests {
 
     use async_trait::async_trait;
     use bytes::Bytes;
+    use tracing::field::{Field as TracingField, Visit};
+    use tracing::{Id, Subscriber};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::registry::LookupSpan;
 
     use crate::engine::catalog::identity::{
         AccessGeneration, DefinitionGeneration, ExistenceGeneration, LogicalIndexId, SchemaId,
@@ -1331,6 +1816,40 @@ mod tests {
     };
 
     use super::*;
+
+    #[derive(Clone, Default)]
+    struct RecursiveSummaryCapture(Arc<Mutex<HashMap<&'static str, usize>>>);
+
+    impl<S> Layer<S> for RecursiveSummaryCapture
+    where
+        S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+    {
+        fn on_record(
+            &self,
+            span: &Id,
+            values: &tracing::span::Record<'_>,
+            context: Context<'_, S>,
+        ) {
+            if context
+                .metadata(span)
+                .is_none_or(|metadata| metadata.name() != "rad.recursive.execute")
+            {
+                return;
+            }
+            values.record(&mut RecursiveSummaryVisitor(&self.0));
+        }
+    }
+
+    struct RecursiveSummaryVisitor<'a>(&'a Mutex<HashMap<&'static str, usize>>);
+
+    impl Visit for RecursiveSummaryVisitor<'_> {
+        fn record_debug(&mut self, field: &TracingField, _value: &dyn std::fmt::Debug) {
+            if field.name().starts_with("rad.recursive.") {
+                let mut counts = self.0.lock().expect("recursive capture lock");
+                *counts.entry(field.name()).or_default() += 1;
+            }
+        }
+    }
 
     fn aggregate_term(function: AggregateFunction, kind: Kind) -> bound::BoundAggregateTerm {
         bound::BoundAggregateTerm {
@@ -2595,7 +3114,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn reference_mutation_smoke_recursive_binding_uses_the_frontier_and_reaches_a_fixpoint() {
         let anchor = int_rows("anchor", 0, &[1]);
         let recursive = Relation::recursive_reference(
@@ -2666,6 +3185,9 @@ mod tests {
             max_iterations: 16,
             max_rows: 64,
         };
+        let summary = RecursiveSummaryCapture::default();
+        let subscriber = tracing_subscriber::registry().with(summary.clone());
+        let _subscriber = tracing::subscriber::set_default(subscriber);
         let frames = Executor::new(&store, proof_limits)
             .run_frames(&plan)
             .await
@@ -2685,6 +3207,26 @@ mod tests {
                 .map(|value| Datum::scalar(Value::Int64(value)))
                 .collect::<Vec<_>>()
         );
+        let counts = summary.0.lock().expect("recursive capture lock");
+        for field in [
+            "rad.recursive.iterations",
+            "rad.recursive.output_rows",
+            "rad.recursive.duplicate_rows",
+            "rad.recursive.peak_frontier_rows",
+            "rad.recursive.peak_retained_bytes",
+            "rad.recursive.anchor_rows",
+            "rad.recursive.anchor_duration_us",
+            "rad.recursive.anchor_rows_examined",
+            "rad.recursive.anchor_logical_row_operations",
+            "rad.recursive.anchor_storage_reads",
+            "rad.recursive.anchor_storage_bytes",
+            "rad.recursive.step_rows_examined",
+            "rad.recursive.step_logical_row_operations",
+            "rad.recursive.step_storage_reads",
+            "rad.recursive.step_storage_bytes",
+        ] {
+            assert_eq!(counts.get(field), Some(&1), "{field}");
+        }
     }
 
     #[tokio::test]
@@ -2785,11 +3327,10 @@ mod tests {
                 max_rows: 2,
             },
         ] {
-            let production_error = Executor::new(&store, limits)
-                .run_frames(&plan)
-                .await
-                .unwrap_err();
+            let mut executor = Executor::new(&store, limits);
+            let production_error = executor.run_frames(&plan).await.unwrap_err();
             assert_eq!(production_error.reason(), ErrorReason::RecursionLimit);
+            assert!(!executor.frontier.contains_key("walk"));
 
             let reference_error = ReferenceExecutor::new(&store, limits)
                 .run_frames(&bound)

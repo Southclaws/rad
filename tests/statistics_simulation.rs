@@ -494,6 +494,8 @@ fn observation(family_seed: u8, exact_seed: u8, rows: u64) -> StatementObservati
         affected: rows,
         mutated: None,
         kv: KvWork::default(),
+        operators: Vec::new(),
+        physical_storage: None,
         join_operators: Vec::new(),
         failure: None,
     }

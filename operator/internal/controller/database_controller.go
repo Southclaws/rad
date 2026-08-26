@@ -385,7 +385,10 @@ func (r *DatabaseReconciler) reconcileFrontendService(ctx context.Context, datab
 		service.Labels = labelsFor(database)
 		service.Spec.Type = corev1.ServiceTypeClusterIP
 		service.Spec.Selector = roleSelectorLabelsFor(database, writeRole)
-		service.Spec.Ports = []corev1.ServicePort{{Name: "http", Port: 80, TargetPort: intstrFromInt(publicPort), Protocol: corev1.ProtocolTCP, AppProtocol: ptr.To("http")}}
+		service.Spec.Ports = []corev1.ServicePort{
+			{Name: "http", Port: 80, TargetPort: intstrFromInt(publicPort), Protocol: corev1.ProtocolTCP, AppProtocol: ptr.To("http")},
+			{Name: "admin", Port: adminPort, TargetPort: intstrFromInt(adminPort), Protocol: corev1.ProtocolTCP, AppProtocol: ptr.To("http")},
+		}
 		return nil
 	})
 	return err
@@ -414,7 +417,7 @@ func (r *DatabaseReconciler) reconcileStatefulSet(
 		statefulSet.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels:      roleLabelsFor(database, writeRole),
-				Annotations: rolloutAnnotations(authentication),
+				Annotations: workloadAnnotations(database, authentication),
 			},
 			Spec: r.radPodSpec(database, authentication, transport, writeRole),
 		}
@@ -429,7 +432,10 @@ func (r *DatabaseReconciler) reconcileStatefulSet(
 // Only the writer serves the internal API, so only the writer declares its
 // port. A reader reaches it; nothing reaches a reader on it.
 func radContainerPorts(database *radv1alpha1.Database, role string) []corev1.ContainerPort {
-	ports := []corev1.ContainerPort{{Name: "http", ContainerPort: publicPort, Protocol: corev1.ProtocolTCP}}
+	ports := []corev1.ContainerPort{
+		{Name: "http", ContainerPort: publicPort, Protocol: corev1.ProtocolTCP},
+		{Name: "admin", ContainerPort: adminPort, Protocol: corev1.ProtocolTCP},
+	}
 	if relayEnabled(database) && role == writeRole {
 		ports = append(ports, corev1.ContainerPort{
 			Name: "internal", ContainerPort: internalPort, Protocol: corev1.ProtocolTCP,
@@ -459,6 +465,16 @@ func rolloutAnnotations(authentication resolvedAuthentication) map[string]string
 		return map[string]string{credentialsVersionKey: authentication.versionAnnotation}
 	}
 	return map[string]string{workloadIdentityVersionKey: authentication.versionAnnotation}
+}
+
+func workloadAnnotations(database *radv1alpha1.Database, authentication resolvedAuthentication) map[string]string {
+	annotations := rolloutAnnotations(authentication)
+	if databaseMetricsEnabled(database) {
+		annotations["prometheus.io/scrape"] = "true"
+		annotations["prometheus.io/path"] = "/metrics"
+		annotations["prometheus.io/port"] = strconv.Itoa(publicPort)
+	}
+	return annotations
 }
 
 func (r *DatabaseReconciler) radPodSpec(
@@ -819,13 +835,16 @@ func databaseEnvironment(
 	role string,
 ) []corev1.EnvVar {
 	values := map[string]string{
-		"RAD_ADDR": fmt.Sprintf("0.0.0.0:%d", publicPort),
-		// Loopback keeps the admin surface off the pod network; it stays
-		// reachable through kubectl port-forward, which enters the pod's own
-		// network namespace.
-		"RAD_ADMIN_ADDR":        fmt.Sprintf("127.0.0.1:%d", adminPort),
+		"RAD_ADDR":              fmt.Sprintf("0.0.0.0:%d", publicPort),
+		"RAD_ADMIN_ADDR":        fmt.Sprintf("0.0.0.0:%d", adminPort),
 		"RAD_CATALOG_MODE":      string(database.Spec.CatalogMode),
 		"RAD_CLOSE_TIMEOUT_MS":  strconv.FormatInt(closeTimeoutMilliseconds(database), 10),
+		"RAD_LOG_FORMAT":        databaseLogFormat(database),
+		"RAD_LOG_LEVEL":         databaseLogLevel(database),
+		"RAD_LOG_PROGRAMS":      strconv.FormatBool(database.Spec.Logging.Programs),
+		"RAD_DIAGNOSTICS":       databaseDiagnosticLevel(database),
+		"RAD_METRICS":           strconv.FormatBool(databaseMetricsEnabled(database)),
+		"RAD_CACHE_SIZE_MIB":    strconv.FormatInt(databaseCacheSizeMiB(database), 10),
 		"RAD_ROLE":              role,
 		"RAD_S3_BUCKET":         database.Spec.Storage.Bucket,
 		"RAD_S3_PREFIX":         database.Spec.Storage.Prefix,
@@ -851,6 +870,9 @@ func databaseEnvironment(
 	if database.Spec.CaptureWorkloadCorpus {
 		values["RAD_CAPTURE_WORKLOAD_CORPUS"] = "true"
 	}
+	if database.Spec.Telemetry.Endpoint != "" {
+		values["OTEL_EXPORTER_OTLP_ENDPOINT"] = database.Spec.Telemetry.Endpoint
+	}
 	if database.Spec.Storage.Endpoint != "" {
 		values["RAD_S3_ENDPOINT"] = database.Spec.Storage.Endpoint
 	}
@@ -863,7 +885,66 @@ func databaseEnvironment(
 	for _, key := range keys {
 		environment = append(environment, corev1.EnvVar{Name: key, Value: values[key]})
 	}
+	environment = append(environment,
+		corev1.EnvVar{
+			Name: "RAD_INSTANCE_ID",
+			ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{
+				FieldPath: "metadata.name",
+			}},
+		},
+		corev1.EnvVar{
+			Name: "OTEL_RESOURCE_ATTRIBUTES_K8S_POD_NAME",
+			ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{
+				FieldPath: "metadata.name",
+			}},
+		},
+		corev1.EnvVar{
+			Name: "OTEL_RESOURCE_ATTRIBUTES_K8S_NAMESPACE_NAME",
+			ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{
+				FieldPath: "metadata.namespace",
+			}},
+		},
+		corev1.EnvVar{Name: "OTEL_RESOURCE_ATTRIBUTES_RAD_DATABASE", Value: database.Name},
+	)
+	sort.Slice(environment, func(left, right int) bool {
+		return environment[left].Name < environment[right].Name
+	})
 	return environment
+}
+
+func databaseDiagnosticLevel(database *radv1alpha1.Database) string {
+	if database.Spec.Telemetry.Diagnostics == "" {
+		return "summary"
+	}
+	return string(database.Spec.Telemetry.Diagnostics)
+}
+
+func databaseMetricsEnabled(database *radv1alpha1.Database) bool {
+	if database.Spec.Telemetry.Metrics == nil {
+		return true
+	}
+	return *database.Spec.Telemetry.Metrics
+}
+
+func databaseCacheSizeMiB(database *radv1alpha1.Database) int64 {
+	if database.Spec.Cache.SizeMiB == 0 {
+		return 128
+	}
+	return int64(database.Spec.Cache.SizeMiB)
+}
+
+func databaseLogLevel(database *radv1alpha1.Database) string {
+	if database.Spec.Logging.Level == "" {
+		return "info"
+	}
+	return string(database.Spec.Logging.Level)
+}
+
+func databaseLogFormat(database *radv1alpha1.Database) string {
+	if database.Spec.Logging.Format == "" {
+		return "json"
+	}
+	return string(database.Spec.Logging.Format)
 }
 
 func credentialEnvironment(secretName string) []corev1.EnvVar {

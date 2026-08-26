@@ -218,10 +218,10 @@ impl Health {
         self.phase.store(Phase::Draining.code(), Ordering::Release);
     }
 
-    pub fn observe_storage(&self) {
+    pub fn observe_storage(&self) -> bool {
         let elapsed = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(UNOBSERVED - 1);
         self.storage_observed_at.store(elapsed, Ordering::Release);
-        self.storage_failing.store(false, Ordering::Release);
+        self.storage_failing.swap(false, Ordering::AcqRel)
     }
 
     /// Returns whether this changed the observed state, so a caller can log the

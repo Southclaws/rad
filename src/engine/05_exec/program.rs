@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use tracing::Instrument as _;
 
 use crate::engine::catalog;
 use crate::engine::catalog::Mutation as CatalogMutation;
@@ -208,6 +209,27 @@ impl Statement {
         }
     }
 
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Query { .. } => "query",
+            Self::Create { .. } => "create",
+            Self::Update { .. } => "update",
+            Self::Delete { .. } => "delete",
+            Self::CreateTable { .. } => "create_table",
+            Self::RenameTable { .. } => "rename_table",
+            Self::DeleteTable { .. } => "delete_table",
+            Self::CreateColumn { .. } => "create_column",
+            Self::RenameColumn { .. } => "rename_column",
+            Self::ChangeColumnDefault { .. } => "change_column_default",
+            Self::DeleteColumn { .. } => "delete_column",
+            Self::CreateIndex { .. } => "create_index",
+            Self::DeleteIndex { .. } => "delete_index",
+            Self::StartIndexBuild { .. } => "start_index_build",
+            Self::StartColumnReplacement { .. } => "start_column_replacement",
+            Self::StartConstraintValidation { .. } => "start_constraint_validation",
+        }
+    }
+
     pub fn relational(&self) -> bool {
         matches!(
             self,
@@ -281,7 +303,8 @@ pub struct ProgramResult {
     pub plans: Vec<StatementPlan>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StatementPlan {
     pub name: String,
     pub plan: PlanView,
@@ -297,6 +320,10 @@ pub struct StatementPlanMeasurement {
     pub logical_kv: super::observe::KvWork,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logical_scans: Option<super::observe::KvScanTrace>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operator_trace: Option<super::observe::OperatorTrace>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_storage: Option<crate::engine::kv::telemetry::PhysicalRequestTrace>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub join_operators: Vec<super::observe::JoinOperatorMeasurement>,
 }
@@ -585,17 +612,69 @@ async fn run_statements(
 ) -> Result<()> {
     let mut catalog_changed = false;
     let mut schema_changed = false;
-    let observing = matches!(path, ExecutionPath::Production) && observation.enabled();
-    let measuring = matches!(path, ExecutionPath::Production) && (observing || collect_plan);
+    let tracing_statements = matches!(path, ExecutionPath::Production)
+        && tracing::event_enabled!(target: "rad::program", tracing::Level::DEBUG);
+    let tracing_spans = matches!(path, ExecutionPath::Production)
+        && tracing::enabled!(target: "rad::telemetry", tracing::Level::INFO);
+    let tracing_operator_events = matches!(path, ExecutionPath::Production)
+        && tracing::event_enabled!(target: "rad::telemetry", tracing::Level::DEBUG);
+    let tracing_operator_spans = matches!(path, ExecutionPath::Production)
+        && tracing::enabled!(target: "rad::telemetry", tracing::Level::DEBUG);
+    let observing = matches!(path, ExecutionPath::Production)
+        && (observation.enabled() || tracing_statements || tracing_spans);
+    let measuring = matches!(path, ExecutionPath::Production)
+        && (observing || collect_plan || crate::telemetry::enabled());
+    let measure_operators = matches!(path, ExecutionPath::Production)
+        && (collect_plan || tracing_operator_events || tracing_operator_spans);
     binder.set_statistics(statistics.clone());
     binder.set_plan_options(plan_options);
     for statement in &program.statements {
+        let statement_span = tracing::info_span!(
+            target: "rad::telemetry",
+            "rad.statement.execute",
+            otel.kind = "internal",
+            rad.statement.kind = statement.kind(),
+            rad.statement.fingerprint = tracing::field::Empty,
+            rad.statement.plan_fingerprint = tracing::field::Empty,
+            rad.statement.result_rows = tracing::field::Empty,
+            rad.statement.affected_rows = tracing::field::Empty,
+            rad.statement.bind_duration_us = tracing::field::Empty,
+            rad.statement.execution_duration_us = tracing::field::Empty,
+            rad.kv.gets = tracing::field::Empty,
+            rad.kv.puts = tracing::field::Empty,
+            rad.kv.deletes = tracing::field::Empty,
+            rad.kv.scans = tracing::field::Empty,
+            rad.kv.bytes_read = tracing::field::Empty,
+            rad.kv.bytes_written = tracing::field::Empty,
+            rad.status = tracing::field::Empty,
+            error.type = tracing::field::Empty,
+            otel.status_code = tracing::field::Empty,
+        );
         if let Some(binding) = statement.binder_statement() {
             let catalog = super::engine::ViewCatalog { view: &*view };
             let bind_started = measuring.then(|| runtime.monotonic());
-            let bound = match path {
-                ExecutionPath::Production => binder.bind(&catalog, binding).await?,
-                ExecutionPath::Reference => binder.bind_reference(&catalog, binding).await?,
+            let bound = match match path {
+                ExecutionPath::Production => {
+                    binder
+                        .bind(&catalog, binding)
+                        .instrument(statement_span.clone())
+                        .await
+                }
+                ExecutionPath::Reference => {
+                    binder
+                        .bind_reference(&catalog, binding)
+                        .instrument(statement_span.clone())
+                        .await
+                }
+            } {
+                Ok(bound) => bound,
+                Err(error) => {
+                    let error: Error = error.into();
+                    statement_span.record("rad.status", "error");
+                    statement_span.record("error.type", error.kind().as_str());
+                    statement_span.record("otel.status_code", "ERROR");
+                    return Err(error);
+                }
             };
             let bind = bind_started.map(|started| runtime.monotonic().saturating_sub(started));
             let execute_started = measuring.then(|| runtime.monotonic());
@@ -603,37 +682,63 @@ async fn run_statements(
             let mut binding_rows = Vec::new();
             let mut measured = Vec::new();
             let mut join_operators = Vec::new();
-            let frames = if let Some(counters) = &counters {
-                let mut observed = super::observe::ObservedView::new(&*view, counters);
-                run_relational(
-                    &mut observed,
-                    statement,
-                    &bound,
-                    bindings,
-                    limits,
-                    path,
-                    runtime.as_ref(),
-                    measuring,
-                    &mut binding_rows,
-                    &mut measured,
-                    &mut join_operators,
-                )
-                .await?
+            let mut operators = Vec::new();
+            let execution = async {
+                if let Some(counters) = &counters {
+                    let mut observed = super::observe::ObservedView::new(&*view, counters);
+                    run_relational(
+                        &mut observed,
+                        Some(counters),
+                        statement,
+                        &bound,
+                        bindings,
+                        limits,
+                        path,
+                        runtime.as_ref(),
+                        measuring,
+                        &mut binding_rows,
+                        &mut measured,
+                        &mut join_operators,
+                        measure_operators,
+                        &mut operators,
+                    )
+                    .await
+                } else {
+                    run_relational(
+                        view,
+                        None,
+                        statement,
+                        &bound,
+                        bindings,
+                        limits,
+                        path,
+                        runtime.as_ref(),
+                        measuring,
+                        &mut binding_rows,
+                        &mut measured,
+                        &mut join_operators,
+                        measure_operators,
+                        &mut operators,
+                    )
+                    .await
+                }
+            };
+            let execution = execution.instrument(statement_span.clone());
+            let (frames, physical_storage) = if measure_operators {
+                let (frames, trace) =
+                    crate::engine::kv::telemetry::observe_request("slatedb", execution).await;
+                (frames, Some(trace))
             } else {
-                run_relational(
-                    view,
-                    statement,
-                    &bound,
-                    bindings,
-                    limits,
-                    path,
-                    runtime.as_ref(),
-                    measuring,
-                    &mut binding_rows,
-                    &mut measured,
-                    &mut join_operators,
-                )
-                .await?
+                (execution.await, None)
+            };
+            let frames = match frames {
+                Ok(frames) => frames,
+                Err(error) => {
+                    statement_span.record("rad.status", "error");
+                    statement_span.record("error.type", error.kind().as_str());
+                    statement_span.record("otel.status_code", "ERROR");
+                    return Err(error);
+                }
             };
             let affected = frames.len();
             let execute = execute_started
@@ -646,7 +751,37 @@ async fn run_statements(
             let logical_scans = counters
                 .as_ref()
                 .and_then(super::observe::KvCounters::scan_trace);
-            if let Some(observer) = observation.observer {
+            let dropped_operators = operators
+                .len()
+                .saturating_sub(super::observe::MAX_OPERATOR_MEASUREMENTS)
+                as u64;
+            operators.truncate(super::observe::MAX_OPERATOR_MEASUREMENTS);
+            let execution_micros = execute.as_micros().min(u128::from(u64::MAX)) as u64;
+            let attributed_micros = operators
+                .iter()
+                .filter(|measurement| measurement.parent_operator_id.is_none())
+                .map(|measurement| measurement.inclusive_micros)
+                .fold(0u64, u64::saturating_add);
+            let operator_trace = measure_operators.then(|| super::observe::OperatorTrace {
+                format: super::observe::OPERATOR_TRACE_FORMAT,
+                operators: operators.clone(),
+                dropped: dropped_operators,
+                unattributed_micros: execution_micros.saturating_sub(attributed_micros),
+            });
+            if crate::telemetry::enabled() {
+                crate::telemetry::statement_finished(
+                    statement.kind(),
+                    "success",
+                    bind.unwrap_or_default(),
+                    execute,
+                    frames.len() as u64,
+                    &kv,
+                );
+                for operator in &operators {
+                    crate::telemetry::operator_finished(operator);
+                }
+            }
+            if observing {
                 let fingerprints = crate::engine::lir::fingerprint::query(&bound.bound);
                 let stamp = bound.plan.as_ref().map_or_else(
                     crate::engine::planner::models::DependencyStamp::default,
@@ -664,26 +799,162 @@ async fn run_statements(
                         }),
                     })
                     .collect();
-                observer.statement(super::observe::StatementObservation {
-                    query: fingerprints,
-                    estimate,
-                    stamp,
-                    relations,
-                    plan: bound
+                let plan_fingerprint = bound
+                    .plan
+                    .as_ref()
+                    .map(crate::engine::planner::physical::Plan::fingerprint);
+                statement_span.record("rad.statement.fingerprint", fingerprints.family.to_string());
+                if let Some(plan_fingerprint) = plan_fingerprint {
+                    statement_span.record(
+                        "rad.statement.plan_fingerprint",
+                        plan_fingerprint.to_string(),
+                    );
+                }
+                if tracing_statements {
+                    let request = crate::logging::request_context();
+                    let (trace_id, span_id) = crate::telemetry::span_ids(&statement_span);
+                    let plan = bound
                         .plan
                         .as_ref()
-                        .map(crate::engine::planner::physical::Plan::fingerprint),
-                    phase: super::observe::PhaseTimings {
-                        bind: bind.unwrap_or_default(),
-                        execute,
-                    },
-                    rows: frames.len() as u64,
-                    affected: affected as u64,
-                    mutated: bound.target.as_ref().map(|table| table.schema_id),
-                    kv,
-                    join_operators: join_operators.clone(),
-                    failure: None,
-                });
+                        .map(|plan| format!("{plan:?}"))
+                        .unwrap_or_default();
+                    tracing::debug!(
+                        target: "rad::program",
+                        event = "program.statement",
+                        component = "executor",
+                        transport = request.transport,
+                        request_id = request.request_id,
+                        trace_id,
+                        span_id,
+                        transaction_id = request.transaction_id,
+                        client_ip = request.client_ip,
+                        statement = bound.name,
+                        statement_fingerprint = %fingerprints.exact,
+                        statement_family_fingerprint = %fingerprints.family,
+                        relation_fingerprint = %fingerprints.root.family,
+                        plan_fingerprint = plan_fingerprint.map(|value| value.to_string()).unwrap_or_default(),
+                        plan,
+                        bind_duration_us = bind.unwrap_or_default().as_micros() as u64,
+                        execution_duration_us = execute.as_micros() as u64,
+                        result_rows = frames.len() as u64,
+                        affected_rows = if statement.effectful() {
+                            affected as u64
+                        } else {
+                            0
+                        },
+                        kv_gets = kv.gets,
+                        kv_puts = kv.puts,
+                        kv_deletes = kv.deletes,
+                        kv_scans = kv.scans,
+                        kv_iterated = kv.iterated,
+                        kv_bytes_read = kv.bytes_read,
+                        kv_bytes_written = kv.bytes_written,
+                        message = "program statement executed"
+                    );
+                }
+                if let Some(observer) = observation.observer {
+                    observer.statement(super::observe::StatementObservation {
+                        query: fingerprints,
+                        estimate,
+                        stamp,
+                        relations,
+                        plan: plan_fingerprint,
+                        phase: super::observe::PhaseTimings {
+                            bind: bind.unwrap_or_default(),
+                            execute,
+                        },
+                        rows: frames.len() as u64,
+                        affected: affected as u64,
+                        mutated: bound.target.as_ref().map(|table| table.schema_id),
+                        kv,
+                        operators: operators.clone(),
+                        physical_storage: physical_storage.clone(),
+                        join_operators: join_operators.clone(),
+                        failure: None,
+                    });
+                }
+            }
+            statement_span.record("rad.statement.result_rows", frames.len() as u64);
+            statement_span.record(
+                "rad.statement.affected_rows",
+                if statement.effectful() {
+                    affected as u64
+                } else {
+                    0
+                },
+            );
+            statement_span.record(
+                "rad.statement.bind_duration_us",
+                bind.unwrap_or_default().as_micros() as u64,
+            );
+            statement_span.record(
+                "rad.statement.execution_duration_us",
+                execute.as_micros() as u64,
+            );
+            statement_span.record("rad.kv.gets", kv.gets);
+            statement_span.record("rad.kv.puts", kv.puts);
+            statement_span.record("rad.kv.deletes", kv.deletes);
+            statement_span.record("rad.kv.scans", kv.scans);
+            statement_span.record("rad.kv.bytes_read", kv.bytes_read);
+            statement_span.record("rad.kv.bytes_written", kv.bytes_written);
+            statement_span.record("rad.status", "success");
+            if tracing_operator_events {
+                for measurement in &operators {
+                    tracing::debug!(
+                        target: "rad::telemetry",
+                        parent: &statement_span,
+                        event = "operator.completed",
+                        rad.operator.id = measurement.operator_id,
+                        rad.operator.parent_id = measurement.parent_operator_id,
+                        rad.operator.name = measurement.operator,
+                        rad.operator.relation_fingerprint = measurement
+                            .relation_fingerprint
+                            .map(|fingerprint| fingerprint.to_string()),
+                        rad.operator.open_duration_us = measurement.open_micros,
+                        rad.operator.inclusive_duration_us = measurement.inclusive_micros,
+                        rad.operator.exclusive_duration_us = measurement.exclusive_micros,
+                        rad.operator.calls = measurement.calls,
+                        rad.operator.input_rows = measurement.input_rows,
+                        rad.operator.output_rows = measurement.output_rows,
+                        rad.operator.input_complete = measurement.input_complete,
+                        rad.operator.complete = measurement.complete,
+                    );
+                }
+                if let Some(storage) = &physical_storage {
+                    for cache in &storage.caches {
+                        tracing::debug!(
+                            target: "rad::telemetry",
+                            parent: &statement_span,
+                            event = "storage.cache",
+                            rad.storage.backend = storage.backend,
+                            rad.storage.scope = storage.scope,
+                            rad.storage.coverage = storage.coverage,
+                            rad.storage.cache.tier = cache.tier.as_str(),
+                            rad.storage.cache.entry_kind = cache.entry_kind,
+                            rad.storage.cache.accesses = cache.accesses,
+                            rad.storage.cache.hits = cache.hits,
+                            rad.storage.cache.misses = cache.misses,
+                            rad.storage.cache.errors = cache.errors,
+                        );
+                    }
+                    for request in &storage.requests {
+                        tracing::debug!(
+                            target: "rad::telemetry",
+                            parent: &statement_span,
+                            event = "storage.request",
+                            rad.storage.backend = storage.backend,
+                            rad.storage.scope = storage.scope,
+                            rad.storage.coverage = storage.coverage,
+                            rad.storage.service_tier = request.service_tier.as_str(),
+                            rad.storage.request.class = request.class.as_str(),
+                            rad.storage.request.requests = request.requests,
+                            rad.storage.request.completed = request.completed,
+                            rad.storage.request.errors = request.errors,
+                            rad.storage.request.bytes = request.bytes,
+                            rad.storage.request.duration_us = request.duration_micros,
+                        );
+                    }
+                }
             }
             if collect_plan {
                 let plan = bound.plan.as_ref().expect("execution plan requested");
@@ -700,10 +971,12 @@ async fn run_statements(
                             .as_micros()
                             .min(u128::from(u64::MAX))
                             as u64,
-                        execution_micros: execute.as_micros().min(u128::from(u64::MAX)) as u64,
+                        execution_micros,
                         result_rows: frames.len() as u64,
                         logical_kv: kv,
                         logical_scans,
+                        operator_trace,
+                        physical_storage,
                         join_operators,
                     }),
                 });
@@ -721,7 +994,16 @@ async fn run_statements(
         }
 
         let mut mutation = CatalogMutation::with_runtime(view, runtime.clone());
-        let transition = apply_catalog(&mut mutation, statement, transitions, true).await?;
+        let transition = match apply_catalog(&mut mutation, statement, transitions, true).await {
+            Ok(transition) => transition,
+            Err(error) => {
+                statement_span.record("rad.status", "error");
+                statement_span.record("error.type", error.kind().as_str());
+                statement_span.record("otel.status_code", "ERROR");
+                return Err(error);
+            }
+        };
+        statement_span.record("rad.status", "success");
         catalog_changed |= mutation.catalog_changed();
         schema_changed |= mutation.schema_changed();
         if policy == CatalogPolicy::RevisionPerStatement {
@@ -750,6 +1032,7 @@ async fn run_statements(
 #[allow(clippy::too_many_arguments)]
 async fn run_relational(
     view: &mut dyn KvView,
+    kv_counters: Option<&super::observe::KvCounters>,
     statement: &Statement,
     bound: &BoundStatement,
     bindings: &HashMap<String, Vec<Env>>,
@@ -760,6 +1043,8 @@ async fn run_relational(
     binding_rows: &mut Vec<(String, u64)>,
     measured: &mut Vec<(crate::engine::lir::fingerprint::Fingerprint, u64)>,
     join_operators: &mut Vec<super::observe::JoinOperatorMeasurement>,
+    measure_operators: bool,
+    operators: &mut Vec<super::observe::OperatorMeasurement>,
 ) -> Result<Vec<Env>> {
     let input = match path {
         ExecutionPath::Production => {
@@ -768,8 +1053,14 @@ async fn run_relational(
                 .as_ref()
                 .expect("production program binding has a physical plan");
             let mut executor = Executor::new(&*view, limits);
+            if let Some(kv_counters) = kv_counters {
+                executor.observe_kv_work(kv_counters);
+            }
             if measure_relations {
                 executor.enable_measurements();
+            }
+            if measure_operators {
+                executor.enable_operator_measurements();
             }
             executor.seed_bindings(bindings.clone());
             let frames = executor.run_frames(plan).await?;
@@ -780,6 +1071,7 @@ async fn run_relational(
             }
             measured.extend_from_slice(executor.measured());
             join_operators.extend_from_slice(executor.join_measurements());
+            operators.extend(executor.operator_measurements());
             frames
         }
         ExecutionPath::Reference => {
@@ -1350,6 +1642,26 @@ mod tests {
             .as_ref()
             .and_then(|measurement| measurement.logical_scans.as_ref())
             .expect("executed scan trace");
+        let read_measurement = result.plans[1].measurement.as_ref().unwrap();
+        let operator_trace = read_measurement
+            .operator_trace
+            .as_ref()
+            .expect("executed operator trace");
+        assert_eq!(operator_trace.format, "rad-operator-trace-v1");
+        assert_eq!(operator_trace.dropped, 0);
+        assert!(
+            operator_trace
+                .operators
+                .iter()
+                .any(|operator| operator.operator == "TableScan")
+        );
+        let physical_storage = read_measurement
+            .physical_storage
+            .as_ref()
+            .expect("executed physical storage trace");
+        assert_eq!(physical_storage.format, "rad-physical-storage-trace-v1");
+        assert_eq!(physical_storage.backend, "slatedb");
+        assert_eq!(physical_storage.coverage, "cache_and_backing_reads");
         assert_eq!(read_scans.format, "rad-logical-scan-trace-v1");
         assert_eq!(read_scans.dropped, 0);
         assert!(read_scans.scans.iter().any(|scan| {
@@ -1673,7 +1985,7 @@ mod tests {
             async move {
                 observer.observations.lock().unwrap().clear();
                 engine
-                    .execute_program(
+                    .execute_program_with_options(
                         Program {
                             statements: vec![Statement::Query {
                                 name: "read".into(),
@@ -1685,7 +1997,10 @@ mod tests {
                             }],
                             result: Some("read".into()),
                         },
-                        CatalogPolicy::Forbidden,
+                        ProgramOptions {
+                            collect_plan: true,
+                            ..ProgramOptions::default()
+                        },
                     )
                     .await
                     .unwrap();
@@ -1745,6 +2060,30 @@ mod tests {
             vec![2, 3],
             "the slice and the exhausted scan report; the abandoned sort does not: {:?}",
             limited.relations
+        );
+        let operator = |name| {
+            limited
+                .operators
+                .iter()
+                .find(|measurement| measurement.operator == name)
+                .unwrap_or_else(|| panic!("missing {name} measurement"))
+        };
+        let scan = operator("TableScan");
+        assert_eq!(scan.output_rows, 3);
+        assert!(scan.complete);
+        let sort = operator("Sort");
+        assert_eq!(sort.input_rows, 3);
+        assert_eq!(sort.output_rows, 2);
+        assert!(sort.input_complete);
+        assert!(!sort.complete);
+        let slice = operator("Slice");
+        assert_eq!(slice.input_rows, 2);
+        assert_eq!(slice.output_rows, 2);
+        assert!(slice.complete);
+        assert!(
+            limited.operators.iter().all(|measurement| {
+                measurement.exclusive_micros <= measurement.inclusive_micros
+            })
         );
     }
 

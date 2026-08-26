@@ -12,6 +12,15 @@ spec:
         name: example-rad-s3
   catalogMode: schema
   readers: 2
+  logging:
+    level: info
+    format: json
+    programs: false
+  telemetry:
+    diagnostics: summary
+    metrics: true
+  cache:
+    sizeMiB: 128
   route:
     hostname: example.radengine.dev
     scheme: https

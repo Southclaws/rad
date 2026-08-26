@@ -23,6 +23,7 @@ use super::query::resolve_constant;
 use super::row_store::{self, RowIterator};
 use super::set;
 use super::{Error, ErrorKind, Result};
+use std::time::Instant;
 
 #[async_trait]
 trait Operator: Send {
@@ -55,15 +56,21 @@ pub(super) fn supports(node: &Node) -> bool {
 
 /// Run one fused segment, tallying rows emitted by every node inside it that
 /// carries an attribution.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn execute_measured(
     view: &dyn KvView,
     node: &Node,
     outer: &Env,
     measured: &mut Vec<(Fingerprint, u64)>,
     join_measurements: &mut Vec<super::observe::JoinOperatorMeasurement>,
+    operator_measurements: &mut Vec<super::observe::OperatorMeasurement>,
+    next_operator_id: &mut u32,
+    parent_operator_id: Option<u32>,
+    measure_operators: bool,
 ) -> Result<Vec<Env>> {
     let mut tallies = Vec::new();
     let mut join_tallies = Vec::new();
+    let mut operator_tallies = Vec::new();
     let mut operator = build(
         view,
         node,
@@ -71,6 +78,11 @@ pub(super) async fn execute_measured(
         &mut tallies,
         &mut join_tallies,
         true,
+        &mut operator_tallies,
+        next_operator_id,
+        parent_operator_id,
+        measure_operators,
+        None,
     )
     .await?;
     let mut frames = Vec::new();
@@ -88,6 +100,7 @@ pub(super) async fn execute_measured(
             .then(|| (family, tally.rows.load(atomic::Ordering::Relaxed)))
     }));
     join_measurements.extend(join_tallies.iter().map(JoinTally::snapshot));
+    operator_measurements.extend(operator_tallies.iter().map(OperatorTally::snapshot));
     Ok(frames)
 }
 
@@ -99,6 +112,8 @@ pub(super) async fn execute(
 ) -> Result<Vec<Env>> {
     let mut tallies = Vec::new();
     let mut join_tallies = Vec::new();
+    let mut operator_tallies = Vec::new();
+    let mut next_operator_id = 0;
     let mut operator = build(
         view,
         node,
@@ -106,6 +121,11 @@ pub(super) async fn execute(
         &mut tallies,
         &mut join_tallies,
         false,
+        &mut operator_tallies,
+        &mut next_operator_id,
+        None,
+        false,
+        None,
     )
     .await?;
     let mut frames = Vec::new();
@@ -117,6 +137,7 @@ pub(super) async fn execute(
     Ok(frames)
 }
 
+#[allow(clippy::too_many_arguments)]
 #[async_recursion]
 async fn build<'a>(
     view: &'a dyn KvView,
@@ -125,7 +146,41 @@ async fn build<'a>(
     tallies: &mut Vec<(Fingerprint, Tally)>,
     join_tallies: &mut Vec<JoinTally>,
     measure: bool,
+    operator_tallies: &mut Vec<OperatorTally>,
+    next_operator_id: &mut u32,
+    parent_operator_id: Option<u32>,
+    measure_operators: bool,
+    parent_operator_span: Option<&tracing::Span>,
 ) -> Result<Box<dyn Operator + 'a>> {
+    let operator_tally = measure_operators.then(|| {
+        let operator_id = *next_operator_id;
+        *next_operator_id = next_operator_id.saturating_add(1);
+        let tally = OperatorTally::new(
+            operator_id,
+            parent_operator_id,
+            super::query::operator_name(&node.kind),
+            node.attribution,
+        );
+        operator_tallies.push(tally.clone());
+        tally
+    });
+    let operator_span = operator_tally.as_ref().map(|tally| {
+        super::observe::OperatorRuntimeSpan::new(
+            tally.operator_id,
+            tally.parent_operator_id,
+            tally.operator,
+            tally.relation_fingerprint,
+            parent_operator_span,
+        )
+    });
+    let child_parent_id = operator_tally
+        .as_ref()
+        .map_or(parent_operator_id, |tally| Some(tally.operator_id));
+    let child_parent_span = operator_span
+        .as_ref()
+        .map(super::observe::OperatorRuntimeSpan::span)
+        .or(parent_operator_span);
+    let open_started = operator_tally.as_ref().map(|_| Instant::now());
     let operator: Box<dyn Operator + 'a> = match &node.kind {
         NodeKind::PrimaryKeyGet {
             scan,
@@ -138,7 +193,12 @@ async fn build<'a>(
             for (column, constant) in table.primary_key.iter().zip(key) {
                 let value = resolve_constant(constant, &outer)?;
                 if value.is_null() {
-                    return Ok(Box::new(Empty) as Box<dyn Operator + 'a>);
+                    return finish_operator(
+                        operator_tally,
+                        operator_span,
+                        open_started,
+                        Box::new(Empty),
+                    );
                 }
                 values.insert(column.clone(), value);
             }
@@ -173,7 +233,12 @@ async fn build<'a>(
                 .map(|constant| resolve_constant(constant, &outer))
                 .collect::<Result<Vec<_>>>()?;
             if equality_prefix.iter().any(Value::is_null) {
-                return Ok(Box::new(Empty) as Box<dyn Operator + 'a>);
+                return finish_operator(
+                    operator_tally,
+                    operator_span,
+                    open_started,
+                    Box::new(Empty),
+                );
             }
             let range = range.as_ref().map(|range| row_store::Range {
                 lower: range
@@ -205,16 +270,57 @@ async fn build<'a>(
             position: 0,
         }),
         NodeKind::Filter { input, predicate } => Box::new(Filter {
-            input: build(view, input, outer, tallies, join_tallies, measure).await?,
+            input: build(
+                view,
+                input,
+                outer,
+                tallies,
+                join_tallies,
+                measure,
+                operator_tallies,
+                next_operator_id,
+                child_parent_id,
+                measure_operators,
+                child_parent_span,
+            )
+            .await?,
             predicate: predicate.clone(),
         }),
         NodeKind::Project { input, fields } => Box::new(Project {
-            input: build(view, input, outer.clone(), tallies, join_tallies, measure).await?,
+            input: build(
+                view,
+                input,
+                outer.clone(),
+                tallies,
+                join_tallies,
+                measure,
+                operator_tallies,
+                next_operator_id,
+                child_parent_id,
+                measure_operators,
+                child_parent_span,
+            )
+            .await?,
             fields: fields.clone(),
             outer,
         }),
         NodeKind::Sort { input, terms } => Box::new(Sort {
-            input: Some(build(view, input, outer, tallies, join_tallies, measure).await?),
+            input: Some(
+                build(
+                    view,
+                    input,
+                    outer,
+                    tallies,
+                    join_tallies,
+                    measure,
+                    operator_tallies,
+                    next_operator_id,
+                    child_parent_id,
+                    measure_operators,
+                    child_parent_span,
+                )
+                .await?,
+            ),
             terms: terms.clone(),
             frames: Vec::new(),
             position: 0,
@@ -224,12 +330,38 @@ async fn build<'a>(
             offset,
             limit,
         } => Box::new(Slice {
-            input: build(view, input, outer, tallies, join_tallies, measure).await?,
+            input: build(
+                view,
+                input,
+                outer,
+                tallies,
+                join_tallies,
+                measure,
+                operator_tallies,
+                next_operator_id,
+                child_parent_id,
+                measure_operators,
+                child_parent_span,
+            )
+            .await?,
             remaining_offset: *offset,
             remaining: *limit,
         }),
         NodeKind::Distinct { input, output } => Box::new(Distinct {
-            input: build(view, input, outer, tallies, join_tallies, measure).await?,
+            input: build(
+                view,
+                input,
+                outer,
+                tallies,
+                join_tallies,
+                measure,
+                operator_tallies,
+                next_operator_id,
+                child_parent_id,
+                measure_operators,
+                child_parent_span,
+            )
+            .await?,
             seen: CanonicalRowSet::new(output.fields.clone()),
         }),
         NodeKind::NestedLoopJoin {
@@ -249,8 +381,36 @@ async fn build<'a>(
                 JoinTally::disabled("NestedLoopJoin")
             };
             Box::new(NestedLoopJoin {
-                left: build(view, left, outer.clone(), tallies, join_tallies, measure).await?,
-                right: Some(build(view, right, outer, tallies, join_tallies, measure).await?),
+                left: build(
+                    view,
+                    left,
+                    outer.clone(),
+                    tallies,
+                    join_tallies,
+                    measure,
+                    operator_tallies,
+                    next_operator_id,
+                    child_parent_id,
+                    measure_operators,
+                    child_parent_span,
+                )
+                .await?,
+                right: Some(
+                    build(
+                        view,
+                        right,
+                        outer,
+                        tallies,
+                        join_tallies,
+                        measure,
+                        operator_tallies,
+                        next_operator_id,
+                        child_parent_id,
+                        measure_operators,
+                        child_parent_span,
+                    )
+                    .await?,
+                ),
                 kind: *kind,
                 predicate: on.clone(),
                 keys: keys.clone(),
@@ -281,8 +441,36 @@ async fn build<'a>(
                 JoinTally::disabled("HashJoin")
             };
             Box::new(HashJoin {
-                left: build(view, left, outer.clone(), tallies, join_tallies, measure).await?,
-                right: Some(build(view, right, outer, tallies, join_tallies, measure).await?),
+                left: build(
+                    view,
+                    left,
+                    outer.clone(),
+                    tallies,
+                    join_tallies,
+                    measure,
+                    operator_tallies,
+                    next_operator_id,
+                    child_parent_id,
+                    measure_operators,
+                    child_parent_span,
+                )
+                .await?,
+                right: Some(
+                    build(
+                        view,
+                        right,
+                        outer,
+                        tallies,
+                        join_tallies,
+                        measure,
+                        operator_tallies,
+                        next_operator_id,
+                        child_parent_id,
+                        measure_operators,
+                        child_parent_span,
+                    )
+                    .await?,
+                ),
                 kind: *kind,
                 predicate: on.clone(),
                 keys: keys.clone(),
@@ -305,8 +493,22 @@ async fn build<'a>(
         } => {
             let mut operators = Vec::with_capacity(inputs.len());
             for input in inputs {
-                operators
-                    .push(build(view, input, outer.clone(), tallies, join_tallies, measure).await?);
+                operators.push(
+                    build(
+                        view,
+                        input,
+                        outer.clone(),
+                        tallies,
+                        join_tallies,
+                        measure,
+                        operator_tallies,
+                        next_operator_id,
+                        child_parent_id,
+                        measure_operators,
+                        child_parent_span,
+                    )
+                    .await?,
+                );
             }
             Box::new(Concatenate {
                 inputs: operators,
@@ -324,8 +526,34 @@ async fn build<'a>(
             right_output,
             output,
         } => Box::new(SetOperator::new(
-            build(view, left, outer.clone(), tallies, join_tallies, measure).await?,
-            build(view, right, outer.clone(), tallies, join_tallies, measure).await?,
+            build(
+                view,
+                left,
+                outer.clone(),
+                tallies,
+                join_tallies,
+                measure,
+                operator_tallies,
+                next_operator_id,
+                child_parent_id,
+                measure_operators,
+                child_parent_span,
+            )
+            .await?,
+            build(
+                view,
+                right,
+                outer.clone(),
+                tallies,
+                join_tallies,
+                measure,
+                operator_tallies,
+                next_operator_id,
+                child_parent_id,
+                measure_operators,
+                child_parent_span,
+            )
+            .await?,
             *quantifier,
             false,
             left_output.clone(),
@@ -341,8 +569,34 @@ async fn build<'a>(
             right_output,
             output,
         } => Box::new(SetOperator::new(
-            build(view, left, outer.clone(), tallies, join_tallies, measure).await?,
-            build(view, right, outer.clone(), tallies, join_tallies, measure).await?,
+            build(
+                view,
+                left,
+                outer.clone(),
+                tallies,
+                join_tallies,
+                measure,
+                operator_tallies,
+                next_operator_id,
+                child_parent_id,
+                measure_operators,
+                child_parent_span,
+            )
+            .await?,
+            build(
+                view,
+                right,
+                outer.clone(),
+                tallies,
+                join_tallies,
+                measure,
+                operator_tallies,
+                next_operator_id,
+                child_parent_id,
+                measure_operators,
+                child_parent_span,
+            )
+            .await?,
             *quantifier,
             true,
             left_output.clone(),
@@ -357,15 +611,59 @@ async fn build<'a>(
             ));
         }
     };
-    let Some(attribution) = node.attribution.filter(|_| measure) else {
+    if let (Some(tally), Some(started)) = (&operator_tally, open_started) {
+        tally
+            .open_nanos
+            .store(duration_nanos(started.elapsed()), atomic::Ordering::Relaxed);
+    };
+    let operator: Box<dyn Operator + 'a> =
+        if let Some(attribution) = node.attribution.filter(|_| measure) {
+            let tally = Tally::default();
+            tallies.push((attribution, tally.clone()));
+            Box::new(Counting {
+                inner: operator,
+                tally,
+            })
+        } else {
+            operator
+        };
+    Ok(match (operator_tally, operator_span) {
+        (Some(tally), Some(runtime_span)) => Box::new(MeasuredOperator {
+            inner: operator,
+            tally,
+            runtime_span,
+            failed: false,
+        }),
+        (None, None) => operator,
+        _ => unreachable!("operator tally and span are created together"),
+    })
+}
+
+fn finish_operator<'a>(
+    tally: Option<OperatorTally>,
+    runtime_span: Option<super::observe::OperatorRuntimeSpan>,
+    started: Option<Instant>,
+    operator: Box<dyn Operator + 'a>,
+) -> Result<Box<dyn Operator + 'a>> {
+    let Some(tally) = tally else {
         return Ok(operator);
     };
-    let tally = Tally::default();
-    tallies.push((attribution, tally.clone()));
-    Ok(Box::new(Counting {
+    let runtime_span = runtime_span.expect("operator tally and span are created together");
+    if let Some(started) = started {
+        tally
+            .open_nanos
+            .store(duration_nanos(started.elapsed()), atomic::Ordering::Relaxed);
+    }
+    Ok(Box::new(MeasuredOperator {
         inner: operator,
         tally,
+        runtime_span,
+        failed: false,
     }))
+}
+
+fn duration_nanos(duration: std::time::Duration) -> u64 {
+    duration.as_nanos().min(u128::from(u64::MAX)) as u64
 }
 
 /// Rows a node emitted, and whether it ran out of rows or was abandoned once
@@ -374,6 +672,60 @@ async fn build<'a>(
 struct Tally {
     rows: Arc<atomic::AtomicU64>,
     exhausted: Arc<atomic::AtomicBool>,
+}
+
+#[derive(Clone)]
+struct OperatorTally {
+    operator_id: u32,
+    parent_operator_id: Option<u32>,
+    operator: &'static str,
+    relation_fingerprint: Option<Fingerprint>,
+    open_nanos: Arc<atomic::AtomicU64>,
+    next_nanos: Arc<atomic::AtomicU64>,
+    calls: Arc<atomic::AtomicU64>,
+    rows: Arc<atomic::AtomicU64>,
+    complete: Arc<atomic::AtomicBool>,
+}
+
+impl OperatorTally {
+    fn new(
+        operator_id: u32,
+        parent_operator_id: Option<u32>,
+        operator: &'static str,
+        relation_fingerprint: Option<Fingerprint>,
+    ) -> Self {
+        Self {
+            operator_id,
+            parent_operator_id,
+            operator,
+            relation_fingerprint,
+            open_nanos: Arc::new(atomic::AtomicU64::new(0)),
+            next_nanos: Arc::new(atomic::AtomicU64::new(0)),
+            calls: Arc::new(atomic::AtomicU64::new(0)),
+            rows: Arc::new(atomic::AtomicU64::new(0)),
+            complete: Arc::new(atomic::AtomicBool::new(false)),
+        }
+    }
+
+    fn snapshot(&self) -> super::observe::OperatorMeasurement {
+        let open_nanos = self.open_nanos.load(atomic::Ordering::Relaxed);
+        let next_nanos = self.next_nanos.load(atomic::Ordering::Relaxed);
+        let inclusive_micros = open_nanos.saturating_add(next_nanos) / 1_000;
+        super::observe::OperatorMeasurement {
+            operator_id: self.operator_id,
+            parent_operator_id: self.parent_operator_id,
+            operator: self.operator,
+            relation_fingerprint: self.relation_fingerprint,
+            open_micros: open_nanos / 1_000,
+            inclusive_micros,
+            exclusive_micros: inclusive_micros,
+            calls: self.calls.load(atomic::Ordering::Relaxed),
+            input_rows: 0,
+            output_rows: self.rows.load(atomic::Ordering::Relaxed),
+            input_complete: true,
+            complete: self.complete.load(atomic::Ordering::Relaxed),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -494,6 +846,40 @@ impl JoinTally {
 struct Counting<'a> {
     inner: Box<dyn Operator + 'a>,
     tally: Tally,
+}
+
+struct MeasuredOperator<'a> {
+    inner: Box<dyn Operator + 'a>,
+    tally: OperatorTally,
+    runtime_span: super::observe::OperatorRuntimeSpan,
+    failed: bool,
+}
+
+#[async_trait]
+impl Operator for MeasuredOperator<'_> {
+    async fn next(&mut self) -> Result<Option<Env>> {
+        let started = Instant::now();
+        let result = self.inner.next().await;
+        self.tally
+            .next_nanos
+            .fetch_add(duration_nanos(started.elapsed()), atomic::Ordering::Relaxed);
+        self.tally.calls.fetch_add(1, atomic::Ordering::Relaxed);
+        match &result {
+            Ok(Some(_)) => {
+                self.tally.rows.fetch_add(1, atomic::Ordering::Relaxed);
+            }
+            Ok(None) => self.tally.complete.store(true, atomic::Ordering::Relaxed),
+            Err(_) => self.failed = true,
+        }
+        result
+    }
+}
+
+impl Drop for MeasuredOperator<'_> {
+    fn drop(&mut self) {
+        self.runtime_span
+            .record(&self.tally.snapshot(), self.failed);
+    }
 }
 
 #[async_trait]

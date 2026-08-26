@@ -4,7 +4,7 @@ use std::env;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use slatedb::object_store::ObjectStore;
@@ -75,6 +75,7 @@ impl std::fmt::Display for Role {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     pub address: String,
+    pub cache_size_mib: u64,
     /// Admin listener address; `None` derives the next port on the public
     /// host. Orchestrated deployments pin this to loopback so the admin
     /// surface is reachable only through the orchestrator's own tunnel.
@@ -118,6 +119,9 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self> {
         let address = normalize_address(&env_or("RAD_ADDR", "0.0.0.0:7237"));
+        let cache_size_mib = env_or("RAD_CACHE_SIZE_MIB", "128")
+            .parse::<u64>()
+            .map_err(|error| format!("invalid RAD_CACHE_SIZE_MIB: {error}"))?;
         let admin_address = admin_address_from_env();
         let catalog_mode = env::var("RAD_CATALOG_MODE")
             .ok()
@@ -191,6 +195,7 @@ impl Config {
         let config = Self {
             address,
             admin_address,
+            cache_size_mib,
             catalog_mode,
             capture_workload_corpus,
             close_timeout,
@@ -220,6 +225,9 @@ impl Config {
     /// port, and a target alone would gather evidence that every attempt to
     /// send is refused for.
     pub fn validate(&self) -> Result<()> {
+        if self.cache_size_mib < 16 {
+            return Err("RAD_CACHE_SIZE_MIB must be at least 16".into());
+        }
         if self.internal_address.is_some() && self.relay_token_file.is_none() {
             return Err(
                 "RAD_INTERNAL_ADDR requires RAD_RELAY_TOKEN_FILE: the internal API is never served unauthenticated"
@@ -266,6 +274,14 @@ impl Config {
 /// built, so a slow or unavailable object store never publishes a partially
 /// initialized database.
 pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + 'static) -> Result {
+    config.validate()?;
+    tracing::info!(
+        target: "rad",
+        event = "process.started",
+        component = "process",
+        role = %config.role,
+        message = "Rad process started"
+    );
     let health = Health::starting(crate::health::STORAGE_FRESHNESS);
     let (listener, startup_listener) = bind_public(&config.address).await?;
     let admin_address = match &config.admin_address {
@@ -317,21 +333,40 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
 
     let public_address = listener.local_addr()?;
     let bound_admin_address = admin_listener.local_addr()?;
-    eprintln!(
-        "rad serving on {public_address} (storage: {location}, catalog: {mode:?}, role: {})",
-        config.role
+    tracing::info!(
+        target: "rad",
+        event = "process.ready",
+        component = "process",
+        role = %config.role,
+        catalog_mode = ?mode,
+        storage = %location,
+        public_address = %public_address,
+        admin_address = %bound_admin_address,
+        message = "Rad is ready"
     );
-    eprintln!("admin UI on http://{bound_admin_address}");
     if let Some(listener) = &internal_listener {
         let scheme = if internal_certificate.is_some() {
             "https"
         } else {
             "http"
         };
-        eprintln!("internal API on {scheme}://{}", listener.local_addr()?);
+        tracing::info!(
+            target: "rad",
+            event = "listener.started",
+            component = "internal_http",
+            scheme,
+            address = %listener.local_addr()?,
+            message = "internal HTTP listener started"
+        );
     }
     if let Some(listener) = &postgres_listener {
-        eprintln!("postgres frontend on {}", listener.local_addr()?);
+        tracing::info!(
+            target: "rad",
+            event = "listener.started",
+            component = "postgres",
+            address = %listener.local_addr()?,
+            message = "PostgreSQL listener started"
+        );
     }
     health.serve();
 
@@ -341,6 +376,12 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
     let shutdown_drain = config.shutdown_drain;
     let shutdown_task = tokio::spawn(async move {
         shutdown.await;
+        tracing::info!(
+            target: "rad",
+            event = "process.draining",
+            component = "process",
+            message = "Rad is draining"
+        );
         shutdown_health.drain();
         tokio::time::sleep(shutdown_drain).await;
         let _ = shutdown_sender.send(true);
@@ -430,6 +471,12 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
     server_result?;
     scheduler_result?;
     close_result?;
+    tracing::info!(
+        target: "rad",
+        event = "process.stopped",
+        component = "process",
+        message = "Rad stopped in order"
+    );
     Ok(())
 }
 
@@ -540,7 +587,13 @@ async fn start_runtime(config: &Config, health: &Arc<Health>) -> Result<Runtime>
 }
 
 async fn open_runtime(config: &Config, built: &BuiltObjects) -> Result<Runtime> {
-    let opened = open_storage(built, config.role, config.reader_poll_interval).await?;
+    let opened = open_storage(
+        built,
+        config.role,
+        config.reader_poll_interval,
+        config.cache_size_mib,
+    )
+    .await?;
     let store = opened.store;
     if let Err(error) = admit_storage_compatibility(store.as_ref(), config.role).await {
         return close_after_error(store.as_ref(), config.close_timeout, error).await;
@@ -559,7 +612,14 @@ async fn open_runtime(config: &Config, built: &BuiltObjects) -> Result<Runtime> 
     let capture_programs = config.capture_workload_corpus
         && sink.as_ref().is_some_and(|sink| sink.carries_user_values());
     if config.capture_workload_corpus && !capture_programs {
-        eprintln!("workload corpus capture is off: the statistics sink cannot carry user values");
+        tracing::warn!(
+            target: "rad",
+            event = "workload_corpus.disabled",
+            component = "statistics",
+            error_kind = "configuration",
+            error_reason = "sink_rejects_user_values",
+            message = "workload corpus capture is disabled"
+        );
     }
     let statistics = Some(crate::scheduler::statistics::StatisticsRunner::start(
         Arc::new(crate::runtime::SystemRuntime),
@@ -621,7 +681,14 @@ async fn diagnose_startup_hold(objects: Arc<dyn ObjectStore>, path: String, heal
         .await;
         let hold = classify_startup_hold(listed);
         if health.observe_startup_hold(hold) && hold != StartupHold::Opening {
-            eprintln!("startup held: {}", hold.as_str());
+            tracing::warn!(
+                target: "rad",
+                event = "process.startup_held",
+                component = "storage",
+                error_kind = "storage_unavailable",
+                error_reason = hold.as_str(),
+                message = "storage holds process startup"
+            );
         }
     }
 }
@@ -667,7 +734,13 @@ fn joined_server(
 }
 
 pub async fn run() -> Result {
-    serve(Config::from_env()?, shutdown_signal()).await
+    crate::logging::install(crate::logging::Config::from_env()?)?;
+    let result = serve(Config::from_env()?, shutdown_signal()).await;
+    if let Err(error) = &result {
+        crate::logging::terminal_failure(error.as_ref());
+    }
+    crate::logging::shutdown();
+    result
 }
 
 struct OpenedStorage {
@@ -722,7 +795,10 @@ fn build_objects(config: &StorageConfig) -> Result<BuiltObjects> {
                         .with_allow_http(endpoint.starts_with("http://"))
                         .with_virtual_hosted_style_request(false);
                 }
-                let objects: Arc<dyn ObjectStore> = Arc::new(builder.build()?);
+                let objects: Arc<dyn ObjectStore> =
+                    crate::engine::kv::object_store_telemetry::observe_remote_object_store(
+                        Arc::new(builder.build()?),
+                    );
                 (path.clone(), objects, format!("s3://{bucket}/{path}"), true)
             }
         };
@@ -738,12 +814,14 @@ async fn open_storage(
     built: &BuiltObjects,
     role: Role,
     reader_poll_interval: Duration,
+    cache_size_mib: u64,
 ) -> Result<OpenedStorage> {
     let path = built.path.clone();
     let objects = built.objects.clone();
     match role {
         Role::Write => {
-            let writer = Arc::new(Store::open(path, objects).await?);
+            let writer =
+                Arc::new(Store::open_with_cache_size(path, objects, cache_size_mib).await?);
             let store: Arc<dyn TransactionalKv> = writer.clone();
             Ok(OpenedStorage {
                 store,
@@ -752,8 +830,15 @@ async fn open_storage(
             })
         }
         Role::Read => {
-            let store: Arc<dyn TransactionalKv> =
-                Arc::new(ReaderStore::open(path, objects, reader_poll_interval).await?);
+            let store: Arc<dyn TransactionalKv> = Arc::new(
+                ReaderStore::open_with_cache_size(
+                    path,
+                    objects,
+                    reader_poll_interval,
+                    cache_size_mib,
+                )
+                .await?,
+            );
             Ok(OpenedStorage {
                 store,
                 writer: None,
@@ -799,6 +884,7 @@ async fn monitor_runtime(
 ) -> std::io::Result<()> {
     let token = Bytes::from(uuid::Uuid::new_v4().into_bytes().to_vec());
     let mut interval = tokio::time::interval(crate::health::STORAGE_OBSERVATION_INTERVAL);
+    let mut outage_started: Option<Instant> = None;
     loop {
         tokio::select! {
             changed = stop.changed() => {
@@ -809,11 +895,21 @@ async fn monitor_runtime(
             _ = interval.tick() => {
                 if jobs.as_ref().is_some_and(|jobs| jobs.worker_lost()) {
                     health.observe_task_failure();
+                    crate::telemetry::scheduler_worker_lost();
+                    tracing::error!(
+                        target: "rad",
+                        event = "scheduler.worker_lost",
+                        component = "schema_scheduler",
+                        error_kind = "worker_lost",
+                        error_reason = "worker_stopped",
+                        message = "schema scheduler worker stopped"
+                    );
                     return stop_after_drain(
                         &health,
                         &stop_sender,
                         drain,
-                        "the schema job runner stopped without being asked to".to_owned(),
+                        "scheduler_worker_lost",
+                        "schema scheduler worker stopped",
                     )
                     .await;
                 }
@@ -830,23 +926,64 @@ async fn monitor_runtime(
                     None => Kv::get(store.as_ref(), &fence_key).await.map(|_| ()),
                 };
                 let Err(error) = observation else {
-                    health.observe_storage();
+                    crate::telemetry::storage_observed(true);
+                    if health.observe_storage() {
+                        if let Some(started) = outage_started.take() {
+                            crate::telemetry::storage_outage_finished(
+                                "observation_failed",
+                                started.elapsed(),
+                            );
+                        }
+                        tracing::info!(
+                            target: "rad",
+                            event = "storage.recovered",
+                            component = "storage",
+                            message = "storage is available"
+                        );
+                    }
                     continue;
                 };
                 if error.kind() == KvErrorKind::Unavailable {
+                    crate::telemetry::storage_observed(false);
                     if health.observe_storage_unavailable() {
-                        eprintln!("storage is unavailable, withdrawing traffic: {error}");
+                        outage_started = Some(Instant::now());
+                        crate::telemetry::storage_outage_started("observation_failed");
+                        tracing::warn!(
+                            target: "rad",
+                            event = "storage.unavailable",
+                            component = "storage",
+                            error_kind = "unavailable",
+                            error_reason = "observation_failed",
+                            message = "storage is unavailable"
+                        );
                     }
                     continue;
                 }
-                let message = if error.closure() == Some(Closure::Fenced) {
+                let (reason, message) = if error.closure() == Some(Closure::Fenced) {
                     health.observe_fenced();
-                    format!("Slate writer lost ownership: {error}")
+                    crate::telemetry::storage_fenced("writer_ownership_lost");
+                    tracing::error!(
+                        target: "rad",
+                        event = "storage.fenced",
+                        component = "storage",
+                        error_kind = "fenced",
+                        error_reason = "writer_ownership_lost",
+                        message = "Slate writer lost storage ownership"
+                    );
+                    ("writer_ownership_lost", "Slate writer lost storage ownership")
                 } else {
                     health.observe_task_failure();
-                    format!("Slate storage is unusable: {error}")
+                    tracing::error!(
+                        target: "rad",
+                        event = "storage.failed",
+                        component = "storage",
+                        error_kind = "unusable",
+                        error_reason = "observation_failed",
+                        message = "Slate storage is unusable"
+                    );
+                    ("storage_unusable", "Slate storage is unusable")
                 };
-                return stop_after_drain(&health, &stop_sender, drain, message).await;
+                return stop_after_drain(&health, &stop_sender, drain, reason, message).await;
             }
         }
     }
@@ -859,14 +996,31 @@ async fn stop_after_drain(
     health: &Health,
     stop_sender: &tokio::sync::watch::Sender<bool>,
     drain: Duration,
-    message: String,
+    reason: &'static str,
+    message: &'static str,
 ) -> std::io::Result<()> {
-    eprintln!("{message}");
     health.drain();
     tokio::time::sleep(drain).await;
     let _ = stop_sender.send(true);
-    Err(std::io::Error::other(message))
+    Err(std::io::Error::other(TerminalRuntimeError {
+        reason,
+        message,
+    }))
 }
+
+#[derive(Debug)]
+pub(crate) struct TerminalRuntimeError {
+    pub reason: &'static str,
+    pub message: &'static str,
+}
+
+impl std::fmt::Display for TerminalRuntimeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message)
+    }
+}
+
+impl std::error::Error for TerminalRuntimeError {}
 
 async fn admit_storage_compatibility(
     store: &dyn TransactionalKv,
@@ -1018,6 +1172,7 @@ pub(crate) async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::kv::slatedb::DEFAULT_CACHE_SIZE_MIB;
 
     #[tokio::test]
     async fn memory_process_starts_and_closes_all_runtime_components() {
@@ -1026,6 +1181,7 @@ mod tests {
             admin_address: Some("127.0.0.1:0".into()),
             close_timeout: Some(Duration::from_secs(30)),
             catalog_mode: Some(Mode::Schema),
+            cache_size_mib: DEFAULT_CACHE_SIZE_MIB,
             capture_workload_corpus: false,
             frontend: Some(Frontend::Postgres),
             postgres_address: "127.0.0.1:0".into(),
@@ -1060,6 +1216,7 @@ mod tests {
                 admin_address: None,
                 close_timeout: None,
                 catalog_mode: Some(Mode::Direct),
+                cache_size_mib: DEFAULT_CACHE_SIZE_MIB,
                 capture_workload_corpus: false,
                 frontend: None,
                 postgres_address: "127.0.0.1:0".into(),
@@ -1086,6 +1243,7 @@ mod tests {
                 admin_address: None,
                 close_timeout: None,
                 catalog_mode: None,
+                cache_size_mib: DEFAULT_CACHE_SIZE_MIB,
                 capture_workload_corpus: false,
                 frontend: None,
                 postgres_address: "127.0.0.1:0".into(),
@@ -1114,6 +1272,7 @@ mod tests {
             admin_address: None,
             close_timeout: None,
             catalog_mode: None,
+            cache_size_mib: DEFAULT_CACHE_SIZE_MIB,
             capture_workload_corpus: false,
             frontend: None,
             instance_id: None,
@@ -1164,6 +1323,15 @@ mod tests {
         // Neither half is the ordinary single-instance case, which must not
         // require a secret it has no use for.
         assert!(relay_config(None, None, None).validate().is_ok());
+    }
+
+    #[test]
+    fn decoded_cache_capacity_has_a_safe_minimum() {
+        let mut config = relay_config(None, None, None);
+        config.cache_size_mib = 15;
+        assert!(config.validate().is_err());
+        config.cache_size_mib = 16;
+        assert!(config.validate().is_ok());
     }
 
     #[test]

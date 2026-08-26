@@ -131,7 +131,7 @@ func (r *DatabaseReconciler) reconcileReaderDeployment(
 		deployment.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels:      roleLabelsFor(database, readRole),
-				Annotations: rolloutAnnotations(authentication),
+				Annotations: workloadAnnotations(database, authentication),
 			},
 			Spec: r.radPodSpec(database, authentication, transport, readRole),
 		}

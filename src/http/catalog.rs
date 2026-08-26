@@ -335,16 +335,19 @@ impl CatalogApi for Api {
 }
 
 async fn run_catalog(api: &Api, statement: Statement) -> Result<Vec<Table>, ResponseProblem> {
-    api.engine
-        .execute_program(
-            Program {
-                statements: vec![statement],
-                result: None,
-            },
-            CatalogPolicy::RevisionPerStatement,
-        )
-        .await
-        .map_err(|error| server::engine_problem(&error))?;
+    crate::engine::frontend::execute_program_with_options(
+        &api.engine,
+        Program {
+            statements: vec![statement],
+            result: None,
+        },
+        crate::engine::exec::ProgramOptions {
+            catalog: CatalogPolicy::RevisionPerStatement,
+            ..crate::engine::exec::ProgramOptions::default()
+        },
+    )
+    .await
+    .map_err(|error| server::engine_problem(&error))?;
     snapshot(api).await
 }
 

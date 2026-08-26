@@ -58,6 +58,20 @@ spec:
               DatabaseSpec is the desired state for one Rad process and one physical S3
               bucket.
             properties:
+              cache:
+                default:
+                  sizeMiB: 128
+                description: Cache applies the same decoded cache capacity to all
+                  pods.
+                properties:
+                  sizeMiB:
+                    default: 128
+                    description: SizeMiB is the total decoded data block and metadata
+                      cache capacity.
+                    format: int32
+                    minimum: 16
+                    type: integer
+                type: object
               captureWorkloadCorpus:
                 default: false
                 description: |-
@@ -129,6 +143,35 @@ spec:
                   rule: '!(has(self.secretName) && has(self.issuerRef))'
                 - message: disabled internal TLS cannot also name a certificate source
                   rule: '!(self.mode == ''disabled'' && (has(self.secretName) || has(self.issuerRef)))'
+              logging:
+                default:
+                  format: json
+                  level: info
+                  programs: false
+                description: Logging applies the same event policy to the writer and
+                  all readers.
+                properties:
+                  format:
+                    default: json
+                    description: LogFormat selects the standard error event projection.
+                    enum:
+                    - text
+                    - json
+                    - logfmt
+                    type: string
+                  level:
+                    default: info
+                    description: LogLevel selects the minimum operational event severity.
+                    enum:
+                    - error
+                    - warn
+                    - info
+                    - debug
+                    type: string
+                  programs:
+                    default: false
+                    type: boolean
+                type: object
               readers:
                 default: 0
                 description: |-
@@ -307,6 +350,34 @@ spec:
                     && self.region == oldSelf.region && ((!has(self.endpoint) && !has(oldSelf.endpoint))
                     || (has(self.endpoint) && has(oldSelf.endpoint) && self.endpoint
                     == oldSelf.endpoint))
+              telemetry:
+                default:
+                  diagnostics: summary
+                  metrics: true
+                description: Telemetry applies the same export and diagnostic policy
+                  to all pods.
+                properties:
+                  diagnostics:
+                    default: summary
+                    description: Diagnostics limits the level that an HTTP request
+                      can select.
+                    enum:
+                    - "off"
+                    - summary
+                    - detailed
+                    - full
+                    type: string
+                  endpoint:
+                    description: Endpoint is the base OTLP HTTP endpoint. An empty
+                      value disables export.
+                    pattern: ^$|^https?://
+                    type: string
+                  metrics:
+                    default: true
+                    description: Metrics enables OTEL metric export and the metrics
+                      HTTP route.
+                    type: boolean
+                type: object
               terminationGracePeriodSeconds:
                 default: 120
                 description: |-

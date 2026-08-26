@@ -1,0 +1,128 @@
+---
+title: Program diagnostics
+description: Request bounded program execution evidence and configure OpenTelemetry export.
+---
+
+Rad can add a diagnostic extension to an HTTP program response. This format is
+for investigation and development tools. It is not part of the OpenAPI
+contract. Its fields can change as the planner and executor change.
+
+Send the `Rad-Diagnostics` request header to `POST /execute`:
+
+```text
+Rad-Diagnostics: summary
+```
+
+The permitted values are `summary`, `detailed`, and `full`. Rad adds the
+document at `_rad.diagnostics` in success and Problem JSON responses. A request
+without the header has no extension. Generated clients continue to read the
+normal response.
+
+Each document has the `rad-program-diagnostics-v1` format identifier. It also
+has the request identifier, trace identifier when OpenTelemetry is active,
+status, program family fingerprint, duration, statement results, row counts,
+phase time, and aggregate KV work.
+
+The levels add this information:
+
+| Level | Information |
+| --- | --- |
+| `summary` | Status, fingerprints, statement kinds, time, rows, and aggregate KV work. |
+| `detailed` | Summary information, a literal-free lowered program family, plans, costs, and bounded execution measurements. |
+| `full` | Detailed information and the exact submitted and lowered program. This level can contain PIR and LIR literals. |
+
+Rad never adds raw KV keys or stored values. KV evidence uses SHA-256
+identifiers. A program document larger than 256 KiB is omitted. A complete
+diagnostic document larger than 1 MiB loses its large sections and sets
+`truncated` to `true`.
+
+Detailed and full documents include a bounded physical operator trace. Each
+record has a parent operator, relation fingerprint when available, open time,
+inclusive time, exclusive time, pull calls, input rows, output rows, and
+completion state. An incomplete operator is one that a downstream operator
+stops before the operator returns its terminal result.
+
+Detailed and full documents also include request-scoped physical storage read
+evidence. Logical KV work and physical storage work are different counts. A
+logical get can access multiple SlateDB cache entries. SlateDB evidence reports
+memory-cache and local-cache results. S3 evidence counts only read calls that
+reach the S3 object store below these cache layers. The trace marks this
+coverage as `cache_and_backing_reads`.
+
+`rad serve --diagnostics` sets the maximum permitted request level. The default
+is `summary`. Use `off` to reject all diagnostic requests. A request above the
+configured maximum returns a Problem response.
+
+## OpenTelemetry
+
+`rad serve --otel-endpoint http://collector:4318` exports traces and metrics by
+OTLP over HTTP. The exporter sends to `/v1/traces` and `/v1/metrics` below the
+configured base endpoint.
+
+Metrics are enabled by default. `GET /metrics` exposes the same metric provider
+in Prometheus text format. Use `--metrics false` or `RAD_METRICS=false` to
+disable the route and OTEL metric export. Trace export stays enabled when an
+OTLP endpoint is configured. The metrics route returns `404` when metrics are
+disabled. Successful metric scrape requests do not create request spans,
+metrics, or access events.
+
+Rad creates HTTP, PostgreSQL connection, explicit transaction, program,
+statement, physical operator, and scheduler spans. It accepts W3C `traceparent`
+and `tracestate` headers on HTTP requests. Successful probe requests do not
+create request spans, metrics, or access events.
+
+Each statement trace contains a maximum of 256 physical operator spans. The
+spans use the physical operator tree as their parent structure. Each span has
+the operator name, stable identifier, relation fingerprint when available,
+active duration, pull calls, output rows, completion state, and status. This
+structure supports trace flame graphs without a span for each row.
+
+Statement spans contain bounded `operator.completed`, `storage.cache`, and
+`storage.request` events. These events use the same typed records as response
+diagnostics. Trace sampling can discard them. Response diagnostics do not
+depend on trace sampling.
+
+Rad does not create one span for each logical KV operation, cache entry, or
+backing read. One statement can issue thousands of these operations. Aggregate
+events and metrics keep this detail useful without excessive trace volume.
+
+Rad also exports low-cardinality operator duration and row histograms. Storage
+metrics separate cache results by tier from backing-store read calls. These
+metrics do not use request identifiers or program fingerprints.
+
+Slate metrics include decoded cache results, local object cache state, object
+storage requests, WAL flushes, memory-table and L0 flush state, backpressure,
+LSM state, compaction, and garbage collection. Object storage metrics separate
+the main store from the WAL store. They also separate the database, reader,
+compactor, and garbage collector. The `rad.storage.activity` attribute groups
+these components as `foreground` or `background`.
+
+`rad.storage.write.amplification` uses this cumulative ratio:
+
+```text
+(WAL flush bytes + L0 flush bytes + compacted bytes) / memory-table write bytes
+```
+
+Rad enables a Slate Foyer decoded cache by default. `--cache-size-mib` or
+`RAD_CACHE_SIZE_MIB` sets its total capacity. The default is 128 MiB. Rad uses
+80 percent for decoded data blocks and 20 percent for metadata. A value below
+16 MiB is invalid.
+
+The metric attributes use bounded operational values. They do not include
+request identifiers, client addresses, program fingerprints, raw paths, or
+user-defined object names.
+
+The Kubernetes `Database` resource applies one policy to its writer and
+readers:
+
+```yaml
+spec:
+  telemetry:
+    endpoint: http://otel-collector.observability.svc:4318
+    diagnostics: summary
+    metrics: true
+  cache:
+    sizeMiB: 128
+```
+
+A change to this section changes the pod template and starts a normal rollout.

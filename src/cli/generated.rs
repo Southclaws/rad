@@ -64,9 +64,51 @@ pub enum ServeCatalogMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServeDiagnostics {
+    #[value(name = r"off")]
+    Off,
+    #[value(name = r"summary")]
+    Summary,
+    #[value(name = r"detailed")]
+    Detailed,
+    #[value(name = r"full")]
+    Full,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ServeFrontend {
     #[value(name = r"postgres")]
     Postgres,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServeLogFormat {
+    #[value(name = r"text")]
+    Text,
+    #[value(name = r"json")]
+    Json,
+    #[value(name = r"logfmt")]
+    Logfmt,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServeLogLevel {
+    #[value(name = r"error")]
+    Error,
+    #[value(name = r"warn")]
+    Warn,
+    #[value(name = r"info")]
+    Info,
+    #[value(name = r"debug")]
+    Debug,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServeMetrics {
+    #[value(name = r"true")]
+    True,
+    #[value(name = r"false")]
+    False,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -574,6 +616,65 @@ pub struct ServeArgs {
         default_value = r"false"
     )]
     pub capture_workload_corpus: bool,
+    #[arg(
+        id = r"log-level",
+        long = r"log-level",
+        help = r"Minimum operational log level.",
+        env = r"RAD_LOG_LEVEL",
+        default_value = r"info",
+        value_enum
+    )]
+    pub log_level: ServeLogLevel,
+    #[arg(
+        id = r"log-format",
+        long = r"log-format",
+        help = r"Log output format.",
+        env = r"RAD_LOG_FORMAT",
+        default_value = r"text",
+        value_enum
+    )]
+    pub log_format: ServeLogFormat,
+    #[arg(
+        id = r"log-programs",
+        long = r"log-programs",
+        help = r"Emit program events independently from the operational log level.",
+        env = r"RAD_LOG_PROGRAMS",
+        default_value = r"false"
+    )]
+    pub log_programs: bool,
+    #[arg(
+        id = r"diagnostics",
+        long = r"diagnostics",
+        help = r"Maximum diagnostic level that an HTTP request can select.",
+        env = r"RAD_DIAGNOSTICS",
+        default_value = r"summary",
+        value_enum
+    )]
+    pub diagnostics: ServeDiagnostics,
+    #[arg(
+        id = r"otel-endpoint",
+        long = r"otel-endpoint",
+        help = r"OTLP HTTP endpoint for traces and metrics.",
+        env = r"OTEL_EXPORTER_OTLP_ENDPOINT"
+    )]
+    pub otel_endpoint: Option<String>,
+    #[arg(
+        id = r"metrics",
+        long = r"metrics",
+        help = r"Enable or disable OTEL metrics and the GET /metrics route.",
+        env = r"RAD_METRICS",
+        default_value = r"true",
+        value_enum
+    )]
+    pub metrics: ServeMetrics,
+    #[arg(
+        id = r"cache-size-mib",
+        long = r"cache-size-mib",
+        help = r"Total Slate decoded cache capacity in MiB.",
+        env = r"RAD_CACHE_SIZE_MIB",
+        default_value = r"128"
+    )]
+    pub cache_size_mib: i64,
     #[arg(
         id = r"storage",
         long = r"storage",

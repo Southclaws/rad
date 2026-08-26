@@ -82,6 +82,13 @@ Documentation: https://www.radengine.dev/docs/cli#rad-serve
 | `--relay-ca <path>` | Certificate authority that the reported-to instance must chain to. |  | `RAD_RELAY_CA` |
 | `--instance-id <value>` | Name this instance reports itself as; defaults to the hostname. |  | `RAD_INSTANCE_ID` |
 | `--capture-workload-corpus` | Record canonical programs with user values for bounded offline replay. | `false` | `RAD_CAPTURE_WORKLOAD_CORPUS` |
+| `--log-level <error\|warn\|info\|debug>` | Minimum operational log level. Choices: error, warn, info, debug. | `info` | `RAD_LOG_LEVEL` |
+| `--log-format <text\|json\|logfmt>` | Log output format. Choices: text, json, logfmt. | `text` | `RAD_LOG_FORMAT` |
+| `--log-programs` | Emit program events independently from the operational log level. | `false` | `RAD_LOG_PROGRAMS` |
+| `--diagnostics <off\|summary\|detailed\|full>` | Maximum diagnostic level that an HTTP request can select. Choices: off, summary, detailed, full. | `summary` | `RAD_DIAGNOSTICS` |
+| `--otel-endpoint <value>` | OTLP HTTP endpoint for traces and metrics. |  | `OTEL_EXPORTER_OTLP_ENDPOINT` |
+| `--metrics <true\|false>` | Enable or disable OTEL metrics and the GET /metrics route. Choices: true, false. | `true` | `RAD_METRICS` |
+| `--cache-size-mib <value>` | Total Slate decoded cache capacity in MiB. | `128` | `RAD_CACHE_SIZE_MIB` |
 | `--storage <memory\|file\|s3>` | Storage backend for SlateDB data. Choices: memory, file, s3. | `file` | `RAD_STORAGE` |
 | `-d`, `--db <path>` | File storage directory; used only with --storage file. | `data` | `RAD_DATA_DIR` |
 | `--storage-path <value>` | Logical SlateDB path within the selected backend. | `rad` | `RAD_STORAGE_PATH` |

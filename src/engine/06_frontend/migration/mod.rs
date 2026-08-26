@@ -120,17 +120,16 @@ impl<'a> Migration<'a> {
 
         let mut controls = plan.transitions.clone();
         if !plan.program.statements.is_empty() {
-            let executed = self
-                .engine
-                .execute_program_with_options(
-                    plan.program.clone(),
-                    ProgramOptions {
-                        catalog: CatalogPolicy::RevisionPerProgram,
-                        expected_catalog: Some(CatalogExpectation::from(&plan.current)),
-                        ..ProgramOptions::default()
-                    },
-                )
-                .await?;
+            let executed = super::execute_program_with_options(
+                self.engine,
+                plan.program.clone(),
+                ProgramOptions {
+                    catalog: CatalogPolicy::RevisionPerProgram,
+                    expected_catalog: Some(CatalogExpectation::from(&plan.current)),
+                    ..ProgramOptions::default()
+                },
+            )
+            .await?;
             for statement in executed.statements {
                 if let Some(control) = statement.control {
                     controls.push(control);
