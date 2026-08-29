@@ -48,8 +48,8 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-slatedb = { version = "=0.14.1", default-features = false, features = ["aws"] }
-slatedb-common = "=0.14.1"
+slatedb = { version = "=0.15.0", default-features = false, features = ["aws"] }
+slatedb-common = "=0.15.0"
 thiserror = "2.0.12"
 tempfile = "3.20.0"
 tokio = { version = "1.46.1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }

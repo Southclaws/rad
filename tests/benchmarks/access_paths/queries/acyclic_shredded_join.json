@@ -1,0 +1,72 @@
+{
+  "name": "acyclic_shredded_join",
+  "description": "Count an acyclic join whose semijoin passes remove all dangling rows.",
+  "warmup": 1,
+  "iterations": 6,
+  "expect_rows": 1,
+  "expect_result": { "joined_count": 0 },
+  "program": {
+    "statements": [{
+      "name": "acyclic_shredded_join",
+      "kind": "query",
+      "relation": {
+        "nodes": {
+          "left_rows": {
+            "kind": "rows", "scope": "l",
+            "columns": [{ "name": "left_key", "type": "text" }],
+            "rows": [
+              ["a"], ["a"], ["a"], ["a"], ["a"], ["a"], ["a"], ["a"], ["a"], ["a"],
+              ["a"], ["a"], ["a"], ["a"], ["a"], ["a"], ["a"], ["a"], ["a"], ["a"],
+              ["a"], ["a"], ["a"], ["a"], ["a"], ["a"], ["a"], ["a"], ["a"], ["a"]
+            ]
+          },
+          "center_rows": {
+            "kind": "rows", "scope": "c",
+            "columns": [
+              { "name": "left_key", "type": "text" },
+              { "name": "right_key", "type": "text" }
+            ],
+            "rows": [
+              ["a", "x"], ["a", "x"], ["a", "x"], ["a", "x"], ["a", "x"],
+              ["a", "x"], ["a", "x"], ["a", "x"], ["a", "x"], ["a", "x"],
+              ["a", "x"], ["a", "x"], ["a", "x"], ["a", "x"], ["a", "x"],
+              ["b", "y"], ["b", "y"], ["b", "y"], ["b", "y"], ["b", "y"],
+              ["b", "y"], ["b", "y"], ["b", "y"], ["b", "y"], ["b", "y"],
+              ["b", "y"], ["b", "y"], ["b", "y"], ["b", "y"], ["b", "y"]
+            ]
+          },
+          "right_rows": {
+            "kind": "rows", "scope": "r",
+            "columns": [{ "name": "right_key", "type": "text" }],
+            "rows": [
+              ["y"], ["y"], ["y"], ["y"], ["y"], ["y"], ["y"], ["y"], ["y"], ["y"],
+              ["y"], ["y"], ["y"], ["y"], ["y"], ["y"], ["y"], ["y"], ["y"], ["y"],
+              ["y"], ["y"], ["y"], ["y"], ["y"], ["y"], ["y"], ["y"], ["y"], ["y"]
+            ]
+          },
+          "left_center": {
+            "kind": "join", "left": "left_rows", "right": "center_rows", "join": "inner",
+            "on": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "l", "column": "left_key" },
+              "right": { "kind": "col", "scope": "c", "column": "left_key" }
+            }
+          },
+          "joined": {
+            "kind": "join", "left": "left_center", "right": "right_rows", "join": "inner",
+            "on": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "c", "column": "right_key" },
+              "right": { "kind": "col", "scope": "r", "column": "right_key" }
+            }
+          },
+          "counted": {
+            "kind": "aggregate", "input": "joined", "scope": "result",
+            "aggs": [{ "fn": "count", "as": "joined_count" }]
+          }
+        },
+        "root": { "node": "counted", "cardinality": "exactly_one" }
+      }
+    }]
+  }
+}

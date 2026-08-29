@@ -200,7 +200,11 @@ pub fn query(query: &bound::Query) -> QueryFingerprints {
 /// A relation stamped this way carries the identity it has wherever it
 /// appears, so a count charged to it is comparable across statements.
 pub fn relation_family(relation: &Relation) -> Fingerprint {
-    Canonicalizer::new(&[]).relation(relation).family
+    relation_fingerprints(relation).family
+}
+
+pub fn relation_fingerprints(relation: &Relation) -> RelationFingerprints {
+    Canonicalizer::new(&[]).relation(relation)
 }
 
 pub(crate) fn finish(domain: u8, payload: &[u8]) -> Fingerprint {

@@ -9,10 +9,12 @@ mod events;
 mod frames;
 pub mod key_describe;
 mod pipeline;
+mod predicate_transfer;
 mod program;
 mod query;
 mod reference;
 mod row_store;
+mod shredded_join;
 mod set;
 pub mod schema_jobs;
 mod mutate;
@@ -25,7 +27,8 @@ pub use frames::shape_frames;
 pub(crate) use program::resolve_default;
 pub use program::{
     CatalogExpectation, CatalogPolicy, DefaultSpec, PreparedStatementEstimate, Program,
-    ProgramOptions, ProgramResult, Statement, StatementPlan, StatementResult,
+    ProgramOptions, ProgramResult, Statement, StatementPlan, StatementPlanMeasurement,
+    StatementResult,
 };
 pub use query::{Executor, Limits};
 pub use reference::ReferenceExecutor;

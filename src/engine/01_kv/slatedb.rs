@@ -337,6 +337,12 @@ impl Transaction for ReaderTransaction {
         &self.begin_position
     }
 
+    fn scan_position(&self) -> Option<&DataPosition> {
+        // A reader can refresh between operations. Its begin position does not
+        // identify the state that builds this scan.
+        None
+    }
+
     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         self.reader.get(key).await.map_err(map_operation_error)
     }
@@ -442,6 +448,13 @@ struct SlateIterator {
 
 #[async_trait]
 impl KvIterator for SlateIterator {
+    async fn seek_forward(&mut self, next_key: &[u8]) -> Result<()> {
+        self.iterator
+            .seek(next_key)
+            .await
+            .map_err(map_operation_error)
+    }
+
     async fn next(&mut self) -> Result<Option<Entry>> {
         self.iterator
             .next()
@@ -770,6 +783,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scan_seek_moves_only_forward_inside_the_original_range() -> Result<()> {
+        let store = Store::memory("scan-forward-seek").await?;
+        for key in [b"a", b"b", b"c", b"d"] {
+            store
+                .put(Bytes::copy_from_slice(key), Bytes::copy_from_slice(key))
+                .await?;
+        }
+        let mut iterator = store
+            .scan(KeyRange::new(
+                Bytes::from_static(b"a"),
+                Bytes::from_static(b"e"),
+            ))
+            .await?;
+        iterator.seek_forward(b"c").await?;
+        assert_eq!(
+            iterator.next().await?.map(|entry| entry.key),
+            Some(Bytes::from_static(b"c"))
+        );
+        iterator.seek_forward(b"d").await?;
+        assert_eq!(
+            iterator.next().await?.map(|entry| entry.key),
+            Some(Bytes::from_static(b"d"))
+        );
+        assert_eq!(
+            iterator.seek_forward(b"c").await.unwrap_err().kind(),
+            ErrorKind::Invalid
+        );
+        drop(iterator);
+        store.close().await
+    }
+
+    #[tokio::test]
+    async fn transaction_scan_descriptor_keeps_the_range_and_position() -> Result<()> {
+        let store = Store::memory("scan-descriptor").await?;
+        store
+            .put(Bytes::from_static(b"b"), Bytes::from_static(b"value"))
+            .await?;
+        let transaction = store.begin(IsolationLevel::Snapshot).await?;
+        let position = transaction.begin_position().clone();
+        let request = crate::engine::kv::ScanRequest::cascade_range(KeyRange::new(
+            Bytes::from_static(b"b"),
+            Bytes::from_static(b"c"),
+        ));
+        {
+            let scan = transaction.scan_with_request(request.clone()).await?;
+            assert_eq!(scan.descriptor.request, request);
+            assert_eq!(scan.descriptor.position, Some(position));
+            assert_eq!(collect(scan.iterator).await?.len(), 1);
+        }
+        transaction.rollback();
+        store.close().await
+    }
+
+    #[tokio::test]
     async fn transaction_cursor_allows_interleaved_point_reads() -> Result<()> {
         let store = Store::memory("interleaved-cursor-reads").await?;
         for (key, value) in [(b"i/a", b"row/a"), (b"i/b", b"row/b")] {
@@ -962,6 +1029,12 @@ mod tests {
             transaction.untrack_write(b"key").unwrap_err().kind(),
             ErrorKind::ReadOnly
         );
+        {
+            let scan = transaction
+                .scan_with_request(crate::engine::kv::ScanRequest::access_path(KeyRange::all()))
+                .await?;
+            assert_eq!(scan.descriptor.position, None);
+        }
         transaction.rollback();
 
         let checkpoint_client = reader.reader.current();

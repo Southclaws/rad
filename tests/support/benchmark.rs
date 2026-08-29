@@ -10,7 +10,8 @@ use super::http_process::RadProcess;
 use super::s3::TestResult;
 
 pub const FORMAT: &str = "rad-s3-http-benchmark-v1";
-pub const RESULT_FORMAT: &str = "rad-s3-http-benchmark-result-v2";
+pub const RESULT_FORMAT: &str = "rad-s3-http-benchmark-result-v3";
+pub const FAILURE_FORMAT: &str = "rad-s3-http-benchmark-failure-v1";
 
 #[derive(Debug, Deserialize)]
 pub struct Manifest {

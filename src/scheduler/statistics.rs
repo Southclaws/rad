@@ -34,6 +34,7 @@ pub const DEFAULT_REGISTRY_CAPACITY: usize = 4096;
 pub const CANONICAL_FORMAT_VERSION: u64 = 1;
 const STATISTICS_MODEL_FORMAT: u32 = 1;
 const STATISTICS_MODEL_CATALOG_FORMAT: u32 = 1;
+const STATISTICS_SYNOPSIS_FORMAT: u32 = 5;
 const STATISTICS_FREQUENCY_FORMAT: u32 = 1;
 const RETENTION_EPOCH_MICROS: u64 = 7 * 24 * 60 * 60 * 1_000_000;
 const CORPUS_MAX_EXECUTIONS: usize = 10_000;
@@ -1147,12 +1148,74 @@ fn distill_with_persisted(
     for (family, count) in persisted_frequency {
         stats.workload_frequency.record_at_least(family, *count);
     }
+    stats.snapshot_identity = planner_statistics_identity(&stats);
     stats
+}
+
+fn distill_persisted_only(
+    persisted: &PersistedStatisticsSnapshot,
+    published_at: Duration,
+) -> PlannerStats {
+    let mut stats = PlannerStats::empty();
+    stats.snapshot_identity = persisted.identity.clone();
+    stats.scope = crate::engine::planner::models::StatisticsScope::Persisted;
+    stats.published_at = published_at;
+    stats.synopsis_models = persisted
+        .synopses
+        .iter()
+        .cloned()
+        .map(|model| (model.table, model))
+        .collect();
+    for model in &persisted.models {
+        let models = match model.kind {
+            ObservationModelKind::Relation => &mut stats.feedback_models,
+            ObservationModelKind::Statement => &mut stats.statement_models,
+        };
+        models.insert(model.family, feedback_from_model(model));
+    }
+    for (family, count) in &persisted.frequencies {
+        stats.workload_frequency.record_at_least(family, *count);
+    }
+    stats
+}
+
+#[allow(clippy::too_many_arguments)]
+fn runner_snapshots(
+    registry: &HotRegistry,
+    persisted: &PersistedStatisticsSnapshot,
+    owns_stored_models: bool,
+    physical_cost: Option<crate::engine::planner::models::PhysicalCostModel>,
+    collector: CollectorReport,
+    corpus_maintenance: Option<CorpusMaintenanceStats>,
+    published_at: Duration,
+) -> (Arc<PlannerStats>, Arc<PlannerStats>) {
+    let mut diagnostic = distill_with_persisted(
+        registry,
+        &persisted.models,
+        &persisted.frequencies,
+        physical_cost,
+        collector,
+        corpus_maintenance,
+        published_at,
+    );
+    if owns_stored_models {
+        diagnostic.scope = crate::engine::planner::models::StatisticsScope::WriterLive;
+        let planning = Arc::new(diagnostic.clone());
+        (planning, Arc::new(diagnostic))
+    } else {
+        diagnostic.scope = crate::engine::planner::models::StatisticsScope::ReaderDiagnostic;
+        (
+            Arc::new(distill_persisted_only(persisted, published_at)),
+            Arc::new(diagnostic),
+        )
+    }
 }
 
 impl HotRegistry {
     fn distill(&self, collector: CollectorReport, published_at: Duration) -> PlannerStats {
-        PlannerStats {
+        let mut stats = PlannerStats {
+            snapshot_identity: String::new(),
+            scope: crate::engine::planner::models::StatisticsScope::WriterLive,
             feedback_models: self
                 .models
                 .iter()
@@ -1184,7 +1247,9 @@ impl HotRegistry {
             relayed_corpus: self.relayed_corpus,
             relayed_stale: self.relayed_stale,
             published_at,
-        }
+        };
+        stats.snapshot_identity = planner_statistics_identity(&stats);
+        stats
     }
 }
 
@@ -1283,6 +1348,14 @@ pub trait StatisticsSource: Send + Sync {
     async fn load_models(&self, limit: usize) -> Vec<QueryModel>;
     async fn load_synopses(&self) -> Vec<SynopsisModel>;
 
+    async fn load_snapshot(&self, limit: usize) -> PersistedStatisticsSnapshot {
+        PersistedStatisticsSnapshot::new(
+            self.load_models(limit).await,
+            self.load_synopses().await,
+            self.load_frequencies(limit).await,
+        )
+    }
+
     fn physical_telemetry(&self) -> Option<crate::engine::kv::telemetry::SharedPhysicalTelemetry> {
         None
     }
@@ -1294,6 +1367,198 @@ pub trait StatisticsSource: Send + Sync {
     async fn load_corpus(&self, _limit: usize) -> Result<Vec<CorpusExecution>, CorpusReplayError> {
         Err(CorpusReplayError::Unavailable)
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct PersistedStatisticsSnapshot {
+    pub models: Vec<QueryModel>,
+    pub synopses: Vec<SynopsisModel>,
+    pub frequencies: Vec<(Fingerprint, u32)>,
+    pub identity: String,
+}
+
+impl Default for PersistedStatisticsSnapshot {
+    fn default() -> Self {
+        Self::new(Vec::new(), Vec::new(), Vec::new())
+    }
+}
+
+impl PersistedStatisticsSnapshot {
+    fn new(
+        mut models: Vec<QueryModel>,
+        mut synopses: Vec<SynopsisModel>,
+        mut frequencies: Vec<(Fingerprint, u32)>,
+    ) -> Self {
+        for model in &mut models {
+            canonicalize_query_model(model);
+        }
+        for synopsis in &mut synopses {
+            canonicalize_synopsis_model(synopsis);
+        }
+        models.sort_by_key(|model| (model.kind, model.family));
+        synopses.sort_by_key(|model| model.table);
+        frequencies.sort_by_key(|(family, _)| *family);
+        let identity = persisted_statistics_identity(&models, &synopses, &frequencies);
+        Self {
+            models,
+            synopses,
+            frequencies,
+            identity,
+        }
+    }
+}
+
+fn canonicalize_query_model(model: &mut QueryModel) {
+    model.plans.sort_by_key(|(plan, _)| *plan);
+    model
+        .plan_profiles
+        .sort_by_key(|profile| (profile.plan, profile.access_stamp));
+}
+
+fn canonicalize_feedback_model(model: &mut FeedbackModel) {
+    model.plans.sort_by_key(|(plan, _)| *plan);
+    model
+        .plan_profiles
+        .sort_by_key(|profile| (profile.plan, profile.access_stamp));
+}
+
+fn canonicalize_synopsis_model(model: &mut SynopsisModel) {
+    for column in &mut model.columns {
+        column.most_common_values.sort_by_cached_key(|value| {
+            serde_json::to_vec(value).expect("most common value serializes")
+        });
+        if let Some(sequence) = &mut column.degree_sequence {
+            sequence.segments.sort_by_key(|segment| {
+                (
+                    segment.rank_start,
+                    segment.rank_end,
+                    segment.frequency_upper,
+                )
+            });
+        }
+    }
+    model.columns.sort_by_key(|column| column.column);
+    for group in &mut model.column_groups {
+        group.most_common_values.sort_by_cached_key(|value| {
+            serde_json::to_vec(value).expect("most common column group serializes")
+        });
+        if let Some(sequence) = &mut group.degree_sequence {
+            sequence.segments.sort_by_key(|segment| {
+                (
+                    segment.rank_start,
+                    segment.rank_end,
+                    segment.frequency_upper,
+                )
+            });
+        }
+    }
+    model
+        .column_groups
+        .sort_by(|left, right| left.columns.cmp(&right.columns));
+    for conditioned in &mut model.predicate_conditioned_degrees {
+        conditioned.values.sort_by_cached_key(|value| {
+            serde_json::to_vec(&value.predicate_value).expect("conditioned value serializes")
+        });
+    }
+    model.predicate_conditioned_degrees.sort_by(|left, right| {
+        (&left.join_columns, left.predicate_column)
+            .cmp(&(&right.join_columns, right.predicate_column))
+    });
+}
+
+fn planner_statistics_identity(stats: &PlannerStats) -> String {
+    use sha2::{Digest as _, Sha256};
+
+    let mut hash = Sha256::new();
+    hash.update(b"rad-planner-statistics-v1");
+    hash.update(STATISTICS_MODEL_FORMAT.to_be_bytes());
+    hash.update(STATISTICS_SYNOPSIS_FORMAT.to_be_bytes());
+    hash.update(STATISTICS_FREQUENCY_FORMAT.to_be_bytes());
+    let mut models = stats
+        .feedback_models
+        .values()
+        .cloned()
+        .map(|model| (ObservationModelKind::Relation, model))
+        .chain(
+            stats
+                .statement_models
+                .values()
+                .cloned()
+                .map(|model| (ObservationModelKind::Statement, model)),
+        )
+        .collect::<Vec<_>>();
+    models.sort_by_key(|(kind, model)| (*kind, model.family));
+    for (kind, mut model) in models {
+        canonicalize_feedback_model(&mut model);
+        hash_statistics_record(
+            &mut hash,
+            &serde_json::to_vec(&(kind, model)).expect("planner model serializes"),
+        );
+    }
+    let mut synopses = stats.synopsis_models.values().cloned().collect::<Vec<_>>();
+    for synopsis in &mut synopses {
+        canonicalize_synopsis_model(synopsis);
+    }
+    synopses.sort_by_key(|model| model.table);
+    for synopsis in synopses {
+        hash_statistics_record(
+            &mut hash,
+            &serde_json::to_vec(&synopsis).expect("synopsis model serializes"),
+        );
+    }
+    hash_statistics_record(
+        &mut hash,
+        &serde_json::to_vec(&stats.workload_frequency).expect("frequency sketch serializes"),
+    );
+    statistics_hash_identity(hash)
+}
+
+fn persisted_statistics_identity(
+    models: &[QueryModel],
+    synopses: &[SynopsisModel],
+    frequencies: &[(Fingerprint, u32)],
+) -> String {
+    use sha2::{Digest as _, Sha256};
+
+    let mut hash = Sha256::new();
+    hash.update(b"rad-statistics-snapshot-v1");
+    hash.update(STATISTICS_MODEL_FORMAT.to_be_bytes());
+    hash.update(STATISTICS_SYNOPSIS_FORMAT.to_be_bytes());
+    hash.update(STATISTICS_FREQUENCY_FORMAT.to_be_bytes());
+    for model in models {
+        hash_statistics_record(
+            &mut hash,
+            &serde_json::to_vec(model).expect("query model serializes"),
+        );
+    }
+    for synopsis in synopses {
+        hash_statistics_record(
+            &mut hash,
+            &serde_json::to_vec(synopsis).expect("synopsis model serializes"),
+        );
+    }
+    for (family, frequency) in frequencies {
+        let mut record = family.to_bytes().to_vec();
+        record.extend_from_slice(&frequency.to_be_bytes());
+        hash_statistics_record(&mut hash, &record);
+    }
+    statistics_hash_identity(hash)
+}
+
+fn statistics_hash_identity(hash: sha2::Sha256) -> String {
+    use sha2::Digest as _;
+
+    hash.finalize()[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn hash_statistics_record(hash: &mut sha2::Sha256, record: &[u8]) {
+    use sha2::Digest as _;
+
+    hash.update((record.len() as u64).to_be_bytes());
+    hash.update(record);
 }
 
 /// Publishes locally gathered statistics. Writing to the shared store is one
@@ -1518,6 +1783,12 @@ impl StatisticsSource for SlateStatistics {
 
     async fn load_synopses(&self) -> Vec<SynopsisModel> {
         load_persisted_synopses(&self.store)
+            .await
+            .unwrap_or_default()
+    }
+
+    async fn load_snapshot(&self, limit: usize) -> PersistedStatisticsSnapshot {
+        load_persisted_snapshot(&self.store, limit)
             .await
             .unwrap_or_default()
     }
@@ -2292,6 +2563,14 @@ impl SlateStatistics {
 async fn load_persisted_synopses(
     store: &Arc<dyn crate::engine::kv::TransactionalKv>,
 ) -> crate::engine::kv::Result<Vec<SynopsisModel>> {
+    let store_view: &dyn crate::engine::kv::Kv = store.as_ref();
+    load_persisted_synopses_from(store_view).await
+}
+
+async fn load_persisted_synopses_from<V>(view: &V) -> crate::engine::kv::Result<Vec<SynopsisModel>>
+where
+    V: crate::engine::kv::KvView + ?Sized,
+{
     use crate::engine::kv::{KeyRange, KvView, keys};
 
     let prefix = keys::statistics_synopsis_prefix();
@@ -2301,8 +2580,7 @@ async fn load_persisted_synopses(
         None => KeyRange::from_start(prefix.clone()),
     };
     let mut models = Vec::new();
-    let store_view: &dyn crate::engine::kv::Kv = store.as_ref();
-    let mut iterator = KvView::scan(store_view, range).await?;
+    let mut iterator = KvView::scan(view, range).await?;
     while let Some(entry) = iterator.next().await? {
         if let Ok(model) = serde_json::from_slice::<SynopsisModel>(&entry.value) {
             models.push(model);
@@ -2315,13 +2593,23 @@ async fn load_persisted_models(
     store: &Arc<dyn crate::engine::kv::TransactionalKv>,
     limit: usize,
 ) -> crate::engine::kv::Result<Vec<QueryModel>> {
+    let store_view: &dyn crate::engine::kv::Kv = store.as_ref();
+    load_persisted_models_from(store_view, limit).await
+}
+
+async fn load_persisted_models_from<V>(
+    view: &V,
+    limit: usize,
+) -> crate::engine::kv::Result<Vec<QueryModel>>
+where
+    V: crate::engine::kv::KvView + ?Sized,
+{
     use crate::engine::kv::{KvView, keys};
 
     if limit == 0 {
         return Ok(Vec::new());
     }
-    let store_view: &dyn crate::engine::kv::Kv = store.as_ref();
-    let catalog = KvView::get(store_view, &keys::statistics_model_catalog_key())
+    let catalog = KvView::get(view, &keys::statistics_model_catalog_key())
         .await?
         .and_then(|value| decode_model_catalog(&value));
     if let Some(mut catalog) = catalog {
@@ -2341,7 +2629,7 @@ async fn load_persisted_models(
             if !seen.insert(id) {
                 continue;
             }
-            if let Some(value) = KvView::get(store_view, &model_storage_key(id)).await?
+            if let Some(value) = KvView::get(view, &model_storage_key(id)).await?
                 && let Some(model) = decode_stored_model(&value, id.family, id.kind)
             {
                 models.push(model);
@@ -2349,25 +2637,35 @@ async fn load_persisted_models(
         }
         return Ok(models);
     }
-    scan_retained_persisted_models(store_view, limit).await
+    scan_retained_persisted_models(view, limit).await
 }
 
 async fn load_persisted_frequencies(
     store: &Arc<dyn crate::engine::kv::TransactionalKv>,
     limit: usize,
 ) -> crate::engine::kv::Result<Vec<(Fingerprint, u32)>> {
+    let store_view: &dyn crate::engine::kv::Kv = store.as_ref();
+    load_persisted_frequencies_from(store_view, limit).await
+}
+
+async fn load_persisted_frequencies_from<V>(
+    view: &V,
+    limit: usize,
+) -> crate::engine::kv::Result<Vec<(Fingerprint, u32)>>
+where
+    V: crate::engine::kv::KvView + ?Sized,
+{
     use crate::engine::kv::{KvView, keys};
 
     if limit == 0 {
         return Ok(Vec::new());
     }
-    let store_view: &dyn crate::engine::kv::Kv = store.as_ref();
-    let epoch = KvView::get(store_view, &keys::statistics_frequency_epoch_key())
+    let epoch = KvView::get(view, &keys::statistics_frequency_epoch_key())
         .await?
         .and_then(|value| String::from_utf8(value.to_vec()).ok())
         .and_then(|text| text.parse::<u64>().ok())
         .unwrap_or(0);
-    let catalog = KvView::get(store_view, &keys::statistics_model_catalog_key())
+    let catalog = KvView::get(view, &keys::statistics_model_catalog_key())
         .await?
         .and_then(|value| decode_model_catalog(&value));
     let mut families = Vec::new();
@@ -2391,7 +2689,7 @@ async fn load_persisted_frequencies(
             }
         }
     } else {
-        for model in scan_retained_persisted_models(store_view, limit).await? {
+        for model in scan_retained_persisted_models(view, limit).await? {
             if seen.insert(model.family) {
                 families.push(model.family);
             }
@@ -2400,7 +2698,7 @@ async fn load_persisted_frequencies(
     let mut frequencies = Vec::with_capacity(families.len());
     for family in families {
         let key = keys::statistics_frequency_key(&family.to_bytes());
-        if let Some(value) = KvView::get(store_view, &key).await?
+        if let Some(value) = KvView::get(view, &key).await?
             && let Some(count) = decode_stored_frequency(&value, epoch)
             && count > 0
         {
@@ -2410,12 +2708,33 @@ async fn load_persisted_frequencies(
     Ok(frequencies)
 }
 
+async fn load_persisted_snapshot(
+    store: &Arc<dyn crate::engine::kv::TransactionalKv>,
+    limit: usize,
+) -> crate::engine::kv::Result<PersistedStatisticsSnapshot> {
+    use crate::engine::kv::{IsolationLevel, TransactionView};
+
+    let transaction = store.begin(IsolationLevel::Snapshot).await?;
+    let result = async {
+        let view = TransactionView(transaction.as_ref());
+        let models = load_persisted_models_from(&view, limit).await?;
+        let synopses = load_persisted_synopses_from(&view).await?;
+        let frequencies = load_persisted_frequencies_from(&view, limit).await?;
+        Ok(PersistedStatisticsSnapshot::new(
+            models,
+            synopses,
+            frequencies,
+        ))
+    }
+    .await;
+    transaction.rollback();
+    result
+}
+
 type SurveyFuture = std::pin::Pin<Box<dyn Future<Output = Option<SurveyResult>> + Send>>;
 type FlushFuture =
     std::pin::Pin<Box<dyn Future<Output = (StatisticsBatch, Result<(), StatisticsBatch>)> + Send>>;
-type RefreshFuture = std::pin::Pin<
-    Box<dyn Future<Output = (Vec<QueryModel>, Vec<SynopsisModel>, Vec<(Fingerprint, u32)>)> + Send>,
->;
+type RefreshFuture = std::pin::Pin<Box<dyn Future<Output = PersistedStatisticsSnapshot> + Send>>;
 type CorpusMaintenanceFuture = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
 
 fn complete_flush(
@@ -2456,7 +2775,8 @@ pub struct StatisticsRunner {
     /// Kept so the sending side of the relay stays observable; the runner's
     /// own use of the sink is inside its task.
     sink: Option<Arc<dyn StatisticsSink>>,
-    snapshot: Arc<std::sync::RwLock<Arc<PlannerStats>>>,
+    planning_snapshot: Arc<std::sync::RwLock<Arc<PlannerStats>>>,
+    diagnostic_snapshot: Arc<std::sync::RwLock<Arc<PlannerStats>>>,
     engine: Arc<std::sync::Mutex<Option<Arc<crate::engine::exec::Engine>>>>,
     stop: Arc<tokio::sync::Notify>,
     task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -2479,13 +2799,15 @@ impl StatisticsRunner {
             RELAY_QUEUE_CAPACITY,
             config.capture_programs,
         );
-        let snapshot = Arc::new(std::sync::RwLock::new(Arc::new(PlannerStats::empty())));
+        let planning_snapshot = Arc::new(std::sync::RwLock::new(Arc::new(PlannerStats::empty())));
+        let diagnostic_snapshot = Arc::new(std::sync::RwLock::new(Arc::new(PlannerStats::empty())));
         let stop = Arc::new(tokio::sync::Notify::new());
         let engine = Arc::new(std::sync::Mutex::new(
             None::<Arc<crate::engine::exec::Engine>>,
         ));
 
-        let task_snapshot = snapshot.clone();
+        let task_planning_snapshot = planning_snapshot.clone();
+        let task_diagnostic_snapshot = diagnostic_snapshot.clone();
         let task_stop = stop.clone();
         let task_collector = collector.clone();
         let task_engine = engine.clone();
@@ -2497,8 +2819,7 @@ impl StatisticsRunner {
         let task = tokio::spawn(async move {
             let mut registry = HotRegistry::new(config.registry_capacity);
             let mut physical_cost = PhysicalCostRegistry::default();
-            let mut persisted = Vec::new();
-            let mut persisted_frequency = Vec::new();
+            let mut persisted = PersistedStatisticsSnapshot::default();
             // An instance that owns the stored models adopts them as the base
             // it extends. One that does not keeps them separate: its own
             // observations describe the traffic it serves, and it refreshes,
@@ -2519,12 +2840,8 @@ impl StatisticsRunner {
             let mut flush_future: Option<FlushFuture> = None;
             let mut refresh_future: Option<RefreshFuture> = source.as_ref().map(|source| {
                 let source = source.clone();
-                Box::pin(async move {
-                    let models = source.load_models(config.registry_capacity).await;
-                    let synopses = source.load_synopses().await;
-                    let frequencies = source.load_frequencies(config.registry_capacity).await;
-                    (models, synopses, frequencies)
-                }) as RefreshFuture
+                Box::pin(async move { source.load_snapshot(config.registry_capacity).await })
+                    as RefreshFuture
             });
             let mut corpus_maintenance_future: Option<CorpusMaintenanceFuture> =
                 sink.as_ref().map(|sink| {
@@ -2583,20 +2900,19 @@ impl StatisticsRunner {
                         flush_future = None;
                         complete_flush(&mut registry, covered, result);
                     },
-                    (models, synopses, frequencies) = async {
+                    refreshed = async {
                         refresh_future.as_mut().expect("refresh future").await
                     }, if refresh_future.is_some() => {
                         refresh_future = None;
                         if owns_stored_models {
-                            registry.hydrate(models);
-                            registry.hydrate_frequency(frequencies);
+                            registry.hydrate(refreshed.models);
+                            registry.hydrate_frequency(refreshed.frequencies);
                             stored_models_loaded = true;
                         } else {
-                            persisted = models;
-                            persisted_frequency = frequencies;
+                            persisted = refreshed.clone();
                         }
-                        if !synopses.is_empty() {
-                            registry.hydrate_synopses(synopses);
+                        if !refreshed.synopses.is_empty() {
+                            registry.hydrate_synopses(refreshed.synopses);
                         }
                         force_publish = true;
                     },
@@ -2688,12 +3004,7 @@ impl StatisticsRunner {
                                 ticks_since_refresh = 0;
                                     let source = source.clone();
                                     refresh_future = Some(Box::pin(async move {
-                                        let models = source.load_models(config.registry_capacity).await;
-                                        let synopses = source.load_synopses().await;
-                                        let frequencies = source
-                                            .load_frequencies(config.registry_capacity)
-                                            .await;
-                                        (models, synopses, frequencies)
+                                        source.load_snapshot(config.registry_capacity).await
                                     }));
                             }
                         }
@@ -2710,16 +3021,21 @@ impl StatisticsRunner {
                             published_collector = collector_report;
                             published_corpus_maintenance = corpus_maintenance;
                             force_publish = false;
-                            let stats = Arc::new(distill_with_persisted(
+                            let (planning, diagnostic) = runner_snapshots(
                                 &registry,
                                 &persisted,
-                                &persisted_frequency,
+                                owns_stored_models,
                                 physical_cost.model(),
                                 collector_report,
                                 corpus_maintenance,
                                 runtime.unix_time(),
-                            ));
-                            *task_snapshot.write().expect("statistics snapshot lock") = stats;
+                            );
+                            *task_planning_snapshot
+                                .write()
+                                .expect("planning statistics snapshot lock") = planning;
+                            *task_diagnostic_snapshot
+                                .write()
+                                .expect("diagnostic statistics snapshot lock") = diagnostic;
                         }
                     }
                 }
@@ -2731,16 +3047,21 @@ impl StatisticsRunner {
             if let Some(sink) = &sink {
                 finish_publication(sink.as_ref(), registry.take_batch()).await;
             }
-            let stats = Arc::new(distill_with_persisted(
+            let (planning, diagnostic) = runner_snapshots(
                 &registry,
                 &persisted,
-                &persisted_frequency,
+                owns_stored_models,
                 physical_cost.model(),
                 task_collector.report(),
                 sink.as_ref().and_then(|sink| sink.corpus_maintenance()),
                 runtime.unix_time(),
-            ));
-            *task_snapshot.write().expect("statistics snapshot lock") = stats;
+            );
+            *task_planning_snapshot
+                .write()
+                .expect("planning statistics snapshot lock") = planning;
+            *task_diagnostic_snapshot
+                .write()
+                .expect("diagnostic statistics snapshot lock") = diagnostic;
         });
 
         Arc::new(Self {
@@ -2748,7 +3069,8 @@ impl StatisticsRunner {
             ingest,
             source: reported_source,
             sink: reported_sink,
-            snapshot,
+            planning_snapshot,
+            diagnostic_snapshot,
             engine,
             stop,
             task: std::sync::Mutex::new(Some(task)),
@@ -2787,9 +3109,16 @@ impl StatisticsRunner {
 
     /// The current distilled snapshot. Cheap: one lock, one `Arc` clone.
     pub fn stats(&self) -> Arc<PlannerStats> {
-        self.snapshot
+        self.diagnostic_snapshot
             .read()
-            .expect("statistics snapshot lock")
+            .expect("diagnostic statistics snapshot lock")
+            .clone()
+    }
+
+    pub fn planning_stats(&self) -> Arc<PlannerStats> {
+        self.planning_snapshot
+            .read()
+            .expect("planning statistics snapshot lock")
             .clone()
     }
 
@@ -2818,7 +3147,7 @@ impl StatisticsRunner {
             .map_err(|error| CorpusReplayError::Engine(error.to_string()))?;
         Ok(super::replay::replay(
             engine.as_ref(),
-            self.stats(),
+            self.planning_stats(),
             executions,
             &super::replay::FamilyFeedbackCandidate,
             revision.version.get(),
@@ -2843,7 +3172,11 @@ impl Drop for StatisticsRunner {
 }
 
 impl crate::engine::planner::estimator::StatisticsProvider for StatisticsRunner {
-    fn stats(&self) -> Arc<PlannerStats> {
+    fn planning_stats(&self) -> Arc<PlannerStats> {
+        Self::planning_stats(self)
+    }
+
+    fn diagnostic_stats(&self) -> Arc<PlannerStats> {
         Self::stats(self)
     }
 
@@ -2875,6 +3208,44 @@ pub(super) mod tests {
         fn unix_time(&self) -> Duration {
             Duration::from_micros(self.0.load(Ordering::Relaxed))
         }
+    }
+
+    #[test]
+    fn persisted_snapshot_identity_is_canonical_and_content_sensitive() {
+        let mut first = QueryModel::new(fingerprint(1), ObservationModelKind::Statement);
+        first.executions = 3;
+        let mut second = QueryModel::new(fingerprint(2), ObservationModelKind::Relation);
+        second.executions = 5;
+        let canonical = PersistedStatisticsSnapshot::new(
+            vec![first.clone(), second.clone()],
+            Vec::new(),
+            vec![(fingerprint(1), 7), (fingerprint(2), 11)],
+        );
+        let reordered = PersistedStatisticsSnapshot::new(
+            vec![second.clone(), first.clone()],
+            Vec::new(),
+            vec![(fingerprint(2), 11), (fingerprint(1), 7)],
+        );
+        let changed = PersistedStatisticsSnapshot::new(
+            vec![first, second],
+            Vec::new(),
+            vec![(fingerprint(1), 8), (fingerprint(2), 11)],
+        );
+
+        assert_eq!(canonical.identity, reordered.identity);
+        assert_ne!(canonical.identity, changed.identity);
+    }
+
+    #[test]
+    fn live_snapshot_identity_changes_with_planner_content() {
+        let mut registry = HotRegistry::new(16);
+        let empty = registry.distill(CollectorReport::default(), Duration::ZERO);
+        registry.absorb(&observation(1, 1, 10), Duration::ZERO);
+        let observed = registry.distill(CollectorReport::default(), Duration::ZERO);
+
+        assert_eq!(empty.snapshot_identity.len(), 32);
+        assert_eq!(observed.snapshot_identity.len(), 32);
+        assert_ne!(empty.snapshot_identity, observed.snapshot_identity);
     }
 
     async fn prefix_count(store: &dyn crate::engine::kv::Kv, prefix: Vec<u8>) -> usize {
@@ -2922,6 +3293,7 @@ pub(super) mod tests {
             affected: rows,
             mutated: None,
             kv: Default::default(),
+            join_operators: Vec::new(),
             failure: None,
         }
     }
@@ -3239,6 +3611,7 @@ pub(super) mod tests {
             catalog_version: 1,
             columns: Vec::new(),
             column_groups: Vec::new(),
+            predicate_conditioned_degrees: Vec::new(),
         };
         let mutation = |affected| {
             let mut observation = observation(1, 1, affected);
@@ -3285,6 +3658,7 @@ pub(super) mod tests {
             catalog_version: 1,
             columns: Vec::new(),
             column_groups: Vec::new(),
+            predicate_conditioned_degrees: Vec::new(),
         }]);
 
         assert_eq!(registry.synopses[&table].changes_since_collection, 10);
@@ -3810,8 +4184,12 @@ pub(super) mod tests {
         use crate::engine::catalog::identity::SchemaId;
         use crate::engine::kv::TransactionalKv;
         use crate::engine::planner::models::{
-            ColumnGroupSynopsis, ColumnSynopsis, MostCommonColumnGroup, MostCommonValue,
-            SynopsisCoverage, SynopsisModel, SynopsisValue,
+            ColumnGroupSynopsis, ColumnSynopsis, DEGREE_SEQUENCE_FORMAT_VERSION,
+            DegreeSequenceNorms, DegreeSequenceSegment, DegreeSequenceSynopsis,
+            MostCommonColumnGroup, MostCommonValue, PREDICATE_CONDITIONED_DEGREE_FORMAT_VERSION,
+            PredicateConditionedDegreeSynopsis, PredicateConditionedDegreeValue,
+            RANGE_DISTRIBUTION_FORMAT_VERSION, RangeDistribution, RangeDistributionBucket,
+            SynopsisCountBounds, SynopsisCoverage, SynopsisModel, SynopsisValue,
         };
 
         let store: Arc<dyn TransactionalKv> = Arc::new(
@@ -3841,6 +4219,7 @@ pub(super) mod tests {
                             distinct: 3,
                             distinct_is_exact: true,
                             average_width: 4,
+                            maximum_width: Some(4),
                             minimum: Some("\"cold\"".into()),
                             maximum: Some("\"hot\"".into()),
                             most_common_values: vec![MostCommonValue {
@@ -3848,6 +4227,42 @@ pub(super) mod tests {
                                 frequency: 70,
                                 maximum_error: 2,
                             }],
+                            range_distribution: Some(RangeDistribution {
+                                format_version: RANGE_DISTRIBUTION_FORMAT_VERSION,
+                                coverage: SynopsisCoverage::Complete,
+                                sample_size: 100,
+                                value_generation: 5,
+                                collected_row_count: 100,
+                                buckets: vec![RangeDistributionBucket {
+                                    lower: SynopsisValue::Text("cold".into()),
+                                    upper: SynopsisValue::Text("hot".into()),
+                                    rows: SynopsisCountBounds::exact(90),
+                                    cumulative_rows: SynopsisCountBounds::exact(90),
+                                    lower_endpoint_rows: SynopsisCountBounds::exact(20),
+                                    upper_endpoint_rows: SynopsisCountBounds::exact(70),
+                                }],
+                            }),
+                            degree_sequence: Some(DegreeSequenceSynopsis {
+                                format_version: DEGREE_SEQUENCE_FORMAT_VERSION,
+                                coverage: SynopsisCoverage::Complete,
+                                sample_size: 100,
+                                value_generations: vec![5],
+                                collected_row_count: 100,
+                                non_null_rows: 90,
+                                distinct_values: 3,
+                                distinct_is_exact: true,
+                                norms: DegreeSequenceNorms {
+                                    l1: 90,
+                                    l2_upper: 73,
+                                    l_infinity: 70,
+                                    exact: true,
+                                },
+                                segments: vec![DegreeSequenceSegment {
+                                    rank_start: 0,
+                                    rank_end: 3,
+                                    frequency_upper: 70,
+                                }],
+                            }),
                         }],
                         column_groups: vec![ColumnGroupSynopsis {
                             columns: vec![SchemaId::new(8).unwrap(), SchemaId::new(9).unwrap()],
@@ -3863,7 +4278,49 @@ pub(super) mod tests {
                                 frequency: 60,
                                 maximum_error: 3,
                             }],
+                            degree_sequence: Some(DegreeSequenceSynopsis {
+                                format_version: DEGREE_SEQUENCE_FORMAT_VERSION,
+                                coverage: SynopsisCoverage::Complete,
+                                sample_size: 100,
+                                value_generations: vec![5, 6],
+                                collected_row_count: 100,
+                                non_null_rows: 96,
+                                distinct_values: 8,
+                                distinct_is_exact: true,
+                                norms: DegreeSequenceNorms {
+                                    l1: 96,
+                                    l2_upper: 62,
+                                    l_infinity: 60,
+                                    exact: true,
+                                },
+                                segments: vec![DegreeSequenceSegment {
+                                    rank_start: 0,
+                                    rank_end: 8,
+                                    frequency_upper: 60,
+                                }],
+                            }),
                         }],
+                        predicate_conditioned_degrees: vec![PredicateConditionedDegreeSynopsis {
+                            format_version: PREDICATE_CONDITIONED_DEGREE_FORMAT_VERSION,
+                            coverage: SynopsisCoverage::Complete,
+                            sample_size: 100,
+                            join_columns: vec![SchemaId::new(8).unwrap()],
+                            join_value_generations: vec![5],
+                            predicate_column: SchemaId::new(9).unwrap(),
+                            predicate_value_generation: 6,
+                            values: vec![PredicateConditionedDegreeValue {
+                                predicate_value: SynopsisValue::Bool(true),
+                                matching_rows: 60,
+                                non_null_join_rows: 58,
+                                distinct_join_values: 3,
+                                norms: DegreeSequenceNorms {
+                                    l1: 58,
+                                    l2_upper: 50,
+                                    l_infinity: 48,
+                                    exact: true,
+                                },
+                            }],
+                        },],
                     }],
                     ..StatisticsBatch::default()
                 })
@@ -3877,10 +4334,42 @@ pub(super) mod tests {
         assert_eq!(loaded[0].table_existence_generation, 3);
         assert_eq!(loaded[0].columns[0].value_generation, 5);
         assert_eq!(loaded[0].columns[0].null_count, 10);
+        assert_eq!(loaded[0].columns[0].maximum_width, Some(4));
         assert_eq!(loaded[0].columns[0].most_common_values[0].frequency, 70);
         assert_eq!(loaded[0].columns[0].most_common_values[0].maximum_error, 2);
+        assert_eq!(
+            loaded[0].columns[0]
+                .degree_sequence
+                .as_ref()
+                .unwrap()
+                .norms
+                .l2_upper,
+            73
+        );
+        let distribution = loaded[0].columns[0]
+            .range_distribution
+            .as_ref()
+            .expect("persisted range distribution");
+        assert_eq!(distribution.value_generation, 5);
+        assert_eq!(distribution.buckets[0].rows.lower_bound, 90);
+        assert_eq!(
+            distribution.buckets[0].cumulative_rows,
+            SynopsisCountBounds::exact(90)
+        );
+        assert_eq!(
+            distribution.buckets[0].upper_endpoint_rows,
+            SynopsisCountBounds::exact(70)
+        );
         assert_eq!(loaded[0].column_groups[0].value_generations, [5, 6]);
         assert_eq!(loaded[0].column_groups[0].null_count, 4);
+        assert_eq!(
+            loaded[0].column_groups[0]
+                .degree_sequence
+                .as_ref()
+                .unwrap()
+                .value_generations,
+            [5, 6]
+        );
         assert_eq!(
             loaded[0].column_groups[0].most_common_values[0].frequency,
             60
@@ -3888,6 +4377,16 @@ pub(super) mod tests {
         assert_eq!(
             loaded[0].column_groups[0].most_common_values[0].maximum_error,
             3
+        );
+        assert_eq!(
+            loaded[0].predicate_conditioned_degrees[0].join_value_generations,
+            [5]
+        );
+        assert_eq!(
+            loaded[0].predicate_conditioned_degrees[0].values[0]
+                .norms
+                .l_infinity,
+            48
         );
     }
 
@@ -4191,16 +4690,165 @@ pub(super) mod tests {
             None,
         );
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
+        let planning_identity = loop {
             let stats = reader.stats();
             if let Some(model) = stats.statement_models.get(&fingerprint(1)) {
                 assert_eq!(model.retained_executions, 12);
                 assert!(model.rows_p50_upper_bound >= 70);
-                break;
+                let planning = reader.planning_stats();
+                assert_eq!(
+                    planning.scope,
+                    crate::engine::planner::models::StatisticsScope::Persisted
+                );
+                assert_eq!(planning.snapshot_identity.len(), 32);
+                assert_eq!(
+                    planning
+                        .statement_models
+                        .get(&fingerprint(1))
+                        .expect("persisted planning model")
+                        .retained_executions,
+                    12
+                );
+                break planning.snapshot_identity.clone();
             }
             assert!(
                 std::time::Instant::now() < deadline,
                 "the reader never picked up the published model"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+
+        let peer = StatisticsRunner::start(
+            Arc::new(crate::runtime::SystemRuntime),
+            StatisticsConfig {
+                publish_interval: Duration::from_millis(10),
+                refresh_every: 1,
+                ..StatisticsConfig::default()
+            },
+            Some(slate.clone()),
+            None,
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let planning = peer.planning_stats();
+            if planning.snapshot_identity == planning_identity
+                && planning.statement_models.contains_key(&fingerprint(1))
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the peer reader never loaded the same snapshot"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        let reader_collector = reader.collector();
+        reader_collector.statement(observation(2, 1, 9));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while reader.stats().absorbed == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "reader never absorbed its local observation"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            reader
+                .stats()
+                .statement_models
+                .contains_key(&fingerprint(2))
+        );
+        assert!(
+            !reader
+                .planning_stats()
+                .statement_models
+                .contains_key(&fingerprint(2))
+        );
+        assert_eq!(reader.planning_stats().snapshot_identity, planning_identity);
+        assert_eq!(peer.planning_stats().snapshot_identity, planning_identity);
+        peer.shutdown().await;
+        reader.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_reader_adopts_relayed_evidence_only_after_writer_publication() {
+        use crate::engine::kv::TransactionalKv;
+
+        let store: Arc<dyn TransactionalKv> = Arc::new(
+            crate::engine::kv::slatedb::Store::memory("stats-relay-publication")
+                .await
+                .unwrap(),
+        );
+        let slate = Arc::new(SlateStatistics::new(store));
+        let writer = StatisticsRunner::start(
+            Arc::new(crate::runtime::SystemRuntime),
+            StatisticsConfig {
+                publish_interval: Duration::from_millis(5),
+                flush_every: 1_000_000,
+                ..StatisticsConfig::default()
+            },
+            Some(slate.clone()),
+            Some(slate.clone()),
+        );
+        let reader = StatisticsRunner::start(
+            Arc::new(crate::runtime::SystemRuntime),
+            StatisticsConfig {
+                publish_interval: Duration::from_millis(5),
+                refresh_every: 1,
+                ..StatisticsConfig::default()
+            },
+            Some(slate.clone()),
+            None,
+        );
+        let family = fingerprint(9);
+        let mut relayed = QueryModel::new(family, ObservationModelKind::Statement);
+        relayed.executions = 6;
+        assert_eq!(
+            writer
+                .ingest()
+                .submit(super::super::relay::ObservationBatch {
+                    format: super::super::relay::RELAY_FORMAT,
+                    instance: "reader-1".into(),
+                    boot: "boot-1".into(),
+                    sequence: 1,
+                    sent_at_micros: 0,
+                    families: vec![relayed],
+                    frequency: vec![(family, 6)],
+                    corpus: Vec::new(),
+                }),
+            super::super::relay::IngestOutcome::Accepted
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !writer
+            .planning_stats()
+            .statement_models
+            .contains_key(&family)
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the writer did not merge relayed evidence"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            !reader
+                .planning_stats()
+                .statement_models
+                .contains_key(&family)
+        );
+
+        writer.shutdown().await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !reader
+            .planning_stats()
+            .statement_models
+            .contains_key(&family)
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the reader did not refresh the writer publication"
             );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }

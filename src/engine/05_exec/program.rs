@@ -285,6 +285,20 @@ pub struct ProgramResult {
 pub struct StatementPlan {
     pub name: String,
     pub plan: PlanView,
+    pub measurement: Option<StatementPlanMeasurement>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatementPlanMeasurement {
+    pub planning_micros: u64,
+    pub execution_micros: u64,
+    pub result_rows: u64,
+    pub logical_kv: super::observe::KvWork,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logical_scans: Option<super::observe::KvScanTrace>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub join_operators: Vec<super::observe::JoinOperatorMeasurement>,
 }
 
 #[derive(Clone, Debug)]
@@ -360,10 +374,12 @@ pub(super) async fn preflight(
     collect_estimates: bool,
     runtime: &Arc<dyn RuntimeEffects>,
     statistics: Option<Arc<crate::engine::planner::models::PlannerStats>>,
+    plan_options: crate::engine::planner::PlanOptions,
 ) -> Result<PreflightResult> {
     let names = relational_names(program);
     let mut binder = ProgramBinder::new(names)?;
     binder.set_statistics(statistics.clone());
+    binder.set_plan_options(plan_options);
     let mut transitions = HashMap::new();
     let mut catalog_changed = false;
     let mut schema_changed = false;
@@ -379,13 +395,14 @@ pub(super) async fn preflight(
             };
             if collect_plan {
                 let plan = bound.plan.as_ref().expect("plan requested");
-                let mut plan_view = PlanView::new(plan);
+                let mut plan_view = PlanView::with_mode(plan, plan_options.mode);
                 if let Some(stats) = &statistics {
                     plan_view.annotate_estimates(stats, bound.estimate, &bound.bound, plan);
                 }
                 plans.push(StatementPlan {
                     name: bound.name.clone(),
                     plan: plan_view,
+                    measurement: None,
                 });
             }
             if collect_estimates
@@ -422,6 +439,13 @@ pub(super) async fn preflight(
     Ok(PreflightResult { plans, estimates })
 }
 
+pub(super) struct RunContext<'a> {
+    pub observation: super::observe::Observation<'a>,
+    pub statistics: Option<Arc<crate::engine::planner::models::PlannerStats>>,
+    pub plan_options: crate::engine::planner::PlanOptions,
+    pub collect_plan: bool,
+}
+
 pub(super) async fn run(
     view: &mut dyn KvView,
     program: &Program,
@@ -429,7 +453,7 @@ pub(super) async fn run(
     policy: CatalogPolicy,
     limits: Limits,
     runtime: &Arc<dyn RuntimeEffects>,
-    observation: super::observe::Observation<'_>,
+    context: RunContext<'_>,
 ) -> Result<ProgramResult> {
     run_with_path(
         view,
@@ -439,7 +463,10 @@ pub(super) async fn run(
         limits,
         ExecutionPath::Production,
         runtime,
-        observation,
+        context.observation,
+        context.statistics,
+        context.plan_options,
+        context.collect_plan,
     )
     .await
 }
@@ -461,6 +488,9 @@ pub(super) async fn run_reference(
         ExecutionPath::Reference,
         runtime,
         super::observe::Observation::default(),
+        None,
+        crate::engine::planner::PlanOptions::default(),
+        false,
     )
     .await
 }
@@ -475,12 +505,16 @@ async fn run_with_path(
     path: ExecutionPath,
     runtime: &Arc<dyn RuntimeEffects>,
     observation: super::observe::Observation<'_>,
+    statistics: Option<Arc<crate::engine::planner::models::PlannerStats>>,
+    plan_options: crate::engine::planner::PlanOptions,
+    collect_plan: bool,
 ) -> Result<ProgramResult> {
     let mut binder = ProgramBinder::new(relational_names(program))?;
     let mut bindings = HashMap::<String, Vec<Env>>::new();
     let mut transitions = HashMap::new();
     let mut summaries = Vec::with_capacity(program.statements.len());
     let mut result = Datum::Null;
+    let mut plans = Vec::new();
 
     run_statements(
         view,
@@ -496,12 +530,16 @@ async fn run_with_path(
         &mut result,
         runtime,
         observation,
+        statistics,
+        plan_options,
+        collect_plan,
+        &mut plans,
     )
     .await?;
     Ok(ProgramResult {
         result,
         statements: summaries,
-        plans: Vec::new(),
+        plans,
     })
 }
 
@@ -540,27 +578,31 @@ async fn run_statements(
     result: &mut Datum,
     runtime: &Arc<dyn RuntimeEffects>,
     observation: super::observe::Observation<'_>,
+    statistics: Option<Arc<crate::engine::planner::models::PlannerStats>>,
+    plan_options: crate::engine::planner::PlanOptions,
+    collect_plan: bool,
+    plans: &mut Vec<StatementPlan>,
 ) -> Result<()> {
     let mut catalog_changed = false;
     let mut schema_changed = false;
     let observing = matches!(path, ExecutionPath::Production) && observation.enabled();
-    let stats = observing
-        .then(|| observation.statistics.map(|provider| provider.stats()))
-        .flatten();
-    binder.set_statistics(stats.clone());
+    let measuring = matches!(path, ExecutionPath::Production) && (observing || collect_plan);
+    binder.set_statistics(statistics.clone());
+    binder.set_plan_options(plan_options);
     for statement in &program.statements {
         if let Some(binding) = statement.binder_statement() {
             let catalog = super::engine::ViewCatalog { view: &*view };
-            let bind_started = observing.then(|| runtime.monotonic());
+            let bind_started = measuring.then(|| runtime.monotonic());
             let bound = match path {
                 ExecutionPath::Production => binder.bind(&catalog, binding).await?,
                 ExecutionPath::Reference => binder.bind_reference(&catalog, binding).await?,
             };
             let bind = bind_started.map(|started| runtime.monotonic().saturating_sub(started));
-            let execute_started = observing.then(|| runtime.monotonic());
-            let counters = observing.then(super::observe::KvCounters::default);
+            let execute_started = measuring.then(|| runtime.monotonic());
+            let counters = measuring.then(|| super::observe::KvCounters::new(collect_plan));
             let mut binding_rows = Vec::new();
             let mut measured = Vec::new();
+            let mut join_operators = Vec::new();
             let frames = if let Some(counters) = &counters {
                 let mut observed = super::observe::ObservedView::new(&*view, counters);
                 run_relational(
@@ -571,9 +613,10 @@ async fn run_statements(
                     limits,
                     path,
                     runtime.as_ref(),
-                    observing,
+                    measuring,
                     &mut binding_rows,
                     &mut measured,
+                    &mut join_operators,
                 )
                 .await?
             } else {
@@ -585,17 +628,25 @@ async fn run_statements(
                     limits,
                     path,
                     runtime.as_ref(),
-                    observing,
+                    measuring,
                     &mut binding_rows,
                     &mut measured,
+                    &mut join_operators,
                 )
                 .await?
             };
             let affected = frames.len();
+            let execute = execute_started
+                .map(|started| runtime.monotonic().saturating_sub(started))
+                .unwrap_or_default();
+            let kv = counters
+                .as_ref()
+                .map(super::observe::KvCounters::snapshot)
+                .unwrap_or_default();
+            let logical_scans = counters
+                .as_ref()
+                .and_then(super::observe::KvCounters::scan_trace);
             if let Some(observer) = observation.observer {
-                let execute = execute_started
-                    .map(|started| runtime.monotonic().saturating_sub(started))
-                    .unwrap_or_default();
                 let fingerprints = crate::engine::lir::fingerprint::query(&bound.bound);
                 let stamp = bound.plan.as_ref().map_or_else(
                     crate::engine::planner::models::DependencyStamp::default,
@@ -607,7 +658,7 @@ async fn run_statements(
                     .map(|(family, rows)| super::observe::RelationObservation {
                         family: *family,
                         rows: *rows,
-                        estimate: stats.as_ref().map(|stats| {
+                        estimate: statistics.as_ref().map(|stats| {
                             crate::engine::planner::estimator::Estimator::new(stats)
                                 .relation(family, None, stamp)
                         }),
@@ -629,10 +680,32 @@ async fn run_statements(
                     rows: frames.len() as u64,
                     affected: affected as u64,
                     mutated: bound.target.as_ref().map(|table| table.schema_id),
-                    kv: counters
-                        .map(|counters| counters.snapshot())
-                        .unwrap_or_default(),
+                    kv,
+                    join_operators: join_operators.clone(),
                     failure: None,
+                });
+            }
+            if collect_plan {
+                let plan = bound.plan.as_ref().expect("execution plan requested");
+                let mut plan_view = PlanView::with_mode(plan, plan_options.mode);
+                if let Some(statistics) = &statistics {
+                    plan_view.annotate_estimates(statistics, bound.estimate, &bound.bound, plan);
+                }
+                plans.push(StatementPlan {
+                    name: bound.name.clone(),
+                    plan: plan_view,
+                    measurement: Some(StatementPlanMeasurement {
+                        planning_micros: bind
+                            .unwrap_or_default()
+                            .as_micros()
+                            .min(u128::from(u64::MAX))
+                            as u64,
+                        execution_micros: execute.as_micros().min(u128::from(u64::MAX)) as u64,
+                        result_rows: frames.len() as u64,
+                        logical_kv: kv,
+                        logical_scans,
+                        join_operators,
+                    }),
                 });
             }
             if result_name == Some(statement.name()) {
@@ -686,6 +759,7 @@ async fn run_relational(
     measure_relations: bool,
     binding_rows: &mut Vec<(String, u64)>,
     measured: &mut Vec<(crate::engine::lir::fingerprint::Fingerprint, u64)>,
+    join_operators: &mut Vec<super::observe::JoinOperatorMeasurement>,
 ) -> Result<Vec<Env>> {
     let input = match path {
         ExecutionPath::Production => {
@@ -705,6 +779,7 @@ async fn run_relational(
                 }
             }
             measured.extend_from_slice(executor.measured());
+            join_operators.extend_from_slice(executor.join_measurements());
             frames
         }
         ExecutionPath::Reference => {
@@ -1211,7 +1286,7 @@ mod tests {
     struct FixedStats(Arc<crate::engine::planner::models::PlannerStats>);
 
     impl crate::engine::planner::estimator::StatisticsProvider for FixedStats {
-        fn stats(&self) -> Arc<crate::engine::planner::models::PlannerStats> {
+        fn planning_stats(&self) -> Arc<crate::engine::planner::models::PlannerStats> {
             self.0.clone()
         }
     }
@@ -1238,6 +1313,7 @@ mod tests {
                 catalog_version: 1,
                 columns: Vec::new(),
                 column_groups: Vec::new(),
+                predicate_conditioned_degrees: Vec::new(),
             },
         );
         let engine =
@@ -1268,6 +1344,20 @@ mod tests {
             .unwrap();
 
         let read_plan = &result.plans[1].plan;
+        assert!(result.plans.iter().all(|plan| plan.measurement.is_some()));
+        let read_scans = result.plans[1]
+            .measurement
+            .as_ref()
+            .and_then(|measurement| measurement.logical_scans.as_ref())
+            .expect("executed scan trace");
+        assert_eq!(read_scans.format, "rad-logical-scan-trace-v1");
+        assert_eq!(read_scans.dropped, 0);
+        assert!(read_scans.scans.iter().any(|scan| {
+            scan.purpose == crate::engine::kv::ScanPurpose::AccessPath
+                && scan.snapshot_position.is_some()
+                && scan.iterated == 1
+                && scan.complete
+        }));
         let created_plan = serde_json::to_value(&result.plans[0].plan).unwrap();
         assert!(
             created_plan["estimates"]
@@ -1301,6 +1391,49 @@ mod tests {
         }));
     }
 
+    struct CountingStats {
+        calls: std::sync::atomic::AtomicUsize,
+        statistics: Arc<crate::engine::planner::models::PlannerStats>,
+    }
+
+    impl crate::engine::planner::estimator::StatisticsProvider for CountingStats {
+        fn planning_stats(&self) -> Arc<crate::engine::planner::models::PlannerStats> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.statistics.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn one_statistics_snapshot_covers_preflight_and_execution() {
+        let (store, _engine, catalog) = setup("pir-pinned-statistics").await;
+        catalog.create_table(tasks_table()).await.unwrap();
+        let provider = Arc::new(CountingStats {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            statistics: Arc::new(crate::engine::planner::models::PlannerStats::empty()),
+        });
+        let engine = Engine::new(store).with_statistics_provider(provider.clone());
+        let mut relation = rows(&[("a", "new")]);
+        relation.cardinality = RootCardinality::ExactlyOne;
+        engine
+            .execute_program_with_options(
+                Program {
+                    statements: vec![Statement::Query {
+                        name: "read".into(),
+                        relation,
+                    }],
+                    result: Some("read".into()),
+                },
+                ProgramOptions {
+                    collect_plan: true,
+                    ..ProgramOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
     #[tokio::test]
     async fn observations_pair_the_estimate_with_the_actual_row_count() {
         use crate::engine::planner::models::{
@@ -1325,6 +1458,7 @@ mod tests {
                 catalog_version: 1,
                 columns: Vec::new(),
                 column_groups: Vec::new(),
+                predicate_conditioned_degrees: Vec::new(),
             },
         );
         let observer = Arc::new(RecordingObserver::default());
@@ -1722,6 +1856,7 @@ mod tests {
         assert!(result.statements.is_empty());
         assert_eq!(result.plans.len(), 1);
         assert_eq!(result.plans[0].name, "created");
+        assert!(result.plans[0].measurement.is_none());
         assert!(catalog.get_table("tasks").await.unwrap().is_none());
     }
 

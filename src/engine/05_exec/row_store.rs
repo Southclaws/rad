@@ -5,7 +5,7 @@ use bytes::Bytes;
 
 use crate::engine::catalog::model::{Column, Index, Table};
 use crate::engine::kv::key_encoding::prefix_end;
-use crate::engine::kv::{KeyRange, KvIterator, KvView};
+use crate::engine::kv::{KeyRange, KvIterator, KvView, ScanRequest};
 use crate::engine::lir::{Row, Value};
 
 use super::codec;
@@ -121,18 +121,34 @@ pub(super) trait RowIterator: Send {
     async fn next(&mut self) -> Result<Option<Row>>;
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum ScanPruning {
+    Empty,
+    Range(KeyRange),
+}
+
 pub(super) async fn scan_table<'a>(
     view: &'a dyn KvView,
     table: &Table,
     columns: &[Column],
 ) -> Result<Box<dyn RowIterator + 'a>> {
+    scan_table_with_pruning(view, table, columns, None).await
+}
+
+pub(super) async fn scan_table_with_pruning<'a>(
+    view: &'a dyn KvView,
+    table: &Table,
+    columns: &[Column],
+    pruning: Option<&ScanPruning>,
+) -> Result<Box<dyn RowIterator + 'a>> {
     let prefix = codec::data_prefix(table)?;
-    let iterator = view
-        .scan(KeyRange {
-            start: Some(Bytes::from(prefix.clone())),
-            end: prefix_end(&prefix).map(Bytes::from),
-        })
-        .await?;
+    let range = KeyRange {
+        start: Some(Bytes::from(prefix.clone())),
+        end: prefix_end(&prefix).map(Bytes::from),
+    };
+    let Some(iterator) = open_scan(view, range, pruning).await? else {
+        return Ok(Box::new(EmptyIterator));
+    };
     Ok(Box::new(TableIterator {
         iterator,
         prefix,
@@ -203,6 +219,19 @@ pub(super) async fn scan_index_range<'a>(
     range: Option<Range<'_>>,
     columns: &[Column],
 ) -> Result<Box<dyn RowIterator + 'a>> {
+    scan_index_range_with_pruning(view, table, index, equality_prefix, range, columns, None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn scan_index_range_with_pruning<'a>(
+    view: &'a dyn KvView,
+    table: &Table,
+    index: &Index,
+    equality_prefix: &[Value],
+    range: Option<Range<'_>>,
+    columns: &[Column],
+    pruning: Option<&ScanPruning>,
+) -> Result<Box<dyn RowIterator + 'a>> {
     let mut prefix = codec::index_prefix(table, &index.id)?;
     prefix.extend_from_slice(&codec::encode_tuple(equality_prefix)?);
     let mut start = prefix.clone();
@@ -230,16 +259,13 @@ pub(super) async fn scan_index_range<'a>(
             };
         }
     }
-    if end.as_ref().is_some_and(|end| start >= *end) {
+    let range = KeyRange {
+        start: Some(Bytes::from(start)),
+        end: end.map(Bytes::from),
+    };
+    let Some(iterator) = open_scan(view, range, pruning).await? else {
         return Ok(Box::new(EmptyIterator));
-    }
-
-    let iterator = view
-        .scan(KeyRange {
-            start: Some(Bytes::from(start)),
-            end: end.map(Bytes::from),
-        })
-        .await?;
+    };
     Ok(Box::new(IndexIterator {
         view,
         iterator,
@@ -250,6 +276,86 @@ pub(super) async fn scan_index_range<'a>(
 }
 
 struct EmptyIterator;
+
+async fn open_scan<'a>(
+    view: &'a dyn KvView,
+    range: KeyRange,
+    pruning: Option<&ScanPruning>,
+) -> Result<Option<Box<dyn KvIterator + 'a>>> {
+    let Some(pruning) = pruning else {
+        let Some(range) = nonempty_range(range) else {
+            return Ok(None);
+        };
+        return Ok(Some(view.scan(range).await?));
+    };
+    let ScanPruning::Range(_) = pruning else {
+        return Ok(None);
+    };
+    let Some(pruned) = pruned_range(range.clone(), Some(pruning)) else {
+        return Ok(None);
+    };
+    let forward_seek = stricter_start(&range.start, &pruned.start);
+    let initial = KeyRange {
+        start: range.start,
+        end: pruned.end,
+    };
+    let mut iterator = view
+        .scan_with_request(ScanRequest::cascade_range(initial))
+        .await?
+        .iterator;
+    if let Some(next_key) = forward_seek {
+        iterator.seek_forward(&next_key).await?;
+    }
+    Ok(Some(iterator))
+}
+
+fn stricter_start(original: &Option<Bytes>, pruned: &Option<Bytes>) -> Option<Bytes> {
+    pruned
+        .as_ref()
+        .filter(|pruned| original.as_ref().is_none_or(|original| *pruned > original))
+        .cloned()
+}
+
+fn pruned_range(range: KeyRange, pruning: Option<&ScanPruning>) -> Option<KeyRange> {
+    let Some(pruning) = pruning else {
+        return nonempty_range(range);
+    };
+    let ScanPruning::Range(pruning) = pruning else {
+        return None;
+    };
+    nonempty_range(KeyRange {
+        start: maximum_start(range.start, pruning.start.clone()),
+        end: minimum_end(range.end, pruning.end.clone()),
+    })
+}
+
+fn maximum_start(first: Option<Bytes>, second: Option<Bytes>) -> Option<Bytes> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(first.max(second)),
+        (first, second) => first.or(second),
+    }
+}
+
+fn minimum_end(first: Option<Bytes>, second: Option<Bytes>) -> Option<Bytes> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(first.min(second)),
+        (Some(end), None) | (None, Some(end)) => Some(end),
+        (None, None) => None,
+    }
+}
+
+fn nonempty_range(range: KeyRange) -> Option<KeyRange> {
+    if range
+        .start
+        .as_ref()
+        .zip(range.end.as_ref())
+        .is_some_and(|(start, end)| start >= end)
+    {
+        None
+    } else {
+        Some(range)
+    }
+}
 
 #[async_trait]
 impl RowIterator for EmptyIterator {

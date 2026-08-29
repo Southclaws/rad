@@ -3,7 +3,7 @@
 // Required dependency:
 // clap = { version = "4.6", features = ["derive", "env"] }
 
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum GenerateLang {
@@ -70,6 +70,14 @@ pub enum ServeFrontend {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServePlannerMode {
+    #[value(name = r"structural")]
+    Structural,
+    #[value(name = r"cost")]
+    Cost,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ServeRole {
     #[value(name = r"read")]
     Read,
@@ -132,7 +140,7 @@ pub struct Cli {
     pub command: RootCommand,
 }
 
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct GlobalArgs {
     #[arg(
         id = r"output",
@@ -143,27 +151,20 @@ pub struct GlobalArgs {
         value_enum
     )]
     pub output: GlobalOutput,
-    #[arg(id = r"json", long = r"json", help = r"Emit JSON; shorthand for --output json.", global = true, default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(
+        id = r"json",
+        long = r"json",
+        help = r"Emit JSON; shorthand for --output json.",
+        global = true
+    )]
     pub json: bool,
-    #[arg(id = r"non-interactive", long = r"non-interactive", help = r"Never prompt; fail when confirmation or input is required.", global = true, default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(
+        id = r"non-interactive",
+        long = r"non-interactive",
+        help = r"Never prompt; fail when confirmation or input is required.",
+        global = true
+    )]
     pub non_interactive: bool,
-}
-
-impl std::fmt::Debug for GlobalArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("GlobalArgs");
-        debug.field("output", &self.output);
-        debug.field("json", &self.json);
-        debug.field("non_interactive", &self.non_interactive);
-        debug.finish()
-    }
-}
-
-impl GlobalArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -298,191 +299,124 @@ Documentation: https://www.radengine.dev/docs/cli#rad-spec
 pub trait Handler {
     type Error;
 
-    async fn init(
-        &mut self,
-        globals: &GlobalArgs,
-        args: InitArgs,
-    ) -> std::result::Result<(), Self::Error>;
-    async fn serve(
-        &mut self,
-        globals: &GlobalArgs,
-        args: ServeArgs,
-    ) -> std::result::Result<(), Self::Error>;
+    async fn init(&mut self, globals: &GlobalArgs, args: InitArgs) -> Result<(), Self::Error>;
+    async fn serve(&mut self, globals: &GlobalArgs, args: ServeArgs) -> Result<(), Self::Error>;
     async fn validate(
         &mut self,
         globals: &GlobalArgs,
         args: ValidateArgs,
-    ) -> std::result::Result<(), Self::Error>;
-    async fn doctor(
-        &mut self,
-        globals: &GlobalArgs,
-        args: DoctorArgs,
-    ) -> std::result::Result<(), Self::Error>;
+    ) -> Result<(), Self::Error>;
+    async fn doctor(&mut self, globals: &GlobalArgs, args: DoctorArgs) -> Result<(), Self::Error>;
     async fn schema_status(
         &mut self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         args: SchemaStatusArgs,
-    ) -> std::result::Result<(), Self::Error>;
+    ) -> Result<(), Self::Error>;
     async fn schema_diff(
         &mut self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         args: SchemaDiffArgs,
-    ) -> std::result::Result<(), Self::Error>;
+    ) -> Result<(), Self::Error>;
     async fn schema_migrate(
         &mut self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         args: SchemaMigrateArgs,
-    ) -> std::result::Result<(), Self::Error>;
+    ) -> Result<(), Self::Error>;
     async fn schema_pull(
         &mut self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         args: SchemaPullArgs,
-    ) -> std::result::Result<(), Self::Error>;
+    ) -> Result<(), Self::Error>;
     async fn schema_json_schema(
         &mut self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         args: SchemaJsonSchemaArgs,
-    ) -> std::result::Result<(), Self::Error>;
+    ) -> Result<(), Self::Error>;
     async fn schema_transitions_list(
         &mut self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         context_schema_transitions: &SchemaTransitionsOptions,
         args: SchemaTransitionsListArgs,
-    ) -> std::result::Result<(), Self::Error>;
+    ) -> Result<(), Self::Error>;
     async fn schema_transitions_get(
         &mut self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         context_schema_transitions: &SchemaTransitionsOptions,
         args: SchemaTransitionsGetArgs,
-    ) -> std::result::Result<(), Self::Error>;
+    ) -> Result<(), Self::Error>;
     async fn schema_transitions_wait(
         &mut self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         context_schema_transitions: &SchemaTransitionsOptions,
         args: SchemaTransitionsWaitArgs,
-    ) -> std::result::Result<(), Self::Error>;
+    ) -> Result<(), Self::Error>;
     async fn schema_transitions_cancel(
         &mut self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         context_schema_transitions: &SchemaTransitionsOptions,
         args: SchemaTransitionsCancelArgs,
-    ) -> std::result::Result<(), Self::Error>;
+    ) -> Result<(), Self::Error>;
     async fn generate(
         &mut self,
         globals: &GlobalArgs,
         args: GenerateArgs,
-    ) -> std::result::Result<(), Self::Error>;
+    ) -> Result<(), Self::Error>;
     async fn skills_list(
         &mut self,
         globals: &GlobalArgs,
         context_skills: &SkillsOptions,
         args: SkillsListArgs,
-    ) -> std::result::Result<(), Self::Error>;
+    ) -> Result<(), Self::Error>;
     async fn skills_get(
         &mut self,
         globals: &GlobalArgs,
         context_skills: &SkillsOptions,
         args: SkillsGetArgs,
-    ) -> std::result::Result<(), Self::Error>;
+    ) -> Result<(), Self::Error>;
     async fn skills_path(
         &mut self,
         globals: &GlobalArgs,
         context_skills: &SkillsOptions,
         args: SkillsPathArgs,
-    ) -> std::result::Result<(), Self::Error>;
-    async fn spec(
-        &mut self,
-        globals: &GlobalArgs,
-        args: SpecArgs,
-    ) -> std::result::Result<(), Self::Error>;
+    ) -> Result<(), Self::Error>;
+    async fn spec(&mut self, globals: &GlobalArgs, args: SpecArgs) -> Result<(), Self::Error>;
 }
 
 impl Cli {
-    pub fn parse() -> Self {
-        Self::try_parse_from(std::env::args_os()).unwrap_or_else(|error| error.exit())
-    }
-
-    pub fn parse_from<I, T>(values: I) -> Self
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<std::ffi::OsString> + Clone,
-    {
-        Self::try_parse_from(values).unwrap_or_else(|error| error.exit())
-    }
-
-    pub fn try_parse_from<I, T>(values: I) -> std::result::Result<Self, clap::Error>
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<std::ffi::OsString> + Clone,
-    {
-        let mut matches = <Self as CommandFactory>::command().try_get_matches_from(values)?;
-        let sources = matches.clone();
-        let mut parsed = <Self as FromArgMatches>::from_arg_matches_mut(&mut matches)?;
-        parsed.globals.apply_track_changed(&sources);
-        parsed.command.apply_track_changed(&sources);
-        Ok(parsed)
-    }
-
-    pub async fn dispatch<H: Handler>(self, handler: &mut H) -> std::result::Result<(), H::Error> {
-        self.dispatch_to(handler, &mut std::io::stdout().lock())
-            .await
-    }
-
-    pub async fn dispatch_to<H: Handler, W: std::io::Write>(
-        self,
-        handler: &mut H,
-        writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
-        self.command.dispatch(&self.globals, handler, writer).await
+    pub async fn dispatch<H: Handler>(self, handler: &mut H) -> Result<(), H::Error> {
+        self.command.dispatch(&self.globals, handler).await
     }
 }
 
 impl RootCommand {
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let Some((_, child_matches)) = matches.subcommand() else {
-            return;
-        };
-        match self {
-            Self::Init(args) => args.apply_track_changed(child_matches),
-            Self::Serve(args) => args.apply_track_changed(child_matches),
-            Self::Validate(args) => args.apply_track_changed(child_matches),
-            Self::Doctor(args) => args.apply_track_changed(child_matches),
-            Self::Schema(args) => args.apply_track_changed(child_matches),
-            Self::Generate(args) => args.apply_track_changed(child_matches),
-            Self::Skills(args) => args.apply_track_changed(child_matches),
-            Self::Spec(args) => args.apply_track_changed(child_matches),
-        }
-    }
-
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         handler: &mut H,
-        writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         match self {
-            Self::Init(args) => args.dispatch(globals, handler, writer).await,
-            Self::Serve(args) => args.dispatch(globals, handler, writer).await,
-            Self::Validate(args) => args.dispatch(globals, handler, writer).await,
-            Self::Doctor(args) => args.dispatch(globals, handler, writer).await,
-            Self::Schema(args) => args.dispatch(globals, handler, writer).await,
-            Self::Generate(args) => args.dispatch(globals, handler, writer).await,
-            Self::Skills(args) => args.dispatch(globals, handler, writer).await,
-            Self::Spec(args) => args.dispatch(globals, handler, writer).await,
+            Self::Init(args) => args.dispatch(globals, handler).await,
+            Self::Serve(args) => args.dispatch(globals, handler).await,
+            Self::Validate(args) => args.dispatch(globals, handler).await,
+            Self::Doctor(args) => args.dispatch(globals, handler).await,
+            Self::Schema(args) => args.dispatch(globals, handler).await,
+            Self::Generate(args) => args.dispatch(globals, handler).await,
+            Self::Skills(args) => args.dispatch(globals, handler).await,
+            Self::Spec(args) => args.dispatch(globals, handler).await,
         }
     }
 }
 
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct InitArgs {
     #[arg(
         id = r"database-url",
@@ -506,11 +440,24 @@ pub struct InitArgs {
         default_value = r"db"
     )]
     pub pkg: String,
-    #[arg(id = r"no-generate", long = r"no-generate", help = r"Do not configure generated client output.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(
+        id = r"no-generate",
+        long = r"no-generate",
+        help = r"Do not configure generated client output."
+    )]
     pub no_generate: bool,
-    #[arg(id = r"empty", long = r"empty", help = r"Create an empty schema instead of the starter users table.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(
+        id = r"empty",
+        long = r"empty",
+        help = r"Create an empty schema instead of the starter users table."
+    )]
     pub empty: bool,
-    #[arg(id = r"yes", long = r"yes", short = 'y', help = r"Accept supplied values and defaults without prompting.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(
+        id = r"yes",
+        long = r"yes",
+        short = 'y',
+        help = r"Accept supplied values and defaults without prompting."
+    )]
     pub yes: bool,
     #[arg(
         id = r"DIRECTORY",
@@ -520,38 +467,21 @@ pub struct InitArgs {
     )]
     pub directory: std::path::PathBuf,
 }
-impl std::fmt::Debug for InitArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("InitArgs");
-        debug.field("database_url", &self.database_url);
-        debug.field("out", &self.out);
-        debug.field("pkg", &self.pkg);
-        debug.field("no_generate", &self.no_generate);
-        debug.field("empty", &self.empty);
-        debug.field("yes", &self.yes);
-        debug.field("directory", &self.directory);
-        debug.finish()
-    }
+
+impl InitArgs {
+    pub const OPERATION_ID: &'static str = r"init";
 }
 
 impl InitArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-    pub const OPERATION_ID: &'static str = r"init";
-}
-impl InitArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler.init(globals, self).await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct ServeArgs {
     #[arg(
         id = r"addr",
@@ -570,6 +500,15 @@ pub struct ServeArgs {
         value_enum
     )]
     pub role: ServeRole,
+    #[arg(
+        id = r"planner-mode",
+        long = r"planner-mode",
+        help = r"Access-path selection mode.",
+        env = r"RAD_PLANNER_MODE",
+        default_value = r"structural",
+        value_enum
+    )]
+    pub planner_mode: ServePlannerMode,
     #[arg(
         id = r"reader-poll-interval-ms",
         long = r"reader-poll-interval-ms",
@@ -627,7 +566,13 @@ pub struct ServeArgs {
         env = r"RAD_INSTANCE_ID"
     )]
     pub instance_id: Option<String>,
-    #[arg(id = r"capture-workload-corpus", long = r"capture-workload-corpus", help = r"Record canonical programs with user values for bounded offline replay.", env = r"RAD_CAPTURE_WORKLOAD_CORPUS", default_value = r"false", action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(
+        id = r"capture-workload-corpus",
+        long = r"capture-workload-corpus",
+        help = r"Record canonical programs with user values for bounded offline replay.",
+        env = r"RAD_CAPTURE_WORKLOAD_CORPUS",
+        default_value = r"false"
+    )]
     pub capture_workload_corpus: bool,
     #[arg(
         id = r"storage",
@@ -708,52 +653,21 @@ pub struct ServeArgs {
     )]
     pub s3_endpoint: Option<String>,
 }
-impl std::fmt::Debug for ServeArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("ServeArgs");
-        debug.field("addr", &self.addr);
-        debug.field("role", &self.role);
-        debug.field("reader_poll_interval_ms", &self.reader_poll_interval_ms);
-        debug.field("internal_addr", &self.internal_addr);
-        debug.field("relay_target", &self.relay_target);
-        debug.field("relay_token_file", &self.relay_token_file);
-        debug.field("internal_tls_cert", &self.internal_tls_cert);
-        debug.field("internal_tls_key", &self.internal_tls_key);
-        debug.field("relay_ca", &self.relay_ca);
-        debug.field("instance_id", &self.instance_id);
-        debug.field("capture_workload_corpus", &self.capture_workload_corpus);
-        debug.field("storage", &self.storage);
-        debug.field("db", &self.db);
-        debug.field("storage_path", &self.storage_path);
-        debug.field("catalog_mode", &self.catalog_mode);
-        debug.field("frontend", &self.frontend);
-        debug.field("postgres_addr", &self.postgres_addr);
-        debug.field("s3_bucket", &self.s3_bucket);
-        debug.field("s3_prefix", &self.s3_prefix);
-        debug.field("s3_region", &self.s3_region);
-        debug.field("s3_endpoint", &self.s3_endpoint);
-        debug.finish()
-    }
+
+impl ServeArgs {
+    pub const OPERATION_ID: &'static str = r"serve";
 }
 
 impl ServeArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-    pub const OPERATION_ID: &'static str = r"serve";
-}
-impl ServeArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler.serve(globals, self).await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct ValidateArgs {
     #[arg(
         id = r"file",
@@ -764,32 +678,21 @@ pub struct ValidateArgs {
     )]
     pub file: std::path::PathBuf,
 }
-impl std::fmt::Debug for ValidateArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("ValidateArgs");
-        debug.field("file", &self.file);
-        debug.finish()
-    }
+
+impl ValidateArgs {
+    pub const OPERATION_ID: &'static str = r"validate";
 }
 
 impl ValidateArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-    pub const OPERATION_ID: &'static str = r"validate";
-}
-impl ValidateArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler.validate(globals, self).await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct DoctorArgs {
     #[arg(
         id = r"config",
@@ -807,33 +710,21 @@ pub struct DoctorArgs {
     )]
     pub file: std::path::PathBuf,
 }
-impl std::fmt::Debug for DoctorArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("DoctorArgs");
-        debug.field("config", &self.config);
-        debug.field("file", &self.file);
-        debug.finish()
-    }
+
+impl DoctorArgs {
+    pub const OPERATION_ID: &'static str = r"doctor";
 }
 
 impl DoctorArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-    pub const OPERATION_ID: &'static str = r"doctor";
-}
-impl DoctorArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler.doctor(globals, self).await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SchemaArgs {
     #[command(flatten)]
     pub options: SchemaOptions,
@@ -841,16 +732,8 @@ pub struct SchemaArgs {
     #[command(subcommand)]
     pub command: SchemaCommand,
 }
-impl std::fmt::Debug for SchemaArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SchemaArgs");
-        debug.field("options", &self.options);
-        debug.field("command", &self.command);
-        debug.finish()
-    }
-}
 
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SchemaOptions {
     #[arg(
         id = r"config",
@@ -868,41 +751,14 @@ pub struct SchemaOptions {
     )]
     pub file: std::path::PathBuf,
 }
-impl std::fmt::Debug for SchemaOptions {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SchemaOptions");
-        debug.field("config", &self.config);
-        debug.field("file", &self.file);
-        debug.finish()
-    }
-}
-impl SchemaOptions {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-}
 
 impl SchemaArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-        self.options.apply_track_changed(matches);
-        if let Some((_, child_matches)) = matches.subcommand() {
-            self.command.apply_track_changed(child_matches);
-        }
-    }
-}
-impl SchemaArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         handler: &mut H,
-        writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
-        self.command
-            .dispatch(globals, &self.options, handler, writer)
-            .await
+    ) -> Result<(), H::Error> {
+        self.command.dispatch(globals, &self.options, handler).await
     }
 }
 #[derive(Debug, Subcommand)]
@@ -996,84 +852,41 @@ Documentation: https://www.radengine.dev/docs/schemas/monitor
 }
 
 impl SchemaCommand {
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let Some((_, child_matches)) = matches.subcommand() else {
-            return;
-        };
-        match self {
-            Self::Status(args) => args.apply_track_changed(child_matches),
-            Self::Diff(args) => args.apply_track_changed(child_matches),
-            Self::Migrate(args) => args.apply_track_changed(child_matches),
-            Self::Pull(args) => args.apply_track_changed(child_matches),
-            Self::JsonSchema(args) => args.apply_track_changed(child_matches),
-            Self::Transitions(args) => args.apply_track_changed(child_matches),
-        }
-    }
-
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         handler: &mut H,
-        writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         match self {
-            Self::Status(args) => {
-                args.dispatch(globals, context_schema, handler, writer)
-                    .await
-            }
-            Self::Diff(args) => {
-                args.dispatch(globals, context_schema, handler, writer)
-                    .await
-            }
-            Self::Migrate(args) => {
-                args.dispatch(globals, context_schema, handler, writer)
-                    .await
-            }
-            Self::Pull(args) => {
-                args.dispatch(globals, context_schema, handler, writer)
-                    .await
-            }
-            Self::JsonSchema(args) => {
-                args.dispatch(globals, context_schema, handler, writer)
-                    .await
-            }
-            Self::Transitions(args) => {
-                args.dispatch(globals, context_schema, handler, writer)
-                    .await
-            }
+            Self::Status(args) => args.dispatch(globals, context_schema, handler).await,
+            Self::Diff(args) => args.dispatch(globals, context_schema, handler).await,
+            Self::Migrate(args) => args.dispatch(globals, context_schema, handler).await,
+            Self::Pull(args) => args.dispatch(globals, context_schema, handler).await,
+            Self::JsonSchema(args) => args.dispatch(globals, context_schema, handler).await,
+            Self::Transitions(args) => args.dispatch(globals, context_schema, handler).await,
         }
     }
 }
 
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SchemaStatusArgs {}
-impl std::fmt::Debug for SchemaStatusArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SchemaStatusArgs");
-        debug.finish()
-    }
-}
 
 impl SchemaStatusArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
     pub const OPERATION_ID: &'static str = r"schemaStatus";
 }
+
 impl SchemaStatusArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler.schema_status(globals, context_schema, self).await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SchemaDiffArgs {
     #[arg(
         id = r"format",
@@ -1084,130 +897,101 @@ pub struct SchemaDiffArgs {
     )]
     pub format: SchemaDiffFormat,
 }
-impl std::fmt::Debug for SchemaDiffArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SchemaDiffArgs");
-        debug.field("format", &self.format);
-        debug.finish()
-    }
+
+impl SchemaDiffArgs {
+    pub const OPERATION_ID: &'static str = r"schemaDiff";
 }
 
 impl SchemaDiffArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-    pub const OPERATION_ID: &'static str = r"schemaDiff";
-}
-impl SchemaDiffArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler.schema_diff(globals, context_schema, self).await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SchemaMigrateArgs {
-    #[arg(id = r"accept-data-loss", long = r"accept-data-loss", help = r"Permit only the destructive findings reported by the migration plan.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(
+        id = r"accept-data-loss",
+        long = r"accept-data-loss",
+        help = r"Permit only the destructive findings reported by the migration plan."
+    )]
     pub accept_data_loss: bool,
-    #[arg(id = r"no-generate", long = r"no-generate", help = r"Do not regenerate configured clients after acceptance.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(
+        id = r"no-generate",
+        long = r"no-generate",
+        help = r"Do not regenerate configured clients after acceptance."
+    )]
     pub no_generate: bool,
-}
-impl std::fmt::Debug for SchemaMigrateArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SchemaMigrateArgs");
-        debug.field("accept_data_loss", &self.accept_data_loss);
-        debug.field("no_generate", &self.no_generate);
-        debug.finish()
-    }
 }
 
 impl SchemaMigrateArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
     pub const OPERATION_ID: &'static str = r"schemaMigrate";
 }
+
 impl SchemaMigrateArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler.schema_migrate(globals, context_schema, self).await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SchemaPullArgs {
-    #[arg(id = r"force", long = r"force", help = r"Back up and replace a locally modified desired schema.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(
+        id = r"force",
+        long = r"force",
+        help = r"Back up and replace a locally modified desired schema."
+    )]
     pub force: bool,
-    #[arg(id = r"no-generate", long = r"no-generate", help = r"Do not regenerate configured clients after recovery.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(
+        id = r"no-generate",
+        long = r"no-generate",
+        help = r"Do not regenerate configured clients after recovery."
+    )]
     pub no_generate: bool,
-}
-impl std::fmt::Debug for SchemaPullArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SchemaPullArgs");
-        debug.field("force", &self.force);
-        debug.field("no_generate", &self.no_generate);
-        debug.finish()
-    }
 }
 
 impl SchemaPullArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
     pub const OPERATION_ID: &'static str = r"schemaPull";
 }
+
 impl SchemaPullArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler.schema_pull(globals, context_schema, self).await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SchemaJsonSchemaArgs {}
-impl std::fmt::Debug for SchemaJsonSchemaArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SchemaJsonSchemaArgs");
-        debug.finish()
-    }
+
+impl SchemaJsonSchemaArgs {
+    pub const OPERATION_ID: &'static str = r"schemaJsonSchema";
 }
 
 impl SchemaJsonSchemaArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-    pub const OPERATION_ID: &'static str = r"schemaJsonSchema";
-}
-impl SchemaJsonSchemaArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler
             .schema_json_schema(globals, context_schema, self)
             .await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SchemaTransitionsArgs {
     #[command(flatten)]
     pub options: SchemaTransitionsOptions,
@@ -1215,50 +999,19 @@ pub struct SchemaTransitionsArgs {
     #[command(subcommand)]
     pub command: SchemaTransitionsCommand,
 }
-impl std::fmt::Debug for SchemaTransitionsArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SchemaTransitionsArgs");
-        debug.field("options", &self.options);
-        debug.field("command", &self.command);
-        debug.finish()
-    }
-}
 
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SchemaTransitionsOptions {}
-impl std::fmt::Debug for SchemaTransitionsOptions {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SchemaTransitionsOptions");
-        debug.finish()
-    }
-}
-impl SchemaTransitionsOptions {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-}
 
 impl SchemaTransitionsArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-        self.options.apply_track_changed(matches);
-        if let Some((_, child_matches)) = matches.subcommand() {
-            self.command.apply_track_changed(child_matches);
-        }
-    }
-}
-impl SchemaTransitionsArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         handler: &mut H,
-        writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         self.command
-            .dispatch(globals, context_schema, &self.options, handler, writer)
+            .dispatch(globals, context_schema, &self.options, handler)
             .await
     }
 }
@@ -1316,72 +1069,35 @@ Documentation: https://www.radengine.dev/docs/schemas/monitor
 }
 
 impl SchemaTransitionsCommand {
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let Some((_, child_matches)) = matches.subcommand() else {
-            return;
-        };
-        match self {
-            Self::List(args) => args.apply_track_changed(child_matches),
-            Self::Get(args) => args.apply_track_changed(child_matches),
-            Self::Wait(args) => args.apply_track_changed(child_matches),
-            Self::Cancel(args) => args.apply_track_changed(child_matches),
-        }
-    }
-
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         context_schema_transitions: &SchemaTransitionsOptions,
         handler: &mut H,
-        writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         match self {
             Self::List(args) => {
-                args.dispatch(
-                    globals,
-                    context_schema,
-                    context_schema_transitions,
-                    handler,
-                    writer,
-                )
-                .await
+                args.dispatch(globals, context_schema, context_schema_transitions, handler)
+                    .await
             }
             Self::Get(args) => {
-                args.dispatch(
-                    globals,
-                    context_schema,
-                    context_schema_transitions,
-                    handler,
-                    writer,
-                )
-                .await
+                args.dispatch(globals, context_schema, context_schema_transitions, handler)
+                    .await
             }
             Self::Wait(args) => {
-                args.dispatch(
-                    globals,
-                    context_schema,
-                    context_schema_transitions,
-                    handler,
-                    writer,
-                )
-                .await
+                args.dispatch(globals, context_schema, context_schema_transitions, handler)
+                    .await
             }
             Self::Cancel(args) => {
-                args.dispatch(
-                    globals,
-                    context_schema,
-                    context_schema_transitions,
-                    handler,
-                    writer,
-                )
-                .await
+                args.dispatch(globals, context_schema, context_schema_transitions, handler)
+                    .await
             }
         }
     }
 }
 
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SchemaTransitionsListArgs {
     #[arg(
         id = r"kind",
@@ -1398,37 +1114,25 @@ pub struct SchemaTransitionsListArgs {
     )]
     pub state: Option<SchemaTransitionsListState>,
 }
-impl std::fmt::Debug for SchemaTransitionsListArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SchemaTransitionsListArgs");
-        debug.field("kind", &self.kind);
-        debug.field("state", &self.state);
-        debug.finish()
-    }
+
+impl SchemaTransitionsListArgs {
+    pub const OPERATION_ID: &'static str = r"schemaTransitionsList";
 }
 
 impl SchemaTransitionsListArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-    pub const OPERATION_ID: &'static str = r"schemaTransitionsList";
-}
-impl SchemaTransitionsListArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         context_schema_transitions: &SchemaTransitionsOptions,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler
             .schema_transitions_list(globals, context_schema, context_schema_transitions, self)
             .await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SchemaTransitionsGetArgs {
     #[arg(
         id = r"TRANSITION",
@@ -1437,36 +1141,25 @@ pub struct SchemaTransitionsGetArgs {
     )]
     pub transition: String,
 }
-impl std::fmt::Debug for SchemaTransitionsGetArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SchemaTransitionsGetArgs");
-        debug.field("transition", &self.transition);
-        debug.finish()
-    }
+
+impl SchemaTransitionsGetArgs {
+    pub const OPERATION_ID: &'static str = r"schemaTransitionsGet";
 }
 
 impl SchemaTransitionsGetArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-    pub const OPERATION_ID: &'static str = r"schemaTransitionsGet";
-}
-impl SchemaTransitionsGetArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         context_schema_transitions: &SchemaTransitionsOptions,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler
             .schema_transitions_get(globals, context_schema, context_schema_transitions, self)
             .await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SchemaTransitionsWaitArgs {
     #[arg(
         id = r"interval-ms",
@@ -1489,40 +1182,32 @@ pub struct SchemaTransitionsWaitArgs {
     )]
     pub transition: String,
 }
-impl std::fmt::Debug for SchemaTransitionsWaitArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SchemaTransitionsWaitArgs");
-        debug.field("interval_ms", &self.interval_ms);
-        debug.field("timeout_seconds", &self.timeout_seconds);
-        debug.field("transition", &self.transition);
-        debug.finish()
-    }
+
+impl SchemaTransitionsWaitArgs {
+    pub const OPERATION_ID: &'static str = r"schemaTransitionsWait";
 }
 
 impl SchemaTransitionsWaitArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-    pub const OPERATION_ID: &'static str = r"schemaTransitionsWait";
-}
-impl SchemaTransitionsWaitArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         context_schema_transitions: &SchemaTransitionsOptions,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler
             .schema_transitions_wait(globals, context_schema, context_schema_transitions, self)
             .await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SchemaTransitionsCancelArgs {
-    #[arg(id = r"yes", long = r"yes", short = 'y', help = r"Confirm cancellation without prompting.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(
+        id = r"yes",
+        long = r"yes",
+        short = 'y',
+        help = r"Confirm cancellation without prompting."
+    )]
     pub yes: bool,
     #[arg(
         id = r"TRANSITION",
@@ -1531,37 +1216,25 @@ pub struct SchemaTransitionsCancelArgs {
     )]
     pub transition: String,
 }
-impl std::fmt::Debug for SchemaTransitionsCancelArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SchemaTransitionsCancelArgs");
-        debug.field("yes", &self.yes);
-        debug.field("transition", &self.transition);
-        debug.finish()
-    }
+
+impl SchemaTransitionsCancelArgs {
+    pub const OPERATION_ID: &'static str = r"schemaTransitionsCancel";
 }
 
 impl SchemaTransitionsCancelArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-    pub const OPERATION_ID: &'static str = r"schemaTransitionsCancel";
-}
-impl SchemaTransitionsCancelArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         context_schema: &SchemaOptions,
         context_schema_transitions: &SchemaTransitionsOptions,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler
             .schema_transitions_cancel(globals, context_schema, context_schema_transitions, self)
             .await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct GenerateArgs {
     #[arg(
         id = r"file",
@@ -1595,35 +1268,21 @@ pub struct GenerateArgs {
     )]
     pub lang: GenerateLang,
 }
-impl std::fmt::Debug for GenerateArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("GenerateArgs");
-        debug.field("file", &self.file);
-        debug.field("out", &self.out);
-        debug.field("pkg", &self.pkg);
-        debug.field("lang", &self.lang);
-        debug.finish()
-    }
+
+impl GenerateArgs {
+    pub const OPERATION_ID: &'static str = r"generate";
 }
 
 impl GenerateArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-    pub const OPERATION_ID: &'static str = r"generate";
-}
-impl GenerateArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler.generate(globals, self).await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SkillsArgs {
     #[command(flatten)]
     pub options: SkillsOptions,
@@ -1631,50 +1290,17 @@ pub struct SkillsArgs {
     #[command(subcommand)]
     pub command: SkillsCommand,
 }
-impl std::fmt::Debug for SkillsArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SkillsArgs");
-        debug.field("options", &self.options);
-        debug.field("command", &self.command);
-        debug.finish()
-    }
-}
 
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SkillsOptions {}
-impl std::fmt::Debug for SkillsOptions {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SkillsOptions");
-        debug.finish()
-    }
-}
-impl SkillsOptions {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-}
 
 impl SkillsArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-        self.options.apply_track_changed(matches);
-        if let Some((_, child_matches)) = matches.subcommand() {
-            self.command.apply_track_changed(child_matches);
-        }
-    }
-}
-impl SkillsArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         handler: &mut H,
-        writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
-        self.command
-            .dispatch(globals, &self.options, handler, writer)
-            .await
+    ) -> Result<(), H::Error> {
+        self.command.dispatch(globals, &self.options, handler).await
     }
 }
 #[derive(Debug, Subcommand)]
@@ -1716,134 +1342,84 @@ Documentation: https://www.radengine.dev/docs/cli#rad-skills-path
 }
 
 impl SkillsCommand {
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let Some((_, child_matches)) = matches.subcommand() else {
-            return;
-        };
-        match self {
-            Self::List(args) => args.apply_track_changed(child_matches),
-            Self::Get(args) => args.apply_track_changed(child_matches),
-            Self::Path(args) => args.apply_track_changed(child_matches),
-        }
-    }
-
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         context_skills: &SkillsOptions,
         handler: &mut H,
-        writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         match self {
-            Self::List(args) => {
-                args.dispatch(globals, context_skills, handler, writer)
-                    .await
-            }
-            Self::Get(args) => {
-                args.dispatch(globals, context_skills, handler, writer)
-                    .await
-            }
-            Self::Path(args) => {
-                args.dispatch(globals, context_skills, handler, writer)
-                    .await
-            }
+            Self::List(args) => args.dispatch(globals, context_skills, handler).await,
+            Self::Get(args) => args.dispatch(globals, context_skills, handler).await,
+            Self::Path(args) => args.dispatch(globals, context_skills, handler).await,
         }
     }
 }
 
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SkillsListArgs {}
-impl std::fmt::Debug for SkillsListArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SkillsListArgs");
-        debug.finish()
-    }
-}
 
 impl SkillsListArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
     pub const OPERATION_ID: &'static str = r"skillsList";
 }
+
 impl SkillsListArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         context_skills: &SkillsOptions,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler.skills_list(globals, context_skills, self).await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SkillsGetArgs {
-    #[arg(id = r"full", long = r"full", help = r"Include all bundled reference documents.", default_value = r"false", hide_default_value = true, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(
+        id = r"full",
+        long = r"full",
+        help = r"Include all bundled reference documents."
+    )]
     pub full: bool,
     #[arg(id = r"NAME", index = 1, help = r"Bundled skill name.", value_enum)]
     pub name: SkillsGetName,
 }
-impl std::fmt::Debug for SkillsGetArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SkillsGetArgs");
-        debug.field("full", &self.full);
-        debug.field("name", &self.name);
-        debug.finish()
-    }
+
+impl SkillsGetArgs {
+    pub const OPERATION_ID: &'static str = r"skillsGet";
 }
 
 impl SkillsGetArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-    pub const OPERATION_ID: &'static str = r"skillsGet";
-}
-impl SkillsGetArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         context_skills: &SkillsOptions,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler.skills_get(globals, context_skills, self).await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SkillsPathArgs {
     #[arg(id = r"NAME", index = 1, help = r"Bundled skill name.", value_enum)]
     pub name: SkillsPathName,
 }
-impl std::fmt::Debug for SkillsPathArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SkillsPathArgs");
-        debug.field("name", &self.name);
-        debug.finish()
-    }
+
+impl SkillsPathArgs {
+    pub const OPERATION_ID: &'static str = r"skillsPath";
 }
 
 impl SkillsPathArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-    pub const OPERATION_ID: &'static str = r"skillsPath";
-}
-impl SkillsPathArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         context_skills: &SkillsOptions,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler.skills_path(globals, context_skills, self).await
     }
 }
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct SpecArgs {
     #[arg(
         id = r"format",
@@ -1854,28 +1430,17 @@ pub struct SpecArgs {
     )]
     pub format: SpecFormat,
 }
-impl std::fmt::Debug for SpecArgs {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = formatter.debug_struct("SpecArgs");
-        debug.field("format", &self.format);
-        debug.finish()
-    }
+
+impl SpecArgs {
+    pub const OPERATION_ID: &'static str = r"spec";
 }
 
 impl SpecArgs {
-    #[allow(clippy::unused_self)]
-    fn apply_track_changed(&mut self, matches: &clap::ArgMatches) {
-        let _ = matches;
-    }
-    pub const OPERATION_ID: &'static str = r"spec";
-}
-impl SpecArgs {
-    async fn dispatch<H: Handler, W: std::io::Write>(
+    async fn dispatch<H: Handler>(
         self,
         globals: &GlobalArgs,
         handler: &mut H,
-        _writer: &mut W,
-    ) -> std::result::Result<(), H::Error> {
+    ) -> Result<(), H::Error> {
         handler.spec(globals, self).await
     }
 }

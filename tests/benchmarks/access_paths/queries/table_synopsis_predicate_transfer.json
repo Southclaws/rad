@@ -1,0 +1,50 @@
+{
+  "name": "table_synopsis_predicate_transfer",
+  "description": "Count a bounded cyclic self-join whose complete table synopsis bounds predicate transfer.",
+  "warmup": 1,
+  "iterations": 6,
+  "expect_rows": 1,
+  "expect_result": { "joined_count": 0 },
+  "program": {
+    "statements": [{
+      "name": "table_synopsis_predicate_transfer",
+      "kind": "query",
+      "relation": {
+        "nodes": {
+          "first_rows": { "kind": "scan", "table": "events", "scope": "f" },
+          "second_rows": { "kind": "scan", "table": "events", "scope": "s" },
+          "third_rows": { "kind": "scan", "table": "events", "scope": "t" },
+          "first_second": {
+            "kind": "join", "left": "first_rows", "right": "second_rows", "join": "inner",
+            "on": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "f", "column": "segment" },
+              "right": { "kind": "col", "scope": "s", "column": "category" }
+            }
+          },
+          "joined": {
+            "kind": "join", "left": "first_second", "right": "third_rows", "join": "inner",
+            "on": {
+              "kind": "binary", "op": "and",
+              "left": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "s", "column": "region" },
+                "right": { "kind": "col", "scope": "t", "column": "region" }
+              },
+              "right": {
+                "kind": "binary", "op": "eq",
+                "left": { "kind": "col", "scope": "f", "column": "category" },
+                "right": { "kind": "col", "scope": "t", "column": "category" }
+              }
+            }
+          },
+          "counted": {
+            "kind": "aggregate", "input": "joined", "scope": "result",
+            "aggs": [{ "fn": "count", "as": "joined_count" }]
+          }
+        },
+        "root": { "node": "counted", "cardinality": "exactly_one" }
+      }
+    }]
+  }
+}

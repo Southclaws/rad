@@ -120,6 +120,11 @@ commands:
         envVar: RAD_ROLE
         choices: [read, write]
         default: write
+      - name: planner-mode
+        description: Access-path selection mode.
+        envVar: RAD_PLANNER_MODE
+        choices: [structural, cost]
+        default: structural
       - name: reader-poll-interval-ms
         description: Slate manifest polling interval for read instances.
         type: integer

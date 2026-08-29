@@ -8,8 +8,12 @@ tables:
   - { name: products, rows: 100 }
   - { name: orders, rows: 1000 }
   - { name: order_items, rows: 3000 }
+statistics:
+  required_synopses: 3
+  timeout_seconds: 110
 queries:
   - queries/customer_by_id.json
   - queries/paid_orders_page.json
   - queries/customer_order_summary.json
   - queries/category_revenue.json
+  - queries/memo_distinct.json

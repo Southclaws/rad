@@ -11,8 +11,9 @@ use super::generated::{
     SchemaJsonSchemaArgs, SchemaMigrateArgs, SchemaOptions, SchemaPullArgs, SchemaStatusArgs,
     SchemaTransitionsCancelArgs, SchemaTransitionsGetArgs, SchemaTransitionsListArgs,
     SchemaTransitionsListKind, SchemaTransitionsListState, SchemaTransitionsOptions,
-    SchemaTransitionsWaitArgs, ServeArgs, ServeCatalogMode, ServeFrontend, ServeRole, ServeStorage,
-    SkillsGetArgs, SkillsListArgs, SkillsOptions, SkillsPathArgs, SpecArgs, ValidateArgs,
+    SchemaTransitionsWaitArgs, ServeArgs, ServeCatalogMode, ServeFrontend, ServePlannerMode,
+    ServeRole, ServeStorage, SkillsGetArgs, SkillsListArgs, SkillsOptions, SkillsPathArgs,
+    SpecArgs, ValidateArgs,
 };
 use super::output::{self, CliError};
 use super::project::{Project, read_schema_file};
@@ -184,6 +185,10 @@ impl Handler for App {
             relay_authority: args.relay_ca,
             relay_target: args.relay_target,
             relay_token_file: args.relay_token_file,
+            planner_mode: match args.planner_mode {
+                ServePlannerMode::Structural => crate::engine::planner::PlannerMode::Structural,
+                ServePlannerMode::Cost => crate::engine::planner::PlannerMode::Cost,
+            },
             role: match args.role {
                 ServeRole::Read => Role::Read,
                 ServeRole::Write => Role::Write,

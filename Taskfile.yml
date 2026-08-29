@@ -156,6 +156,13 @@ tasks:
     cmds:
       - cargo test --release --locked --test s3_http_benchmark -- --ignored --nocapture --test-threads=1 {{.CLI_ARGS}}
 
+  benchmark:s3:smoke:
+    desc: Run the short S3 benchmark control and plan check against RustFS
+    env:
+      RAD_BENCHMARK_PROFILE: smoke
+    cmds:
+      - cargo test --release --locked --test s3_http_benchmark -- --ignored --nocapture --test-threads=1 {{.CLI_ARGS}}
+
   generate:storage:
     desc: Regenerate storage format artifacts from the normative keyform specification
     cmds:

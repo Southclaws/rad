@@ -34,7 +34,7 @@ impl MetaApi for Api {
             );
             return GetStatisticsResponse::NotFound(problem.body);
         };
-        let stats = provider.stats();
+        let stats = provider.diagnostic_stats();
         let mut models: Vec<StatisticsModel> = stats
             .feedback_models
             .values()

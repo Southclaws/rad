@@ -1,0 +1,29 @@
+{
+  "name": "memo_distinct",
+  "description": "Triple distinct chain used to compare directed and saturated memo exploration.",
+  "warmup": 1,
+  "iterations": 6,
+  "expect_rows": 200,
+  "program": {
+    "statements": [{
+      "name": "memo_distinct",
+      "kind": "query",
+      "relation": {
+        "nodes": {
+          "customers": { "kind": "scan", "table": "customers", "scope": "c" },
+          "distinct_one": { "kind": "distinct", "input": "customers" },
+          "distinct_two": { "kind": "distinct", "input": "distinct_one" },
+          "distinct_three": { "kind": "distinct", "input": "distinct_two" },
+          "ordered": {
+            "kind": "order",
+            "input": "distinct_three",
+            "terms": [{
+              "expr": { "kind": "col", "scope": "c", "column": "customer_id" }
+            }]
+          }
+        },
+        "root": { "node": "ordered", "cardinality": "many" }
+      }
+    }]
+  }
+}

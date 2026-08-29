@@ -27,6 +27,7 @@ pub enum Operation {
     TransactionPut,
     TransactionDelete,
     TransactionScan,
+    IteratorSeekForward,
     Commit,
     Rollback,
     Close,
@@ -523,6 +524,13 @@ struct FaultingIterator<'a> {
 
 #[async_trait]
 impl KvIterator for FaultingIterator<'_> {
+    async fn seek_forward(&mut self, next_key: &[u8]) -> Result<()> {
+        let call = self
+            .context
+            .start(Operation::IteratorSeekForward, Target::key(next_key));
+        call.run_async(|| self.inner.seek_forward(next_key)).await
+    }
+
     async fn next(&mut self) -> Result<Option<Entry>> {
         let call = self.context.start(Operation::IteratorNext, Target::None);
         call.run_async(|| self.inner.next()).await

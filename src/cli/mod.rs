@@ -16,6 +16,8 @@ mod state;
 
 use std::process::ExitCode;
 
+use clap::Parser as _;
+
 pub async fn run() -> ExitCode {
     let cli = generated::Cli::parse();
     let json = output::is_json(&cli.globals);
@@ -31,6 +33,8 @@ pub async fn run() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
+
+    use clap::Parser as _;
 
     use super::generated::*;
     #[test]
@@ -72,6 +76,8 @@ mod tests {
             "postgres",
             "--postgres-addr",
             "127.0.0.1:15432",
+            "--planner-mode",
+            "cost",
         ])
         .unwrap();
         let RootCommand::Serve(serve) = cli.command else {
@@ -79,6 +85,7 @@ mod tests {
         };
         assert_eq!(serve.storage, ServeStorage::Memory);
         assert_eq!(serve.frontend, Some(ServeFrontend::Postgres));
+        assert_eq!(serve.planner_mode, ServePlannerMode::Cost);
         assert_eq!(serve.postgres_addr, "127.0.0.1:15432");
     }
 

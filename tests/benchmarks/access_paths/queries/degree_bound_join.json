@@ -1,0 +1,33 @@
+{
+  "name": "degree_bound_join",
+  "description": "Count a self-join whose cardinality is bounded by degree norms.",
+  "warmup": 1,
+  "iterations": 6,
+  "expect_rows": 1,
+  "expect_result": { "joined_count": 1000 },
+  "program": {
+    "statements": [{
+      "name": "degree_bound_join",
+      "kind": "query",
+      "relation": {
+        "nodes": {
+          "left_events": { "kind": "scan", "table": "events", "scope": "l" },
+          "right_events": { "kind": "scan", "table": "events", "scope": "r" },
+          "joined": {
+            "kind": "join", "left": "left_events", "right": "right_events", "join": "inner",
+            "on": {
+              "kind": "binary", "op": "eq",
+              "left": { "kind": "col", "scope": "l", "column": "created_at" },
+              "right": { "kind": "col", "scope": "r", "column": "created_at" }
+            }
+          },
+          "counted": {
+            "kind": "aggregate", "input": "joined", "scope": "result",
+            "aggs": [{ "fn": "count", "as": "joined_count" }]
+          }
+        },
+        "root": { "node": "counted", "cardinality": "exactly_one" }
+      }
+    }]
+  }
+}
