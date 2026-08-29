@@ -13,12 +13,6 @@ export function SiteNav({ docsHref = "/docs" }: { docsHref?: string }) {
           <span className="tag">v0</span>
         </Link>
         <nav className="nav__links" aria-label="Primary">
-          <Link className="nav__hide" href="/#loop">
-            the loop
-          </Link>
-          <Link className="nav__hide" href="/#build">
-            what you get
-          </Link>
           <Link href={docsHref}>docs</Link>
           <Link href="/blog">blog</Link>
           <a className="nav__gh" href={GITHUB} aria-label="Rad on GitHub">

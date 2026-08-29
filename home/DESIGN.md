@@ -111,9 +111,6 @@ Intentional, part of the build — but restrained (dry, not loud).
 - **Hero boot** — on load, the terminal "boots": the prompt types `rad
 serve`, then output lines print in a short stagger, cursor blinks. One
   orchestrated moment, not fade-on-scroll everywhere.
-- **Section reveals** — subtle, tailored per section (the loop staggers its
-  steps; a code panel crossfades). Reveals enhance an already-visible default
-  — content is never gated behind a transition that could fail headless.
 - Easing: ease-out-expo / quart. No bounce, no elastic.
 - **`prefers-reduced-motion: reduce`** — every animation degrades to the
   final static state or a crossfade; the boot shows completed output instantly

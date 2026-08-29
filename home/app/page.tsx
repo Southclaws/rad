@@ -3,8 +3,8 @@ import { Backronym } from "@/components/backronym";
 import { BootTerminal } from "@/components/boot-terminal";
 import { InstallCommand } from "@/components/copy-command";
 import { GitHubMark, ArrowUpRight } from "@/components/icons";
+import { RadOverviewDiagram } from "@/components/rad-overview-diagram";
 import { RelationGlyph } from "@/components/relation-glyph";
-import { Reveal } from "@/components/reveal";
 import { SiteNav } from "@/components/site-nav";
 
 const GITHUB = "https://github.com/Southclaws/rad";
@@ -20,37 +20,37 @@ const LOOP: {
     n: "01",
     verb: "define",
     hint: "rad.schema.yaml",
-    desc: "Describe your data model.",
+    desc: "Describe tables, relations and indexes.",
   },
   {
     n: "02",
     verb: "migrate",
-    hint: "automatic",
-    desc: "The database itself handles it.",
+    hint: "rad schema migrate",
+    desc: "Review and apply the schema diff.",
   },
   {
     n: "03",
     verb: "generate",
     hint: "rad generate",
-    desc: "Generate type-safe clients.",
+    desc: "Generate schema-aware clients.",
   },
   {
     n: "04",
     verb: "build",
     hint: "your application",
-    desc: "Write business logic, not database glue.",
+    desc: "Use typed queries in application code.",
   },
   {
     n: "05",
     verb: "deploy",
-    hint: "object store native",
-    desc: "Backed by durable object storage.",
+    hint: "stateless compute",
+    desc: "Run against durable object storage.",
   },
   {
     n: "06",
-    verb: "repeat",
-    hint: "stay in flow",
-    desc: "Keep your momentum focused.",
+    verb: "evolve",
+    hint: "the next revision",
+    desc: "Change the schema and regenerate.",
     last: true,
   },
 ];
@@ -133,10 +133,10 @@ export default function Home() {
               <div className="hero__aside">
                 <p className="hero__thesis">
                   The relational database, redesigned.{" "}
-                  <span className="mark">With one cohesive toolchain.</span>{" "}
                   <span className="dim">
-                    True OLTP backed by durable object storage.
-                  </span>
+                    Serverless OLTP backed by durable object storage.
+                  </span>{" "}
+                  <span className="mark">With a relational IR layer.</span>
                 </p>
                 <InstallCommand />
                 <div className="hero__cta">
@@ -153,21 +153,72 @@ export default function Home() {
           </div>
         </section>
 
-        {/* ── the loop ─────────────────────────────────────────────────── */}
-        <section className="section" id="loop">
+        <section className="section" id="overview">
           <div className="wrap">
-            <Reveal>
-              <p className="slabel">the loop</p>
-              <h2 className="stitle">
-                Everything starts with the <span className="mark">schema.</span>
-              </h2>
+            <div className="overview">
+              <div className="overview__copy">
+                <p className="slabel">What is Rad?</p>
+                <p className="prose" style={{ marginTop: "1.25rem" }}>
+                  Rad is a new <strong>relational database</strong>, unlike any
+                  other.
+                </p>
+                <p className="prose" style={{ marginTop: "1.25rem" }}>
+                  Firstly, it challenges the status-quo of SQL being the lingua
+                  franca of <em>relational protocols</em>. Instead, Rad exposes
+                  a <strong>relational intermediate representation</strong> as
+                  its interface. This IR can be targeted by SQL dialects, ORMs,
+                  or any other kind of frontend.
+                </p>
+                <p className="prose" style={{ marginTop: "1.25rem" }}>
+                  Secondly, it's backed by <strong>object storage</strong>{" "}
+                  rather than disks. This sacrifices speed for infrastructural
+                  simplicity. This means Rad can run in serverless environments
+                  with just an S3-compatible bucket and a stateless compute
+                  environment. You can think of Rad as a small relational query
+                  engine over a key-value store.
+                </p>
+              </div>
+              <div className="overview__visual">
+                <RadOverviewDiagram />
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* ── intermediate representation ─────────────────────────────── */}
+        <section className="section" id="ir">
+          <div className="wrap">
+            <div>
+              <p className="slabel">LIR + PIR</p>
+              <h2 className="stitle">A relational database IR.</h2>
               <p className="prose" style={{ marginTop: "1.25rem" }}>
-                Rad's <span className="mark">declarative</span> schema is the
-                source of truth for your database, migrations and type-safe
+                Rad&apos;s generated clients compile transactions into
+                structured programs. Inspired by LLVM, the shared intermediate
+                layer separates frontend syntax from structured machine-friendly
+                commands.
+              </p>
+            </div>
+            <div>
+              <div className="ir-example">
+                <Artifacts />
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* ── schema-driven workflow ───────────────────────────────────── */}
+        <section className="section" id="workflow">
+          <div className="wrap">
+            <div>
+              <p className="slabel">development workflow</p>
+              <h2 className="stitle">Schema driven</h2>
+              <p className="prose" style={{ marginTop: "1.25rem" }}>
+                Rad&apos;s <span className="mark">declarative</span> schema is
+                the source of truth for your database, migrations and type-safe
                 clients. Change it, and everything else follows.
               </p>
-            </Reveal>
-            <Reveal className="loop" delay={80}>
+            </div>
+            <div className="loop">
               {LOOP.map((s) => (
                 <div className="node" key={s.n}>
                   <div className="node__n">
@@ -183,34 +234,14 @@ export default function Home() {
                   <p className="node__desc">{s.desc}</p>
                 </div>
               ))}
-            </Reveal>
-          </div>
-        </section>
-
-        {/* ── show, don't tell ─────────────────────────────────────────── */}
-        <section className="section" id="show">
-          <div className="wrap">
-            <Reveal>
-              <p className="slabel">show, don&apos;t tell</p>
-              <h2 className="stitle">Here&apos;s the whole thing.</h2>
-              <p className="prose" style={{ marginTop: "1.25rem" }}>
-                You author a single declarative schema. Rad generates the exact
-                clients for your database. No ORMs. No query builders. No
-                string-gluing.
-              </p>
-            </Reveal>
-            <Reveal delay={80} className="">
-              <div style={{ marginTop: "2.5rem" }}>
-                <Artifacts />
-              </div>
-            </Reveal>
+            </div>
           </div>
         </section>
 
         {/* ── what you get ─────────────────────────────────────────────── */}
         <section className="section" id="build">
           <div className="wrap">
-            <Reveal>
+            <div>
               <p className="slabel">what you get</p>
               <h2 className="stitle">
                 Radically rethink your relationship with rows.
@@ -219,8 +250,8 @@ export default function Home() {
                 The whole stack, from code to columns. Built for today, not
                 1973.
               </p>
-            </Reveal>
-            <Reveal delay={60} className="feat">
+            </div>
+            <div className="feat">
               {FEATURES.map((f) => (
                 <div
                   className={`cell${f.span2 ? " cell--span2" : ""}`}
@@ -235,14 +266,14 @@ export default function Home() {
               <div className="cell cell--deco">
                 <RelationGlyph />
               </div>
-            </Reveal>
+            </div>
           </div>
         </section>
 
         {/* ── get started ──────────────────────────────────────────────── */}
         <section className="section">
           <div className="wrap">
-            <Reveal className="cta">
+            <div className="cta">
               <p
                 className="prose"
                 style={{
@@ -263,7 +294,7 @@ export default function Home() {
                   <GitHubMark size={16} /> Source code
                 </a>
               </div>
-            </Reveal>
+            </div>
           </div>
         </section>
       </main>
@@ -275,8 +306,6 @@ export default function Home() {
         <div className="wrap foot__in">
           <div className="foot__cols">
             <a href="/docs">Docs</a>
-            <a href="#loop">The loop</a>
-            <a href="#build">What you get</a>
             <a href={GITHUB}>GitHub</a>
           </div>
           <div className="foot__note">

@@ -2,82 +2,114 @@
 
 import { Fragment, useState } from "react";
 
-type Lang = "yaml" | "go" | "ts";
+type Lang = "json";
 
 const FILES: { name: string; lang: Lang; code: string }[] = [
   {
-    name: "rad.schema.yaml",
-    lang: "yaml",
-    code: `tables:
-  - id: 1
-    name: users
-    columns:
-      - { id: 1, name: id,    type: string, pk: true, default: uuid() }
-      - { id: 2, name: email, type: string, unique: true }
-
-  - id: 2
-    name: teams
-    columns:
-      - { id: 1, name: id,   type: string, pk: true, default: uuid() }
-      - { id: 2, name: name, type: string }
-
-  - id: 3
-    name: boards
-    columns:
-      - { id: 1, name: id,      type: string, pk: true, default: uuid() }
-      - { id: 2, name: team_id, type: string, ref: teams.id }
-      - { id: 3, name: name,    type: string }
-
-  - id: 4
-    name: tasks
-    columns:
-      - { id: 1, name: id,          type: string, pk: true, default: uuid() }
-      - { id: 2, name: board_id,    type: string, ref: boards.id, index: true }
-      - { id: 3, name: title,       type: string }
-      - { id: 4, name: status,      type: string, default: todo }
-      - { id: 5, name: priority,    type: int64, default: 2 }
-      - { id: 6, name: assignee_id, type: string, ref: users.id, nullable: true }
-      - { id: 7, name: estimate,    type: float64, nullable: true }
-    indexes:
-      - { columns: [board_id, status] }`,
+    name: "query.lir.json",
+    lang: "json",
+    code: `{
+  "nodes": {
+    "users": { "kind": "scan", "table": "users", "scope": "u" },
+    "users_ordered": {
+      "kind": "order",
+      "input": "users",
+      "terms": [
+        { "expr": { "kind": "col", "scope": "u", "column": "id" } }
+      ]
+    },
+    "posts": { "kind": "scan", "table": "posts", "scope": "p" },
+    "posts_for_user": {
+      "kind": "filter",
+      "input": "posts",
+      "predicate": {
+        "kind": "binary",
+        "op": "eq",
+        "left": { "kind": "col", "scope": "p", "column": "user_id" },
+        "right": { "kind": "col", "scope": "u", "column": "id" }
+      }
+    },
+    "post_objects": {
+      "kind": "project",
+      "input": "posts_for_user",
+      "scope": "po",
+      "fields": [
+        { "as": "id", "expr": { "kind": "col", "scope": "p", "column": "id" } },
+        { "as": "title", "expr": { "kind": "col", "scope": "p", "column": "title" } }
+      ]
+    },
+    "posts_ordered": {
+      "kind": "order",
+      "input": "post_objects",
+      "terms": [
+        { "expr": { "kind": "col", "scope": "po", "column": "id" } }
+      ]
+    },
+    "result": {
+      "kind": "project",
+      "input": "users_ordered",
+      "fields": [
+        { "as": "id", "expr": { "kind": "col", "scope": "u", "column": "id" } },
+        { "as": "name", "expr": { "kind": "col", "scope": "u", "column": "name" } },
+        { "as": "posts", "expr": { "kind": "array", "node": "posts_ordered" } }
+      ]
+    }
+  },
+  "root": { "node": "result", "cardinality": "many" }
+}`,
   },
   {
-    name: "client.go",
-    lang: "go",
-    code: `db, _ := tracker.Connect("rad://localhost:7237")
-
-// one query, typed all the way down — no SQL, no N+1
-board, _, _ := db.Boards.Query().
-    IDEq(id).
-    IncludeTasks(func(t *tracker.TaskInclude) {
-        t.OrderByPriority().IncludeAssignee()
-    }).
-    First(ctx)
-
-// aggregates fold server-side — zero rows fetched
-open, _ := db.Tasks.Query().
-    BoardIDEq(id).StatusNe("done").Count(ctx)`,
-  },
-  {
-    name: "client.ts",
-    lang: "ts",
-    code: `const db = connect("rad://localhost:7237");
-
-// the same wire, the same shapes, from TypeScript
-const board = await db.boards.query()
-  .idEq(id)
-  .includeTasks((t) => t.orderByPriority().includeAssignee())
-  .first();
-
-const open = await db.tasks.query()
-  .boardIdEq(id).statusNe("done").count();`,
+    name: "transaction.pir.json",
+    lang: "json",
+    code: `{
+  "statements": [
+    {
+      "name": "author",
+      "kind": "create",
+      "table": "users",
+      "relation": {
+        "nodes": {
+          "row": {
+            "kind": "rows",
+            "scope": "r",
+            "columns": [
+              { "name": "id", "type": "text" },
+              { "name": "name", "type": "text" }
+            ],
+            "rows": [["u1", "Ada"]]
+          }
+        },
+        "root": { "node": "row", "cardinality": "many" }
+      }
+    },
+    {
+      "name": "post",
+      "kind": "create",
+      "table": "posts",
+      "relation": {
+        "nodes": {
+          "author": { "kind": "ref", "binding": "author", "scope": "a" },
+          "post": {
+            "kind": "project",
+            "input": "author",
+            "fields": [
+              { "as": "id", "expr": { "kind": "lit", "value": { "type": "text", "value": "p1" } } },
+              { "as": "user_id", "expr": { "kind": "col", "scope": "a", "column": "id" } },
+              { "as": "title", "expr": { "kind": "lit", "value": { "type": "text", "value": "Relational values" } } }
+            ]
+          }
+        },
+        "root": { "node": "post", "cardinality": "many" }
+      }
+    }
+  ],
+  "result": "post"
+}`,
   },
 ];
 
 const KEYWORDS: Record<Lang, RegExp> = {
-  yaml: /\b(string|int64|float64|bool|true|false|uuid|now_ms)\b/g,
-  go: /\b(func|db|ctx|nil|await|const)\b/g,
-  ts: /\b(const|await|db|connect)\b/g,
+  json: /\b(true|false|null|many|exactly_one|scan|filter|project|order|array|create|query)\b/g,
 };
 
 // Minimal, dependency-free highlighter. Strings and comments carry most of the
@@ -89,14 +121,15 @@ function highlight(line: string, lang: Lang, key: number) {
   const parts = line.split(/("[^"]*")/g);
   parts.forEach((part, i) => {
     if (part.startsWith('"')) {
+      const isKey = parts[i + 1]?.trimStart().startsWith(":");
       nodes.push(
-        <span className="t-str" key={`s${i}`}>
+        <span className={isKey ? "t-key" : "t-str"} key={`s${i}`}>
           {part}
         </span>,
       );
       return;
     }
-    const commentIdx = lang === "yaml" ? part.indexOf("#") : part.indexOf("//");
+    const commentIdx = part.indexOf("//");
     let code = part;
     let comment = "";
     if (commentIdx >= 0) {
@@ -143,7 +176,11 @@ export function Artifacts() {
 
   return (
     <div className="panel crop" style={{ borderRadius: 8, overflow: "hidden" }}>
-      <div className="filetab" role="tablist" aria-label="Generated artifacts">
+      <div
+        className="filetab"
+        role="tablist"
+        aria-label="Intermediate representation examples"
+      >
         {FILES.map((f, i) => (
           <button
             key={f.name}

@@ -31,8 +31,8 @@
 
   --red: oklch(0.66 0.19 25);
 
-  --mono:
-    var(--font-mono, ui-monospace), ui-monospace, "SFMono-Regular", monospace;
+  --mono: var(--font-mono, ui-monospace), ui-monospace, "SFMono-Regular",
+    monospace;
   --sans: var(--font-sans, ui-sans-serif), ui-sans-serif, system-ui, sans-serif;
 
   /* rhythm */
@@ -168,9 +168,77 @@ h3 {
 }
 
 .stitle {
-  font-size: clamp(2rem, 7vw, 5rem);
+  font-size: clamp(1.8rem, 4.5vw, 3.75rem);
   letter-spacing: -0.03em;
   overflow-wrap: break-word;
+}
+
+.overview {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: clamp(2.5rem, 7vw, 5rem);
+}
+.overview__copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.overview__visual {
+  width: min(100%, 30rem);
+  align-self: center;
+}
+.overview-diagram {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 1;
+  margin: 0;
+  padding: clamp(0.75rem, 2vw, 1.25rem);
+  background: transparent;
+  border: 0;
+}
+.overview-diagram::before,
+.overview-diagram::after {
+  content: "";
+  position: absolute;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px dashed var(--line-2);
+  pointer-events: none;
+}
+.overview-diagram::before {
+  top: 0;
+  left: 0;
+  border-right: 0;
+  border-bottom: 0;
+}
+.overview-diagram::after {
+  right: 0;
+  bottom: 0;
+  border-top: 0;
+  border-left: 0;
+}
+.overview-diagram svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.overview-diagram text {
+  font-family: var(--mono);
+}
+@media (min-width: 900px) {
+  .overview {
+    flex-direction: row;
+    align-items: center;
+  }
+  .overview__copy {
+    flex: 1 1 58%;
+  }
+  .overview__visual {
+    flex: 0 1 30rem;
+    width: 42%;
+  }
 }
 
 /* ── blueprint primitives ───────────────────────────────────────────────── */
@@ -281,11 +349,8 @@ h3 {
   border: 1px solid transparent;
   border-radius: 5px;
   cursor: pointer;
-  transition:
-    box-shadow 0.25s var(--ease-out),
-    border-color 0.2s ease,
-    background 0.2s ease,
-    transform 0.2s var(--ease-out);
+  transition: box-shadow 0.25s var(--ease-out), border-color 0.2s ease,
+    background 0.2s ease, transform 0.2s var(--ease-out);
 }
 .btn--primary {
   background: var(--green);
@@ -294,9 +359,7 @@ h3 {
 .btn--primary:hover {
   /* keep dark text — beats the global a:hover green (which vanished here) */
   color: var(--on-green);
-  box-shadow:
-    0 0 0 1px var(--green),
-    0 8px 30px -8px var(--green-glow);
+  box-shadow: 0 0 0 1px var(--green), 0 8px 30px -8px var(--green-glow);
   transform: translateY(-1px);
 }
 .btn--ghost {
@@ -338,8 +401,7 @@ h3 {
   right: var(--rail);
   z-index: 0;
   pointer-events: none;
-  background-image:
-    repeating-linear-gradient(
+  background-image: repeating-linear-gradient(
       to bottom,
       var(--line) 0 1px,
       transparent 1px 96px
@@ -349,12 +411,8 @@ h3 {
       var(--line) 0 1px,
       transparent 1px 96px
     );
-  background-position:
-    left top,
-    right top;
-  background-size:
-    6px 96px,
-    6px 96px;
+  background-position: left top, right top;
+  background-size: 6px 96px, 6px 96px;
   background-repeat: repeat-y;
   opacity: 0.6;
 }
@@ -381,24 +439,17 @@ main,
 .wordmark {
   font-family: var(--mono);
   font-weight: 700;
-  font-size: clamp(6rem, 34vw, 26rem);
+  font-size: clamp(5.5rem, 22vw, 12rem);
   line-height: 0.8;
   letter-spacing: -0.05em;
   color: var(--green);
   /* phosphor extrusion — a stack of dim offsets receding into the board */
-  text-shadow:
-    2px 2px 0 var(--green-deep),
-    4px 4px 0 var(--green-deep),
-    6px 6px 0 var(--green-deep),
-    8px 8px 0 var(--green-deep),
-    10px 10px 0 var(--green-deep),
-    12px 12px 0 var(--green-deep),
-    14px 14px 0 var(--green-deep),
-    16px 16px 0 var(--green-deep),
-    18px 18px 0 var(--green-deep),
-    20px 20px 0 var(--green-deep),
-    22px 22px 0 var(--green-deep),
-    24px 24px 0 var(--green-deep),
+  text-shadow: 2px 2px 0 var(--green-deep), 4px 4px 0 var(--green-deep),
+    6px 6px 0 var(--green-deep), 8px 8px 0 var(--green-deep),
+    10px 10px 0 var(--green-deep), 12px 12px 0 var(--green-deep),
+    14px 14px 0 var(--green-deep), 16px 16px 0 var(--green-deep),
+    18px 18px 0 var(--green-deep), 20px 20px 0 var(--green-deep),
+    22px 22px 0 var(--green-deep), 24px 24px 0 var(--green-deep),
     0 0 60px var(--green-glow);
   margin-left: -0.06em;
 }
@@ -438,7 +489,7 @@ main,
   color: var(--ink);
   letter-spacing: -0.01em;
   text-wrap: balance;
-  max-width: 22ch;
+  max-width: 32ch;
 }
 .hero__thesis .dim {
   color: var(--muted);
@@ -492,9 +543,7 @@ main,
   letter-spacing: 0.04em;
   padding-inline: 0.9rem;
   cursor: pointer;
-  transition:
-    color 0.2s,
-    background 0.2s;
+  transition: color 0.2s, background 0.2s;
 }
 .cmd__copy:hover {
   color: var(--green);
@@ -535,9 +584,7 @@ main,
   letter-spacing: 0.04em;
   padding: 0.4rem 0.85rem;
   cursor: pointer;
-  transition:
-    color 0.2s,
-    background 0.2s;
+  transition: color 0.2s, background 0.2s;
 }
 .install__tab:hover {
   color: var(--green-mid);
@@ -592,9 +639,7 @@ main,
   width: 1.9rem;
   height: 1.25rem;
   border-radius: 3px;
-  transition:
-    background 0.15s ease,
-    color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 .term__win svg {
   display: block;
@@ -632,9 +677,7 @@ main,
   opacity: 0;
   transform: translateY(-4px);
   pointer-events: none;
-  transition:
-    opacity 0.16s var(--ease-out),
-    transform 0.16s var(--ease-out);
+  transition: opacity 0.16s var(--ease-out), transform 0.16s var(--ease-out);
   z-index: 5;
 }
 .term__x:hover .term__tip,
@@ -779,15 +822,10 @@ main,
   letter-spacing: -0.05em;
   color: var(--green);
   margin-left: -0.04em;
-  text-shadow:
-    2px 2px 0 var(--green-deep),
-    4px 4px 0 var(--green-deep),
-    6px 6px 0 var(--green-deep),
-    8px 8px 0 var(--green-deep),
-    10px 10px 0 var(--green-deep),
-    12px 12px 0 var(--green-deep),
-    14px 14px 0 var(--green-deep),
-    16px 16px 0 var(--green-deep),
+  text-shadow: 2px 2px 0 var(--green-deep), 4px 4px 0 var(--green-deep),
+    6px 6px 0 var(--green-deep), 8px 8px 0 var(--green-deep),
+    10px 10px 0 var(--green-deep), 12px 12px 0 var(--green-deep),
+    14px 14px 0 var(--green-deep), 16px 16px 0 var(--green-deep),
     0 0 55px var(--green-glow);
 }
 .nf__title {
@@ -829,6 +867,13 @@ main,
   padding: 1.1rem 1.2rem;
   tab-size: 2;
 }
+.ir-example {
+  margin-top: 2.5rem;
+}
+.ir-example .code {
+  max-height: 34rem;
+  overflow: auto;
+}
 .t-key {
   color: var(--green);
 }
@@ -862,10 +907,7 @@ main,
   color: var(--muted);
   padding: 0.7rem 1rem;
   cursor: pointer;
-  transition:
-    color 0.2s,
-    border-color 0.2s,
-    background 0.2s;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
 }
 .filetab button:hover {
   color: var(--ink);
@@ -1193,11 +1235,8 @@ main,
   box-shadow: inset 0 0 12px oklch(0 0 0 / 0.35);
   /* width + margin animate so the board (and "Database" beside it) glide
      rather than jump when a word changes length */
-  transition:
-    width 0.4s var(--ease-out),
-    margin 0.4s var(--ease-out),
-    opacity 0.3s var(--ease-out),
-    border-color 0.3s var(--ease-out);
+  transition: width 0.4s var(--ease-out), margin 0.4s var(--ease-out),
+    opacity 0.3s var(--ease-out), border-color 0.3s var(--ease-out);
 }
 .flap:first-child {
   margin-left: 0;
@@ -1294,9 +1333,7 @@ main,
   color: var(--ink);
   cursor: pointer;
   list-style: none;
-  transition:
-    border-color 160ms ease,
-    background 160ms ease;
+  transition: border-color 160ms ease, background 160ms ease;
 }
 .docs__section summary::-webkit-details-marker {
   display: none;
@@ -1918,26 +1955,6 @@ main,
   text-align: center;
 }
 
-/* ── reveal-on-scroll (enhances an already-visible default) ──────────────── */
-
-/* Default: fully visible (no-JS, headless, and hidden-tab safe). JS opts in
-   to the animation by setting data-anim, then flips data-shown when in view
-   (with a safety timeout so content always ends visible). */
-.reveal {
-  transition:
-    opacity 0.7s var(--ease-out),
-    transform 0.7s var(--ease-out);
-}
-.reveal[data-anim] {
-  opacity: 0;
-  transform: translateY(14px);
-  will-change: opacity, transform;
-}
-.reveal[data-anim][data-shown="true"] {
-  opacity: 1;
-  transform: none;
-}
-
 @keyframes blink {
   0%,
   50% {
@@ -1958,10 +1975,6 @@ main,
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
-  }
-  .reveal {
-    opacity: 1;
-    transform: none;
   }
   .term__cursor,
   .wordmark .cursor {
