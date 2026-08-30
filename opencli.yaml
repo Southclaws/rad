@@ -160,6 +160,39 @@ commands:
         type: boolean
         envVar: RAD_CAPTURE_WORKLOAD_CORPUS
         default: false
+      - name: log-level
+        description: Minimum operational log level.
+        envVar: RAD_LOG_LEVEL
+        choices: [error, warn, info, debug]
+        default: info
+      - name: log-format
+        description: Log output format.
+        envVar: RAD_LOG_FORMAT
+        choices: [text, json, logfmt]
+        default: text
+      - name: log-programs
+        description: Emit program events independently from the operational log level.
+        type: boolean
+        envVar: RAD_LOG_PROGRAMS
+        default: false
+      - name: diagnostics
+        description: Maximum diagnostic level that an HTTP request can select.
+        envVar: RAD_DIAGNOSTICS
+        choices: [off, summary, detailed, full]
+        default: summary
+      - name: otel-endpoint
+        description: OTLP HTTP endpoint for traces and metrics.
+        envVar: OTEL_EXPORTER_OTLP_ENDPOINT
+      - name: metrics
+        description: Enable or disable OTEL metrics and the GET /metrics route.
+        envVar: RAD_METRICS
+        choices: ["true", "false"]
+        default: "true"
+      - name: cache-size-mib
+        description: Total Slate decoded cache capacity in MiB.
+        type: integer
+        envVar: RAD_CACHE_SIZE_MIB
+        default: 128
       - name: storage
         description: Storage backend for SlateDB data.
         envVar: RAD_STORAGE

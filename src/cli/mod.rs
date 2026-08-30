@@ -21,13 +21,23 @@ use clap::Parser as _;
 pub async fn run() -> ExitCode {
     let cli = generated::Cli::parse();
     let json = output::is_json(&cli.globals);
-    match cli.dispatch(&mut commands::App).await {
+    let exit = match cli.dispatch(&mut commands::App).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            output::render_error(error.as_ref(), json);
+            if logging_is_installed() {
+                crate::logging::terminal_failure(error.as_ref());
+            } else {
+                output::render_error(error.as_ref(), json);
+            }
             ExitCode::FAILURE
         }
-    }
+    };
+    crate::logging::shutdown();
+    exit
+}
+
+fn logging_is_installed() -> bool {
+    crate::logging::is_installed()
 }
 
 #[cfg(test)]
@@ -87,6 +97,43 @@ mod tests {
         assert_eq!(serve.frontend, Some(ServeFrontend::Postgres));
         assert_eq!(serve.planner_mode, ServePlannerMode::Cost);
         assert_eq!(serve.postgres_addr, "127.0.0.1:15432");
+        assert_eq!(serve.log_level, ServeLogLevel::Info);
+        assert_eq!(serve.log_format, ServeLogFormat::Text);
+        assert!(!serve.log_programs);
+        assert_eq!(serve.diagnostics, ServeDiagnostics::Summary);
+        assert_eq!(serve.otel_endpoint, None);
+    }
+
+    #[test]
+    fn generated_serve_logging_flags_are_validated() {
+        let cli = Cli::try_parse_from([
+            "rad",
+            "serve",
+            "--log-level",
+            "error",
+            "--log-format",
+            "logfmt",
+            "--log-programs",
+            "--diagnostics",
+            "detailed",
+            "--otel-endpoint",
+            "http://collector:4318",
+        ])
+        .unwrap();
+        let RootCommand::Serve(serve) = cli.command else {
+            panic!("expected serve command");
+        };
+        assert_eq!(serve.log_level, ServeLogLevel::Error);
+        assert_eq!(serve.log_format, ServeLogFormat::Logfmt);
+        assert!(serve.log_programs);
+        assert_eq!(serve.diagnostics, ServeDiagnostics::Detailed);
+        assert_eq!(
+            serve.otel_endpoint.as_deref(),
+            Some("http://collector:4318")
+        );
+        assert!(Cli::try_parse_from(["rad", "serve", "--log-level", "trace"]).is_err());
+        assert!(Cli::try_parse_from(["rad", "serve", "--log-format", "pretty"]).is_err());
+        assert!(Cli::try_parse_from(["rad", "serve", "--diagnostics", "trace"]).is_err());
     }
 
     #[test]

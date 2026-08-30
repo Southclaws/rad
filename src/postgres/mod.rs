@@ -25,6 +25,7 @@ use sqlparser::ast::{
     Statement as SqlStatement, TransactionAccessMode, TransactionIsolationLevel, TransactionMode,
 };
 use tokio::sync::Mutex;
+use tracing::Instrument as _;
 
 use crate::engine::catalog::Catalog;
 use crate::engine::catalog::model::{Mode, ScalarType, Table};
@@ -79,12 +80,69 @@ pub async fn serve(
                 }
             }
             accepted = listener.accept() => {
-                let (socket, _) = accepted?;
+                let (socket, peer) = accepted?;
                 let server = server.clone();
                 connections.spawn(async move {
-                    if let Err(error) = process_socket(socket, None, server).await {
-                        eprintln!("postgres connection closed with error: {error}");
+                    let span = tracing::info_span!(
+                        target: "rad::telemetry",
+                        "postgres.connection",
+                        otel.kind = "server",
+                        network.transport = "tcp",
+                        network.peer.address = %peer.ip(),
+                        network.peer.port = peer.port(),
+                        rad.status = tracing::field::Empty,
+                        error.type = tracing::field::Empty,
+                        otel.status_code = tracing::field::Empty,
+                    );
+                    let (trace_id, span_id) = crate::telemetry::span_ids(&span);
+                    crate::telemetry::postgres_connection_started();
+                    tracing::debug!(
+                        target: "rad",
+                        event = "postgres.connection_started",
+                        component = "postgres",
+                        trace_id,
+                        span_id,
+                        client_ip = %peer.ip(),
+                        message = "PostgreSQL connection started"
+                    );
+                    let result = process_socket(socket, None, server)
+                        .instrument(span.clone())
+                        .await;
+                    span.record("rad.status", if result.is_ok() { "success" } else { "error" });
+                    if let Err(error) = &result {
+                        span.record("error.type", stable_postgres_error_reason(error));
+                        span.record("otel.status_code", "ERROR");
                     }
+                    crate::telemetry::postgres_connection_finished(if result.is_ok() {
+                        "success"
+                    } else {
+                        "error"
+                    });
+                    if let Err(error) = &result
+                        && !expected_postgres_disconnect(error)
+                    {
+                        tracing::warn!(
+                            target: "rad",
+                            event = "postgres.connection_failed",
+                            component = "postgres",
+                            trace_id,
+                            span_id,
+                            client_ip = %peer.ip(),
+                            error_kind = "protocol",
+                            error_reason = stable_postgres_error_reason(error),
+                            message = "PostgreSQL connection failed"
+                        );
+                    }
+                    tracing::debug!(
+                        target: "rad",
+                        event = "postgres.connection_stopped",
+                        component = "postgres",
+                        trace_id,
+                        span_id,
+                        client_ip = %peer.ip(),
+                        status = if result.is_ok() { "success" } else { "error" },
+                        message = "PostgreSQL connection stopped"
+                    );
                 });
             }
         }
@@ -92,6 +150,25 @@ pub async fn serve(
     connections.abort_all();
     while connections.join_next().await.is_some() {}
     Ok(())
+}
+
+fn stable_postgres_error_reason(error: &std::io::Error) -> &'static str {
+    match error.kind() {
+        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted => {
+            "connection_closed"
+        }
+        _ => "io",
+    }
+}
+
+fn expected_postgres_disconnect(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::UnexpectedEof
+    )
 }
 
 struct Backend {
@@ -133,10 +210,7 @@ impl SimpleQueryHandler for Backend {
         for statement in statements {
             let statement = statement.to_string();
             let prepared = self.parser.prepare(client, &statement, &[]).await?;
-            match self
-                .execute(client, &prepared, &[], &Format::UnifiedText)
-                .await
-            {
+            match Box::pin(self.execute(client, &prepared, &[], &Format::UnifiedText)).await {
                 Ok(response) => responses.push(response),
                 Err(PgWireError::UserError(error)) => {
                     responses.push(Response::Error(error));
@@ -171,12 +245,12 @@ impl ExtendedQueryHandler for Backend {
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
         let parameters = decode_parameters(portal)?;
-        self.execute(
+        Box::pin(self.execute(
             client,
             &portal.statement.statement,
             &parameters,
             &portal.result_column_format,
-        )
+        ))
         .await
     }
 
@@ -232,7 +306,7 @@ impl Backend {
     where
         C: ClientInfo + Unpin + Send + Sync,
     {
-        let response = async {
+        let response = Box::pin(async {
             match prepared {
                 PgPrepared::Control(control) => self.execute_control(client, *control).await,
                 PgPrepared::Catalog(plan) => {
@@ -256,17 +330,57 @@ impl Backend {
                     let sql = prepared.sql();
                     let session = session(client);
                     let mut state = session.lock().await;
+                    let request_id = uuid::Uuid::new_v4().to_string();
+                    let client_ip = client.socket_addr().ip().to_string();
                     let result = if let Some(transaction) = &mut state.transaction {
-                        transaction
-                            .execute_program(program, catalog_policy)
-                            .await
-                            .map_err(|error| engine_error_with_sql(error, &sql))
+                        let transaction_span = transaction.span();
+                        let (trace_id, span_id) = crate::telemetry::span_ids(&transaction_span);
+                        let context = crate::logging::RequestContext {
+                            transport: "postgres",
+                            request_id,
+                            transaction_id: transaction.id().to_owned(),
+                            client_ip,
+                            transaction_state: "explicit",
+                            trace_id,
+                            span_id,
+                            diagnostics: None,
+                            parent_span: Some(transaction_span),
+                        };
+                        Box::pin(crate::logging::with_request_context(
+                            context,
+                            transaction.execute_program(program, catalog_policy),
+                        ))
+                        .await
+                        .map_err(|error| engine_error_with_sql(error, &sql))
                     } else {
                         drop(state);
-                        self.engine
-                            .execute_program(program, catalog_policy)
-                            .await
-                            .map_err(|error| engine_error_with_sql(error, &sql))
+                        let current_span = tracing::Span::current();
+                        let (trace_id, span_id) = crate::telemetry::span_ids(&current_span);
+                        let context = crate::logging::RequestContext {
+                            transport: "postgres",
+                            request_id,
+                            transaction_id: String::new(),
+                            client_ip,
+                            transaction_state: "implicit",
+                            trace_id,
+                            span_id,
+                            diagnostics: None,
+                            parent_span: None,
+                        };
+                        let options = crate::engine::exec::ProgramOptions {
+                            catalog: catalog_policy,
+                            ..crate::engine::exec::ProgramOptions::default()
+                        };
+                        Box::pin(crate::logging::with_request_context(
+                            context,
+                            crate::engine::frontend::execute_program_with_options(
+                                &self.engine,
+                                program,
+                                options,
+                            ),
+                        ))
+                        .await
+                        .map_err(|error| engine_error_with_sql(error, &sql))
                     }?;
                     let affected = result
                         .statements
@@ -291,7 +405,7 @@ impl Backend {
                     }
                 }
             }
-        }
+        })
         .await;
         if response.is_err() {
             let session = session(client);
@@ -334,6 +448,14 @@ impl Backend {
                     state.transaction =
                         Some(Tx::begin(self.engine.clone()).await.map_err(engine_error)?);
                     state.failed = false;
+                    tracing::debug!(
+                        target: "rad",
+                        event = "transaction.started",
+                        component = "postgres",
+                        transaction_id = state.transaction.as_ref().map_or("", Tx::id),
+                        client_ip = %client.socket_addr().ip(),
+                        message = "PostgreSQL transaction started"
+                    );
                 }
                 Ok(Response::TransactionStart(Tag::new("BEGIN")))
             }
@@ -347,11 +469,26 @@ impl Backend {
                 };
                 match transaction {
                     Some(transaction) if failed => {
+                        let transaction_id = transaction.id().to_owned();
                         transaction.rollback();
+                        log_transaction_completed(
+                            &transaction_id,
+                            client.socket_addr().ip(),
+                            "rollback",
+                            "success",
+                        );
                         Ok(Response::TransactionEnd(Tag::new("ROLLBACK")))
                     }
                     Some(transaction) => {
-                        transaction.commit().await.map_err(engine_error)?;
+                        let transaction_id = transaction.id().to_owned();
+                        let result = transaction.commit().await;
+                        log_transaction_completed(
+                            &transaction_id,
+                            client.socket_addr().ip(),
+                            "commit",
+                            if result.is_ok() { "success" } else { "error" },
+                        );
+                        result.map_err(engine_error)?;
                         Ok(Response::TransactionEnd(Tag::new("COMMIT")))
                     }
                     None => Ok(Response::TransactionEnd(Tag::new("COMMIT"))),
@@ -364,12 +501,38 @@ impl Backend {
                     state.transaction.take()
                 };
                 if let Some(transaction) = transaction {
+                    let transaction_id = transaction.id().to_owned();
                     transaction.rollback();
+                    log_transaction_completed(
+                        &transaction_id,
+                        client.socket_addr().ip(),
+                        "rollback",
+                        "success",
+                    );
                 }
                 Ok(Response::TransactionEnd(Tag::new("ROLLBACK")))
             }
         }
     }
+}
+
+fn log_transaction_completed(
+    transaction_id: &str,
+    client_ip: std::net::IpAddr,
+    outcome: &'static str,
+    status: &'static str,
+) {
+    tracing::info!(
+        target: "rad::program",
+        event = "transaction.completed",
+        component = "postgres",
+        transport = "postgres",
+        transaction_id,
+        client_ip = %client_ip,
+        outcome,
+        status,
+        message = "PostgreSQL transaction completed"
+    );
 }
 
 #[derive(Clone)]

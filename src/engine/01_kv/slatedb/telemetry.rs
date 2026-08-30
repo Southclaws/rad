@@ -1,8 +1,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use slatedb_common::metrics::{DefaultMetricsRecorder, Metric, MetricValue, MetricsRecorder};
+use slatedb_common::metrics::{
+    CounterFn, DefaultMetricsRecorder, GaugeFn, HistogramFn, Metric, MetricValue, MetricsRecorder,
+    UpDownCounterFn,
+};
 
+use super::metric_export;
 use super::slate_db;
 use crate::engine::kv::telemetry::{
     CumulativeHistogram, PHYSICAL_TELEMETRY_FORMAT, PhysicalCacheSnapshot, PhysicalCacheTier,
@@ -11,18 +15,205 @@ use crate::engine::kv::telemetry::{
 };
 
 pub(super) struct SlateTelemetry {
-    recorder: Arc<DefaultMetricsRecorder>,
+    global: Arc<DefaultMetricsRecorder>,
+    recorder: Arc<SlateMetricsRecorder>,
 }
 
 impl SlateTelemetry {
     pub(super) fn new() -> Arc<Self> {
+        let global = Arc::new(DefaultMetricsRecorder::new());
         Arc::new(Self {
-            recorder: Arc::new(DefaultMetricsRecorder::new()),
+            recorder: Arc::new(SlateMetricsRecorder {
+                global: Arc::clone(&global),
+                write_amplification: metric_export::WriteAmplification::new(),
+            }),
+            global,
         })
     }
 
     pub(super) fn recorder(&self) -> Arc<dyn MetricsRecorder> {
         self.recorder.clone()
+    }
+}
+
+struct SlateMetricsRecorder {
+    global: Arc<DefaultMetricsRecorder>,
+    write_amplification: Arc<metric_export::WriteAmplification>,
+}
+
+enum RequestCacheCounter {
+    MemoryHit(String),
+    MemoryMiss(String),
+    MemoryError,
+    LocalAccess,
+    LocalHit,
+}
+
+struct SlateCounter {
+    global: Arc<dyn CounterFn>,
+    request: Option<RequestCacheCounter>,
+    export: Option<metric_export::Counter>,
+}
+
+impl CounterFn for SlateCounter {
+    fn increment(&self, value: u64) {
+        self.global.increment(value);
+        if let Some(export) = &self.export {
+            export.add(value);
+        }
+        use crate::engine::kv::telemetry::{PhysicalCacheTier, record_cache};
+        match &self.request {
+            Some(RequestCacheCounter::MemoryHit(entry_kind)) => record_cache(
+                PhysicalCacheTier::Memory,
+                Some(entry_kind),
+                value,
+                value,
+                0,
+                0,
+            ),
+            Some(RequestCacheCounter::MemoryMiss(entry_kind)) => record_cache(
+                PhysicalCacheTier::Memory,
+                Some(entry_kind),
+                value,
+                0,
+                value,
+                0,
+            ),
+            Some(RequestCacheCounter::MemoryError) => {
+                record_cache(PhysicalCacheTier::Memory, None, 0, 0, 0, value);
+            }
+            Some(RequestCacheCounter::LocalAccess) => {
+                record_cache(PhysicalCacheTier::Local, None, value, 0, 0, 0);
+            }
+            Some(RequestCacheCounter::LocalHit) => {
+                record_cache(PhysicalCacheTier::Local, None, 0, value, 0, 0);
+            }
+            None => {}
+        }
+    }
+}
+
+impl MetricsRecorder for SlateMetricsRecorder {
+    fn register_counter(
+        &self,
+        name: &str,
+        description: &str,
+        labels: &[(&str, &str)],
+    ) -> Arc<dyn CounterFn> {
+        let global = self.global.register_counter(name, description, labels);
+        let label = |key| {
+            labels
+                .iter()
+                .find_map(|(label, value)| (*label == key).then_some(*value))
+        };
+        let request = match name {
+            slate_db::db_cache_stats::ACCESS_COUNT => match label("result") {
+                Some("hit") => label("entry_kind")
+                    .map(str::to_owned)
+                    .map(RequestCacheCounter::MemoryHit),
+                Some("miss") => label("entry_kind")
+                    .map(str::to_owned)
+                    .map(RequestCacheCounter::MemoryMiss),
+                _ => None,
+            },
+            slate_db::db_cache_stats::ERROR_COUNT => Some(RequestCacheCounter::MemoryError),
+            slate_db::cached_object_store_stats::PART_ACCESS_COUNT => {
+                Some(RequestCacheCounter::LocalAccess)
+            }
+            slate_db::cached_object_store_stats::PART_HIT_COUNT => {
+                Some(RequestCacheCounter::LocalHit)
+            }
+            _ => None,
+        };
+        let export = metric_export::Counter::new(name, labels, &self.write_amplification);
+        Arc::new(SlateCounter {
+            global,
+            request,
+            export,
+        })
+    }
+
+    fn register_gauge(
+        &self,
+        name: &str,
+        description: &str,
+        labels: &[(&str, &str)],
+    ) -> Arc<dyn GaugeFn> {
+        Arc::new(SlateGauge {
+            global: self.global.register_gauge(name, description, labels),
+            export: metric_export::Gauge::new(name, labels),
+        })
+    }
+
+    fn register_up_down_counter(
+        &self,
+        name: &str,
+        description: &str,
+        labels: &[(&str, &str)],
+    ) -> Arc<dyn UpDownCounterFn> {
+        Arc::new(SlateUpDownCounter {
+            global: self
+                .global
+                .register_up_down_counter(name, description, labels),
+            export: metric_export::UpDownCounter::new(name, labels),
+        })
+    }
+
+    fn register_histogram(
+        &self,
+        name: &str,
+        description: &str,
+        labels: &[(&str, &str)],
+        boundaries: &[f64],
+    ) -> Arc<dyn HistogramFn> {
+        Arc::new(SlateHistogram {
+            global: self
+                .global
+                .register_histogram(name, description, labels, boundaries),
+            export: metric_export::Histogram::new(name, labels),
+        })
+    }
+}
+
+struct SlateGauge {
+    global: Arc<dyn GaugeFn>,
+    export: Option<metric_export::Gauge>,
+}
+
+impl GaugeFn for SlateGauge {
+    fn set(&self, value: i64) {
+        self.global.set(value);
+        if let Some(export) = &self.export {
+            export.record(value);
+        }
+    }
+}
+
+struct SlateUpDownCounter {
+    global: Arc<dyn UpDownCounterFn>,
+    export: Option<metric_export::UpDownCounter>,
+}
+
+impl UpDownCounterFn for SlateUpDownCounter {
+    fn increment(&self, value: i64) {
+        self.global.increment(value);
+        if let Some(export) = &self.export {
+            export.add(value);
+        }
+    }
+}
+
+struct SlateHistogram {
+    global: Arc<dyn HistogramFn>,
+    export: Option<metric_export::Histogram>,
+}
+
+impl HistogramFn for SlateHistogram {
+    fn record(&self, value: f64) {
+        self.global.record(value);
+        if let Some(export) = &self.export {
+            export.record(value);
+        }
     }
 }
 
@@ -35,7 +226,7 @@ struct RequestAccumulator {
 
 impl PhysicalTelemetry for SlateTelemetry {
     fn snapshot(&self) -> PhysicalTelemetrySnapshot {
-        let snapshot = self.recorder.snapshot();
+        let snapshot = self.global.snapshot();
         let mut requests = BTreeMap::<PhysicalRequestClass, RequestAccumulator>::new();
         for metric in snapshot.all() {
             let Some(class) = request_class(metric) else {
@@ -284,5 +475,34 @@ mod tests {
                 .increment(1);
         }
         assert!(telemetry.snapshot().requests.is_empty());
+    }
+
+    #[tokio::test]
+    async fn request_scope_separates_memory_cache_results() {
+        let telemetry = SlateTelemetry::new();
+        let hit = telemetry.recorder.register_counter(
+            slate_db::db_cache_stats::ACCESS_COUNT,
+            "",
+            &[("entry_kind", "data_block"), ("result", "hit")],
+        );
+        let miss = telemetry.recorder.register_counter(
+            slate_db::db_cache_stats::ACCESS_COUNT,
+            "",
+            &[("entry_kind", "data_block"), ("result", "miss")],
+        );
+
+        let (_, trace) = crate::engine::kv::telemetry::observe_request("slatedb", async {
+            hit.increment(4);
+            miss.increment(2);
+        })
+        .await;
+
+        assert_eq!(trace.backend, "slatedb");
+        assert_eq!(trace.scope, "foreground_task");
+        assert_eq!(trace.caches.len(), 1);
+        assert_eq!(trace.caches[0].entry_kind.as_deref(), Some("data_block"));
+        assert_eq!(trace.caches[0].accesses, 6);
+        assert_eq!(trace.caches[0].hits, 4);
+        assert_eq!(trace.caches[0].misses, 2);
     }
 }

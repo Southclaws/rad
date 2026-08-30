@@ -59,8 +59,15 @@ async fn serve_tls(
             _ = refresh.tick() => {
                 // A failed reload is not fatal: the previous certificate keeps
                 // serving, and the next tick tries again.
-                if let Err(error) = certificate.refresh() {
-                    eprintln!("internal TLS certificate reload failed: {error}");
+                if certificate.refresh().is_err() {
+                    tracing::warn!(
+                        target: "rad",
+                        event = "tls.reload_failed",
+                        component = "internal_http",
+                        error_kind = "tls",
+                        error_reason = "certificate_reload_failed",
+                        message = "internal TLS certificate reload failed"
+                    );
                 }
             }
             accepted = listener.accept() => {

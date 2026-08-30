@@ -4,6 +4,7 @@ pub mod key_encoding;
 pub mod keys;
 pub mod keyspace;
 pub mod manifest;
+pub(crate) mod object_store_telemetry;
 pub mod slatedb;
 pub mod telemetry;
 

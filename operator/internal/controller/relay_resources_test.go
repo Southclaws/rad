@@ -96,12 +96,11 @@ func TestRelayGivesTheWriterAListenerAndReadersATarget(t *testing.T) {
 		assertTokenReadableByItsProcess(t, pair.role, pair.container, pair.spec)
 	}
 
-	// Only the writer serves the port, so only the writer declares it.
-	if len(writer.Ports) != 2 || writer.Ports[1].ContainerPort != internalPort {
+	if len(writer.Ports) != 3 || writer.Ports[2].ContainerPort != internalPort {
 		t.Fatalf("writer ports = %#v", writer.Ports)
 	}
-	if len(reader.Ports) != 1 {
-		t.Fatalf("reader ports = %#v, want only the client port", reader.Ports)
+	if len(reader.Ports) != 2 {
+		t.Fatalf("reader ports = %#v, want client and admin ports", reader.Ports)
 	}
 }
 
@@ -121,6 +120,103 @@ func TestCorpusCapturePolicyReachesWriterAndReaders(t *testing.T) {
 		if environmentMap(environment)["RAD_CAPTURE_WORKLOAD_CORPUS"] != "true" {
 			t.Fatalf("%s does not receive the corpus capture policy", role)
 		}
+	}
+}
+
+func TestLoggingPolicyReachesWriterAndReaders(t *testing.T) {
+	database := testDatabase("alpha", "alpha-bucket", "alpha.rad.localhost", "alpha-s3", time.Unix(1, 0))
+	database.Spec.Readers = 2
+	database.Spec.Logging = radv1alpha1.Logging{
+		Level:    radv1alpha1.LogLevelDebug,
+		Format:   radv1alpha1.LogFormatLogfmt,
+		Programs: true,
+	}
+	reconciler, kubernetesClient := testReconciler(t, database, testSecret("alpha-s3"))
+	reconcileReadySpec(t, reconciler, database)
+
+	statefulSet := getObject(t, kubernetesClient, types.NamespacedName{Namespace: testNamespace, Name: "rad-alpha"}, &appsv1.StatefulSet{})
+	deployment := getObject(t, kubernetesClient, types.NamespacedName{Namespace: testNamespace, Name: "rad-alpha-reader"}, &appsv1.Deployment{})
+	for role, environment := range map[string][]corev1.EnvVar{
+		"writer": statefulSet.Spec.Template.Spec.Containers[0].Env,
+		"reader": deployment.Spec.Template.Spec.Containers[0].Env,
+	} {
+		values := environmentMap(environment)
+		if values["RAD_LOG_LEVEL"] != "debug" || values["RAD_LOG_FORMAT"] != "logfmt" || values["RAD_LOG_PROGRAMS"] != "true" {
+			t.Fatalf("%s logging environment = %#v", role, values)
+		}
+	}
+}
+
+func TestOperatorWorkloadsDefaultToJSONLogs(t *testing.T) {
+	database := testDatabase("alpha", "alpha-bucket", "alpha.rad.localhost", "alpha-s3", time.Unix(1, 0))
+	values := environmentMap(databaseEnvironment(database, internalTransport{}, writeRole))
+	if values["RAD_LOG_LEVEL"] != "info" || values["RAD_LOG_FORMAT"] != "json" || values["RAD_LOG_PROGRAMS"] != "false" {
+		t.Fatalf("default logging environment = %#v", values)
+	}
+}
+
+func TestTelemetryPolicyReachesWriterAndReaders(t *testing.T) {
+	database := testDatabase("alpha", "alpha-bucket", "alpha.rad.localhost", "alpha-s3", time.Unix(1, 0))
+	database.Spec.Readers = 2
+	metrics := false
+	database.Spec.Telemetry = radv1alpha1.Telemetry{
+		Endpoint:    "http://collector:4318",
+		Diagnostics: radv1alpha1.DiagnosticLevelDetailed,
+		Metrics:     &metrics,
+	}
+	database.Spec.Cache.SizeMiB = 256
+	reconciler, kubernetesClient := testReconciler(t, database, testSecret("alpha-s3"))
+	reconcileReadySpec(t, reconciler, database)
+
+	statefulSet := getObject(t, kubernetesClient, types.NamespacedName{Namespace: testNamespace, Name: "rad-alpha"}, &appsv1.StatefulSet{})
+	deployment := getObject(t, kubernetesClient, types.NamespacedName{Namespace: testNamespace, Name: "rad-alpha-reader"}, &appsv1.Deployment{})
+	for role, environment := range map[string][]corev1.EnvVar{
+		"writer": statefulSet.Spec.Template.Spec.Containers[0].Env,
+		"reader": deployment.Spec.Template.Spec.Containers[0].Env,
+	} {
+		values := environmentMap(environment)
+		if values["RAD_DIAGNOSTICS"] != "detailed" || values["OTEL_EXPORTER_OTLP_ENDPOINT"] != "http://collector:4318" || values["RAD_METRICS"] != "false" || values["RAD_CACHE_SIZE_MIB"] != "256" {
+			t.Fatalf("%s telemetry environment = %#v", role, values)
+		}
+		for name, fieldPath := range map[string]string{
+			"RAD_INSTANCE_ID":                             "metadata.name",
+			"OTEL_RESOURCE_ATTRIBUTES_K8S_POD_NAME":       "metadata.name",
+			"OTEL_RESOURCE_ATTRIBUTES_K8S_NAMESPACE_NAME": "metadata.namespace",
+		} {
+			variable := findEnvironmentVariable(t, environment, name)
+			if variable.ValueFrom == nil || variable.ValueFrom.FieldRef == nil || variable.ValueFrom.FieldRef.FieldPath != fieldPath {
+				t.Fatalf("%s %s projection = %#v", role, name, variable)
+			}
+		}
+	}
+}
+
+func TestTelemetryDefaultsToSummaryWithoutAnExporter(t *testing.T) {
+	database := testDatabase("alpha", "alpha-bucket", "alpha.rad.localhost", "alpha-s3", time.Unix(1, 0))
+	values := environmentMap(databaseEnvironment(database, internalTransport{}, writeRole))
+	if values["RAD_DIAGNOSTICS"] != "summary" {
+		t.Fatalf("default diagnostic environment = %#v", values)
+	}
+	if _, configured := values["OTEL_EXPORTER_OTLP_ENDPOINT"]; configured {
+		t.Fatalf("default telemetry exporter is configured: %#v", values)
+	}
+	if values["RAD_METRICS"] != "true" || values["RAD_CACHE_SIZE_MIB"] != "128" {
+		t.Fatalf("default metric and cache environment = %#v", values)
+	}
+}
+
+func TestMetricScrapeAnnotationsFollowTheMetricPolicy(t *testing.T) {
+	database := testDatabase("alpha", "alpha-bucket", "alpha.rad.localhost", "alpha-s3", time.Unix(1, 0))
+	authentication := resolvedAuthentication{secretName: "alpha-s3", versionAnnotation: "one"}
+	annotations := workloadAnnotations(database, authentication)
+	if annotations["prometheus.io/scrape"] != "true" || annotations["prometheus.io/path"] != "/metrics" || annotations["prometheus.io/port"] != "7237" {
+		t.Fatalf("metric scrape annotations = %#v", annotations)
+	}
+	metrics := false
+	database.Spec.Telemetry.Metrics = &metrics
+	annotations = workloadAnnotations(database, authentication)
+	if _, configured := annotations["prometheus.io/scrape"]; configured {
+		t.Fatalf("disabled metric scrape annotations = %#v", annotations)
 	}
 }
 

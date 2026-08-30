@@ -3293,6 +3293,8 @@ pub(super) mod tests {
             affected: rows,
             mutated: None,
             kv: Default::default(),
+            operators: Vec::new(),
+            physical_storage: None,
             join_operators: Vec::new(),
             failure: None,
         }

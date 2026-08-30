@@ -47,6 +47,73 @@ type DeletionPolicy string
 
 const DeletionPolicyRetain DeletionPolicy = "Retain"
 
+// LogLevel selects the minimum operational event severity.
+// +kubebuilder:validation:Enum=error;warn;info;debug
+type LogLevel string
+
+// LogFormat selects the standard error event projection.
+// +kubebuilder:validation:Enum=text;json;logfmt
+type LogFormat string
+
+const (
+	LogLevelError LogLevel = "error"
+	LogLevelWarn  LogLevel = "warn"
+	LogLevelInfo  LogLevel = "info"
+	LogLevelDebug LogLevel = "debug"
+
+	LogFormatText   LogFormat = "text"
+	LogFormatJSON   LogFormat = "json"
+	LogFormatLogfmt LogFormat = "logfmt"
+)
+
+// Logging configures Rad events for all database pods.
+type Logging struct {
+	// +kubebuilder:default=info
+	Level LogLevel `json:"level,omitempty"`
+
+	// +kubebuilder:default=json
+	Format LogFormat `json:"format,omitempty"`
+
+	// +kubebuilder:default=false
+	Programs bool `json:"programs,omitempty"`
+}
+
+// DiagnosticLevel selects the maximum program diagnostic document level.
+// +kubebuilder:validation:Enum=off;summary;detailed;full
+type DiagnosticLevel string
+
+const (
+	DiagnosticLevelOff      DiagnosticLevel = "off"
+	DiagnosticLevelSummary  DiagnosticLevel = "summary"
+	DiagnosticLevelDetailed DiagnosticLevel = "detailed"
+	DiagnosticLevelFull     DiagnosticLevel = "full"
+)
+
+// Telemetry configures Rad traces, metrics, and response diagnostics.
+type Telemetry struct {
+	// Endpoint is the base OTLP HTTP endpoint. An empty value disables export.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^$|^https?://`
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// Diagnostics limits the level that an HTTP request can select.
+	// +kubebuilder:default=summary
+	Diagnostics DiagnosticLevel `json:"diagnostics,omitempty"`
+
+	// Metrics enables OTEL metric export and the metrics HTTP route.
+	// +optional
+	// +kubebuilder:default=true
+	Metrics *bool `json:"metrics,omitempty"`
+}
+
+// Cache configures the Slate decoded cache for all database pods.
+type Cache struct {
+	// SizeMiB is the total decoded data block and metadata cache capacity.
+	// +kubebuilder:default=128
+	// +kubebuilder:validation:Minimum=16
+	SizeMiB int32 `json:"sizeMiB,omitempty"`
+}
+
 // S3Authentication selects one credential source. A Secret contains AWS SDK
 // environment variable names; a ServiceAccount enables provider-native
 // workload identity such as AssumeRoleWithWebIdentity.
@@ -190,6 +257,21 @@ type DatabaseSpec struct {
 	// bounded offline replay. The writer and each reader apply the same policy.
 	// +kubebuilder:default=false
 	CaptureWorkloadCorpus bool `json:"captureWorkloadCorpus,omitempty"`
+
+	// Logging applies the same event policy to the writer and all readers.
+	// +optional
+	// +kubebuilder:default={level: info, format: json, programs: false}
+	Logging Logging `json:"logging,omitempty"`
+
+	// Telemetry applies the same export and diagnostic policy to all pods.
+	// +optional
+	// +kubebuilder:default={diagnostics: summary, metrics: true}
+	Telemetry Telemetry `json:"telemetry,omitempty"`
+
+	// Cache applies the same decoded cache capacity to all pods.
+	// +optional
+	// +kubebuilder:default={sizeMiB: 128}
+	Cache Cache `json:"cache,omitempty"`
 
 	// InternalTLS secures the reader-to-writer statistics channel. It has no
 	// effect while no readers exist, because the channel does not exist.

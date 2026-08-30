@@ -80,10 +80,15 @@ pub fn router_with_health(
         Probes::new(health),
         api,
     )
+    .route(
+        "/metrics",
+        axum::routing::get(crate::telemetry::prometheus_metrics),
+    )
     .layer(axum::middleware::map_response(
         validation::normalize_generated_rejection,
     ))
     .layer(axum::middleware::from_fn(super::cors::allow_admin_origin))
+    .layer(axum::middleware::from_fn(super::context::log_request))
 }
 
 #[async_trait::async_trait]
@@ -102,19 +107,25 @@ impl DataApi for Api {
             Err(error) => return invalid_request(format!("invalid PIR program: {error}")),
         };
 
+        let show_plan = show_plan.unwrap_or(false);
+        let diagnostic_measurements = crate::logging::request_context().diagnostics.is_some();
         let options = ProgramOptions {
             catalog: self.catalog_policy(),
             dry_run: dry_run.unwrap_or(false),
-            collect_plan: show_plan.unwrap_or(false),
+            collect_plan: show_plan || diagnostic_measurements,
             ..ProgramOptions::default()
         };
-        let result = match frontend::execute_pir_with_options(&self.engine, program, options).await
+        let mut result = match frontend::execute_pir_with_options(&self.engine, program, options)
+            .await
         {
             Ok(result) => result,
             Err(error) => {
                 return execute_problem(problem::ResponseProblem::from_failure((&error).into()));
             }
         };
+        if !show_plan {
+            result.plans.clear();
+        }
         match result::encode(&result) {
             Ok(result) => ExecuteResponse::Ok(result),
             Err(error) => {

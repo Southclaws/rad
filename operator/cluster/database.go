@@ -21,9 +21,32 @@ import (
 // initializes its storage.
 type CatalogMode string
 
+// LogLevel selects the minimum Rad operational event severity.
+type LogLevel string
+
+// LogFormat selects the Rad event projection.
+type LogFormat string
+
+// DiagnosticLevel selects the maximum Rad response diagnostic level.
+type DiagnosticLevel string
+
 const (
 	CatalogModeDirect CatalogMode = "direct"
 	CatalogModeSchema CatalogMode = "schema"
+
+	LogLevelError LogLevel = "error"
+	LogLevelWarn  LogLevel = "warn"
+	LogLevelInfo  LogLevel = "info"
+	LogLevelDebug LogLevel = "debug"
+
+	LogFormatText   LogFormat = "text"
+	LogFormatJSON   LogFormat = "json"
+	LogFormatLogfmt LogFormat = "logfmt"
+
+	DiagnosticLevelOff      DiagnosticLevel = "off"
+	DiagnosticLevelSummary  DiagnosticLevel = "summary"
+	DiagnosticLevelDetailed DiagnosticLevel = "detailed"
+	DiagnosticLevelFull     DiagnosticLevel = "full"
 )
 
 // DatabaseSpec is the product-level description of one tenant database. The
@@ -59,6 +82,22 @@ type DatabaseSpec struct {
 	// through [Database.ReaderService]; the external URL always reaches the
 	// writer.
 	Readers int32
+
+	// LogLevel defaults to info.
+	LogLevel LogLevel
+	// LogFormat defaults to JSON in operator workloads.
+	LogFormat LogFormat
+	// LogPrograms emits program events independently from LogLevel.
+	LogPrograms bool
+
+	// OTelEndpoint selects the base OTLP HTTP endpoint. Empty disables export.
+	OTelEndpoint string
+	// Diagnostics defaults to summary.
+	Diagnostics DiagnosticLevel
+	// MetricsEnabled defaults to true when it is nil.
+	MetricsEnabled *bool
+	// CacheSizeMiB defaults to 128.
+	CacheSizeMiB int32
 
 	// InternalTLSMode secures the channel readers use to report statistics to
 	// the writer: "auto" (the default) provisions a certificate through
@@ -113,6 +152,14 @@ type Database struct {
 	ReaderService  string
 	DesiredReaders int32
 	ReadyReaders   int32
+
+	LogLevel       LogLevel
+	LogFormat      LogFormat
+	LogPrograms    bool
+	OTelEndpoint   string
+	Diagnostics    DiagnosticLevel
+	MetricsEnabled bool
+	CacheSizeMiB   int32
 
 	// InternalTransportMode is "tls" or "plaintext", empty without readers.
 	// It describes the statistics channel, never client traffic.
@@ -234,6 +281,19 @@ func (c *Client) resource(spec DatabaseSpec) (*radv1alpha1.Database, error) {
 	default:
 		return nil, fmt.Errorf("database %s: one of CredentialsSecret or ServiceAccount is required", spec.Name)
 	}
+	diagnostics := spec.Diagnostics
+	if diagnostics == "" {
+		diagnostics = DiagnosticLevelSummary
+	}
+	metrics := spec.MetricsEnabled
+	if metrics == nil {
+		enabled := true
+		metrics = &enabled
+	}
+	cacheSizeMiB := spec.CacheSizeMiB
+	if cacheSizeMiB == 0 {
+		cacheSizeMiB = 128
+	}
 	return &radv1alpha1.Database{
 		ObjectMeta: metav1.ObjectMeta{Namespace: c.namespace, Name: spec.Name},
 		Spec: radv1alpha1.DatabaseSpec{
@@ -246,6 +306,17 @@ func (c *Client) resource(spec DatabaseSpec) (*radv1alpha1.Database, error) {
 			},
 			CatalogMode: radv1alpha1.CatalogMode(spec.CatalogMode),
 			Readers:     spec.Readers,
+			Logging: radv1alpha1.Logging{
+				Level:    radv1alpha1.LogLevel(spec.LogLevel),
+				Format:   radv1alpha1.LogFormat(spec.LogFormat),
+				Programs: spec.LogPrograms,
+			},
+			Telemetry: radv1alpha1.Telemetry{
+				Endpoint:    spec.OTelEndpoint,
+				Diagnostics: radv1alpha1.DiagnosticLevel(diagnostics),
+				Metrics:     metrics,
+			},
+			Cache: radv1alpha1.Cache{SizeMiB: cacheSizeMiB},
 			InternalTLS: radv1alpha1.InternalTLS{
 				Mode:       radv1alpha1.InternalTLSMode(spec.InternalTLSMode),
 				SecretName: spec.InternalTLSSecret,
@@ -273,6 +344,13 @@ func databaseView(resource *radv1alpha1.Database) Database {
 		ReaderService:  resource.Status.ReaderServiceName,
 		DesiredReaders: resource.Status.DesiredReaders,
 		ReadyReaders:   resource.Status.ReadyReaders,
+		LogLevel:       LogLevel(resource.Spec.Logging.Level),
+		LogFormat:      LogFormat(resource.Spec.Logging.Format),
+		LogPrograms:    resource.Spec.Logging.Programs,
+		OTelEndpoint:   resource.Spec.Telemetry.Endpoint,
+		Diagnostics:    DiagnosticLevel(resource.Spec.Telemetry.Diagnostics),
+		MetricsEnabled: resource.Spec.Telemetry.Metrics == nil || *resource.Spec.Telemetry.Metrics,
+		CacheSizeMiB:   resource.Spec.Cache.SizeMiB,
 	}
 	if transport := resource.Status.InternalTransport; transport != nil {
 		database.InternalTransportMode = transport.Mode

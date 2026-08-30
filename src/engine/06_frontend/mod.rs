@@ -4,6 +4,8 @@ pub mod migration;
 pub mod schema_transitions;
 
 use std::sync::Arc;
+use std::time::Instant;
+use tracing::Instrument as _;
 
 use crate::engine::catalog;
 use crate::engine::catalog::model::Table;
@@ -19,19 +21,44 @@ use crate::protocol::generated::pir;
 /// PIR units while reads, writes, and catalog changes share one snapshot until
 /// the frontend commits or rolls back the handle.
 pub struct Tx {
+    id: String,
     engine: Arc<Engine>,
     transaction: Option<Box<dyn Transaction>>,
     catalog_statements: Vec<String>,
+    span: tracing::Span,
+    started: Instant,
 }
 
 impl Tx {
     pub async fn begin(engine: Arc<Engine>) -> crate::engine::exec::Result<Self> {
         let transaction = engine.begin_frontend_transaction().await?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let span = tracing::info_span!(
+            target: "rad::telemetry",
+            "rad.transaction",
+            otel.kind = "internal",
+            transaction_id = id,
+            rad.transaction.outcome = tracing::field::Empty,
+            rad.status = tracing::field::Empty,
+            error.type = tracing::field::Empty,
+            otel.status_code = tracing::field::Empty,
+        );
         Ok(Self {
+            id,
             engine,
             transaction: Some(transaction),
             catalog_statements: Vec::new(),
+            span,
+            started: Instant::now(),
         })
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn span(&self) -> tracing::Span {
+        self.span.clone()
     }
 
     pub async fn execute_program(
@@ -49,10 +76,18 @@ impl Tx {
             .transaction
             .as_deref_mut()
             .expect("frontend transaction remains open while executing");
+        let options = ProgramOptions {
+            catalog: catalog_policy,
+            ..ProgramOptions::default()
+        };
+        let program_log = ProgramLog::new(&program, &options);
         let result = self
             .engine
             .execute_program_in_transaction(transaction, &program, catalog_policy)
-            .await?;
+            .instrument(program_log.span.clone())
+            .await;
+        program_log.finish(&result);
+        let result = result?;
         self.catalog_statements.extend(catalog_statements);
         Ok(result)
     }
@@ -73,15 +108,38 @@ impl Tx {
             .transaction
             .take()
             .expect("frontend transaction commits once");
-        self.engine
+        let result = self
+            .engine
             .commit_frontend_transaction(transaction, std::mem::take(&mut self.catalog_statements))
-            .await
+            .instrument(self.span.clone())
+            .await;
+        self.span.record("rad.transaction.outcome", "commit");
+        self.span.record(
+            "rad.status",
+            if result.is_ok() { "success" } else { "error" },
+        );
+        if let Err(error) = &result {
+            self.span.record("error.type", error.kind().as_str());
+            self.span.record("otel.status_code", "ERROR");
+        }
+        crate::telemetry::transaction_finished(
+            "commit",
+            if result.is_ok() { "success" } else { "error" },
+            self.started.elapsed(),
+            result.as_ref().err().and_then(|error| {
+                (error.kind() == ErrorKind::Conflict).then(|| error.reason().as_str())
+            }),
+        );
+        result
     }
 
     pub fn rollback(mut self) {
         if let Some(transaction) = self.transaction.take() {
             transaction.rollback();
         }
+        self.span.record("rad.transaction.outcome", "rollback");
+        self.span.record("rad.status", "success");
+        crate::telemetry::transaction_finished("rollback", "success", self.started.elapsed(), None);
     }
 }
 
@@ -89,6 +147,16 @@ impl Drop for Tx {
     fn drop(&mut self) {
         if let Some(transaction) = self.transaction.take() {
             transaction.rollback();
+            self.span.record("rad.transaction.outcome", "abandoned");
+            self.span.record("rad.status", "error");
+            self.span.record("error.type", "abandoned");
+            self.span.record("otel.status_code", "ERROR");
+            crate::telemetry::transaction_finished(
+                "abandoned",
+                "error",
+                self.started.elapsed(),
+                None,
+            );
         }
     }
 }
@@ -101,16 +169,27 @@ pub async fn execute_pir(
     program: pir::Program,
     catalog_policy: CatalogPolicy,
 ) -> crate::engine::exec::Result<ProgramResult> {
+    if let Some(diagnostics) = crate::logging::request_context().diagnostics {
+        diagnostics.submitted(&program);
+    }
     let capture = captured_program(engine, &program);
     let program = match lower_pir(program) {
         Ok(program) => program,
         Err(error) => {
             record_corpus_program(engine, capture, &std::collections::HashSet::new(), None);
-            return Err(error);
+            let result = Err(error);
+            if let Some(diagnostics) = crate::logging::request_context().diagnostics {
+                diagnostics.finish(&result);
+            }
+            return result;
         }
     };
     let relational = relational_statement_names(&program);
-    let result = engine.execute_program(program, catalog_policy).await;
+    let options = ProgramOptions {
+        catalog: catalog_policy,
+        ..ProgramOptions::default()
+    };
+    let result = execute_program_with_options(engine, program, options).await;
     record_corpus_program(engine, capture, &relational, result.as_ref().ok());
     result
 }
@@ -120,6 +199,9 @@ pub async fn execute_pir_with_options(
     program: pir::Program,
     options: ProgramOptions,
 ) -> crate::engine::exec::Result<ProgramResult> {
+    if let Some(diagnostics) = crate::logging::request_context().diagnostics {
+        diagnostics.submitted(&program);
+    }
     let capture = (!options.dry_run)
         .then(|| captured_program(engine, &program))
         .flatten();
@@ -127,13 +209,285 @@ pub async fn execute_pir_with_options(
         Ok(program) => program,
         Err(error) => {
             record_corpus_program(engine, capture, &std::collections::HashSet::new(), None);
-            return Err(error);
+            let result = Err(error);
+            if let Some(diagnostics) = crate::logging::request_context().diagnostics {
+                diagnostics.finish(&result);
+            }
+            return result;
         }
     };
     let relational = relational_statement_names(&program);
-    let result = engine.execute_program_with_options(program, options).await;
+    let result = execute_program_with_options(engine, program, options).await;
     record_corpus_program(engine, capture, &relational, result.as_ref().ok());
     result
+}
+
+pub async fn execute_program_with_options(
+    engine: &Engine,
+    program: Program,
+    options: ProgramOptions,
+) -> crate::engine::exec::Result<ProgramResult> {
+    let program_log = ProgramLog::new(&program, &options);
+    let result = engine
+        .execute_program_with_options(program, options)
+        .instrument(program_log.span.clone())
+        .await;
+    program_log.finish(&result);
+    result
+}
+
+struct ProgramLog {
+    enabled: bool,
+    started: Option<Instant>,
+    fingerprint: String,
+    statements: usize,
+    mutation_statements: usize,
+    mutation_names: Vec<String>,
+    dry_run: bool,
+    context: crate::logging::RequestContext,
+    span: tracing::Span,
+    trace_id: String,
+    span_id: String,
+    metrics: bool,
+    diagnostics: Option<crate::diagnostics::ProgramDiagnosticRecorder>,
+}
+
+impl ProgramLog {
+    fn new(program: &Program, options: &ProgramOptions) -> Self {
+        let context = crate::logging::request_context();
+        let transport = if context.transport.is_empty() {
+            "direct"
+        } else {
+            context.transport
+        };
+        let parent = context
+            .parent_span
+            .clone()
+            .unwrap_or_else(tracing::Span::current);
+        let span = tracing::info_span!(
+            target: "rad::telemetry",
+            parent: &parent,
+            "rad.program.execute",
+            otel.kind = "internal",
+            request_id = context.request_id,
+            rad.transport = transport,
+            rad.program.fingerprint = tracing::field::Empty,
+            rad.program.statement_count = program.statements.len(),
+            rad.program.mutation_statement_count = program.statements.iter().filter(|statement| statement.effectful()).count(),
+            rad.program.dry_run = options.dry_run,
+            rad.status = tracing::field::Empty,
+            rad.program.result_rows = tracing::field::Empty,
+            rad.program.affected_rows = tracing::field::Empty,
+            error.type = tracing::field::Empty,
+            otel.status_code = tracing::field::Empty,
+        );
+        let enabled = tracing::event_enabled!(target: "rad::program", tracing::Level::INFO);
+        let metrics = crate::telemetry::enabled();
+        let diagnostics = context.diagnostics.clone();
+        let fingerprint_enabled = enabled || !span.is_disabled() || diagnostics.is_some();
+        if !fingerprint_enabled && !metrics {
+            return Self {
+                enabled,
+                started: None,
+                fingerprint: String::new(),
+                statements: 0,
+                mutation_statements: 0,
+                mutation_names: Vec::new(),
+                dry_run: options.dry_run,
+                context,
+                span,
+                trace_id: String::new(),
+                span_id: String::new(),
+                metrics,
+                diagnostics,
+            };
+        }
+        let fingerprints = fingerprint_enabled
+            .then(|| crate::engine::exec::diagnostic::program_fingerprints(program));
+        if let Some(fingerprints) = &fingerprints {
+            span.record("rad.program.fingerprint", fingerprints.family.as_str());
+        }
+        let (trace_id, span_id) = crate::telemetry::span_ids(&span);
+        if let Some(diagnostics) = &diagnostics
+            && let Some(fingerprints) = &fingerprints
+        {
+            diagnostics.start(program, options, fingerprints);
+        }
+        if metrics {
+            crate::telemetry::program_started(transport);
+        }
+        if enabled
+            && tracing::event_enabled!(target: "rad::program", tracing::Level::DEBUG)
+            && let Some(fingerprints) = &fingerprints
+        {
+            let document = crate::engine::exec::diagnostic::program_document(program);
+            if document.len() <= crate::engine::exec::diagnostic::MAX_PROGRAM_DOCUMENT_BYTES {
+                tracing::debug!(
+                    target: "rad::program",
+                    event = "program.diagnostic",
+                    component = "frontend",
+                    program_fingerprint = fingerprints.family,
+                    exact_program_fingerprint = fingerprints.exact,
+                    transport = context.transport,
+                    request_id = context.request_id,
+                    trace_id,
+                    span_id,
+                    transaction_id = context.transaction_id,
+                    client_ip = context.client_ip,
+                    diagnostic = %String::from_utf8_lossy(&document),
+                    diagnostic_bytes = document.len(),
+                    diagnostic_omitted = false,
+                    message = "program diagnostic is available"
+                );
+            } else {
+                tracing::debug!(
+                    target: "rad::program",
+                    event = "program.diagnostic",
+                    component = "frontend",
+                    program_fingerprint = fingerprints.family,
+                    exact_program_fingerprint = fingerprints.exact,
+                    transport = context.transport,
+                    request_id = context.request_id,
+                    trace_id,
+                    span_id,
+                    transaction_id = context.transaction_id,
+                    client_ip = context.client_ip,
+                    diagnostic_bytes = document.len(),
+                    diagnostic_omitted = true,
+                    message = "program diagnostic is omitted"
+                );
+            }
+        }
+        let mutation_names = program
+            .statements
+            .iter()
+            .filter(|statement| {
+                matches!(
+                    statement,
+                    crate::engine::exec::Statement::Create { .. }
+                        | crate::engine::exec::Statement::Update { .. }
+                        | crate::engine::exec::Statement::Delete { .. }
+                )
+            })
+            .map(|statement| statement.name().to_owned())
+            .collect::<Vec<_>>();
+        Self {
+            enabled,
+            started: Some(Instant::now()),
+            fingerprint: fingerprints.map_or_else(String::new, |value| value.family),
+            statements: program.statements.len(),
+            mutation_statements: mutation_names.len(),
+            mutation_names,
+            dry_run: options.dry_run,
+            context,
+            span,
+            trace_id,
+            span_id,
+            metrics,
+            diagnostics,
+        }
+    }
+
+    fn finish(&self, result: &crate::engine::exec::Result<ProgramResult>) {
+        let duration = self
+            .started
+            .map_or(std::time::Duration::ZERO, |started| started.elapsed());
+        let duration_ms = duration.as_millis() as u64;
+        let transport = if self.context.transport.is_empty() {
+            "direct"
+        } else {
+            self.context.transport
+        };
+        let (status, rows, affected) = match result {
+            Ok(result) => (
+                "success",
+                result_rows(&result.result),
+                result
+                    .statements
+                    .iter()
+                    .filter(|statement| self.mutation_names.contains(&statement.name))
+                    .map(|statement| statement.affected as u64)
+                    .sum(),
+            ),
+            Err(_) => ("error", 0, 0),
+        };
+        self.span.record("rad.status", status);
+        self.span.record("rad.program.result_rows", rows);
+        self.span.record("rad.program.affected_rows", affected);
+        if let Err(error) = result {
+            self.span.record("error.type", error.kind().as_str());
+            self.span.record("otel.status_code", "ERROR");
+        }
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.finish(result);
+        }
+        if self.metrics {
+            crate::telemetry::program_finished(crate::telemetry::ProgramMeasurement {
+                transport,
+                status,
+                duration,
+                result_rows: rows,
+                affected_rows: affected,
+                statements: self.statements as u64,
+                dry_run: self.dry_run,
+            });
+        }
+        if !self.enabled {
+            return;
+        }
+        match result {
+            Ok(_) => tracing::info!(
+                target: "rad::program",
+                event = "program.executed",
+                component = "frontend",
+                program_fingerprint = self.fingerprint,
+                statements = self.statements,
+                mutation_statements = self.mutation_statements,
+                transport,
+                request_id = self.context.request_id,
+                trace_id = self.trace_id,
+                span_id = self.span_id,
+                transaction_id = self.context.transaction_id,
+                client_ip = self.context.client_ip,
+                duration_ms,
+                status = "success",
+                result_rows = rows,
+                affected_rows = affected,
+                dry_run = self.dry_run,
+                transaction_state = self.context.transaction_state,
+                message = "program executed"
+            ),
+            Err(error) => tracing::info!(
+                target: "rad::program",
+                event = "program.executed",
+                component = "frontend",
+                program_fingerprint = self.fingerprint,
+                statements = self.statements,
+                mutation_statements = self.mutation_statements,
+                transport,
+                request_id = self.context.request_id,
+                trace_id = self.trace_id,
+                span_id = self.span_id,
+                transaction_id = self.context.transaction_id,
+                client_ip = self.context.client_ip,
+                duration_ms,
+                status = "error",
+                error_kind = error.kind().as_str(),
+                error_reason = error.reason().as_str(),
+                dry_run = self.dry_run,
+                transaction_state = self.context.transaction_state,
+                message = "program execution failed"
+            ),
+        }
+    }
+}
+
+fn result_rows(result: &crate::engine::lir::Datum) -> u64 {
+    match result {
+        crate::engine::lir::Datum::Null => 0,
+        crate::engine::lir::Datum::Array(rows) => rows.len() as u64,
+        crate::engine::lir::Datum::Scalar(_) | crate::engine::lir::Datum::Object(_) => 1,
+    }
 }
 
 /// Capture the submitted wire program for the workload corpus. Failed
@@ -261,6 +615,7 @@ mod tests {
 
     use crate::engine::kv::slatedb::Store;
     use crate::engine::lir::{Datum, ObjectField, Value};
+    use tracing_subscriber::prelude::*;
 
     use super::*;
 
@@ -283,6 +638,123 @@ mod tests {
 
         fn program_skipped_oversize(&self) {
             self.skipped_oversize.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn program_span_uses_the_current_otel_trace() {
+        use opentelemetry::trace::TracerProvider as _;
+        use tracing_subscriber::filter::{LevelFilter, Targets};
+
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+        let tracer = provider.tracer("rad-test");
+        let subscriber = tracing_subscriber::registry()
+            .with(
+                tracing_opentelemetry::layer()
+                    .with_tracer(tracer)
+                    .with_filter(
+                        Targets::new()
+                            .with_default(LevelFilter::OFF)
+                            .with_target("rad::telemetry", LevelFilter::DEBUG),
+                    ),
+            )
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::sink)
+                    .with_filter(
+                        Targets::new()
+                            .with_default(LevelFilter::OFF)
+                            .with_target("rad", LevelFilter::DEBUG)
+                            .with_target("rad::program", LevelFilter::DEBUG),
+                    ),
+            );
+        tracing::subscriber::with_default(subscriber, || {
+            let parent = tracing::info_span!(target: "rad::telemetry", "test.request");
+            let (parent_trace_id, parent_span_id) = crate::telemetry::span_ids(&parent);
+            parent.in_scope(|| {
+                let program = Program {
+                    statements: Vec::new(),
+                    result: None,
+                };
+                let program_log = ProgramLog::new(&program, &ProgramOptions::default());
+                assert_eq!(program_log.trace_id, parent_trace_id);
+                assert_ne!(program_log.span_id, parent_span_id);
+                assert!(!program_log.span_id.is_empty());
+            });
+        });
+    }
+
+    #[test]
+    fn normal_program_event_does_not_contain_program_literals() {
+        let program = lower_pir(
+            serde_json::from_value(serde_json::json!({
+                "statements": [{
+                    "kind": "query",
+                    "name": "read",
+                    "relation": {
+                        "nodes": {
+                            "rows": {
+                                "kind": "rows",
+                                "scope": "r",
+                                "columns": [{"name": "value", "type": "text"}],
+                                "rows": [["private-value"]]
+                            }
+                        },
+                        "root": {"node": "rows", "cardinality": "many"}
+                    }
+                }],
+                "result": "read"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_subscriber::filter::LevelFilter::INFO)
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .flatten_event(true)
+                    .with_target(false)
+                    .with_writer(ProgramCapture(output.clone())),
+            );
+        tracing::subscriber::with_default(subscriber, || {
+            ProgramLog::new(&program, &ProgramOptions::default()).finish(&Ok(ProgramResult {
+                result: Datum::Array(Vec::new()),
+                statements: vec![crate::engine::exec::StatementResult {
+                    name: "read".to_owned(),
+                    affected: 0,
+                    control: None,
+                }],
+                plans: Vec::new(),
+            }));
+        });
+        let output = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("program.executed"));
+        assert!(output.contains("program_fingerprint"));
+        assert!(!output.contains("private-value"));
+        assert!(!output.contains("diagnostic"));
+    }
+
+    #[derive(Clone)]
+    struct ProgramCapture(Arc<Mutex<Vec<u8>>>);
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for ProgramCapture {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    impl std::io::Write for ProgramCapture {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().write_all(buffer)?;
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
         }
     }
 

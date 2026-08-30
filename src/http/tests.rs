@@ -37,6 +37,14 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
     request_json(Method::POST, uri, body)
 }
 
+fn post_json_with_diagnostics(uri: &str, body: Value, level: &str) -> Request<Body> {
+    let mut request = post_json(uri, body);
+    request
+        .headers_mut()
+        .insert(crate::diagnostics::HEADER, level.parse().unwrap());
+    request
+}
+
 fn request_json(method: Method, uri: &str, body: Value) -> Request<Body> {
     Request::builder()
         .method(method)
@@ -93,6 +101,19 @@ async fn json_body(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+fn contains_json_string(value: &Value, expected: &str) -> bool {
+    match value {
+        Value::String(value) => value == expected,
+        Value::Array(values) => values
+            .iter()
+            .any(|value| contains_json_string(value, expected)),
+        Value::Object(fields) => fields
+            .values()
+            .any(|value| contains_json_string(value, expected)),
+        Value::Null | Value::Bool(_) | Value::Number(_) => false,
+    }
+}
+
 #[tokio::test]
 async fn health_reports_the_immutable_catalog_mode() {
     let response = test_router("http-health", Mode::Schema)
@@ -129,6 +150,16 @@ async fn a_serving_router_passes_every_probe() {
             "{path}"
         );
     }
+}
+
+#[tokio::test]
+async fn metrics_route_is_not_found_without_an_installed_metric_provider() {
+    let response = test_router("http-metrics-disabled", Mode::Schema)
+        .await
+        .oneshot(request(Method::GET, "/metrics"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -563,6 +594,113 @@ async fn dry_run_and_show_plan_are_transport_options() {
     let body = json_body(response).await;
     assert_eq!(body["result"], Value::Null);
     assert!(body["plan"]["statements"].is_array());
+}
+
+#[tokio::test]
+async fn program_diagnostics_are_an_opt_in_response_extension() {
+    crate::diagnostics::set_max_level(crate::diagnostics::Level::Summary);
+    let policy = test_router("http-program-diagnostic-policy", Mode::Direct).await;
+    let denied = policy
+        .clone()
+        .oneshot(post_json_with_diagnostics(
+            "/execute",
+            one_row_program(),
+            "detailed",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    let invalid = policy
+        .oneshot(post_json_with_diagnostics(
+            "/execute",
+            one_row_program(),
+            "trace",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+
+    crate::diagnostics::set_max_level(crate::diagnostics::Level::Full);
+    let app = test_router("http-program-diagnostics", Mode::Direct).await;
+
+    let plain = app
+        .clone()
+        .oneshot(post_json("/execute", one_row_program()))
+        .await
+        .unwrap();
+    assert!(json_body(plain).await.get("_rad").is_none());
+
+    let summary = app
+        .clone()
+        .oneshot(post_json_with_diagnostics(
+            "/execute",
+            one_row_program(),
+            "summary",
+        ))
+        .await
+        .unwrap();
+    let summary = json_body(summary).await;
+    let diagnostic = &summary["_rad"]["diagnostics"];
+    assert_eq!(diagnostic["format"], crate::diagnostics::FORMAT);
+    assert_eq!(diagnostic["status"], "success");
+    assert_eq!(diagnostic["resultRows"], 1);
+    assert!(
+        diagnostic["programFingerprint"]
+            .as_str()
+            .unwrap()
+            .starts_with("p1:family:sha256:")
+    );
+    assert!(diagnostic.get("submittedProgram").is_none());
+    assert!(diagnostic.get("loweredProgram").is_none());
+
+    let detailed = app
+        .clone()
+        .oneshot(post_json_with_diagnostics(
+            "/execute",
+            one_row_program(),
+            "detailed",
+        ))
+        .await
+        .unwrap();
+    let detailed = json_body(detailed).await;
+    assert!(detailed.get("plan").is_none());
+    assert!(detailed["_rad"]["diagnostics"]["plans"].is_array());
+    assert!(detailed["_rad"]["diagnostics"]["loweredProgramFamily"].is_object());
+    assert!(!contains_json_string(&detailed["_rad"]["diagnostics"], "1"));
+    assert!(
+        detailed["_rad"]["diagnostics"]
+            .get("submittedProgram")
+            .is_none()
+    );
+
+    let full = app
+        .oneshot(post_json_with_diagnostics(
+            "/execute",
+            one_row_program(),
+            "full",
+        ))
+        .await
+        .unwrap();
+    let full = json_body(full).await;
+    assert_eq!(
+        full["_rad"]["diagnostics"]["submittedProgram"]["statements"][0]["relation"]["nodes"]["row"]
+            ["rows"][0][0],
+        "1"
+    );
+    crate::diagnostics::set_max_level(crate::diagnostics::Level::Summary);
+}
+
+#[tokio::test]
+async fn program_diagnostics_extend_problem_responses() {
+    let response = test_router("http-program-diagnostics-problem", Mode::Direct)
+        .await
+        .oneshot(post_json_with_diagnostics("/execute", json!({}), "summary"))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert_eq!(body["_rad"]["diagnostics"]["status"], "error");
 }
 
 #[tokio::test]

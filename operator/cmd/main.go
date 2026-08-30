@@ -22,7 +22,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	radv1alpha1 "github.com/Southclaws/rad/operator/api/v1alpha1"
@@ -43,8 +42,6 @@ func main() {
 		credentialPollInterval  time.Duration
 		maxConcurrentReconciles int
 	)
-	loggerOptions := zap.Options{Development: false}
-	loggerOptions.BindFlags(flag.CommandLine)
 	flag.StringVar(&metricsAddress, "metrics-bind-address", ":8080", "Address for the controller metrics endpoint; use 0 to disable it.")
 	flag.StringVar(&healthAddress, "health-probe-bind-address", ":8081", "Address for controller health probes.")
 	flag.BoolVar(&leaderElection, "leader-elect", true, "Use a Lease to elect one active controller replica.")
@@ -58,7 +55,7 @@ func main() {
 	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 4, "Maximum Database reconciliations in flight.")
 	flag.Parse()
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&loggerOptions)))
+	installLogger()
 	setupLog := ctrl.Log.WithName("setup")
 	radImage = strings.TrimSpace(radImage)
 	ingressClass = strings.TrimSpace(ingressClass)

@@ -5,7 +5,7 @@ mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -156,6 +156,161 @@ impl SchemaJobHook for NoopSchemaJobHook {
     async fn reach(&self, _event: SchemaJobEvent) {}
 }
 
+#[derive(Debug, Default)]
+pub struct TracingSchemaJobHook {
+    started: Mutex<Option<std::time::Instant>>,
+}
+
+impl TracingSchemaJobHook {
+    fn start(&self) {
+        *self.started.lock().expect("schema job span lock poisoned") =
+            Some(std::time::Instant::now());
+    }
+
+    fn duration(&self) -> Duration {
+        self.started
+            .lock()
+            .expect("schema job span lock poisoned")
+            .take()
+            .map_or(Duration::ZERO, |started| started.elapsed())
+    }
+
+    fn span(&self, job: &SchemaJob, status: &str, error: &str, items: usize) {
+        let duration = self.duration();
+        let span = tracing::info_span!(
+            target: "rad::telemetry",
+            "rad.scheduler.batch",
+            otel.kind = "internal",
+            rad.scheduler.job.kind = schema_job_kind(job),
+            rad.scheduler.items = items,
+            rad.scheduler.duration_ms = duration.as_millis() as u64,
+            rad.status = status,
+            error.type = error,
+            otel.status_code = if status == "error" { "ERROR" } else { "OK" },
+        );
+        drop(span);
+    }
+}
+
+#[async_trait]
+impl SchemaJobHook for TracingSchemaJobHook {
+    async fn reach(&self, event: SchemaJobEvent) {
+        match event {
+            SchemaJobEvent::Started => tracing::info!(
+                target: "rad",
+                event = "scheduler.started",
+                component = "schema_scheduler",
+                message = "schema scheduler started"
+            ),
+            SchemaJobEvent::BeforeJob { .. } => self.start(),
+            SchemaJobEvent::AfterJob { job, items } if items > 0 => {
+                self.span(&job, "success", "", items);
+                crate::telemetry::scheduler_job(schema_job_kind(&job), "success");
+                tracing::debug!(
+                    target: "rad",
+                    event = "scheduler.batch_completed",
+                    component = "schema_scheduler",
+                    job_kind = schema_job_kind(&job),
+                    items,
+                    message = "schema job batch completed"
+                );
+            }
+            SchemaJobEvent::RetryDeferred {
+                job,
+                failures: 0,
+                delay,
+                ..
+            } => {
+                self.span(&job, "error", "contention", 0);
+                crate::telemetry::scheduler_job(schema_job_kind(&job), "contention");
+                tracing::debug!(
+                    target: "rad",
+                    event = "scheduler.job_deferred",
+                    component = "schema_scheduler",
+                    job_kind = schema_job_kind(&job),
+                    error_kind = "contention",
+                    error_reason = "ownership_changed",
+                    delay_ms = delay.as_millis() as u64,
+                    message = "schema job is deferred after contention"
+                );
+            }
+            SchemaJobEvent::RetryDeferred {
+                job,
+                failures,
+                delay,
+                ..
+            } => {
+                self.span(&job, "error", "job_failed", 0);
+                crate::telemetry::scheduler_job(schema_job_kind(&job), "deferred");
+                tracing::warn!(
+                    target: "rad",
+                    event = "scheduler.job_deferred",
+                    component = "schema_scheduler",
+                    job_kind = schema_job_kind(&job),
+                    failures,
+                    error_kind = "job_failed",
+                    error_reason = "retry_scheduled",
+                    delay_ms = delay.as_millis() as u64,
+                    message = "schema job retry is scheduled"
+                );
+            }
+            SchemaJobEvent::Quarantined { job, failures, .. } => {
+                self.span(&job, "error", "job_failed", 0);
+                crate::telemetry::scheduler_job(schema_job_kind(&job), "quarantined");
+                crate::telemetry::scheduler_quarantined(
+                    schema_job_kind(&job),
+                    "retry_limit_reached",
+                );
+                tracing::error!(
+                    target: "rad",
+                    event = "scheduler.job_quarantined",
+                    component = "schema_scheduler",
+                    job_kind = schema_job_kind(&job),
+                    failures,
+                    error_kind = "job_failed",
+                    error_reason = "retry_limit_reached",
+                    message = "schema job is quarantined"
+                );
+            }
+            SchemaJobEvent::DiscoveryFailed { delay, .. } => tracing::warn!(
+                target: "rad",
+                event = "scheduler.discovery_failed",
+                component = "schema_scheduler",
+                error_kind = "discovery_failed",
+                error_reason = "retry_scheduled",
+                delay_ms = delay.as_millis() as u64,
+                message = "schema job discovery failed"
+            ),
+            SchemaJobEvent::Stopping => tracing::info!(
+                target: "rad",
+                event = "scheduler.stopping",
+                component = "schema_scheduler",
+                message = "schema scheduler is stopping"
+            ),
+            SchemaJobEvent::Stopped => tracing::info!(
+                target: "rad",
+                event = "scheduler.stopped",
+                component = "schema_scheduler",
+                message = "schema scheduler stopped"
+            ),
+            SchemaJobEvent::AfterJob { .. } => {
+                let _ = self.duration();
+            }
+            SchemaJobEvent::Discovered { .. } | SchemaJobEvent::Idle => {}
+        }
+    }
+}
+
+fn schema_job_kind(job: &SchemaJob) -> &'static str {
+    match job {
+        SchemaJob::Activation(_) => "activation",
+        SchemaJob::Transition(_) => "transition",
+        SchemaJob::Reclamation(_) => "reclamation",
+        SchemaJob::TransitionCompaction(_) => "transition_compaction",
+        SchemaJob::CatalogHistory => "catalog_history",
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SchemaJobStats {
     pub rounds: u64,
@@ -213,7 +368,7 @@ pub struct SchemaJobRunner {
 
 impl SchemaJobRunner {
     pub fn start(engine: Arc<Engine>, config: SchemaJobConfig) -> Result<Self, ConfigError> {
-        Self::start_with_hook(engine, config, Arc::new(NoopSchemaJobHook))
+        Self::start_with_hook(engine, config, Arc::new(TracingSchemaJobHook::default()))
     }
 
     pub fn start_with_hook(

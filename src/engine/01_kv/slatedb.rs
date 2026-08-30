@@ -4,6 +4,8 @@ use std::time::Duration;
 use ::slatedb as slate_db;
 use async_trait::async_trait;
 use bytes::Bytes;
+use slate_db::db_cache::foyer::{FoyerCache, FoyerCacheOptions};
+use slate_db::db_cache::{DbCache, SplitCache};
 use slate_db::object_store::{ObjectStore, memory::InMemory};
 use tokio::sync::{Mutex as AsyncMutex, Notify, OnceCell};
 
@@ -13,11 +15,15 @@ use super::{
 };
 
 mod telemetry;
+mod metric_export;
 
 use telemetry::SlateTelemetry;
 
+pub const DEFAULT_CACHE_SIZE_MIB: u64 = 128;
+
 pub struct Store {
     db: Arc<slate_db::Db>,
+    cache: Arc<dyn DbCache>,
     lifecycle: Arc<Lifecycle>,
     telemetry: Arc<SlateTelemetry>,
 }
@@ -36,6 +42,7 @@ struct ReaderBackend {
     object_store: Arc<dyn ObjectStore>,
     options: slate_db::config::DbReaderOptions,
     telemetry: Arc<SlateTelemetry>,
+    cache: Arc<dyn DbCache>,
     reopen: AsyncMutex<()>,
 }
 
@@ -44,6 +51,15 @@ impl ReaderStore {
         path: impl Into<slate_db::object_store::path::Path> + Send,
         object_store: Arc<dyn ObjectStore>,
         poll_interval: Duration,
+    ) -> Result<Self> {
+        Self::open_with_cache_size(path, object_store, poll_interval, DEFAULT_CACHE_SIZE_MIB).await
+    }
+
+    pub async fn open_with_cache_size(
+        path: impl Into<slate_db::object_store::path::Path> + Send,
+        object_store: Arc<dyn ObjectStore>,
+        poll_interval: Duration,
+        cache_size_mib: u64,
     ) -> Result<Self> {
         let path = path.into();
         let options = slate_db::config::DbReaderOptions {
@@ -55,9 +71,11 @@ impl ReaderStore {
             ..Default::default()
         };
         let telemetry = SlateTelemetry::new();
+        let cache = decoded_cache(cache_size_mib);
         let db = slate_db::DbReader::builder(path.clone(), Arc::clone(&object_store))
             .with_options(options.clone())
             .with_metrics_recorder(telemetry.recorder())
+            .with_db_cache(Arc::clone(&cache))
             .build()
             .await
             .map_err(map_operation_error)?;
@@ -68,6 +86,7 @@ impl ReaderStore {
                 object_store,
                 options,
                 telemetry,
+                cache,
                 reopen: AsyncMutex::new(()),
             }),
             lifecycle: Arc::new(Lifecycle::default()),
@@ -93,6 +112,7 @@ impl ReaderBackend {
             slate_db::DbReader::builder(self.path.clone(), Arc::clone(&self.object_store))
                 .with_options(self.options.clone())
                 .with_metrics_recorder(self.telemetry.recorder())
+                .with_db_cache(Arc::clone(&self.cache))
                 .build()
                 .await?,
         );
@@ -128,7 +148,8 @@ impl ReaderBackend {
 
     async fn close(&self) -> std::result::Result<(), slate_db::Error> {
         let _guard = self.reopen.lock().await;
-        self.current().close().await
+        self.current().close().await?;
+        self.cache.close().await
     }
 }
 
@@ -143,14 +164,25 @@ impl Store {
         path: impl Into<slate_db::object_store::path::Path> + Send,
         object_store: Arc<dyn ObjectStore>,
     ) -> Result<Self> {
+        Self::open_with_cache_size(path, object_store, DEFAULT_CACHE_SIZE_MIB).await
+    }
+
+    pub async fn open_with_cache_size(
+        path: impl Into<slate_db::object_store::path::Path> + Send,
+        object_store: Arc<dyn ObjectStore>,
+        cache_size_mib: u64,
+    ) -> Result<Self> {
         let telemetry = SlateTelemetry::new();
+        let cache = decoded_cache(cache_size_mib);
         let db = slate_db::Db::builder(path, object_store)
             .with_metrics_recorder(telemetry.recorder())
+            .with_db_cache(Arc::clone(&cache))
             .build()
             .await
             .map_err(map_operation_error)?;
         Ok(Self {
             db: Arc::new(db),
+            cache,
             lifecycle: Arc::new(Lifecycle::default()),
             telemetry,
         })
@@ -159,6 +191,34 @@ impl Store {
     pub async fn memory(path: &str) -> Result<Self> {
         Self::open(path, Arc::new(InMemory::new())).await
     }
+}
+
+fn decoded_cache(cache_size_mib: u64) -> Arc<dyn DbCache> {
+    let (block_capacity, metadata_capacity) = decoded_cache_capacities(cache_size_mib);
+    crate::telemetry::storage_cache_capacity("data_block", block_capacity);
+    crate::telemetry::storage_cache_capacity("metadata", metadata_capacity);
+    let cache = |max_capacity| {
+        let options = FoyerCacheOptions {
+            max_capacity,
+            ..FoyerCacheOptions::default()
+        };
+        Arc::new(FoyerCache::new_with_opts(options)) as Arc<dyn DbCache>
+    };
+    Arc::new(
+        SplitCache::new()
+            .with_block_cache(Some(cache(block_capacity)))
+            .with_meta_cache(Some(cache(metadata_capacity)))
+            .build(),
+    )
+}
+
+fn decoded_cache_capacities(cache_size_mib: u64) -> (u64, u64) {
+    let capacity = cache_size_mib.saturating_mul(1024 * 1024);
+    let metadata_capacity = capacity / 5;
+    (
+        capacity.saturating_sub(metadata_capacity),
+        metadata_capacity,
+    )
 }
 
 #[async_trait]
@@ -221,8 +281,10 @@ impl TransactionalKv for Store {
             .get_or_init(|| async {
                 self.lifecycle.wait_until_idle().await;
                 match self.db.close().await {
-                    Ok(()) => Ok(()),
-                    Err(error) if matches!(error.kind(), slate_db::ErrorKind::Closed(_)) => Ok(()),
+                    Ok(()) => self.cache.close().await.map_err(map_operation_error),
+                    Err(error) if matches!(error.kind(), slate_db::ErrorKind::Closed(_)) => {
+                        self.cache.close().await.map_err(map_operation_error)
+                    }
                     Err(error) => Err(map_operation_error(error)),
                 }
             })
@@ -611,6 +673,13 @@ mod tests {
     use tokio::sync::oneshot;
 
     use super::*;
+
+    #[test]
+    fn decoded_cache_uses_the_configured_total_capacity() {
+        let (blocks, metadata) = decoded_cache_capacities(128);
+        assert_eq!(blocks + metadata, 128 * 1024 * 1024);
+        assert_eq!(metadata, 128 * 1024 * 1024 / 5);
+    }
 
     #[derive(Debug, Default)]
     struct FaultingReadStore {
