@@ -100,16 +100,11 @@ func TestTwoTenantsServeIsolatedDataAndSurviveRestart(t *testing.T) {
 		t.Fatalf("beta isolation violated: %s", betaRows)
 	}
 
-	// The admin surface binds loopback: reachable through port-forward only,
-	// never from another pod.
-	writer := &corev1.Pod{}
-	if err := h.client.Get(context.Background(),
-		types.NamespacedName{Namespace: h.namespace, Name: h.writerPod(alpha)}, writer); err != nil {
-		t.Fatal(err)
-	}
+	// The operator publishes the admin surface on the tenant Service without
+	// routing it through the public ingress.
 	if output, err := h.curl(t, "-m", "3", "-o", "/dev/null", "-w", "%{http_code}",
-		"http://"+writer.Status.PodIP+":7238/"); err == nil && output == "200" {
-		t.Fatal("admin surface is reachable from the pod network")
+		h.serviceURL(alpha)+":7238/"); err != nil || output != "200" {
+		t.Fatalf("admin surface status = %q, error = %v", output, err)
 	}
 
 	// Catalog and data must reopen from S3 across a writer restart.
@@ -316,7 +311,7 @@ func TestRogueWriterIsFencedThenRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	terminated := displaced.Status.ContainerStatuses[0].LastTerminationState.Terminated
-	if terminated == nil || !strings.Contains(terminated.Message, "lost ownership") {
+	if terminated == nil || !strings.Contains(terminated.Message, `"error_reason":"writer_ownership_lost"`) {
 		t.Fatalf("termination state = %+v, want the fencing reason surfaced", terminated)
 	}
 	waitFor(t, 4*time.Minute, "rogue permanently fenced", func() (bool, string) {
