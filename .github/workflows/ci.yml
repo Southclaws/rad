@@ -175,6 +175,7 @@ jobs:
           command: check
           # License checking joins this gate when Rad declares its package license.
           command-arguments: advisories bans sources
+          rust-version: 1.96.0
 
       - name: Check unused dependencies
         uses: bnjbvr/cargo-machete@ac30a525c0a8d163a92d727b3ff079ee3f6ecb08 # v0.9.2
