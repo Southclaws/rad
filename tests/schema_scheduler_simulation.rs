@@ -6,6 +6,10 @@ use std::time::{Duration, Instant};
 use scenario::{CrashBoundary, Scenario, campaign_cases, run_case, write_campaign_summary};
 
 #[test]
+#[cfg_attr(
+    all(target_os = "linux", target_arch = "x86_64"),
+    ignore = "mad-turmoil simulation is not convergent with SlateDB on Linux x86"
+)]
 fn turmoil_restarts_schema_work_at_every_engine_boundary() -> Result<(), Box<dyn std::error::Error>>
 {
     for (scenario, boundary) in campaign_cases() {
