@@ -20,6 +20,7 @@ pub struct RadProcess {
 const PORT_PAIR_COUNT: usize = 9_000;
 const EXTRA_PORT_COUNT: usize = 10_000;
 const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 180;
+const PROCESS_READY_TIMEOUT: Duration = Duration::from_secs(60);
 static NEXT_PORT_PAIR: AtomicUsize = AtomicUsize::new(0);
 static NEXT_EXTRA_PORT: AtomicUsize = AtomicUsize::new(0);
 
@@ -398,7 +399,8 @@ impl RadProcess {
     }
 
     async fn wait_until_ready(&mut self) -> TestResult {
-        for _ in 0..400 {
+        let deadline = Instant::now() + PROCESS_READY_TIMEOUT;
+        loop {
             if let Some(status) = self.child.try_wait()? {
                 return Err(format!("Rad exited before readiness: {status}").into());
             }
@@ -411,9 +413,15 @@ impl RadProcess {
             {
                 return Ok(());
             }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "Rad did not become ready within {} seconds",
+                    PROCESS_READY_TIMEOUT.as_secs()
+                )
+                .into());
+            }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        Err("Rad did not become ready".into())
     }
 }
 
