@@ -23,6 +23,8 @@ use sha2::{Digest, Sha256};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn identical_seed_and_boundary_produce_identical_traces() -> Result<(), Box<dyn std::error::Error>>
 {
+    const MAX_KV_EVENTS: usize = 100_000;
+    const MAX_ENCODED_BYTES: u64 = 20 * 1024 * 1024;
     const REPLAY_SEED: u64 = 0x7261_642d_6473_7401;
     let mut evidence = Vec::new();
     write_evidence(REPLAY_SEED, "running", &evidence)?;
@@ -42,10 +44,24 @@ fn identical_seed_and_boundary_produce_identical_traces() -> Result<(), Box<dyn 
         run_trace_process(REPLAY_SEED, scenario, boundary, &first_path)?;
         run_trace_process(REPLAY_SEED, scenario, boundary, &replay_path)?;
         let comparison = compare_trace_files(&first_path, &replay_path)?;
+        let first_bytes = std::fs::read(&first_path)?;
+        let first: CapturedTrace = serde_json::from_slice(&first_bytes)?;
+        assert!(
+            first.kv_event_count() <= MAX_KV_EVENTS,
+            "tiny {} scenario at {} emitted {} KV events; budget is {MAX_KV_EVENTS}",
+            scenario.name(),
+            boundary.name(),
+            first.kv_event_count()
+        );
+        assert!(
+            comparison.bytes <= MAX_ENCODED_BYTES,
+            "tiny {} scenario at {} encoded {} bytes; budget is {MAX_ENCODED_BYTES}",
+            scenario.name(),
+            boundary.name(),
+            comparison.bytes
+        );
         if !comparison.identical {
-            let first_bytes = std::fs::read(first_path)?;
             let replay_bytes = std::fs::read(replay_path)?;
-            let first: CapturedTrace = serde_json::from_slice(&first_bytes)?;
             let replay: CapturedTrace = serde_json::from_slice(&replay_bytes)?;
             retain_divergence(REPLAY_SEED, scenario, boundary, &first_bytes, &replay_bytes)?;
             write_evidence(REPLAY_SEED, "diverged", &evidence)?;
@@ -138,31 +154,6 @@ fn trace_file_comparison_is_exact_and_streamed() -> Result<(), Box<dyn std::erro
     longer.push(b'z');
     std::fs::write(&replay, &longer)?;
     assert!(!compare_trace_files(&first, &replay)?.identical);
-    Ok(())
-}
-
-#[test]
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn recovery_monitor_does_not_dominate_the_semantic_trace() -> Result<(), Box<dyn std::error::Error>>
-{
-    const MAX_KV_EVENTS: usize = 100_000;
-    const MAX_ENCODED_BYTES: usize = 20 * 1024 * 1024;
-    let trace = capture_case_trace(
-        0x7261_642d_6473_7401,
-        Scenario::DependencyGraph,
-        CrashBoundary::WriteProtocol,
-    )?;
-    let encoded = serde_json::to_vec(&trace)?;
-    assert!(
-        trace.kv_event_count() <= MAX_KV_EVENTS,
-        "tiny dependency scenario emitted {} KV events; budget is {MAX_KV_EVENTS}",
-        trace.kv_event_count()
-    );
-    assert!(
-        encoded.len() <= MAX_ENCODED_BYTES,
-        "tiny dependency scenario encoded {} bytes; budget is {MAX_ENCODED_BYTES}",
-        encoded.len()
-    );
     Ok(())
 }
 

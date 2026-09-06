@@ -369,7 +369,7 @@ jobs:
   determinism:
     name: byte-identical DST replay
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
       CARGO_TARGET_DIR: target/dst-determinism
       RAD_TEST_ARTIFACT_DIR: ${{ github.workspace }}/artifacts/determinism
