@@ -124,7 +124,7 @@ tasks:
     env:
       RUSTFLAGS: --cfg tokio_unstable
     cmds:
-      - cargo test --locked --test schema_scheduler_determinism identical_seed_and_boundary_produce_identical_traces -- --exact --ignored --nocapture {{.CLI_ARGS}}
+      - cargo test --locked --features dst-determinism --test schema_scheduler_determinism identical_seed_and_boundary_produce_identical_traces -- --exact --ignored --nocapture {{.CLI_ARGS}}
       - cargo test --locked --test statistics_simulation statistics_collection_replays_identically_for_the_same_seed -- --exact --ignored --nocapture {{.CLI_ARGS}}
 
   test:dst:soak:

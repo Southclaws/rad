@@ -7,6 +7,14 @@ name = "rad"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+dst-determinism = []
+
+[[test]]
+name = "schema_scheduler_determinism"
+path = "tests/schema_scheduler_determinism.rs"
+required-features = ["dst-determinism"]
+
 [lints.rust]
 # deny, not forbid: forbid cannot be relaxed by an attribute, and the test
 # harness carries one sanctioned `unsafe` block (Windows console signal
