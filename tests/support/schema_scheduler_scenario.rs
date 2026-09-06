@@ -484,9 +484,7 @@ fn simulate(
             let path = path.clone();
             async move {
                 let current = generation.fetch_add(1, Ordering::SeqCst);
-                // The simulator controls every source of task ordering. The decoded cache has
-                // its own platform-specific concurrency and is orthogonal to the KV fault model.
-                let store = Arc::new(Store::open_with_cache_size(path, objects, 0).await?);
+                let store = Arc::new(Store::open(path, objects).await?);
                 let traced: Arc<dyn TransactionalKv> = Arc::new(FaultingKv::new(store.clone(), kv));
                 if current == 0 {
                     let bootstrap = Engine::with_runtime(traced.clone(), runtime.clone());

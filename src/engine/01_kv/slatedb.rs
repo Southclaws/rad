@@ -23,7 +23,7 @@ pub const DEFAULT_CACHE_SIZE_MIB: u64 = 128;
 
 pub struct Store {
     db: Arc<slate_db::Db>,
-    cache: Option<Arc<dyn DbCache>>,
+    cache: Arc<dyn DbCache>,
     lifecycle: Arc<Lifecycle>,
     telemetry: Arc<SlateTelemetry>,
 }
@@ -173,15 +173,13 @@ impl Store {
         cache_size_mib: u64,
     ) -> Result<Self> {
         let telemetry = SlateTelemetry::new();
-        let builder =
-            slate_db::Db::builder(path, object_store).with_metrics_recorder(telemetry.recorder());
-        let (builder, cache) = if cache_size_mib == 0 {
-            (builder.with_db_cache_disabled(), None)
-        } else {
-            let cache = decoded_cache(cache_size_mib);
-            (builder.with_db_cache(Arc::clone(&cache)), Some(cache))
-        };
-        let db = builder.build().await.map_err(map_operation_error)?;
+        let cache = decoded_cache(cache_size_mib);
+        let db = slate_db::Db::builder(path, object_store)
+            .with_metrics_recorder(telemetry.recorder())
+            .with_db_cache(Arc::clone(&cache))
+            .build()
+            .await
+            .map_err(map_operation_error)?;
         Ok(Self {
             db: Arc::new(db),
             cache,
@@ -283,9 +281,9 @@ impl TransactionalKv for Store {
             .get_or_init(|| async {
                 self.lifecycle.wait_until_idle().await;
                 match self.db.close().await {
-                    Ok(()) => close_cache(self.cache.as_deref()).await,
+                    Ok(()) => self.cache.close().await.map_err(map_operation_error),
                     Err(error) if matches!(error.kind(), slate_db::ErrorKind::Closed(_)) => {
-                        close_cache(self.cache.as_deref()).await
+                        self.cache.close().await.map_err(map_operation_error)
                     }
                     Err(error) => Err(map_operation_error(error)),
                 }
@@ -298,13 +296,6 @@ impl TransactionalKv for Store {
 
     fn physical_telemetry(&self) -> Option<Arc<dyn super::telemetry::PhysicalTelemetry>> {
         Some(self.telemetry.clone())
-    }
-}
-
-async fn close_cache(cache: Option<&dyn DbCache>) -> Result<()> {
-    match cache {
-        Some(cache) => cache.close().await.map_err(map_operation_error),
-        None => Ok(()),
     }
 }
 
@@ -688,15 +679,6 @@ mod tests {
         let (blocks, metadata) = decoded_cache_capacities(128);
         assert_eq!(blocks + metadata, 128 * 1024 * 1024);
         assert_eq!(metadata, 128 * 1024 * 1024 / 5);
-    }
-
-    #[tokio::test]
-    async fn zero_cache_size_disables_the_decoded_cache() -> Result<()> {
-        let store =
-            Store::open_with_cache_size("cache-disabled", Arc::new(InMemory::new()), 0).await?;
-
-        assert!(store.cache.is_none());
-        store.close().await
     }
 
     #[derive(Debug, Default)]
