@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 
 /// Where the certificate, its key, and the trust anchor live. Paths rather
 /// than bytes: the files outlive any one read of them.
@@ -64,7 +64,7 @@ fn read(path: &Path) -> Result<Vec<u8>, TlsError> {
 
 pub(super) fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsError> {
     let bytes = read(path)?;
-    let chain = rustls_pemfile::certs(&mut bytes.as_slice())
+    let chain = CertificateDer::pem_slice_iter(&bytes)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| TlsError::Invalid(error.to_string()))?;
     if chain.is_empty() {
@@ -75,7 +75,9 @@ pub(super) fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>, 
 
 fn private_key(path: &Path) -> Result<PrivateKeyDer<'static>, TlsError> {
     let bytes = read(path)?;
-    rustls_pemfile::private_key(&mut bytes.as_slice())
+    PrivateKeyDer::pem_slice_iter(&bytes)
+        .next()
+        .transpose()
         .map_err(|error| TlsError::Invalid(error.to_string()))?
         .ok_or_else(|| TlsError::NoPrivateKey(path.to_owned()))
 }
@@ -121,7 +123,7 @@ impl RotatingCertificate {
     ) -> Result<(Arc<rustls::sign::CertifiedKey>, Fingerprint), TlsError> {
         let certificate_bytes = read(&files.certificate)?;
         let key_bytes = read(&files.key)?;
-        let chain = rustls_pemfile::certs(&mut certificate_bytes.as_slice())
+        let chain = CertificateDer::pem_slice_iter(&certificate_bytes)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| TlsError::Invalid(error.to_string()))?;
         if chain.is_empty() {
@@ -173,7 +175,7 @@ impl RotatingCertificate {
 /// Digest of PEM-encoded certificates, comparable with [`RotatingCertificate::serving_digest`].
 #[cfg(test)]
 pub(super) fn pem_digest(pem: &[u8]) -> u64 {
-    let chain = rustls_pemfile::certs(&mut &pem[..])
+    let chain = CertificateDer::pem_slice_iter(pem)
         .collect::<Result<Vec<_>, _>>()
         .expect("test certificate parses");
     let mut digest = crate::fnv::OFFSET_BASIS;

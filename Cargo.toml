@@ -51,7 +51,6 @@ sha2 = "0.10.9"
 sqlparser = "0.62.0"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-rustls-pemfile = "2"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 slatedb = { version = "=0.15.0", default-features = false, features = ["aws", "foyer"] }
 slatedb-common = "=0.15.0"
