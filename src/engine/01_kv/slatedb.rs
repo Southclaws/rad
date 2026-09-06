@@ -1238,13 +1238,14 @@ mod tests {
 
         objects.failures_remaining.store(2, Ordering::Relaxed);
         let before_scan = objects.read_attempts.load(Ordering::Relaxed);
-        assert_eq!(
-            match reader.scan(KeyRange::all()).await {
+        let error = match reader.scan(KeyRange::all()).await {
+            Ok(iterator) => match collect(iterator).await {
                 Ok(_) => panic!("scan unexpectedly succeeded through an unavailable store"),
-                Err(error) => error.kind(),
+                Err(error) => error,
             },
-            ErrorKind::Data,
-        );
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), ErrorKind::Data);
         assert_eq!(
             objects.read_attempts.load(Ordering::Relaxed) - before_scan,
             2,
