@@ -756,7 +756,7 @@ impl<'a> Estimator<'a> {
         })
     }
 
-    fn synopsis_estimate(&self, synopsis: &super::models::SynopsisModel) -> Estimate {
+    fn synopsis_estimate(&self, synopsis: &SynopsisModel) -> Estimate {
         let interval = match (synopsis.coverage, synopsis.changes_since_collection) {
             (SynopsisCoverage::Complete, 0) => EstimateInterval::Exact,
             (SynopsisCoverage::Complete, changes) => EstimateInterval::Range {

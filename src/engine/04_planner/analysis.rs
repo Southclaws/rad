@@ -33,8 +33,8 @@ pub struct ScanConstraints {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EquiJoinKey {
-    pub left: crate::engine::lir::Field,
-    pub right: crate::engine::lir::Field,
+    pub left: lir::Field,
+    pub right: lir::Field,
 }
 
 pub fn equi_join_keys(

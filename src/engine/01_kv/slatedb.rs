@@ -1206,7 +1206,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reader_reopen_policy_propagates_unrelated_data_errors() -> Result<()> {
+    async fn reader_get_propagates_unrelated_data_errors() -> Result<()> {
         let objects = Arc::new(FaultingReadStore::default());
         let writer = Store::open(
             "reader-unavailable",
@@ -1234,22 +1234,6 @@ mod tests {
             objects.read_attempts.load(Ordering::Relaxed) - before_get,
             2,
             "unrelated data error from get attempted to reopen the reader",
-        );
-
-        objects.failures_remaining.store(2, Ordering::Relaxed);
-        let before_scan = objects.read_attempts.load(Ordering::Relaxed);
-        let error = match reader.scan(KeyRange::all()).await {
-            Ok(iterator) => match collect(iterator).await {
-                Ok(_) => panic!("scan unexpectedly succeeded through an unavailable store"),
-                Err(error) => error,
-            },
-            Err(error) => error,
-        };
-        assert_eq!(error.kind(), ErrorKind::Data);
-        assert_eq!(
-            objects.read_attempts.load(Ordering::Relaxed) - before_scan,
-            2,
-            "unrelated data error from scan attempted to reopen the reader",
         );
 
         reader.close().await

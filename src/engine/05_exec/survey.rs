@@ -586,7 +586,7 @@ fn degree_value_key(value: &Value) -> Option<Vec<u8>> {
             key.extend_from_slice(&(value.len() as u64).to_be_bytes());
             key.extend_from_slice(value.as_bytes());
         }
-        Value::Text(_) => return None,
+        Value::Text(_) | Value::Null(_) => return None,
         Value::Int64(value) => {
             key.push(1);
             key.extend_from_slice(&value.to_be_bytes());
@@ -597,7 +597,6 @@ fn degree_value_key(value: &Value) -> Option<Vec<u8>> {
             key.extend_from_slice(&bits.to_be_bytes());
         }
         Value::Bool(value) => key.extend_from_slice(&[3, u8::from(*value)]),
-        Value::Null(_) => return None,
     }
     Some(key)
 }

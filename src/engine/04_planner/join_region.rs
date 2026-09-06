@@ -26,7 +26,7 @@ pub(super) struct StrategySelection<T> {
 }
 
 impl<T> StrategySelection<T> {
-    pub fn finish(self, metadata: DecisionMetadata) -> (usize, T, JoinGraphDecision) {
+    pub(super) fn finish(self, metadata: DecisionMetadata) -> (usize, T, JoinGraphDecision) {
         let mut selected_plan = None;
         let candidates = self
             .candidates

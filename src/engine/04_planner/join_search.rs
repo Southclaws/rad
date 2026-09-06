@@ -24,9 +24,9 @@ use crate::engine::lir::{BinaryOp, JoinKind, SlotId};
 use super::estimator::{Estimate, EstimateInterval, Estimator};
 use super::models::PlannerStats;
 
-pub const MAX_JOIN_SEARCH_INPUTS: usize = 8;
-pub const MAX_STATES_PER_SUBSET: usize = 8;
-pub const MAX_JOIN_SEARCH_PLANNING_EFFORT: u32 = 512;
+pub(super) const MAX_JOIN_SEARCH_INPUTS: usize = 8;
+pub(super) const MAX_STATES_PER_SUBSET: usize = 8;
+pub(super) const MAX_JOIN_SEARCH_PLANNING_EFFORT: u32 = 512;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

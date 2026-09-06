@@ -94,7 +94,7 @@ pub(super) struct OperatorRuntimeSpan {
 }
 
 impl OperatorRuntimeSpan {
-    pub fn new(
+    pub(super) fn new(
         operator_id: u32,
         parent_operator_id: Option<u32>,
         operator: &'static str,
@@ -133,11 +133,11 @@ impl OperatorRuntimeSpan {
         Self { span }
     }
 
-    pub fn span(&self) -> &tracing::Span {
+    pub(super) fn span(&self) -> &tracing::Span {
         &self.span
     }
 
-    pub fn record(&self, measurement: &OperatorMeasurement, failed: bool) {
+    pub(super) fn record(&self, measurement: &OperatorMeasurement, failed: bool) {
         self.span
             .record("rad.operator.open_duration_us", measurement.open_micros);
         self.span.record(

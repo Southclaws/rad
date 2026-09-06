@@ -720,13 +720,13 @@ fn weighted_key(
     row: &WeightedSynopsisRow,
     signature: &[crate::engine::lir::SlotId],
 ) -> Option<Vec<u8>> {
-    encode_synopsis_values(
+    Some(encode_synopsis_values(
         signature
             .iter()
             .map(|slot| row.values.get(slot))
             .collect::<Option<Vec<_>>>()?
             .into_iter(),
-    )
+    ))
 }
 
 fn complete_weighted_rows(
@@ -1064,7 +1064,7 @@ fn complete_domain(
             .iter()
             .map(|value| {
                 Some(DomainEntry {
-                    key: encode_synopsis_values(std::iter::once(&value.value))?,
+                    key: encode_synopsis_values(std::iter::once(&value.value)),
                     rows: value.frequency,
                 })
             })
@@ -1120,7 +1120,7 @@ fn complete_domain(
             Some(DomainEntry {
                 key: encode_synopsis_values(
                     positions.iter().map(|position| &value.values[*position]),
-                )?,
+                ),
                 rows: value.frequency,
             })
         })
@@ -1157,7 +1157,7 @@ fn target_signature(edge: &PredicateTransferEdge) -> Vec<crate::engine::lir::Slo
     edge.keys.iter().map(|key| key.right.slot).collect()
 }
 
-fn encode_synopsis_values<'a>(values: impl Iterator<Item = &'a SynopsisValue>) -> Option<Vec<u8>> {
+fn encode_synopsis_values<'a>(values: impl Iterator<Item = &'a SynopsisValue>) -> Vec<u8> {
     let mut output = Vec::new();
     for value in values {
         match value {
@@ -1184,7 +1184,7 @@ fn encode_synopsis_values<'a>(values: impl Iterator<Item = &'a SynopsisValue>) -
             SynopsisValue::Bool(value) => output.extend_from_slice(&[4, u8::from(*value)]),
         }
     }
-    Some(output)
+    output
 }
 
 fn bloom_bytes(rows: AccessQuantity) -> AccessQuantity {
@@ -1240,7 +1240,7 @@ pub(crate) fn simulate_literal_rows(
         .inputs
         .iter()
         .map(|input| match &input.node {
-            crate::engine::lir::bound::RelationNode::Rows { values, .. } => Some(values.clone()),
+            RelationNode::Rows { values, .. } => Some(values.clone()),
             _ => None,
         })
         .collect::<Option<Vec<_>>>()?;
@@ -1266,7 +1266,7 @@ pub(crate) fn simulate_literal_rows(
         hash_functions,
         &mut scans,
         &mut simulation,
-    )?;
+    );
     simulate_pass(
         &mut rows,
         graph,
@@ -1275,7 +1275,7 @@ pub(crate) fn simulate_literal_rows(
         hash_functions,
         &mut scans,
         &mut simulation,
-    )?;
+    );
     simulation.filtered_rows = rows.iter().map(|rows| rows.len() as u64).collect();
     Some(simulation)
 }
@@ -1289,7 +1289,7 @@ fn simulate_pass(
     hash_functions: u8,
     scans: &mut [u64],
     simulation: &mut TransferSimulation,
-) -> Option<()> {
+) {
     let mut pending = (0..rows.len())
         .map(|_| Vec::<(usize, Arc<SimulatedCascadeFilter>)>::new())
         .collect::<Vec<_>>();
@@ -1379,7 +1379,6 @@ fn simulate_pass(
             }
         }
     }
-    Some(())
 }
 
 fn literal_join_key(

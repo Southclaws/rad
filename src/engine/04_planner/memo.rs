@@ -99,6 +99,7 @@ pub struct MemoRootReport {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct MemoCandidate {
     pub expression: Fingerprint,
     pub origin: MemoCandidateOrigin,
@@ -207,6 +208,7 @@ pub struct MemoOrdering {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ExpressionEffects {
     pub pure: bool,
     pub deterministic: bool,
@@ -897,8 +899,8 @@ fn relation_keys(relation: &bound::Relation) -> Vec<Vec<SlotId>> {
         RelationNode::Aggregate { groups, .. } => {
             vec![groups.iter().map(|group| group.slot).collect()]
         }
-        RelationNode::Distinct(_) => vec![relation.output().slots()],
-        RelationNode::Intersect {
+        RelationNode::Distinct(_)
+        | RelationNode::Intersect {
             quantifier: SetQuantifier::Distinct,
             ..
         }

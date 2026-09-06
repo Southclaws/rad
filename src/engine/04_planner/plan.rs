@@ -15,7 +15,7 @@ use super::physical::{
     NodeKind, PhysicalField, Plan, RangeSpec,
 };
 
-pub const DEFAULT_HASH_JOIN_MEMORY_LIMIT_BYTES: u64 = 8 * 1024 * 1024;
+pub(super) const DEFAULT_HASH_JOIN_MEMORY_LIMIT_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PlannerMode {
@@ -187,7 +187,7 @@ struct Planner<'a> {
 }
 
 struct MemoPlannedCandidate {
-    expression: crate::engine::lir::fingerprint::Fingerprint,
+    expression: lir::fingerprint::Fingerprint,
     origin: super::memo::MemoCandidateOrigin,
     metrics: MemoPhysicalMetrics,
     node: Node,
@@ -1168,7 +1168,7 @@ impl Planner<'_> {
         if !matches!(right.node, RelationNode::Scan { .. })
             || keys
                 .iter()
-                .any(|key| key.right.value_type.kind == crate::engine::lir::Kind::Float64)
+                .any(|key| key.right.value_type.kind == lir::Kind::Float64)
         {
             return None;
         }
@@ -1790,9 +1790,9 @@ fn hash_join_memory_bound(
             .maximum_column_width(table, &scan_field.name)
             .ok_or(JoinRejectionReason::MissingEvidence)?;
         let encoded_width = match scan_field.value_type.kind {
-            crate::engine::lir::Kind::Text => width.saturating_add(9),
-            crate::engine::lir::Kind::Int64 | crate::engine::lir::Kind::Float64 => 9,
-            crate::engine::lir::Kind::Bool => 2,
+            lir::Kind::Text => width.saturating_add(9),
+            lir::Kind::Int64 | lir::Kind::Float64 => 9,
+            lir::Kind::Bool => 2,
             _ => return Err(JoinRejectionReason::UnsupportedInput),
         };
         key_width = key_width.saturating_add(encoded_width);
@@ -2192,20 +2192,20 @@ fn maximum_relation_row_width(
     )
 }
 
-fn scalar_value_width(value: &crate::engine::lir::Value) -> u64 {
+fn scalar_value_width(value: &lir::Value) -> u64 {
     match value {
-        crate::engine::lir::Value::Text(value) => value.len() as u64,
-        crate::engine::lir::Value::Int64(_) | crate::engine::lir::Value::Float64(_) => 8,
-        crate::engine::lir::Value::Bool(_) => 1,
-        crate::engine::lir::Value::Null(_) => 0,
+        lir::Value::Text(value) => value.len() as u64,
+        lir::Value::Int64(_) | lir::Value::Float64(_) => 8,
+        lir::Value::Bool(_) => 1,
+        lir::Value::Null(_) => 0,
     }
 }
 
-fn encoded_scalar_width(kind: crate::engine::lir::Kind, value_width: u64) -> Option<u64> {
+fn encoded_scalar_width(kind: lir::Kind, value_width: u64) -> Option<u64> {
     match kind {
-        crate::engine::lir::Kind::Text => Some(value_width.saturating_add(9)),
-        crate::engine::lir::Kind::Int64 | crate::engine::lir::Kind::Float64 => Some(9),
-        crate::engine::lir::Kind::Bool => Some(2),
+        lir::Kind::Text => Some(value_width.saturating_add(9)),
+        lir::Kind::Int64 | lir::Kind::Float64 => Some(9),
+        lir::Kind::Bool => Some(2),
         _ => None,
     }
 }

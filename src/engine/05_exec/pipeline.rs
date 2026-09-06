@@ -45,10 +45,6 @@ pub(super) fn supports(node: &Node) -> bool {
         | NodeKind::HashJoin { left, right, .. }
         | NodeKind::Intersect { left, right, .. }
         | NodeKind::Except { left, right, .. } => supports(left) && supports(right),
-        NodeKind::JoinGraphChoice { .. }
-        | NodeKind::ShreddedYannakakisJoin { .. }
-        | NodeKind::PredicateTransferJoin { .. }
-        | NodeKind::PredicateTransferInput { .. } => false,
         NodeKind::Concatenate { inputs, .. } => inputs.iter().all(supports),
         _ => false,
     }
@@ -193,12 +189,12 @@ async fn build<'a>(
             for (column, constant) in table.primary_key.iter().zip(key) {
                 let value = resolve_constant(constant, &outer)?;
                 if value.is_null() {
-                    return finish_operator(
+                    return Ok(finish_operator(
                         operator_tally,
                         operator_span,
                         open_started,
                         Box::new(Empty),
-                    );
+                    ));
                 }
                 values.insert(column.clone(), value);
             }
@@ -233,12 +229,12 @@ async fn build<'a>(
                 .map(|constant| resolve_constant(constant, &outer))
                 .collect::<Result<Vec<_>>>()?;
             if equality_prefix.iter().any(Value::is_null) {
-                return finish_operator(
+                return Ok(finish_operator(
                     operator_tally,
                     operator_span,
                     open_started,
                     Box::new(Empty),
-                );
+                ));
             }
             let range = range.as_ref().map(|range| row_store::Range {
                 lower: range
@@ -644,9 +640,9 @@ fn finish_operator<'a>(
     runtime_span: Option<super::observe::OperatorRuntimeSpan>,
     started: Option<Instant>,
     operator: Box<dyn Operator + 'a>,
-) -> Result<Box<dyn Operator + 'a>> {
+) -> Box<dyn Operator + 'a> {
     let Some(tally) = tally else {
-        return Ok(operator);
+        return operator;
     };
     let runtime_span = runtime_span.expect("operator tally and span are created together");
     if let Some(started) = started {
@@ -654,12 +650,12 @@ fn finish_operator<'a>(
             .open_nanos
             .store(duration_nanos(started.elapsed()), atomic::Ordering::Relaxed);
     }
-    Ok(Box::new(MeasuredOperator {
+    Box::new(MeasuredOperator {
         inner: operator,
         tally,
         runtime_span,
         failed: false,
-    }))
+    })
 }
 
 fn duration_nanos(duration: std::time::Duration) -> u64 {
@@ -1152,7 +1148,7 @@ impl Operator for NestedLoopJoin<'_> {
             if self.kind == JoinKind::Left && !self.matched {
                 let mut padded = left;
                 for field in &self.right_output.fields {
-                    padded.insert(field.slot, crate::engine::lir::Datum::Null);
+                    padded.insert(field.slot, Datum::Null);
                 }
                 return Ok(Some(padded));
             }
