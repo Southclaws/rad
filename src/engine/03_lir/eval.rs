@@ -2,15 +2,16 @@
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crate::engine::catalog::model::ScalarType;
 
 use super::bound::{Expr, TextPattern};
-use super::{BinaryOp, Datum, Field, Kind, SlotId, SlotRow, TriBool, Type, UnaryOp, Value};
+use super::{BinaryOp, Datum, Field, Kind, SlotId, TriBool, Type, UnaryOp, Value};
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct Env {
-    values: SlotRow,
+    segments: smallvec::SmallVec<[Arc<Vec<Option<Datum>>>; 2]>,
 }
 
 impl Env {
@@ -18,46 +19,101 @@ impl Env {
         Self::default()
     }
 
-    pub fn insert(&mut self, slot: SlotId, datum: Datum) -> Option<Datum> {
-        self.values.insert(slot, datum)
+    pub fn insert(&mut self, slot: SlotId, datum: Datum) {
+        if self
+            .segments
+            .last()
+            .is_none_or(|segment| Arc::strong_count(segment) != 1)
+        {
+            self.segments.push(Arc::new(Vec::new()));
+        }
+        let values = Arc::get_mut(
+            self.segments
+                .last_mut()
+                .expect("environment segment is present"),
+        )
+        .expect("new environment segment is not shared");
+        if values.len() <= slot.0 {
+            values.resize_with(slot.0 + 1, || None);
+        }
+        values[slot.0] = Some(datum);
     }
 
     pub fn set_scalar(&mut self, slot: SlotId, value: Value) {
-        self.values.insert(slot, Datum::scalar(value));
+        self.insert(slot, Datum::scalar(value));
+    }
+
+    pub fn set_scalars(&mut self, slots: &[SlotId], values: impl IntoIterator<Item = Value>) {
+        if slots
+            .iter()
+            .enumerate()
+            .all(|(index, slot)| slot.0 == index)
+        {
+            let segment = values
+                .into_iter()
+                .map(|value| Some(Datum::scalar(value)))
+                .collect::<Vec<_>>();
+            debug_assert_eq!(segment.len(), slots.len());
+            self.segments.push(Arc::new(segment));
+            return;
+        }
+        let Some(length) = slots.iter().map(|slot| slot.0.saturating_add(1)).max() else {
+            return;
+        };
+        let mut segment = Vec::with_capacity(length);
+        segment.resize_with(length, || None);
+        let mut values = values.into_iter();
+        let mut value_count = 0;
+        for (slot, value) in slots.iter().zip(values.by_ref()) {
+            segment[slot.0] = Some(Datum::scalar(value));
+            value_count += 1;
+        }
+        debug_assert_eq!(value_count, slots.len());
+        debug_assert!(values.next().is_none());
+        self.segments.push(Arc::new(segment));
     }
 
     pub fn get(&self, slot: SlotId) -> Option<&Datum> {
-        self.values.get(&slot)
+        self.segments
+            .iter()
+            .rev()
+            .find_map(|values| values.get(slot.0).and_then(Option::as_ref))
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&SlotId, &Datum)> {
-        self.values.iter()
+    pub fn iter(&self) -> impl Iterator<Item = (SlotId, &Datum)> {
+        let slots = self
+            .segments
+            .iter()
+            .map(|values| values.len())
+            .max()
+            .unwrap_or(0);
+        (0..slots).filter_map(|slot| self.get(SlotId(slot)).map(|datum| (SlotId(slot), datum)))
     }
 
     pub fn extend_from(&mut self, other: &Self) {
-        self.values.extend(
-            other
-                .values
-                .iter()
-                .map(|(slot, datum)| (*slot, datum.clone())),
-        );
+        self.segments.extend(other.segments.iter().cloned());
     }
 
     pub fn scalar_at(&self, slot: SlotId, name: &str, value_type: &Type) -> Result<Value> {
-        match self.values.get(&slot) {
-            Some(Datum::Scalar(value)) => Ok(value.clone()),
-            Some(Datum::Null) => Ok(Value::Null(value_type.kind.catalog_type().ok_or_else(
-                || {
-                    EvalError::internal(format!(
-                        "exec: slot {} ({name}) has non-scalar type {}",
-                        slot.0, value_type.kind
-                    ))
-                },
-            )?)),
-            Some(Datum::Object(_) | Datum::Array(_)) => Err(EvalError::internal(format!(
-                "exec: slot {} ({name}) holds a nested value, not a scalar",
-                slot.0
-            ))),
+        scalar_at(self, slot, name, value_type)
+    }
+
+    pub fn scalar_ref_at(
+        &self,
+        slot: SlotId,
+        name: &str,
+        value_type: &Type,
+    ) -> Result<Option<&Value>> {
+        match self.get(slot) {
+            Some(Datum::Scalar(value)) if value.is_null() => Ok(None),
+            Some(Datum::Scalar(value)) => Ok(Some(value)),
+            Some(Datum::Null) if value_type.kind.is_scalar() => Ok(None),
+            Some(Datum::Null | Datum::Object(_) | Datum::Array(_)) => {
+                Err(EvalError::internal(format!(
+                    "exec: slot {} ({name}) holds a {}, not a scalar",
+                    slot.0, value_type.kind
+                )))
+            }
             None => Err(EvalError::internal(format!(
                 "exec: slot {} ({name}) not in scope",
                 slot.0
@@ -66,7 +122,110 @@ impl Env {
     }
 }
 
+impl PartialEq for Env {
+    fn eq(&self, other: &Self) -> bool {
+        let slots = self
+            .segments
+            .iter()
+            .chain(&other.segments)
+            .map(|values| values.len())
+            .max()
+            .unwrap_or(0);
+        (0..slots).all(|slot| self.get(SlotId(slot)) == other.get(SlotId(slot)))
+    }
+}
+
+trait DatumLookup {
+    fn datum(&self, slot: SlotId) -> Option<&Datum>;
+}
+
+impl DatumLookup for Env {
+    fn datum(&self, slot: SlotId) -> Option<&Datum> {
+        self.get(slot)
+    }
+}
+
+struct JoinedEnv<'a> {
+    left: &'a Env,
+    right: &'a Env,
+}
+
+impl DatumLookup for JoinedEnv<'_> {
+    fn datum(&self, slot: SlotId) -> Option<&Datum> {
+        self.right.get(slot).or_else(|| self.left.get(slot))
+    }
+}
+
+fn scalar_at(
+    environment: &(impl DatumLookup + ?Sized),
+    slot: SlotId,
+    name: &str,
+    value_type: &Type,
+) -> Result<Value> {
+    match environment.datum(slot) {
+        Some(Datum::Scalar(value)) => Ok(value.clone()),
+        Some(Datum::Null) => Ok(Value::Null(value_type.kind.catalog_type().ok_or_else(
+            || {
+                EvalError::internal(format!(
+                    "exec: slot {} ({name}) has non-scalar type {}",
+                    slot.0, value_type.kind
+                ))
+            },
+        )?)),
+        Some(Datum::Object(_) | Datum::Array(_)) => Err(EvalError::internal(format!(
+            "exec: slot {} ({name}) holds a nested value, not a scalar",
+            slot.0
+        ))),
+        None => Err(EvalError::internal(format!(
+            "exec: slot {} ({name}) not in scope",
+            slot.0
+        ))),
+    }
+}
+
 pub fn evaluate_predicate(expression: &Expr, environment: &Env) -> Result<TriBool> {
+    evaluate_predicate_in(expression, environment)
+}
+
+pub(crate) fn evaluate_join_predicate(
+    expression: &Expr,
+    left: &Env,
+    right: &Env,
+) -> Result<TriBool> {
+    evaluate_predicate_in(expression, &JoinedEnv { left, right })
+}
+
+pub(crate) fn evaluate_join_key_equality(
+    left_slot: SlotId,
+    right_slot: SlotId,
+    left: &Env,
+    right: &Env,
+) -> Result<TriBool> {
+    let left = direct_datum_scalar(left_slot, left.get(left_slot))?;
+    let right = direct_datum_scalar(right_slot, right.get(right_slot))?;
+    compare_direct(BinaryOp::Eq, left, right)
+}
+
+fn direct_datum_scalar(slot: SlotId, datum: Option<&Datum>) -> Result<DirectScalar<'_>> {
+    match datum {
+        Some(Datum::Scalar(value)) if value.is_null() => Ok(DirectScalar::Null),
+        Some(Datum::Scalar(value)) => Ok(DirectScalar::Value(value)),
+        Some(Datum::Null) => Ok(DirectScalar::Null),
+        Some(Datum::Object(_) | Datum::Array(_)) => Err(EvalError::internal(format!(
+            "exec: slot {} holds a nested value, not a scalar",
+            slot.0
+        ))),
+        None => Err(EvalError::internal(format!(
+            "exec: slot {} not in scope",
+            slot.0
+        ))),
+    }
+}
+
+fn evaluate_predicate_in(
+    expression: &Expr,
+    environment: &(impl DatumLookup + ?Sized),
+) -> Result<TriBool> {
     match expression {
         Expr::Binary {
             op: BinaryOp::And,
@@ -74,11 +233,11 @@ pub fn evaluate_predicate(expression: &Expr, environment: &Env) -> Result<TriBoo
             right,
             ..
         } => {
-            let left = evaluate_predicate(left, environment)?;
+            let left = evaluate_predicate_in(left, environment)?;
             if left == TriBool::False {
                 return Ok(TriBool::False);
             }
-            Ok(left.and(evaluate_predicate(right, environment)?))
+            Ok(left.and(evaluate_predicate_in(right, environment)?))
         }
         Expr::Binary {
             op: BinaryOp::Or,
@@ -86,11 +245,11 @@ pub fn evaluate_predicate(expression: &Expr, environment: &Env) -> Result<TriBoo
             right,
             ..
         } => {
-            let left = evaluate_predicate(left, environment)?;
+            let left = evaluate_predicate_in(left, environment)?;
             if left == TriBool::True {
                 return Ok(TriBool::True);
             }
-            Ok(left.or(evaluate_predicate(right, environment)?))
+            Ok(left.or(evaluate_predicate_in(right, environment)?))
         }
         Expr::Binary {
             op:
@@ -108,20 +267,20 @@ pub fn evaluate_predicate(expression: &Expr, environment: &Env) -> Result<TriBoo
             op: UnaryOp::Not,
             expression,
             ..
-        } => Ok(!evaluate_predicate(expression, environment)?),
+        } => Ok(!evaluate_predicate_in(expression, environment)?),
         Expr::Unary {
             op: op @ (UnaryOp::IsNull | UnaryOp::IsNotNull),
             expression,
             ..
         } => {
-            let is_null = matches!(evaluate_datum(expression, environment)?, Datum::Null);
+            let is_null = matches!(evaluate_datum_in(expression, environment)?, Datum::Null);
             Ok(TriBool::from_bool(if *op == UnaryOp::IsNull {
                 is_null
             } else {
                 !is_null
             }))
         }
-        _ => match evaluate(expression, environment)? {
+        _ => match evaluate_in(expression, environment)? {
             Value::Bool(value) => Ok(TriBool::from_bool(value)),
             Value::Null(ScalarType::Bool) => Ok(TriBool::Unknown),
             value => Err(EvalError::internal(format!(
@@ -136,15 +295,80 @@ fn evaluate_comparison(
     operation: BinaryOp,
     left: &Expr,
     right: &Expr,
-    environment: &Env,
+    environment: &(impl DatumLookup + ?Sized),
 ) -> Result<TriBool> {
-    let left = evaluate(left, environment)?;
-    let right = evaluate(right, environment)?;
+    if let (Some(left), Some(right)) = (
+        direct_scalar(left, environment)?,
+        direct_scalar(right, environment)?,
+    ) {
+        return compare_direct(operation, left, right);
+    }
+    let left = evaluate_in(left, environment)?;
+    let right = evaluate_in(right, environment)?;
     if left.is_null() || right.is_null() {
         return Ok(TriBool::Unknown);
     }
+    compare_values(operation, &left, &right)
+}
+
+#[derive(Clone, Copy)]
+enum DirectScalar<'a> {
+    Value(&'a Value),
+    Null,
+}
+
+fn direct_scalar<'a>(
+    expression: &'a Expr,
+    environment: &'a (impl DatumLookup + ?Sized),
+) -> Result<Option<DirectScalar<'a>>> {
+    match expression {
+        Expr::Literal(value) if value.is_null() => Ok(Some(DirectScalar::Null)),
+        Expr::Literal(value) => Ok(Some(DirectScalar::Value(value))),
+        Expr::SlotRef {
+            slot,
+            name,
+            value_type,
+        } => {
+            if !value_type.kind.is_scalar() {
+                return Err(EvalError::internal(format!(
+                    "exec: slot {} ({name}) holds a {}, not a scalar",
+                    slot.0, value_type.kind
+                )));
+            }
+            match environment.datum(*slot) {
+                Some(Datum::Scalar(value)) if value.is_null() => Ok(Some(DirectScalar::Null)),
+                Some(Datum::Scalar(value)) => Ok(Some(DirectScalar::Value(value))),
+                Some(Datum::Null) => Ok(Some(DirectScalar::Null)),
+                Some(Datum::Object(_) | Datum::Array(_)) => Err(EvalError::internal(format!(
+                    "exec: slot {} ({name}) holds a nested value, not a scalar",
+                    slot.0
+                ))),
+                None => Err(EvalError::internal(format!(
+                    "exec: slot {} ({name}) not in scope",
+                    slot.0
+                ))),
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+fn compare_direct(
+    operation: BinaryOp,
+    left: DirectScalar<'_>,
+    right: DirectScalar<'_>,
+) -> Result<TriBool> {
+    match (left, right) {
+        (DirectScalar::Null, _) | (_, DirectScalar::Null) => Ok(TriBool::Unknown),
+        (DirectScalar::Value(left), DirectScalar::Value(right)) => {
+            compare_values(operation, left, right)
+        }
+    }
+}
+
+fn compare_values(operation: BinaryOp, left: &Value, right: &Value) -> Result<TriBool> {
     let ordering = left
-        .compare(&right)
+        .compare(right)
         .map_err(|error| EvalError::internal(format!("exec: {error}")))?;
     Ok(TriBool::from_bool(match operation {
         BinaryOp::Eq => ordering == Ordering::Equal,
@@ -158,6 +382,10 @@ fn evaluate_comparison(
 }
 
 pub fn evaluate(expression: &Expr, environment: &Env) -> Result<Value> {
+    evaluate_in(expression, environment)
+}
+
+fn evaluate_in(expression: &Expr, environment: &(impl DatumLookup + ?Sized)) -> Result<Value> {
     match expression {
         Expr::Literal(value) => Ok(value.clone()),
         Expr::SlotRef {
@@ -171,7 +399,7 @@ pub fn evaluate(expression: &Expr, environment: &Env) -> Result<Value> {
                     slot.0, value_type.kind
                 )));
             }
-            environment.scalar_at(*slot, name, value_type)
+            scalar_at(environment, *slot, name, value_type)
         }
         Expr::Binary {
             op: op @ (BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div),
@@ -183,7 +411,7 @@ pub fn evaluate(expression: &Expr, environment: &Env) -> Result<Value> {
             op: UnaryOp::Negate,
             expression,
             ..
-        } => match evaluate(expression, environment)? {
+        } => match evaluate_in(expression, environment)? {
             Value::Null(value_type) => Ok(Value::Null(value_type)),
             Value::Int64(value) => value.checked_neg().map(Value::Int64).ok_or_else(|| {
                 EvalError::numeric_overflow(format!("exec: integer overflow: negate {value}"))
@@ -195,18 +423,18 @@ pub fn evaluate(expression: &Expr, environment: &Env) -> Result<Value> {
             ))),
         },
         Expr::Binary { .. } | Expr::Unary { .. } => {
-            Ok(tri_value(evaluate_predicate(expression, environment)?))
+            Ok(tri_value(evaluate_predicate_in(expression, environment)?))
         }
         Expr::Cast { expression, to, .. } => evaluate_cast(expression, *to, environment),
         Expr::Branch {
             arms, otherwise, ..
         } => {
             for arm in arms {
-                if evaluate_predicate(&arm.when, environment)? == TriBool::True {
-                    return evaluate(&arm.then, environment);
+                if evaluate_predicate_in(&arm.when, environment)? == TriBool::True {
+                    return evaluate_in(&arm.then, environment);
                 }
             }
-            evaluate(otherwise, environment)
+            evaluate_in(otherwise, environment)
         }
         Expr::TextMatch { value, pattern, .. } => evaluate_text_match(value, pattern, environment),
         Expr::Exists(_) | Expr::First { .. } | Expr::Scalar { .. } | Expr::Array { .. } => Err(
@@ -216,6 +444,13 @@ pub fn evaluate(expression: &Expr, environment: &Env) -> Result<Value> {
 }
 
 pub fn evaluate_datum(expression: &Expr, environment: &Env) -> Result<Datum> {
+    evaluate_datum_in(expression, environment)
+}
+
+fn evaluate_datum_in(
+    expression: &Expr,
+    environment: &(impl DatumLookup + ?Sized),
+) -> Result<Datum> {
     if let Expr::SlotRef {
         slot,
         name,
@@ -223,11 +458,11 @@ pub fn evaluate_datum(expression: &Expr, environment: &Env) -> Result<Datum> {
     } = expression
         && !value_type.kind.is_scalar()
     {
-        return environment.get(*slot).cloned().ok_or_else(|| {
+        return environment.datum(*slot).cloned().ok_or_else(|| {
             EvalError::internal(format!("exec: slot {} ({name}) not in scope", slot.0))
         });
     }
-    evaluate(expression, environment).map(Datum::scalar)
+    evaluate_in(expression, environment).map(Datum::scalar)
 }
 
 fn tri_value(value: TriBool) -> Value {
@@ -243,10 +478,10 @@ fn evaluate_arithmetic(
     left: &Expr,
     right: &Expr,
     result_kind: Kind,
-    environment: &Env,
+    environment: &(impl DatumLookup + ?Sized),
 ) -> Result<Value> {
-    let left = evaluate(left, environment)?;
-    let right = evaluate(right, environment)?;
+    let left = evaluate_in(left, environment)?;
+    let right = evaluate_in(right, environment)?;
     let result_type = result_kind
         .catalog_type()
         .expect("bound arithmetic has a scalar result");
@@ -310,8 +545,12 @@ fn as_float(value: Value) -> Result<f64> {
     }
 }
 
-fn evaluate_cast(expression: &Expr, to: Kind, environment: &Env) -> Result<Value> {
-    let value = evaluate(expression, environment)?;
+fn evaluate_cast(
+    expression: &Expr,
+    to: Kind,
+    environment: &(impl DatumLookup + ?Sized),
+) -> Result<Value> {
+    let value = evaluate_in(expression, environment)?;
     let target = to
         .catalog_type()
         .ok_or_else(|| EvalError::internal("exec: cast target is not scalar"))?;
@@ -338,8 +577,12 @@ fn evaluate_cast(expression: &Expr, to: Kind, environment: &Env) -> Result<Value
     }
 }
 
-fn evaluate_text_match(value: &Expr, pattern: &TextPattern, environment: &Env) -> Result<Value> {
-    match evaluate(value, environment)? {
+fn evaluate_text_match(
+    value: &Expr,
+    pattern: &TextPattern,
+    environment: &(impl DatumLookup + ?Sized),
+) -> Result<Value> {
+    match evaluate_in(value, environment)? {
         Value::Null(_) => Ok(Value::Null(ScalarType::Bool)),
         Value::Text(value) => Ok(Value::Bool(pattern.is_match(&value))),
         value => Err(EvalError::internal(format!(

@@ -112,19 +112,21 @@ pub enum ServeMetrics {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-pub enum ServePlannerMode {
-    #[value(name = r"structural")]
-    Structural,
-    #[value(name = r"cost")]
-    Cost,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ServeRole {
     #[value(name = r"read")]
     Read,
     #[value(name = r"write")]
     Write,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServeSlateObjectCachePreload {
+    #[value(name = r"none")]
+    None,
+    #[value(name = r"l0")]
+    L0,
+    #[value(name = r"all")]
+    All,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -231,9 +233,8 @@ Unattended setup with defaults.
     #[command(
         name = r"serve",
         about = r"Run the database API and administration UI.",
-        long_about = r"Run Rad until interrupted. A write instance owns the Slate writer; any
-number of read instances can serve polling checkpoint views of the same
-storage path. A fresh database defaults to direct catalog management;
+        long_about = r"Run Rad until interrupted. Slate supports one write instance and multiple
+read instances. A fresh database defaults to direct catalog management;
 pass --catalog-mode schema when rad.schema.yaml should own all catalog
 changes. Catalog mode is immutable after database initialization.
 
@@ -536,21 +537,11 @@ pub struct ServeArgs {
     #[arg(
         id = r"role",
         long = r"role",
-        help = r"Process-wide Slate access role.",
+        help = r"Slate access role; omission selects write.",
         env = r"RAD_ROLE",
-        default_value = r"write",
         value_enum
     )]
-    pub role: ServeRole,
-    #[arg(
-        id = r"planner-mode",
-        long = r"planner-mode",
-        help = r"Access-path selection mode.",
-        env = r"RAD_PLANNER_MODE",
-        default_value = r"structural",
-        value_enum
-    )]
-    pub planner_mode: ServePlannerMode,
+    pub role: Option<ServeRole>,
     #[arg(
         id = r"reader-poll-interval-ms",
         long = r"reader-poll-interval-ms",
@@ -668,35 +659,178 @@ pub struct ServeArgs {
     )]
     pub metrics: ServeMetrics,
     #[arg(
-        id = r"cache-size-mib",
-        long = r"cache-size-mib",
-        help = r"Total Slate decoded cache capacity in MiB.",
-        env = r"RAD_CACHE_SIZE_MIB",
+        id = r"slate-decoded-cache-size-mib",
+        long = r"slate-decoded-cache-size-mib",
+        help = r"Total memory capacity for decoded Slate data blocks and metadata.",
+        env = r"RAD_SLATE_DECODED_CACHE_SIZE_MIB",
         default_value = r"128"
     )]
-    pub cache_size_mib: i64,
+    pub slate_decoded_cache_size_mib: i64,
+    #[arg(
+        id = r"slate-scan-cache-blocks",
+        long = r"slate-scan-cache-blocks",
+        help = r"Add blocks from throughput scans to the decoded cache.",
+        env = r"RAD_SLATE_SCAN_CACHE_BLOCKS",
+        default_value = r"false"
+    )]
+    pub slate_scan_cache_blocks: bool,
+    #[arg(
+        id = r"slate-scan-read-ahead-kib",
+        long = r"slate-scan-read-ahead-kib",
+        help = r"Read-ahead target for each throughput scan.",
+        env = r"RAD_SLATE_SCAN_READ_AHEAD_KIB",
+        default_value = r"256"
+    )]
+    pub slate_scan_read_ahead_kib: i64,
+    #[arg(
+        id = r"slate-scan-max-fetch-tasks",
+        long = r"slate-scan-max-fetch-tasks",
+        help = r"Maximum concurrent Slate fetch tasks for each throughput scan.",
+        env = r"RAD_SLATE_SCAN_MAX_FETCH_TASKS",
+        default_value = r"4"
+    )]
+    pub slate_scan_max_fetch_tasks: i64,
+    #[arg(
+        id = r"slate-flush-interval-ms",
+        long = r"slate-flush-interval-ms",
+        help = r"Interval between automatic WAL flush attempts.",
+        env = r"RAD_SLATE_FLUSH_INTERVAL_MS",
+        default_value = r"100"
+    )]
+    pub slate_flush_interval_ms: i64,
+    #[arg(
+        id = r"slate-l0-sst-size-mib",
+        long = r"slate-l0-sst-size-mib",
+        help = r"Target memtable size before Slate writes an L0 SST.",
+        env = r"RAD_SLATE_L0_SST_SIZE_MIB",
+        default_value = r"64"
+    )]
+    pub slate_l0_sst_size_mib: i64,
+    #[arg(
+        id = r"slate-max-wal-flushes-before-l0-flush",
+        long = r"slate-max-wal-flushes-before-l0-flush",
+        help = r"Maximum WAL flush count before Slate writes the memtable to L0.",
+        env = r"RAD_SLATE_MAX_WAL_FLUSHES_BEFORE_L0_FLUSH",
+        default_value = r"4096"
+    )]
+    pub slate_max_wal_flushes_before_l0_flush: i64,
+    #[arg(
+        id = r"slate-l0-max-ssts",
+        long = r"slate-l0-max-ssts",
+        help = r"Maximum total L0 SST count before Slate applies write backpressure.",
+        env = r"RAD_SLATE_L0_MAX_SSTS",
+        default_value = r"8"
+    )]
+    pub slate_l0_max_ssts: i64,
+    #[arg(
+        id = r"slate-l0-max-ssts-per-key",
+        long = r"slate-l0-max-ssts-per-key",
+        help = r"Maximum L0 SST count that can cover one key.",
+        env = r"RAD_SLATE_L0_MAX_SSTS_PER_KEY",
+        default_value = r"8"
+    )]
+    pub slate_l0_max_ssts_per_key: i64,
+    #[arg(
+        id = r"slate-l0-flush-parallelism",
+        long = r"slate-l0-flush-parallelism",
+        help = r"Number of parallel Slate workers that flush memtables to L0.",
+        env = r"RAD_SLATE_L0_FLUSH_PARALLELISM",
+        default_value = r"4"
+    )]
+    pub slate_l0_flush_parallelism: i64,
+    #[arg(
+        id = r"slate-max-unflushed-mib",
+        long = r"slate-max-unflushed-mib",
+        help = r"Maximum unflushed key and value bytes before write backpressure.",
+        env = r"RAD_SLATE_MAX_UNFLUSHED_MIB",
+        default_value = r"1024"
+    )]
+    pub slate_max_unflushed_mib: i64,
+    #[arg(
+        id = r"slate-min-filter-keys",
+        long = r"slate-min-filter-keys",
+        help = r"Minimum SST key count at which Slate writes a Bloom filter.",
+        env = r"RAD_SLATE_MIN_FILTER_KEYS",
+        default_value = r"1000"
+    )]
+    pub slate_min_filter_keys: i64,
+    #[arg(
+        id = r"slate-bloom-bits-per-key",
+        long = r"slate-bloom-bits-per-key",
+        help = r"Bloom filter bits per key for newly written SST files.",
+        env = r"RAD_SLATE_BLOOM_BITS_PER_KEY",
+        default_value = r"10"
+    )]
+    pub slate_bloom_bits_per_key: i64,
+    #[arg(
+        id = r"slate-sst-block-size-kib",
+        long = r"slate-sst-block-size-kib",
+        help = r"Data block size for newly written Slate SST files.",
+        env = r"RAD_SLATE_SST_BLOCK_SIZE_KIB",
+        default_value = r"4"
+    )]
+    pub slate_sst_block_size_kib: i64,
+    #[arg(
+        id = r"slate-object-cache-path",
+        long = r"slate-object-cache-path",
+        help = r"Local directory for the raw Slate object cache; omission disables it.",
+        env = r"RAD_SLATE_OBJECT_CACHE_PATH"
+    )]
+    pub slate_object_cache_path: Option<std::path::PathBuf>,
+    #[arg(
+        id = r"slate-object-cache-size-mib",
+        long = r"slate-object-cache-size-mib",
+        help = r"Maximum raw Slate object cache capacity.",
+        env = r"RAD_SLATE_OBJECT_CACHE_SIZE_MIB",
+        default_value = r"16384"
+    )]
+    pub slate_object_cache_size_mib: i64,
+    #[arg(
+        id = r"slate-object-cache-part-size-kib",
+        long = r"slate-object-cache-part-size-kib",
+        help = r"Part size for files in the raw Slate object cache.",
+        env = r"RAD_SLATE_OBJECT_CACHE_PART_SIZE_KIB",
+        default_value = r"4096"
+    )]
+    pub slate_object_cache_part_size_kib: i64,
+    #[arg(
+        id = r"slate-object-cache-on-flush",
+        long = r"slate-object-cache-on-flush",
+        help = r"Add new L0 SST files to the raw object cache after a flush.",
+        env = r"RAD_SLATE_OBJECT_CACHE_ON_FLUSH",
+        default_value = r"false"
+    )]
+    pub slate_object_cache_on_flush: bool,
+    #[arg(
+        id = r"slate-object-cache-on-compaction",
+        long = r"slate-object-cache-on-compaction",
+        help = r"Add new compacted SST files to the raw object cache.",
+        env = r"RAD_SLATE_OBJECT_CACHE_ON_COMPACTION",
+        default_value = r"false"
+    )]
+    pub slate_object_cache_on_compaction: bool,
+    #[arg(
+        id = r"slate-object-cache-preload",
+        long = r"slate-object-cache-preload",
+        help = r"SST files to load into the raw object cache during startup.",
+        env = r"RAD_SLATE_OBJECT_CACHE_PRELOAD",
+        default_value = r"none",
+        value_enum
+    )]
+    pub slate_object_cache_preload: ServeSlateObjectCachePreload,
     #[arg(
         id = r"storage",
         long = r"storage",
-        help = r"Storage backend for SlateDB data.",
+        help = r"Slate object storage implementation.",
         env = r"RAD_STORAGE",
         default_value = r"file",
         value_enum
     )]
     pub storage: ServeStorage,
     #[arg(
-        id = r"db",
-        long = r"db",
-        short = 'd',
-        help = r"File storage directory; used only with --storage file.",
-        env = r"RAD_DATA_DIR",
-        default_value = r"data"
-    )]
-    pub db: std::path::PathBuf,
-    #[arg(
         id = r"storage-path",
         long = r"storage-path",
-        help = r"Logical SlateDB path within the selected backend.",
+        help = r"Local database directory or object storage prefix.",
         env = r"RAD_STORAGE_PATH",
         default_value = r"rad"
     )]

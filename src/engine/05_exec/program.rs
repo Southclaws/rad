@@ -471,6 +471,7 @@ pub(super) struct RunContext<'a> {
     pub statistics: Option<Arc<crate::engine::planner::models::PlannerStats>>,
     pub plan_options: crate::engine::planner::PlanOptions,
     pub collect_plan: bool,
+    pub execution_grant: super::parallel::ExecutionGrant,
 }
 
 pub(super) async fn run(
@@ -494,6 +495,7 @@ pub(super) async fn run(
         context.statistics,
         context.plan_options,
         context.collect_plan,
+        context.execution_grant,
     )
     .await
 }
@@ -518,6 +520,7 @@ pub(super) async fn run_reference(
         None,
         crate::engine::planner::PlanOptions::default(),
         false,
+        super::parallel::ExecutionGrant::serial(),
     )
     .await
 }
@@ -535,6 +538,7 @@ async fn run_with_path(
     statistics: Option<Arc<crate::engine::planner::models::PlannerStats>>,
     plan_options: crate::engine::planner::PlanOptions,
     collect_plan: bool,
+    execution_grant: super::parallel::ExecutionGrant,
 ) -> Result<ProgramResult> {
     let mut binder = ProgramBinder::new(relational_names(program))?;
     let mut bindings = HashMap::<String, Vec<Env>>::new();
@@ -560,6 +564,7 @@ async fn run_with_path(
         statistics,
         plan_options,
         collect_plan,
+        &execution_grant,
         &mut plans,
     )
     .await?;
@@ -608,6 +613,7 @@ async fn run_statements(
     statistics: Option<Arc<crate::engine::planner::models::PlannerStats>>,
     plan_options: crate::engine::planner::PlanOptions,
     collect_plan: bool,
+    execution_grant: &super::parallel::ExecutionGrant,
     plans: &mut Vec<StatementPlan>,
 ) -> Result<()> {
     let mut catalog_changed = false;
@@ -701,6 +707,7 @@ async fn run_statements(
                         &mut join_operators,
                         measure_operators,
                         &mut operators,
+                        execution_grant,
                     )
                     .await
                 } else {
@@ -719,6 +726,7 @@ async fn run_statements(
                         &mut join_operators,
                         measure_operators,
                         &mut operators,
+                        execution_grant,
                     )
                     .await
                 }
@@ -1045,6 +1053,7 @@ async fn run_relational(
     join_operators: &mut Vec<super::observe::JoinOperatorMeasurement>,
     measure_operators: bool,
     operators: &mut Vec<super::observe::OperatorMeasurement>,
+    execution_grant: &super::parallel::ExecutionGrant,
 ) -> Result<Vec<Env>> {
     let input = match path {
         ExecutionPath::Production => {
@@ -1053,6 +1062,7 @@ async fn run_relational(
                 .as_ref()
                 .expect("production program binding has a physical plan");
             let mut executor = Executor::new(&*view, limits);
+            executor.set_execution_grant(execution_grant.clone());
             if let Some(kv_counters) = kv_counters {
                 executor.observe_kv_work(kv_counters);
             }
@@ -1372,7 +1382,7 @@ mod tests {
     };
     use crate::engine::kv::TransactionalKv;
     use crate::engine::kv::fault::{
-        FaultAction, FaultController, FaultRule, FaultingKv, Operation,
+        FaultAction, FaultController, FaultRule, FaultingKv, Operation, TracePhase,
     };
     use crate::engine::kv::slatedb::Store;
     use crate::engine::lir::{Kind, RawScalar, Relation, RootCardinality, RowsColumn, Value};
@@ -1744,6 +1754,41 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn read_only_program_uses_one_storage_snapshot() {
+        let store = Arc::new(Store::memory("pir-one-read-snapshot").await.unwrap());
+        let controller = FaultController::default();
+        let engine = Engine::new(Arc::new(FaultingKv::new(store, controller.clone())));
+        let mut relation = rows(&[("a", "new")]);
+        relation.cardinality = RootCardinality::ExactlyOne;
+
+        engine
+            .execute_program_with_options(
+                Program {
+                    statements: vec![Statement::Query {
+                        name: "read".into(),
+                        relation,
+                    }],
+                    result: Some("read".into()),
+                },
+                ProgramOptions {
+                    collect_plan: true,
+                    ..ProgramOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let begins = controller
+            .trace()
+            .into_iter()
+            .filter(|event| {
+                event.operation == Operation::Begin && event.phase == TracePhase::Started
+            })
+            .count();
+        assert_eq!(begins, 1);
     }
 
     #[tokio::test]

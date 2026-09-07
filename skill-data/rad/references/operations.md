@@ -17,7 +17,7 @@ Local schema-managed development:
 rad serve --storage memory --catalog-mode schema
 ```
 
-File storage persists under `--db`; S3 storage requires `--s3-bucket` and accepts region, prefix, and custom endpoint settings. The public API defaults to port 7237 and the administration UI uses the following port.
+File storage persists under `--storage-path`. S3 storage requires `--s3-bucket` and accepts region, prefix, and custom endpoint settings. The public API defaults to port 7237 and the administration UI uses the following port.
 
 Run `rad serve --help` for the exact environment-variable mapping shipped with the binary.
 

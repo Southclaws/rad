@@ -50,7 +50,7 @@ impl RadProcess {
         endpoint: &str,
         prefix: &str,
     ) -> TestResult<Self> {
-        Self::start_s3_role(config, endpoint, prefix, "write", "structural", true).await
+        Self::start_s3_role(config, endpoint, prefix, "write", "cost", true).await
     }
 
     pub async fn start_s3_reader(
@@ -58,7 +58,7 @@ impl RadProcess {
         endpoint: &str,
         prefix: &str,
     ) -> TestResult<Self> {
-        Self::start_s3_role(config, endpoint, prefix, "read", "structural", false).await
+        Self::start_s3_role(config, endpoint, prefix, "read", "cost", false).await
     }
 
     pub async fn start_s3_reader_mode(
@@ -95,8 +95,6 @@ impl RadProcess {
                 "schema",
                 "--role",
                 role,
-                "--planner-mode",
-                planner_mode,
                 "--reader-poll-interval-ms",
                 "100",
                 "--s3-bucket",
@@ -108,6 +106,8 @@ impl RadProcess {
             ])
             .env("AWS_ACCESS_KEY_ID", &config.access_key)
             .env("AWS_SECRET_ACCESS_KEY", &config.secret_key)
+            .env("RAD_INTERNAL_TESTING", "true")
+            .env("RAD_INTERNAL_TEST_PLANNER_MODE", planner_mode)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
         if capture_workload_corpus {
@@ -149,16 +149,14 @@ impl RadProcess {
         extra: &[&str],
     ) -> TestResult<Self> {
         let child = rad_command()
+            .arg("serve")
+            .arg("--addr")
+            .arg(format!("127.0.0.1:{port}"))
+            .arg("--storage")
+            .arg("file")
+            .arg("--storage-path")
+            .arg(directory.join(prefix))
             .args([
-                "serve",
-                "--addr",
-                &format!("127.0.0.1:{port}"),
-                "--storage",
-                "file",
-                "--db",
-                directory.to_str().ok_or("temporary path is not UTF-8")?,
-                "--storage-path",
-                prefix,
                 "--catalog-mode",
                 "schema",
                 "--role",

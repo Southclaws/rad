@@ -56,9 +56,8 @@ Documentation: https://www.radengine.dev/docs/cli#rad-init
 
 ### `rad serve`
 
-Run Rad until interrupted. A write instance owns the Slate writer; any
-number of read instances can serve polling checkpoint views of the same
-storage path. A fresh database defaults to direct catalog management;
+Run Rad until interrupted. Slate supports one write instance and multiple
+read instances. A fresh database defaults to direct catalog management;
 pass --catalog-mode schema when rad.schema.yaml should own all catalog
 changes. Catalog mode is immutable after database initialization.
 
@@ -71,8 +70,7 @@ Documentation: https://www.radengine.dev/docs/cli#rad-serve
 | Option | Purpose | Default | Environment |
 | --- | --- | --- | --- |
 | `--addr <value>` | Public HTTP listen address; the admin UI uses the next port. | `0.0.0.0:7237` | `RAD_ADDR` |
-| `--role <read\|write>` | Process-wide Slate access role. Choices: read, write. | `write` | `RAD_ROLE` |
-| `--planner-mode <structural\|cost>` | Access-path selection mode. Choices: structural, cost. | `structural` | `RAD_PLANNER_MODE` |
+| `--role <read\|write>` | Slate access role; omission selects write. Choices: read, write. |  | `RAD_ROLE` |
 | `--reader-poll-interval-ms <value>` | Slate manifest polling interval for read instances. | `1000` | `RAD_READER_POLL_INTERVAL_MS` |
 | `--internal-addr <value>` | Listen address for the instance-to-instance API; requires --relay-token-file. |  | `RAD_INTERNAL_ADDR` |
 | `--relay-target <value>` | Base URL of the instance this one reports statistics to. |  | `RAD_RELAY_TARGET` |
@@ -88,10 +86,28 @@ Documentation: https://www.radengine.dev/docs/cli#rad-serve
 | `--diagnostics <off\|summary\|detailed\|full>` | Maximum diagnostic level that an HTTP request can select. Choices: off, summary, detailed, full. | `summary` | `RAD_DIAGNOSTICS` |
 | `--otel-endpoint <value>` | OTLP HTTP endpoint for traces and metrics. |  | `OTEL_EXPORTER_OTLP_ENDPOINT` |
 | `--metrics <true\|false>` | Enable or disable OTEL metrics and the GET /metrics route. Choices: true, false. | `true` | `RAD_METRICS` |
-| `--cache-size-mib <value>` | Total Slate decoded cache capacity in MiB. | `128` | `RAD_CACHE_SIZE_MIB` |
-| `--storage <memory\|file\|s3>` | Storage backend for SlateDB data. Choices: memory, file, s3. | `file` | `RAD_STORAGE` |
-| `-d`, `--db <path>` | File storage directory; used only with --storage file. | `data` | `RAD_DATA_DIR` |
-| `--storage-path <value>` | Logical SlateDB path within the selected backend. | `rad` | `RAD_STORAGE_PATH` |
+| `--slate-decoded-cache-size-mib <value>` | Total memory capacity for decoded Slate data blocks and metadata. | `128` | `RAD_SLATE_DECODED_CACHE_SIZE_MIB` |
+| `--slate-scan-cache-blocks` | Add blocks from throughput scans to the decoded cache. | `false` | `RAD_SLATE_SCAN_CACHE_BLOCKS` |
+| `--slate-scan-read-ahead-kib <value>` | Read-ahead target for each throughput scan. | `256` | `RAD_SLATE_SCAN_READ_AHEAD_KIB` |
+| `--slate-scan-max-fetch-tasks <value>` | Maximum concurrent Slate fetch tasks for each throughput scan. | `4` | `RAD_SLATE_SCAN_MAX_FETCH_TASKS` |
+| `--slate-flush-interval-ms <value>` | Interval between automatic WAL flush attempts. | `100` | `RAD_SLATE_FLUSH_INTERVAL_MS` |
+| `--slate-l0-sst-size-mib <value>` | Target memtable size before Slate writes an L0 SST. | `64` | `RAD_SLATE_L0_SST_SIZE_MIB` |
+| `--slate-max-wal-flushes-before-l0-flush <value>` | Maximum WAL flush count before Slate writes the memtable to L0. | `4096` | `RAD_SLATE_MAX_WAL_FLUSHES_BEFORE_L0_FLUSH` |
+| `--slate-l0-max-ssts <value>` | Maximum total L0 SST count before Slate applies write backpressure. | `8` | `RAD_SLATE_L0_MAX_SSTS` |
+| `--slate-l0-max-ssts-per-key <value>` | Maximum L0 SST count that can cover one key. | `8` | `RAD_SLATE_L0_MAX_SSTS_PER_KEY` |
+| `--slate-l0-flush-parallelism <value>` | Number of parallel Slate workers that flush memtables to L0. | `4` | `RAD_SLATE_L0_FLUSH_PARALLELISM` |
+| `--slate-max-unflushed-mib <value>` | Maximum unflushed key and value bytes before write backpressure. | `1024` | `RAD_SLATE_MAX_UNFLUSHED_MIB` |
+| `--slate-min-filter-keys <value>` | Minimum SST key count at which Slate writes a Bloom filter. | `1000` | `RAD_SLATE_MIN_FILTER_KEYS` |
+| `--slate-bloom-bits-per-key <value>` | Bloom filter bits per key for newly written SST files. | `10` | `RAD_SLATE_BLOOM_BITS_PER_KEY` |
+| `--slate-sst-block-size-kib <value>` | Data block size for newly written Slate SST files. | `4` | `RAD_SLATE_SST_BLOCK_SIZE_KIB` |
+| `--slate-object-cache-path <path>` | Local directory for the raw Slate object cache; omission disables it. |  | `RAD_SLATE_OBJECT_CACHE_PATH` |
+| `--slate-object-cache-size-mib <value>` | Maximum raw Slate object cache capacity. | `16384` | `RAD_SLATE_OBJECT_CACHE_SIZE_MIB` |
+| `--slate-object-cache-part-size-kib <value>` | Part size for files in the raw Slate object cache. | `4096` | `RAD_SLATE_OBJECT_CACHE_PART_SIZE_KIB` |
+| `--slate-object-cache-on-flush` | Add new L0 SST files to the raw object cache after a flush. | `false` | `RAD_SLATE_OBJECT_CACHE_ON_FLUSH` |
+| `--slate-object-cache-on-compaction` | Add new compacted SST files to the raw object cache. | `false` | `RAD_SLATE_OBJECT_CACHE_ON_COMPACTION` |
+| `--slate-object-cache-preload <none\|l0\|all>` | SST files to load into the raw object cache during startup. Choices: none, l0, all. | `none` | `RAD_SLATE_OBJECT_CACHE_PRELOAD` |
+| `--storage <memory\|file\|s3>` | Slate object storage implementation. Choices: memory, file, s3. | `file` | `RAD_STORAGE` |
+| `--storage-path <value>` | Local database directory or object storage prefix. | `rad` | `RAD_STORAGE_PATH` |
 | `--catalog-mode <direct\|schema>` | Catalog mode for a fresh database; immutable after initialization. Choices: direct, schema. |  | `RAD_CATALOG_MODE` |
 | `--frontend <postgres>` | Optional compatibility frontend to expose alongside the HTTP API. Choices: postgres. |  | `RAD_FRONTEND` |
 | `--postgres-addr <value>` | PostgreSQL frontend listen address; used with --frontend postgres. | `0.0.0.0:5432` | `RAD_POSTGRES_ADDR` |

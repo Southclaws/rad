@@ -12,4 +12,3 @@ fuzz_target!(|input: &[u8]| {
     };
     let _ = lower_lir(query);
 });
-

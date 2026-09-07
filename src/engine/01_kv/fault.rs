@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     DataPosition, Entry, Error, ErrorKind, IsolationLevel, KeyRange, Kv, KvIterator, Result,
-    Transaction, TransactionalKv,
+    ScanOrder, Transaction, TransactionalKv,
 };
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -424,8 +424,14 @@ impl Kv for FaultingKv {
     }
 
     async fn scan(&self, range: KeyRange) -> Result<Box<dyn KvIterator>> {
+        self.scan_ordered(range, ScanOrder::Ascending).await
+    }
+
+    async fn scan_ordered(&self, range: KeyRange, order: ScanOrder) -> Result<Box<dyn KvIterator>> {
         let call = self.context.start(Operation::Scan, Target::range(&range));
-        let iterator = call.run_async(|| Kv::scan(&*self.inner, range)).await?;
+        let iterator = call
+            .run_async(|| Kv::scan_ordered(&*self.inner, range, order))
+            .await?;
         Ok(Box::new(FaultingIterator {
             inner: iterator,
             context: self.context.clone(),
@@ -492,10 +498,20 @@ impl Transaction for FaultingTransaction {
     }
 
     async fn scan<'a>(&'a self, range: KeyRange) -> Result<Box<dyn KvIterator + 'a>> {
+        self.scan_ordered(range, ScanOrder::Ascending).await
+    }
+
+    async fn scan_ordered<'a>(
+        &'a self,
+        range: KeyRange,
+        order: ScanOrder,
+    ) -> Result<Box<dyn KvIterator + 'a>> {
         let call = self
             .context
             .start(Operation::TransactionScan, Target::range(&range));
-        let iterator = call.run_async(|| self.inner.scan(range)).await?;
+        let iterator = call
+            .run_async(|| self.inner.scan_ordered(range, order))
+            .await?;
         Ok(Box::new(FaultingIterator {
             inner: iterator,
             context: self.context.clone(),

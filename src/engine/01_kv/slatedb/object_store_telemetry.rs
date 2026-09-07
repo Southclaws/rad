@@ -16,7 +16,7 @@ use slatedb::object_store::{
     Result as ObjectStoreResult,
 };
 
-use super::telemetry::{
+use super::super::telemetry::{
     PhysicalRequestClass, PhysicalRequestRecorder, PhysicalServiceTier, current_request_recorder,
 };
 
@@ -294,7 +294,7 @@ mod tests {
             .unwrap();
         let observed = observe_remote_object_store(inner);
 
-        let (bytes, trace) = super::super::telemetry::observe_request("slatedb", async {
+        let (bytes, trace) = crate::engine::kv::telemetry::observe_request("slatedb", async {
             observed
                 .get(&location)
                 .await

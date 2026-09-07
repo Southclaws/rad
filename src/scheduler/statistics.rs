@@ -1348,12 +1348,15 @@ pub trait StatisticsSource: Send + Sync {
     async fn load_models(&self, limit: usize) -> Vec<QueryModel>;
     async fn load_synopses(&self) -> Vec<SynopsisModel>;
 
-    async fn load_snapshot(&self, limit: usize) -> PersistedStatisticsSnapshot {
-        PersistedStatisticsSnapshot::new(
+    async fn load_snapshot(
+        &self,
+        limit: usize,
+    ) -> crate::engine::kv::Result<PersistedStatisticsSnapshot> {
+        Ok(PersistedStatisticsSnapshot::new(
             self.load_models(limit).await,
             self.load_synopses().await,
             self.load_frequencies(limit).await,
-        )
+        ))
     }
 
     fn physical_telemetry(&self) -> Option<crate::engine::kv::telemetry::SharedPhysicalTelemetry> {
@@ -1787,10 +1790,11 @@ impl StatisticsSource for SlateStatistics {
             .unwrap_or_default()
     }
 
-    async fn load_snapshot(&self, limit: usize) -> PersistedStatisticsSnapshot {
-        load_persisted_snapshot(&self.store, limit)
-            .await
-            .unwrap_or_default()
+    async fn load_snapshot(
+        &self,
+        limit: usize,
+    ) -> crate::engine::kv::Result<PersistedStatisticsSnapshot> {
+        load_persisted_snapshot(&self.store, limit).await
     }
 
     fn physical_telemetry(&self) -> Option<crate::engine::kv::telemetry::SharedPhysicalTelemetry> {
@@ -2734,8 +2738,23 @@ async fn load_persisted_snapshot(
 type SurveyFuture = std::pin::Pin<Box<dyn Future<Output = Option<SurveyResult>> + Send>>;
 type FlushFuture =
     std::pin::Pin<Box<dyn Future<Output = (StatisticsBatch, Result<(), StatisticsBatch>)> + Send>>;
-type RefreshFuture = std::pin::Pin<Box<dyn Future<Output = PersistedStatisticsSnapshot> + Send>>;
+type RefreshFuture = std::pin::Pin<
+    Box<dyn Future<Output = crate::engine::kv::Result<PersistedStatisticsSnapshot>> + Send>,
+>;
 type CorpusMaintenanceFuture = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
+
+fn statistics_storage_error_kind(kind: crate::engine::kv::ErrorKind) -> &'static str {
+    match kind {
+        crate::engine::kv::ErrorKind::ReadOnly => "read_only",
+        crate::engine::kv::ErrorKind::Conflict => "conflict",
+        crate::engine::kv::ErrorKind::CommitOutcomeUnknown => "commit_outcome_unknown",
+        crate::engine::kv::ErrorKind::Closed => "closed",
+        crate::engine::kv::ErrorKind::Unavailable => "unavailable",
+        crate::engine::kv::ErrorKind::Invalid => "invalid",
+        crate::engine::kv::ErrorKind::Data => "data",
+        crate::engine::kv::ErrorKind::Internal => "internal",
+    }
+}
 
 fn complete_flush(
     registry: &mut HotRegistry,
@@ -2838,6 +2857,8 @@ impl StatisticsRunner {
             let mut force_publish = false;
             let mut survey_future: Option<SurveyFuture> = None;
             let mut flush_future: Option<FlushFuture> = None;
+            let mut refresh_failures = 0u64;
+            let mut refresh_error_kind = None;
             let mut refresh_future: Option<RefreshFuture> = source.as_ref().map(|source| {
                 let source = source.clone();
                 Box::pin(async move { source.load_snapshot(config.registry_capacity).await })
@@ -2900,21 +2921,64 @@ impl StatisticsRunner {
                         flush_future = None;
                         complete_flush(&mut registry, covered, result);
                     },
-                    refreshed = async {
+                    refresh_result = async {
                         refresh_future.as_mut().expect("refresh future").await
                     }, if refresh_future.is_some() => {
                         refresh_future = None;
-                        if owns_stored_models {
-                            registry.hydrate(refreshed.models);
-                            registry.hydrate_frequency(refreshed.frequencies);
-                            stored_models_loaded = true;
-                        } else {
-                            persisted = refreshed.clone();
+                        match refresh_result {
+                            Ok(refreshed) => {
+                                if refresh_failures > 0 {
+                                    tracing::info!(
+                                        target: "rad",
+                                        event = "statistics.refresh_recovered",
+                                        component = "statistics_scheduler",
+                                        consecutive_failures = refresh_failures,
+                                        message = "statistics refresh recovered"
+                                    );
+                                }
+                                refresh_failures = 0;
+                                refresh_error_kind = None;
+                                if owns_stored_models {
+                                    registry.hydrate(refreshed.models);
+                                    registry.hydrate_frequency(refreshed.frequencies);
+                                    stored_models_loaded = true;
+                                } else {
+                                    persisted = refreshed.clone();
+                                }
+                                if !refreshed.synopses.is_empty() {
+                                    registry.hydrate_synopses(refreshed.synopses);
+                                }
+                                force_publish = true;
+                            }
+                            Err(error) => {
+                                refresh_failures = refresh_failures.saturating_add(1);
+                                let storage_error_kind = statistics_storage_error_kind(error.kind());
+                                if refresh_error_kind != Some(error.kind()) {
+                                    tracing::warn!(
+                                        target: "rad",
+                                        event = "statistics.refresh_failed",
+                                        component = "statistics_scheduler",
+                                        error_kind = "storage",
+                                        error_reason = "snapshot_load_failed",
+                                        storage_error_kind,
+                                        consecutive_failures = refresh_failures,
+                                        message = "statistics refresh failed; the last good snapshot remains active"
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        target: "rad",
+                                        event = "statistics.refresh_failed",
+                                        component = "statistics_scheduler",
+                                        error_kind = "storage",
+                                        error_reason = "snapshot_load_failed",
+                                        storage_error_kind,
+                                        consecutive_failures = refresh_failures,
+                                        message = "statistics refresh remains unavailable; the last good snapshot remains active"
+                                    );
+                                }
+                                refresh_error_kind = Some(error.kind());
+                            }
                         }
-                        if !refreshed.synopses.is_empty() {
-                            registry.hydrate_synopses(refreshed.synopses);
-                        }
-                        force_publish = true;
                     },
                     _ = async {
                         corpus_maintenance_future
@@ -2991,11 +3055,8 @@ impl StatisticsRunner {
                                 }
                             }
                         }
-                        // Only an instance that does not own the stored models
-                        // has anything to learn from them: an owner's registry
-                        // is already what it last wrote there.
                         if let Some(source) = &source
-                            && !owns_stored_models
+                            && (!owns_stored_models || !stored_models_loaded)
                         {
                             ticks_since_refresh += 1;
                             if ticks_since_refresh >= config.refresh_every
@@ -3953,6 +4014,30 @@ pub(super) mod tests {
         release: tokio::sync::Semaphore,
     }
 
+    struct ControlledSource {
+        result: std::sync::Mutex<crate::engine::kv::Result<PersistedStatisticsSnapshot>>,
+        loads: AtomicU64,
+    }
+
+    impl ControlledSource {
+        fn new(result: crate::engine::kv::Result<PersistedStatisticsSnapshot>) -> Self {
+            Self {
+                result: std::sync::Mutex::new(result),
+                loads: AtomicU64::new(0),
+            }
+        }
+
+        fn set(&self, result: crate::engine::kv::Result<PersistedStatisticsSnapshot>) {
+            *self.result.lock().expect("controlled source result") = result;
+        }
+
+        fn loads(&self) -> u64 {
+            self.loads.load(Ordering::Relaxed)
+        }
+    }
+
+    struct SourceOwningSink;
+
     #[async_trait::async_trait]
     impl StatisticsSource for BlockingSource {
         async fn load_models(&self, _limit: usize) -> Vec<QueryModel> {
@@ -3967,6 +4052,39 @@ pub(super) mod tests {
 
         async fn load_synopses(&self) -> Vec<SynopsisModel> {
             Vec::new()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StatisticsSource for ControlledSource {
+        async fn load_models(&self, _limit: usize) -> Vec<QueryModel> {
+            Vec::new()
+        }
+
+        async fn load_synopses(&self) -> Vec<SynopsisModel> {
+            Vec::new()
+        }
+
+        async fn load_snapshot(
+            &self,
+            _limit: usize,
+        ) -> crate::engine::kv::Result<PersistedStatisticsSnapshot> {
+            self.loads.fetch_add(1, Ordering::Relaxed);
+            self.result
+                .lock()
+                .expect("controlled source result")
+                .clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StatisticsSink for SourceOwningSink {
+        async fn publish(&self, _batch: StatisticsBatch) -> Result<(), StatisticsBatch> {
+            Ok(())
+        }
+
+        fn extends_the_source(&self) -> bool {
+            true
         }
     }
 
@@ -4082,6 +4200,116 @@ pub(super) mod tests {
         }
 
         source.release.add_permits(1);
+        runner.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_reader_refresh_keeps_the_last_good_snapshot() {
+        let mut first_model = QueryModel::new(fingerprint(1), ObservationModelKind::Statement);
+        first_model.executions = 7;
+        let first = PersistedStatisticsSnapshot::new(vec![first_model], Vec::new(), Vec::new());
+        let first_identity = first.identity.clone();
+        let source = Arc::new(ControlledSource::new(Ok(first)));
+        let runner = StatisticsRunner::start(
+            Arc::new(crate::runtime::SystemRuntime),
+            StatisticsConfig {
+                publish_interval: Duration::from_millis(5),
+                refresh_every: 1,
+                ..StatisticsConfig::default()
+            },
+            Some(source.clone()),
+            None,
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while runner.planning_stats().snapshot_identity != first_identity {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the reader did not load the first snapshot"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        source.set(Err(crate::engine::kv::Error::message(
+            crate::engine::kv::ErrorKind::Unavailable,
+            "controlled statistics load failure",
+        )));
+        let completed_loads = source.loads();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while source.loads() == completed_loads {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the reader did not attempt the failed refresh"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(runner.planning_stats().snapshot_identity, first_identity);
+
+        let mut second_model = QueryModel::new(fingerprint(2), ObservationModelKind::Statement);
+        second_model.executions = 11;
+        let second = PersistedStatisticsSnapshot::new(vec![second_model], Vec::new(), Vec::new());
+        let second_identity = second.identity.clone();
+        source.set(Ok(second));
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while runner.planning_stats().snapshot_identity != second_identity {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the reader did not recover after the failed refresh"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        runner.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_writer_retries_its_initial_snapshot_after_a_failure() {
+        let source = Arc::new(ControlledSource::new(Err(
+            crate::engine::kv::Error::message(
+                crate::engine::kv::ErrorKind::Unavailable,
+                "controlled statistics load failure",
+            ),
+        )));
+        let runner = StatisticsRunner::start(
+            Arc::new(crate::runtime::SystemRuntime),
+            StatisticsConfig {
+                publish_interval: Duration::from_millis(5),
+                refresh_every: 1,
+                ..StatisticsConfig::default()
+            },
+            Some(source.clone()),
+            Some(Arc::new(SourceOwningSink)),
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while source.loads() < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the writer did not retry the initial snapshot"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        let mut model = QueryModel::new(fingerprint(3), ObservationModelKind::Statement);
+        model.executions = 13;
+        source.set(Ok(PersistedStatisticsSnapshot::new(
+            vec![model],
+            Vec::new(),
+            Vec::new(),
+        )));
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !runner
+            .planning_stats()
+            .statement_models
+            .contains_key(&fingerprint(3))
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the writer did not load the recovered snapshot"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
         runner.shutdown().await;
     }
 

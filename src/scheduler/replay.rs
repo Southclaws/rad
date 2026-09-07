@@ -302,6 +302,7 @@ pub async fn replay(
                     .filter(|candidate| candidate.chosen)
                 {
                     match candidate.decision_basis {
+                        Some(JoinDecisionBasis::BoundedBuild) => cost_dominance_decisions += 1,
                         Some(JoinDecisionBasis::CostDominance) => cost_dominance_decisions += 1,
                         Some(JoinDecisionBasis::Structural) => structural_fallback_decisions += 1,
                         _ => {}
@@ -777,7 +778,7 @@ mod tests {
         let engine = Engine::new(store);
         let empty = Arc::new(PlannerStats::empty());
         let prepared = engine
-            .prepare_program_estimates(&program, empty)
+            .prepare_program_estimates_with_mode(&program, empty, PlannerMode::Structural)
             .await
             .unwrap();
         assert_eq!(prepared[0].active.cardinality, 1_000);

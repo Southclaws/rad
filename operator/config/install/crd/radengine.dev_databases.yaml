@@ -58,20 +58,6 @@ spec:
               DatabaseSpec is the desired state for one Rad process and one physical S3
               bucket.
             properties:
-              cache:
-                default:
-                  sizeMiB: 128
-                description: Cache applies the same decoded cache capacity to all
-                  pods.
-                properties:
-                  sizeMiB:
-                    default: 128
-                    description: SizeMiB is the total decoded data block and metadata
-                      cache capacity.
-                    format: int32
-                    minimum: 16
-                    type: integer
-                type: object
               captureWorkloadCorpus:
                 default: false
                 description: |-
@@ -278,6 +264,123 @@ spec:
                 x-kubernetes-validations:
                 - message: tlsSecretName requires scheme https
                   rule: '!has(self.tlsSecretName) || self.scheme == ''https'''
+              slate:
+                description: Slate applies the same storage settings to all pods.
+                properties:
+                  bloomBitsPerKey:
+                    default: 10
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  decodedCacheSizeMiB:
+                    default: 128
+                    format: int32
+                    minimum: 16
+                    type: integer
+                  flushIntervalMilliseconds:
+                    default: 100
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  l0FlushParallelism:
+                    default: 4
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  l0MaxSSTs:
+                    default: 8
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  l0MaxSSTsPerKey:
+                    default: 8
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  l0SSTSizeMiB:
+                    default: 64
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  maxUnflushedMiB:
+                    default: 1024
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  maxWALFlushesBeforeL0Flush:
+                    default: 4096
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  minFilterKeys:
+                    default: 1000
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  objectCache:
+                    description: SlateObjectCache configures the local raw object
+                      cache for each database pod.
+                    properties:
+                      cacheOnCompaction:
+                        default: false
+                        type: boolean
+                      cacheOnFlush:
+                        default: false
+                        type: boolean
+                      enabled:
+                        default: false
+                        description: Enabled creates an ephemeral cache directory
+                          for each pod.
+                        type: boolean
+                      partSizeKiB:
+                        default: 4096
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      preload:
+                        default: none
+                        enum:
+                        - none
+                        - l0
+                        - all
+                        type: string
+                      sizeMiB:
+                        default: 16384
+                        format: int32
+                        minimum: 1
+                        type: integer
+                    type: object
+                  scanCacheBlocks:
+                    default: false
+                    type: boolean
+                  scanMaxFetchTasks:
+                    default: 4
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  scanReadAheadKiB:
+                    default: 256
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  sstBlockSizeKiB:
+                    default: 4
+                    enum:
+                    - 1
+                    - 2
+                    - 4
+                    - 8
+                    - 16
+                    - 32
+                    - 64
+                    format: int32
+                    type: integer
+                type: object
+                x-kubernetes-validations:
+                - message: l0MaxSSTsPerKey must not exceed l0MaxSSTs
+                  rule: self.l0MaxSSTsPerKey <= self.l0MaxSSTs
+                - message: maxUnflushedMiB must be at least l0SSTSizeMiB
+                  rule: self.maxUnflushedMiB >= self.l0SSTSizeMiB
               storage:
                 description: |-
                   The physical storage fields are immutable, while authentication may be

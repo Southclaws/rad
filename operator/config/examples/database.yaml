@@ -19,8 +19,9 @@ spec:
   telemetry:
     diagnostics: summary
     metrics: true
-  cache:
-    sizeMiB: 128
+  slate:
+    decodedCacheSizeMiB: 128
+    scanCacheBlocks: false
   route:
     hostname: example.radengine.dev
     scheme: https

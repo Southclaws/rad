@@ -14,6 +14,9 @@ tables:
     name: users
     columns:
       - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: status, type: string }
+    indexes:
+      - { columns: [status] }
 "#;
 
 pub async fn seed(writer: &RadProcess) -> TestResult {
@@ -53,7 +56,43 @@ pub async fn qualify_replicas(
 
     writer.execute(&insert_program("user-2")).await?;
     wait_for_row(reader_one, "user-2").await?;
-    wait_for_row(reader_two, "user-2").await
+    wait_for_row(reader_two, "user-2").await?;
+    exercise_concurrent_index_reads(writer, reader_one, reader_two).await
+}
+
+async fn exercise_concurrent_index_reads(
+    writer: &RadProcess,
+    reader_one: &RadProcess,
+    reader_two: &RadProcess,
+) -> TestResult {
+    let planned = reader_one
+        .post_response("/execute?show-plan=true", &query_active_program())
+        .await?;
+    let status = planned.status();
+    let planned: Value = planned.json().await?;
+    if status != StatusCode::OK || !planned.to_string().contains("IndexRangeScan") {
+        return Err(format!("active-user query did not use an index range scan: {planned}").into());
+    }
+    let write = async {
+        for iteration in 0..64 {
+            let status = if iteration % 2 == 0 {
+                "active"
+            } else {
+                "inactive"
+            };
+            writer.execute(&update_program("user-1", status)).await?;
+        }
+        TestResult::Ok(())
+    };
+    tokio::try_join!(write, read_active(reader_one), read_active(reader_two))?;
+    Ok(())
+}
+
+async fn read_active(reader: &RadProcess) -> TestResult {
+    for _ in 0..64 {
+        reader.execute(&query_active_program()).await?;
+    }
+    Ok(())
 }
 
 async fn assert_access(process: &RadProcess, expected: &str) -> TestResult {
@@ -109,11 +148,70 @@ pub fn insert_program(id: &str) -> Value {
                     "row": {
                         "kind": "rows",
                         "scope": "literal",
-                        "columns": [{"name": "id", "type": "text"}],
-                        "rows": [[id]]
+                        "columns": [
+                            {"name": "id", "type": "text"},
+                            {"name": "status", "type": "text"}
+                        ],
+                        "rows": [[id, "active"]]
                     }
                 },
                 "root": {"node": "row", "cardinality": "many"}
+            }
+        }]
+    })
+}
+
+fn update_program(id: &str, status: &str) -> Value {
+    json!({
+        "statements": [{
+            "name": "update-user",
+            "kind": "update",
+            "table": "users",
+            "relation": {
+                "nodes": {
+                    "row": {
+                        "kind": "rows",
+                        "scope": "input",
+                        "columns": [
+                            {"name": "id", "type": "text"},
+                            {"name": "status", "type": "text"}
+                        ],
+                        "rows": [[id, status]]
+                    }
+                },
+                "root": {"node": "row", "cardinality": "many"}
+            }
+        }]
+    })
+}
+
+fn query_active_program() -> Value {
+    json!({
+        "statements": [{
+            "name": "active-users",
+            "kind": "query",
+            "relation": {
+                "nodes": {
+                    "users": {"kind": "scan", "table": "users", "scope": "user"},
+                    "active": {
+                        "kind": "filter",
+                        "input": "users",
+                        "predicate": {
+                            "kind": "binary",
+                            "op": "eq",
+                            "left": {"kind": "col", "scope": "user", "column": "status"},
+                            "right": {"kind": "lit", "value": {"type": "text", "value": "active"}}
+                        }
+                    },
+                    "ordered": {
+                        "kind": "order",
+                        "input": "active",
+                        "terms": [
+                            {"expr": {"kind": "col", "scope": "user", "column": "id"}}
+                        ]
+                    }
+                },
+                "root": {"node": "ordered", "cardinality": "many"}
             }
         }]
     })

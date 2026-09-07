@@ -176,14 +176,18 @@ pub struct JoinCandidate {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JoinDecisionBasis {
+    BoundedBuild,
     CostDominance,
+    MinimaxRegret,
     Structural,
 }
 
 impl JoinDecisionBasis {
     pub(super) const fn label(self) -> &'static str {
         match self {
+            Self::BoundedBuild => "bounded_build",
             Self::CostDominance => "cost_dominance",
+            Self::MinimaxRegret => "minimax_regret",
             Self::Structural => "structural",
         }
     }
@@ -192,11 +196,13 @@ impl JoinDecisionBasis {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JoinRejectionReason {
+    HigherMaximumRegret,
     MemoryLimit,
     MissingEvidence,
     MoreExpensive,
     OverlappingCost,
     StructuralFallback,
+    TailRegression,
     UnsupportedInput,
     UnsupportedPredicate,
 }
@@ -204,11 +210,13 @@ pub enum JoinRejectionReason {
 impl JoinRejectionReason {
     pub(super) const fn label(self) -> &'static str {
         match self {
+            Self::HigherMaximumRegret => "higher_maximum_regret",
             Self::MemoryLimit => "memory_limit",
             Self::MissingEvidence => "missing_evidence",
             Self::MoreExpensive => "more_expensive",
             Self::OverlappingCost => "overlapping_cost",
             Self::StructuralFallback => "structural_fallback",
+            Self::TailRegression => "tail_regression",
             Self::UnsupportedInput => "unsupported_input",
             Self::UnsupportedPredicate => "unsupported_predicate",
         }
@@ -465,6 +473,8 @@ pub enum NodeKind {
         index: Index,
         equality_prefix: Vec<ConstValue>,
         range: Option<RangeSpec>,
+        descending_prefix: usize,
+        descending_limit: Option<usize>,
         decode_columns: Vec<Column>,
         access: AccessDecision,
     },
@@ -585,6 +595,17 @@ pub enum NodeKind {
         input: Box<Node>,
         groups: Vec<BoundGroupTerm>,
         terms: Vec<BoundAggregateTerm>,
+    },
+    GroupedHashJoinAggregate {
+        fact: Box<Node>,
+        dimension: Box<Node>,
+        keys: Vec<EquiJoinKey>,
+        fact_is_left: bool,
+        groups: Vec<BoundGroupTerm>,
+        terms: Vec<BoundAggregateTerm>,
+        memory_limit_bytes: u64,
+        input_rows: u64,
+        dimension_rows: u64,
     },
 }
 
@@ -733,12 +754,22 @@ fn encode_plan_node(
             index,
             equality_prefix,
             range,
+            descending_prefix,
+            descending_limit,
             ..
         } => {
             payload.push(4);
             payload.extend_from_slice(&scan_schema_id(scan).to_be_bytes());
             encode_str(index.logical_id.as_str(), payload);
             payload.extend_from_slice(&(equality_prefix.len() as u64).to_be_bytes());
+            payload.extend_from_slice(&(*descending_prefix as u64).to_be_bytes());
+            match descending_limit {
+                Some(limit) => {
+                    payload.push(1);
+                    payload.extend_from_slice(&(*limit as u64).to_be_bytes());
+                }
+                None => payload.push(0),
+            }
             match range {
                 Some(range) => {
                     payload.push(1);
@@ -965,6 +996,28 @@ fn encode_plan_node(
             }
             encode_plan_node(input, positions, payload);
         }
+        NodeKind::GroupedHashJoinAggregate {
+            fact,
+            dimension,
+            keys,
+            fact_is_left,
+            groups,
+            terms,
+            memory_limit_bytes,
+            ..
+        } => {
+            payload.push(24);
+            payload.push(u8::from(*fact_is_left));
+            payload.extend_from_slice(&(keys.len() as u64).to_be_bytes());
+            payload.extend_from_slice(&(groups.len() as u64).to_be_bytes());
+            payload.extend_from_slice(&(terms.len() as u64).to_be_bytes());
+            payload.extend_from_slice(&memory_limit_bytes.to_be_bytes());
+            for term in terms {
+                payload.push(fp::aggregate_byte(term.function));
+            }
+            encode_plan_node(fact, positions, payload);
+            encode_plan_node(dimension, positions, payload);
+        }
     }
 }
 
@@ -998,6 +1051,9 @@ impl Node {
             | NodeKind::IndexedLookupJoin { left, right, .. }
             | NodeKind::Intersect { left, right, .. }
             | NodeKind::Except { left, right, .. } => vec![left, right],
+            NodeKind::GroupedHashJoinAggregate {
+                fact, dimension, ..
+            } => vec![fact, dimension],
             NodeKind::Concatenate { inputs, .. }
             | NodeKind::ShreddedYannakakisJoin { inputs, .. }
             | NodeKind::PredicateTransferJoin { inputs, .. } => inputs.iter().collect(),
@@ -1042,6 +1098,9 @@ impl Node {
             | NodeKind::IndexedLookupJoin { left, right, .. }
             | NodeKind::Intersect { left, right, .. }
             | NodeKind::Except { left, right, .. } => vec![left, right],
+            NodeKind::GroupedHashJoinAggregate {
+                fact, dimension, ..
+            } => vec![fact, dimension],
             NodeKind::Concatenate { inputs, .. }
             | NodeKind::ShreddedYannakakisJoin { inputs, .. }
             | NodeKind::PredicateTransferJoin { inputs, .. } => inputs.iter_mut().collect(),

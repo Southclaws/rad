@@ -1106,20 +1106,11 @@ async fn survey_table_with_budget(
     let mut rows = 0u64;
     let mut bytes = 0u64;
     let mut exact = true;
-    while let Some(row) = iterator.next().await? {
+    while let Some(row_values) = iterator.next().await? {
         if rows >= row_limit {
             exact = false;
             break;
         }
-        let row_values = table
-            .columns
-            .iter()
-            .map(|column| {
-                row.get(&column.name)
-                    .cloned()
-                    .unwrap_or(Value::Null(column.scalar_type))
-            })
-            .collect::<Vec<_>>();
         let row_bytes = row_values
             .iter()
             .map(value_width)

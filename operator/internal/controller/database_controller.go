@@ -42,6 +42,8 @@ const (
 	publicPort                 = 7237
 	adminPort                  = 7238
 	internalPort               = 7239
+	slateObjectCacheVolume     = "slate-object-cache"
+	slateObjectCachePath       = "/var/cache/rad/slate"
 	// The unprivileged user the Rad container runs as, and the group that
 	// owns anything mounted for it to read.
 	radRuntimeUser            = 65532
@@ -513,6 +515,18 @@ func (r *DatabaseReconciler) radPodSpec(
 		automountToken = ptr.To(false)
 	}
 	var volumes []corev1.Volume
+	if database.Spec.Slate.ObjectCache.Enabled {
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name:      slateObjectCacheVolume,
+			MountPath: slateObjectCachePath,
+		})
+		volumes = append(volumes, corev1.Volume{
+			Name: slateObjectCacheVolume,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		})
+	}
 	if relayEnabled(database) {
 		container.VolumeMounts = append(container.VolumeMounts, relayVolumeMount())
 		volumes = append(volumes, relayVolume(database))
@@ -844,13 +858,15 @@ func databaseEnvironment(
 		"RAD_LOG_PROGRAMS":      strconv.FormatBool(database.Spec.Logging.Programs),
 		"RAD_DIAGNOSTICS":       databaseDiagnosticLevel(database),
 		"RAD_METRICS":           strconv.FormatBool(databaseMetricsEnabled(database)),
-		"RAD_CACHE_SIZE_MIB":    strconv.FormatInt(databaseCacheSizeMiB(database), 10),
 		"RAD_ROLE":              role,
 		"RAD_S3_BUCKET":         database.Spec.Storage.Bucket,
 		"RAD_S3_PREFIX":         database.Spec.Storage.Prefix,
 		"RAD_S3_REGION":         database.Spec.Storage.Region,
 		"RAD_SHUTDOWN_DRAIN_MS": strconv.FormatInt(shutdownDrainMilliseconds(database), 10),
 		"RAD_STORAGE":           "s3",
+	}
+	for name, value := range slateEnvironment(database) {
+		values[name] = value
 	}
 	if relayEnabled(database) {
 		values["RAD_RELAY_TOKEN_FILE"] = relayTokenPath()
@@ -926,11 +942,54 @@ func databaseMetricsEnabled(database *radv1alpha1.Database) bool {
 	return *database.Spec.Telemetry.Metrics
 }
 
-func databaseCacheSizeMiB(database *radv1alpha1.Database) int64 {
-	if database.Spec.Cache.SizeMiB == 0 {
-		return 128
+func slateEnvironment(database *radv1alpha1.Database) map[string]string {
+	slate := database.Spec.Slate
+	values := map[string]string{
+		"RAD_SLATE_DECODED_CACHE_SIZE_MIB":          formatDefaultInt32(slate.DecodedCacheSizeMiB, 128),
+		"RAD_SLATE_SCAN_CACHE_BLOCKS":               strconv.FormatBool(slate.ScanCacheBlocks),
+		"RAD_SLATE_SCAN_READ_AHEAD_KIB":             formatDefaultInt32(slate.ScanReadAheadKiB, 256),
+		"RAD_SLATE_SCAN_MAX_FETCH_TASKS":            formatDefaultInt32(slate.ScanMaxFetchTasks, 4),
+		"RAD_SLATE_FLUSH_INTERVAL_MS":               formatDefaultInt32(slate.FlushIntervalMilliseconds, 100),
+		"RAD_SLATE_L0_SST_SIZE_MIB":                 formatDefaultInt32(slate.L0SSTSizeMiB, 64),
+		"RAD_SLATE_MAX_WAL_FLUSHES_BEFORE_L0_FLUSH": formatDefaultInt64(slate.MaxWALFlushesBeforeL0Flush, 4096),
+		"RAD_SLATE_L0_MAX_SSTS":                     formatDefaultInt32(slate.L0MaxSSTs, 8),
+		"RAD_SLATE_L0_MAX_SSTS_PER_KEY":             formatDefaultInt32(slate.L0MaxSSTsPerKey, 8),
+		"RAD_SLATE_L0_FLUSH_PARALLELISM":            formatDefaultInt32(slate.L0FlushParallelism, 4),
+		"RAD_SLATE_MAX_UNFLUSHED_MIB":               formatDefaultInt32(slate.MaxUnflushedMiB, 1024),
+		"RAD_SLATE_MIN_FILTER_KEYS":                 formatDefaultInt32(slate.MinFilterKeys, 1000),
+		"RAD_SLATE_BLOOM_BITS_PER_KEY":              formatDefaultInt32(slate.BloomBitsPerKey, 10),
+		"RAD_SLATE_SST_BLOCK_SIZE_KIB":              formatDefaultInt32(slate.SSTBlockSizeKiB, 4),
+		"RAD_SLATE_OBJECT_CACHE_SIZE_MIB":           formatDefaultInt32(slate.ObjectCache.SizeMiB, 16384),
+		"RAD_SLATE_OBJECT_CACHE_PART_SIZE_KIB":      formatDefaultInt32(slate.ObjectCache.PartSizeKiB, 4096),
+		"RAD_SLATE_OBJECT_CACHE_ON_FLUSH":           strconv.FormatBool(slate.ObjectCache.CacheOnFlush),
+		"RAD_SLATE_OBJECT_CACHE_ON_COMPACTION":      strconv.FormatBool(slate.ObjectCache.CacheOnCompaction),
+		"RAD_SLATE_OBJECT_CACHE_PRELOAD":            defaultString(slate.ObjectCache.Preload, "none"),
 	}
-	return int64(database.Spec.Cache.SizeMiB)
+	if slate.ObjectCache.Enabled {
+		values["RAD_SLATE_OBJECT_CACHE_PATH"] = slateObjectCachePath
+	}
+	return values
+}
+
+func formatDefaultInt32(value int32, fallback int32) string {
+	if value == 0 {
+		value = fallback
+	}
+	return strconv.FormatInt(int64(value), 10)
+}
+
+func formatDefaultInt64(value int64, fallback int64) string {
+	if value == 0 {
+		value = fallback
+	}
+	return strconv.FormatInt(value, 10)
+}
+
+func defaultString(value string, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func databaseLogLevel(database *radv1alpha1.Database) string {

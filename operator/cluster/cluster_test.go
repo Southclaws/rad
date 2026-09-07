@@ -135,19 +135,19 @@ func TestTelemetryPolicyIsProjected(t *testing.T) {
 	spec.Diagnostics = DiagnosticLevelDetailed
 	metrics := false
 	spec.MetricsEnabled = &metrics
-	spec.CacheSizeMiB = 256
+	spec.Slate.DecodedCacheSizeMiB = 256
 	created, err := c.CreateDatabase(context.Background(), spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.OTelEndpoint != spec.OTelEndpoint || created.Diagnostics != DiagnosticLevelDetailed || created.MetricsEnabled || created.CacheSizeMiB != 256 {
+	if created.OTelEndpoint != spec.OTelEndpoint || created.Diagnostics != DiagnosticLevelDetailed || created.MetricsEnabled || created.Slate.DecodedCacheSizeMiB != 256 {
 		t.Fatalf("telemetry view = %+v", created)
 	}
 	resource := &radv1alpha1.Database{}
 	if err := c.kube.Get(context.Background(), types.NamespacedName{Namespace: "tenants", Name: "telemetry"}, resource); err != nil {
 		t.Fatal(err)
 	}
-	if resource.Spec.Telemetry.Endpoint != spec.OTelEndpoint || resource.Spec.Telemetry.Diagnostics != radv1alpha1.DiagnosticLevelDetailed || resource.Spec.Telemetry.Metrics == nil || *resource.Spec.Telemetry.Metrics || resource.Spec.Cache.SizeMiB != 256 {
+	if resource.Spec.Telemetry.Endpoint != spec.OTelEndpoint || resource.Spec.Telemetry.Diagnostics != radv1alpha1.DiagnosticLevelDetailed || resource.Spec.Telemetry.Metrics == nil || *resource.Spec.Telemetry.Metrics || resource.Spec.Slate.DecodedCacheSizeMiB != 256 {
 		t.Fatalf("telemetry resource = %+v", resource.Spec.Telemetry)
 	}
 }
@@ -158,7 +158,7 @@ func TestMetricAndCacheDefaultsAreProjected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !created.MetricsEnabled || created.CacheSizeMiB != 128 {
+	if !created.MetricsEnabled || created.Slate.DecodedCacheSizeMiB != 128 {
 		t.Fatalf("metric and cache defaults = %+v", created)
 	}
 }

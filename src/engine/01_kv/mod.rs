@@ -4,7 +4,6 @@ pub mod key_encoding;
 pub mod keys;
 pub mod keyspace;
 pub mod manifest;
-pub(crate) mod object_store_telemetry;
 pub mod slatedb;
 pub mod telemetry;
 
@@ -43,10 +42,6 @@ impl DataPosition {
     fn from_sequence(sequence: u64) -> Self {
         Self(sequence.to_string())
     }
-
-    fn reader() -> Self {
-        Self("reader".into())
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
@@ -57,10 +52,27 @@ pub enum ScanPurpose {
     CascadeRange,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanOrder {
+    #[default]
+    Ascending,
+    Descending,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ScanProfile {
+    #[default]
+    Latency,
+    Throughput,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScanRequest {
     pub range: KeyRange,
     pub purpose: ScanPurpose,
+    pub order: ScanOrder,
+    pub profile: ScanProfile,
 }
 
 impl ScanRequest {
@@ -68,6 +80,8 @@ impl ScanRequest {
         Self {
             range,
             purpose: ScanPurpose::AccessPath,
+            order: ScanOrder::Ascending,
+            profile: ScanProfile::Latency,
         }
     }
 
@@ -75,7 +89,19 @@ impl ScanRequest {
         Self {
             range,
             purpose: ScanPurpose::CascadeRange,
+            order: ScanOrder::Ascending,
+            profile: ScanProfile::Latency,
         }
+    }
+
+    pub fn with_order(mut self, order: ScanOrder) -> Self {
+        self.order = order;
+        self
+    }
+
+    pub fn with_profile(mut self, profile: ScanProfile) -> Self {
+        self.profile = profile;
+        self
     }
 }
 
@@ -139,6 +165,17 @@ pub trait KvIterator: Send {
     /// returned key.
     async fn seek_forward(&mut self, next_key: &[u8]) -> Result<()>;
     async fn next(&mut self) -> Result<Option<Entry>>;
+
+    async fn next_batch(&mut self, limit: usize, output: &mut Vec<Entry>) -> Result<()> {
+        let target = output.len().saturating_add(limit);
+        while output.len() < target {
+            let Some(entry) = self.next().await? else {
+                break;
+            };
+            output.push(entry);
+        }
+        Ok(())
+    }
 }
 
 /// The common read/write surface shared by a database and an open
@@ -168,12 +205,26 @@ pub trait KvView: Send + Sync {
     /// transaction from being consumed before the cursor is dropped.
     async fn scan<'a>(&'a self, range: KeyRange) -> Result<Box<dyn KvIterator + 'a>>;
 
+    async fn scan_ordered<'a>(
+        &'a self,
+        range: KeyRange,
+        order: ScanOrder,
+    ) -> Result<Box<dyn KvIterator + 'a>> {
+        match order {
+            ScanOrder::Ascending => self.scan(range).await,
+            ScanOrder::Descending => Err(Error::message(
+                ErrorKind::Invalid,
+                "descending scan is not supported by this KV view",
+            )),
+        }
+    }
+
     async fn scan_with_request<'a>(&'a self, request: ScanRequest) -> Result<DescribedScan<'a>> {
         let descriptor = ScanDescriptor {
             request: request.clone(),
             position: None,
         };
-        let iterator = self.scan(request.range).await?;
+        let iterator = self.scan_ordered(request.range, request.order).await?;
         Ok(DescribedScan {
             descriptor,
             iterator,
@@ -188,6 +239,20 @@ pub trait Kv: Send + Sync {
     async fn put(&self, key: Bytes, value: Bytes) -> Result<()>;
     async fn delete(&self, key: &[u8]) -> Result<()>;
     async fn scan(&self, range: KeyRange) -> Result<Box<dyn KvIterator>>;
+
+    async fn scan_ordered(&self, range: KeyRange, order: ScanOrder) -> Result<Box<dyn KvIterator>> {
+        match order {
+            ScanOrder::Ascending => self.scan(range).await,
+            ScanOrder::Descending => Err(Error::message(
+                ErrorKind::Invalid,
+                "descending scan is not supported by this KV store",
+            )),
+        }
+    }
+
+    async fn scan_requested(&self, request: ScanRequest) -> Result<Box<dyn KvIterator>> {
+        self.scan_ordered(request.range, request.order).await
+    }
 }
 
 /// A transaction with a stable snapshot plus read-your-own-writes behavior.
@@ -202,6 +267,25 @@ pub trait Transaction: Send + Sync {
     fn delete(&self, key: &[u8]) -> Result<()>;
     fn untrack_write(&self, key: &[u8]) -> Result<()>;
     async fn scan<'a>(&'a self, range: KeyRange) -> Result<Box<dyn KvIterator + 'a>>;
+    async fn scan_ordered<'a>(
+        &'a self,
+        range: KeyRange,
+        order: ScanOrder,
+    ) -> Result<Box<dyn KvIterator + 'a>> {
+        match order {
+            ScanOrder::Ascending => self.scan(range).await,
+            ScanOrder::Descending => Err(Error::message(
+                ErrorKind::Invalid,
+                "descending scan is not supported by this transaction",
+            )),
+        }
+    }
+    async fn scan_requested<'a>(
+        &'a self,
+        request: ScanRequest,
+    ) -> Result<Box<dyn KvIterator + 'a>> {
+        self.scan_ordered(request.range, request.order).await
+    }
     fn scan_position(&self) -> Option<&DataPosition> {
         Some(self.begin_position())
     }
@@ -210,7 +294,7 @@ pub trait Transaction: Send + Sync {
             request: request.clone(),
             position: self.scan_position().cloned(),
         };
-        let iterator = self.scan(request.range).await?;
+        let iterator = self.scan_requested(request.clone()).await?;
         Ok(DescribedScan {
             descriptor,
             iterator,
@@ -251,6 +335,26 @@ where
     async fn scan<'a>(&'a self, range: KeyRange) -> Result<Box<dyn KvIterator + 'a>> {
         Kv::scan(self, range).await
     }
+
+    async fn scan_ordered<'a>(
+        &'a self,
+        range: KeyRange,
+        order: ScanOrder,
+    ) -> Result<Box<dyn KvIterator + 'a>> {
+        Kv::scan_ordered(self, range, order).await
+    }
+
+    async fn scan_with_request<'a>(&'a self, request: ScanRequest) -> Result<DescribedScan<'a>> {
+        let descriptor = ScanDescriptor {
+            request: request.clone(),
+            position: None,
+        };
+        let iterator = Kv::scan_requested(self, request).await?;
+        Ok(DescribedScan {
+            descriptor,
+            iterator,
+        })
+    }
 }
 
 /// Adapter for dynamic transactions. The transaction's buffered writes are
@@ -282,6 +386,14 @@ impl KvView for TransactionView<'_> {
 
     async fn scan<'a>(&'a self, range: KeyRange) -> Result<Box<dyn KvIterator + 'a>> {
         self.0.scan(range).await
+    }
+
+    async fn scan_ordered<'a>(
+        &'a self,
+        range: KeyRange,
+        order: ScanOrder,
+    ) -> Result<Box<dyn KvIterator + 'a>> {
+        self.0.scan_ordered(range, order).await
     }
 
     async fn scan_with_request<'a>(&'a self, request: ScanRequest) -> Result<DescribedScan<'a>> {

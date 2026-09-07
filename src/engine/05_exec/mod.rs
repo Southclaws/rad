@@ -19,6 +19,7 @@ mod shredded_join;
 mod set;
 pub mod schema_jobs;
 mod mutate;
+mod parallel;
 mod write;
 
 pub use engine::Engine;

@@ -9,4 +9,3 @@ fuzz_target!(|input: &[u8]| {
     }
     let _ = schema::parse("fuzz.schema.yaml", input);
 });
-

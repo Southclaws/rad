@@ -30,18 +30,18 @@ reclamation removes `c18` only after retention permits it.
 
 ## The counters answer different questions
 
-| Counter or identity | Question answered |
-| --- | --- |
-| Canonical schema revision | Which complete logical schema publication is this? |
-| Schema ID | Is this the same logical table or column after rename? |
-| Physical ID | Which stored representation is this? |
-| Definition generation | Which immutable physical object definition did binding use? |
-| Existence generation | Does this physical table lifetime still exist? |
-| Column value generation | Do these bytes decode with the same value semantics? |
-| Index access generation | Is this selected physical access path still valid? |
-| Write-protocol generation | Must a writer perform the same obligations? |
-| Transition generation | Is this transition state and progress record current? |
-| Owner epoch | May this worker still checkpoint or publish? |
+| Counter or identity       | Question answered                                           |
+| ------------------------- | ----------------------------------------------------------- |
+| Canonical schema revision | Which complete logical schema publication is this?          |
+| Schema ID                 | Is this the same logical table or column after rename?      |
+| Physical ID               | Which stored representation is this?                        |
+| Definition generation     | Which immutable physical object definition did binding use? |
+| Existence generation      | Does this physical table lifetime still exist?              |
+| Column value generation   | Do these bytes decode with the same value semantics?        |
+| Index access generation   | Is this selected physical access path still valid?          |
+| Write-protocol generation | Must a writer perform the same obligations?                 |
+| Transition generation     | Is this transition state and progress record current?       |
+| Owner epoch               | May this worker still checkpoint or publish?                |
 
 A canonical revision is useful for history, hashes, migration compare-and-swap,
 and inspection. It is too broad for ordinary transaction compatibility. A
@@ -52,7 +52,7 @@ column-value, index-access, and write-protocol fences compatible.
 
 Execution follows this order:
 
-1. Begin the SlateDB execution transaction.
+1. Begin the storage execution transaction.
 2. Bind names against the catalog visible through that transaction.
 3. Choose access paths and collect an exact typed dependency manifest.
 4. Read every dependency fence through the same transaction.
@@ -62,10 +62,10 @@ Execution follows this order:
 PIR preflight uses an earlier rollback-only transaction, but execution does not
 reuse its bound plans. It binds the program again inside the execution
 transaction. In a serializable execution transaction, admitted fence reads stay
-in SlateDB's conflict set through commit.
+in the storage backend conflict set through commit.
 
-Rad owns binding, compatibility, and publication semantics. SlateDB owns
-version visibility and commit conflict detection. Rad does not build another
+Rad owns binding, compatibility, and publication semantics. The storage backend
+owns version visibility and durable commit. Rad does not build another
 row-version store above it.
 
 ## Dependency manifests
@@ -84,15 +84,15 @@ column values.
 
 This produces semantic conflict rules:
 
-| Concurrent catalog change | Already-bound work |
-| --- | --- |
-| Rename its table or column | Continue through stable identity |
-| Add an unobserved nullable column | Continue |
-| Change an unrelated table | Continue |
-| Delete a column it decodes | Conflict |
-| Replace a column it decodes | Conflict |
-| Delete the physical index selected by its plan | Conflict |
-| Change its table's write obligations | Writer conflicts and retries with the new protocol |
+| Concurrent catalog change                      | Already-bound work                                 |
+| ---------------------------------------------- | -------------------------------------------------- |
+| Rename its table or column                     | Continue through stable identity                   |
+| Add an unobserved nullable column              | Continue                                           |
+| Change an unrelated table                      | Continue                                           |
+| Delete a column it decodes                     | Conflict                                           |
+| Replace a column it decodes                    | Conflict                                           |
+| Delete the physical index selected by its plan | Conflict                                           |
+| Change its table's write obligations           | Writer conflicts and retries with the new protocol |
 
 An executing plan never falls back to a mutable current table head. It uses the
 generation-qualified definitions fixed during binding.
@@ -136,8 +136,8 @@ publication reads that epoch, so a stale owner cannot commit after takeover.
 
 The local scheduler is deliberately replaceable policy around durable state.
 Fair rotation, batch sizes, item budgets, and backoff affect resource use, not
-the meaning of a transition. SlateDB currently limits a database to one Rad
-writer process, so distributed leases are not required for current correctness.
+the meaning of a transition. Slate permits one Rad writer. Distributed leases
+are not required for current correctness.
 
 ## Retention and reclamation
 
@@ -157,7 +157,7 @@ resource-specific, not one global oldest-generation number.
 
 The substrate is ahead of its consumers. No production persistent prepared
 plan, replica, CDC stream, or long-lived snapshot reader currently creates
-these pins. The KV API also cannot reopen an old SlateDB snapshot or express
+these pins. The KV API also cannot reopen an old storage snapshot or express
 cross-restart storage retention. An opaque data-snapshot pin therefore blocks
 all physical reclamation conservatively.
 

@@ -12,8 +12,9 @@ use super::generated::{
     SchemaTransitionsCancelArgs, SchemaTransitionsGetArgs, SchemaTransitionsListArgs,
     SchemaTransitionsListKind, SchemaTransitionsListState, SchemaTransitionsOptions,
     SchemaTransitionsWaitArgs, ServeArgs, ServeCatalogMode, ServeDiagnostics, ServeFrontend,
-    ServeLogFormat, ServeLogLevel, ServeMetrics, ServePlannerMode, ServeRole, ServeStorage,
-    SkillsGetArgs, SkillsListArgs, SkillsOptions, SkillsPathArgs, SpecArgs, ValidateArgs,
+    ServeLogFormat, ServeLogLevel, ServeMetrics, ServeRole, ServeSlateObjectCachePreload,
+    ServeStorage, SkillsGetArgs, SkillsListArgs, SkillsOptions, SkillsPathArgs, SpecArgs,
+    ValidateArgs,
 };
 use super::output::{self, CliError};
 use super::project::{Project, read_schema_file};
@@ -139,10 +140,82 @@ impl Handler for App {
     }
 
     async fn serve(&mut self, _globals: &GlobalArgs, args: ServeArgs) -> Result {
-        let cache_size_mib = u64::try_from(args.cache_size_mib)
-            .ok()
-            .filter(|value| *value >= 16)
-            .ok_or("--cache-size-mib must be at least 16")?;
+        crate::process::ensure_storage_path_environment()?;
+        let role = args.role.map_or(Role::Write, |role| match role {
+            ServeRole::Read => Role::Read,
+            ServeRole::Write => Role::Write,
+        });
+        let slate = crate::engine::kv::slatedb::Options {
+            decoded_cache_size_mib: positive_u64(
+                args.slate_decoded_cache_size_mib,
+                "--slate-decoded-cache-size-mib",
+            )?,
+            scan_cache_blocks: args.slate_scan_cache_blocks,
+            scan_read_ahead_kib: positive_u64(
+                args.slate_scan_read_ahead_kib,
+                "--slate-scan-read-ahead-kib",
+            )?,
+            scan_max_fetch_tasks: positive_usize(
+                args.slate_scan_max_fetch_tasks,
+                "--slate-scan-max-fetch-tasks",
+            )?,
+            flush_interval: Duration::from_millis(positive_u64(
+                args.slate_flush_interval_ms,
+                "--slate-flush-interval-ms",
+            )?),
+            l0_sst_size_mib: positive_u64(args.slate_l0_sst_size_mib, "--slate-l0-sst-size-mib")?,
+            max_wal_flushes_before_l0_flush: positive_u64(
+                args.slate_max_wal_flushes_before_l0_flush,
+                "--slate-max-wal-flushes-before-l0-flush",
+            )?,
+            l0_max_ssts: positive_usize(args.slate_l0_max_ssts, "--slate-l0-max-ssts")?,
+            l0_max_ssts_per_key: positive_usize(
+                args.slate_l0_max_ssts_per_key,
+                "--slate-l0-max-ssts-per-key",
+            )?,
+            l0_flush_parallelism: positive_usize(
+                args.slate_l0_flush_parallelism,
+                "--slate-l0-flush-parallelism",
+            )?,
+            max_unflushed_mib: positive_u64(
+                args.slate_max_unflushed_mib,
+                "--slate-max-unflushed-mib",
+            )?,
+            min_filter_keys: nonnegative_u32(
+                args.slate_min_filter_keys,
+                "--slate-min-filter-keys",
+            )?,
+            bloom_bits_per_key: positive_u32(
+                args.slate_bloom_bits_per_key,
+                "--slate-bloom-bits-per-key",
+            )?,
+            sst_block_size_kib: positive_u32(
+                args.slate_sst_block_size_kib,
+                "--slate-sst-block-size-kib",
+            )?,
+            object_cache_path: args.slate_object_cache_path,
+            object_cache_size_mib: positive_u64(
+                args.slate_object_cache_size_mib,
+                "--slate-object-cache-size-mib",
+            )?,
+            object_cache_part_size_kib: positive_u64(
+                args.slate_object_cache_part_size_kib,
+                "--slate-object-cache-part-size-kib",
+            )?,
+            object_cache_cache_on_flush: args.slate_object_cache_on_flush,
+            object_cache_cache_on_compaction: args.slate_object_cache_on_compaction,
+            object_cache_preload: match args.slate_object_cache_preload {
+                ServeSlateObjectCachePreload::None => {
+                    crate::engine::kv::slatedb::ObjectCachePreload::None
+                }
+                ServeSlateObjectCachePreload::L0 => {
+                    crate::engine::kv::slatedb::ObjectCachePreload::L0
+                }
+                ServeSlateObjectCachePreload::All => {
+                    crate::engine::kv::slatedb::ObjectCachePreload::All
+                }
+            },
+        };
         let metrics = matches!(args.metrics, ServeMetrics::True);
         crate::logging::install(crate::logging::Config {
             level: match args.log_level {
@@ -160,13 +233,7 @@ impl Handler for App {
             telemetry: crate::telemetry::Config {
                 endpoint: args.otel_endpoint.filter(|value| !value.is_empty()),
                 instance_id: args.instance_id.clone(),
-                role: Some(
-                    match args.role {
-                        ServeRole::Read => "read",
-                        ServeRole::Write => "write",
-                    }
-                    .to_owned(),
-                ),
+                role: Some(role.to_string()),
                 metrics,
             },
             diagnostics: match args.diagnostics {
@@ -185,8 +252,7 @@ impl Handler for App {
                 path: args.storage_path,
             },
             ServeStorage::File => StorageConfig::File {
-                directory: args.db,
-                path: args.storage_path,
+                path: args.storage_path.into(),
             },
             ServeStorage::S3 => StorageConfig::S3 {
                 bucket: args
@@ -206,7 +272,6 @@ impl Handler for App {
             admin_address: crate::process::admin_address_from_env(),
             catalog_mode,
             capture_workload_corpus: args.capture_workload_corpus,
-            cache_size_mib,
             close_timeout: crate::process::close_timeout_from_env()?,
             frontend: args.frontend.map(|frontend| match frontend {
                 ServeFrontend::Postgres => crate::process::Frontend::Postgres,
@@ -223,15 +288,9 @@ impl Handler for App {
             relay_authority: args.relay_ca,
             relay_target: args.relay_target,
             relay_token_file: args.relay_token_file,
-            planner_mode: match args.planner_mode {
-                ServePlannerMode::Structural => crate::engine::planner::PlannerMode::Structural,
-                ServePlannerMode::Cost => crate::engine::planner::PlannerMode::Cost,
-            },
-            role: match args.role {
-                ServeRole::Read => Role::Read,
-                ServeRole::Write => Role::Write,
-            },
+            role,
             shutdown_drain: crate::process::shutdown_drain_from_env()?,
+            slate,
             storage,
         };
         config.validate()?;
@@ -692,6 +751,31 @@ impl Handler for App {
     async fn spec(&mut self, globals: &GlobalArgs, args: SpecArgs) -> Result {
         super::spec::print_spec(globals, args)
     }
+}
+
+fn positive_u64(value: i64, name: &str) -> Result<u64> {
+    u64::try_from(value)
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("{name} must be greater than zero").into())
+}
+
+fn positive_usize(value: i64, name: &str) -> Result<usize> {
+    usize::try_from(value)
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("{name} must be greater than zero").into())
+}
+
+fn positive_u32(value: i64, name: &str) -> Result<u32> {
+    u32::try_from(value)
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("{name} must be greater than zero").into())
+}
+
+fn nonnegative_u32(value: i64, name: &str) -> Result<u32> {
+    u32::try_from(value).map_err(|_| format!("{name} must not be negative").into())
 }
 
 fn open_project(options: &SchemaOptions) -> Result<(Project, Client)> {

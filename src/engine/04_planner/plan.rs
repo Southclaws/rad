@@ -337,6 +337,7 @@ fn memo_physical_metrics(
             NodeKind::Sort { .. }
             | NodeKind::Distinct { .. }
             | NodeKind::Aggregate { .. }
+            | NodeKind::GroupedHashJoinAggregate { .. }
             | NodeKind::NestedLoopJoin { .. }
             | NodeKind::IndexedLookupJoin { .. } => {
                 blocking_operators = blocking_operators.saturating_add(1);
@@ -641,9 +642,18 @@ impl Planner<'_> {
         relation: &bound::Relation,
         required_order: &[bound::BoundOrderTerm],
     ) -> Node {
+        self.plan_with_limit(relation, required_order, None)
+    }
+
+    fn plan_with_limit(
+        &mut self,
+        relation: &bound::Relation,
+        required_order: &[bound::BoundOrderTerm],
+        limit: Option<usize>,
+    ) -> Node {
         Node {
             attribution: Some(lir::fingerprint::relation_family(relation)),
-            kind: self.plan_kind(relation, required_order),
+            kind: self.plan_kind(relation, required_order, limit),
         }
     }
 
@@ -651,6 +661,7 @@ impl Planner<'_> {
         &mut self,
         relation: &bound::Relation,
         required_order: &[bound::BoundOrderTerm],
+        limit: Option<usize>,
     ) -> NodeKind {
         match &relation.node {
             RelationNode::Scan { .. } => self.choose_access_path(
@@ -659,13 +670,17 @@ impl Planner<'_> {
                     columns: Default::default(),
                 },
                 required_order,
+                limit,
+                None,
             ),
             RelationNode::Rows { .. } => NodeKind::Rows(relation.clone()),
             RelationNode::Filter { input, predicate } => {
                 if let Some(predicate) = merged_scan_predicate(relation) {
                     let constraints = analysis::extract_constraints(relation)
                         .expect("a filter chain terminating in a scan has constraints");
-                    let access = self.choose_access_path(&constraints, required_order).bare();
+                    let access = self
+                        .choose_access_path(&constraints, required_order, limit, Some(&predicate))
+                        .bare();
                     let (predicate, specifications) = self.extract_expr(&predicate);
                     NodeKind::Filter {
                         input: Box::new(attach_wrap(access, specifications)),
@@ -681,7 +696,7 @@ impl Planner<'_> {
                 }
             }
             RelationNode::Order { input, terms } => {
-                let input = self.plan(input, terms);
+                let input = self.plan_with_limit(input, terms, limit);
                 let mut rewritten = Vec::with_capacity(terms.len());
                 let mut specifications = Vec::new();
                 for term in terms {
@@ -706,7 +721,11 @@ impl Planner<'_> {
                 offset,
                 limit,
             } => NodeKind::Slice {
-                input: Box::new(self.plan(input, &[])),
+                input: Box::new(self.plan_with_limit(
+                    input,
+                    &[],
+                    limit.map(|limit| offset.saturating_add(limit)),
+                )),
                 offset: *offset,
                 limit: *limit,
             },
@@ -751,12 +770,36 @@ impl Planner<'_> {
                         term.argument = Some(expression);
                         specifications.append(&mut extracted);
                     }
+                    if term.function == lir::AggregateFunction::Count
+                        && matches!(
+                            &term.argument,
+                            Some(bound::Expr::SlotRef { value_type, .. })
+                                if !value_type.nullable
+                        )
+                    {
+                        term.argument = None;
+                    }
                 }
-                let input = self.plan(input, &[]);
-                NodeKind::Aggregate {
-                    input: Box::new(attach_wrap(input, specifications)),
-                    groups: planned_groups,
-                    terms: planned_terms,
+                let planned_input = self.plan(input, &[]);
+                if specifications.is_empty()
+                    && let Some(grouped) = self.statistics.and_then(|statistics| {
+                        grouped_hash_join_aggregate(
+                            statistics,
+                            input,
+                            &planned_input,
+                            &planned_groups,
+                            &planned_terms,
+                            self.options.hash_join_memory_limit_bytes,
+                        )
+                    })
+                {
+                    grouped
+                } else {
+                    NodeKind::Aggregate {
+                        input: Box::new(attach_wrap(planned_input, specifications)),
+                        groups: planned_groups,
+                        terms: planned_terms,
+                    }
                 }
             }
             RelationNode::Join {
@@ -1022,6 +1065,32 @@ impl Planner<'_> {
         on: &bound::Expr,
         required_order: &[bound::BoundOrderTerm],
     ) -> NodeKind {
+        let predicate_effects = super::memo::expression_effects(on);
+        let recursive_lookup_preserves_evaluation = predicate_effects.pure
+            && predicate_effects.deterministic
+            && predicate_effects.total
+            && !predicate_effects.lazy_ordered_boundary
+            && !predicate_effects.relational_crossing;
+        let reverse_for_recursive_indexed_lookup = recursive_lookup_preserves_evaluation
+            && kind == lir::JoinKind::Inner
+            && required_order.is_empty()
+            && !self.options.full_scan_only
+            && matches!(left.node, RelationNode::Scan { .. })
+            && matches!(right.node, RelationNode::RecursiveRef { .. })
+            && analysis::equi_join_keys(right, left, on).is_some_and(|keys| {
+                matches!(
+                    self.indexed_lookup_input(left, &keys),
+                    Some(Node {
+                        kind: NodeKind::PrimaryKeyGet { .. } | NodeKind::IndexRangeScan { .. },
+                        ..
+                    })
+                )
+            });
+        let (left, right) = if reverse_for_recursive_indexed_lookup {
+            (right, left)
+        } else {
+            (left, right)
+        };
         let keys = analysis::equi_join_keys(left, right, on).unwrap_or_default();
         let planned_left = self.plan(left, &[]);
         let planned_right = self.plan(right, &[]);
@@ -1033,25 +1102,69 @@ impl Planner<'_> {
         let nested_cost = self.statistics.and_then(|statistics| {
             join_costs(statistics, relation, left, right, &keys, ordering).map(|costs| costs.nested)
         });
+        let reversible_hash_join = kind == lir::JoinKind::Inner
+            && required_order.is_empty()
+            && predicate_effects.pure
+            && predicate_effects.deterministic
+            && predicate_effects.total
+            && !predicate_effects.lazy_ordered_boundary
+            && !predicate_effects.relational_crossing
+            && left.free_slots().is_empty()
+            && right.free_slots().is_empty()
+            && !super::memo::contains_recursive_reference(left)
+            && !super::memo::contains_recursive_reference(right)
+            && [left, right].into_iter().all(|input| {
+                let effects = super::memo::relation_effects(input);
+                effects.pure
+                    && effects.deterministic
+                    && effects.total
+                    && !effects.lazy_ordered_boundary
+                    && !effects.relational_crossing
+            });
         let hash_result = if keys.is_empty() {
             Err(JoinRejectionReason::UnsupportedPredicate)
         } else {
             self.statistics
                 .ok_or(JoinRejectionReason::MissingEvidence)
                 .and_then(|statistics| {
-                    let costs = join_costs(statistics, relation, left, right, &keys, ordering)
-                        .ok_or(JoinRejectionReason::MissingEvidence)?;
-                    let memory = hash_join_memory_bound(statistics, right, &keys, costs.right)?;
-                    if memory > self.options.hash_join_memory_limit_bytes {
-                        return Err(JoinRejectionReason::MemoryLimit);
+                    let original = hash_join_plan(
+                        statistics,
+                        relation,
+                        left,
+                        right,
+                        keys.clone(),
+                        ordering,
+                        self.options.hash_join_memory_limit_bytes,
+                    );
+                    if !reversible_hash_join {
+                        return original;
                     }
-                    let mut cost = costs.hash;
-                    cost.peak_retained_bytes = Some(AccessQuantity {
-                        central: memory,
-                        lower_bound: 0,
-                        upper_bound: Some(memory),
+                    let reversed_keys = analysis::equi_join_keys(right, left, on)
+                        .ok_or(JoinRejectionReason::UnsupportedPredicate)?;
+                    let reversed = hash_join_plan(
+                        statistics,
+                        relation,
+                        right,
+                        left,
+                        reversed_keys,
+                        ordering,
+                        self.options.hash_join_memory_limit_bytes,
+                    )
+                    .map(|mut plan| {
+                        plan.reversed = true;
+                        plan
                     });
-                    Ok(cost)
+                    match (original, reversed) {
+                        (Ok(original), Ok(reversed)) => {
+                            Ok(if reversed.memory_bytes < original.memory_bytes {
+                                reversed
+                            } else {
+                                original
+                            })
+                        }
+                        (Ok(plan), Err(_)) | (Err(_), Ok(plan)) => Ok(plan),
+                        (Err(original), Err(_)) => Err(original),
+                    }
                 })
         };
         let lookup_plan = if keys.is_empty() {
@@ -1074,6 +1187,17 @@ impl Planner<'_> {
                             .ok_or(JoinRejectionReason::MissingEvidence)
                     })
             });
+        let recursive_indexed_lookup = recursive_lookup_preserves_evaluation
+            && kind == lir::JoinKind::Inner
+            && required_order.is_empty()
+            && matches!(left.node, RelationNode::RecursiveRef { .. })
+            && matches!(
+                &lookup_plan,
+                Ok(Node {
+                    kind: NodeKind::PrimaryKeyGet { .. } | NodeKind::IndexRangeScan { .. },
+                    ..
+                })
+            );
         let mut candidates = vec![
             JoinCandidate {
                 method: "NestedLoopJoin".into(),
@@ -1084,7 +1208,7 @@ impl Planner<'_> {
             },
             JoinCandidate {
                 method: "HashJoin".into(),
-                cost: hash_result.as_ref().ok().copied(),
+                cost: hash_result.as_ref().ok().map(|plan| plan.cost),
                 decision_basis: None,
                 rejection_reason: hash_result.as_ref().err().copied(),
                 chosen: false,
@@ -1097,26 +1221,76 @@ impl Planner<'_> {
                 chosen: false,
             },
         ];
-        let structural_fallback = 0;
-        let chosen = if self.options.mode == PlannerMode::Cost && !self.options.full_scan_only {
-            strict_join_cost_winner(&candidates).unwrap_or(structural_fallback)
+        let structural_fallback = if recursive_indexed_lookup { 2 } else { 0 };
+        let strict_chosen = (self.options.mode == PlannerMode::Cost
+            && !self.options.full_scan_only)
+            .then(|| strict_join_cost_winner(&candidates))
+            .flatten();
+        let robust_chosen = (self.options.mode == PlannerMode::Cost
+            && !self.options.full_scan_only
+            && strict_chosen.is_none())
+        .then(|| robust_join_cost_winner(&candidates, structural_fallback))
+        .flatten();
+        let bounded_hash_chosen = (self.options.mode == PlannerMode::Cost
+            && !self.options.full_scan_only
+            && strict_chosen.is_none()
+            && robust_chosen.is_none())
+        .then(|| bounded_hash_join_winner(&candidates, structural_fallback))
+        .flatten();
+        let chosen = if recursive_indexed_lookup {
+            structural_fallback
+        } else if self.options.mode == PlannerMode::Cost && !self.options.full_scan_only {
+            strict_chosen
+                .or(robust_chosen)
+                .or(bounded_hash_chosen)
+                .unwrap_or(structural_fallback)
         } else {
             structural_fallback
         };
         candidates[chosen].chosen = true;
         candidates[chosen].decision_basis = Some(if chosen == structural_fallback {
             JoinDecisionBasis::Structural
+        } else if bounded_hash_chosen == Some(chosen) {
+            JoinDecisionBasis::BoundedBuild
+        } else if robust_chosen == Some(chosen) {
+            JoinDecisionBasis::MinimaxRegret
         } else {
             JoinDecisionBasis::CostDominance
         });
         let winner = candidates[chosen].cost;
+        let maximum_regrets = join_maximum_regrets(&candidates);
+        let structural_cost = candidates[structural_fallback].cost;
+        let winner_regret = maximum_regrets[chosen];
         for (index, candidate) in candidates.iter_mut().enumerate() {
             if index == chosen || candidate.rejection_reason.is_some() {
                 continue;
             }
             candidate.rejection_reason = Some(
                 if chosen == structural_fallback || index == structural_fallback {
-                    JoinRejectionReason::StructuralFallback
+                    if chosen == structural_fallback {
+                        JoinRejectionReason::StructuralFallback
+                    } else if join_cost_is_more_expensive(candidate.cost, winner) {
+                        JoinRejectionReason::MoreExpensive
+                    } else {
+                        JoinRejectionReason::HigherMaximumRegret
+                    }
+                } else if structural_cost
+                    .zip(candidate.cost)
+                    .and_then(|(structural, candidate)| {
+                        Some((
+                            structural.logical_row_operations.upper_bound?,
+                            candidate.logical_row_operations.upper_bound?,
+                        ))
+                    })
+                    .is_some_and(|(structural, candidate)| candidate > structural)
+                {
+                    JoinRejectionReason::TailRegression
+                } else if robust_chosen.is_some()
+                    && maximum_regrets[index]
+                        .zip(winner_regret)
+                        .is_some_and(|(candidate, winner)| candidate >= winner)
+                {
+                    JoinRejectionReason::HigherMaximumRegret
                 } else if join_cost_is_more_expensive(candidate.cost, winner) {
                     JoinRejectionReason::MoreExpensive
                 } else {
@@ -1129,16 +1303,24 @@ impl Planner<'_> {
             structural_fallback,
         };
         match chosen {
-            1 => NodeKind::HashJoin {
-                left: Box::new(planned_left),
-                right: Box::new(planned_right),
-                kind,
-                on: on.clone(),
-                keys,
-                right_output: right.output().clone(),
-                memory_limit_bytes: self.options.hash_join_memory_limit_bytes,
-                decision,
-            },
+            1 => {
+                let hash = hash_result.expect("chosen hash join plan");
+                let (planned_left, planned_right, right_output) = if hash.reversed {
+                    (planned_right, planned_left, left.output().clone())
+                } else {
+                    (planned_left, planned_right, right.output().clone())
+                };
+                NodeKind::HashJoin {
+                    left: Box::new(planned_left),
+                    right: Box::new(planned_right),
+                    kind,
+                    on: on.clone(),
+                    keys: hash.keys,
+                    right_output,
+                    memory_limit_bytes: self.options.hash_join_memory_limit_bytes,
+                    decision,
+                }
+            }
             2 => NodeKind::IndexedLookupJoin {
                 left: Box::new(planned_left),
                 right: Box::new(lookup_plan.expect("chosen lookup plan")),
@@ -1183,7 +1365,7 @@ impl Planner<'_> {
                 },
             );
         }
-        let access = self.choose_access_path(&constraints, &[]);
+        let access = self.choose_access_path(&constraints, &[], None, None);
         let table = constraints.scan.scan_table();
         let key_columns: std::collections::HashSet<_> =
             keys.iter().map(|key| key.right.name.as_str()).collect();
@@ -1203,9 +1385,11 @@ impl Planner<'_> {
             } => {
                 let columns = table.index_column_names(index);
                 range.is_none()
-                    && columns.len() == keys.len()
-                    && equality_prefix.len() == columns.len()
-                    && columns.iter().all(|column| key_columns.contains(*column))
+                    && equality_prefix.len() == keys.len()
+                    && columns
+                        .iter()
+                        .take(keys.len())
+                        .all(|column| key_columns.contains(*column))
             }
             _ => false,
         };
@@ -1216,6 +1400,8 @@ impl Planner<'_> {
         &self,
         constraints: &ScanConstraints,
         required_order: &[bound::BoundOrderTerm],
+        limit: Option<usize>,
+        predicate: Option<&bound::Expr>,
     ) -> NodeKind {
         let table = constraints.scan.scan_table();
         if self.options.full_scan_only {
@@ -1310,14 +1496,36 @@ impl Planner<'_> {
                 });
             let equality_prefix_len = equality_prefix.len();
             let has_range = range.is_some();
-            let candidate = NodeKind::IndexRangeScan {
+            let mut candidate = NodeKind::IndexRangeScan {
                 scan: Box::new(constraints.scan.clone()),
                 index: index.clone(),
                 equality_prefix: equality_prefix.clone(),
                 range: range.clone(),
+                descending_prefix: 0,
+                descending_limit: None,
                 decode_columns: Vec::new(),
                 access: Default::default(),
             };
+            if let Some(required_descending_prefix) = required_descending_prefix(required_order)
+                && order_slots_match(&candidate, required_order)
+                && let NodeKind::IndexRangeScan {
+                    descending_prefix,
+                    descending_limit,
+                    ..
+                } = &mut candidate
+            {
+                *descending_prefix = required_descending_prefix;
+                *descending_limit = limit.filter(|_| {
+                    predicate.is_none_or(|predicate| {
+                        predicate_covered_by_index_equalities(
+                            predicate,
+                            &constraints.scan,
+                            &column_names[..equality_prefix_len],
+                            &equality_prefix,
+                        )
+                    })
+                });
+            }
             let candidate_score = score(&candidate, equality_prefix_len, has_range, required_order);
             let unique_point = index.unique
                 && equality_prefix_len == column_names.len()
@@ -1462,6 +1670,161 @@ fn attach_wrap(input: Node, specifications: Vec<AttachSpec>) -> Node {
     }
 }
 
+fn grouped_hash_join_aggregate(
+    statistics: &super::models::PlannerStats,
+    input: &bound::Relation,
+    planned_input: &Node,
+    groups: &[bound::BoundGroupTerm],
+    terms: &[bound::BoundAggregateTerm],
+    memory_limit_bytes: u64,
+) -> Option<NodeKind> {
+    let RelationNode::Join {
+        left,
+        right,
+        kind: lir::JoinKind::Inner,
+        on,
+    } = &input.node
+    else {
+        return None;
+    };
+    analysis::equi_join_keys(left, right, on)?;
+    let hash = match &planned_input.kind {
+        NodeKind::HashJoin {
+            left, right, keys, ..
+        } => (left.as_ref(), right.as_ref(), keys),
+        NodeKind::JoinGraphChoice { input, .. } => match &input.kind {
+            NodeKind::HashJoin {
+                left, right, keys, ..
+            } => (left.as_ref(), right.as_ref(), keys),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let physical_left_is_logical_left = hash.2.iter().all(|key| {
+        left.produced().contains(key.left.slot) && right.produced().contains(key.right.slot)
+    });
+    let physical_right_is_logical_left = hash.2.iter().all(|key| {
+        right.produced().contains(key.left.slot) && left.produced().contains(key.right.slot)
+    });
+    let (physical_left, physical_right) = if physical_left_is_logical_left {
+        (left.as_ref(), right.as_ref())
+    } else if physical_right_is_logical_left {
+        (right.as_ref(), left.as_ref())
+    } else {
+        return None;
+    };
+
+    let groups_on_left = expressions_within(
+        groups.iter().map(|group| &group.expression),
+        physical_left.produced(),
+    );
+    let groups_on_right = expressions_within(
+        groups.iter().map(|group| &group.expression),
+        physical_right.produced(),
+    );
+    if groups.is_empty() || groups_on_left == groups_on_right {
+        return None;
+    }
+    let fact_is_left = groups_on_right;
+    if !fact_is_left {
+        return None;
+    }
+    let fact_relation = physical_left;
+    if !terms.iter().all(|term| {
+        term.argument
+            .as_ref()
+            .is_none_or(|argument| expression_within(argument, fact_relation.produced()))
+    }) {
+        return None;
+    }
+    if !groups
+        .iter()
+        .all(|group| expression_is_safe_to_precompute(&group.expression))
+    {
+        return None;
+    }
+
+    let (fact, dimension) = (hash.0, hash.1);
+    if hash.2.len() != 1 {
+        return None;
+    }
+    let dimension_key = hash.2.first()?.right.clone();
+    if !dimension_join_key_is_unique(dimension, &dimension_key) {
+        return None;
+    }
+    let input_rows = scan_row_estimate(statistics, fact)?;
+    let dimension_rows = scan_row_estimate(statistics, dimension)?;
+    if input_rows < 4_096 || dimension_rows.saturating_mul(4) > input_rows {
+        return None;
+    }
+    if dimension_rows.saturating_mul(256) > memory_limit_bytes {
+        return None;
+    }
+
+    Some(NodeKind::GroupedHashJoinAggregate {
+        fact: Box::new(fact.clone()),
+        dimension: Box::new(dimension.clone()),
+        keys: hash.2.clone(),
+        fact_is_left,
+        groups: groups.to_vec(),
+        terms: terms.to_vec(),
+        memory_limit_bytes,
+        input_rows,
+        dimension_rows,
+    })
+}
+
+fn expression_within(expression: &bound::Expr, slots: &bound::SlotSet) -> bool {
+    expression.free_slots().without(slots).is_empty()
+}
+
+fn expressions_within<'a>(
+    expressions: impl IntoIterator<Item = &'a bound::Expr>,
+    slots: &bound::SlotSet,
+) -> bool {
+    expressions
+        .into_iter()
+        .all(|expression| expression_within(expression, slots))
+}
+
+fn expression_is_safe_to_precompute(expression: &bound::Expr) -> bool {
+    let effects = super::memo::expression_effects(expression);
+    effects.pure
+        && effects.deterministic
+        && effects.total
+        && !effects.lazy_ordered_boundary
+        && !effects.relational_crossing
+}
+
+fn scan_row_estimate(statistics: &super::models::PlannerStats, node: &Node) -> Option<u64> {
+    let NodeKind::TableScan { scan, .. } = &node.kind else {
+        return None;
+    };
+    let table = scan.scan_table();
+    let synopsis = statistics.synopsis_models.get(&table.schema_id)?;
+    if synopsis.table_existence_generation != table.existence_generation.get() {
+        return None;
+    }
+    Some(
+        synopsis
+            .observed_rows
+            .saturating_add(synopsis.changes_since_collection),
+    )
+}
+
+fn dimension_join_key_is_unique(dimension: &Node, key: &lir::Field) -> bool {
+    let NodeKind::TableScan { scan, .. } = &dimension.kind else {
+        return false;
+    };
+    let table = scan.scan_table();
+    table.primary_key == [key.name.as_str()]
+        || table.indexes.iter().any(|index| {
+            index.unique
+                && index.is_ready()
+                && table.index_column_names(index) == [key.name.as_str()]
+        })
+}
+
 fn merged_scan_predicate(relation: &bound::Relation) -> Option<bound::Expr> {
     let mut relation = relation;
     let mut predicate = None;
@@ -1477,6 +1840,72 @@ fn merged_scan_predicate(relation: &bound::Relation) -> Option<bound::Expr> {
         relation = input;
     }
     matches!(relation.node, RelationNode::Scan { .. }).then_some(predicate?)
+}
+
+fn predicate_covered_by_index_equalities(
+    predicate: &bound::Expr,
+    scan: &bound::Relation,
+    columns: &[&str],
+    values: &[ConstValue],
+) -> bool {
+    let equalities = columns
+        .iter()
+        .zip(values)
+        .filter_map(|(column, value)| {
+            scan.output()
+                .lookup(column)
+                .map(|field| (field.slot, value))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    !equalities.is_empty()
+        && analysis::conjuncts(predicate)
+            .into_iter()
+            .all(|conjunct| equality_is_covered(conjunct, scan, &equalities))
+}
+
+fn equality_is_covered(
+    expression: &bound::Expr,
+    scan: &bound::Relation,
+    equalities: &std::collections::HashMap<SlotId, &ConstValue>,
+) -> bool {
+    let bound::Expr::Binary {
+        op: lir::BinaryOp::Eq,
+        left,
+        right,
+        ..
+    } = expression
+    else {
+        return false;
+    };
+    [(&**left, &**right), (&**right, &**left)]
+        .into_iter()
+        .any(|(candidate, value)| {
+            let bound::Expr::SlotRef { slot, .. } = candidate else {
+                return false;
+            };
+            equalities
+                .get(slot)
+                .zip(predicate_constant(value, scan))
+                .is_some_and(|(expected, actual)| same_constant(expected, &actual))
+        })
+}
+
+fn predicate_constant(expression: &bound::Expr, scan: &bound::Relation) -> Option<ConstValue> {
+    match expression {
+        bound::Expr::Literal(value) if !value.is_null() => Some(ConstValue::Literal(value.clone())),
+        bound::Expr::SlotRef { slot, .. } if !scan.produced().contains(*slot) => {
+            Some(ConstValue::Outer(*slot))
+        }
+        _ => None,
+    }
+}
+
+fn same_constant(left: &ConstValue, right: &ConstValue) -> bool {
+    match (left, right) {
+        (ConstValue::Literal(left), ConstValue::Literal(right)) => left.storage_eq(right),
+        (ConstValue::Outer(left), ConstValue::Outer(right)) => left == right,
+        _ => false,
+    }
 }
 
 fn pinned_key(constraints: &ScanConstraints, columns: &[String]) -> Option<Vec<ConstValue>> {
@@ -1515,6 +1944,42 @@ struct JoinCosts {
     right: AccessQuantity,
 }
 
+struct HashJoinPlan {
+    cost: JoinCost,
+    keys: Vec<analysis::EquiJoinKey>,
+    memory_bytes: u64,
+    reversed: bool,
+}
+
+fn hash_join_plan(
+    statistics: &super::models::PlannerStats,
+    relation: &bound::Relation,
+    left: &bound::Relation,
+    right: &bound::Relation,
+    keys: Vec<analysis::EquiJoinKey>,
+    ordering: AccessOrdering,
+    memory_limit_bytes: u64,
+) -> Result<HashJoinPlan, JoinRejectionReason> {
+    let costs = join_costs(statistics, relation, left, right, &keys, ordering)
+        .ok_or(JoinRejectionReason::MissingEvidence)?;
+    let memory_bytes = hash_join_memory_bound(statistics, right, &keys, costs.right)?;
+    if memory_bytes > memory_limit_bytes {
+        return Err(JoinRejectionReason::MemoryLimit);
+    }
+    let mut cost = costs.hash;
+    cost.peak_retained_bytes = Some(AccessQuantity {
+        central: memory_bytes,
+        lower_bound: 0,
+        upper_bound: Some(memory_bytes),
+    });
+    Ok(HashJoinPlan {
+        cost,
+        keys,
+        memory_bytes,
+        reversed: false,
+    })
+}
+
 fn join_costs(
     statistics: &super::models::PlannerStats,
     relation: &bound::Relation,
@@ -1530,9 +1995,6 @@ fn join_costs(
     let left_rows = estimate_quantity(left_estimate, 1);
     let right_rows = estimate_quantity(right_estimate, 1);
     let output_rows = estimate_quantity(output_estimate, 1);
-    left_rows.upper_bound?;
-    right_rows.upper_bound?;
-    output_rows.upper_bound?;
     let pairs = quantity_product(left_rows, right_rows);
     let nested_key_comparisons = AccessQuantity {
         central: pairs.central.saturating_mul(keys.len() as u64),
@@ -2233,6 +2695,80 @@ fn strict_join_cost_winner(candidates: &[JoinCandidate]) -> Option<usize> {
         })
 }
 
+fn join_maximum_regrets(candidates: &[JoinCandidate]) -> Vec<Option<u64>> {
+    let minima = candidates
+        .iter()
+        .filter_map(|candidate| candidate.cost)
+        .filter_map(|cost| {
+            Some((
+                cost.logical_row_operations.lower_bound,
+                cost.logical_row_operations.central,
+                cost.logical_row_operations.upper_bound?,
+            ))
+        })
+        .fold(None, |minimum: Option<(u64, u64, u64)>, cost| {
+            Some(minimum.map_or(cost, |minimum| {
+                (
+                    minimum.0.min(cost.0),
+                    minimum.1.min(cost.1),
+                    minimum.2.min(cost.2),
+                )
+            }))
+        });
+    candidates
+        .iter()
+        .map(|candidate| {
+            let minimum = minima?;
+            let cost = candidate.cost?.logical_row_operations;
+            Some(
+                cost.lower_bound
+                    .saturating_sub(minimum.0)
+                    .max(cost.central.saturating_sub(minimum.1))
+                    .max(cost.upper_bound?.saturating_sub(minimum.2)),
+            )
+        })
+        .collect()
+}
+
+fn robust_join_cost_winner(candidates: &[JoinCandidate], structural: usize) -> Option<usize> {
+    let structural_cost = candidates.get(structural)?.cost?.logical_row_operations;
+    let structural_upper = structural_cost.upper_bound?;
+    let maximum_regrets = join_maximum_regrets(candidates);
+    let structural_regret = maximum_regrets[structural]?;
+    candidates
+        .iter()
+        .enumerate()
+        .filter(|(index, candidate)| *index != structural && candidate.rejection_reason.is_none())
+        .filter_map(|(index, candidate)| {
+            let cost = candidate.cost?.logical_row_operations;
+            let upper = cost.upper_bound?;
+            let regret = maximum_regrets[index]?;
+            (upper <= structural_upper && regret < structural_regret).then_some((
+                index,
+                regret,
+                cost.central,
+                upper,
+            ))
+        })
+        .min_by_key(|(index, regret, central, upper)| (*regret, *central, *upper, *index))
+        .map(|(index, _, _, _)| index)
+}
+
+fn bounded_hash_join_winner(candidates: &[JoinCandidate], structural: usize) -> Option<usize> {
+    let nested = candidates.get(structural)?.cost?;
+    let hash_index = candidates.iter().position(|candidate| {
+        candidate.method == "HashJoin"
+            && candidate.rejection_reason.is_none()
+            && candidate.cost.is_some()
+    })?;
+    let hash = candidates[hash_index].cost?;
+    let hash_input_work = hash
+        .build_rows
+        .upper_bound?
+        .saturating_add(hash.probe_rows.lower_bound);
+    (nested.key_comparisons.lower_bound > hash_input_work).then_some(hash_index)
+}
+
 fn join_cost_is_more_expensive(candidate: Option<JoinCost>, winner: Option<JoinCost>) -> bool {
     let (Some(candidate), Some(winner)) = (candidate, winner) else {
         return false;
@@ -2536,13 +3072,50 @@ fn satisfies_order(node: &NodeKind, required: &[bound::BoundOrderTerm]) -> bool 
     if required.is_empty() {
         return true;
     }
+    let descending_prefix = descending_order_prefix(node);
+    let direction_matches = required
+        .iter()
+        .enumerate()
+        .all(|(position, term)| term.descending == (position < descending_prefix));
     let (provided, singleton) = provided_order(node);
-    singleton
-        || (required.len() <= provided.len()
-            && required.iter().zip(provided).all(|(term, provided)| {
-                !term.descending
-                    && matches!(&term.expression, bound::Expr::SlotRef { slot, .. } if *slot == provided)
-            }))
+    singleton || (direction_matches && order_slots_match_with_provided(required, &provided))
+}
+
+fn required_descending_prefix(required: &[bound::BoundOrderTerm]) -> Option<usize> {
+    let descending_prefix = required.iter().take_while(|term| term.descending).count();
+    (descending_prefix > 0
+        && required[descending_prefix..]
+            .iter()
+            .all(|term| !term.descending))
+    .then_some(descending_prefix)
+}
+
+fn descending_order_prefix(node: &NodeKind) -> usize {
+    match node {
+        NodeKind::IndexRangeScan {
+            descending_prefix, ..
+        } => *descending_prefix,
+        NodeKind::Filter { input, .. }
+        | NodeKind::Attach { input, .. }
+        | NodeKind::Slice { input, .. }
+        | NodeKind::JoinGraphChoice { input, .. } => descending_order_prefix(&input.kind),
+        _ => 0,
+    }
+}
+
+fn order_slots_match(node: &NodeKind, required: &[bound::BoundOrderTerm]) -> bool {
+    let (provided, singleton) = provided_order(node);
+    singleton || order_slots_match_with_provided(required, &provided)
+}
+
+fn order_slots_match_with_provided(
+    required: &[bound::BoundOrderTerm],
+    provided: &[SlotId],
+) -> bool {
+    required.len() <= provided.len()
+        && required.iter().zip(provided).all(|(term, provided)| {
+            matches!(&term.expression, bound::Expr::SlotRef { slot, .. } if slot == provided)
+        })
 }
 
 fn provided_order(node: &NodeKind) -> (Vec<SlotId>, bool) {
@@ -2658,6 +3231,83 @@ mod tests {
                 degree_sequence: None,
             });
         statistics
+    }
+
+    #[test]
+    fn large_fact_aggregate_uses_grouped_hash_join_aggregate() {
+        let fact_table = join_table(20, "order-items-table", "order_items");
+        let dimension_table = join_table(10, "tasks-table", "tasks");
+
+        let fact = bound::Relation::scan(
+            fact_table.clone(),
+            "items",
+            vec![SlotId(0), SlotId(1), SlotId(2)],
+        );
+        let dimension = bound::Relation::scan(
+            dimension_table.clone(),
+            "tasks",
+            vec![SlotId(3), SlotId(4), SlotId(5)],
+        );
+        let joined = bound::Relation::join(
+            fact.clone(),
+            dimension.clone(),
+            crate::engine::lir::JoinKind::Inner,
+            bound::Expr::binary(
+                BinaryOp::Eq,
+                column(&fact, "board_id"),
+                column(&dimension, "id"),
+            ),
+        );
+        let aggregate = bound::Relation::aggregate(
+            joined,
+            vec![bound::BoundGroupTerm {
+                name: "status".into(),
+                slot: SlotId(6),
+                expression: column(&dimension, "status"),
+            }],
+            vec![bound::BoundAggregateTerm {
+                function: crate::engine::lir::AggregateFunction::Count,
+                argument: None,
+                name: "count".into(),
+                slot: SlotId(7),
+                value_type: Type::scalar(Kind::Int64, false),
+            }],
+        );
+        let mut statistics = PlannerStats::empty();
+        add_join_synopsis(
+            &mut statistics,
+            &fact_table,
+            50_000,
+            "board_id",
+            &[("a", 25_000), ("b", 25_000)],
+        );
+        add_join_synopsis(
+            &mut statistics,
+            &dimension_table,
+            2,
+            "id",
+            &[("a", 1), ("b", 1)],
+        );
+
+        let planned = plan_query_with_context(
+            &query(aggregate, 8),
+            PlanOptions {
+                mode: PlannerMode::Cost,
+                ..PlanOptions::default()
+            },
+            PlanningContext {
+                statistics: Some(&statistics),
+            },
+        );
+
+        let rendered = super::super::explain::print_plan(&planned.plan);
+        assert!(
+            matches!(
+                planned.plan.root.kind,
+                NodeKind::GroupedHashJoinAggregate { .. }
+            ),
+            "{rendered}"
+        );
     }
 
     fn range_stats(
@@ -3667,6 +4317,197 @@ mod tests {
     }
 
     #[test]
+    fn recursive_frontier_drives_an_exact_primary_key_lookup() {
+        use crate::engine::lir::{Field, RecursiveAccumulation, RowType};
+
+        let table = table();
+        let anchor_field = Field {
+            name: "id".into(),
+            slot: SlotId(0),
+            value_type: Type::scalar(Kind::Text, false),
+        };
+        let anchor = bound::Relation::rows(
+            "anchor",
+            vec![anchor_field.clone()],
+            vec![vec![Value::Text("t3".into())]],
+        );
+        let base = bound::Relation::scan(table, "base", vec![SlotId(2), SlotId(3), SlotId(4)]);
+        let frontier = bound::Relation::recursive_reference(
+            "walk",
+            "frontier",
+            vec![Field {
+                name: "id".into(),
+                slot: SlotId(1),
+                value_type: Type::scalar(Kind::Text, false),
+            }],
+            vec![SlotId(0)],
+        );
+        let joined = bound::Relation::join(
+            base.clone(),
+            frontier,
+            lir::JoinKind::Inner,
+            bound::Expr::binary(
+                BinaryOp::Eq,
+                column(&base, "id"),
+                bound::Expr::slot(SlotId(1), "frontier.id", Type::scalar(Kind::Text, false)),
+            ),
+        );
+        let step = bound::Relation::project(
+            joined,
+            "step",
+            vec![bound::ProjectField {
+                name: "id".into(),
+                slot: SlotId(5),
+                expression: column(&base, "id"),
+            }],
+        );
+        let root = bound::Relation::reference(
+            "walk",
+            "result",
+            vec![Field {
+                name: "id".into(),
+                slot: SlotId(6),
+                value_type: Type::scalar(Kind::Text, false),
+            }],
+            vec![SlotId(0)],
+        );
+        let planned = plan_query(
+            &bound::Query {
+                root,
+                cardinality: lir::RootCardinality::Many,
+                bindings: vec![bound::Binding {
+                    name: "walk".into(),
+                    root: anchor,
+                    output: RowType {
+                        fields: vec![anchor_field],
+                    },
+                    plan_sensitive: false,
+                    recursive: true,
+                    step: Some(step),
+                    accumulation: Some(RecursiveAccumulation::New),
+                }],
+                next_slot: SlotId(7),
+            },
+            PlanOptions::default(),
+        );
+        let BindingPlanKind::Recursive { step, .. } = &planned.bindings[0].kind else {
+            panic!("expected recursive binding")
+        };
+        let NodeKind::Project { input, .. } = &step.kind else {
+            panic!("expected recursive projection")
+        };
+        let NodeKind::IndexedLookupJoin {
+            left,
+            right,
+            decision,
+            ..
+        } = &input.kind
+        else {
+            panic!("expected recursive indexed lookup join")
+        };
+        assert!(matches!(left.kind, NodeKind::RecursiveReference { .. }));
+        assert!(matches!(right.kind, NodeKind::PrimaryKeyGet { .. }));
+        assert_eq!(
+            decision.candidates[2].decision_basis,
+            Some(JoinDecisionBasis::Structural)
+        );
+        let rendered = super::super::explain::print_plan(&planned);
+        assert!(rendered.contains("IndexedLookupJoin"));
+        assert!(rendered.contains("PKGet"));
+    }
+
+    #[test]
+    fn recursive_frontier_drives_a_composite_index_prefix_lookup() {
+        use crate::engine::lir::Field;
+
+        let base = scan();
+        let frontier = bound::Relation::recursive_reference(
+            "walk",
+            "frontier",
+            vec![Field {
+                name: "board_id".into(),
+                slot: SlotId(3),
+                value_type: Type::scalar(Kind::Text, false),
+            }],
+            vec![SlotId(0)],
+        );
+        let joined = bound::Relation::join(
+            base.clone(),
+            frontier,
+            lir::JoinKind::Inner,
+            bound::Expr::binary(
+                BinaryOp::Eq,
+                column(&base, "board_id"),
+                bound::Expr::slot(
+                    SlotId(3),
+                    "frontier.board_id",
+                    Type::scalar(Kind::Text, false),
+                ),
+            ),
+        );
+        let planned = plan_query(&query(joined, 4), PlanOptions::default());
+        let NodeKind::IndexedLookupJoin {
+            left,
+            right,
+            decision,
+            ..
+        } = &planned.root.kind
+        else {
+            panic!("expected indexed lookup join")
+        };
+        assert!(matches!(left.kind, NodeKind::RecursiveReference { .. }));
+        let NodeKind::IndexRangeScan {
+            equality_prefix, ..
+        } = &right.kind
+        else {
+            panic!("expected index range scan")
+        };
+        assert_eq!(equality_prefix.len(), 1);
+        assert_eq!(decision.structural_fallback, 2);
+    }
+
+    #[test]
+    fn recursive_frontier_preserves_lazy_predicate_evaluation() {
+        use crate::engine::lir::Field;
+
+        let base = scan();
+        let frontier = bound::Relation::recursive_reference(
+            "walk",
+            "frontier",
+            vec![Field {
+                name: "id".into(),
+                slot: SlotId(3),
+                value_type: Type::scalar(Kind::Text, false),
+            }],
+            vec![SlotId(0)],
+        );
+        let joined = bound::Relation::join(
+            base.clone(),
+            frontier,
+            lir::JoinKind::Inner,
+            bound::Expr::binary(
+                BinaryOp::And,
+                bound::Expr::binary(
+                    BinaryOp::Eq,
+                    column(&base, "id"),
+                    bound::Expr::slot(SlotId(3), "frontier.id", Type::scalar(Kind::Text, false)),
+                ),
+                bound::Expr::binary(
+                    BinaryOp::Eq,
+                    column(&base, "status"),
+                    bound::Expr::literal(Value::Text("open".into())),
+                ),
+            ),
+        );
+        let planned = plan_query(&query(joined, 4), PlanOptions::default());
+        let NodeKind::NestedLoopJoin { left, right, .. } = &planned.root.kind else {
+            panic!("expected nested-loop join")
+        };
+        assert!(matches!(left.kind, NodeKind::TableScan { .. }));
+        assert!(matches!(right.kind, NodeKind::RecursiveReference { .. }));
+    }
+
+    #[test]
     fn cost_mode_selects_hash_join_for_complete_skew_evidence() {
         let left = join_table(10, "left-table", "left_items");
         let right = join_table(20, "right-table", "right_items");
@@ -3725,6 +4566,130 @@ mod tests {
     }
 
     #[test]
+    fn inner_hash_join_builds_the_stable_bounded_input() {
+        let stable = join_table(10, "stable-table", "stable_items");
+        let changing = join_table(20, "changing-table", "changing_items");
+        let query = join_relation(
+            stable.clone(),
+            changing.clone(),
+            "board_id",
+            "board_id",
+            lir::JoinKind::Inner,
+        );
+        let mut statistics = PlannerStats::empty();
+        add_join_synopsis(
+            &mut statistics,
+            &stable,
+            200,
+            "board_id",
+            &[("a", 100), ("b", 100)],
+        );
+        add_join_synopsis(
+            &mut statistics,
+            &changing,
+            25_000,
+            "board_id",
+            &[("a", 12_500), ("b", 12_500)],
+        );
+        let changing_synopsis = statistics
+            .synopsis_models
+            .get_mut(&changing.schema_id)
+            .unwrap();
+        changing_synopsis.coverage = SynopsisCoverage::PrefixLimit;
+        changing_synopsis.changes_since_collection = 626;
+
+        let planned = plan_query_with_context(
+            &query,
+            PlanOptions {
+                mode: PlannerMode::Cost,
+                ..PlanOptions::default()
+            },
+            PlanningContext {
+                statistics: Some(&statistics),
+            },
+        );
+        let NodeKind::HashJoin {
+            left,
+            right,
+            decision,
+            ..
+        } = &planned.plan.root.kind
+        else {
+            panic!("expected hash join")
+        };
+        let NodeKind::TableScan { scan: probe, .. } = &left.kind else {
+            panic!("expected changing probe scan")
+        };
+        let NodeKind::TableScan { scan: build, .. } = &right.kind else {
+            panic!("expected stable build scan")
+        };
+        assert_eq!(probe.scan_table().schema_id, changing.schema_id);
+        assert_eq!(build.scan_table().schema_id, stable.schema_id);
+        assert!(decision.candidates[1].chosen);
+        assert_eq!(
+            decision.candidates[1].decision_basis,
+            Some(JoinDecisionBasis::BoundedBuild)
+        );
+    }
+
+    fn candidate_with_logical_work(
+        method: &str,
+        lower_bound: u64,
+        central: u64,
+        upper_bound: u64,
+    ) -> JoinCandidate {
+        let zero = AccessQuantity::exact(0);
+        JoinCandidate {
+            method: method.into(),
+            cost: Some(JoinCost {
+                expected_output_rows: super::super::estimator::Estimate {
+                    cardinality: 0,
+                    interval: super::super::estimator::EstimateInterval::Exact,
+                    source: super::super::estimator::EstimateSource::Synopsis,
+                    sample_size: 0,
+                    changes_since_collection: 0,
+                    age: std::time::Duration::ZERO,
+                },
+                build_rows: zero,
+                probe_rows: zero,
+                lookup_requests: zero,
+                key_comparisons: zero,
+                residual_predicate_evaluations: zero,
+                logical_row_operations: AccessQuantity {
+                    central,
+                    lower_bound,
+                    upper_bound: Some(upper_bound),
+                },
+                peak_retained_bytes: None,
+                ordering: AccessOrdering::NotRequired,
+            }),
+            decision_basis: None,
+            rejection_reason: None,
+            chosen: false,
+        }
+    }
+
+    #[test]
+    fn minimax_regret_selects_a_bounded_improvement() {
+        let candidates = [
+            candidate_with_logical_work("NestedLoopJoin", 900_000, 2_400_000, 3_900_000),
+            candidate_with_logical_work("HashJoin", 9_000, 48_000, 78_000),
+            candidate_with_logical_work("IndexedLookupJoin", 18_000, 120_000, 195_000),
+        ];
+        assert_eq!(strict_join_cost_winner(&candidates), None);
+        assert_eq!(robust_join_cost_winner(&candidates, 0), Some(1));
+    }
+
+    #[test]
+    fn minimax_regret_rejects_a_structural_tail_regression() {
+        let candidates = [
+            candidate_with_logical_work("NestedLoopJoin", 10, 100, 1_000),
+            candidate_with_logical_work("HashJoin", 1, 10, 1_001),
+        ];
+        assert_eq!(robust_join_cost_winner(&candidates, 0), None);
+    }
+
+    #[test]
     fn degree_norm_bound_makes_a_hash_join_selectable() {
         let left = join_table(10, "left-table", "left_items");
         let right = join_table(20, "right-table", "right_items");
@@ -3769,7 +4734,7 @@ mod tests {
         );
         assert_eq!(
             decision.candidates[1].decision_basis,
-            Some(JoinDecisionBasis::CostDominance)
+            Some(JoinDecisionBasis::MinimaxRegret)
         );
     }
 
@@ -4294,6 +5259,86 @@ mod tests {
             access.candidates[0].rejection_reason,
             Some(AccessRejectionReason::OrderingRegression)
         );
+    }
+
+    #[test]
+    fn descending_index_prefix_satisfies_order_without_a_sort() {
+        let scan = scan();
+        let filtered = bound::Relation::filter(
+            scan.clone(),
+            bound::Expr::binary(
+                BinaryOp::Eq,
+                column(&scan, "board_id"),
+                bound::Expr::literal(Value::Text("b1".into())),
+            ),
+        );
+        let ordered = bound::Relation::order(
+            filtered,
+            vec![
+                bound::BoundOrderTerm {
+                    expression: column(&scan, "status"),
+                    descending: true,
+                },
+                bound::BoundOrderTerm {
+                    expression: column(&scan, "id"),
+                    descending: false,
+                },
+            ],
+        );
+        let planned = plan_query(&query(ordered, 3), PlanOptions::default());
+        let NodeKind::Filter { input, .. } = &planned.root.kind else {
+            panic!("expected filter")
+        };
+        let NodeKind::IndexRangeScan {
+            descending_prefix, ..
+        } = &input.kind
+        else {
+            panic!("expected index range scan")
+        };
+        assert_eq!(*descending_prefix, 1);
+        assert!(!super::super::explain::print_plan(&planned).contains("Sort"));
+    }
+
+    #[test]
+    fn descending_limit_requires_a_fully_covered_filter() {
+        let scan = scan();
+        let predicate = bound::Expr::binary(
+            BinaryOp::And,
+            bound::Expr::binary(
+                BinaryOp::Eq,
+                column(&scan, "board_id"),
+                bound::Expr::literal(Value::Text("b1".into())),
+            ),
+            bound::Expr::binary(
+                BinaryOp::Ne,
+                column(&scan, "status"),
+                bound::Expr::literal(Value::Text("closed".into())),
+            ),
+        );
+        let ordered = bound::Relation::order(
+            bound::Relation::filter(scan.clone(), predicate),
+            vec![bound::BoundOrderTerm {
+                expression: column(&scan, "status"),
+                descending: true,
+            }],
+        );
+        let planned = plan_query(
+            &query(bound::Relation::slice(ordered, 0, Some(3)), 3),
+            PlanOptions::default(),
+        );
+        let NodeKind::Slice { input, .. } = &planned.root.kind else {
+            panic!("expected slice")
+        };
+        let NodeKind::Filter { input, .. } = &input.kind else {
+            panic!("expected filter")
+        };
+        let NodeKind::IndexRangeScan {
+            descending_limit, ..
+        } = &input.kind
+        else {
+            panic!("expected index range scan")
+        };
+        assert_eq!(*descending_limit, None);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use rad::engine::kv::fault::{
 };
 use rad::engine::kv::slatedb::Store;
 use rad::engine::kv::{
-    Entry, ErrorKind, IsolationLevel, KeyRange, Kv, KvIterator, Result, TransactionalKv,
+    Entry, ErrorKind, IsolationLevel, KeyRange, Kv, KvIterator, Result, ScanOrder, TransactionalKv,
 };
 use slatedb::object_store::ObjectStore;
 use slatedb::object_store::local::LocalFileSystem;
@@ -120,6 +120,49 @@ async fn qualify_backend(store: Arc<dyn TransactionalKv>) -> Result<()> {
         vec![Bytes::from_static(b"scan/b"), Bytes::from_static(b"scan/c")]
     );
 
+    let transaction = store.begin(IsolationLevel::Snapshot).await?;
+    transaction.delete(b"scan/b")?;
+    transaction.put(
+        Bytes::from_static(b"scan/bb"),
+        Bytes::from_static(b"inserted"),
+    )?;
+    transaction.put(
+        Bytes::from_static(b"scan/c"),
+        Bytes::from_static(b"updated"),
+    )?;
+    let range = KeyRange::new(Bytes::from_static(b"scan/b"), Bytes::from_static(b"scan/d"));
+    let entries = collect(transaction.scan(range.clone()).await?).await?;
+    assert_eq!(
+        entries,
+        vec![
+            Entry {
+                key: Bytes::from_static(b"scan/bb"),
+                value: Bytes::from_static(b"inserted"),
+            },
+            Entry {
+                key: Bytes::from_static(b"scan/c"),
+                value: Bytes::from_static(b"updated"),
+            },
+        ]
+    );
+    let entries = collect(
+        transaction
+            .scan_ordered(range, ScanOrder::Descending)
+            .await?,
+    )
+    .await?;
+    assert_eq!(
+        entries
+            .into_iter()
+            .map(|entry| entry.key)
+            .collect::<Vec<_>>(),
+        vec![
+            Bytes::from_static(b"scan/c"),
+            Bytes::from_static(b"scan/bb")
+        ]
+    );
+    transaction.rollback();
+
     let bulk = store.begin(IsolationLevel::SerializableSnapshot).await?;
     for value in 0..256 {
         let key = Bytes::from(format!("bulk/{value:04}"));
@@ -143,6 +186,23 @@ async fn qualify_backend(store: Arc<dyn TransactionalKv>) -> Result<()> {
         entries.last().unwrap().key,
         Bytes::from_static(b"bulk/0255")
     );
+    let descending = collect(
+        store
+            .scan_ordered(
+                KeyRange::new(Bytes::from_static(b"bulk/"), Bytes::from_static(b"bulk0")),
+                ScanOrder::Descending,
+            )
+            .await?,
+    )
+    .await?;
+    assert_eq!(
+        descending.first().unwrap().key,
+        Bytes::from_static(b"bulk/0255")
+    );
+    assert_eq!(
+        descending.last().unwrap().key,
+        Bytes::from_static(b"bulk/0000")
+    );
 
     let first = store.begin(IsolationLevel::Snapshot).await?;
     let second = store.begin(IsolationLevel::Snapshot).await?;
@@ -158,6 +218,49 @@ async fn qualify_backend(store: Arc<dyn TransactionalKv>) -> Result<()> {
     assert_eq!(
         second.commit().await.unwrap_err().kind(),
         ErrorKind::Conflict
+    );
+
+    Kv::put(
+        &*store,
+        Bytes::from_static(b"conflict/aba"),
+        Bytes::from_static(b"original"),
+    )
+    .await?;
+    let aba = store.begin(IsolationLevel::Snapshot).await?;
+    aba.put(
+        Bytes::from_static(b"conflict/aba"),
+        Bytes::from_static(b"transaction"),
+    )?;
+    Kv::put(
+        &*store,
+        Bytes::from_static(b"conflict/aba"),
+        Bytes::from_static(b"temporary"),
+    )
+    .await?;
+    Kv::put(
+        &*store,
+        Bytes::from_static(b"conflict/aba"),
+        Bytes::from_static(b"original"),
+    )
+    .await?;
+    assert_eq!(aba.commit().await.unwrap_err().kind(), ErrorKind::Conflict);
+
+    let untracked = store.begin(IsolationLevel::SerializableSnapshot).await?;
+    untracked.put(
+        Bytes::from_static(b"conflict/untracked"),
+        Bytes::from_static(b"untracked"),
+    )?;
+    untracked.untrack_write(b"conflict/untracked")?;
+    let competing = store.begin(IsolationLevel::SerializableSnapshot).await?;
+    competing.put(
+        Bytes::from_static(b"conflict/untracked"),
+        Bytes::from_static(b"competing"),
+    )?;
+    competing.commit().await?;
+    untracked.commit().await?;
+    assert_eq!(
+        Kv::get(&*store, b"conflict/untracked").await?,
+        Some(Bytes::from_static(b"untracked"))
     );
 
     Kv::put(
@@ -226,6 +329,31 @@ async fn qualify_backend(store: Arc<dyn TransactionalKv>) -> Result<()> {
         Bytes::from_static(b"value"),
     )?;
     writer.commit().await?;
+    assert_eq!(
+        reader.commit().await.unwrap_err().kind(),
+        ErrorKind::Conflict
+    );
+
+    let reader = store.begin(IsolationLevel::SerializableSnapshot).await?;
+    assert!(
+        collect(
+            reader
+                .scan(KeyRange::new(
+                    Bytes::from_static(b"phantom-aba/"),
+                    Bytes::from_static(b"phantom-aba0"),
+                ))
+                .await?
+        )
+        .await?
+        .is_empty()
+    );
+    Kv::put(
+        &*store,
+        Bytes::from_static(b"phantom-aba/key"),
+        Bytes::from_static(b"value"),
+    )
+    .await?;
+    Kv::delete(&*store, b"phantom-aba/key").await?;
     assert_eq!(
         reader.commit().await.unwrap_err().kind(),
         ErrorKind::Conflict
