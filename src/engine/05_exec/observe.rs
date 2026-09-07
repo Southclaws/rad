@@ -87,6 +87,12 @@ pub struct OperatorMeasurement {
     pub output_rows: u64,
     pub input_complete: bool,
     pub complete: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub index_entries_visited: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub index_base_row_reads: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub index_peak_base_row_read_concurrency: u64,
 }
 
 pub(super) struct OperatorRuntimeSpan {
@@ -124,6 +130,9 @@ impl OperatorRuntimeSpan {
             rad.operator.calls = tracing::field::Empty,
             rad.operator.output_rows = tracing::field::Empty,
             rad.operator.complete = tracing::field::Empty,
+            rad.operator.index_entries_visited = tracing::field::Empty,
+            rad.operator.index_base_row_reads = tracing::field::Empty,
+            rad.operator.index_peak_base_row_read_concurrency = tracing::field::Empty,
             rad.status = tracing::field::Empty,
             otel.status_code = tracing::field::Empty,
         );
@@ -149,6 +158,22 @@ impl OperatorRuntimeSpan {
             .record("rad.operator.output_rows", measurement.output_rows);
         self.span
             .record("rad.operator.complete", measurement.complete);
+        if measurement.index_entries_visited > 0 {
+            self.span.record(
+                "rad.operator.index_entries_visited",
+                measurement.index_entries_visited,
+            );
+        }
+        if measurement.index_base_row_reads > 0 {
+            self.span.record(
+                "rad.operator.index_base_row_reads",
+                measurement.index_base_row_reads,
+            );
+            self.span.record(
+                "rad.operator.index_peak_base_row_read_concurrency",
+                measurement.index_peak_base_row_read_concurrency,
+            );
+        }
         self.span
             .record("rad.status", if failed { "error" } else { "success" });
         if failed {
@@ -545,6 +570,44 @@ impl KvIterator for ObservedIterator<'_> {
             diagnostic.log(self.rows, self.bytes, true, None);
         }
         Ok(entry)
+    }
+
+    async fn next_batch(&mut self, limit: usize, output: &mut Vec<Entry>) -> KvResult<()> {
+        let start = output.len();
+        let result = self.inner.next_batch(limit, output).await;
+        let entries = &output[start..];
+        let rows = entries.len() as u64;
+        let bytes = entries.iter().fold(0_u64, |bytes, entry| {
+            bytes.saturating_add((entry.key.len() + entry.value.len()) as u64)
+        });
+        self.rows = self.rows.saturating_add(rows);
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.counters.iterated.fetch_add(rows, Ordering::Relaxed);
+        self.counters.bytes_read.fetch_add(bytes, Ordering::Relaxed);
+        if let Some(index) = self.trace_index {
+            for entry in entries {
+                self.counters.record_scan_entry(index, entry);
+            }
+        }
+        match result {
+            Ok(()) => {
+                if entries.len() < limit {
+                    if let Some(index) = self.trace_index {
+                        self.counters.complete_scan(index);
+                    }
+                    if let Some(diagnostic) = self.diagnostic.take() {
+                        diagnostic.log(self.rows, self.bytes, true, None);
+                    }
+                }
+                Ok(())
+            }
+            Err(error) => {
+                if let Some(diagnostic) = self.diagnostic.take() {
+                    diagnostic.log(self.rows, self.bytes, false, Some(error.kind()));
+                }
+                Err(error)
+            }
+        }
     }
 }
 

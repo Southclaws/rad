@@ -2,9 +2,10 @@
 
 use std::cmp::Ordering;
 
+use crate::engine::catalog::model::Column;
 use crate::engine::lir::bound;
 use crate::engine::lir::eval::{Env, evaluate};
-use crate::engine::lir::{Datum, ObjectField, RootCardinality, Row, RowType, SlotId};
+use crate::engine::lir::{Datum, ObjectField, RootCardinality, Row, RowType, SlotId, Value};
 
 use super::{Error, ErrorKind, ErrorReason, Result};
 
@@ -56,6 +57,36 @@ pub(super) fn row_to_frame(relation: &bound::Relation, row: &Row, outer: &Env) -
             frame.set_scalar(field.slot, value.clone());
         }
     }
+    frame
+}
+
+pub(super) fn scan_slots(relation: &bound::Relation, columns: &[Column]) -> Result<Vec<SlotId>> {
+    columns
+        .iter()
+        .map(|column| {
+            relation
+                .output()
+                .fields
+                .iter()
+                .find(|field| field.name == column.name)
+                .map(|field| field.slot)
+                .ok_or_else(|| {
+                    Error::message(
+                        ErrorKind::Internal,
+                        format!("exec: scan output has no column {:?}", column.name),
+                    )
+                })
+        })
+        .collect()
+}
+
+pub(super) fn column_values_to_frame(
+    slots: &[SlotId],
+    values: impl IntoIterator<Item = Value>,
+    outer: &Env,
+) -> Env {
+    let mut frame = new_frame(outer);
+    frame.set_scalars(slots, values);
     frame
 }
 

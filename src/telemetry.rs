@@ -191,6 +191,9 @@ struct Instruments {
     http_requests: Counter<u64>,
     http_duration: Histogram<f64>,
     program_active: UpDownCounter<i64>,
+    program_admitted_active: UpDownCounter<i64>,
+    program_queue_active: UpDownCounter<i64>,
+    program_queue_duration: Histogram<f64>,
     program_executions: Counter<u64>,
     program_duration: Histogram<f64>,
     program_statements: Histogram<u64>,
@@ -202,6 +205,9 @@ struct Instruments {
     planner_duration: Histogram<f64>,
     operator_duration: Histogram<f64>,
     operator_rows: Histogram<u64>,
+    execution_parallel_width: Histogram<u64>,
+    execution_parallel_batches: Counter<u64>,
+    execution_parallel_rows: Counter<u64>,
     kv_operations: Counter<u64>,
     kv_operation_duration: Histogram<f64>,
     kv_bytes: Counter<u64>,
@@ -244,7 +250,7 @@ impl Instruments {
                 .with_unit("{cpu}")
                 .with_description("Rad process CPU limit")
                 .with_callback(|observer| {
-                    if let Some(value) = cgroup_cpu_limit() {
+                    if let Some(value) = process_cpu_limit() {
                         observer.observe(value, &[]);
                     }
                 })
@@ -305,6 +311,19 @@ impl Instruments {
                 .i64_up_down_counter("rad.program.active")
                 .with_description("Active Rad programs")
                 .build(),
+            program_admitted_active: meter
+                .i64_up_down_counter("rad.program.admitted.active")
+                .with_description("Programs admitted for execution")
+                .build(),
+            program_queue_active: meter
+                .i64_up_down_counter("rad.program.queue.active")
+                .with_description("Programs waiting for execution")
+                .build(),
+            program_queue_duration: meter
+                .f64_histogram("rad.program.queue.duration")
+                .with_unit("s")
+                .with_description("Program execution queue duration")
+                .build(),
             program_executions: meter
                 .u64_counter("rad.program.executions")
                 .with_description("Completed Rad programs")
@@ -352,6 +371,18 @@ impl Instruments {
             operator_rows: meter
                 .u64_histogram("rad.operator.rows")
                 .with_description("Rows processed by Rad physical operators")
+                .build(),
+            execution_parallel_width: meter
+                .u64_histogram("rad.execution.parallel.width")
+                .with_description("Workers used by a parallel execution batch")
+                .build(),
+            execution_parallel_batches: meter
+                .u64_counter("rad.execution.parallel.batches")
+                .with_description("Parallel execution batches")
+                .build(),
+            execution_parallel_rows: meter
+                .u64_counter("rad.execution.parallel.rows")
+                .with_description("Rows processed by parallel execution batches")
                 .build(),
             kv_operations: meter
                 .u64_counter("rad.kv.operations")
@@ -460,7 +491,7 @@ fn cgroup_stat(_name: &str) -> Option<u64> {
 }
 
 #[cfg(target_os = "linux")]
-fn cgroup_cpu_limit() -> Option<f64> {
+pub(crate) fn process_cpu_limit() -> Option<f64> {
     let contents = std::fs::read_to_string("/sys/fs/cgroup/cpu.max").ok()?;
     let (quota, period) = contents.trim().split_once(' ')?;
     if quota == "max" {
@@ -470,7 +501,7 @@ fn cgroup_cpu_limit() -> Option<f64> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn cgroup_cpu_limit() -> Option<f64> {
+pub(crate) fn process_cpu_limit() -> Option<f64> {
     None
 }
 
@@ -580,6 +611,39 @@ pub fn program_started(transport: &str) {
     }
 }
 
+pub fn program_admitted_started() {
+    if let Some(instruments) = INSTRUMENTS.get() {
+        instruments.program_admitted_active.add(1, &[]);
+    }
+}
+
+pub fn program_admitted_finished() {
+    if let Some(instruments) = INSTRUMENTS.get() {
+        instruments.program_admitted_active.add(-1, &[]);
+    }
+}
+
+pub fn program_queue_started() {
+    if let Some(instruments) = INSTRUMENTS.get() {
+        instruments.program_queue_active.add(1, &[]);
+    }
+}
+
+pub fn program_queue_finished(duration: Duration) {
+    if let Some(instruments) = INSTRUMENTS.get() {
+        instruments.program_queue_active.add(-1, &[]);
+        instruments
+            .program_queue_duration
+            .record(duration.as_secs_f64(), &[]);
+    }
+}
+
+pub fn program_queue_cancelled() {
+    if let Some(instruments) = INSTRUMENTS.get() {
+        instruments.program_queue_active.add(-1, &[]);
+    }
+}
+
 pub struct ProgramMeasurement<'a> {
     pub transport: &'a str,
     pub status: &'a str,
@@ -675,6 +739,20 @@ pub fn operator_finished(measurement: &crate::engine::exec::observe::OperatorMea
         measurement.output_rows,
         &[operator, KeyValue::new("rad.operator.direction", "output")],
     );
+}
+
+pub fn execution_parallel_batch(operator: &str, width: usize, rows: usize) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    let attributes = [KeyValue::new("rad.operator.name", operator.to_owned())];
+    instruments
+        .execution_parallel_width
+        .record(width as u64, &attributes);
+    instruments.execution_parallel_batches.add(1, &attributes);
+    instruments
+        .execution_parallel_rows
+        .add(rows as u64, &attributes);
 }
 
 pub fn storage_cache_observed(

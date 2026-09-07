@@ -164,7 +164,7 @@ func TestTelemetryPolicyReachesWriterAndReaders(t *testing.T) {
 		Diagnostics: radv1alpha1.DiagnosticLevelDetailed,
 		Metrics:     &metrics,
 	}
-	database.Spec.Cache.SizeMiB = 256
+	database.Spec.Slate.DecodedCacheSizeMiB = 256
 	reconciler, kubernetesClient := testReconciler(t, database, testSecret("alpha-s3"))
 	reconcileReadySpec(t, reconciler, database)
 
@@ -175,7 +175,7 @@ func TestTelemetryPolicyReachesWriterAndReaders(t *testing.T) {
 		"reader": deployment.Spec.Template.Spec.Containers[0].Env,
 	} {
 		values := environmentMap(environment)
-		if values["RAD_DIAGNOSTICS"] != "detailed" || values["OTEL_EXPORTER_OTLP_ENDPOINT"] != "http://collector:4318" || values["RAD_METRICS"] != "false" || values["RAD_CACHE_SIZE_MIB"] != "256" {
+		if values["RAD_DIAGNOSTICS"] != "detailed" || values["OTEL_EXPORTER_OTLP_ENDPOINT"] != "http://collector:4318" || values["RAD_METRICS"] != "false" || values["RAD_SLATE_DECODED_CACHE_SIZE_MIB"] != "256" {
 			t.Fatalf("%s telemetry environment = %#v", role, values)
 		}
 		for name, fieldPath := range map[string]string{
@@ -200,8 +200,77 @@ func TestTelemetryDefaultsToSummaryWithoutAnExporter(t *testing.T) {
 	if _, configured := values["OTEL_EXPORTER_OTLP_ENDPOINT"]; configured {
 		t.Fatalf("default telemetry exporter is configured: %#v", values)
 	}
-	if values["RAD_METRICS"] != "true" || values["RAD_CACHE_SIZE_MIB"] != "128" {
+	if values["RAD_METRICS"] != "true" || values["RAD_SLATE_DECODED_CACHE_SIZE_MIB"] != "128" {
 		t.Fatalf("default metric and cache environment = %#v", values)
+	}
+}
+
+func TestSlateSettingsReachPods(t *testing.T) {
+	database := testDatabase("alpha", "alpha-bucket", "alpha.rad.localhost", "alpha-s3", time.Unix(1, 0))
+	database.Spec.Slate = radv1alpha1.Slate{
+		DecodedCacheSizeMiB:        256,
+		ScanCacheBlocks:            true,
+		ScanReadAheadKiB:           512,
+		ScanMaxFetchTasks:          8,
+		FlushIntervalMilliseconds:  250,
+		L0SSTSizeMiB:               128,
+		MaxWALFlushesBeforeL0Flush: 2048,
+		L0MaxSSTs:                  16,
+		L0MaxSSTsPerKey:            12,
+		L0FlushParallelism:         6,
+		MaxUnflushedMiB:            2048,
+		MinFilterKeys:              500,
+		BloomBitsPerKey:            14,
+		SSTBlockSizeKiB:            16,
+		ObjectCache: radv1alpha1.SlateObjectCache{
+			Enabled:           true,
+			SizeMiB:           8192,
+			PartSizeKiB:       2048,
+			CacheOnFlush:      true,
+			CacheOnCompaction: true,
+			Preload:           "l0",
+		},
+	}
+	values := environmentMap(databaseEnvironment(database, internalTransport{}, writeRole))
+	want := map[string]string{
+		"RAD_SLATE_DECODED_CACHE_SIZE_MIB":          "256",
+		"RAD_SLATE_SCAN_CACHE_BLOCKS":               "true",
+		"RAD_SLATE_SCAN_READ_AHEAD_KIB":             "512",
+		"RAD_SLATE_SCAN_MAX_FETCH_TASKS":            "8",
+		"RAD_SLATE_FLUSH_INTERVAL_MS":               "250",
+		"RAD_SLATE_L0_SST_SIZE_MIB":                 "128",
+		"RAD_SLATE_MAX_WAL_FLUSHES_BEFORE_L0_FLUSH": "2048",
+		"RAD_SLATE_L0_MAX_SSTS":                     "16",
+		"RAD_SLATE_L0_MAX_SSTS_PER_KEY":             "12",
+		"RAD_SLATE_L0_FLUSH_PARALLELISM":            "6",
+		"RAD_SLATE_MAX_UNFLUSHED_MIB":               "2048",
+		"RAD_SLATE_MIN_FILTER_KEYS":                 "500",
+		"RAD_SLATE_BLOOM_BITS_PER_KEY":              "14",
+		"RAD_SLATE_SST_BLOCK_SIZE_KIB":              "16",
+		"RAD_SLATE_OBJECT_CACHE_PATH":               slateObjectCachePath,
+		"RAD_SLATE_OBJECT_CACHE_SIZE_MIB":           "8192",
+		"RAD_SLATE_OBJECT_CACHE_PART_SIZE_KIB":      "2048",
+		"RAD_SLATE_OBJECT_CACHE_ON_FLUSH":           "true",
+		"RAD_SLATE_OBJECT_CACHE_ON_COMPACTION":      "true",
+		"RAD_SLATE_OBJECT_CACHE_PRELOAD":            "l0",
+	}
+	for name, value := range want {
+		if values[name] != value {
+			t.Fatalf("%s = %q, want %q", name, values[name], value)
+		}
+	}
+	pod := (&DatabaseReconciler{}).radPodSpec(
+		database,
+		resolvedAuthentication{secretName: "alpha-s3"},
+		internalTransport{},
+		writeRole,
+	)
+	if len(pod.Volumes) != 1 || pod.Volumes[0].Name != slateObjectCacheVolume || pod.Volumes[0].EmptyDir == nil {
+		t.Fatalf("Slate object cache volume = %#v", pod.Volumes)
+	}
+	mounts := pod.Containers[0].VolumeMounts
+	if len(mounts) != 1 || mounts[0].Name != slateObjectCacheVolume || mounts[0].MountPath != slateObjectCachePath {
+		t.Fatalf("Slate object cache mount = %#v", mounts)
 	}
 }
 

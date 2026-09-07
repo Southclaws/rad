@@ -78,7 +78,7 @@ async fn a_readers_queries_reach_the_writers_statistics() -> TestResult {
     // Only the reader serves these, so evidence for them can reach the writer
     // by no route other than the relay.
     for _ in 0..12 {
-        reader.execute(&multi_replica::query_program()).await?;
+        multi_replica::execute_read(&reader, &multi_replica::query_program()).await?;
     }
     wait_for_relayed_growth(&writer, baseline, 12).await?;
 
@@ -131,11 +131,11 @@ async fn a_reader_whose_writer_is_unreachable_keeps_serving() -> TestResult {
     .await?;
 
     for _ in 0..8 {
-        reader.execute(&multi_replica::query_program()).await?;
+        multi_replica::execute_read(&reader, &multi_replica::query_program()).await?;
     }
     assert_eq!(reader.get_status("/readyz").await?, 200);
     assert_eq!(reader.get_status("/livez").await?, 200);
-    let rows = reader.execute(&multi_replica::query_program()).await?;
+    let rows = multi_replica::execute_read(&reader, &multi_replica::query_program()).await?;
     assert!(
         rows["result"]
             .as_array()

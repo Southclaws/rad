@@ -50,11 +50,6 @@ tasks:
       - cargo deny --all-features check advisories bans sources
       - cargo machete --with-metadata
 
-  check:semver:
-    desc: Check the public Rust API against a supplied release or revision baseline
-    cmds:
-      - cargo semver-checks {{.CLI_ARGS}}
-
   install:
     desc: Install the Rad binary from this checkout
     cmds:
@@ -108,6 +103,7 @@ tasks:
       - cargo +nightly-2026-07-20 fuzz run schema -- -runs=256 {{.CLI_ARGS}}
       - cargo +nightly-2026-07-20 fuzz run ordered_tuple -- -runs=256 {{.CLI_ARGS}}
       - cargo +nightly-2026-07-20 fuzz run row_codec -- -runs=256 {{.CLI_ARGS}}
+      - cargo +nightly-2026-07-20 fuzz run reader_snapshot -- -runs=256 {{.CLI_ARGS}}
 
   test:http:
     desc: Run the outside-in OpenAPI/Axum adapter tests
@@ -115,9 +111,10 @@ tasks:
       - cargo test --locked http::tests {{.CLI_ARGS}}
 
   test:dst:
-    desc: Run deterministic schema scheduling and crash-boundary simulations
+    desc: Run deterministic schema, storage, and crash-boundary simulations
     cmds:
       - cargo test --locked --test schema_scheduler_simulation {{.CLI_ARGS}}
+      - cargo test --locked --test reader_snapshot_simulation {{.CLI_ARGS}}
 
   test:dst:determinism:
     desc: Prove byte-identical same-seed DST replay on Linux or macOS
@@ -140,7 +137,7 @@ tasks:
   test:storage:
     desc: Run Docker-free storage qualification, crash recovery, and simulation
     cmds:
-      - cargo test --locked --test kv_backend_qualification --test storage_crash_recovery --test storage_fault_campaign --test storage_simulation --test storage_network_faults {{.CLI_ARGS}}
+      - cargo test --locked --test kv_backend_qualification --test reader_snapshot_simulation --test storage_crash_recovery --test storage_fault_campaign --test storage_simulation --test storage_network_faults {{.CLI_ARGS}}
 
   test:storage:rustfs:
     desc: Run qualification, replicas, process-death, network-fault, and latency suites against RustFS

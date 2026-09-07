@@ -11,6 +11,8 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 serde_json = "1"
 rad = { path = ".." }
+slatedb = { version = "=0.15.0", default-features = false, features = ["foyer"] }
+tokio = { version = "1.46.1", features = ["rt-multi-thread", "time"] }
 
 [[bin]]
 name = "protocol_lir"
@@ -43,6 +45,13 @@ bench = false
 [[bin]]
 name = "row_codec"
 path = "fuzz_targets/row_codec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "reader_snapshot"
+path = "fuzz_targets/reader_snapshot.rs"
 test = false
 doc = false
 bench = false

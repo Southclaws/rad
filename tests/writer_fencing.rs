@@ -69,21 +69,14 @@ fn reserve_port() -> TestResult<u16> {
 
 fn spawn_writer(directory: &std::path::Path, port: u16) -> TestResult<Child> {
     Ok(Command::new(env!("CARGO_BIN_EXE_rad"))
-        .args([
-            "serve",
-            "--addr",
-            &format!("127.0.0.1:{port}"),
-            "--storage",
-            "file",
-            "--db",
-            directory.to_str().ok_or("temporary path is not UTF-8")?,
-            "--storage-path",
-            "writer-fence",
-            "--catalog-mode",
-            "direct",
-            "--role",
-            "write",
-        ])
+        .arg("serve")
+        .arg("--addr")
+        .arg(format!("127.0.0.1:{port}"))
+        .arg("--storage")
+        .arg("file")
+        .arg("--storage-path")
+        .arg(directory.join("writer-fence"))
+        .args(["--catalog-mode", "direct", "--role", "write"])
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()?)

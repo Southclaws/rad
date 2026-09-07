@@ -106,12 +106,92 @@ type Telemetry struct {
 	Metrics *bool `json:"metrics,omitempty"`
 }
 
-// Cache configures the Slate decoded cache for all database pods.
-type Cache struct {
-	// SizeMiB is the total decoded data block and metadata cache capacity.
+// SlateObjectCache configures the local raw object cache for each database pod.
+type SlateObjectCache struct {
+	// Enabled creates an ephemeral cache directory for each pod.
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// +kubebuilder:default=16384
+	// +kubebuilder:validation:Minimum=1
+	SizeMiB int32 `json:"sizeMiB,omitempty"`
+
+	// +kubebuilder:default=4096
+	// +kubebuilder:validation:Minimum=1
+	PartSizeKiB int32 `json:"partSizeKiB,omitempty"`
+
+	// +kubebuilder:default=false
+	CacheOnFlush bool `json:"cacheOnFlush,omitempty"`
+
+	// +kubebuilder:default=false
+	CacheOnCompaction bool `json:"cacheOnCompaction,omitempty"`
+
+	// +kubebuilder:default=none
+	// +kubebuilder:validation:Enum=none;l0;all
+	Preload string `json:"preload,omitempty"`
+}
+
+// Slate configures storage behavior for all database pods.
+// +kubebuilder:validation:XValidation:rule="self.l0MaxSSTsPerKey <= self.l0MaxSSTs",message="l0MaxSSTsPerKey must not exceed l0MaxSSTs"
+// +kubebuilder:validation:XValidation:rule="self.maxUnflushedMiB >= self.l0SSTSizeMiB",message="maxUnflushedMiB must be at least l0SSTSizeMiB"
+type Slate struct {
 	// +kubebuilder:default=128
 	// +kubebuilder:validation:Minimum=16
-	SizeMiB int32 `json:"sizeMiB,omitempty"`
+	DecodedCacheSizeMiB int32 `json:"decodedCacheSizeMiB,omitempty"`
+
+	// +kubebuilder:default=false
+	ScanCacheBlocks bool `json:"scanCacheBlocks,omitempty"`
+
+	// +kubebuilder:default=256
+	// +kubebuilder:validation:Minimum=1
+	ScanReadAheadKiB int32 `json:"scanReadAheadKiB,omitempty"`
+
+	// +kubebuilder:default=4
+	// +kubebuilder:validation:Minimum=1
+	ScanMaxFetchTasks int32 `json:"scanMaxFetchTasks,omitempty"`
+
+	// +kubebuilder:default=100
+	// +kubebuilder:validation:Minimum=1
+	FlushIntervalMilliseconds int32 `json:"flushIntervalMilliseconds,omitempty"`
+
+	// +kubebuilder:default=64
+	// +kubebuilder:validation:Minimum=1
+	L0SSTSizeMiB int32 `json:"l0SSTSizeMiB,omitempty"`
+
+	// +kubebuilder:default=4096
+	// +kubebuilder:validation:Minimum=1
+	MaxWALFlushesBeforeL0Flush int64 `json:"maxWALFlushesBeforeL0Flush,omitempty"`
+
+	// +kubebuilder:default=8
+	// +kubebuilder:validation:Minimum=1
+	L0MaxSSTs int32 `json:"l0MaxSSTs,omitempty"`
+
+	// +kubebuilder:default=8
+	// +kubebuilder:validation:Minimum=1
+	L0MaxSSTsPerKey int32 `json:"l0MaxSSTsPerKey,omitempty"`
+
+	// +kubebuilder:default=4
+	// +kubebuilder:validation:Minimum=1
+	L0FlushParallelism int32 `json:"l0FlushParallelism,omitempty"`
+
+	// +kubebuilder:default=1024
+	// +kubebuilder:validation:Minimum=1
+	MaxUnflushedMiB int32 `json:"maxUnflushedMiB,omitempty"`
+
+	// +kubebuilder:default=1000
+	// +kubebuilder:validation:Minimum=1
+	MinFilterKeys int32 `json:"minFilterKeys,omitempty"`
+
+	// +kubebuilder:default=10
+	// +kubebuilder:validation:Minimum=1
+	BloomBitsPerKey int32 `json:"bloomBitsPerKey,omitempty"`
+
+	// +kubebuilder:default=4
+	// +kubebuilder:validation:Enum=1;2;4;8;16;32;64
+	SSTBlockSizeKiB int32 `json:"sstBlockSizeKiB,omitempty"`
+
+	// +optional
+	ObjectCache SlateObjectCache `json:"objectCache,omitempty"`
 }
 
 // S3Authentication selects one credential source. A Secret contains AWS SDK
@@ -268,10 +348,9 @@ type DatabaseSpec struct {
 	// +kubebuilder:default={diagnostics: summary, metrics: true}
 	Telemetry Telemetry `json:"telemetry,omitempty"`
 
-	// Cache applies the same decoded cache capacity to all pods.
+	// Slate applies the same storage settings to all pods.
 	// +optional
-	// +kubebuilder:default={sizeMiB: 128}
-	Cache Cache `json:"cache,omitempty"`
+	Slate Slate `json:"slate,omitempty"`
 
 	// InternalTLS secures the reader-to-writer statistics channel. It has no
 	// effect while no readers exist, because the channel does not exist.

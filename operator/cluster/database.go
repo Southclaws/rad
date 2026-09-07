@@ -96,8 +96,7 @@ type DatabaseSpec struct {
 	Diagnostics DiagnosticLevel
 	// MetricsEnabled defaults to true when it is nil.
 	MetricsEnabled *bool
-	// CacheSizeMiB defaults to 128.
-	CacheSizeMiB int32
+	Slate          SlateOptions
 
 	// InternalTLSMode secures the channel readers use to report statistics to
 	// the writer: "auto" (the default) provisions a certificate through
@@ -118,6 +117,33 @@ type DatabaseSpec struct {
 	// TLSSecret enables ingress TLS from a kubernetes.io/tls Secret. Omit it
 	// when TLS terminates before the cluster ingress.
 	TLSSecret string
+}
+
+type SlateObjectCacheOptions struct {
+	Enabled           bool
+	SizeMiB           int32
+	PartSizeKiB       int32
+	CacheOnFlush      bool
+	CacheOnCompaction bool
+	Preload           string
+}
+
+type SlateOptions struct {
+	DecodedCacheSizeMiB        int32
+	ScanCacheBlocks            bool
+	ScanReadAheadKiB           int32
+	ScanMaxFetchTasks          int32
+	FlushIntervalMilliseconds  int32
+	L0SSTSizeMiB               int32
+	MaxWALFlushesBeforeL0Flush int64
+	L0MaxSSTs                  int32
+	L0MaxSSTsPerKey            int32
+	L0FlushParallelism         int32
+	MaxUnflushedMiB            int32
+	MinFilterKeys              int32
+	BloomBitsPerKey            int32
+	SSTBlockSizeKiB            int32
+	ObjectCache                SlateObjectCacheOptions
 }
 
 // Database is the observed state of one tenant database.
@@ -159,7 +185,7 @@ type Database struct {
 	OTelEndpoint   string
 	Diagnostics    DiagnosticLevel
 	MetricsEnabled bool
-	CacheSizeMiB   int32
+	Slate          SlateOptions
 
 	// InternalTransportMode is "tls" or "plaintext", empty without readers.
 	// It describes the statistics channel, never client traffic.
@@ -290,10 +316,6 @@ func (c *Client) resource(spec DatabaseSpec) (*radv1alpha1.Database, error) {
 		enabled := true
 		metrics = &enabled
 	}
-	cacheSizeMiB := spec.CacheSizeMiB
-	if cacheSizeMiB == 0 {
-		cacheSizeMiB = 128
-	}
 	return &radv1alpha1.Database{
 		ObjectMeta: metav1.ObjectMeta{Namespace: c.namespace, Name: spec.Name},
 		Spec: radv1alpha1.DatabaseSpec{
@@ -316,7 +338,7 @@ func (c *Client) resource(spec DatabaseSpec) (*radv1alpha1.Database, error) {
 				Diagnostics: radv1alpha1.DiagnosticLevel(diagnostics),
 				Metrics:     metrics,
 			},
-			Cache: radv1alpha1.Cache{SizeMiB: cacheSizeMiB},
+			Slate: slateResource(spec.Slate),
 			InternalTLS: radv1alpha1.InternalTLS{
 				Mode:       radv1alpha1.InternalTLSMode(spec.InternalTLSMode),
 				SecretName: spec.InternalTLSSecret,
@@ -328,6 +350,81 @@ func (c *Client) resource(spec DatabaseSpec) (*radv1alpha1.Database, error) {
 			},
 		},
 	}, nil
+}
+
+func slateResource(options SlateOptions) radv1alpha1.Slate {
+	return radv1alpha1.Slate{
+		DecodedCacheSizeMiB:        defaultInt32(options.DecodedCacheSizeMiB, 128),
+		ScanCacheBlocks:            options.ScanCacheBlocks,
+		ScanReadAheadKiB:           defaultInt32(options.ScanReadAheadKiB, 256),
+		ScanMaxFetchTasks:          defaultInt32(options.ScanMaxFetchTasks, 4),
+		FlushIntervalMilliseconds:  defaultInt32(options.FlushIntervalMilliseconds, 100),
+		L0SSTSizeMiB:               defaultInt32(options.L0SSTSizeMiB, 64),
+		MaxWALFlushesBeforeL0Flush: defaultInt64(options.MaxWALFlushesBeforeL0Flush, 4096),
+		L0MaxSSTs:                  defaultInt32(options.L0MaxSSTs, 8),
+		L0MaxSSTsPerKey:            defaultInt32(options.L0MaxSSTsPerKey, 8),
+		L0FlushParallelism:         defaultInt32(options.L0FlushParallelism, 4),
+		MaxUnflushedMiB:            defaultInt32(options.MaxUnflushedMiB, 1024),
+		MinFilterKeys:              defaultInt32(options.MinFilterKeys, 1000),
+		BloomBitsPerKey:            defaultInt32(options.BloomBitsPerKey, 10),
+		SSTBlockSizeKiB:            defaultInt32(options.SSTBlockSizeKiB, 4),
+		ObjectCache: radv1alpha1.SlateObjectCache{
+			Enabled:           options.ObjectCache.Enabled,
+			SizeMiB:           defaultInt32(options.ObjectCache.SizeMiB, 16384),
+			PartSizeKiB:       defaultInt32(options.ObjectCache.PartSizeKiB, 4096),
+			CacheOnFlush:      options.ObjectCache.CacheOnFlush,
+			CacheOnCompaction: options.ObjectCache.CacheOnCompaction,
+			Preload:           defaultValue(options.ObjectCache.Preload, "none"),
+		},
+	}
+}
+
+func defaultInt32(value int32, fallback int32) int32 {
+	if value == 0 {
+		return fallback
+	}
+	return value
+}
+
+func defaultInt64(value int64, fallback int64) int64 {
+	if value == 0 {
+		return fallback
+	}
+	return value
+}
+
+func defaultValue(value string, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func slateView(options radv1alpha1.Slate) SlateOptions {
+	return SlateOptions{
+		DecodedCacheSizeMiB:        options.DecodedCacheSizeMiB,
+		ScanCacheBlocks:            options.ScanCacheBlocks,
+		ScanReadAheadKiB:           options.ScanReadAheadKiB,
+		ScanMaxFetchTasks:          options.ScanMaxFetchTasks,
+		FlushIntervalMilliseconds:  options.FlushIntervalMilliseconds,
+		L0SSTSizeMiB:               options.L0SSTSizeMiB,
+		MaxWALFlushesBeforeL0Flush: options.MaxWALFlushesBeforeL0Flush,
+		L0MaxSSTs:                  options.L0MaxSSTs,
+		L0MaxSSTsPerKey:            options.L0MaxSSTsPerKey,
+		L0FlushParallelism:         options.L0FlushParallelism,
+		MaxUnflushedMiB:            options.MaxUnflushedMiB,
+		MinFilterKeys:              options.MinFilterKeys,
+		BloomBitsPerKey:            options.BloomBitsPerKey,
+		SSTBlockSizeKiB:            options.SSTBlockSizeKiB,
+		ObjectCache: SlateObjectCacheOptions{
+			Enabled:           options.ObjectCache.Enabled,
+			SizeMiB:           options.ObjectCache.SizeMiB,
+			PartSizeKiB:       options.ObjectCache.PartSizeKiB,
+			CacheOnFlush:      options.ObjectCache.CacheOnFlush,
+			CacheOnCompaction: options.ObjectCache.CacheOnCompaction,
+			Preload:           options.ObjectCache.Preload,
+		},
+	}
 }
 
 func databaseView(resource *radv1alpha1.Database) Database {
@@ -350,7 +447,7 @@ func databaseView(resource *radv1alpha1.Database) Database {
 		OTelEndpoint:   resource.Spec.Telemetry.Endpoint,
 		Diagnostics:    DiagnosticLevel(resource.Spec.Telemetry.Diagnostics),
 		MetricsEnabled: resource.Spec.Telemetry.Metrics == nil || *resource.Spec.Telemetry.Metrics,
-		CacheSizeMiB:   resource.Spec.Cache.SizeMiB,
+		Slate:          slateView(resource.Spec.Slate),
 	}
 	if transport := resource.Status.InternalTransport; transport != nil {
 		database.InternalTransportMode = transport.Mode

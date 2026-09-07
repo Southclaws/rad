@@ -92,9 +92,8 @@ commands:
     operationId: serve
     description: Run the database API and administration UI.
     longDescription: |
-      Run Rad until interrupted. A write instance owns the Slate writer; any
-      number of read instances can serve polling checkpoint views of the same
-      storage path. A fresh database defaults to direct catalog management;
+      Run Rad until interrupted. Slate supports one write instance and multiple
+      read instances. A fresh database defaults to direct catalog management;
       pass --catalog-mode schema when rad.schema.yaml should own all catalog
       changes. Catalog mode is immutable after database initialization.
 
@@ -116,15 +115,9 @@ commands:
         envVar: RAD_ADDR
         default: 0.0.0.0:7237
       - name: role
-        description: Process-wide Slate access role.
+        description: Slate access role; omission selects write.
         envVar: RAD_ROLE
         choices: [read, write]
-        default: write
-      - name: planner-mode
-        description: Access-path selection mode.
-        envVar: RAD_PLANNER_MODE
-        choices: [structural, cost]
-        default: structural
       - name: reader-poll-interval-ms
         description: Slate manifest polling interval for read instances.
         type: integer
@@ -188,24 +181,112 @@ commands:
         envVar: RAD_METRICS
         choices: ["true", "false"]
         default: "true"
-      - name: cache-size-mib
-        description: Total Slate decoded cache capacity in MiB.
+      - name: slate-decoded-cache-size-mib
+        description: Total memory capacity for decoded Slate data blocks and metadata.
         type: integer
-        envVar: RAD_CACHE_SIZE_MIB
+        envVar: RAD_SLATE_DECODED_CACHE_SIZE_MIB
         default: 128
+      - name: slate-scan-cache-blocks
+        description: Add blocks from throughput scans to the decoded cache.
+        type: boolean
+        envVar: RAD_SLATE_SCAN_CACHE_BLOCKS
+        default: false
+      - name: slate-scan-read-ahead-kib
+        description: Read-ahead target for each throughput scan.
+        type: integer
+        envVar: RAD_SLATE_SCAN_READ_AHEAD_KIB
+        default: 256
+      - name: slate-scan-max-fetch-tasks
+        description: Maximum concurrent Slate fetch tasks for each throughput scan.
+        type: integer
+        envVar: RAD_SLATE_SCAN_MAX_FETCH_TASKS
+        default: 4
+      - name: slate-flush-interval-ms
+        description: Interval between automatic WAL flush attempts.
+        type: integer
+        envVar: RAD_SLATE_FLUSH_INTERVAL_MS
+        default: 100
+      - name: slate-l0-sst-size-mib
+        description: Target memtable size before Slate writes an L0 SST.
+        type: integer
+        envVar: RAD_SLATE_L0_SST_SIZE_MIB
+        default: 64
+      - name: slate-max-wal-flushes-before-l0-flush
+        description: Maximum WAL flush count before Slate writes the memtable to L0.
+        type: integer
+        envVar: RAD_SLATE_MAX_WAL_FLUSHES_BEFORE_L0_FLUSH
+        default: 4096
+      - name: slate-l0-max-ssts
+        description: Maximum total L0 SST count before Slate applies write backpressure.
+        type: integer
+        envVar: RAD_SLATE_L0_MAX_SSTS
+        default: 8
+      - name: slate-l0-max-ssts-per-key
+        description: Maximum L0 SST count that can cover one key.
+        type: integer
+        envVar: RAD_SLATE_L0_MAX_SSTS_PER_KEY
+        default: 8
+      - name: slate-l0-flush-parallelism
+        description: Number of parallel Slate workers that flush memtables to L0.
+        type: integer
+        envVar: RAD_SLATE_L0_FLUSH_PARALLELISM
+        default: 4
+      - name: slate-max-unflushed-mib
+        description: Maximum unflushed key and value bytes before write backpressure.
+        type: integer
+        envVar: RAD_SLATE_MAX_UNFLUSHED_MIB
+        default: 1024
+      - name: slate-min-filter-keys
+        description: Minimum SST key count at which Slate writes a Bloom filter.
+        type: integer
+        envVar: RAD_SLATE_MIN_FILTER_KEYS
+        default: 1000
+      - name: slate-bloom-bits-per-key
+        description: Bloom filter bits per key for newly written SST files.
+        type: integer
+        envVar: RAD_SLATE_BLOOM_BITS_PER_KEY
+        default: 10
+      - name: slate-sst-block-size-kib
+        description: Data block size for newly written Slate SST files.
+        type: integer
+        envVar: RAD_SLATE_SST_BLOCK_SIZE_KIB
+        default: 4
+      - name: slate-object-cache-path
+        description: Local directory for the raw Slate object cache; omission disables it.
+        type: path
+        envVar: RAD_SLATE_OBJECT_CACHE_PATH
+      - name: slate-object-cache-size-mib
+        description: Maximum raw Slate object cache capacity.
+        type: integer
+        envVar: RAD_SLATE_OBJECT_CACHE_SIZE_MIB
+        default: 16384
+      - name: slate-object-cache-part-size-kib
+        description: Part size for files in the raw Slate object cache.
+        type: integer
+        envVar: RAD_SLATE_OBJECT_CACHE_PART_SIZE_KIB
+        default: 4096
+      - name: slate-object-cache-on-flush
+        description: Add new L0 SST files to the raw object cache after a flush.
+        type: boolean
+        envVar: RAD_SLATE_OBJECT_CACHE_ON_FLUSH
+        default: false
+      - name: slate-object-cache-on-compaction
+        description: Add new compacted SST files to the raw object cache.
+        type: boolean
+        envVar: RAD_SLATE_OBJECT_CACHE_ON_COMPACTION
+        default: false
+      - name: slate-object-cache-preload
+        description: SST files to load into the raw object cache during startup.
+        envVar: RAD_SLATE_OBJECT_CACHE_PRELOAD
+        choices: [none, l0, all]
+        default: none
       - name: storage
-        description: Storage backend for SlateDB data.
+        description: Slate object storage implementation.
         envVar: RAD_STORAGE
         choices: [memory, file, s3]
         default: file
-      - name: db
-        short: d
-        description: File storage directory; used only with --storage file.
-        type: path
-        envVar: RAD_DATA_DIR
-        default: data
       - name: storage-path
-        description: Logical SlateDB path within the selected backend.
+        description: Local database directory or object storage prefix.
         envVar: RAD_STORAGE_PATH
         default: rad
       - name: catalog-mode

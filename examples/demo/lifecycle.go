@@ -63,8 +63,7 @@ func runLocalDemo(stay bool) error {
 		"serve",
 		"--addr", "127.0.0.1:7237",
 		"--storage", "file",
-		"--db", data,
-		"--storage-path", "database",
+		"--storage-path", filepath.Join(data, "database"),
 		"--catalog-mode", "schema",
 	)
 	server.Stdout = logFile

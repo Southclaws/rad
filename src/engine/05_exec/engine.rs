@@ -1,8 +1,11 @@
 //! Snapshot-coherent bind, plan, and execute entry points.
 
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 use async_trait::async_trait;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
+use tracing::Instrument as _;
 
 use crate::engine::catalog;
 use crate::engine::catalog::model::{Revision, Schema, SchemaTransition, Table};
@@ -12,6 +15,7 @@ use crate::engine::planner::bind;
 use crate::engine::planner::{PlanOptions, PlannerMode, PlanningContext, plan_query_with_context};
 use crate::runtime::{RuntimeEffects, SystemRuntime};
 
+use super::parallel::ExecutionScheduler;
 use super::{
     CatalogPolicy, EngineEvent, EngineEventHook, EngineOperation, Executor, Limits,
     NoopEngineEventHook, Program, ProgramOptions, ProgramResult, ReferenceExecutor, Result,
@@ -28,7 +32,56 @@ pub struct Engine {
     pub(super) observer: Option<Arc<dyn super::observe::ExecutionObserver>>,
     pub(super) statistics: Option<Arc<dyn crate::engine::planner::estimator::StatisticsProvider>>,
     planner_mode: PlannerMode,
+    execution_admission: Option<(Arc<Semaphore>, usize)>,
+    execution_scheduler: Arc<ExecutionScheduler>,
     catalog_observers: RwLock<Vec<CatalogObserver>>,
+}
+
+struct ExecutionPermit {
+    _permit: OwnedSemaphorePermit,
+}
+
+impl ExecutionPermit {
+    fn new(permit: OwnedSemaphorePermit) -> Self {
+        crate::telemetry::program_admitted_started();
+        Self { _permit: permit }
+    }
+}
+
+impl Drop for ExecutionPermit {
+    fn drop(&mut self) {
+        crate::telemetry::program_admitted_finished();
+    }
+}
+
+struct QueueMeasurement {
+    started: Instant,
+    active: bool,
+}
+
+impl QueueMeasurement {
+    fn start() -> Self {
+        crate::telemetry::program_queue_started();
+        Self {
+            started: Instant::now(),
+            active: true,
+        }
+    }
+
+    fn finish(mut self) -> std::time::Duration {
+        let duration = self.started.elapsed();
+        crate::telemetry::program_queue_finished(duration);
+        self.active = false;
+        duration
+    }
+}
+
+impl Drop for QueueMeasurement {
+    fn drop(&mut self) {
+        if self.active {
+            crate::telemetry::program_queue_cancelled();
+        }
+    }
 }
 
 impl Engine {
@@ -45,7 +98,9 @@ impl Engine {
             events: Arc::new(NoopEngineEventHook),
             observer: None,
             statistics: None,
-            planner_mode: PlannerMode::Structural,
+            planner_mode: PlannerMode::Cost,
+            execution_admission: None,
+            execution_scheduler: ExecutionScheduler::adaptive(1),
             catalog_observers: RwLock::new(Vec::new()),
         }
     }
@@ -87,7 +142,9 @@ impl Engine {
             events: Arc::new(NoopEngineEventHook),
             observer: None,
             statistics: None,
-            planner_mode: PlannerMode::Structural,
+            planner_mode: PlannerMode::Cost,
+            execution_admission: None,
+            execution_scheduler: ExecutionScheduler::adaptive(1),
             catalog_observers: RwLock::new(Vec::new()),
         }
     }
@@ -117,9 +174,52 @@ impl Engine {
         self
     }
 
-    pub fn with_planner_mode(mut self, planner_mode: PlannerMode) -> Self {
+    pub(crate) fn with_planner_mode(mut self, planner_mode: PlannerMode) -> Self {
         self.planner_mode = planner_mode;
         self
+    }
+
+    pub(crate) fn with_execution_capacity(
+        mut self,
+        program_limit: usize,
+        cpu_limit: usize,
+    ) -> Self {
+        let program_limit = program_limit.max(1);
+        self.execution_admission = Some((Arc::new(Semaphore::new(program_limit)), program_limit));
+        self.execution_scheduler = ExecutionScheduler::adaptive(cpu_limit);
+        self
+    }
+
+    async fn admit_execution(&self) -> Option<ExecutionPermit> {
+        let (admission, limit) = self.execution_admission.as_ref()?;
+        let admission = admission.clone();
+        match admission.clone().try_acquire_owned() {
+            Ok(permit) => Some(ExecutionPermit::new(permit)),
+            Err(TryAcquireError::NoPermits) => {
+                let measurement = QueueMeasurement::start();
+                let span = tracing::debug_span!(
+                    target: "rad::telemetry",
+                    "rad.program.queue",
+                    otel.kind = "internal",
+                    rad.program.admission_limit = *limit,
+                    rad.program.queue_duration_ms = tracing::field::Empty,
+                    rad.status = tracing::field::Empty,
+                );
+                let permit = admission
+                    .acquire_owned()
+                    .instrument(span.clone())
+                    .await
+                    .expect("execution admission remains open");
+                let duration = measurement.finish();
+                span.record(
+                    "rad.program.queue_duration_ms",
+                    duration.as_secs_f64() * 1_000.0,
+                );
+                span.record("rad.status", "success");
+                Some(ExecutionPermit::new(permit))
+            }
+            Err(TryAcquireError::Closed) => unreachable!("execution admission remains open"),
+        }
     }
 
     pub fn observer(&self) -> Option<&Arc<dyn super::observe::ExecutionObserver>> {
@@ -265,6 +365,7 @@ impl Engine {
         transaction: &mut dyn Transaction,
         query: lir::Query,
     ) -> Result<Datum> {
+        let execution_grant = self.execution_scheduler.enter();
         let view = TransactionView(&*transaction);
         execute_on_view(
             &view,
@@ -278,6 +379,7 @@ impl Engine {
             self.statistics
                 .as_ref()
                 .map(|provider| provider.planning_stats()),
+            execution_grant,
         )
         .await
     }
@@ -320,10 +422,17 @@ impl Engine {
         program: &Program,
         catalog_policy: CatalogPolicy,
     ) -> Result<ProgramResult> {
-        if program.statements.iter().any(super::Statement::effectful) {
+        let effectful = program.statements.iter().any(super::Statement::effectful);
+        if effectful {
             self.require_write()?;
         }
         let result_name = super::program::validate(program, catalog_policy)?;
+        let _execution_permit = self.admit_execution().await;
+        let execution_grant = if effectful {
+            super::parallel::ExecutionGrant::serial()
+        } else {
+            self.execution_scheduler.enter()
+        };
         let mut view = TransactionView(&*transaction);
         let statistics = self
             .statistics
@@ -344,6 +453,7 @@ impl Engine {
                     ..PlanOptions::default()
                 },
                 collect_plan: false,
+                execution_grant,
             },
         )
         .await
@@ -384,10 +494,17 @@ impl Engine {
         options: ProgramOptions,
         reference: bool,
     ) -> Result<ProgramResult> {
-        if program.statements.iter().any(super::Statement::effectful) {
+        let effectful = program.statements.iter().any(super::Statement::effectful);
+        if effectful {
             self.require_write()?;
         }
         let result_name = super::program::validate(&program, options.catalog)?;
+        let _execution_permit = self.admit_execution().await;
+        let execution_grant = if effectful {
+            super::parallel::ExecutionGrant::serial()
+        } else {
+            self.execution_scheduler.enter()
+        };
         let catalog_statements = program
             .statements
             .iter()
@@ -402,33 +519,38 @@ impl Engine {
             mode: self.planner_mode,
             ..PlanOptions::default()
         };
-        let preflight = self
-            .store
-            .begin(IsolationLevel::SerializableSnapshot)
-            .await?;
-        let preflight_result = {
-            let mut view = TransactionView(&*preflight);
-            match super::program::expect_catalog(&mut view, options.expected_catalog.as_ref()).await
-            {
-                Ok(()) => {
-                    super::program::preflight(
-                        &mut view,
-                        &program,
-                        options.catalog,
-                        options.collect_plan,
-                        !reference,
-                        false,
-                        &self.runtime,
-                        statistics.clone(),
-                        plan_options,
-                    )
+        let plans = if effectful || options.dry_run || reference {
+            let preflight = self
+                .store
+                .begin(IsolationLevel::SerializableSnapshot)
+                .await?;
+            let preflight_result = {
+                let mut view = TransactionView(&*preflight);
+                match super::program::expect_catalog(&mut view, options.expected_catalog.as_ref())
                     .await
+                {
+                    Ok(()) => {
+                        super::program::preflight(
+                            &mut view,
+                            &program,
+                            options.catalog,
+                            options.collect_plan,
+                            !reference,
+                            false,
+                            &self.runtime,
+                            statistics.clone(),
+                            plan_options,
+                        )
+                        .await
+                    }
+                    Err(error) => Err(error),
                 }
-                Err(error) => Err(error),
-            }
+            };
+            preflight.rollback();
+            preflight_result?.plans
+        } else {
+            Vec::new()
         };
-        preflight.rollback();
-        let plans = preflight_result?.plans;
         if options.dry_run {
             return Ok(ProgramResult {
                 result: Datum::Null,
@@ -437,7 +559,6 @@ impl Engine {
             });
         }
 
-        let effectful = program.statements.iter().any(super::Statement::effectful);
         let isolation = if effectful {
             IsolationLevel::SerializableSnapshot
         } else {
@@ -471,6 +592,7 @@ impl Engine {
                             statistics: statistics.clone(),
                             plan_options,
                             collect_plan: options.collect_plan,
+                            execution_grant,
                         },
                     )
                     .await
@@ -645,6 +767,7 @@ impl Engine {
         force_nested: bool,
     ) -> Result<Datum> {
         let transaction = self.store.begin(IsolationLevel::Snapshot).await?;
+        let execution_grant = self.execution_scheduler.enter();
         let result = {
             let view = TransactionView(&*transaction);
             execute_on_view(
@@ -659,6 +782,7 @@ impl Engine {
                 self.statistics
                     .as_ref()
                     .map(|provider| provider.planning_stats()),
+                execution_grant,
             )
             .await
         };
@@ -741,6 +865,7 @@ async fn execute_on_view(
     force_nested: bool,
     limits: Limits,
     statistics: Option<Arc<crate::engine::planner::models::PlannerStats>>,
+    execution_grant: super::parallel::ExecutionGrant,
 ) -> Result<Datum> {
     let bound = bind::bind(&ViewCatalog { view }, query).await?;
     let planned = plan_query_with_context(
@@ -751,6 +876,7 @@ async fn execute_on_view(
         },
     );
     let mut executor = Executor::new(view, limits);
+    executor.set_execution_grant(execution_grant);
     executor.set_force_nested(force_nested);
     executor.execute(&planned.plan).await
 }
@@ -771,6 +897,7 @@ mod tests {
     use std::collections::HashMap;
     use std::collections::VecDeque;
     use std::sync::Mutex;
+    use std::time::Duration;
 
     use bytes::Bytes;
     use chrono::{DateTime, TimeZone, Utc};
@@ -811,6 +938,30 @@ mod tests {
                 .pop_front()
                 .expect("test supplied enough UUIDs")
         }
+    }
+
+    #[tokio::test]
+    async fn execution_admission_applies_backpressure() {
+        let store = Arc::new(Store::memory("execution-admission").await.unwrap());
+        let engine = Engine::new(store.clone()).with_execution_capacity(2, 1);
+
+        let first = engine.admit_execution().await.unwrap();
+        let second = engine.admit_execution().await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), engine.admit_execution())
+                .await
+                .is_err()
+        );
+
+        drop(first);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), engine.admit_execution())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        drop(second);
+        store.close().await.unwrap();
     }
 
     #[tokio::test]

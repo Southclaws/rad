@@ -3,7 +3,7 @@ title: "Layer 05: the executor"
 description: "Transactional query execution, mutations, schema jobs, and physical reclamation."
 ---
 
-The executor turns bound programs and physical plans into SlateDB operations.
+The executor turns bound programs and physical plans into KV operations.
 It owns transaction admission, pull-based query operators, constraint-checked
 mutations, durable schema workers, and automatic reclamation.
 
@@ -38,7 +38,7 @@ the complete manifest before constructing operators.
 
 Admission happens inside the same transaction used for binding and data access.
 For effectful programs, a concurrent change to an admitted fence participates
-in SlateDB's serializable conflict detection at commit. Read-only programs
+in the backend's serializable conflict detection at commit. Read-only programs
 instead complete against their stable snapshot and roll back. Unrelated
 catalog publications leave the manifest's fences untouched.
 
@@ -48,15 +48,15 @@ Physical operators pull one frame at a time until their input is exhausted. A
 frame maps bound slots to datums. It can contain stored scalar fields,
 computed values, nested objects or arrays, and inherited outer slots.
 
-| Operator family | Behaviour |
-| --- | --- |
-| Point get and scans | Stream rows from primary or index storage |
-| Filter and project | Evaluate pure bound expressions per frame |
-| Slice | Stop pulling after offset and limit |
-| Sort | Materialise and stable-sort the input |
-| Aggregate | Fold global or grouped input |
-| Join | Nested-loop current physical implementation |
-| Attach | Evaluate relation crossings and place their datum in a slot |
+| Operator family     | Behaviour                                                   |
+| ------------------- | ----------------------------------------------------------- |
+| Point get and scans | Stream rows from primary or index storage                   |
+| Filter and project  | Evaluate pure bound expressions per frame                   |
+| Slice               | Stop pulling after offset and limit                         |
+| Sort                | Materialise and stable-sort the input                       |
+| Aggregate           | Fold global or grouped input                                |
+| Join                | Nested-loop current physical implementation                 |
+| Attach              | Evaluate relation crossings and place their datum in a slot |
 
 Filters keep only `TRUE`; `FALSE` and `UNKNOWN` are discarded. Expressions do
 no I/O. The planner has already turned relation-valued crossings into attach
@@ -103,7 +103,7 @@ protocol contains:
 The obligation lists are canonicalised, so the order in which compatible
 transitions started cannot change mutation behaviour. Foreground row writes,
 index changes, captured deltas, dual-written values, and checks commit in the
-same SlateDB transaction.
+same storage transaction.
 
 A changed protocol generation produces a serialization conflict. An index
 delta backlog at its hard limit produces the retryable
@@ -115,11 +115,11 @@ retryable `schema_transition_finalizing` rejection for the affected table.
 Normal operation starts durable schema work through the migration frontend or
 transactional program boundary. The executor owns its physical protocols:
 
-| Kind | Worker path |
-| --- | --- |
-| Index build | Bounded base scan, ordered delta capture and replay, uniqueness claims when needed, ready publication |
-| Column replacement | Strict conversion backfill, foreground dual-write, violation tracking, logical swap |
-| Constraint validation | Enforce new writes, scan historical rows, validate and publish |
+| Kind                  | Worker path                                                                                           |
+| --------------------- | ----------------------------------------------------------------------------------------------------- |
+| Index build           | Bounded base scan, ordered delta capture and replay, uniqueness claims when needed, ready publication |
+| Column replacement    | Strict conversion backfill, foreground dual-write, violation tracking, logical swap                   |
+| Constraint validation | Enforce new writes, scan historical rows, validate and publish                                        |
 
 Transitions can wait on prerequisites. Activation resolves stable logical IDs
 against current physical definitions, then installs its write obligation.
@@ -148,9 +148,8 @@ reclamations, transition compaction, and canonical-history compaction. It:
 - resumes after a file-backed close and reopen.
 
 Shutdown stops and joins this local runner without taking ownership of the
-shared KV store. SlateDB's single-writer constraint means one Rad process owns
-a database for now; worker epochs still matter across restart and stale local
-work.
+shared KV store. Slate permits one writer process and additional reader
+processes. Worker epochs still matter across a restart and stale local work.
 
 ## Retention and reclamation
 
@@ -164,8 +163,8 @@ transition deltas and validation artifacts, and terminal-record detail.
 Reclamation records finish as compact summaries rather than vanishing.
 
 Typed durable pins and resource-specific horizon reporting exist as substrate.
-Executing SlateDB transactions use SlateDB's own visibility and do not publish
-durable pins. Persistent prepared plans, replicas, CDC, and retained snapshots
+Executing transactions use the backend's visibility and do not publish durable
+pins. Persistent prepared plans, replicas, CDC, and retained snapshots
 do not yet create production pins. An opaque data-snapshot pin conservatively
 blocks every reclamation kind because the KV contract cannot prove a narrower
 safe position.

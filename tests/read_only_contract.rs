@@ -415,13 +415,8 @@ impl Process {
             format!("127.0.0.1:{http_port}"),
             "--storage".to_owned(),
             "file".to_owned(),
-            "--db".to_owned(),
-            directory
-                .to_str()
-                .ok_or("temporary path is not UTF-8")?
-                .to_owned(),
             "--storage-path".to_owned(),
-            prefix.to_owned(),
+            directory.join(prefix).display().to_string(),
             "--catalog-mode".to_owned(),
             "direct".to_owned(),
             "--role".to_owned(),

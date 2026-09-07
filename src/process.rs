@@ -2,7 +2,7 @@
 
 use std::env;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,9 @@ use slatedb::object_store::memory::InMemory;
 use crate::engine::catalog::Catalog;
 use crate::engine::catalog::model::Mode;
 use crate::engine::exec::Engine;
-use crate::engine::kv::slatedb::{ReaderStore, Store};
+use crate::engine::kv::slatedb::{
+    ObjectCachePreload, Options as SlateOptions, ReaderStore, Store as SlateStore,
+};
 use crate::engine::kv::{Closure, ErrorKind as KvErrorKind, Kv, TransactionalKv};
 use crate::health::{Health, StartupHold};
 use crate::scheduler::schema_jobs::{SchemaJobConfig, SchemaJobRunner};
@@ -28,8 +30,7 @@ pub enum StorageConfig {
         path: String,
     },
     File {
-        directory: PathBuf,
-        path: String,
+        path: PathBuf,
     },
     S3 {
         bucket: String,
@@ -75,7 +76,6 @@ impl std::fmt::Display for Role {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     pub address: String,
-    pub cache_size_mib: u64,
     /// Admin listener address; `None` derives the next port on the public
     /// host. Orchestrated deployments pin this to loopback so the admin
     /// surface is reachable only through the orchestrator's own tunnel.
@@ -83,7 +83,7 @@ pub struct Config {
     pub catalog_mode: Option<Mode>,
     pub frontend: Option<Frontend>,
     pub postgres_address: String,
-    /// Bound on the orderly Slate close; `None` waits indefinitely. Commits are
+    /// Bound on the orderly storage close; `None` waits indefinitely. Commits are
     /// durable before they are acknowledged, so abandoning a close that cannot
     /// finish — a destroyed bucket retries longer than any termination grace —
     /// forfeits only background housekeeping, never acknowledged data.
@@ -109,19 +109,18 @@ pub struct Config {
     /// batch sequences apart.
     pub instance_id: Option<String>,
     pub role: Role,
-    pub planner_mode: crate::engine::planner::PlannerMode,
     /// How long readiness reports unavailable before the listeners stop, so an
     /// orchestrator can move traffic elsewhere while requests still succeed.
     pub shutdown_drain: Duration,
+    pub slate: SlateOptions,
     pub storage: StorageConfig,
 }
 
 impl Config {
     pub fn from_env() -> Result<Self> {
+        ensure_storage_path_environment()?;
         let address = normalize_address(&env_or("RAD_ADDR", "0.0.0.0:7237"));
-        let cache_size_mib = env_or("RAD_CACHE_SIZE_MIB", "128")
-            .parse::<u64>()
-            .map_err(|error| format!("invalid RAD_CACHE_SIZE_MIB: {error}"))?;
+        let slate = slate_options_from_env()?;
         let admin_address = admin_address_from_env();
         let catalog_mode = env::var("RAD_CATALOG_MODE")
             .ok()
@@ -166,19 +165,18 @@ impl Config {
             .ok()
             .filter(|value| !value.is_empty());
         let role = env_or("RAD_ROLE", "write").parse()?;
-        let planner_mode = env_or("RAD_PLANNER_MODE", "structural").parse()?;
         let close_timeout = close_timeout_from_env()?;
         let shutdown_drain = shutdown_drain_from_env()?;
-        let path = env_or("RAD_STORAGE_PATH", "rad");
-        let storage = match env_or("RAD_STORAGE", "file").as_str() {
-            "memory" => StorageConfig::Memory { path },
+        let storage_path = env_or("RAD_STORAGE_PATH", "rad");
+        let object_storage = env_or("RAD_STORAGE", "file");
+        let storage = match object_storage.as_str() {
+            "memory" => StorageConfig::Memory { path: storage_path },
             "file" => StorageConfig::File {
-                directory: PathBuf::from(env_or("RAD_DATA_DIR", "data")),
-                path,
+                path: PathBuf::from(storage_path),
             },
             "s3" => StorageConfig::S3 {
                 bucket: required_env("RAD_S3_BUCKET")?,
-                path: env_or("RAD_S3_PREFIX", &path),
+                path: env_or("RAD_S3_PREFIX", &storage_path),
                 region: env::var("RAD_S3_REGION")
                     .ok()
                     .filter(|value| !value.is_empty()),
@@ -195,7 +193,6 @@ impl Config {
         let config = Self {
             address,
             admin_address,
-            cache_size_mib,
             catalog_mode,
             capture_workload_corpus,
             close_timeout,
@@ -210,8 +207,8 @@ impl Config {
             relay_target,
             relay_token_file,
             role,
-            planner_mode,
             shutdown_drain,
+            slate,
             storage,
         };
         config.validate()?;
@@ -225,9 +222,7 @@ impl Config {
     /// port, and a target alone would gather evidence that every attempt to
     /// send is refused for.
     pub fn validate(&self) -> Result<()> {
-        if self.cache_size_mib < 16 {
-            return Err("RAD_CACHE_SIZE_MIB must be at least 16".into());
-        }
+        validate_slate_options(&self.slate)?;
         if self.internal_address.is_some() && self.relay_token_file.is_none() {
             return Err(
                 "RAD_INTERNAL_ADDR requires RAD_RELAY_TOKEN_FILE: the internal API is never served unauthenticated"
@@ -264,17 +259,25 @@ impl Config {
     }
 }
 
+pub(crate) fn ensure_storage_path_environment() -> Result {
+    if env::var_os("RAD_DATA_DIR").is_some() {
+        return Err("RAD_DATA_DIR is not supported; use RAD_STORAGE_PATH".into());
+    }
+    Ok(())
+}
+
 /// Construct the production runtime and serve until `shutdown` resolves.
 ///
 /// Durable schema work starts before the listener and is stopped before the
-/// Slate store closes. Store close is awaited even when the HTTP server exits
-/// with an error, preserving Slate's orderly-shutdown contract.
+/// store closes. Store close is awaited even when the HTTP server exits
+/// with an error, preserving the storage orderly-shutdown contract.
 ///
 /// Only the probe endpoints answer on the public address until the runtime is
 /// built, so a slow or unavailable object store never publishes a partially
 /// initialized database.
 pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + 'static) -> Result {
     config.validate()?;
+    let planner_mode = internal_test_planner_mode()?;
     tracing::info!(
         target: "rad",
         event = "process.started",
@@ -316,12 +319,12 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
         crate::http::probe_router(health.clone()),
         wait_for_stop(started_receiver),
     ));
-    let started = start_runtime(&config, &health).await;
+    let started = start_runtime(&config, &health, planner_mode).await;
     let _ = started_sender.send(true);
     let handover = joined_server(startup_probes.await);
     let Runtime {
         store,
-        writer,
+        runtime_fence_writer,
         location,
         catalog,
         engine,
@@ -342,6 +345,7 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
         storage = %location,
         public_address = %public_address,
         admin_address = %bound_admin_address,
+        execution_concurrency = default_execution_concurrency(),
         message = "Rad is ready"
     );
     if let Some(listener) = &internal_listener {
@@ -395,7 +399,7 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
     servers.spawn(async move {
         monitor_runtime(
             monitor_store,
-            writer,
+            runtime_fence_writer,
             monitor_jobs,
             monitor_health,
             shutdown_drain,
@@ -487,7 +491,7 @@ async fn close_store(store: &dyn TransactionalKv, timeout: Option<Duration>) -> 
     match tokio::time::timeout(limit, store.close()).await {
         Ok(result) => Ok(result?),
         Err(_) => Err(format!(
-            "orderly Slate close did not finish within {limit:?}; abandoning storage housekeeping"
+            "orderly storage close did not finish within {limit:?}; abandoning storage housekeeping"
         )
         .into()),
     }
@@ -508,7 +512,7 @@ async fn bind_public(address: &str) -> Result<(tokio::net::TcpListener, tokio::n
 
 struct Runtime {
     store: Arc<dyn TransactionalKv>,
-    writer: Option<Arc<Store>>,
+    runtime_fence_writer: Option<Arc<dyn Kv>>,
     location: String,
     catalog: Arc<Catalog>,
     engine: Arc<Engine>,
@@ -564,13 +568,17 @@ fn instance_id(config: &Config) -> String {
         .unwrap_or_else(|| "rad".into())
 }
 
-/// Any failure closes Slate before returning, so a process that never publishes
+/// Any failure closes storage before returning, so a process that never publishes
 /// still leaves its storage location cleanly.
 ///
 /// A preflight monitors a remote store while it opens and records the cause
 /// of a held startup. SlateDB retries an unavailable object store without
 /// limit, so the open does not return an error to classify.
-async fn start_runtime(config: &Config, health: &Arc<Health>) -> Result<Runtime> {
+async fn start_runtime(
+    config: &Config,
+    health: &Arc<Health>,
+    planner_mode: crate::engine::planner::PlannerMode,
+) -> Result<Runtime> {
     let built = build_objects(&config.storage)?;
     let preflight = built.remote.then(|| {
         tokio::spawn(diagnose_startup_hold(
@@ -579,21 +587,24 @@ async fn start_runtime(config: &Config, health: &Arc<Health>) -> Result<Runtime>
             health.clone(),
         ))
     });
-    let runtime = open_runtime(config, &built).await;
+    let opened = open_slate_storage(
+        &built,
+        config.role,
+        config.reader_poll_interval,
+        config.slate.clone(),
+    )
+    .await;
     if let Some(preflight) = preflight {
         preflight.abort();
     }
-    runtime
+    open_runtime(config, opened?, planner_mode).await
 }
 
-async fn open_runtime(config: &Config, built: &BuiltObjects) -> Result<Runtime> {
-    let opened = open_storage(
-        built,
-        config.role,
-        config.reader_poll_interval,
-        config.cache_size_mib,
-    )
-    .await?;
+async fn open_runtime(
+    config: &Config,
+    opened: OpenedStorage,
+    planner_mode: crate::engine::planner::PlannerMode,
+) -> Result<Runtime> {
     let store = opened.store;
     if let Err(error) = admit_storage_compatibility(store.as_ref(), config.role).await {
         return close_after_error(store.as_ref(), config.close_timeout, error).await;
@@ -630,11 +641,16 @@ async fn open_runtime(config: &Config, built: &BuiltObjects) -> Result<Runtime> 
         Some(slate_statistics.clone()),
         sink,
     ));
+    let execution_cpu_limit = default_execution_cpu_limit();
     let engine = match config.role {
         Role::Read => Engine::read_only(store.clone()),
         Role::Write => Engine::new(store.clone()),
     }
-    .with_planner_mode(config.planner_mode);
+    .with_planner_mode(planner_mode)
+    .with_execution_capacity(
+        execution_concurrency_for(execution_cpu_limit, execution_cpu_limit),
+        execution_cpu_limit,
+    );
     let engine = Arc::new(match &statistics {
         Some(statistics) => engine
             .with_observer(statistics.collector())
@@ -659,7 +675,7 @@ async fn open_runtime(config: &Config, built: &BuiltObjects) -> Result<Runtime> 
     };
     Ok(Runtime {
         store,
-        writer: opened.writer,
+        runtime_fence_writer: opened.runtime_fence_writer,
         location: opened.location,
         catalog,
         engine,
@@ -667,6 +683,26 @@ async fn open_runtime(config: &Config, built: &BuiltObjects) -> Result<Runtime> 
         jobs,
         statistics,
     })
+}
+
+fn default_execution_concurrency() -> usize {
+    let cpu_limit = default_execution_cpu_limit();
+    execution_concurrency_for(cpu_limit, cpu_limit)
+}
+
+fn default_execution_cpu_limit() -> usize {
+    let available = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    let quota = crate::telemetry::process_cpu_limit()
+        .filter(|limit| limit.is_finite() && *limit > 0.0)
+        .map(|limit| limit.ceil() as usize)
+        .unwrap_or(available);
+    available.min(quota).max(1)
+}
+
+fn execution_concurrency_for(available: usize, quota: usize) -> usize {
+    available.min(quota).max(1).saturating_mul(4).clamp(4, 64)
 }
 
 async fn diagnose_startup_hold(objects: Arc<dyn ObjectStore>, path: String, health: Arc<Health>) {
@@ -745,7 +781,7 @@ pub async fn run() -> Result {
 
 struct OpenedStorage {
     store: Arc<dyn TransactionalKv>,
-    writer: Option<Arc<Store>>,
+    runtime_fence_writer: Option<Arc<dyn Kv>>,
     location: String,
 }
 
@@ -767,17 +803,12 @@ fn build_objects(config: &StorageConfig) -> Result<BuiltObjects> {
                 "memory:///".into(),
                 false,
             ),
-            StorageConfig::File { directory, path } => {
-                std::fs::create_dir_all(directory)?;
-                let directory = directory.canonicalize()?;
+            StorageConfig::File { path } => {
+                let (directory, database) = local_storage_path(path)?;
                 let objects: Arc<dyn ObjectStore> =
                     Arc::new(LocalFileSystem::new_with_prefix(&directory)?);
-                (
-                    path.clone(),
-                    objects,
-                    directory.join(path).display().to_string(),
-                    false,
-                )
+                let location = directory.join(&database).display().to_string();
+                (database, objects, location, false)
             }
             StorageConfig::S3 {
                 bucket,
@@ -796,9 +827,9 @@ fn build_objects(config: &StorageConfig) -> Result<BuiltObjects> {
                         .with_virtual_hosted_style_request(false);
                 }
                 let objects: Arc<dyn ObjectStore> =
-                    crate::engine::kv::object_store_telemetry::observe_remote_object_store(
-                        Arc::new(builder.build()?),
-                    );
+                    crate::engine::kv::slatedb::observe_remote_object_store(Arc::new(
+                        builder.build()?,
+                    ));
                 (path.clone(), objects, format!("s3://{bucket}/{path}"), true)
             }
         };
@@ -810,42 +841,52 @@ fn build_objects(config: &StorageConfig) -> Result<BuiltObjects> {
     })
 }
 
-async fn open_storage(
+async fn open_slate_storage(
     built: &BuiltObjects,
     role: Role,
     reader_poll_interval: Duration,
-    cache_size_mib: u64,
+    options: SlateOptions,
 ) -> Result<OpenedStorage> {
     let path = built.path.clone();
     let objects = built.objects.clone();
     match role {
         Role::Write => {
-            let writer =
-                Arc::new(Store::open_with_cache_size(path, objects, cache_size_mib).await?);
+            let writer = Arc::new(SlateStore::open_with_options(path, objects, options).await?);
             let store: Arc<dyn TransactionalKv> = writer.clone();
+            let writer: Arc<dyn Kv> = writer;
             Ok(OpenedStorage {
                 store,
-                writer: Some(writer),
+                runtime_fence_writer: Some(writer),
                 location: built.location.clone(),
             })
         }
         Role::Read => {
             let store: Arc<dyn TransactionalKv> = Arc::new(
-                ReaderStore::open_with_cache_size(
-                    path,
-                    objects,
-                    reader_poll_interval,
-                    cache_size_mib,
-                )
-                .await?,
+                ReaderStore::open_with_options(path, objects, reader_poll_interval, options)
+                    .await?,
             );
             Ok(OpenedStorage {
                 store,
-                writer: None,
+                runtime_fence_writer: None,
                 location: built.location.clone(),
             })
         }
     }
+}
+
+fn local_storage_path(path: &Path) -> Result<(PathBuf, String)> {
+    let database = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or("RAD_STORAGE_PATH must name a local database directory")?
+        .to_owned();
+    let directory = path
+        .parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(directory)?;
+    Ok((directory.canonicalize()?, database))
 }
 
 async fn open_catalog_mode(catalog: &Catalog, requested: Option<Mode>, role: Role) -> Result<Mode> {
@@ -875,7 +916,7 @@ async fn open_catalog_mode(catalog: &Catalog, requested: Option<Mode>, role: Rol
 /// or the store itself is terminal: the process drains and stops.
 async fn monitor_runtime(
     store: Arc<dyn TransactionalKv>,
-    writer: Option<Arc<Store>>,
+    runtime_fence_writer: Option<Arc<dyn Kv>>,
     jobs: Option<Arc<SchemaJobRunner>>,
     health: Arc<Health>,
     drain: Duration,
@@ -917,7 +958,7 @@ async fn monitor_runtime(
                 // it to hold the storage location, and a reader reads it to
                 // observe that storage still answers.
                 let fence_key = crate::engine::kv::keys::runtime_writer_fence_key();
-                let observation = match &writer {
+                let observation = match &runtime_fence_writer {
                     Some(writer) => Kv::put(
                         writer.as_ref(),
                         Bytes::from(fence_key),
@@ -968,9 +1009,9 @@ async fn monitor_runtime(
                         component = "storage",
                         error_kind = "fenced",
                         error_reason = "writer_ownership_lost",
-                        message = "Slate writer lost storage ownership"
+                        message = "writer lost storage ownership"
                     );
-                    ("writer_ownership_lost", "Slate writer lost storage ownership")
+                    ("writer_ownership_lost", "writer lost storage ownership")
                 } else {
                     health.observe_task_failure();
                     tracing::error!(
@@ -979,9 +1020,9 @@ async fn monitor_runtime(
                         component = "storage",
                         error_kind = "unusable",
                         error_reason = "observation_failed",
-                        message = "Slate storage is unusable"
+                        message = "storage is unusable"
                     );
-                    ("storage_unusable", "Slate storage is unusable")
+                    ("storage_unusable", "storage is unusable")
                 };
                 return stop_after_drain(&health, &stop_sender, drain, reason, message).await;
             }
@@ -1054,7 +1095,7 @@ async fn close_after_error<T>(
     let original = error.to_string();
     match close_store(store, timeout).await {
         Ok(()) => Err(error),
-        Err(close) => Err(format!("{original}; orderly Slate close also failed: {close}").into()),
+        Err(close) => Err(format!("{original}; orderly storage close also failed: {close}").into()),
     }
 }
 
@@ -1084,6 +1125,126 @@ pub fn shutdown_drain_from_env() -> Result<Duration> {
             .parse::<u64>()
             .map_err(|error| format!("invalid RAD_SHUTDOWN_DRAIN_MS: {error}"))?,
     ))
+}
+
+fn internal_test_planner_mode() -> Result<crate::engine::planner::PlannerMode> {
+    if !matches!(
+        env::var("RAD_INTERNAL_TESTING").ok().as_deref(),
+        Some("1" | "true" | "yes")
+    ) {
+        return Ok(crate::engine::planner::PlannerMode::Cost);
+    }
+    env_or("RAD_INTERNAL_TEST_PLANNER_MODE", "cost")
+        .parse()
+        .map_err(Into::into)
+}
+
+fn slate_options_from_env() -> Result<SlateOptions> {
+    Ok(SlateOptions {
+        decoded_cache_size_mib: parse_env("RAD_SLATE_DECODED_CACHE_SIZE_MIB", "128")?,
+        scan_cache_blocks: parse_bool_env("RAD_SLATE_SCAN_CACHE_BLOCKS", false)?,
+        scan_read_ahead_kib: parse_env("RAD_SLATE_SCAN_READ_AHEAD_KIB", "256")?,
+        scan_max_fetch_tasks: parse_env("RAD_SLATE_SCAN_MAX_FETCH_TASKS", "4")?,
+        flush_interval: Duration::from_millis(parse_env("RAD_SLATE_FLUSH_INTERVAL_MS", "100")?),
+        l0_sst_size_mib: parse_env("RAD_SLATE_L0_SST_SIZE_MIB", "64")?,
+        max_wal_flushes_before_l0_flush: parse_env(
+            "RAD_SLATE_MAX_WAL_FLUSHES_BEFORE_L0_FLUSH",
+            "4096",
+        )?,
+        l0_max_ssts: parse_env("RAD_SLATE_L0_MAX_SSTS", "8")?,
+        l0_max_ssts_per_key: parse_env("RAD_SLATE_L0_MAX_SSTS_PER_KEY", "8")?,
+        l0_flush_parallelism: parse_env("RAD_SLATE_L0_FLUSH_PARALLELISM", "4")?,
+        max_unflushed_mib: parse_env("RAD_SLATE_MAX_UNFLUSHED_MIB", "1024")?,
+        min_filter_keys: parse_env("RAD_SLATE_MIN_FILTER_KEYS", "1000")?,
+        bloom_bits_per_key: parse_env("RAD_SLATE_BLOOM_BITS_PER_KEY", "10")?,
+        sst_block_size_kib: parse_env("RAD_SLATE_SST_BLOCK_SIZE_KIB", "4")?,
+        object_cache_path: env_path("RAD_SLATE_OBJECT_CACHE_PATH"),
+        object_cache_size_mib: parse_env("RAD_SLATE_OBJECT_CACHE_SIZE_MIB", "16384")?,
+        object_cache_part_size_kib: parse_env("RAD_SLATE_OBJECT_CACHE_PART_SIZE_KIB", "4096")?,
+        object_cache_cache_on_flush: parse_bool_env("RAD_SLATE_OBJECT_CACHE_ON_FLUSH", false)?,
+        object_cache_cache_on_compaction: parse_bool_env(
+            "RAD_SLATE_OBJECT_CACHE_ON_COMPACTION",
+            false,
+        )?,
+        object_cache_preload: match env_or("RAD_SLATE_OBJECT_CACHE_PRELOAD", "none").as_str() {
+            "none" => ObjectCachePreload::None,
+            "l0" => ObjectCachePreload::L0,
+            "all" => ObjectCachePreload::All,
+            value => {
+                return Err(format!(
+                    "unknown RAD_SLATE_OBJECT_CACHE_PRELOAD {value:?} (none, l0, or all)"
+                )
+                .into());
+            }
+        },
+    })
+}
+
+fn parse_env<T>(name: &str, fallback: &str) -> Result<T>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    env_or(name, fallback)
+        .parse()
+        .map_err(|error| format!("invalid {name}: {error}").into())
+}
+
+fn parse_bool_env(name: &str, fallback: bool) -> Result<bool> {
+    match env::var(name).ok().filter(|value| !value.is_empty()) {
+        None => Ok(fallback),
+        Some(value) => match value.as_str() {
+            "1" | "true" | "yes" => Ok(true),
+            "0" | "false" | "no" => Ok(false),
+            _ => Err(format!("invalid {name}: expected true or false").into()),
+        },
+    }
+}
+
+fn validate_slate_options(options: &SlateOptions) -> Result {
+    if options.decoded_cache_size_mib < 16 {
+        return Err("Slate decoded cache size must be at least 16 MiB".into());
+    }
+    if options.scan_read_ahead_kib == 0 {
+        return Err("Slate scan read-ahead size must be greater than zero".into());
+    }
+    if options.scan_max_fetch_tasks == 0 {
+        return Err("Slate scan fetch task count must be greater than zero".into());
+    }
+    if options.flush_interval.is_zero() {
+        return Err("Slate flush interval must be greater than zero".into());
+    }
+    if options.l0_sst_size_mib == 0 {
+        return Err("Slate L0 SST size must be greater than zero".into());
+    }
+    if options.max_wal_flushes_before_l0_flush == 0 {
+        return Err("Slate WAL flush limit must be greater than zero".into());
+    }
+    if options.l0_max_ssts == 0 || options.l0_max_ssts_per_key == 0 {
+        return Err("Slate L0 SST limits must be greater than zero".into());
+    }
+    if options.l0_max_ssts_per_key > options.l0_max_ssts {
+        return Err("Slate per-key L0 SST limit must not exceed the total L0 SST limit".into());
+    }
+    if options.l0_flush_parallelism == 0 {
+        return Err("Slate L0 flush parallelism must be greater than zero".into());
+    }
+    if options.max_unflushed_mib < options.l0_sst_size_mib {
+        return Err("Slate maximum unflushed size must be at least the L0 SST size".into());
+    }
+    if options.bloom_bits_per_key == 0 {
+        return Err("Slate Bloom filter bits per key must be greater than zero".into());
+    }
+    if !matches!(options.sst_block_size_kib, 1 | 2 | 4 | 8 | 16 | 32 | 64) {
+        return Err("Slate SST block size must be 1, 2, 4, 8, 16, 32, or 64 KiB".into());
+    }
+    if options.object_cache_size_mib == 0 {
+        return Err("Slate object cache size must be greater than zero".into());
+    }
+    if options.object_cache_part_size_kib == 0 {
+        return Err("Slate object cache part size must be greater than zero".into());
+    }
+    Ok(())
 }
 
 fn env_or(name: &str, fallback: &str) -> String {
@@ -1172,7 +1333,14 @@ pub(crate) async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::kv::slatedb::DEFAULT_CACHE_SIZE_MIB;
+    use crate::engine::kv::slatedb::Options as SlateOptions;
+
+    #[test]
+    fn execution_concurrency_uses_four_slots_per_cpu() {
+        assert_eq!(execution_concurrency_for(8, 4), 16);
+        assert_eq!(execution_concurrency_for(1, 1), 4);
+        assert_eq!(execution_concurrency_for(128, 128), 64);
+    }
 
     #[tokio::test]
     async fn memory_process_starts_and_closes_all_runtime_components() {
@@ -1181,7 +1349,7 @@ mod tests {
             admin_address: Some("127.0.0.1:0".into()),
             close_timeout: Some(Duration::from_secs(30)),
             catalog_mode: Some(Mode::Schema),
-            cache_size_mib: DEFAULT_CACHE_SIZE_MIB,
+            slate: SlateOptions::default(),
             capture_workload_corpus: false,
             frontend: Some(Frontend::Postgres),
             postgres_address: "127.0.0.1:0".into(),
@@ -1194,7 +1362,6 @@ mod tests {
             relay_target: None,
             relay_token_file: None,
             role: Role::Write,
-            planner_mode: crate::engine::planner::PlannerMode::Structural,
             shutdown_drain: Duration::ZERO,
             storage: StorageConfig::Memory {
                 path: "process-lifecycle".into(),
@@ -1207,8 +1374,7 @@ mod tests {
     async fn file_process_reopens_the_same_catalog_mode() {
         let directory = tempfile::tempdir().unwrap();
         let storage = StorageConfig::File {
-            directory: directory.path().into(),
-            path: "database".into(),
+            path: directory.path().join("database"),
         };
         serve(
             Config {
@@ -1216,7 +1382,7 @@ mod tests {
                 admin_address: None,
                 close_timeout: None,
                 catalog_mode: Some(Mode::Direct),
-                cache_size_mib: DEFAULT_CACHE_SIZE_MIB,
+                slate: SlateOptions::default(),
                 capture_workload_corpus: false,
                 frontend: None,
                 postgres_address: "127.0.0.1:0".into(),
@@ -1229,7 +1395,6 @@ mod tests {
                 relay_target: None,
                 relay_token_file: None,
                 role: Role::Write,
-                planner_mode: crate::engine::planner::PlannerMode::Structural,
                 shutdown_drain: Duration::ZERO,
                 storage: storage.clone(),
             },
@@ -1243,7 +1408,7 @@ mod tests {
                 admin_address: None,
                 close_timeout: None,
                 catalog_mode: None,
-                cache_size_mib: DEFAULT_CACHE_SIZE_MIB,
+                slate: SlateOptions::default(),
                 capture_workload_corpus: false,
                 frontend: None,
                 postgres_address: "127.0.0.1:0".into(),
@@ -1256,7 +1421,6 @@ mod tests {
                 relay_target: None,
                 relay_token_file: None,
                 role: Role::Write,
-                planner_mode: crate::engine::planner::PlannerMode::Structural,
                 shutdown_drain: Duration::ZERO,
                 storage,
             },
@@ -1272,7 +1436,7 @@ mod tests {
             admin_address: None,
             close_timeout: None,
             catalog_mode: None,
-            cache_size_mib: DEFAULT_CACHE_SIZE_MIB,
+            slate: SlateOptions::default(),
             capture_workload_corpus: false,
             frontend: None,
             instance_id: None,
@@ -1285,7 +1449,6 @@ mod tests {
             relay_target: target.map(str::to_owned),
             relay_token_file: token.map(PathBuf::from),
             role: Role::Write,
-            planner_mode: crate::engine::planner::PlannerMode::Structural,
             shutdown_drain: Duration::ZERO,
             storage: StorageConfig::Memory {
                 path: "relay-config".into(),
@@ -1328,9 +1491,9 @@ mod tests {
     #[test]
     fn decoded_cache_capacity_has_a_safe_minimum() {
         let mut config = relay_config(None, None, None);
-        config.cache_size_mib = 15;
+        config.slate.decoded_cache_size_mib = 15;
         assert!(config.validate().is_err());
-        config.cache_size_mib = 16;
+        config.slate.decoded_cache_size_mib = 16;
         assert!(config.validate().is_ok());
     }
 

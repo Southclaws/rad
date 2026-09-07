@@ -425,6 +425,8 @@ fn view_node(node: &Node) -> PlanNodeView {
             index,
             equality_prefix,
             range,
+            descending_prefix,
+            descending_limit,
             access,
             ..
         } => {
@@ -439,6 +441,12 @@ fn view_node(node: &Node) -> PlanNodeView {
             }
             if let Some(range) = range {
                 constraints.push(range_string(range));
+            }
+            if *descending_prefix > 0 {
+                constraints.push(format!("descending prefix {descending_prefix}"));
+            }
+            if let Some(limit) = descending_limit {
+                constraints.push(format!("descending limit {limit}"));
             }
             let constraints = if constraints.is_empty() {
                 String::new()
@@ -753,6 +761,48 @@ fn view_node(node: &Node) -> PlanNodeView {
                 parts.join(", "),
                 Vec::new(),
                 vec![view_node(input)],
+            )
+        }
+        NodeKind::GroupedHashJoinAggregate {
+            fact,
+            dimension,
+            keys,
+            groups,
+            terms,
+            input_rows,
+            dimension_rows,
+            ..
+        } => {
+            let mut parts = vec![format!(
+                "keys={}, inputRows={}, dimensionRows={}",
+                keys.len(),
+                input_rows,
+                dimension_rows
+            )];
+            parts.extend(groups.iter().map(|group| {
+                format!(
+                    "group {}#{}={}",
+                    group.name,
+                    group.slot.0,
+                    print_expression(&group.expression)
+                )
+            }));
+            parts.extend(terms.iter().map(|term| {
+                format!(
+                    "{}#{}={}({})",
+                    term.name,
+                    term.slot.0,
+                    term.function.as_str(),
+                    term.argument
+                        .as_ref()
+                        .map_or_else(|| "*".into(), print_expression)
+                )
+            }));
+            plain(
+                "GroupedHashJoinAggregate",
+                parts.join(", "),
+                Vec::new(),
+                vec![view_node(fact), view_node(dimension)],
             )
         }
     };

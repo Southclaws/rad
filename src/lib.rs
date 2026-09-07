@@ -20,5 +20,5 @@ pub mod telemetry;
 /// Run Rad from its environment configuration until an operating-system
 /// shutdown signal arrives.
 pub async fn run() -> process::Result {
-    process::run().await
+    Box::pin(process::run()).await
 }

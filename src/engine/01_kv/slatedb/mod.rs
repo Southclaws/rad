@@ -4,33 +4,196 @@ use std::time::Duration;
 use ::slatedb as slate_db;
 use async_trait::async_trait;
 use bytes::Bytes;
+use slate_db::config::{ObjectStoreCacheOptions, PreloadLevel, Settings, SstBlockSize};
 use slate_db::db_cache::foyer::{FoyerCache, FoyerCacheOptions};
 use slate_db::db_cache::{DbCache, SplitCache};
+use slate_db::filter_policy::{BloomFilterPolicy, FilterPolicy};
 use slate_db::object_store::{ObjectStore, memory::InMemory};
 use tokio::sync::{Mutex as AsyncMutex, Notify, OnceCell};
 
 use super::{
     Closure, DataPosition, Entry, Error, ErrorKind, IsolationLevel, KeyRange, Kv, KvIterator,
-    Result, Transaction, TransactionalKv,
+    Result, ScanOrder, ScanProfile, ScanRequest, Transaction, TransactionalKv,
 };
 
 mod telemetry;
 mod metric_export;
+mod object_store_telemetry;
 
+pub(crate) use object_store_telemetry::observe_remote_object_store;
 use telemetry::SlateTelemetry;
 
-pub const DEFAULT_CACHE_SIZE_MIB: u64 = 128;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObjectCachePreload {
+    None,
+    L0,
+    All,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Options {
+    pub decoded_cache_size_mib: u64,
+    pub scan_cache_blocks: bool,
+    pub scan_read_ahead_kib: u64,
+    pub scan_max_fetch_tasks: usize,
+    pub flush_interval: Duration,
+    pub l0_sst_size_mib: u64,
+    pub max_wal_flushes_before_l0_flush: u64,
+    pub l0_max_ssts: usize,
+    pub l0_max_ssts_per_key: usize,
+    pub l0_flush_parallelism: usize,
+    pub max_unflushed_mib: u64,
+    pub min_filter_keys: u32,
+    pub bloom_bits_per_key: u32,
+    pub sst_block_size_kib: u32,
+    pub object_cache_path: Option<std::path::PathBuf>,
+    pub object_cache_size_mib: u64,
+    pub object_cache_part_size_kib: u64,
+    pub object_cache_cache_on_flush: bool,
+    pub object_cache_cache_on_compaction: bool,
+    pub object_cache_preload: ObjectCachePreload,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            decoded_cache_size_mib: 128,
+            scan_cache_blocks: false,
+            scan_read_ahead_kib: 256,
+            scan_max_fetch_tasks: 4,
+            flush_interval: Duration::from_millis(100),
+            l0_sst_size_mib: 64,
+            max_wal_flushes_before_l0_flush: 4096,
+            l0_max_ssts: 8,
+            l0_max_ssts_per_key: 8,
+            l0_flush_parallelism: 4,
+            max_unflushed_mib: 1024,
+            min_filter_keys: 1000,
+            bloom_bits_per_key: 10,
+            sst_block_size_kib: 4,
+            object_cache_path: None,
+            object_cache_size_mib: 16 * 1024,
+            object_cache_part_size_kib: 4 * 1024,
+            object_cache_cache_on_flush: false,
+            object_cache_cache_on_compaction: false,
+            object_cache_preload: ObjectCachePreload::None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ScanTuning {
+    cache_blocks: bool,
+    read_ahead_bytes: usize,
+    max_fetch_tasks: usize,
+}
+
+impl Options {
+    fn settings(&self) -> Result<Settings> {
+        Ok(Settings {
+            flush_interval: Some(self.flush_interval),
+            l0_sst_size_bytes: mib_to_usize(self.l0_sst_size_mib)?,
+            max_wal_flushes_before_l0_flush: self.max_wal_flushes_before_l0_flush,
+            l0_max_ssts: self.l0_max_ssts,
+            l0_max_ssts_per_key: self.l0_max_ssts_per_key,
+            l0_flush_parallelism: self.l0_flush_parallelism,
+            max_unflushed_bytes: mib_to_usize(self.max_unflushed_mib)?,
+            min_filter_keys: self.min_filter_keys,
+            object_store_cache_options: self.object_cache_options()?,
+            ..Settings::default()
+        })
+    }
+
+    fn reader_options(&self, poll_interval: Duration) -> Result<slate_db::config::DbReaderOptions> {
+        Ok(slate_db::config::DbReaderOptions {
+            manifest_poll_interval: poll_interval,
+            checkpoint_lifetime: poll_interval
+                .checked_mul(10)
+                .unwrap_or(Duration::from_secs(60))
+                .max(Duration::from_secs(1)),
+            object_store_cache_options: self.object_cache_options()?,
+            ..Default::default()
+        })
+    }
+
+    fn object_cache_options(&self) -> Result<ObjectStoreCacheOptions> {
+        Ok(ObjectStoreCacheOptions {
+            root_folder: self.object_cache_path.clone(),
+            max_cache_size_bytes: Some(mib_to_usize(self.object_cache_size_mib)?),
+            part_size_bytes: kib_to_usize(self.object_cache_part_size_kib)?,
+            cache_on_flush: self.object_cache_cache_on_flush,
+            cache_on_compaction: self.object_cache_cache_on_compaction,
+            preload_disk_cache_on_startup: match self.object_cache_preload {
+                ObjectCachePreload::None => None,
+                ObjectCachePreload::L0 => Some(PreloadLevel::L0Sst),
+                ObjectCachePreload::All => Some(PreloadLevel::AllSst),
+            },
+            ..ObjectStoreCacheOptions::default()
+        })
+    }
+
+    fn filter_policies(&self) -> Vec<Arc<dyn FilterPolicy>> {
+        vec![Arc::new(BloomFilterPolicy::new(self.bloom_bits_per_key))]
+    }
+
+    fn sst_block_size(&self) -> Result<SstBlockSize> {
+        match self.sst_block_size_kib {
+            1 => Ok(SstBlockSize::Block1Kib),
+            2 => Ok(SstBlockSize::Block2Kib),
+            4 => Ok(SstBlockSize::Block4Kib),
+            8 => Ok(SstBlockSize::Block8Kib),
+            16 => Ok(SstBlockSize::Block16Kib),
+            32 => Ok(SstBlockSize::Block32Kib),
+            64 => Ok(SstBlockSize::Block64Kib),
+            value => Err(Error::message(
+                ErrorKind::Invalid,
+                format!("unsupported Slate SST block size: {value} KiB"),
+            )),
+        }
+    }
+
+    fn scan_tuning(&self) -> Result<ScanTuning> {
+        Ok(ScanTuning {
+            cache_blocks: self.scan_cache_blocks,
+            read_ahead_bytes: kib_to_usize(self.scan_read_ahead_kib)?,
+            max_fetch_tasks: self.scan_max_fetch_tasks,
+        })
+    }
+}
+
+fn mib_to_usize(value: u64) -> Result<usize> {
+    value
+        .checked_mul(1024 * 1024)
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .ok_or_else(|| {
+            Error::message(
+                ErrorKind::Invalid,
+                "Slate size exceeds this platform's address range",
+            )
+        })
+}
+
+fn kib_to_usize(value: u64) -> Result<usize> {
+    value
+        .checked_mul(1024)
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .ok_or_else(|| {
+            Error::message(
+                ErrorKind::Invalid,
+                "Slate size exceeds this platform's address range",
+            )
+        })
+}
 
 pub struct Store {
     db: Arc<slate_db::Db>,
     cache: Arc<dyn DbCache>,
     lifecycle: Arc<Lifecycle>,
     telemetry: Arc<SlateTelemetry>,
+    scan_tuning: ScanTuning,
 }
 
 /// A Slate checkpoint reader exposed through Rad's transactional read surface.
-/// Transactions are stable only for the duration of each individual operation;
-/// the engine rejects every effectful program before it opens this view.
 pub struct ReaderStore {
     reader: Arc<ReaderBackend>,
     lifecycle: Arc<Lifecycle>,
@@ -43,6 +206,8 @@ struct ReaderBackend {
     options: slate_db::config::DbReaderOptions,
     telemetry: Arc<SlateTelemetry>,
     cache: Arc<dyn DbCache>,
+    slate_options: Options,
+    scan_tuning: ScanTuning,
     reopen: AsyncMutex<()>,
 }
 
@@ -52,28 +217,23 @@ impl ReaderStore {
         object_store: Arc<dyn ObjectStore>,
         poll_interval: Duration,
     ) -> Result<Self> {
-        Self::open_with_cache_size(path, object_store, poll_interval, DEFAULT_CACHE_SIZE_MIB).await
+        Self::open_with_options(path, object_store, poll_interval, Options::default()).await
     }
 
-    pub async fn open_with_cache_size(
+    pub async fn open_with_options(
         path: impl Into<slate_db::object_store::path::Path> + Send,
         object_store: Arc<dyn ObjectStore>,
         poll_interval: Duration,
-        cache_size_mib: u64,
+        slate_options: Options,
     ) -> Result<Self> {
         let path = path.into();
-        let options = slate_db::config::DbReaderOptions {
-            manifest_poll_interval: poll_interval,
-            checkpoint_lifetime: poll_interval
-                .checked_mul(10)
-                .unwrap_or(Duration::from_secs(60))
-                .max(Duration::from_secs(1)),
-            ..Default::default()
-        };
+        let options = slate_options.reader_options(poll_interval)?;
+        let scan_tuning = slate_options.scan_tuning()?;
         let telemetry = SlateTelemetry::new();
-        let cache = decoded_cache(cache_size_mib);
+        let cache = decoded_cache(slate_options.decoded_cache_size_mib);
         let db = slate_db::DbReader::builder(path.clone(), Arc::clone(&object_store))
             .with_options(options.clone())
+            .with_filter_policies(slate_options.filter_policies())
             .with_metrics_recorder(telemetry.recorder())
             .with_db_cache(Arc::clone(&cache))
             .build()
@@ -87,6 +247,8 @@ impl ReaderStore {
                 options,
                 telemetry,
                 cache,
+                slate_options,
+                scan_tuning,
                 reopen: AsyncMutex::new(()),
             }),
             lifecycle: Arc::new(Lifecycle::default()),
@@ -111,6 +273,7 @@ impl ReaderBackend {
         let replacement = Arc::new(
             slate_db::DbReader::builder(self.path.clone(), Arc::clone(&self.object_store))
                 .with_options(self.options.clone())
+                .with_filter_policies(self.slate_options.filter_policies())
                 .with_metrics_recorder(self.telemetry.recorder())
                 .with_db_cache(Arc::clone(&self.cache))
                 .build()
@@ -134,13 +297,20 @@ impl ReaderBackend {
 
     async fn scan(
         &self,
-        range: KeyRange,
+        request: ScanRequest,
     ) -> std::result::Result<slate_db::DbIterator, slate_db::Error> {
         let reader = self.current();
-        match reader.scan(range.clone()).await {
+        let options = scan_options(&request, self.scan_tuning);
+        match reader
+            .scan_with_options(request.range.clone(), &options)
+            .await
+        {
             Ok(iterator) => Ok(iterator),
             Err(error) if reader_must_reopen(&error) => {
-                self.reopen_after(&reader).await?.scan(range).await
+                self.reopen_after(&reader)
+                    .await?
+                    .scan_with_options(request.range, &options)
+                    .await
             }
             Err(error) => Err(error),
         }
@@ -150,6 +320,21 @@ impl ReaderBackend {
         let _guard = self.reopen.lock().await;
         self.current().close().await?;
         self.cache.close().await
+    }
+}
+
+fn scan_options(request: &ScanRequest, tuning: ScanTuning) -> slate_db::config::ScanOptions {
+    let order = match request.order {
+        ScanOrder::Ascending => slate_db::IterationOrder::Ascending,
+        ScanOrder::Descending => slate_db::IterationOrder::Descending,
+    };
+    let options = slate_db::config::ScanOptions::default().with_order(order);
+    match request.profile {
+        ScanProfile::Latency => options,
+        ScanProfile::Throughput => options
+            .with_read_ahead_bytes(tuning.read_ahead_bytes)
+            .with_max_fetch_tasks(tuning.max_fetch_tasks)
+            .with_cache_blocks(tuning.cache_blocks),
     }
 }
 
@@ -164,17 +349,21 @@ impl Store {
         path: impl Into<slate_db::object_store::path::Path> + Send,
         object_store: Arc<dyn ObjectStore>,
     ) -> Result<Self> {
-        Self::open_with_cache_size(path, object_store, DEFAULT_CACHE_SIZE_MIB).await
+        Self::open_with_options(path, object_store, Options::default()).await
     }
 
-    pub async fn open_with_cache_size(
+    pub async fn open_with_options(
         path: impl Into<slate_db::object_store::path::Path> + Send,
         object_store: Arc<dyn ObjectStore>,
-        cache_size_mib: u64,
+        options: Options,
     ) -> Result<Self> {
         let telemetry = SlateTelemetry::new();
-        let cache = decoded_cache(cache_size_mib);
+        let cache = decoded_cache(options.decoded_cache_size_mib);
+        let scan_tuning = options.scan_tuning()?;
         let db = slate_db::Db::builder(path, object_store)
+            .with_settings(options.settings()?)
+            .with_sst_block_size(options.sst_block_size()?)
+            .with_filter_policies(options.filter_policies())
             .with_metrics_recorder(telemetry.recorder())
             .with_db_cache(Arc::clone(&cache))
             .build()
@@ -185,6 +374,7 @@ impl Store {
             cache,
             lifecycle: Arc::new(Lifecycle::default()),
             telemetry,
+            scan_tuning,
         })
     }
 
@@ -247,8 +437,38 @@ impl Kv for Store {
     }
 
     async fn scan(&self, range: KeyRange) -> Result<Box<dyn KvIterator>> {
+        self.scan_ordered(range, ScanOrder::Ascending).await
+    }
+
+    async fn scan_ordered(&self, range: KeyRange, order: ScanOrder) -> Result<Box<dyn KvIterator>> {
         let lease = self.lifecycle.acquire()?;
-        let iterator = self.db.scan(range).await.map_err(map_operation_error)?;
+        let iterator = self
+            .db
+            .scan_with_options(
+                range.clone(),
+                &scan_options(
+                    &ScanRequest::access_path(range).with_order(order),
+                    self.scan_tuning,
+                ),
+            )
+            .await
+            .map_err(map_operation_error)?;
+        Ok(Box::new(SlateIterator {
+            iterator,
+            _lease: Some(lease),
+        }))
+    }
+
+    async fn scan_requested(&self, request: ScanRequest) -> Result<Box<dyn KvIterator>> {
+        let lease = self.lifecycle.acquire()?;
+        let iterator = self
+            .db
+            .scan_with_options(
+                request.range.clone(),
+                &scan_options(&request, self.scan_tuning),
+            )
+            .await
+            .map_err(map_operation_error)?;
         Ok(Box::new(SlateIterator {
             iterator,
             _lease: Some(lease),
@@ -269,6 +489,7 @@ impl TransactionalKv for Store {
         Ok(Box::new(SlateTransaction {
             transaction,
             begin_position,
+            scan_tuning: self.scan_tuning,
             _lease: lease,
         }))
     }
@@ -315,8 +536,29 @@ impl Kv for ReaderStore {
     }
 
     async fn scan(&self, range: KeyRange) -> Result<Box<dyn KvIterator>> {
+        self.scan_ordered(range, ScanOrder::Ascending).await
+    }
+
+    async fn scan_ordered(&self, range: KeyRange, order: ScanOrder) -> Result<Box<dyn KvIterator>> {
         let lease = self.lifecycle.acquire()?;
-        let iterator = self.reader.scan(range).await.map_err(map_operation_error)?;
+        let iterator = self
+            .reader
+            .scan(ScanRequest::access_path(range).with_order(order))
+            .await
+            .map_err(map_operation_error)?;
+        Ok(Box::new(SlateIterator {
+            iterator,
+            _lease: Some(lease),
+        }))
+    }
+
+    async fn scan_requested(&self, request: ScanRequest) -> Result<Box<dyn KvIterator>> {
+        let lease = self.lifecycle.acquire()?;
+        let iterator = self
+            .reader
+            .scan(request)
+            .await
+            .map_err(map_operation_error)?;
         Ok(Box::new(SlateIterator {
             iterator,
             _lease: Some(lease),
@@ -328,9 +570,11 @@ impl Kv for ReaderStore {
 impl TransactionalKv for ReaderStore {
     async fn begin(&self, _isolation: IsolationLevel) -> Result<Box<dyn Transaction>> {
         let lease = self.lifecycle.acquire()?;
+        let snapshot = ReaderSnapshot::new(self.reader.current(), self.reader.scan_tuning);
+        let begin_position = DataPosition::from_sequence(snapshot.durable_sequence);
         Ok(Box::new(ReaderTransaction {
-            reader: Arc::clone(&self.reader),
-            begin_position: DataPosition::reader(),
+            snapshot,
+            begin_position,
             _lease: lease,
         }))
     }
@@ -384,13 +628,63 @@ impl slate_db::ByteRangeBounds for KeyRange {
 struct SlateTransaction {
     transaction: slate_db::DbTransaction,
     begin_position: DataPosition,
+    scan_tuning: ScanTuning,
     _lease: Lease,
 }
 
 struct ReaderTransaction {
-    reader: Arc<ReaderBackend>,
+    snapshot: ReaderSnapshot,
     begin_position: DataPosition,
     _lease: Lease,
+}
+
+#[derive(Clone)]
+struct ReaderSnapshot {
+    reader: Arc<slate_db::DbReader>,
+    durable_sequence: u64,
+    scan_tuning: ScanTuning,
+}
+
+impl ReaderSnapshot {
+    fn new(reader: Arc<slate_db::DbReader>, scan_tuning: ScanTuning) -> Self {
+        let durable_sequence = reader.status().durable_seq;
+        Self {
+            reader,
+            durable_sequence,
+            scan_tuning,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.reader.status().durable_seq == self.durable_sequence {
+            Ok(())
+        } else {
+            Err(Error::message(
+                ErrorKind::Conflict,
+                "reader snapshot changed during the transaction",
+            ))
+        }
+    }
+
+    async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
+        self.validate()?;
+        let result = self.reader.get(key).await;
+        self.validate()?;
+        result.map_err(map_operation_error)
+    }
+
+    async fn scan(&self, request: &ScanRequest) -> Result<slate_db::DbIterator> {
+        self.validate()?;
+        let result = self
+            .reader
+            .scan_with_options(
+                request.range.clone(),
+                &scan_options(request, self.scan_tuning),
+            )
+            .await;
+        self.validate()?;
+        result.map_err(map_operation_error)
+    }
 }
 
 #[async_trait]
@@ -399,14 +693,8 @@ impl Transaction for ReaderTransaction {
         &self.begin_position
     }
 
-    fn scan_position(&self) -> Option<&DataPosition> {
-        // A reader can refresh between operations. Its begin position does not
-        // identify the state that builds this scan.
-        None
-    }
-
     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        self.reader.get(key).await.map_err(map_operation_error)
+        self.snapshot.get(key).await
     }
 
     fn put(&self, _key: Bytes, _value: Bytes) -> Result<()> {
@@ -422,7 +710,27 @@ impl Transaction for ReaderTransaction {
     }
 
     async fn scan<'a>(&'a self, range: KeyRange) -> Result<Box<dyn KvIterator + 'a>> {
-        let iterator = self.reader.scan(range).await.map_err(map_operation_error)?;
+        self.scan_ordered(range, ScanOrder::Ascending).await
+    }
+
+    async fn scan_ordered<'a>(
+        &'a self,
+        range: KeyRange,
+        order: ScanOrder,
+    ) -> Result<Box<dyn KvIterator + 'a>> {
+        let request = ScanRequest::access_path(range).with_order(order);
+        let iterator = self.snapshot.scan(&request).await?;
+        Ok(Box::new(SlateIterator {
+            iterator,
+            _lease: None,
+        }))
+    }
+
+    async fn scan_requested<'a>(
+        &'a self,
+        request: ScanRequest,
+    ) -> Result<Box<dyn KvIterator + 'a>> {
+        let iterator = self.snapshot.scan(&request).await?;
         Ok(Box::new(SlateIterator {
             iterator,
             _lease: None,
@@ -441,6 +749,7 @@ impl SlateTransaction {
         let Self {
             transaction,
             begin_position: _,
+            scan_tuning: _,
             _lease: lease,
         } = self;
         (transaction, lease)
@@ -474,9 +783,41 @@ impl Transaction for SlateTransaction {
     }
 
     async fn scan<'a>(&'a self, range: KeyRange) -> Result<Box<dyn KvIterator + 'a>> {
+        self.scan_ordered(range, ScanOrder::Ascending).await
+    }
+
+    async fn scan_ordered<'a>(
+        &'a self,
+        range: KeyRange,
+        order: ScanOrder,
+    ) -> Result<Box<dyn KvIterator + 'a>> {
         let iterator = self
             .transaction
-            .scan(range)
+            .scan_with_options(
+                range.clone(),
+                &scan_options(
+                    &ScanRequest::access_path(range).with_order(order),
+                    self.scan_tuning,
+                ),
+            )
+            .await
+            .map_err(map_operation_error)?;
+        Ok(Box::new(SlateIterator {
+            iterator,
+            _lease: None,
+        }))
+    }
+
+    async fn scan_requested<'a>(
+        &'a self,
+        request: ScanRequest,
+    ) -> Result<Box<dyn KvIterator + 'a>> {
+        let iterator = self
+            .transaction
+            .scan_with_options(
+                request.range.clone(),
+                &scan_options(&request, self.scan_tuning),
+            )
             .await
             .map_err(map_operation_error)?;
         Ok(Box::new(SlateIterator {
@@ -518,9 +859,8 @@ impl KvIterator for SlateIterator {
     }
 
     async fn next(&mut self) -> Result<Option<Entry>> {
-        self.iterator
-            .next()
-            .await
+        let result = self.iterator.next().await;
+        result
             .map(|entry| {
                 entry.map(|entry| Entry {
                     key: entry.key,
@@ -528,6 +868,21 @@ impl KvIterator for SlateIterator {
                 })
             })
             .map_err(map_operation_error)
+    }
+
+    async fn next_batch(&mut self, limit: usize, output: &mut Vec<Entry>) -> Result<()> {
+        let target = output.len().saturating_add(limit);
+        while output.len() < target {
+            let entry = self.iterator.next().await.map_err(map_operation_error)?;
+            let Some(entry) = entry else {
+                break;
+            };
+            output.push(Entry {
+                key: entry.key,
+                value: entry.value,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -851,6 +1206,82 @@ mod tests {
         store.close().await
     }
 
+    #[test]
+    fn scan_profiles_select_bounded_storage_work() -> Result<()> {
+        let tuning = Options::default().scan_tuning()?;
+        let latency = scan_options(&ScanRequest::access_path(KeyRange::all()), tuning);
+        assert_eq!(latency.read_ahead_bytes, 1);
+        assert_eq!(latency.max_fetch_tasks, 1);
+        assert!(!latency.cache_blocks);
+
+        let throughput = scan_options(
+            &ScanRequest::access_path(KeyRange::all()).with_profile(ScanProfile::Throughput),
+            tuning,
+        );
+        assert_eq!(throughput.read_ahead_bytes, 256 * 1024);
+        assert_eq!(throughput.max_fetch_tasks, 4);
+        assert!(!throughput.cache_blocks);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn descending_scans_are_ordered_and_half_open() -> Result<()> {
+        let store = Store::memory("descending-scan-order").await?;
+        for key in [b"a", b"b", b"c", b"d"] {
+            store
+                .put(Bytes::copy_from_slice(key), Bytes::copy_from_slice(key))
+                .await?;
+        }
+        let entries = collect(
+            store
+                .scan_ordered(
+                    KeyRange::new(Bytes::from_static(b"b"), Bytes::from_static(b"d")),
+                    ScanOrder::Descending,
+                )
+                .await?,
+        )
+        .await?;
+        assert_eq!(
+            entries
+                .into_iter()
+                .map(|entry| entry.key)
+                .collect::<Vec<_>>(),
+            vec![Bytes::from_static(b"c"), Bytes::from_static(b"b")]
+        );
+        store.close().await
+    }
+
+    #[tokio::test]
+    async fn descending_transaction_scan_includes_buffered_writes() -> Result<()> {
+        let store = Store::memory("descending-transaction-scan").await?;
+        for key in [b"a", b"b", b"c", b"d"] {
+            store
+                .put(Bytes::copy_from_slice(key), Bytes::copy_from_slice(key))
+                .await?;
+        }
+        let transaction = store.begin(IsolationLevel::Snapshot).await?;
+        transaction.delete(b"c")?;
+        transaction.put(Bytes::from_static(b"bb"), Bytes::from_static(b"bb"))?;
+        let entries = collect(
+            transaction
+                .scan_ordered(
+                    KeyRange::new(Bytes::from_static(b"b"), Bytes::from_static(b"d")),
+                    ScanOrder::Descending,
+                )
+                .await?,
+        )
+        .await?;
+        assert_eq!(
+            entries
+                .into_iter()
+                .map(|entry| entry.key)
+                .collect::<Vec<_>>(),
+            vec![Bytes::from_static(b"bb"), Bytes::from_static(b"b")]
+        );
+        transaction.rollback();
+        store.close().await
+    }
+
     #[tokio::test]
     async fn scan_seek_moves_only_forward_inside_the_original_range() -> Result<()> {
         let store = Store::memory("scan-forward-seek").await?;
@@ -1098,11 +1529,12 @@ mod tests {
             transaction.untrack_write(b"key").unwrap_err().kind(),
             ErrorKind::ReadOnly
         );
+        let position = transaction.begin_position().clone();
         {
             let scan = transaction
                 .scan_with_request(crate::engine::kv::ScanRequest::access_path(KeyRange::all()))
                 .await?;
-            assert_eq!(scan.descriptor.position, None);
+            assert_eq!(scan.descriptor.position, Some(position));
         }
         transaction.rollback();
 
@@ -1115,6 +1547,239 @@ mod tests {
         let error = checkpoint_client.get(b"key").await.unwrap_err();
         assert!(matches!(error.kind(), slate_db::ErrorKind::Closed(_)));
         writer.close().await
+    }
+
+    #[tokio::test]
+    async fn reader_transaction_rejects_a_refresh_between_index_and_base_reads() -> Result<()> {
+        let objects: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let writer = Store::open("reader-stable-view", Arc::clone(&objects)).await?;
+        let initial = writer.begin(IsolationLevel::SerializableSnapshot).await?;
+        initial.put(
+            Bytes::from_static(b"index/active/a"),
+            Bytes::from_static(b"row/a"),
+        )?;
+        initial.put(Bytes::from_static(b"row/a"), Bytes::from_static(b"value-a"))?;
+        initial.commit().await?;
+
+        let reader =
+            ReaderStore::open("reader-stable-view", objects, Duration::from_millis(10)).await?;
+        wait_for_reader_value(&reader, b"row/a", Some(b"value-a")).await?;
+
+        let transaction = reader.begin(IsolationLevel::Snapshot).await?;
+        let mut index = transaction
+            .scan(KeyRange::new(
+                Bytes::from_static(b"index/active/"),
+                Bytes::from_static(b"index/active0"),
+            ))
+            .await?;
+        let entry = index.next().await?.expect("reader did not see index entry");
+        assert_eq!(entry.value, Bytes::from_static(b"row/a"));
+        drop(index);
+
+        let replacement = writer.begin(IsolationLevel::SerializableSnapshot).await?;
+        replacement.delete(b"index/active/a")?;
+        replacement.delete(b"row/a")?;
+        replacement.put(
+            Bytes::from_static(b"index/active/b"),
+            Bytes::from_static(b"row/b"),
+        )?;
+        replacement.put(Bytes::from_static(b"row/b"), Bytes::from_static(b"value-b"))?;
+        replacement.commit().await?;
+        wait_for_reader_value(&reader, b"row/a", None).await?;
+
+        assert_eq!(
+            transaction.get(&entry.value).await.unwrap_err().kind(),
+            ErrorKind::Conflict
+        );
+        transaction.rollback();
+        reader.close().await?;
+        writer.close().await
+    }
+
+    #[tokio::test]
+    async fn concurrent_reader_transactions_return_rows_or_snapshot_conflicts() -> Result<()> {
+        let objects: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let writer = Arc::new(Store::open("reader-concurrent-view", Arc::clone(&objects)).await?);
+        let initial = writer.begin(IsolationLevel::SerializableSnapshot).await?;
+        initial.put(
+            Bytes::from_static(b"index/active/item"),
+            Bytes::from_static(b"row/0000"),
+        )?;
+        initial.put(
+            Bytes::from_static(b"row/0000"),
+            Bytes::from_static(b"row/0000"),
+        )?;
+        initial.commit().await?;
+
+        let reader = Arc::new(
+            ReaderStore::open("reader-concurrent-view", objects, Duration::from_millis(1)).await?,
+        );
+        wait_for_reader_value(&reader, b"row/0000", Some(b"row/0000")).await?;
+
+        let writer_task = {
+            let writer = Arc::clone(&writer);
+            tokio::spawn(async move {
+                for version in 1..=128_u16 {
+                    let old_row = Bytes::from(format!("row/{:04}", version - 1));
+                    let new_row = Bytes::from(format!("row/{version:04}"));
+                    let transaction = writer.begin(IsolationLevel::SerializableSnapshot).await?;
+                    transaction.delete(b"index/active/item")?;
+                    transaction.delete(&old_row)?;
+                    transaction.put(Bytes::from_static(b"index/active/item"), new_row.clone())?;
+                    transaction.put(new_row.clone(), new_row)?;
+                    transaction.commit().await?;
+                    tokio::task::yield_now().await;
+                }
+                Result::<()>::Ok(())
+            })
+        };
+        let mut reader_tasks = Vec::new();
+        for _ in 0..8 {
+            let reader = Arc::clone(&reader);
+            reader_tasks.push(tokio::spawn(async move {
+                for _ in 0..64 {
+                    let transaction = reader.begin(IsolationLevel::Snapshot).await?;
+                    let mut index = match transaction
+                        .scan(KeyRange::new(
+                            Bytes::from_static(b"index/active/"),
+                            Bytes::from_static(b"index/active0"),
+                        ))
+                        .await
+                    {
+                        Ok(index) => index,
+                        Err(error) if error.kind() == ErrorKind::Conflict => continue,
+                        Err(error) => return Err(error),
+                    };
+                    let entry = match index.next().await {
+                        Ok(Some(entry)) => entry,
+                        Ok(None) => panic!("active index entry is missing"),
+                        Err(error) if error.kind() == ErrorKind::Conflict => continue,
+                        Err(error) => return Err(error),
+                    };
+                    drop(index);
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                    match transaction.get(&entry.value).await {
+                        Ok(value) => assert_eq!(value, Some(entry.value)),
+                        Err(error) if error.kind() == ErrorKind::Conflict => {}
+                        Err(error) => return Err(error),
+                    }
+                    transaction.rollback();
+                }
+                Result::<()>::Ok(())
+            }));
+        }
+
+        writer_task.await.expect("writer task panicked")?;
+        for task in reader_tasks {
+            task.await.expect("reader task panicked")?;
+        }
+        reader.close().await?;
+        writer.close().await
+    }
+
+    #[tokio::test]
+    async fn reader_transaction_rejects_a_refresh_after_a_flush() -> Result<()> {
+        use slate_db::config::{FlushOptions, FlushType};
+
+        let objects: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let writer = Store::open("reader-checkpoint-view", Arc::clone(&objects)).await?;
+        writer
+            .put(Bytes::from_static(b"row/old"), Bytes::from_static(b"old"))
+            .await?;
+        writer
+            .db
+            .flush_with_options(FlushOptions {
+                flush_type: FlushType::MemTable,
+            })
+            .await
+            .map_err(map_operation_error)?;
+        let reader = ReaderStore::open(
+            "reader-checkpoint-view",
+            Arc::clone(&objects),
+            Duration::from_millis(10),
+        )
+        .await?;
+        wait_for_reader_value(&reader, b"row/old", Some(b"old")).await?;
+
+        let snapshot = reader.begin(IsolationLevel::Snapshot).await?;
+        let replacement = writer.begin(IsolationLevel::SerializableSnapshot).await?;
+        replacement.delete(b"row/old")?;
+        replacement.put(Bytes::from_static(b"row/new"), Bytes::from_static(b"new"))?;
+        replacement.commit().await?;
+        writer
+            .db
+            .flush_with_options(FlushOptions {
+                flush_type: FlushType::MemTable,
+            })
+            .await
+            .map_err(map_operation_error)?;
+        wait_for_reader_value(&reader, b"row/old", None).await?;
+        assert_eq!(
+            snapshot.get(b"row/old").await.unwrap_err().kind(),
+            ErrorKind::Conflict
+        );
+        snapshot.rollback();
+        reader.close().await?;
+        writer.close().await
+    }
+
+    #[tokio::test]
+    async fn reader_scan_keeps_its_open_snapshot_across_a_refresh() -> Result<()> {
+        let objects: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let writer = Store::open("reader-open-scan", Arc::clone(&objects)).await?;
+        let initial = writer.begin(IsolationLevel::SerializableSnapshot).await?;
+        initial.put(Bytes::from_static(b"row/a"), Bytes::from_static(b"old-a"))?;
+        initial.put(Bytes::from_static(b"row/b"), Bytes::from_static(b"old-b"))?;
+        initial.commit().await?;
+
+        let reader =
+            ReaderStore::open("reader-open-scan", objects, Duration::from_millis(10)).await?;
+        wait_for_reader_value(&reader, b"row/a", Some(b"old-a")).await?;
+
+        let transaction = reader.begin(IsolationLevel::Snapshot).await?;
+        let mut scan = transaction
+            .scan(KeyRange::new(
+                Bytes::from_static(b"row/"),
+                Bytes::from_static(b"row0"),
+            ))
+            .await?;
+        let first = scan.next().await?.expect("first row is missing");
+        assert_eq!(first.value, Bytes::from_static(b"old-a"));
+
+        let replacement = writer.begin(IsolationLevel::SerializableSnapshot).await?;
+        replacement.put(Bytes::from_static(b"row/b"), Bytes::from_static(b"new-b"))?;
+        replacement.commit().await?;
+        wait_for_reader_value(&reader, b"row/b", Some(b"new-b")).await?;
+
+        let second = scan.next().await?.expect("second row is missing");
+        assert_eq!(second.value, Bytes::from_static(b"old-b"));
+        assert!(scan.next().await?.is_none());
+        drop(scan);
+        assert_eq!(
+            transaction.get(b"row/b").await.unwrap_err().kind(),
+            ErrorKind::Conflict
+        );
+        transaction.rollback();
+        reader.close().await?;
+        writer.close().await
+    }
+
+    async fn wait_for_reader_value(
+        reader: &ReaderStore,
+        key: &[u8],
+        expected: Option<&'static [u8]>,
+    ) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let observed = reader.get(key).await?;
+                if observed.as_deref() == expected {
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| Error::message(ErrorKind::Unavailable, "reader did not refresh"))?
     }
 
     #[tokio::test]

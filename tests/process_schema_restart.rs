@@ -240,8 +240,7 @@ impl Process {
             .arg("serve")
             .env("RAD_ADDR", address)
             .env("RAD_STORAGE", "file")
-            .env("RAD_DATA_DIR", directory)
-            .env("RAD_STORAGE_PATH", "database")
+            .env("RAD_STORAGE_PATH", directory.join("database"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());

@@ -7,7 +7,7 @@ RUN apt-get update \
 COPY rad /usr/local/bin/rad
 COPY BUILD.json /usr/share/rad/BUILD.json
 
-ENV RAD_STORAGE=file RAD_DATA_DIR=/data
+ENV RAD_STORAGE=file RAD_STORAGE_PATH=/data/rad
 VOLUME /data
 EXPOSE 7237 7238
 ENTRYPOINT ["rad"]

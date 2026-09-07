@@ -103,10 +103,11 @@ these components as `foreground` or `background`.
 (WAL flush bytes + L0 flush bytes + compacted bytes) / memory-table write bytes
 ```
 
-Rad enables a Slate Foyer decoded cache by default. `--cache-size-mib` or
-`RAD_CACHE_SIZE_MIB` sets its total capacity. The default is 128 MiB. Rad uses
-80 percent for decoded data blocks and 20 percent for metadata. A value below
-16 MiB is invalid.
+Rad enables a Slate Foyer decoded cache by default.
+`--slate-decoded-cache-size-mib` or
+`RAD_SLATE_DECODED_CACHE_SIZE_MIB` sets its total capacity. The default is 128
+MiB. Rad uses 80 percent for decoded data blocks and 20 percent for metadata. A
+value below 16 MiB is invalid.
 
 The metric attributes use bounded operational values. They do not include
 request identifiers, client addresses, program fingerprints, raw paths, or

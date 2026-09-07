@@ -130,6 +130,24 @@ fn required_slots(plan: &Plan) -> SlotSet {
                 }
             }
         }
+        NodeKind::GroupedHashJoinAggregate {
+            keys,
+            groups,
+            terms,
+            ..
+        } => {
+            for key in keys {
+                required = required.union(&SlotSet::new([key.left.slot, key.right.slot]));
+            }
+            for group in groups {
+                add_expr(&mut required, &group.expression);
+            }
+            for term in terms {
+                if let Some(argument) = &term.argument {
+                    add_expr(&mut required, argument);
+                }
+            }
+        }
         _ => {}
     });
     required
@@ -228,6 +246,32 @@ mod tests {
         let NodeKind::Aggregate { input, .. } = &plan.root.kind else {
             panic!("expected aggregate")
         };
+        let NodeKind::TableScan { decode_columns, .. } = &input.kind else {
+            panic!("expected table scan")
+        };
+        assert!(decode_columns.is_empty());
+    }
+
+    #[test]
+    fn count_non_null_slot_does_not_decode_the_slot() {
+        let input = scan();
+        let aggregate = bound::Relation::aggregate(
+            input.clone(),
+            Vec::new(),
+            vec![BoundAggregateTerm {
+                function: AggregateFunction::Count,
+                argument: Some(column(&input, "id")),
+                name: "count".into(),
+                slot: SlotId(3),
+                value_type: Type::scalar(Kind::Int64, false),
+            }],
+        );
+        let plan = plan_query(&query(aggregate, 4), PlanOptions::default());
+
+        let NodeKind::Aggregate { input, terms, .. } = &plan.root.kind else {
+            panic!("expected aggregate")
+        };
+        assert!(terms[0].argument.is_none());
         let NodeKind::TableScan { decode_columns, .. } = &input.kind else {
             panic!("expected table scan")
         };

@@ -4,7 +4,7 @@ description: "The ordered key-value and transaction contract beneath Rad's relat
 ---
 
 The KV layer is Rad's storage boundary. The catalog, planner, and executor
-depend on this contract rather than SlateDB directly.
+depend on this contract rather than a storage backend directly.
 
 The layer deals in byte keys, byte values, ordered ranges, and optimistic
 transactions. It knows nothing about tables or rows. Higher layers create that
@@ -14,12 +14,12 @@ meaning through key layouts and typed encodings.
 
 The storage vocabulary has four operations:
 
-| Operation | Contract |
-| --- | --- |
-| Point read | Return one value or an explicit missing result |
-| Write | Replace the value at one key |
-| Delete | Remove one key; deleting a missing key succeeds |
-| Scan | Visit a half-open key range in ascending lexicographic byte order |
+| Operation  | Contract                                                                        |
+| ---------- | ------------------------------------------------------------------------------- |
+| Point read | Return one value or an explicit missing result                                  |
+| Write      | Replace the value at one key                                                    |
+| Delete     | Remove one key; deleting a missing key succeeds                                 |
+| Scan       | Visit a half-open key range in ascending or descending lexicographic byte order |
 
 An omitted scan bound is unbounded. Prefix scans use the smallest possible end
 key after every key beginning with that prefix. This makes a prefix range fit
@@ -37,10 +37,10 @@ to the same transaction. Upper layers take a new scan after such writes.
 Transactions read a stable snapshot overlaid with their own buffered writes.
 Commit publishes every buffered write atomically. Rollback discards them.
 
-| Isolation level | Conflict detection | Intended use |
-| --- | --- | --- |
-| `Snapshot` | Write-write conflicts | Read-only execution and cases where write skew is acceptable |
-| `SerializableSnapshot` | Write-write and read-write conflicts, including requested scan ranges | Mutations, catalog changes, and PIR programs with effects |
+| Isolation level        | Conflict detection                                                    | Intended use                                                 |
+| ---------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `Snapshot`             | Write-write conflicts                                                 | Read-only execution and cases where write skew is acceptable |
+| `SerializableSnapshot` | Write-write and read-write conflicts, including requested scan ranges | Mutations, catalog changes, and PIR programs with effects    |
 
 Serializable range reads protect their requested bounds, even when the scan
 returns no keys. A concurrent insert into that range conflicts at commit. Rad
@@ -54,12 +54,12 @@ the start. The KV layer does not replay the transaction itself.
 An opaque data position identifies the backend state at which a transaction's
 snapshot began.
 
-The SlateDB adapter encodes its sequence number as decimal text, but that is an
-adapter detail. Higher layers may persist and compare token identity. They must
-not parse, order, increment, or manufacture a position.
+The SlateDB adapter encodes sequence numbers as decimal text, but this is an
+adapter detail. Higher layers may persist and compare token
+identity. They must not parse, order, increment, or manufacture a position.
 
 The current API cannot begin a transaction at an old position, reopen a
-historical snapshot, or tell SlateDB to retain and later release one. Schema
+historical snapshot, or tell a backend to retain and later release one. Schema
 transitions record positions as provenance and barriers; workers do not use
 them as read-at-position handles.
 
@@ -77,7 +77,14 @@ and rolls back after producing its result. A program containing any data or
 catalog effect uses `SerializableSnapshot` and commits the complete program.
 
 Catalog dependency admission happens inside the execution transaction. The
-admitted fence reads remain part of SlateDB's conflict set through commit.
+admitted fence reads remain part of the backend conflict set through commit.
+
+## Object storage selection
+
+Slate can use memory, file, or S3 object storage. `RAD_STORAGE` selects the
+implementation. `RAD_STORAGE_PATH` sets the local database directory or the
+object prefix. One write process owns the database. Additional read processes
+can follow published checkpoints.
 
 ## SlateDB adapter
 
@@ -93,19 +100,41 @@ Rad opens one SlateDB writer process per database. The adapter supports file
 and memory object-store URLs; tests exercise SlateDB itself on `memory:///`
 rather than a separate fake backend.
 
+## Slate tuning
+
+Rad uses a 128 MiB Foyer cache for decoded blocks and metadata. It does not add
+throughput scan blocks to this cache by default. This protects point-read cache
+entries from large scans. A throughput scan reads ahead by 256 KiB and uses at
+most four fetch tasks.
+
+The local raw object cache is disabled until
+`--slate-object-cache-path` is set. The cache has a 16 GiB capacity and 4 MiB
+parts after it is enabled. Flush, compaction, and startup preload do not fill it
+by default. Use the `slate-object-cache-*` options to change this policy.
+
+The remaining `slate-*` options control WAL flush frequency, L0 SST creation
+and backpressure, Bloom filters, and SST block size. The command reference
+states each default. Use these controls only when workload and Slate metrics
+show a specific cache, read, or write limit.
+
+See the Slate documentation for [cache
+design](https://slatedb.io/docs/design/caching/), [Foyer cache
+operation](https://slatedb.io/docs/operations/foyer-cache/), and [storage
+tuning](https://slatedb.io/docs/operations/tuning/).
+
 ## Ordered encoding
 
 The key encoding makes semantic values sort correctly as bytes. Encodings are
 tagged and self-delimiting, so several values can be concatenated into a tuple
 without separators.
 
-| Type | Ordering detail |
-| --- | --- |
-| `NULL` | Sorts before every non-null tagged value |
-| `bool` | Tagged deterministic order |
-| `int64` | Sign bit transformed, then big-endian |
+| Type      | Ordering detail                                            |
+| --------- | ---------------------------------------------------------- |
+| `NULL`    | Sorts before every non-null tagged value                   |
+| `bool`    | Tagged deterministic order                                 |
+| `int64`   | Sign bit transformed, then big-endian                      |
 | `float64` | Bit transform preserving numeric order; callers reject NaN |
-| `text` | NUL escaped and terminated while preserving byte order |
+| `text`    | NUL escaped and terminated while preserving byte order     |
 
 Tags make mixed types deterministic, not numerically interchangeable. Every
 stored column position must use one consistent type.

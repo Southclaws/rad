@@ -5,7 +5,7 @@ mod commands;
 mod doctor;
 // OpenCLI owns this module, so generated style does not participate in Rad's
 // hand-written code hygiene gate.
-#[allow(warnings, unused_qualifications)]
+#[allow(warnings, unused_qualifications, clippy::struct_excessive_bools)]
 pub mod generated;
 mod init;
 mod output;
@@ -86,22 +86,28 @@ mod tests {
             "postgres",
             "--postgres-addr",
             "127.0.0.1:15432",
-            "--planner-mode",
-            "cost",
         ])
         .unwrap();
         let RootCommand::Serve(serve) = cli.command else {
             panic!("expected serve command");
         };
         assert_eq!(serve.storage, ServeStorage::Memory);
+        assert_eq!(serve.role, None);
         assert_eq!(serve.frontend, Some(ServeFrontend::Postgres));
-        assert_eq!(serve.planner_mode, ServePlannerMode::Cost);
         assert_eq!(serve.postgres_addr, "127.0.0.1:15432");
         assert_eq!(serve.log_level, ServeLogLevel::Info);
         assert_eq!(serve.log_format, ServeLogFormat::Text);
         assert!(!serve.log_programs);
         assert_eq!(serve.diagnostics, ServeDiagnostics::Summary);
         assert_eq!(serve.otel_endpoint, None);
+        assert_eq!(serve.slate_decoded_cache_size_mib, 128);
+        assert!(!serve.slate_scan_cache_blocks);
+        assert_eq!(serve.slate_scan_read_ahead_kib, 256);
+        assert_eq!(serve.slate_scan_max_fetch_tasks, 4);
+        assert_eq!(
+            serve.slate_object_cache_preload,
+            ServeSlateObjectCachePreload::None
+        );
     }
 
     #[test]

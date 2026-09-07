@@ -1,7 +1,5 @@
 //! Canonical row bodies and order-preserving key tuples.
 
-use std::collections::{HashMap, HashSet};
-
 use crate::engine::catalog::identity::ColumnId;
 use crate::engine::catalog::model::{
     Column, ColumnConversion, DefaultValue, Index, ScalarType, Table,
@@ -284,79 +282,215 @@ pub fn unmarshal_row(table: &Table, raw: &[u8]) -> Result<Row> {
 }
 
 pub fn unmarshal_row_columns(table: &Table, columns: &[Column], raw: &[u8]) -> Result<Row> {
-    if raw.first() != Some(&ROW_CANARY) {
-        return Err(corrupt("codec: value is not a Rad row (bad canary)"));
-    }
-    let live: HashSet<_> = table.columns.iter().map(|column| &column.id).collect();
-    let mut requested = HashMap::new();
-    for (index, column) in columns.iter().enumerate() {
-        if !live.contains(&column.id) {
-            return Err(corrupt(format!(
-                "codec: column {:?} does not belong to table {:?}",
-                column.name, table.name
-            )));
-        }
-        let id = physical_id(column)?;
-        if requested.insert(id, index).is_some() {
-            return Err(corrupt(format!(
-                "codec: column {:?} requested twice",
-                column.name
-            )));
-        }
+    let values = RowDecoder::new(table, columns)?.decode(raw)?;
+    Ok(columns
+        .iter()
+        .zip(values)
+        .map(|(column, value)| (column.name.clone(), value))
+        .collect())
+}
+
+#[derive(Clone)]
+pub(super) struct RowDecoder {
+    columns: Vec<Column>,
+    requested: Vec<(u64, usize)>,
+}
+
+pub(super) type DecodedRow = smallvec::SmallVec<[Value; 4]>;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum DecodedValueRef<'a> {
+    Text(&'a str),
+    Int64(i64),
+    Float64(f64),
+    Bool(bool),
+    Null(ScalarType),
+}
+
+impl DecodedValueRef<'_> {
+    pub(super) fn is_null(self) -> bool {
+        matches!(self, Self::Null(_))
     }
 
-    let mut position = 1;
-    let count = read_uvarint(raw, &mut position)?;
-    validate_field_count(count, raw.len() - position)?;
-    let mut values = vec![None; columns.len()];
-    let mut previous = 0_u64;
-    for _ in 0..count {
-        let header = read_uvarint(raw, &mut position)?;
-        let delta = header >> 1;
-        let id = previous
-            .checked_add(delta)
-            .filter(|_| delta != 0)
-            .filter(|id| *id <= MAX_PHYSICAL_COLUMN_ID)
-            .ok_or_else(|| corrupt("codec: duplicate, non-ascending, or overflowing column ID"))?;
-        previous = id;
-        if header & 1 == 1 {
-            if let Some(index) = requested.get(&id) {
-                values[*index] = Some(Value::Null(columns[*index].scalar_type));
+    pub(super) fn to_value(self) -> Value {
+        match self {
+            Self::Text(value) => Value::Text(value.to_owned()),
+            Self::Int64(value) => Value::Int64(value),
+            Self::Float64(value) => Value::Float64(value),
+            Self::Bool(value) => Value::Bool(value),
+            Self::Null(value_type) => Value::Null(value_type),
+        }
+    }
+}
+
+pub(super) type DecodedRowRef<'a> = smallvec::SmallVec<[DecodedValueRef<'a>; 4]>;
+
+impl RowDecoder {
+    pub(super) fn new(table: &Table, columns: &[Column]) -> Result<Self> {
+        let mut requested = Vec::with_capacity(columns.len());
+        for (index, column) in columns.iter().enumerate() {
+            if !table
+                .columns
+                .iter()
+                .any(|candidate| candidate.id == column.id)
+            {
+                return Err(corrupt(format!(
+                    "codec: column {:?} does not belong to table {:?}",
+                    column.name, table.name
+                )));
             }
-            continue;
+            requested.push((physical_id(column)?, index));
         }
-        let length = usize::try_from(read_uvarint(raw, &mut position)?)
-            .map_err(|_| corrupt("codec: payload length overflows usize"))?;
-        let end = position
-            .checked_add(length)
-            .filter(|end| *end <= raw.len())
-            .ok_or_else(|| corrupt(format!("codec: truncated payload for column ID {id}")))?;
-        if let Some(index) = requested.get(&id) {
-            values[*index] = Some(decode_payload(
-                columns[*index].scalar_type,
-                &raw[position..end],
-            )?);
+        requested.sort_unstable_by_key(|(id, _)| *id);
+        if requested
+            .windows(2)
+            .any(|columns| columns[0].0 == columns[1].0)
+        {
+            return Err(corrupt("codec: column requested twice"));
         }
-        position = end;
-    }
-    if position != raw.len() {
-        return Err(corrupt(format!(
-            "codec: {} trailing bytes after {count} fields",
-            raw.len() - position
-        )));
-    }
-    columns
-        .iter()
-        .enumerate()
-        .map(|(index, column)| {
-            Ok((
-                column.name.clone(),
-                values[index]
-                    .clone()
-                    .map_or_else(|| decode_missing_value(column), Ok)?,
-            ))
+        Ok(Self {
+            columns: columns.to_vec(),
+            requested,
         })
-        .collect()
+    }
+
+    pub(super) fn decode(&self, raw: &[u8]) -> Result<DecodedRow> {
+        if raw.first() != Some(&ROW_CANARY) {
+            return Err(corrupt("codec: value is not a Rad row (bad canary)"));
+        }
+        let mut position = 1;
+        let count = read_uvarint(raw, &mut position)?;
+        validate_field_count(count, raw.len() - position)?;
+        let mut values = smallvec::SmallVec::<[Option<Value>; 4]>::new();
+        values.resize_with(self.columns.len(), || None);
+        let mut previous = 0_u64;
+        let mut requested_position = 0;
+        for _ in 0..count {
+            let header = read_uvarint(raw, &mut position)?;
+            let delta = header >> 1;
+            let id = previous
+                .checked_add(delta)
+                .filter(|_| delta != 0)
+                .filter(|id| *id <= MAX_PHYSICAL_COLUMN_ID)
+                .ok_or_else(|| {
+                    corrupt("codec: duplicate, non-ascending, or overflowing column ID")
+                })?;
+            previous = id;
+            while self
+                .requested
+                .get(requested_position)
+                .is_some_and(|(requested, _)| *requested < id)
+            {
+                requested_position += 1;
+            }
+            let requested = self
+                .requested
+                .get(requested_position)
+                .filter(|(requested, _)| *requested == id)
+                .map(|(_, index)| *index);
+            if header & 1 == 1 {
+                if let Some(index) = requested {
+                    values[index] = Some(Value::Null(self.columns[index].scalar_type));
+                }
+                continue;
+            }
+            let length = usize::try_from(read_uvarint(raw, &mut position)?)
+                .map_err(|_| corrupt("codec: payload length overflows usize"))?;
+            let end = position
+                .checked_add(length)
+                .filter(|end| *end <= raw.len())
+                .ok_or_else(|| corrupt(format!("codec: truncated payload for column ID {id}")))?;
+            if let Some(index) = requested {
+                values[index] = Some(decode_payload(
+                    self.columns[index].scalar_type,
+                    &raw[position..end],
+                )?);
+            }
+            position = end;
+        }
+        if position != raw.len() {
+            return Err(corrupt(format!(
+                "codec: {} trailing bytes after {count} fields",
+                raw.len() - position
+            )));
+        }
+        values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                value.map_or_else(|| decode_missing_value(&self.columns[index]), Ok)
+            })
+            .collect()
+    }
+
+    pub(super) fn decode_ref<'a>(&'a self, raw: &'a [u8]) -> Result<DecodedRowRef<'a>> {
+        if raw.first() != Some(&ROW_CANARY) {
+            return Err(corrupt("codec: value is not a Rad row (bad canary)"));
+        }
+        let mut position = 1;
+        let count = read_uvarint(raw, &mut position)?;
+        validate_field_count(count, raw.len() - position)?;
+        let mut values = smallvec::SmallVec::<[Option<DecodedValueRef<'a>>; 4]>::new();
+        values.resize_with(self.columns.len(), || None);
+        let mut previous = 0_u64;
+        let mut requested_position = 0;
+        for _ in 0..count {
+            let header = read_uvarint(raw, &mut position)?;
+            let delta = header >> 1;
+            let id = previous
+                .checked_add(delta)
+                .filter(|_| delta != 0)
+                .filter(|id| *id <= MAX_PHYSICAL_COLUMN_ID)
+                .ok_or_else(|| {
+                    corrupt("codec: duplicate, non-ascending, or overflowing column ID")
+                })?;
+            previous = id;
+            while self
+                .requested
+                .get(requested_position)
+                .is_some_and(|(requested, _)| *requested < id)
+            {
+                requested_position += 1;
+            }
+            let requested = self
+                .requested
+                .get(requested_position)
+                .filter(|(requested, _)| *requested == id)
+                .map(|(_, index)| *index);
+            if header & 1 == 1 {
+                if let Some(index) = requested {
+                    values[index] = Some(DecodedValueRef::Null(self.columns[index].scalar_type));
+                }
+                continue;
+            }
+            let length = usize::try_from(read_uvarint(raw, &mut position)?)
+                .map_err(|_| corrupt("codec: payload length overflows usize"))?;
+            let end = position
+                .checked_add(length)
+                .filter(|end| *end <= raw.len())
+                .ok_or_else(|| corrupt(format!("codec: truncated payload for column ID {id}")))?;
+            if let Some(index) = requested {
+                values[index] = Some(decode_payload_ref(
+                    self.columns[index].scalar_type,
+                    &raw[position..end],
+                )?);
+            }
+            position = end;
+        }
+        if position != raw.len() {
+            return Err(corrupt(format!(
+                "codec: {} trailing bytes after {count} fields",
+                raw.len() - position
+            )));
+        }
+        values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                value.map_or_else(|| decode_missing_value_ref(&self.columns[index]), Ok)
+            })
+            .collect()
+    }
 }
 
 pub fn decode_missing_value(column: &Column) -> Result<Value> {
@@ -672,6 +806,51 @@ fn decode_payload(value_type: ScalarType, payload: &[u8]) -> Result<Value> {
     }
 }
 
+fn decode_payload_ref(value_type: ScalarType, payload: &[u8]) -> Result<DecodedValueRef<'_>> {
+    match value_type {
+        ScalarType::Text => std::str::from_utf8(payload)
+            .map(DecodedValueRef::Text)
+            .map_err(|error| {
+                Error::source(ErrorKind::CorruptData, "codec: invalid UTF-8 text", error)
+            }),
+        ScalarType::Int64 if payload.len() == 8 => Ok(DecodedValueRef::Int64(i64::from_be_bytes(
+            payload.try_into().expect("length checked"),
+        ))),
+        ScalarType::Float64 if payload.len() == 8 => {
+            let value = f64::from_bits(u64::from_be_bytes(
+                payload.try_into().expect("length checked"),
+            ));
+            if !value.is_finite() {
+                return Err(corrupt("codec: non-finite float64 payload"));
+            }
+            Ok(DecodedValueRef::Float64(value))
+        }
+        ScalarType::Bool if payload == [0] => Ok(DecodedValueRef::Bool(false)),
+        ScalarType::Bool if payload == [1] => Ok(DecodedValueRef::Bool(true)),
+        _ => Err(corrupt(format!(
+            "codec: malformed {value_type:?} payload of {} bytes",
+            payload.len()
+        ))),
+    }
+}
+
+fn decode_missing_value_ref(column: &Column) -> Result<DecodedValueRef<'_>> {
+    let Some(default) = &column.missing_value else {
+        return Ok(DecodedValueRef::Null(column.scalar_type));
+    };
+    if default.function.is_some() {
+        return Err(corrupt(
+            "codec: historical missing value cannot use a generator",
+        ));
+    }
+    Ok(match column.scalar_type {
+        ScalarType::Text => DecodedValueRef::Text(&default.text),
+        ScalarType::Int64 => DecodedValueRef::Int64(default.int64),
+        ScalarType::Float64 => DecodedValueRef::Float64(default.float64),
+        ScalarType::Bool => DecodedValueRef::Bool(default.bool_value),
+    })
+}
+
 /// Appends the canonical (minimal-length) varint encoding of `value`.
 pub fn append_uvarint(output: &mut Vec<u8>, value: u64) {
     key_encoding::append_uvarint(output, value);
@@ -813,6 +992,38 @@ mod tests {
                 Row::from([("integer".into(), row["integer"].clone())])
             );
         }
+    }
+
+    #[test]
+    fn borrowed_row_decode_matches_owned_decode() {
+        let mut missing = column("c5", 5, "missing", ScalarType::Text);
+        missing.missing_value = Some(DefaultValue {
+            text: "default".into(),
+            ..DefaultValue::default()
+        });
+        let table = table(vec![
+            column("c1", 1, "text", ScalarType::Text),
+            column("c2", 2, "integer", ScalarType::Int64),
+            column("c3", 3, "float", ScalarType::Float64),
+            column("c4", 4, "boolean", ScalarType::Bool),
+            missing,
+        ]);
+        let row = Row::from([
+            ("text".into(), Value::Text("product-0042".into())),
+            ("integer".into(), Value::Int64(-42)),
+            ("float".into(), Value::Float64(1.25)),
+            ("boolean".into(), Value::Bool(true)),
+        ]);
+        let raw = marshal_row(&table, &row).unwrap();
+        let decoder = RowDecoder::new(&table, &table.columns).unwrap();
+        let owned = decoder.decode(&raw).unwrap();
+        let borrowed = decoder
+            .decode_ref(&raw)
+            .unwrap()
+            .into_iter()
+            .map(DecodedValueRef::to_value)
+            .collect::<DecodedRow>();
+        assert_eq!(borrowed, owned);
     }
 
     #[test]
