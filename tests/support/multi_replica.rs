@@ -89,8 +89,28 @@ async fn exercise_concurrent_index_reads(
 }
 
 async fn read_active(reader: &RadProcess) -> TestResult {
-    for _ in 0..64 {
-        reader.execute(&query_active_program()).await?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut completed = 0;
+    while completed < 64 {
+        let response = reader
+            .post_response("/execute", &query_active_program())
+            .await?;
+        let status = response.status();
+        let body: Value = response.json().await?;
+        if status == StatusCode::OK {
+            completed += 1;
+            continue;
+        }
+        if status != StatusCode::CONFLICT
+            || body["code"] != "conflict"
+            || body["reason"] != "serializable_conflict"
+        {
+            return Err(format!("active-user query returned HTTP {status}: {body}").into());
+        }
+        if Instant::now() >= deadline {
+            return Err("active-user query did not complete after snapshot conflicts".into());
+        }
+        tokio::task::yield_now().await;
     }
     Ok(())
 }
