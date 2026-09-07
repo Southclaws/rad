@@ -89,17 +89,20 @@ async fn exercise_concurrent_index_reads(
 }
 
 async fn read_active(reader: &RadProcess) -> TestResult {
+    for _ in 0..64 {
+        execute_read(reader, &query_active_program()).await?;
+    }
+    Ok(())
+}
+
+pub async fn execute_read(reader: &RadProcess, program: &Value) -> TestResult<Value> {
     let deadline = Instant::now() + Duration::from_secs(30);
-    let mut completed = 0;
-    while completed < 64 {
-        let response = reader
-            .post_response("/execute", &query_active_program())
-            .await?;
+    loop {
+        let response = reader.post_response("/execute", program).await?;
         let status = response.status();
         let body: Value = response.json().await?;
         if status == StatusCode::OK {
-            completed += 1;
-            continue;
+            return Ok(body);
         }
         if status != StatusCode::CONFLICT
             || body["code"] != "conflict"
@@ -112,7 +115,6 @@ async fn read_active(reader: &RadProcess) -> TestResult {
         }
         tokio::task::yield_now().await;
     }
-    Ok(())
 }
 
 async fn assert_access(process: &RadProcess, expected: &str) -> TestResult {
