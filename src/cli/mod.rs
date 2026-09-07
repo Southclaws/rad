@@ -5,7 +5,7 @@ mod commands;
 mod doctor;
 // OpenCLI owns this module, so generated style does not participate in Rad's
 // hand-written code hygiene gate.
-#[allow(warnings, unused_qualifications)]
+#[allow(warnings, unused_qualifications, clippy::struct_excessive_bools)]
 pub mod generated;
 mod init;
 mod output;

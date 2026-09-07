@@ -1985,7 +1985,7 @@ fn evaluate_indexed_join_predicate(
         return Ok(TriBool::True);
     }
     if let bound::Expr::Binary {
-        op: crate::engine::lir::BinaryOp::And,
+        op: BinaryOp::And,
         left,
         right,
         ..
@@ -2034,7 +2034,7 @@ fn evaluate_materialized_join_predicate(
         return Ok(TriBool::True);
     }
     if let bound::Expr::Binary {
-        op: crate::engine::lir::BinaryOp::And,
+        op: BinaryOp::And,
         left,
         right,
         ..
@@ -2191,7 +2191,7 @@ mod tests {
         async fn reach(&self, event: crate::engine::exec::parallel::ExecutionScheduleEvent) {
             if matches!(
                 event,
-                crate::engine::exec::parallel::ExecutionScheduleEvent::BatchPrepared { .. }
+                crate::engine::exec::parallel::ExecutionScheduleEvent::Prepared { .. }
             ) && !self.blocked.swap(true, AtomicOrdering::AcqRel)
             {
                 self.reached.notify_one();
@@ -3937,7 +3937,7 @@ mod tests {
             .events()
             .into_iter()
             .filter_map(|event| match event {
-                crate::engine::exec::parallel::ExecutionScheduleEvent::BatchPrepared {
+                crate::engine::exec::parallel::ExecutionScheduleEvent::Prepared {
                     sequence,
                     ..
                 } => Some(sequence),

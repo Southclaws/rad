@@ -308,11 +308,11 @@ pub(super) enum DecodedValueRef<'a> {
 }
 
 impl DecodedValueRef<'_> {
-    pub fn is_null(self) -> bool {
+    pub(super) fn is_null(self) -> bool {
         matches!(self, Self::Null(_))
     }
 
-    pub fn to_value(self) -> Value {
+    pub(super) fn to_value(self) -> Value {
         match self {
             Self::Text(value) => Value::Text(value.to_owned()),
             Self::Int64(value) => Value::Int64(value),
@@ -326,7 +326,7 @@ impl DecodedValueRef<'_> {
 pub(super) type DecodedRowRef<'a> = smallvec::SmallVec<[DecodedValueRef<'a>; 4]>;
 
 impl RowDecoder {
-    pub fn new(table: &Table, columns: &[Column]) -> Result<Self> {
+    pub(super) fn new(table: &Table, columns: &[Column]) -> Result<Self> {
         let mut requested = Vec::with_capacity(columns.len());
         for (index, column) in columns.iter().enumerate() {
             if !table
@@ -354,7 +354,7 @@ impl RowDecoder {
         })
     }
 
-    pub fn decode(&self, raw: &[u8]) -> Result<DecodedRow> {
+    pub(super) fn decode(&self, raw: &[u8]) -> Result<DecodedRow> {
         if raw.first() != Some(&ROW_CANARY) {
             return Err(corrupt("codec: value is not a Rad row (bad canary)"));
         }
@@ -423,7 +423,7 @@ impl RowDecoder {
             .collect()
     }
 
-    pub fn decode_ref<'a>(&'a self, raw: &'a [u8]) -> Result<DecodedRowRef<'a>> {
+    pub(super) fn decode_ref<'a>(&'a self, raw: &'a [u8]) -> Result<DecodedRowRef<'a>> {
         if raw.first() != Some(&ROW_CANARY) {
             return Err(corrupt("codec: value is not a Rad row (bad canary)"));
         }

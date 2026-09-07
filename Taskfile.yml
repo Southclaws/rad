@@ -50,11 +50,6 @@ tasks:
       - cargo deny --all-features check advisories bans sources
       - cargo machete --with-metadata
 
-  check:semver:
-    desc: Check the public Rust API against a supplied release or revision baseline
-    cmds:
-      - cargo semver-checks {{.CLI_ARGS}}
-
   install:
     desc: Install the Rad binary from this checkout
     cmds:

@@ -1286,7 +1286,7 @@ impl Operator for PrimaryKeyGet<'_> {
 
 struct RowScan<'a> {
     iterator: Box<dyn RowIterator + 'a>,
-    slots: Vec<crate::engine::lir::SlotId>,
+    slots: Vec<SlotId>,
     outer: Env,
     values_batch: Vec<super::codec::DecodedRow>,
 }
@@ -2030,10 +2030,7 @@ impl Operator for GroupedHashJoinAggregate<'_> {
             let decoded_access = fact.decoded_slots().and_then(|slots| {
                 DecodedFactAccess::new(slots, &self.keys, self.fact_is_left, &self.terms)
             });
-            let raw_access = decoded_access
-                .as_ref()
-                .zip(fact.raw_decoder())
-                .map(|(access, decoder)| (access, decoder));
+            let raw_access = decoded_access.as_ref().zip(fact.raw_decoder());
             if let Some((decoded_access, decoder)) = raw_access {
                 let mut fact_batch = Vec::with_capacity(1_024);
                 loop {
@@ -2360,7 +2357,7 @@ impl<'a> HashJoin<'a> {
         self.parallel_batch_sequence = self.parallel_batch_sequence.saturating_add(1);
         let width = width.min(left_rows.len());
         self.execution_grant
-            .reach(ExecutionScheduleEvent::BatchPrepared {
+            .reach(ExecutionScheduleEvent::Prepared {
                 operator: "HashJoin",
                 sequence,
                 rows: left_rows.len(),
@@ -2387,23 +2384,23 @@ impl<'a> HashJoin<'a> {
             let permit = (index > 0).then(|| helpers.next()).flatten();
             tasks.push(tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                probe_hash_rows(
+                probe_hash_rows(HashProbeInput {
                     rows,
-                    &entries,
-                    &hash_builder,
+                    entries,
+                    hash_builder,
                     kind,
-                    residual_predicate.as_ref(),
-                    &keys,
-                    &right_output,
-                    &tally,
-                )
+                    residual_predicate,
+                    keys,
+                    right_output,
+                    tally,
+                })
             }));
         }
         drop(helpers);
 
         let completed = futures::future::join_all(tasks).await;
         self.execution_grant
-            .reach(ExecutionScheduleEvent::BatchCompleted {
+            .reach(ExecutionScheduleEvent::Completed {
                 operator: "HashJoin",
                 sequence,
             })
@@ -2420,7 +2417,7 @@ impl<'a> HashJoin<'a> {
             self.parallel_output.extend(rows);
         }
         self.execution_grant
-            .reach(ExecutionScheduleEvent::BatchPublished {
+            .reach(ExecutionScheduleEvent::Published {
                 operator: "HashJoin",
                 sequence,
                 rows: published,
@@ -2498,7 +2495,7 @@ impl<'a> Operator for HashJoin<'a> {
                 {
                     for (index, entry) in entries.iter().enumerate() {
                         self.tally.add_key_comparison();
-                        if join_values_equal(&entry.key, &values)? {
+                        if join_values_equal(&entry.key, values)? {
                             self.current_entry = index;
                             break;
                         }
@@ -2551,27 +2548,29 @@ impl<'a> Operator for HashJoin<'a> {
     }
 }
 
-fn probe_hash_rows(
-    left_rows: Vec<Env>,
-    entries: &HashMap<u64, Vec<HashEntry>>,
-    hash_builder: &ahash::RandomState,
+struct HashProbeInput {
+    rows: Vec<Env>,
+    entries: Arc<HashMap<u64, Vec<HashEntry>>>,
+    hash_builder: ahash::RandomState,
     kind: JoinKind,
-    residual_predicate: Option<&bound::Expr>,
-    keys: &[EquiJoinKey],
-    right_output: &RowType,
-    tally: &JoinTally,
-) -> Result<Vec<Env>> {
-    let mut output = Vec::with_capacity(left_rows.len());
-    for mut left in left_rows {
-        tally.add_probe_row();
-        let values = join_value_refs(&left, keys, true)?;
+    residual_predicate: Option<bound::Expr>,
+    keys: Vec<EquiJoinKey>,
+    right_output: RowType,
+    tally: JoinTally,
+}
+
+fn probe_hash_rows(input: HashProbeInput) -> Result<Vec<Env>> {
+    let mut output = Vec::with_capacity(input.rows.len());
+    for mut left in input.rows {
+        input.tally.add_probe_row();
+        let values = join_value_refs(&left, &input.keys, true)?;
         let mut matching = None;
         if let Some(values) = values.as_ref() {
-            let hash = hash_scalar_values(values.iter().copied().map(Some), hash_builder);
-            if let Some(entries) = entries.get(&hash) {
+            let hash = hash_scalar_values(values.iter().copied().map(Some), &input.hash_builder);
+            if let Some(entries) = input.entries.get(&hash) {
                 for entry in entries {
-                    tally.add_key_comparison();
-                    if join_values_equal(&entry.key, &values)? {
+                    input.tally.add_key_comparison();
+                    if join_values_equal(&entry.key, values)? {
                         matching = Some(entry);
                         break;
                     }
@@ -2582,7 +2581,7 @@ fn probe_hash_rows(
         let mut matched = false;
         if let Some(entry) = matching {
             if let [right] = entry.rows.as_slice() {
-                let accepted = if let Some(predicate) = residual_predicate {
+                let accepted = if let Some(predicate) = &input.residual_predicate {
                     crate::engine::lir::eval::evaluate_join_predicate(predicate, &left, right)?
                         == TriBool::True
                 } else {
@@ -2593,8 +2592,8 @@ fn probe_hash_rows(
                     output.push(left);
                     continue;
                 }
-                if kind == JoinKind::Left {
-                    for field in &right_output.fields {
+                if input.kind == JoinKind::Left {
+                    for field in &input.right_output.fields {
                         left.insert(field.slot, Datum::Null);
                     }
                     output.push(left);
@@ -2602,7 +2601,7 @@ fn probe_hash_rows(
                 continue;
             }
             for right in &entry.rows {
-                if let Some(predicate) = residual_predicate
+                if let Some(predicate) = &input.residual_predicate
                     && crate::engine::lir::eval::evaluate_join_predicate(predicate, &left, right)?
                         != TriBool::True
                 {
@@ -2612,9 +2611,9 @@ fn probe_hash_rows(
                 output.push(merge_frames(&left, right));
             }
         }
-        if kind == JoinKind::Left && !matched {
+        if input.kind == JoinKind::Left && !matched {
             let mut padded = left;
-            for field in &right_output.fields {
+            for field in &input.right_output.fields {
                 padded.insert(field.slot, Datum::Null);
             }
             output.push(padded);
@@ -2628,7 +2627,7 @@ fn join_predicate_is_keys(predicate: &bound::Expr, keys: &[EquiJoinKey]) -> bool
         return false;
     }
     if let bound::Expr::Binary {
-        op: crate::engine::lir::BinaryOp::And,
+        op: BinaryOp::And,
         left,
         right,
         ..
@@ -2637,7 +2636,7 @@ fn join_predicate_is_keys(predicate: &bound::Expr, keys: &[EquiJoinKey]) -> bool
         return join_predicate_is_keys(left, keys) && join_predicate_is_keys(right, keys);
     }
     let bound::Expr::Binary {
-        op: crate::engine::lir::BinaryOp::Eq,
+        op: BinaryOp::Eq,
         left,
         right,
         ..
@@ -2685,7 +2684,7 @@ fn evaluate_join_predicate(
         return Ok(TriBool::True);
     }
     if let bound::Expr::Binary {
-        op: crate::engine::lir::BinaryOp::And,
+        op: BinaryOp::And,
         left,
         right,
         ..

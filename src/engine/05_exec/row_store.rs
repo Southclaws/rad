@@ -45,15 +45,15 @@ impl IndexReadTally {
         ActiveIndexRead(self)
     }
 
-    pub fn reads(&self) -> u64 {
+    pub(super) fn reads(&self) -> u64 {
         self.reads.load(Ordering::Relaxed)
     }
 
-    pub fn entries(&self) -> u64 {
+    pub(super) fn entries(&self) -> u64 {
         self.entries.load(Ordering::Relaxed)
     }
 
-    pub fn peak_active(&self) -> u64 {
+    pub(super) fn peak_active(&self) -> u64 {
         self.peak_active.load(Ordering::Relaxed)
     }
 }

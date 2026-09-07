@@ -302,8 +302,9 @@ pub async fn replay(
                     .filter(|candidate| candidate.chosen)
                 {
                     match candidate.decision_basis {
-                        Some(JoinDecisionBasis::BoundedBuild) => cost_dominance_decisions += 1,
-                        Some(JoinDecisionBasis::CostDominance) => cost_dominance_decisions += 1,
+                        Some(
+                            JoinDecisionBasis::BoundedBuild | JoinDecisionBasis::CostDominance,
+                        ) => cost_dominance_decisions += 1,
                         Some(JoinDecisionBasis::Structural) => structural_fallback_decisions += 1,
                         _ => {}
                     }

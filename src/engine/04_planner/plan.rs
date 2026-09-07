@@ -773,8 +773,12 @@ impl Planner<'_> {
                     if term.function == lir::AggregateFunction::Count
                         && matches!(
                             &term.argument,
-                            Some(bound::Expr::SlotRef { value_type, .. })
-                                if !value_type.nullable
+                            Some(bound::Expr::SlotRef { slot, .. })
+                                if input
+                                    .output()
+                                    .fields
+                                    .iter()
+                                    .any(|field| field.slot == *slot && !field.value_type.nullable)
                         )
                     {
                         term.argument = None;
@@ -1099,8 +1103,8 @@ impl Planner<'_> {
         } else {
             AccessOrdering::SortRequired
         };
-        let nested_cost = self.statistics.and_then(|statistics| {
-            join_costs(statistics, relation, left, right, &keys, ordering).map(|costs| costs.nested)
+        let nested_cost = self.statistics.map(|statistics| {
+            join_costs(statistics, relation, left, right, &keys, ordering).nested
         });
         let reversible_hash_join = kind == lir::JoinKind::Inner
             && required_order.is_empty()
@@ -1181,10 +1185,8 @@ impl Planner<'_> {
             .and_then(|_| {
                 self.statistics
                     .ok_or(JoinRejectionReason::MissingEvidence)
-                    .and_then(|statistics| {
-                        join_costs(statistics, relation, left, right, &keys, ordering)
-                            .map(|costs| costs.lookup)
-                            .ok_or(JoinRejectionReason::MissingEvidence)
+                    .map(|statistics| {
+                        join_costs(statistics, relation, left, right, &keys, ordering).lookup
                     })
             });
         let recursive_indexed_lookup = recursive_lookup_preserves_evaluation
@@ -1960,8 +1962,7 @@ fn hash_join_plan(
     ordering: AccessOrdering,
     memory_limit_bytes: u64,
 ) -> Result<HashJoinPlan, JoinRejectionReason> {
-    let costs = join_costs(statistics, relation, left, right, &keys, ordering)
-        .ok_or(JoinRejectionReason::MissingEvidence)?;
+    let costs = join_costs(statistics, relation, left, right, &keys, ordering);
     let memory_bytes = hash_join_memory_bound(statistics, right, &keys, costs.right)?;
     if memory_bytes > memory_limit_bytes {
         return Err(JoinRejectionReason::MemoryLimit);
@@ -1987,7 +1988,7 @@ fn join_costs(
     right: &bound::Relation,
     keys: &[analysis::EquiJoinKey],
     ordering: AccessOrdering,
-) -> Option<JoinCosts> {
+) -> JoinCosts {
     let estimator = super::estimator::Estimator::new(statistics);
     let left_estimate = estimator.bound_relation(left);
     let right_estimate = estimator.bound_relation(right);
@@ -2044,12 +2045,12 @@ fn join_costs(
         peak_retained_bytes: None,
         ordering,
     };
-    Some(JoinCosts {
+    JoinCosts {
         nested,
         hash,
         lookup,
         right: right_rows,
-    })
+    }
 }
 
 fn binary_join_region_cost(

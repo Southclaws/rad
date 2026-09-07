@@ -7,17 +7,17 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ExecutionScheduleEvent {
-    BatchPrepared {
+    Prepared {
         operator: &'static str,
         sequence: u64,
         rows: usize,
         width: usize,
     },
-    BatchCompleted {
+    Completed {
         operator: &'static str,
         sequence: u64,
     },
-    BatchPublished {
+    Published {
         operator: &'static str,
         sequence: u64,
         rows: usize,
