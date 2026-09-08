@@ -849,15 +849,27 @@ func databaseEnvironment(
 	role string,
 ) []corev1.EnvVar {
 	values := map[string]string{
-		"RAD_ADDR":              fmt.Sprintf("0.0.0.0:%d", publicPort),
-		"RAD_ADMIN_ADDR":        fmt.Sprintf("0.0.0.0:%d", adminPort),
-		"RAD_CATALOG_MODE":      string(database.Spec.CatalogMode),
-		"RAD_CLOSE_TIMEOUT_MS":  strconv.FormatInt(closeTimeoutMilliseconds(database), 10),
-		"RAD_LOG_FORMAT":        databaseLogFormat(database),
-		"RAD_LOG_LEVEL":         databaseLogLevel(database),
-		"RAD_LOG_PROGRAMS":      strconv.FormatBool(database.Spec.Logging.Programs),
-		"RAD_DIAGNOSTICS":       databaseDiagnosticLevel(database),
-		"RAD_METRICS":           strconv.FormatBool(databaseMetricsEnabled(database)),
+		"RAD_ADDR":             fmt.Sprintf("0.0.0.0:%d", publicPort),
+		"RAD_ADMIN_ADDR":       fmt.Sprintf("0.0.0.0:%d", adminPort),
+		"RAD_CATALOG_MODE":     string(database.Spec.CatalogMode),
+		"RAD_CLOSE_TIMEOUT_MS": strconv.FormatInt(closeTimeoutMilliseconds(database), 10),
+		"RAD_LOG_FORMAT":       databaseLogFormat(database),
+		"RAD_LOG_LEVEL":        databaseLogLevel(database),
+		"RAD_LOG_PROGRAMS":     strconv.FormatBool(database.Spec.Logging.Programs),
+		"RAD_DIAGNOSTICS":      databaseDiagnosticLevel(database),
+		"RAD_METRICS":          strconv.FormatBool(databaseMetricsEnabled(database)),
+		"RAD_RELATION_CACHE_SIZE_MIB": formatDefaultInt32(
+			database.Spec.RelationCache.SizeMiB,
+			128,
+		),
+		"RAD_RELATION_CACHE_ENTRIES": formatDefaultInt32(
+			database.Spec.RelationCache.Entries,
+			4096,
+		),
+		"RAD_RELATION_CACHE_MAX_RESULT_SIZE_MIB": formatDefaultInt32(
+			database.Spec.RelationCache.MaxResultSizeMiB,
+			8,
+		),
 		"RAD_ROLE":              role,
 		"RAD_S3_BUCKET":         database.Spec.Storage.Bucket,
 		"RAD_S3_PREFIX":         database.Spec.Storage.Prefix,
@@ -888,6 +900,13 @@ func databaseEnvironment(
 	}
 	if database.Spec.Telemetry.Endpoint != "" {
 		values["OTEL_EXPORTER_OTLP_ENDPOINT"] = database.Spec.Telemetry.Endpoint
+		values["OTEL_TRACES_SAMPLER"] = "parentbased_traceidratio"
+		values["OTEL_TRACES_SAMPLER_ARG"] = strconv.FormatFloat(
+			databaseTraceSampleRatio(database),
+			'f',
+			-1,
+			64,
+		)
 	}
 	if database.Spec.Storage.Endpoint != "" {
 		values["RAD_S3_ENDPOINT"] = database.Spec.Storage.Endpoint
@@ -940,6 +959,13 @@ func databaseMetricsEnabled(database *radv1alpha1.Database) bool {
 		return true
 	}
 	return *database.Spec.Telemetry.Metrics
+}
+
+func databaseTraceSampleRatio(database *radv1alpha1.Database) float64 {
+	if database.Spec.Telemetry.TraceSamplePercent == nil {
+		return 0.01
+	}
+	return float64(*database.Spec.Telemetry.TraceSamplePercent) / 100
 }
 
 func slateEnvironment(database *radv1alpha1.Database) map[string]string {

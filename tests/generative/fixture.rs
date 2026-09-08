@@ -85,7 +85,7 @@ pub async fn emit_fixture(case: &Case, master_seed: u64, detail: &str) -> TestRe
     fs::write(
         directory.join("BUG.md"),
         format!(
-            "# Generated differential regression\n\nThe native generator found and minimized a four-way divergence.\n\n```text\n{detail}\n```\n\nReplay the exact minimized decision tape and campaign from `generated-case.json` with `RAD_GEN_REPLAY` and the recorded `campaign` as `RAD_GEN_REPLAY_KIND`.\n"
+            "# Generated differential regression\n\nThe native generator found and minimized an execution-path divergence.\n\n```text\n{detail}\n```\n\nReplay the exact minimized decision tape and campaign from `generated-case.json` with `RAD_GEN_REPLAY` and the recorded `campaign` as `RAD_GEN_REPLAY_KIND`.\n"
         ),
     )
     .map_err(|error| error.to_string())?;

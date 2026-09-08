@@ -86,6 +86,9 @@ Documentation: https://www.radengine.dev/docs/cli#rad-serve
 | `--diagnostics <off\|summary\|detailed\|full>` | Maximum diagnostic level that an HTTP request can select. Choices: off, summary, detailed, full. | `summary` | `RAD_DIAGNOSTICS` |
 | `--otel-endpoint <value>` | OTLP HTTP endpoint for traces and metrics. |  | `OTEL_EXPORTER_OTLP_ENDPOINT` |
 | `--metrics <true\|false>` | Enable or disable OTEL metrics and the GET /metrics route. Choices: true, false. | `true` | `RAD_METRICS` |
+| `--relation-cache-size-mib <value>` | Total memory capacity for materialized relation results. | `128` | `RAD_RELATION_CACHE_SIZE_MIB` |
+| `--relation-cache-entries <value>` | Maximum materialized relation result count. | `4096` | `RAD_RELATION_CACHE_ENTRIES` |
+| `--relation-cache-max-result-size-mib <value>` | Maximum size of one materialized relation result. | `8` | `RAD_RELATION_CACHE_MAX_RESULT_SIZE_MIB` |
 | `--slate-decoded-cache-size-mib <value>` | Total memory capacity for decoded Slate data blocks and metadata. | `128` | `RAD_SLATE_DECODED_CACHE_SIZE_MIB` |
 | `--slate-scan-cache-blocks` | Add blocks from throughput scans to the decoded cache. | `false` | `RAD_SLATE_SCAN_CACHE_BLOCKS` |
 | `--slate-scan-read-ahead-kib <value>` | Read-ahead target for each throughput scan. | `256` | `RAD_SLATE_SCAN_READ_AHEAD_KIB` |

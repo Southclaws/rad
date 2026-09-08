@@ -59,6 +59,9 @@ macro_rules! string_identity {
 
 macro_rules! generation {
     ($name:ident) => {
+        generation!($name, "catalog generation overflow");
+    };
+    ($name:ident, $overflow:literal) => {
         #[derive(
             Clone,
             Copy,
@@ -87,7 +90,7 @@ macro_rules! generation {
             }
 
             pub fn next(self) -> Self {
-                Self(self.0.checked_add(1).expect("catalog generation overflow"))
+                Self(self.0.checked_add(1).expect($overflow))
             }
         }
 
@@ -118,6 +121,7 @@ generation!(CatalogVersion);
 generation!(DefinitionGeneration);
 generation!(ExistenceGeneration);
 generation!(WriteProtocolGeneration);
+generation!(DataGeneration, "data generation overflow");
 generation!(ValueGeneration);
 generation!(AccessGeneration);
 generation!(TransitionGeneration);

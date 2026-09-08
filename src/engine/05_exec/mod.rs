@@ -14,6 +14,7 @@ mod predicate_transfer;
 mod program;
 mod query;
 mod reference;
+mod relation_cache;
 mod row_store;
 mod shredded_join;
 mod set;
@@ -34,3 +35,4 @@ pub use program::{
 };
 pub use query::{Executor, Limits};
 pub use reference::ReferenceExecutor;
+pub use relation_cache::RelationCacheLimits;

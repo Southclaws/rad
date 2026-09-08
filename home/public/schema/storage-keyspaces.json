@@ -153,6 +153,13 @@
     },
     {
       "invariants": [],
+      "key": "table:physical_id(t)",
+      "name": "catalog_table_data_generation",
+      "tag": "23",
+      "value": "data generation decimal text"
+    },
+    {
+      "invariants": [],
       "key": "",
       "name": "catalog_meta_mode",
       "tag": "30",

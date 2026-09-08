@@ -14,8 +14,8 @@ pub enum EncodeError {
     NonFiniteFloat,
     #[error("result object contains duplicate field {0:?}")]
     DuplicateField(String),
-    #[error("result metadata could not be encoded: {0}")]
-    Metadata(#[from] serde_json::Error),
+    #[error("result could not be encoded: {0}")]
+    Json(#[from] serde_json::Error),
     #[error("statement affected count exceeds the HTTP wire format")]
     AffectedCountOverflow,
 }

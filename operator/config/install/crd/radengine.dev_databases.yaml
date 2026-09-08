@@ -171,6 +171,33 @@ spec:
                 maximum: 32
                 minimum: 0
                 type: integer
+              relationCache:
+                default:
+                  entries: 4096
+                  maxResultSizeMiB: 8
+                  sizeMiB: 128
+                description: RelationCache applies the same materialized result limits
+                  to all pods.
+                properties:
+                  entries:
+                    default: 4096
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  maxResultSizeMiB:
+                    default: 8
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  sizeMiB:
+                    default: 128
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
+                x-kubernetes-validations:
+                - message: maxResultSizeMiB must not exceed sizeMiB
+                  rule: self.maxResultSizeMiB <= self.sizeMiB
               resources:
                 description: |-
                   Resources applies to every Rad container, writer and reader alike. Empty
@@ -480,6 +507,15 @@ spec:
                     description: Metrics enables OTEL metric export and the metrics
                       HTTP route.
                     type: boolean
+                  traceSamplePercent:
+                    default: 1
+                    description: |-
+                      TraceSamplePercent sets the sample percentage for root traces. A sampled
+                      parent trace remains sampled.
+                    format: int32
+                    maximum: 100
+                    minimum: 0
+                    type: integer
                 type: object
               terminationGracePeriodSeconds:
                 default: 120

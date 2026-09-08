@@ -80,8 +80,14 @@ tasks:
     cmds:
       - cargo test --locked --test differential_corpus {{.CLI_ARGS}}
 
+  test:relation-cache:
+    desc: Compare cached and uncached results across authored and generated queries
+    cmds:
+      - cargo test --locked --test differential_corpus shared_e2e_relation_cache_hits_match_uncached_execution_exactly {{.CLI_ARGS}}
+      - cargo test --locked --test generative_differential generated_queries_match_all_execution_paths {{.CLI_ARGS}}
+
   test:generative:
-    desc: Run generated LIR/PIR four-way differentials, state models, and metamorphic checks
+    desc: Run generated LIR/PIR execution-path differentials, state models, and metamorphic checks
     cmds:
       - cargo test --locked --test generative_differential {{.CLI_ARGS}}
 

@@ -3177,6 +3177,7 @@ dependencies = [
  "clap",
  "cliclack",
  "fastrand",
+ "foyer",
  "futures",
  "http-body-util",
  "hyper",

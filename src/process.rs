@@ -14,7 +14,7 @@ use slatedb::object_store::memory::InMemory;
 
 use crate::engine::catalog::Catalog;
 use crate::engine::catalog::model::Mode;
-use crate::engine::exec::Engine;
+use crate::engine::exec::{Engine, RelationCacheLimits};
 use crate::engine::kv::slatedb::{
     ObjectCachePreload, Options as SlateOptions, ReaderStore, Store as SlateStore,
 };
@@ -89,6 +89,7 @@ pub struct Config {
     /// forfeits only background housekeeping, never acknowledged data.
     pub close_timeout: Option<Duration>,
     pub reader_poll_interval: Duration,
+    pub relation_cache: RelationCacheLimits,
     pub capture_workload_corpus: bool,
     /// Listen address for the instance-to-instance API. Requires
     /// `relay_token_file`: an unauthenticated port that accepts evidence is
@@ -143,6 +144,7 @@ impl Config {
         if reader_poll_interval.is_zero() {
             return Err("RAD_READER_POLL_INTERVAL_MS must be greater than zero".into());
         }
+        let relation_cache = relation_cache_limits_from_env()?;
         let capture_workload_corpus = matches!(
             env::var("RAD_CAPTURE_WORKLOAD_CORPUS").ok().as_deref(),
             Some("1" | "true" | "yes")
@@ -203,6 +205,7 @@ impl Config {
             internal_tls_key,
             postgres_address,
             reader_poll_interval,
+            relation_cache,
             relay_authority,
             relay_target,
             relay_token_file,
@@ -223,6 +226,7 @@ impl Config {
     /// send is refused for.
     pub fn validate(&self) -> Result<()> {
         validate_slate_options(&self.slate)?;
+        validate_relation_cache_limits(self.relation_cache)?;
         if self.internal_address.is_some() && self.relay_token_file.is_none() {
             return Err(
                 "RAD_INTERNAL_ADDR requires RAD_RELAY_TOKEN_FILE: the internal API is never served unauthenticated"
@@ -647,6 +651,7 @@ async fn open_runtime(
         Role::Write => Engine::new(store.clone()),
     }
     .with_planner_mode(planner_mode)
+    .with_relation_cache_limits(config.relation_cache)
     .with_execution_capacity(
         execution_concurrency_for(execution_cpu_limit, execution_cpu_limit),
         execution_cpu_limit,
@@ -1180,6 +1185,26 @@ fn slate_options_from_env() -> Result<SlateOptions> {
     })
 }
 
+fn relation_cache_limits_from_env() -> Result<RelationCacheLimits> {
+    let byte_limit_mib = parse_env::<usize>("RAD_RELATION_CACHE_SIZE_MIB", "128")?;
+    let result_byte_limit_mib = parse_env::<usize>("RAD_RELATION_CACHE_MAX_RESULT_SIZE_MIB", "8")?;
+    Ok(RelationCacheLimits {
+        byte_limit: mib_to_bytes("RAD_RELATION_CACHE_SIZE_MIB", byte_limit_mib)?,
+        entry_limit: parse_env("RAD_RELATION_CACHE_ENTRIES", "4096")?,
+        result_byte_limit: mib_to_bytes(
+            "RAD_RELATION_CACHE_MAX_RESULT_SIZE_MIB",
+            result_byte_limit_mib,
+        )?,
+    })
+}
+
+fn mib_to_bytes(name: &str, value: usize) -> Result<usize> {
+    value
+        .checked_mul(1024 * 1024)
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| format!("{name} must be greater than zero and fit in memory").into())
+}
+
 fn parse_env<T>(name: &str, fallback: &str) -> Result<T>
 where
     T: std::str::FromStr,
@@ -1243,6 +1268,22 @@ fn validate_slate_options(options: &SlateOptions) -> Result {
     }
     if options.object_cache_part_size_kib == 0 {
         return Err("Slate object cache part size must be greater than zero".into());
+    }
+    Ok(())
+}
+
+fn validate_relation_cache_limits(limits: RelationCacheLimits) -> Result {
+    if limits.byte_limit == 0 {
+        return Err("Relation cache size must be greater than zero".into());
+    }
+    if limits.entry_limit == 0 {
+        return Err("Relation cache entry limit must be greater than zero".into());
+    }
+    if limits.result_byte_limit == 0 {
+        return Err("Relation cache result size limit must be greater than zero".into());
+    }
+    if limits.result_byte_limit > limits.byte_limit {
+        return Err("Relation cache result size limit must not exceed its total size".into());
     }
     Ok(())
 }
@@ -1342,6 +1383,26 @@ mod tests {
         assert_eq!(execution_concurrency_for(128, 128), 64);
     }
 
+    #[test]
+    fn relation_cache_limits_are_positive_and_nested() {
+        assert!(validate_relation_cache_limits(RelationCacheLimits::default()).is_ok());
+        assert!(
+            validate_relation_cache_limits(RelationCacheLimits {
+                entry_limit: 0,
+                ..RelationCacheLimits::default()
+            })
+            .is_err()
+        );
+        assert!(
+            validate_relation_cache_limits(RelationCacheLimits {
+                byte_limit: 4,
+                result_byte_limit: 5,
+                ..RelationCacheLimits::default()
+            })
+            .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn memory_process_starts_and_closes_all_runtime_components() {
         let config = Config {
@@ -1358,6 +1419,7 @@ mod tests {
             internal_tls_certificate: None,
             internal_tls_key: None,
             reader_poll_interval: Duration::from_millis(10),
+            relation_cache: RelationCacheLimits::default(),
             relay_authority: None,
             relay_target: None,
             relay_token_file: None,
@@ -1391,6 +1453,7 @@ mod tests {
                 internal_tls_certificate: None,
                 internal_tls_key: None,
                 reader_poll_interval: Duration::from_millis(10),
+                relation_cache: RelationCacheLimits::default(),
                 relay_authority: None,
                 relay_target: None,
                 relay_token_file: None,
@@ -1417,6 +1480,7 @@ mod tests {
                 internal_tls_certificate: None,
                 internal_tls_key: None,
                 reader_poll_interval: Duration::from_millis(10),
+                relation_cache: RelationCacheLimits::default(),
                 relay_authority: None,
                 relay_target: None,
                 relay_token_file: None,
@@ -1445,6 +1509,7 @@ mod tests {
             internal_tls_key: None,
             postgres_address: "127.0.0.1:0".into(),
             reader_poll_interval: Duration::from_millis(10),
+            relation_cache: RelationCacheLimits::default(),
             relay_authority: None,
             relay_target: target.map(str::to_owned),
             relay_token_file: token.map(PathBuf::from),

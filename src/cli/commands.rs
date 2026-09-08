@@ -145,6 +145,14 @@ impl Handler for App {
             ServeRole::Read => Role::Read,
             ServeRole::Write => Role::Write,
         });
+        let relation_cache = crate::engine::exec::RelationCacheLimits {
+            byte_limit: positive_mib(args.relation_cache_size_mib, "--relation-cache-size-mib")?,
+            entry_limit: positive_usize(args.relation_cache_entries, "--relation-cache-entries")?,
+            result_byte_limit: positive_mib(
+                args.relation_cache_max_result_size_mib,
+                "--relation-cache-max-result-size-mib",
+            )?,
+        };
         let slate = crate::engine::kv::slatedb::Options {
             decoded_cache_size_mib: positive_u64(
                 args.slate_decoded_cache_size_mib,
@@ -285,6 +293,7 @@ impl Handler for App {
             internal_tls_key: args.internal_tls_key,
             postgres_address: crate::process::normalize_address(&args.postgres_addr),
             reader_poll_interval: Duration::from_millis(reader_poll_interval_ms),
+            relation_cache,
             relay_authority: args.relay_ca,
             relay_target: args.relay_target,
             relay_token_file: args.relay_token_file,
@@ -765,6 +774,12 @@ fn positive_usize(value: i64, name: &str) -> Result<usize> {
         .ok()
         .filter(|value| *value > 0)
         .ok_or_else(|| format!("{name} must be greater than zero").into())
+}
+
+fn positive_mib(value: i64, name: &str) -> Result<usize> {
+    positive_usize(value, name)?
+        .checked_mul(1024 * 1024)
+        .ok_or_else(|| format!("{name} must fit in memory").into())
 }
 
 fn positive_u32(value: i64, name: &str) -> Result<u32> {

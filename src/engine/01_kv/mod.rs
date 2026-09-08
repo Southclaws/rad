@@ -39,7 +39,7 @@ impl DataPosition {
         &self.0
     }
 
-    fn from_sequence(sequence: u64) -> Self {
+    pub(crate) fn from_sequence(sequence: u64) -> Self {
         Self(sequence.to_string())
     }
 }

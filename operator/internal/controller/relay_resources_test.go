@@ -159,12 +159,19 @@ func TestTelemetryPolicyReachesWriterAndReaders(t *testing.T) {
 	database := testDatabase("alpha", "alpha-bucket", "alpha.rad.localhost", "alpha-s3", time.Unix(1, 0))
 	database.Spec.Readers = 2
 	metrics := false
+	traceSamplePercent := int32(25)
 	database.Spec.Telemetry = radv1alpha1.Telemetry{
-		Endpoint:    "http://collector:4318",
-		Diagnostics: radv1alpha1.DiagnosticLevelDetailed,
-		Metrics:     &metrics,
+		Endpoint:           "http://collector:4318",
+		TraceSamplePercent: &traceSamplePercent,
+		Diagnostics:        radv1alpha1.DiagnosticLevelDetailed,
+		Metrics:            &metrics,
 	}
 	database.Spec.Slate.DecodedCacheSizeMiB = 256
+	database.Spec.RelationCache = radv1alpha1.RelationCache{
+		SizeMiB:          256,
+		Entries:          8192,
+		MaxResultSizeMiB: 16,
+	}
 	reconciler, kubernetesClient := testReconciler(t, database, testSecret("alpha-s3"))
 	reconcileReadySpec(t, reconciler, database)
 
@@ -175,7 +182,7 @@ func TestTelemetryPolicyReachesWriterAndReaders(t *testing.T) {
 		"reader": deployment.Spec.Template.Spec.Containers[0].Env,
 	} {
 		values := environmentMap(environment)
-		if values["RAD_DIAGNOSTICS"] != "detailed" || values["OTEL_EXPORTER_OTLP_ENDPOINT"] != "http://collector:4318" || values["RAD_METRICS"] != "false" || values["RAD_SLATE_DECODED_CACHE_SIZE_MIB"] != "256" {
+		if values["RAD_DIAGNOSTICS"] != "detailed" || values["OTEL_EXPORTER_OTLP_ENDPOINT"] != "http://collector:4318" || values["OTEL_TRACES_SAMPLER"] != "parentbased_traceidratio" || values["OTEL_TRACES_SAMPLER_ARG"] != "0.25" || values["RAD_METRICS"] != "false" || values["RAD_SLATE_DECODED_CACHE_SIZE_MIB"] != "256" || values["RAD_RELATION_CACHE_SIZE_MIB"] != "256" || values["RAD_RELATION_CACHE_ENTRIES"] != "8192" || values["RAD_RELATION_CACHE_MAX_RESULT_SIZE_MIB"] != "16" {
 			t.Fatalf("%s telemetry environment = %#v", role, values)
 		}
 		for name, fieldPath := range map[string]string{
@@ -200,8 +207,20 @@ func TestTelemetryDefaultsToSummaryWithoutAnExporter(t *testing.T) {
 	if _, configured := values["OTEL_EXPORTER_OTLP_ENDPOINT"]; configured {
 		t.Fatalf("default telemetry exporter is configured: %#v", values)
 	}
-	if values["RAD_METRICS"] != "true" || values["RAD_SLATE_DECODED_CACHE_SIZE_MIB"] != "128" {
+	if _, configured := values["OTEL_TRACES_SAMPLER"]; configured {
+		t.Fatalf("default trace sampler is configured without an exporter: %#v", values)
+	}
+	if values["RAD_METRICS"] != "true" || values["RAD_SLATE_DECODED_CACHE_SIZE_MIB"] != "128" || values["RAD_RELATION_CACHE_SIZE_MIB"] != "128" || values["RAD_RELATION_CACHE_ENTRIES"] != "4096" || values["RAD_RELATION_CACHE_MAX_RESULT_SIZE_MIB"] != "8" {
 		t.Fatalf("default metric and cache environment = %#v", values)
+	}
+}
+
+func TestTelemetryExporterUsesTheDefaultTraceSampleRatio(t *testing.T) {
+	database := testDatabase("alpha", "alpha-bucket", "alpha.rad.localhost", "alpha-s3", time.Unix(1, 0))
+	database.Spec.Telemetry.Endpoint = "http://collector:4318"
+	values := environmentMap(databaseEnvironment(database, internalTransport{}, writeRole))
+	if values["OTEL_TRACES_SAMPLER"] != "parentbased_traceidratio" || values["OTEL_TRACES_SAMPLER_ARG"] != "0.01" {
+		t.Fatalf("default trace sampler environment = %#v", values)
 	}
 }
 

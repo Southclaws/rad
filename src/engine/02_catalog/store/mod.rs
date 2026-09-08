@@ -1,4 +1,5 @@
 mod compatibility;
+mod data_generations;
 mod durable_json;
 mod definitions;
 mod fences;
@@ -15,6 +16,7 @@ mod transitions;
 mod write_protocol_canonical;
 
 pub use compatibility::*;
+pub use data_generations::*;
 pub use definitions::*;
 pub use fences::*;
 pub use mode::*;

@@ -100,6 +100,9 @@ mod tests {
         assert!(!serve.log_programs);
         assert_eq!(serve.diagnostics, ServeDiagnostics::Summary);
         assert_eq!(serve.otel_endpoint, None);
+        assert_eq!(serve.relation_cache_size_mib, 128);
+        assert_eq!(serve.relation_cache_entries, 4096);
+        assert_eq!(serve.relation_cache_max_result_size_mib, 8);
         assert_eq!(serve.slate_decoded_cache_size_mib, 128);
         assert!(!serve.slate_scan_cache_blocks);
         assert_eq!(serve.slate_scan_read_ahead_kib, 256);

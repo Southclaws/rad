@@ -16,12 +16,19 @@ use crate::engine::planner::{PlanOptions, PlannerMode, PlanningContext, plan_que
 use crate::runtime::{RuntimeEffects, SystemRuntime};
 
 use super::parallel::ExecutionScheduler;
+use super::relation_cache::{CachedWork, DependencyValidation, RelationCache};
 use super::{
     CatalogPolicy, EngineEvent, EngineEventHook, EngineOperation, Executor, Limits,
     NoopEngineEventHook, Program, ProgramOptions, ProgramResult, ReferenceExecutor, Result,
 };
 
 type CatalogObserver = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CacheAccess {
+    Enabled,
+    Disabled,
+}
 
 pub struct Engine {
     pub(super) store: Arc<dyn TransactionalKv>,
@@ -34,6 +41,7 @@ pub struct Engine {
     planner_mode: PlannerMode,
     execution_admission: Option<(Arc<Semaphore>, usize)>,
     execution_scheduler: Arc<ExecutionScheduler>,
+    relation_cache: RelationCache,
     catalog_observers: RwLock<Vec<CatalogObserver>>,
 }
 
@@ -101,6 +109,7 @@ impl Engine {
             planner_mode: PlannerMode::Cost,
             execution_admission: None,
             execution_scheduler: ExecutionScheduler::adaptive(1),
+            relation_cache: RelationCache::default(),
             catalog_observers: RwLock::new(Vec::new()),
         }
     }
@@ -145,8 +154,19 @@ impl Engine {
             planner_mode: PlannerMode::Cost,
             execution_admission: None,
             execution_scheduler: ExecutionScheduler::adaptive(1),
+            relation_cache: RelationCache::default(),
             catalog_observers: RwLock::new(Vec::new()),
         }
+    }
+
+    pub fn with_relation_cache_limits(mut self, limits: super::RelationCacheLimits) -> Self {
+        self.relation_cache = RelationCache::new(limits);
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) fn relation_cache_stats(&self) -> super::relation_cache::RelationCacheStats {
+        self.relation_cache.stats()
     }
 
     /// Install a semantic event hook before sharing the engine. Production
@@ -317,7 +337,13 @@ impl Engine {
 
     /// Bind and read through one discarded snapshot.
     pub async fn execute(&self, query: lir::Query) -> Result<Datum> {
-        self.execute_snapshot(query, PlanOptions::default(), false)
+        self.execute_snapshot(query, PlanOptions::default(), false, CacheAccess::Enabled)
+            .await
+    }
+
+    /// Conformance oracle: execute the selected physical plan without reusable caches.
+    pub async fn execute_uncached(&self, query: lir::Query) -> Result<Datum> {
+        self.execute_snapshot(query, PlanOptions::default(), false, CacheAccess::Disabled)
             .await
     }
 
@@ -331,13 +357,14 @@ impl Engine {
                 ..PlanOptions::default()
             },
             false,
+            CacheAccess::Enabled,
         )
         .await
     }
 
     /// Conformance oracle for correlation: disable distinct-key batching.
     pub async fn execute_nested(&self, query: lir::Query) -> Result<Datum> {
-        self.execute_snapshot(query, PlanOptions::default(), true)
+        self.execute_snapshot(query, PlanOptions::default(), true, CacheAccess::Enabled)
             .await
     }
 
@@ -347,7 +374,15 @@ impl Engine {
         let transaction = self.store.begin(IsolationLevel::Snapshot).await?;
         let result = {
             let view = TransactionView(&*transaction);
-            match bind::bind(&ViewCatalog { view: &view }, query).await {
+            match bind::bind(
+                &ViewCatalog {
+                    view: &view,
+                    relation_cache: None,
+                },
+                query,
+            )
+            .await
+            {
                 Ok(bound) => {
                     ReferenceExecutor::new(&view, self.limits)
                         .execute(&bound)
@@ -365,6 +400,7 @@ impl Engine {
         transaction: &mut dyn Transaction,
         query: lir::Query,
     ) -> Result<Datum> {
+        crate::telemetry::relation_cache_lookup("bypass");
         let execution_grant = self.execution_scheduler.enter();
         let view = TransactionView(&*transaction);
         execute_on_view(
@@ -380,6 +416,7 @@ impl Engine {
                 .as_ref()
                 .map(|provider| provider.planning_stats()),
             execution_grant,
+            None,
         )
         .await
     }
@@ -406,7 +443,34 @@ impl Engine {
         program: Program,
         options: ProgramOptions,
     ) -> Result<ProgramResult> {
-        self.execute_program_path(program, options, false).await
+        self.execute_program_path(program, options, false, CacheAccess::Enabled)
+            .await
+    }
+
+    /// Conformance oracle for PIR: execute the program without reusable caches.
+    pub async fn execute_program_uncached(
+        &self,
+        program: Program,
+        catalog_policy: CatalogPolicy,
+    ) -> Result<ProgramResult> {
+        self.execute_program_uncached_with_options(
+            program,
+            ProgramOptions {
+                catalog: catalog_policy,
+                ..ProgramOptions::default()
+            },
+        )
+        .await
+    }
+
+    /// Conformance oracle for PIR options: execute the program without reusable caches.
+    pub async fn execute_program_uncached_with_options(
+        &self,
+        program: Program,
+        options: ProgramOptions,
+    ) -> Result<ProgramResult> {
+        self.execute_program_path(program, options, false, CacheAccess::Disabled)
+            .await
     }
 
     pub(crate) async fn begin_frontend_transaction(&self) -> Result<Box<dyn Transaction>> {
@@ -421,6 +485,7 @@ impl Engine {
         transaction: &mut dyn Transaction,
         program: &Program,
         catalog_policy: CatalogPolicy,
+        relation_cache_eligible: bool,
     ) -> Result<ProgramResult> {
         let effectful = program.statements.iter().any(super::Statement::effectful);
         if effectful {
@@ -447,6 +512,8 @@ impl Engine {
             &self.runtime,
             super::program::RunContext {
                 observation: self.observation(),
+                relation_cache: relation_cache_eligible.then_some(&self.relation_cache),
+                dependency_validation: DependencyValidation::Transaction,
                 statistics,
                 plan_options: PlanOptions {
                     mode: self.planner_mode,
@@ -485,7 +552,8 @@ impl Engine {
         program: Program,
         options: ProgramOptions,
     ) -> Result<ProgramResult> {
-        self.execute_program_path(program, options, true).await
+        self.execute_program_path(program, options, true, CacheAccess::Disabled)
+            .await
     }
 
     async fn execute_program_path(
@@ -493,6 +561,7 @@ impl Engine {
         program: Program,
         options: ProgramOptions,
         reference: bool,
+        cache_access: CacheAccess,
     ) -> Result<ProgramResult> {
         let effectful = program.statements.iter().any(super::Statement::effectful);
         if effectful {
@@ -589,6 +658,11 @@ impl Engine {
                         &self.runtime,
                         super::program::RunContext {
                             observation: self.observation(),
+                            relation_cache: (!effectful
+                                && !options.collect_plan
+                                && cache_access == CacheAccess::Enabled)
+                                .then_some(&self.relation_cache),
+                            dependency_validation: DependencyValidation::Snapshot,
                             statistics: statistics.clone(),
                             plan_options,
                             collect_plan: options.collect_plan,
@@ -765,9 +839,17 @@ impl Engine {
         query: lir::Query,
         options: PlanOptions,
         force_nested: bool,
+        cache_access: CacheAccess,
     ) -> Result<Datum> {
         let transaction = self.store.begin(IsolationLevel::Snapshot).await?;
         let execution_grant = self.execution_scheduler.enter();
+        let relation_cache =
+            if cache_access == CacheAccess::Disabled || force_nested || options.full_scan_only {
+                crate::telemetry::relation_cache_lookup("bypass");
+                None
+            } else {
+                Some(&self.relation_cache)
+            };
         let result = {
             let view = TransactionView(&*transaction);
             execute_on_view(
@@ -783,6 +865,7 @@ impl Engine {
                     .as_ref()
                     .map(|provider| provider.planning_stats()),
                 execution_grant,
+                relation_cache,
             )
             .await
         };
@@ -858,6 +941,7 @@ async fn delete_on_view(
     super::mutate::delete(view, &table, input_type, rows).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_on_view(
     view: &dyn KvView,
     query: lir::Query,
@@ -866,8 +950,16 @@ async fn execute_on_view(
     limits: Limits,
     statistics: Option<Arc<crate::engine::planner::models::PlannerStats>>,
     execution_grant: super::parallel::ExecutionGrant,
+    relation_cache: Option<&RelationCache>,
 ) -> Result<Datum> {
-    let bound = bind::bind(&ViewCatalog { view }, query).await?;
+    let bound = bind::bind(
+        &ViewCatalog {
+            view,
+            relation_cache,
+        },
+        query,
+    )
+    .await?;
     let planned = plan_query_with_context(
         &bound,
         options,
@@ -875,20 +967,56 @@ async fn execute_on_view(
             statistics: statistics.as_deref(),
         },
     );
-    let mut executor = Executor::new(view, limits);
-    executor.set_execution_grant(execution_grant);
-    executor.set_force_nested(force_nested);
-    executor.execute(&planned.plan).await
+    let Some(relation_cache) = relation_cache else {
+        let mut executor = Executor::new(view, limits);
+        executor.set_execution_grant(execution_grant);
+        executor.set_force_nested(force_nested);
+        return executor.execute(&planned.plan).await;
+    };
+    let fingerprints = crate::engine::lir::fingerprint::query(&bound);
+    let key = relation_cache
+        .key_for_view(
+            fingerprints.exact,
+            view,
+            &planned.plan.dependencies,
+            DependencyValidation::Snapshot,
+        )
+        .await?;
+    let output = &planned.plan.output;
+    let cardinality = planned.plan.cardinality;
+    let cached = relation_cache
+        .get_or_fill(key, output, || async {
+            let counters = super::observe::KvCounters::new(false);
+            let observed = super::observe::ObservedView::new(view, &counters);
+            let mut executor = Executor::new(&observed, limits);
+            executor.set_execution_grant(execution_grant);
+            let started = Instant::now();
+            let frames = executor.run_frames(&planned.plan).await?;
+            super::frames::validate_frame_cardinality(cardinality, frames.len())?;
+            Ok((
+                frames,
+                CachedWork {
+                    kv: counters.snapshot(),
+                    execution: started.elapsed(),
+                },
+            ))
+        })
+        .await?;
+    cached.shape(cardinality, output)
 }
 
 pub(super) struct ViewCatalog<'a> {
     pub(super) view: &'a dyn KvView,
+    pub(super) relation_cache: Option<&'a RelationCache>,
 }
 
 #[async_trait]
 impl bind::Catalog for ViewCatalog<'_> {
     async fn get_table(&self, name: &str) -> catalog::Result<Option<Table>> {
-        catalog::store::get_table(self.view, name).await
+        match self.relation_cache {
+            Some(cache) => cache.catalog_table_for_snapshot(self.view, name).await,
+            None => catalog::store::get_table(self.view, name).await,
+        }
     }
 }
 
@@ -911,7 +1039,8 @@ mod tests {
         DefaultFunction, DefaultValue, ForeignKeyDef, IndexDef, ScalarType, TableDef,
     };
     use crate::engine::exec::codec;
-    use crate::engine::exec::{ErrorKind, ErrorReason};
+    use crate::engine::exec::row_store;
+    use crate::engine::exec::{ErrorKind, ErrorReason, Statement};
     use crate::engine::kv::Kv;
     use crate::engine::kv::slatedb::Store;
     use crate::engine::lir::{
@@ -1315,6 +1444,294 @@ mod tests {
             cardinality: RootCardinality::Many,
             bindings: HashMap::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn relation_cache_uses_dependency_local_generations() {
+        let store = Arc::new(Store::memory("exec-relation-cache").await.unwrap());
+        let catalog = catalog::Catalog::new(store.clone());
+        catalog
+            .create_table(TableDef {
+                id: SchemaId::new(1).unwrap(),
+                name: "items".into(),
+                columns: vec![
+                    ColumnDef {
+                        id: SchemaId::new(1).unwrap(),
+                        name: "id".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                    ColumnDef {
+                        id: SchemaId::new(2).unwrap(),
+                        name: "status".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                ],
+                primary_key: vec!["id".into()],
+                indexes: Vec::new(),
+                foreign_keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let engine = Engine::new(store.clone());
+        engine
+            .create(
+                "items",
+                Row::from([
+                    ("id".into(), Value::Text("one".into())),
+                    ("status".into(), Value::Text("open".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+
+        let open = projected_column("items", "status", Some(("status", "open")));
+        let first = engine.execute(open.clone()).await.unwrap();
+        let second = engine.execute(open.clone()).await.unwrap();
+        assert_eq!(first, second);
+        assert_eq!(engine.relation_cache.stats().misses, 1);
+        assert_eq!(engine.relation_cache.stats().hits, 1);
+        assert_eq!(engine.relation_cache.stats().catalog_misses, 1);
+        assert_eq!(engine.relation_cache.stats().catalog_hits, 1);
+
+        engine
+            .execute(projected_column(
+                "items",
+                "status",
+                Some(("status", "closed")),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(engine.relation_cache.stats().misses, 2);
+
+        catalog
+            .create_table(TableDef {
+                id: SchemaId::new(2).unwrap(),
+                name: "posts".into(),
+                columns: vec![ColumnDef {
+                    id: SchemaId::new(1).unwrap(),
+                    name: "id".into(),
+                    scalar_type: ScalarType::Text,
+                    nullable: false,
+                    format: String::new(),
+                    default: None,
+                }],
+                primary_key: vec!["id".into()],
+                indexes: Vec::new(),
+                foreign_keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+        engine
+            .create(
+                "posts",
+                Row::from([("id".into(), Value::Text("unrelated".into()))]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(engine.execute(open.clone()).await.unwrap(), first);
+        assert_eq!(engine.relation_cache.stats().hits, 2);
+        assert_eq!(engine.relation_cache.stats().misses, 2);
+
+        engine
+            .create(
+                "items",
+                Row::from([
+                    ("id".into(), Value::Text("two".into())),
+                    ("status".into(), Value::Text("open".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        let after_write = engine.execute(open.clone()).await.unwrap();
+        assert!(matches!(after_write, Datum::Array(ref rows) if rows.len() == 2));
+        assert_eq!(engine.relation_cache.stats().misses, 3);
+
+        catalog
+            .create_column(
+                "items",
+                ColumnDef {
+                    id: SchemaId::new(3).unwrap(),
+                    name: "note".into(),
+                    scalar_type: ScalarType::Text,
+                    nullable: true,
+                    format: String::new(),
+                    default: None,
+                },
+            )
+            .await
+            .unwrap();
+        engine.execute(open.clone()).await.unwrap();
+        assert_eq!(engine.relation_cache.stats().misses, 4);
+
+        let mut transaction = store.begin(IsolationLevel::Snapshot).await.unwrap();
+        engine
+            .execute_in(transaction.as_mut(), open.clone())
+            .await
+            .unwrap();
+        engine.execute_in(transaction.as_mut(), open).await.unwrap();
+        transaction.rollback();
+        assert_eq!(engine.relation_cache.stats().hits, 2);
+        assert_eq!(engine.relation_cache.stats().misses, 4);
+        store.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn relation_cache_keeps_pinned_generations_and_conflict_fences() {
+        let store = Arc::new(Store::memory("exec-relation-cache-pinned").await.unwrap());
+        let catalog = catalog::Catalog::new(store.clone());
+        catalog
+            .create_table(TableDef {
+                id: SchemaId::new(1).unwrap(),
+                name: "items".into(),
+                columns: vec![
+                    ColumnDef {
+                        id: SchemaId::new(1).unwrap(),
+                        name: "id".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                    ColumnDef {
+                        id: SchemaId::new(2).unwrap(),
+                        name: "status".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                ],
+                primary_key: vec!["id".into()],
+                indexes: Vec::new(),
+                foreign_keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let engine = Engine::new(store.clone());
+        engine
+            .create(
+                "items",
+                Row::from([
+                    ("id".into(), Value::Text("one".into())),
+                    ("status".into(), Value::Text("open".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        let query = projected_column("items", "status", None);
+        let program = Program {
+            statements: vec![Statement::Query {
+                name: "read".into(),
+                relation: query.clone(),
+            }],
+            result: Some("read".into()),
+        };
+        let mut pinned = store.begin(IsolationLevel::Snapshot).await.unwrap();
+        let first = engine
+            .execute_program_in_transaction(
+                pinned.as_mut(),
+                &program,
+                CatalogPolicy::Forbidden,
+                true,
+            )
+            .await
+            .unwrap();
+        let second = engine
+            .execute_program_in_transaction(
+                pinned.as_mut(),
+                &program,
+                CatalogPolicy::Forbidden,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.result, second.result);
+        assert!(matches!(first.result, Datum::Array(ref rows) if rows.len() == 1));
+        assert_eq!(engine.relation_cache.stats().misses, 1);
+        assert_eq!(engine.relation_cache.stats().hits, 1);
+        assert_eq!(engine.relation_cache.stats().catalog_hits, 0);
+        assert_eq!(engine.relation_cache.stats().catalog_misses, 0);
+        assert_eq!(engine.relation_cache.stats().prepared_hits, 0);
+        assert_eq!(engine.relation_cache.stats().prepared_misses, 0);
+
+        engine
+            .create(
+                "items",
+                Row::from([
+                    ("id".into(), Value::Text("two".into())),
+                    ("status".into(), Value::Text("open".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        let current = engine.execute(query.clone()).await.unwrap();
+        assert!(matches!(current, Datum::Array(ref rows) if rows.len() == 2));
+        assert_eq!(engine.relation_cache.stats().misses, 2);
+        assert_eq!(engine.relation_cache.stats().catalog_misses, 1);
+
+        let old = engine
+            .execute_program_in_transaction(
+                pinned.as_mut(),
+                &program,
+                CatalogPolicy::Forbidden,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(old.result, first.result);
+        assert_eq!(engine.relation_cache.stats().hits, 2);
+        assert_eq!(engine.relation_cache.stats().entries, 2);
+        assert_eq!(engine.relation_cache.stats().catalog_misses, 1);
+        pinned.rollback();
+
+        let mut conflicting = store
+            .begin(IsolationLevel::SerializableSnapshot)
+            .await
+            .unwrap();
+        engine
+            .execute_program_in_transaction(
+                conflicting.as_mut(),
+                &program,
+                CatalogPolicy::Forbidden,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(engine.relation_cache.stats().hits, 3);
+        engine
+            .create(
+                "items",
+                Row::from([
+                    ("id".into(), Value::Text("three".into())),
+                    ("status".into(), Value::Text("open".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        engine
+            .create_many_in(
+                conflicting.as_mut(),
+                "items",
+                &[Row::from([
+                    ("id".into(), Value::Text("four".into())),
+                    ("status".into(), Value::Text("open".into())),
+                ])],
+            )
+            .await
+            .unwrap();
+        assert!(conflicting.commit().await.is_err());
+
+        let after_conflict = engine.execute(query).await.unwrap();
+        assert!(matches!(after_conflict, Datum::Array(ref rows) if rows.len() == 3));
+        assert_eq!(engine.relation_cache.stats().misses, 3);
+        assert_eq!(engine.relation_cache.stats().entries, 3);
+        store.close().await.unwrap();
     }
 
     fn projected_scratch(column: &str, filter_on_retiring: bool) -> lir::Query {
@@ -1978,6 +2395,113 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[tokio::test]
+    async fn row_mutations_advance_data_generation_with_their_commit() {
+        let store = Arc::new(Store::memory("exec-data-generation").await.unwrap());
+        let table = catalog::Catalog::new(store.clone())
+            .create_table(TableDef {
+                id: SchemaId::new(1).unwrap(),
+                name: "items".into(),
+                columns: vec![
+                    ColumnDef {
+                        id: SchemaId::new(1).unwrap(),
+                        name: "id".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                    ColumnDef {
+                        id: SchemaId::new(2).unwrap(),
+                        name: "value".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                ],
+                primary_key: vec!["id".into()],
+                indexes: Vec::new(),
+                foreign_keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let engine = Engine::new(store.clone());
+        let generation = || async {
+            catalog::store::read_table_data_generation(&*store, &table.id)
+                .await
+                .unwrap()
+                .get()
+        };
+
+        assert_eq!(generation().await, 0);
+        engine.create_many("items", Vec::new()).await.unwrap();
+        assert_eq!(generation().await, 0);
+        engine
+            .create(
+                "items",
+                Row::from([
+                    ("id".into(), Value::Text("one".into())),
+                    ("value".into(), Value::Text("first".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(generation().await, 1);
+        engine
+            .update_many(
+                "items",
+                text_input_type(&["id", "value"]),
+                vec![Row::from([
+                    ("id".into(), Value::Text("one".into())),
+                    ("value".into(), Value::Text("second".into())),
+                ])],
+            )
+            .await
+            .unwrap();
+        assert_eq!(generation().await, 2);
+        engine
+            .delete_many(
+                "items",
+                text_input_type(&["id"]),
+                vec![Row::from([("id".into(), Value::Text("one".into()))])],
+            )
+            .await
+            .unwrap();
+        assert_eq!(generation().await, 3);
+
+        let error = engine
+            .create_many(
+                "items",
+                vec![
+                    Row::from([
+                        ("id".into(), Value::Text("dupe".into())),
+                        ("value".into(), Value::Text("first".into())),
+                    ]),
+                    Row::from([
+                        ("id".into(), Value::Text("dupe".into())),
+                        ("value".into(), Value::Text("second".into())),
+                    ]),
+                ],
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ConstraintViolation);
+        assert_eq!(generation().await, 3);
+        assert!(
+            row_store::get_columns(
+                &*store,
+                &table,
+                &Row::from([("id".into(), Value::Text("dupe".into()))]),
+                &table.columns,
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        store.close().await.unwrap();
     }
 
     #[tokio::test]

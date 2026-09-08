@@ -39,6 +39,7 @@ chrono = { version = "0.4.41", features = ["serde"] }
 clap = { version = "4.6", features = ["derive", "env"] }
 cliclack = "0.5.5"
 futures = "0.3.31"
+foyer = { version = "=0.22.3", default-features = false }
 http-body-util = "0.1"
 hyper = { version = "1.11", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["server", "tokio"] }

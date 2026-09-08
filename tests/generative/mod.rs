@@ -215,32 +215,52 @@ async fn database(case: &Case) -> TestResult<(Arc<Store>, Engine)> {
 }
 
 async fn check_in(engine: &Engine, case: &Case) -> TestResult<()> {
-    let chosen = observe(engine.execute(case.query.clone()).await)?;
+    let uncached_result = engine.execute_uncached(case.query.clone()).await;
+    let chosen_result = engine.execute(case.query.clone()).await;
+    let cached_result = engine.execute(case.query.clone()).await;
+    if !crate::exact::outcomes_eq(&uncached_result, &chosen_result)
+        || !crate::exact::outcomes_eq(&uncached_result, &cached_result)
+    {
+        return Err(format!(
+            "relation cache changed the exact query outcome\nuncached: {uncached_result:?}\n     cold: {chosen_result:?}\n      hot: {cached_result:?}\nquery: {:#?}",
+            case.query
+        ));
+    }
+
+    let uncached = observe(uncached_result)?;
+    let chosen = observe(chosen_result)?;
+    let cached = observe(cached_result)?;
     let forced = observe(engine.execute_forced(case.query.clone()).await)?;
     let nested = observe(engine.execute_nested(case.query.clone()).await)?;
     let reference = observe(engine.execute_reference(case.query.clone()).await)?;
 
-    if matches!(chosen, Outcome::Error(ErrorKind::InvalidInput, _))
+    if matches!(uncached, Outcome::Error(ErrorKind::InvalidInput, _))
+        || matches!(chosen, Outcome::Error(ErrorKind::InvalidInput, _))
+        || matches!(cached, Outcome::Error(ErrorKind::InvalidInput, _))
         || matches!(forced, Outcome::Error(ErrorKind::InvalidInput, _))
         || matches!(nested, Outcome::Error(ErrorKind::InvalidInput, _))
         || matches!(reference, Outcome::Error(ErrorKind::InvalidInput, _))
     {
         return Err(format!(
-            "generator produced an invalid query\nchosen: {chosen:?}\nforced: {forced:?}\nnested: {nested:?}\nreference: {reference:?}\nquery: {:#?}",
+            "generator produced an invalid query\nuncached: {uncached:?}\nchosen: {chosen:?}\ncached: {cached:?}\nforced: {forced:?}\nnested: {nested:?}\nreference: {reference:?}\nquery: {:#?}",
             case.query
         ));
     }
 
+    let uncached = comparable(uncached, case.ordered);
     let chosen = comparable(chosen, case.ordered);
+    let cached = comparable(cached, case.ordered);
     let forced = comparable(forced, case.ordered);
     let nested = comparable(nested, case.ordered);
     let reference = comparable(reference, case.ordered);
-    if !equivalent(&chosen, &reference)
+    if !equivalent(&chosen, &uncached)
+        || !equivalent(&chosen, &cached)
+        || !equivalent(&chosen, &reference)
         || !equivalent(&chosen, &forced)
         || !equivalent(&chosen, &nested)
     {
         return Err(format!(
-            "four-way differential mismatch\nchosen: {chosen:?}\nforced: {forced:?}\nnested: {nested:?}\nreference: {reference:?}\nquery: {:#?}",
+            "execution-path differential mismatch\nuncached: {uncached:?}\nchosen: {chosen:?}\ncached: {cached:?}\nforced: {forced:?}\nnested: {nested:?}\nreference: {reference:?}\nquery: {:#?}",
             case.query
         ));
     }

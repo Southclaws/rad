@@ -181,6 +181,21 @@ commands:
         envVar: RAD_METRICS
         choices: ["true", "false"]
         default: "true"
+      - name: relation-cache-size-mib
+        description: Total memory capacity for materialized relation results.
+        type: integer
+        envVar: RAD_RELATION_CACHE_SIZE_MIB
+        default: 128
+      - name: relation-cache-entries
+        description: Maximum materialized relation result count.
+        type: integer
+        envVar: RAD_RELATION_CACHE_ENTRIES
+        default: 4096
+      - name: relation-cache-max-result-size-mib
+        description: Maximum size of one materialized relation result.
+        type: integer
+        envVar: RAD_RELATION_CACHE_MAX_RESULT_SIZE_MIB
+        default: 8
       - name: slate-decoded-cache-size-mib
         description: Total memory capacity for decoded Slate data blocks and metadata.
         type: integer

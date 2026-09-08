@@ -548,10 +548,18 @@ impl QueryModel {
         self.executions += 1;
         self.last_seen = at;
         self.rows.record(observation.rows);
-        let execute_micros = observation.phase.execute.as_micros() as u64;
-        self.execute_micros.record(execute_micros);
         self.bind_micros
             .record(observation.phase.bind.as_micros() as u64);
+        if let Some(estimate) = &observation.estimate {
+            self.record_estimate(estimate.cardinality, observation.rows);
+        }
+        self.exact_variants.record(&observation.query.exact);
+        if observation.source == crate::engine::exec::observe::StatementSource::RelationCache {
+            return;
+        }
+        let execute_micros = observation.phase.execute.as_micros() as u64;
+        let first_execution = self.execute_micros.count() == 0;
+        self.execute_micros.record(execute_micros);
         let resources = crate::engine::planner::models::KvResourceSample {
             gets: observation.kv.gets,
             puts: observation.kv.puts,
@@ -562,7 +570,7 @@ impl QueryModel {
             bytes_written: observation.kv.bytes_written,
         };
         self.resources.record(resources);
-        self.duration_ewma_micros = if self.executions == 1 {
+        self.duration_ewma_micros = if first_execution {
             execute_micros as f64
         } else {
             EWMA_ALPHA * execute_micros as f64 + (1.0 - EWMA_ALPHA) * self.duration_ewma_micros
@@ -576,10 +584,6 @@ impl QueryModel {
                 resources,
             );
         }
-        if let Some(estimate) = &observation.estimate {
-            self.record_estimate(estimate.cardinality, observation.rows);
-        }
-        self.exact_variants.record(&observation.query.exact);
     }
 
     fn record_relation(
@@ -3334,6 +3338,7 @@ pub(super) mod tests {
         let family = fingerprint(family_seed);
         let exact = fingerprint(exact_seed);
         StatementObservation {
+            source: crate::engine::exec::observe::StatementSource::Executed,
             query: QueryFingerprints {
                 exact,
                 family,
@@ -3627,6 +3632,32 @@ pub(super) mod tests {
         assert_eq!(statement.rows.maximum(), 10);
         assert_eq!(statement.execute_micros.count(), 1);
         assert_eq!(registry.len(), 2);
+    }
+
+    #[test]
+    fn relation_cache_hits_record_frequency_without_execution_cost() {
+        let mut registry = HotRegistry::new(16);
+        let mut cached = observation(1, 1, 10);
+        cached.source = crate::engine::exec::observe::StatementSource::RelationCache;
+        registry.absorb(&cached, Duration::from_secs(1));
+
+        let cached_model = registry
+            .model(ObservationModelKind::Statement, &cached.query.family)
+            .expect("statement model");
+        assert_eq!(cached_model.executions, 1);
+        assert_eq!(cached_model.rows.count(), 1);
+        assert_eq!(cached_model.bind_micros.count(), 1);
+        assert_eq!(cached_model.execute_micros.count(), 0);
+        assert!(cached_model.plans.is_empty());
+
+        let executed = observation(1, 1, 10);
+        registry.absorb(&executed, Duration::from_secs(2));
+        let model = registry
+            .model(ObservationModelKind::Statement, &cached.query.family)
+            .expect("statement model");
+        assert_eq!(model.executions, 2);
+        assert_eq!(model.execute_micros.count(), 1);
+        assert_eq!(model.duration_ewma_micros, 400.0);
     }
 
     #[test]

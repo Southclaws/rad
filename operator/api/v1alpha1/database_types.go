@@ -96,6 +96,14 @@ type Telemetry struct {
 	// +kubebuilder:validation:Pattern=`^$|^https?://`
 	Endpoint string `json:"endpoint,omitempty"`
 
+	// TraceSamplePercent sets the sample percentage for root traces. A sampled
+	// parent trace remains sampled.
+	// +optional
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	TraceSamplePercent *int32 `json:"traceSamplePercent,omitempty"`
+
 	// Diagnostics limits the level that an HTTP request can select.
 	// +kubebuilder:default=summary
 	Diagnostics DiagnosticLevel `json:"diagnostics,omitempty"`
@@ -104,6 +112,22 @@ type Telemetry struct {
 	// +optional
 	// +kubebuilder:default=true
 	Metrics *bool `json:"metrics,omitempty"`
+}
+
+// RelationCache configures materialized relation result limits for each pod.
+// The cache algorithm is not configurable.
+type RelationCache struct {
+	// +kubebuilder:default=128
+	// +kubebuilder:validation:Minimum=1
+	SizeMiB int32 `json:"sizeMiB,omitempty"`
+
+	// +kubebuilder:default=4096
+	// +kubebuilder:validation:Minimum=1
+	Entries int32 `json:"entries,omitempty"`
+
+	// +kubebuilder:default=8
+	// +kubebuilder:validation:Minimum=1
+	MaxResultSizeMiB int32 `json:"maxResultSizeMiB,omitempty"`
 }
 
 // SlateObjectCache configures the local raw object cache for each database pod.
@@ -347,6 +371,12 @@ type DatabaseSpec struct {
 	// +optional
 	// +kubebuilder:default={diagnostics: summary, metrics: true}
 	Telemetry Telemetry `json:"telemetry,omitempty"`
+
+	// RelationCache applies the same materialized result limits to all pods.
+	// +optional
+	// +kubebuilder:default={sizeMiB: 128, entries: 4096, maxResultSizeMiB: 8}
+	// +kubebuilder:validation:XValidation:rule="self.maxResultSizeMiB <= self.sizeMiB",message="maxResultSizeMiB must not exceed sizeMiB"
+	RelationCache RelationCache `json:"relationCache,omitempty"`
 
 	// Slate applies the same storage settings to all pods.
 	// +optional

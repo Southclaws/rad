@@ -14,29 +14,43 @@ pub fn shape_frames(
     output: &RowType,
     frames: &[Env],
 ) -> Result<Datum> {
+    validate_frame_cardinality(cardinality, frames.len())?;
     match cardinality {
         RootCardinality::Many => Ok(frames_to_array(output, frames)),
         RootCardinality::First => Ok(frames
             .first()
             .map(|frame| frame_to_object(output, frame))
             .unwrap_or(Datum::Null)),
-        RootCardinality::ExactlyOne => match frames {
-            [frame] => Ok(frame_to_object(output, frame)),
-            [] => Err(Error::with_reason(
-                ErrorKind::Runtime,
-                ErrorReason::CardinalityViolation,
-                "exec: expected exactly one row, got none",
-            )),
-            _ => Err(Error::with_reason(
-                ErrorKind::Runtime,
-                ErrorReason::CardinalityViolation,
-                "exec: expected exactly one row, got more",
-            )),
-        },
+        RootCardinality::ExactlyOne => Ok(frame_to_object(
+            output,
+            frames.first().expect("cardinality is valid"),
+        )),
         RootCardinality::Scalar => Ok(frames
             .first()
             .map(|frame| frame_scalar(output, frame))
             .unwrap_or(Datum::Null)),
+    }
+}
+
+pub(super) fn validate_frame_cardinality(
+    cardinality: RootCardinality,
+    frame_count: usize,
+) -> Result<()> {
+    if cardinality != RootCardinality::ExactlyOne {
+        return Ok(());
+    }
+    match frame_count {
+        1 => Ok(()),
+        0 => Err(Error::with_reason(
+            ErrorKind::Runtime,
+            ErrorReason::CardinalityViolation,
+            "exec: expected exactly one row, got none",
+        )),
+        _ => Err(Error::with_reason(
+            ErrorKind::Runtime,
+            ErrorReason::CardinalityViolation,
+            "exec: expected exactly one row, got more",
+        )),
     }
 }
 

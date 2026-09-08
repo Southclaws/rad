@@ -6,6 +6,7 @@ mod defaults;
 use std::collections::HashSet;
 
 use crate::engine::catalog::model::Table;
+use crate::engine::catalog::store;
 use crate::engine::kv::KvView;
 use crate::engine::lir::{Row, RowType};
 use crate::runtime::RuntimeEffects;
@@ -53,6 +54,9 @@ pub(super) async fn create(
     for (row, primary_key) in stored.iter().zip(&primary_keys) {
         constraints::check_foreign_keys(view, table, row).await?;
         constraints::check_unique_indexes(view, table, row, primary_key).await?;
+    }
+    if !stored.is_empty() {
+        store::advance_table_data_generation(view, &table.id).await?;
     }
     Ok(stored)
 }
@@ -121,6 +125,9 @@ pub(super) async fn update(
         )
         .await?;
     }
+    if !pending.is_empty() {
+        store::advance_table_data_generation(view, &table.id).await?;
+    }
     Ok(pending.into_iter().map(|mutation| mutation.after).collect())
 }
 
@@ -137,6 +144,9 @@ pub(super) async fn delete(
     }
     for target in &targets {
         constraints::check_no_references(view, table, &target.before).await?;
+    }
+    if !targets.is_empty() {
+        store::advance_table_data_generation(view, &table.id).await?;
     }
     Ok(targets.into_iter().map(|target| target.before).collect())
 }

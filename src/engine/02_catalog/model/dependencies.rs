@@ -1,7 +1,7 @@
 use super::{Column, Index, Table};
 use crate::engine::catalog::identity::{
-    AccessGeneration, ColumnId, ExistenceGeneration, IndexId, TableId, ValueGeneration,
-    WriteProtocolGeneration,
+    AccessGeneration, ColumnId, ExistenceGeneration, IndexId, StorageGeneration, TableId,
+    ValueGeneration, WriteProtocolGeneration,
 };
 
 /// Immutable compatibility fences carried by a bound physical plan. Names are
@@ -19,6 +19,7 @@ pub struct TableExistenceDependency {
     pub table_id: TableId,
     pub table_name: String,
     pub generation: ExistenceGeneration,
+    pub storage_generation: StorageGeneration,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,8 +62,13 @@ impl CatalogDependencies {
                 table_id: table.id.clone(),
                 table_name: table.name.clone(),
                 generation: table.existence_generation,
+                storage_generation: table.storage_generation,
             },
-            |left, right| left.table_id == right.table_id && left.generation == right.generation,
+            |left, right| {
+                left.table_id == right.table_id
+                    && left.generation == right.generation
+                    && left.storage_generation == right.storage_generation
+            },
         );
         for column in columns {
             push_unique(
@@ -121,7 +127,9 @@ impl CatalogDependencies {
                 &mut self.table_existence,
                 dependency.clone(),
                 |left, right| {
-                    left.table_id == right.table_id && left.generation == right.generation
+                    left.table_id == right.table_id
+                        && left.generation == right.generation
+                        && left.storage_generation == right.storage_generation
                 },
             );
         }

@@ -25,6 +25,7 @@ pub struct Tx {
     engine: Arc<Engine>,
     transaction: Option<Box<dyn Transaction>>,
     catalog_statements: Vec<String>,
+    dirty: bool,
     span: tracing::Span,
     started: Instant,
 }
@@ -48,6 +49,7 @@ impl Tx {
             engine,
             transaction: Some(transaction),
             catalog_statements: Vec::new(),
+            dirty: false,
             span,
             started: Instant::now(),
         })
@@ -66,6 +68,14 @@ impl Tx {
         program: Program,
         catalog_policy: CatalogPolicy,
     ) -> crate::engine::exec::Result<ProgramResult> {
+        let effectful = program
+            .statements
+            .iter()
+            .any(|statement| statement.effectful());
+        if effectful {
+            self.dirty = true;
+        }
+        let relation_cache_eligible = !self.dirty;
         let catalog_statements = program
             .statements
             .iter()
@@ -83,7 +93,12 @@ impl Tx {
         let program_log = ProgramLog::new(&program, &options);
         let result = self
             .engine
-            .execute_program_in_transaction(transaction, &program, catalog_policy)
+            .execute_program_in_transaction(
+                transaction,
+                &program,
+                catalog_policy,
+                relation_cache_eligible,
+            )
             .instrument(program_log.span.clone())
             .await;
         program_log.finish(&result);
@@ -609,12 +624,17 @@ fn lower_pir(program: pir::Program) -> crate::engine::exec::Result<Program> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use crate::engine::catalog::identity::SchemaId;
+    use crate::engine::catalog::model::{ColumnDef, ScalarType, TableDef};
     use crate::engine::kv::slatedb::Store;
-    use crate::engine::lir::{Datum, ObjectField, Value};
+    use crate::engine::lir::{
+        Datum, Kind, ObjectField, RawScalar, Relation, RootCardinality, RowsColumn, Value,
+    };
     use tracing_subscriber::prelude::*;
 
     use super::*;
@@ -622,11 +642,17 @@ mod tests {
     #[derive(Default)]
     struct ProgramObserver {
         programs: Mutex<Vec<crate::engine::exec::observe::ProgramRecord>>,
+        statements: Mutex<Vec<crate::engine::exec::observe::StatementObservation>>,
         skipped_oversize: AtomicU64,
     }
 
     impl crate::engine::exec::observe::ExecutionObserver for ProgramObserver {
-        fn statement(&self, _observation: crate::engine::exec::observe::StatementObservation) {}
+        fn statement(&self, observation: crate::engine::exec::observe::StatementObservation) {
+            self.statements
+                .lock()
+                .expect("statement observations")
+                .push(observation);
+        }
 
         fn captures_programs(&self) -> bool {
             true
@@ -682,6 +708,145 @@ mod tests {
                 assert!(!program_log.span_id.is_empty());
             });
         });
+    }
+
+    #[tokio::test]
+    async fn explicit_transaction_bypasses_cached_relations_after_a_write() {
+        let store = Arc::new(
+            Store::memory("frontend-relation-cache-dirty")
+                .await
+                .unwrap(),
+        );
+        let catalog = catalog::Catalog::new(store.clone());
+        catalog
+            .create_table(TableDef {
+                id: SchemaId::new(1).unwrap(),
+                name: "tasks".into(),
+                columns: vec![
+                    ColumnDef {
+                        id: SchemaId::new(1).unwrap(),
+                        name: "id".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                    ColumnDef {
+                        id: SchemaId::new(2).unwrap(),
+                        name: "status".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                ],
+                primary_key: vec!["id".into()],
+                indexes: Vec::new(),
+                foreign_keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let observer = Arc::new(ProgramObserver::default());
+        let engine = Arc::new(Engine::new(store).with_observer(observer.clone()));
+        engine
+            .create(
+                "tasks",
+                crate::engine::lir::Row::from([
+                    ("id".into(), Value::Text("a".into())),
+                    ("status".into(), Value::Text("open".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        let read = Program {
+            statements: vec![crate::engine::exec::Statement::Query {
+                name: "read".into(),
+                relation: crate::engine::lir::Query {
+                    root: Relation::Order {
+                        input: Box::new(Relation::Scan {
+                            table: "tasks".into(),
+                            scope: "task".into(),
+                        }),
+                        terms: vec![crate::engine::lir::OrderTerm {
+                            expression: crate::engine::lir::Expr::Column {
+                                scope: "task".into(),
+                                name: "id".into(),
+                            },
+                            descending: false,
+                        }],
+                    },
+                    cardinality: RootCardinality::Many,
+                    bindings: HashMap::new(),
+                },
+            }],
+            result: None,
+        };
+        let create = Program {
+            statements: vec![crate::engine::exec::Statement::Create {
+                name: "create".into(),
+                relation: crate::engine::lir::Query {
+                    root: Relation::Rows {
+                        scope: "input".into(),
+                        columns: vec![
+                            RowsColumn {
+                                name: "id".into(),
+                                kind: Kind::Text,
+                                nullable: false,
+                            },
+                            RowsColumn {
+                                name: "status".into(),
+                                kind: Kind::Text,
+                                nullable: false,
+                            },
+                        ],
+                        values: vec![vec![
+                            RawScalar::Text("b".into()),
+                            RawScalar::Text("open".into()),
+                        ]],
+                    },
+                    cardinality: RootCardinality::Many,
+                    bindings: HashMap::new(),
+                },
+                table: "tasks".into(),
+            }],
+            result: None,
+        };
+        let mut transaction = Tx::begin(engine).await.unwrap();
+
+        transaction
+            .execute_program(read.clone(), CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        transaction
+            .execute_program(read.clone(), CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        transaction
+            .execute_program(create, CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        let after_write = transaction
+            .execute_program(read, CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        assert!(matches!(after_write.result, Datum::Array(ref rows) if rows.len() == 2));
+
+        let statements = observer.statements.lock().expect("statement observations");
+        assert_eq!(statements.len(), 4);
+        assert_eq!(
+            statements[0].source,
+            crate::engine::exec::observe::StatementSource::Executed
+        );
+        assert_eq!(
+            statements[1].source,
+            crate::engine::exec::observe::StatementSource::RelationCache
+        );
+        assert_eq!(
+            statements[3].source,
+            crate::engine::exec::observe::StatementSource::Executed
+        );
+        drop(statements);
+        transaction.rollback();
     }
 
     #[test]

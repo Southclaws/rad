@@ -474,6 +474,7 @@ fn observation(family_seed: u8, exact_seed: u8, rows: u64) -> StatementObservati
     let family = fingerprint(family_seed);
     let exact = fingerprint(exact_seed);
     StatementObservation {
+        source: rad::engine::exec::observe::StatementSource::Executed,
         query: QueryFingerprints {
             exact,
             family,

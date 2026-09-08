@@ -24,8 +24,25 @@ use crate::engine::kv::{
 };
 use crate::engine::lir::fingerprint::{Fingerprint, QueryFingerprints};
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum StatementSource {
+    #[default]
+    Executed,
+    RelationCache,
+}
+
+impl StatementSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Executed => "executed",
+            Self::RelationCache => "relation_cache",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct StatementObservation {
+    pub source: StatementSource,
     /// Fingerprints of the bound statement: exact/family roots, per-subtree
     /// digests in canonical order, and the logical dependency set.
     pub query: QueryFingerprints,

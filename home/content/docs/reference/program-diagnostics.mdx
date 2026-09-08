@@ -122,7 +122,8 @@ spec:
     endpoint: http://otel-collector.observability.svc:4318
     diagnostics: summary
     metrics: true
-  cache:
+    traceSamplePercent: 1
+  relationCache:
     sizeMiB: 128
 ```
 

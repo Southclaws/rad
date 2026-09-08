@@ -135,19 +135,24 @@ func TestTelemetryPolicyIsProjected(t *testing.T) {
 	spec.Diagnostics = DiagnosticLevelDetailed
 	metrics := false
 	spec.MetricsEnabled = &metrics
+	spec.RelationCache = RelationCacheOptions{
+		SizeMiB:          256,
+		Entries:          8192,
+		MaxResultSizeMiB: 16,
+	}
 	spec.Slate.DecodedCacheSizeMiB = 256
 	created, err := c.CreateDatabase(context.Background(), spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.OTelEndpoint != spec.OTelEndpoint || created.Diagnostics != DiagnosticLevelDetailed || created.MetricsEnabled || created.Slate.DecodedCacheSizeMiB != 256 {
+	if created.OTelEndpoint != spec.OTelEndpoint || created.Diagnostics != DiagnosticLevelDetailed || created.MetricsEnabled || created.RelationCache != spec.RelationCache || created.Slate.DecodedCacheSizeMiB != 256 {
 		t.Fatalf("telemetry view = %+v", created)
 	}
 	resource := &radv1alpha1.Database{}
 	if err := c.kube.Get(context.Background(), types.NamespacedName{Namespace: "tenants", Name: "telemetry"}, resource); err != nil {
 		t.Fatal(err)
 	}
-	if resource.Spec.Telemetry.Endpoint != spec.OTelEndpoint || resource.Spec.Telemetry.Diagnostics != radv1alpha1.DiagnosticLevelDetailed || resource.Spec.Telemetry.Metrics == nil || *resource.Spec.Telemetry.Metrics || resource.Spec.Slate.DecodedCacheSizeMiB != 256 {
+	if resource.Spec.Telemetry.Endpoint != spec.OTelEndpoint || resource.Spec.Telemetry.Diagnostics != radv1alpha1.DiagnosticLevelDetailed || resource.Spec.Telemetry.Metrics == nil || *resource.Spec.Telemetry.Metrics || resource.Spec.RelationCache.SizeMiB != 256 || resource.Spec.RelationCache.Entries != 8192 || resource.Spec.RelationCache.MaxResultSizeMiB != 16 || resource.Spec.Slate.DecodedCacheSizeMiB != 256 {
 		t.Fatalf("telemetry resource = %+v", resource.Spec.Telemetry)
 	}
 }
@@ -158,7 +163,7 @@ func TestMetricAndCacheDefaultsAreProjected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !created.MetricsEnabled || created.Slate.DecodedCacheSizeMiB != 128 {
+	if !created.MetricsEnabled || created.RelationCache.SizeMiB != 128 || created.RelationCache.Entries != 4096 || created.RelationCache.MaxResultSizeMiB != 8 || created.Slate.DecodedCacheSizeMiB != 128 {
 		t.Fatalf("metric and cache defaults = %+v", created)
 	}
 }

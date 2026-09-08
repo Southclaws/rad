@@ -8,10 +8,14 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+#[path = "oracle/exact.rs"]
+mod exact;
 
 use rad::engine::catalog;
 use rad::engine::catalog::model::ScalarType;
+use rad::engine::exec::observe::{ExecutionObserver, StatementObservation, StatementSource};
 use rad::engine::exec::{self, CatalogPolicy, Engine, ProgramOptions};
 use rad::engine::kv::TransactionalKv;
 use rad::engine::kv::slatedb::Store;
@@ -104,6 +108,37 @@ struct FixtureDb {
     store: Arc<Store>,
 }
 
+#[derive(Default)]
+struct CacheOracleObserver {
+    sources: Mutex<Vec<StatementSource>>,
+}
+
+impl ExecutionObserver for CacheOracleObserver {
+    fn statement(&self, observation: StatementObservation) {
+        self.sources
+            .lock()
+            .expect("cache oracle observer lock poisoned")
+            .push(observation.source);
+    }
+}
+
+impl CacheOracleObserver {
+    fn take_sources(&self) -> Vec<StatementSource> {
+        std::mem::take(
+            &mut *self
+                .sources
+                .lock()
+                .expect("cache oracle observer lock poisoned"),
+        )
+    }
+}
+
+enum CacheOracleDisposition {
+    Skipped,
+    Hit,
+    Failure,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ObservedError {
     code: &'static str,
@@ -151,7 +186,7 @@ async fn shared_e2e_cases_match_production_reference_and_expected_results() {
     let cases = discover_cases().expect("discover shared E2E corpus");
     let mut failures = Vec::new();
     for (name, fixture_path) in &cases {
-        if let Err(error) = run_case(name, fixture_path).await {
+        if let Err(error) = Box::pin(run_case(name, fixture_path)).await {
             failures.push((name, error));
         }
     }
@@ -169,6 +204,46 @@ async fn shared_e2e_cases_match_production_reference_and_expected_results() {
         let _ = writeln!(report, "\n{name}:\n  {}", error.replace('\n', "\n  "));
     }
     panic!("{report}");
+}
+
+#[tokio::test]
+async fn shared_e2e_relation_cache_hits_match_uncached_execution_exactly() {
+    let cases = discover_cases().expect("discover shared E2E corpus");
+    let mut hits = 0;
+    let mut failures = 0;
+    let mut skipped = 0;
+    let mut mismatches = Vec::new();
+    for (name, fixture_path) in &cases {
+        match run_cache_oracle_case(name, fixture_path).await {
+            Ok(CacheOracleDisposition::Skipped) => skipped += 1,
+            Ok(CacheOracleDisposition::Hit) => hits += 1,
+            Ok(CacheOracleDisposition::Failure) => failures += 1,
+            Err(error) => mismatches.push((name, error)),
+        }
+    }
+
+    if !mismatches.is_empty() {
+        let mut report = format!(
+            "{} of {} shared E2E fixtures failed the relation cache oracle:\n",
+            mismatches.len(),
+            cases.len()
+        );
+        for (name, error) in mismatches {
+            let _ = writeln!(report, "\n{name}:\n  {}", error.replace('\n', "\n  "));
+        }
+        panic!("{report}");
+    }
+    assert!(
+        hits > 0,
+        "relation cache oracle did not observe a cache hit"
+    );
+    assert!(
+        failures > 0,
+        "relation cache oracle did not check a failed execution"
+    );
+    println!(
+        "relation cache oracle checked {hits} cache hits and {failures} repeated failures; skipped {skipped} ineligible fixtures"
+    );
 }
 
 #[tokio::test]
@@ -205,7 +280,7 @@ async fn reference_mutation_smoke() {
         let path = cases
             .get(name)
             .unwrap_or_else(|| panic!("mutation-smoke fixture {name:?} is missing"));
-        run_case(name, path)
+        Box::pin(run_case(name, path))
             .await
             .unwrap_or_else(|error| panic!("mutation-smoke fixture {name:?}: {error}"));
     }
@@ -371,6 +446,91 @@ async fn run_case(name: &str, fixture_path: &Path) -> CaseResult<()> {
     result?;
     production_close?;
     reference_close
+}
+
+async fn run_cache_oracle_case(
+    name: &str,
+    fixture_path: &Path,
+) -> CaseResult<CacheOracleDisposition> {
+    let fixture: Fixture = serde_json::from_slice(
+        &fs::read(fixture_path)
+            .map_err(|error| format!("read {}: {error}", fixture_path.display()))?,
+    )
+    .map_err(|error| format!("decode {}: {error}", fixture_path.display()))?;
+    let wire = match serde_json::from_value::<pir::Program>(fixture.program) {
+        Ok(wire) => wire,
+        Err(_) => return Ok(CacheOracleDisposition::Skipped),
+    };
+    let program = match rad::protocol::lower_pir(wire) {
+        Ok(program) => program,
+        Err(_) => return Ok(CacheOracleDisposition::Skipped),
+    };
+    if !matches!(
+        program.statements.as_slice(),
+        [exec::Statement::Query { .. }]
+    ) {
+        return Ok(CacheOracleDisposition::Skipped);
+    }
+
+    let store = Arc::new(
+        Store::memory(&format!("rust-cache-oracle-{name}"))
+            .await
+            .map_err(|error| format!("open cache oracle store: {error}"))?,
+    );
+    let observer = Arc::new(CacheOracleObserver::default());
+    let engine = Engine::new(store.clone()).with_observer(observer.clone());
+    let directory = fixture_path
+        .parent()
+        .ok_or_else(|| format!("fixture {} has no parent", fixture_path.display()))?;
+    if let Err(error) = install_schema_and_seed(directory, store.clone(), &engine).await {
+        let _ = store.close().await;
+        return Err(format!("cache oracle setup: {error}"));
+    }
+    observer.take_sources();
+
+    let uncached = engine
+        .execute_program_uncached(program.clone(), CatalogPolicy::Forbidden)
+        .await;
+    let cold = engine
+        .execute_program(program.clone(), CatalogPolicy::Forbidden)
+        .await;
+    let hot = engine
+        .execute_program(program, CatalogPolicy::Forbidden)
+        .await;
+    let sources = observer.take_sources();
+
+    let result = if !exact::outcomes_eq(&uncached, &cold) || !exact::outcomes_eq(&uncached, &hot) {
+        Err(format!(
+            "cached and uncached outcomes differ\nuncached: {uncached:?}\n     cold: {cold:?}\n       hot: {hot:?}"
+        ))
+    } else {
+        match &uncached {
+            Ok(_)
+                if sources
+                    == [
+                        StatementSource::Executed,
+                        StatementSource::Executed,
+                        StatementSource::RelationCache,
+                    ] =>
+            {
+                Ok(CacheOracleDisposition::Hit)
+            }
+            Ok(_) => Err(format!(
+                "successful cache oracle sources are {sources:?}, want [executed, executed, relation_cache]"
+            )),
+            Err(_) if sources.contains(&StatementSource::RelationCache) => Err(format!(
+                "failed execution used a relation cache result: {sources:?}"
+            )),
+            Err(_) => Ok(CacheOracleDisposition::Failure),
+        }
+    };
+    let close = store
+        .close()
+        .await
+        .map_err(|error| format!("close cache oracle store: {error}"));
+    let disposition = result?;
+    close?;
+    Ok(disposition)
 }
 
 async fn execute_case(

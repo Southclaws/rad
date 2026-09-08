@@ -353,7 +353,7 @@ async fn malformed_pir_is_a_typed_bad_request_problem() {
 }
 
 #[tokio::test]
-async fn malformed_json_from_the_generated_router_uses_the_rad_problem_union() {
+async fn malformed_json_uses_the_rad_problem_union() {
     let response = test_router("http-malformed-json", Mode::Direct)
         .await
         .oneshot(
@@ -371,6 +371,49 @@ async fn malformed_json_from_the_generated_router_uses_the_rad_problem_union() {
     assert_eq!(body["code"], "invalid");
     assert_eq!(body["reason"], "schema_violation");
     assert_eq!(body["status"], 400);
+}
+
+#[tokio::test]
+async fn execute_preserves_request_validation_at_the_direct_codec_boundary() {
+    let router = test_router("http-execute-validation", Mode::Direct).await;
+    let duplicate_query = router
+        .clone()
+        .oneshot(post_json(
+            "/execute?show-plan=true&show-plan=false",
+            one_row_program(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(duplicate_query.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(duplicate_query).await["code"], "invalid");
+
+    let wrong_media_type = router
+        .clone()
+        .oneshot(
+            Request::post("/execute")
+                .header(header::CONTENT_TYPE, "text/plain")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        wrong_media_type.status(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
+    assert_eq!(json_body(wrong_media_type).await["code"], "invalid");
+
+    let oversized = router
+        .oneshot(
+            Request::post("/execute")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(vec![b' '; 4 * 1024 * 1024 + 1]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(json_body(oversized).await["code"], "invalid");
 }
 
 #[tokio::test]

@@ -659,6 +659,30 @@ pub struct ServeArgs {
     )]
     pub metrics: ServeMetrics,
     #[arg(
+        id = r"relation-cache-size-mib",
+        long = r"relation-cache-size-mib",
+        help = r"Total memory capacity for materialized relation results.",
+        env = r"RAD_RELATION_CACHE_SIZE_MIB",
+        default_value = r"128"
+    )]
+    pub relation_cache_size_mib: i64,
+    #[arg(
+        id = r"relation-cache-entries",
+        long = r"relation-cache-entries",
+        help = r"Maximum materialized relation result count.",
+        env = r"RAD_RELATION_CACHE_ENTRIES",
+        default_value = r"4096"
+    )]
+    pub relation_cache_entries: i64,
+    #[arg(
+        id = r"relation-cache-max-result-size-mib",
+        long = r"relation-cache-max-result-size-mib",
+        help = r"Maximum size of one materialized relation result.",
+        env = r"RAD_RELATION_CACHE_MAX_RESULT_SIZE_MIB",
+        default_value = r"8"
+    )]
+    pub relation_cache_max_result_size_mib: i64,
+    #[arg(
         id = r"slate-decoded-cache-size-mib",
         long = r"slate-decoded-cache-size-mib",
         help = r"Total memory capacity for decoded Slate data blocks and metadata.",

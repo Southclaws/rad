@@ -20,9 +20,7 @@ use crate::engine::planner::bind::{
 use crate::engine::planner::explain::PlanView;
 use crate::runtime::RuntimeEffects;
 
-use super::{
-    Error, ErrorKind, Executor, Limits, ReferenceExecutor, Result, row_store, shape_frames, write,
-};
+use super::{Error, ErrorKind, Executor, Limits, ReferenceExecutor, Result, row_store, write};
 
 #[derive(Clone, Copy)]
 pub(super) enum ExecutionPath {
@@ -414,7 +412,10 @@ pub(super) async fn preflight(
     let mut estimates = Vec::new();
     for statement in &program.statements {
         if let Some(binding) = statement.binder_statement() {
-            let catalog = super::engine::ViewCatalog { view: &*view };
+            let catalog = super::engine::ViewCatalog {
+                view: &*view,
+                relation_cache: None,
+            };
             let bound = if physical || collect_plan {
                 binder.bind(&catalog, binding).await?
             } else {
@@ -468,6 +469,8 @@ pub(super) async fn preflight(
 
 pub(super) struct RunContext<'a> {
     pub observation: super::observe::Observation<'a>,
+    pub relation_cache: Option<&'a super::relation_cache::RelationCache>,
+    pub dependency_validation: super::relation_cache::DependencyValidation,
     pub statistics: Option<Arc<crate::engine::planner::models::PlannerStats>>,
     pub plan_options: crate::engine::planner::PlanOptions,
     pub collect_plan: bool,
@@ -483,7 +486,7 @@ pub(super) async fn run(
     runtime: &Arc<dyn RuntimeEffects>,
     context: RunContext<'_>,
 ) -> Result<ProgramResult> {
-    run_with_path(
+    Box::pin(run_with_path(
         view,
         program,
         result_name,
@@ -496,7 +499,9 @@ pub(super) async fn run(
         context.plan_options,
         context.collect_plan,
         context.execution_grant,
-    )
+        context.relation_cache,
+        context.dependency_validation,
+    ))
     .await
 }
 
@@ -508,7 +513,7 @@ pub(super) async fn run_reference(
     limits: Limits,
     runtime: &Arc<dyn RuntimeEffects>,
 ) -> Result<ProgramResult> {
-    run_with_path(
+    Box::pin(run_with_path(
         view,
         program,
         result_name,
@@ -521,7 +526,9 @@ pub(super) async fn run_reference(
         crate::engine::planner::PlanOptions::default(),
         false,
         super::parallel::ExecutionGrant::serial(),
-    )
+        None,
+        super::relation_cache::DependencyValidation::Transaction,
+    ))
     .await
 }
 
@@ -539,6 +546,8 @@ async fn run_with_path(
     plan_options: crate::engine::planner::PlanOptions,
     collect_plan: bool,
     execution_grant: super::parallel::ExecutionGrant,
+    relation_cache: Option<&super::relation_cache::RelationCache>,
+    dependency_validation: super::relation_cache::DependencyValidation,
 ) -> Result<ProgramResult> {
     let mut binder = ProgramBinder::new(relational_names(program))?;
     let mut bindings = HashMap::<String, Vec<Env>>::new();
@@ -547,7 +556,7 @@ async fn run_with_path(
     let mut result = Datum::Null;
     let mut plans = Vec::new();
 
-    run_statements(
+    Box::pin(run_statements(
         view,
         program,
         result_name,
@@ -565,8 +574,10 @@ async fn run_with_path(
         plan_options,
         collect_plan,
         &execution_grant,
+        relation_cache,
+        dependency_validation,
         &mut plans,
-    )
+    ))
     .await?;
     Ok(ProgramResult {
         result,
@@ -614,6 +625,8 @@ async fn run_statements(
     plan_options: crate::engine::planner::PlanOptions,
     collect_plan: bool,
     execution_grant: &super::parallel::ExecutionGrant,
+    relation_cache: Option<&super::relation_cache::RelationCache>,
+    dependency_validation: super::relation_cache::DependencyValidation,
     plans: &mut Vec<StatementPlan>,
 ) -> Result<()> {
     let mut catalog_changed = false;
@@ -634,12 +647,13 @@ async fn run_statements(
         && (collect_plan || tracing_operator_events || tracing_operator_spans);
     binder.set_statistics(statistics.clone());
     binder.set_plan_options(plan_options);
-    for statement in &program.statements {
+    for (statement_index, statement) in program.statements.iter().enumerate() {
         let statement_span = tracing::info_span!(
             target: "rad::telemetry",
             "rad.statement.execute",
             otel.kind = "internal",
             rad.statement.kind = statement.kind(),
+            rad.statement.source = tracing::field::Empty,
             rad.statement.fingerprint = tracing::field::Empty,
             rad.statement.plan_fingerprint = tracing::field::Empty,
             rad.statement.result_rows = tracing::field::Empty,
@@ -656,26 +670,80 @@ async fn run_statements(
             error.type = tracing::field::Empty,
             otel.status_code = tracing::field::Empty,
         );
-        if let Some(binding) = statement.binder_statement() {
-            let catalog = super::engine::ViewCatalog { view: &*view };
+        if statement.relational() {
+            let catalog = super::engine::ViewCatalog {
+                view: &*view,
+                relation_cache: relation_cache.filter(|_| {
+                    dependency_validation == super::relation_cache::DependencyValidation::Snapshot
+                }),
+            };
             let bind_started = measuring.then(|| runtime.monotonic());
-            let bound = match match path {
-                ExecutionPath::Production => {
-                    binder
-                        .bind(&catalog, binding)
-                        .instrument(statement_span.clone())
-                        .await
+            let cache = relation_cache.filter(|_| {
+                program.statements.len() == 1 && matches!(statement, Statement::Query { .. })
+            });
+            if relation_cache.is_some() && cache.is_none() {
+                crate::telemetry::relation_cache_lookup("bypass");
+            }
+            let prepared_cache = cache.filter(|_| {
+                // A prepared-read hit does not advance ProgramBinder state. This is
+                // safe only when the program contains one query statement because
+                // no subsequent statement can depend on that binder state.
+                dependency_validation == super::relation_cache::DependencyValidation::Snapshot
+                    && matches!(path, ExecutionPath::Production)
+            });
+            let prepared = if let (
+                Some(prepared_cache),
+                Statement::Query {
+                    relation: query, ..
+                },
+            ) = (prepared_cache, statement)
+            {
+                let bind_span = statement_span.clone();
+                prepared_cache
+                    .get_or_prepare_read(&*view, query, statistics.as_deref(), plan_options, || {
+                        let binding = statement
+                            .binder_statement()
+                            .expect("a relational statement has binder input");
+                        async {
+                            binder
+                                .bind(&catalog, binding)
+                                .instrument(bind_span)
+                                .await
+                                .map_err(Into::into)
+                        }
+                    })
+                    .await
+                    .map(|result| {
+                        (
+                            result.prepared.statement.clone(),
+                            Some(result.prepared.fingerprints.clone()),
+                            Some(result.relation_key),
+                        )
+                    })
+            } else {
+                let binding = statement
+                    .binder_statement()
+                    .expect("a relational statement has binder input");
+                match path {
+                    ExecutionPath::Production => {
+                        binder
+                            .bind(&catalog, binding)
+                            .instrument(statement_span.clone())
+                            .await
+                    }
+                    ExecutionPath::Reference => {
+                        binder
+                            .bind_reference(&catalog, binding)
+                            .instrument(statement_span.clone())
+                            .await
+                    }
                 }
-                ExecutionPath::Reference => {
-                    binder
-                        .bind_reference(&catalog, binding)
-                        .instrument(statement_span.clone())
-                        .await
-                }
-            } {
-                Ok(bound) => bound,
+                .map_err(Into::into)
+                .map(|bound| (Arc::new(bound), None, None))
+            };
+            let (bound, prepared_fingerprints, prepared_relation_key) = match prepared {
+                Ok(prepared) => prepared,
                 Err(error) => {
-                    let error: Error = error.into();
                     statement_span.record("rad.status", "error");
                     statement_span.record("error.type", error.kind().as_str());
                     statement_span.record("otel.status_code", "ERROR");
@@ -683,13 +751,42 @@ async fn run_statements(
                 }
             };
             let bind = bind_started.map(|started| runtime.monotonic().saturating_sub(started));
+            let fingerprints = prepared_fingerprints.or_else(|| {
+                (observing || cache.is_some())
+                    .then(|| Arc::new(crate::engine::lir::fingerprint::query(&bound.bound)))
+            });
+            let cache_key = if let Some(cache) = cache {
+                Some((
+                    cache,
+                    match prepared_relation_key {
+                        Some(key) => key,
+                        None => {
+                            let plan = bound.plan.as_ref().expect("production plan is present");
+                            cache
+                                .key_for_view(
+                                    fingerprints
+                                        .as_ref()
+                                        .expect("cache fingerprint is present")
+                                        .exact,
+                                    &*view,
+                                    &plan.dependencies,
+                                    dependency_validation,
+                                )
+                                .await?
+                        }
+                    },
+                ))
+            } else {
+                None
+            };
             let execute_started = measuring.then(|| runtime.monotonic());
-            let counters = measuring.then(|| super::observe::KvCounters::new(collect_plan));
+            let counters = (measuring || cache_key.is_some())
+                .then(|| super::observe::KvCounters::new(collect_plan));
             let mut binding_rows = Vec::new();
             let mut measured = Vec::new();
             let mut join_operators = Vec::new();
             let mut operators = Vec::new();
-            let execution = async {
+            let relational = async {
                 if let Some(counters) = &counters {
                     let mut observed = super::observe::ObservedView::new(&*view, counters);
                     run_relational(
@@ -731,16 +828,46 @@ async fn run_statements(
                     .await
                 }
             };
+            let execution = async {
+                if let Some((cache, key)) = cache_key {
+                    cache
+                        .get_or_fill(key, &bound.result_output, || async {
+                            let started = runtime.monotonic();
+                            let frames = relational.await?;
+                            super::frames::validate_frame_cardinality(
+                                bound.result_cardinality,
+                                frames.len(),
+                            )?;
+                            Ok((
+                                frames,
+                                super::relation_cache::CachedWork {
+                                    kv: counters
+                                        .as_ref()
+                                        .expect("cache counters are present")
+                                        .snapshot(),
+                                    execution: runtime.monotonic().saturating_sub(started),
+                                },
+                            ))
+                        })
+                        .await
+                } else {
+                    relational
+                        .await
+                        .map(super::relation_cache::RelationCacheResult::executed)
+                }
+            };
             let execution = execution.instrument(statement_span.clone());
-            let (frames, physical_storage) = if measure_operators {
-                let (frames, trace) =
-                    crate::engine::kv::telemetry::observe_request("slatedb", execution).await;
-                (frames, Some(trace))
+            let (rows, physical_storage) = if measure_operators {
+                let (rows, trace) = Box::pin(crate::engine::kv::telemetry::observe_request(
+                    "slatedb", execution,
+                ))
+                .await;
+                (rows, Some(trace))
             } else {
                 (execution.await, None)
             };
-            let frames = match frames {
-                Ok(frames) => frames,
+            let rows = match rows {
+                Ok(rows) => rows,
                 Err(error) => {
                     statement_span.record("rad.status", "error");
                     statement_span.record("error.type", error.kind().as_str());
@@ -748,7 +875,8 @@ async fn run_statements(
                     return Err(error);
                 }
             };
-            let affected = frames.len();
+            let source = rows.source;
+            let affected = rows.len();
             let execute = execute_started
                 .map(|started| runtime.monotonic().saturating_sub(started))
                 .unwrap_or_default();
@@ -779,10 +907,11 @@ async fn run_statements(
             if crate::telemetry::enabled() {
                 crate::telemetry::statement_finished(
                     statement.kind(),
+                    source,
                     "success",
                     bind.unwrap_or_default(),
                     execute,
-                    frames.len() as u64,
+                    rows.len() as u64,
                     &kv,
                 );
                 for operator in &operators {
@@ -790,7 +919,7 @@ async fn run_statements(
                 }
             }
             if observing {
-                let fingerprints = crate::engine::lir::fingerprint::query(&bound.bound);
+                let fingerprints = fingerprints.expect("observation fingerprint is present");
                 let stamp = bound.plan.as_ref().map_or_else(
                     crate::engine::planner::models::DependencyStamp::default,
                     |plan| crate::engine::planner::models::DependencyStamp::of(&plan.dependencies),
@@ -836,7 +965,8 @@ async fn run_statements(
                         span_id,
                         transaction_id = request.transaction_id,
                         client_ip = request.client_ip,
-                        statement = bound.name,
+                        statement = statement.name(),
+                        statement_source = source.as_str(),
                         statement_fingerprint = %fingerprints.exact,
                         statement_family_fingerprint = %fingerprints.family,
                         relation_fingerprint = %fingerprints.root.family,
@@ -844,7 +974,7 @@ async fn run_statements(
                         plan,
                         bind_duration_us = bind.unwrap_or_default().as_micros() as u64,
                         execution_duration_us = execute.as_micros() as u64,
-                        result_rows = frames.len() as u64,
+                        result_rows = rows.len() as u64,
                         affected_rows = if statement.effectful() {
                             affected as u64
                         } else {
@@ -862,7 +992,8 @@ async fn run_statements(
                 }
                 if let Some(observer) = observation.observer {
                     observer.statement(super::observe::StatementObservation {
-                        query: fingerprints,
+                        source,
+                        query: fingerprints.as_ref().clone(),
                         estimate,
                         stamp,
                         relations,
@@ -871,7 +1002,7 @@ async fn run_statements(
                             bind: bind.unwrap_or_default(),
                             execute,
                         },
-                        rows: frames.len() as u64,
+                        rows: rows.len() as u64,
                         affected: affected as u64,
                         mutated: bound.target.as_ref().map(|table| table.schema_id),
                         kv,
@@ -882,7 +1013,8 @@ async fn run_statements(
                     });
                 }
             }
-            statement_span.record("rad.statement.result_rows", frames.len() as u64);
+            statement_span.record("rad.statement.source", source.as_str());
+            statement_span.record("rad.statement.result_rows", rows.len() as u64);
             statement_span.record(
                 "rad.statement.affected_rows",
                 if statement.effectful() {
@@ -980,7 +1112,7 @@ async fn run_statements(
                             .min(u128::from(u64::MAX))
                             as u64,
                         execution_micros,
-                        result_rows: frames.len() as u64,
+                        result_rows: rows.len() as u64,
                         logical_kv: kv,
                         logical_scans,
                         operator_trace,
@@ -990,9 +1122,17 @@ async fn run_statements(
                 });
             }
             if result_name == Some(statement.name()) {
-                *result = shape_frames(bound.result_cardinality, &bound.result_output, &frames)?;
+                *result = rows.shape(bound.result_cardinality, &bound.result_output)?;
             }
-            bindings.insert(statement.name().to_owned(), frames);
+            // A binding serves only a later statement. Restoring cached rows
+            // after the final statement adds a full result copy that no
+            // consumer can read.
+            if statement_index + 1 < program.statements.len() {
+                bindings.insert(
+                    statement.name().to_owned(),
+                    rows.into_frames(&bound.result_output),
+                );
+            }
             summaries.push(StatementResult {
                 name: statement.name().to_owned(),
                 affected,
@@ -1471,6 +1611,32 @@ mod tests {
         }
     }
 
+    fn scan_program(table: &str) -> Program {
+        Program {
+            statements: vec![Statement::Query {
+                name: "read".into(),
+                relation: crate::engine::lir::Query {
+                    root: Relation::Order {
+                        input: Box::new(Relation::Scan {
+                            table: table.into(),
+                            scope: "scan".into(),
+                        }),
+                        terms: vec![crate::engine::lir::OrderTerm {
+                            expression: crate::engine::lir::Expr::Column {
+                                scope: "scan".into(),
+                                name: "id".into(),
+                            },
+                            descending: false,
+                        }],
+                    },
+                    cardinality: RootCardinality::Many,
+                    bindings: HashMap::new(),
+                },
+            }],
+            result: Some("read".into()),
+        }
+    }
+
     async fn setup(name: &str) -> (Arc<Store>, Engine, catalog::Catalog) {
         let store = Arc::new(Store::memory(name).await.unwrap());
         let engine = Engine::new(store.clone());
@@ -1533,6 +1699,195 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repeated_single_query_programs_use_the_relation_cache() {
+        let (store, _engine, catalog) = setup("pir-relation-cache").await;
+        catalog.create_table(tasks_table()).await.unwrap();
+        let observer = Arc::new(RecordingObserver::default());
+        let engine = Engine::new(store).with_observer(observer.clone());
+        engine
+            .execute_program(
+                Program {
+                    statements: vec![Statement::Create {
+                        name: "seed".into(),
+                        relation: rows(&[("a", "open")]),
+                        table: "tasks".into(),
+                    }],
+                    result: None,
+                },
+                CatalogPolicy::Forbidden,
+            )
+            .await
+            .unwrap();
+        observer.observations.lock().unwrap().clear();
+        let read = Program {
+            statements: vec![Statement::Query {
+                name: "read".into(),
+                relation: crate::engine::lir::Query {
+                    root: Relation::Order {
+                        input: Box::new(Relation::Scan {
+                            table: "tasks".into(),
+                            scope: "task".into(),
+                        }),
+                        terms: vec![crate::engine::lir::OrderTerm {
+                            expression: crate::engine::lir::Expr::Column {
+                                scope: "task".into(),
+                                name: "id".into(),
+                            },
+                            descending: false,
+                        }],
+                    },
+                    cardinality: RootCardinality::Many,
+                    bindings: HashMap::new(),
+                },
+            }],
+            result: None,
+        };
+
+        let first = engine
+            .execute_program(read.clone(), CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        let second = engine
+            .execute_program(read, CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        assert_eq!(first.result, second.result);
+        let observations = observer.observations.lock().unwrap();
+        assert_eq!(observations.len(), 2);
+        assert_eq!(
+            observations[0].source,
+            super::super::observe::StatementSource::Executed
+        );
+        assert_eq!(
+            observations[1].source,
+            super::super::observe::StatementSource::RelationCache
+        );
+        assert_eq!(observations[1].kv, super::super::observe::KvWork::default());
+        assert!(observations[1].operators.is_empty());
+        let cache = engine.relation_cache_stats();
+        assert_eq!(cache.prepared_misses, 1);
+        assert_eq!(cache.prepared_hits, 1);
+        assert_eq!(cache.prepared_admissions, 1);
+        assert_eq!(cache.prepared_entries, 1);
+    }
+
+    #[tokio::test]
+    async fn prepared_read_preserves_the_current_statement_name() {
+        let (store, _engine, catalog) = setup("pir-prepared-read-name").await;
+        catalog.create_table(tasks_table()).await.unwrap();
+        let engine = Engine::new(store);
+        let named_read = |name: &str| {
+            let mut program = scan_program("tasks");
+            let Statement::Query {
+                name: statement_name,
+                ..
+            } = &mut program.statements[0]
+            else {
+                unreachable!("scan program contains one query")
+            };
+            *statement_name = name.to_owned();
+            program.result = Some(name.to_owned());
+            program
+        };
+        let first = engine
+            .execute_program(named_read("first"), CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        let second = engine
+            .execute_program(named_read("second"), CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+
+        assert_eq!(first.statements[0].name, "first");
+        assert_eq!(second.statements[0].name, "second");
+        assert_eq!(engine.relation_cache_stats().prepared_hits, 1);
+    }
+
+    #[tokio::test]
+    async fn prepared_read_reuses_a_plan_after_a_data_change() {
+        let (store, _engine, catalog) = setup("pir-prepared-read-data").await;
+        catalog.create_table(tasks_table()).await.unwrap();
+        let engine = Engine::new(store);
+        engine
+            .create(
+                "tasks",
+                crate::engine::lir::Row::from([
+                    ("id".into(), Value::Text("a".into())),
+                    ("status".into(), Value::Text("open".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        let read = scan_program("tasks");
+
+        let first = engine
+            .execute_program(read.clone(), CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        engine
+            .create(
+                "tasks",
+                crate::engine::lir::Row::from([
+                    ("id".into(), Value::Text("b".into())),
+                    ("status".into(), Value::Text("done".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        let second = engine
+            .execute_program(read, CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+
+        assert!(matches!(first.result, Datum::Array(ref rows) if rows.len() == 1));
+        assert!(matches!(second.result, Datum::Array(ref rows) if rows.len() == 2));
+        let cache = engine.relation_cache_stats();
+        assert_eq!(cache.prepared_misses, 1);
+        assert_eq!(cache.prepared_hits, 1);
+        assert_eq!(cache.prepared_entries, 1);
+        assert_eq!(cache.misses, 2);
+    }
+
+    #[tokio::test]
+    async fn prepared_read_rebinds_after_a_relevant_catalog_change() {
+        let (store, _engine, catalog) = setup("pir-prepared-read-catalog").await;
+        catalog.create_table(tasks_table()).await.unwrap();
+        let engine = Engine::new(store);
+        let read = scan_program("tasks");
+
+        engine
+            .execute_program(read.clone(), CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        catalog
+            .create_column(
+                "tasks",
+                crate::engine::catalog::model::ColumnDef {
+                    id: SchemaId::new(3).unwrap(),
+                    name: "note".into(),
+                    scalar_type: ScalarType::Text,
+                    nullable: true,
+                    format: String::new(),
+                    default: None,
+                },
+            )
+            .await
+            .unwrap();
+        let result = engine
+            .execute_program(read, CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+
+        assert!(matches!(result.result, Datum::Array(ref rows) if rows.is_empty()));
+        let cache = engine.relation_cache_stats();
+        assert_eq!(cache.prepared_misses, 2);
+        assert_eq!(cache.prepared_hits, 0);
+        assert_eq!(cache.prepared_admissions, 2);
+        assert_eq!(cache.prepared_superseded, 1);
+        assert_eq!(cache.prepared_entries, 2);
+    }
+
+    #[tokio::test]
     async fn production_statements_emit_observations_with_fingerprints() {
         let (store, _engine, catalog) = setup("pir-observe").await;
         catalog.create_table(tasks_table()).await.unwrap();
@@ -1591,6 +1946,47 @@ mod tests {
         fn planning_stats(&self) -> Arc<crate::engine::planner::models::PlannerStats> {
             self.0.clone()
         }
+    }
+
+    struct SwappingStats(std::sync::RwLock<Arc<crate::engine::planner::models::PlannerStats>>);
+
+    impl crate::engine::planner::estimator::StatisticsProvider for SwappingStats {
+        fn planning_stats(&self) -> Arc<crate::engine::planner::models::PlannerStats> {
+            self.0.read().expect("statistics read lock").clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn prepared_read_refreshes_when_statistics_identity_changes() {
+        let (store, _engine, catalog) = setup("pir-prepared-read-statistics").await;
+        catalog.create_table(tasks_table()).await.unwrap();
+        let mut first = crate::engine::planner::models::PlannerStats::empty();
+        first.snapshot_identity = "first".into();
+        let provider = Arc::new(SwappingStats(std::sync::RwLock::new(Arc::new(first))));
+        let engine = Engine::new(store).with_statistics_provider(provider.clone());
+        let read = scan_program("tasks");
+
+        engine
+            .execute_program(read.clone(), CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        engine
+            .execute_program(read.clone(), CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        let mut second = crate::engine::planner::models::PlannerStats::empty();
+        second.snapshot_identity = "second".into();
+        *provider.0.write().expect("statistics write lock") = Arc::new(second);
+        engine
+            .execute_program(read, CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+
+        let cache = engine.relation_cache_stats();
+        assert_eq!(cache.prepared_misses, 2);
+        assert_eq!(cache.prepared_hits, 1);
+        assert_eq!(cache.prepared_admissions, 2);
+        assert_eq!(cache.prepared_entries, 2);
     }
 
     #[tokio::test]

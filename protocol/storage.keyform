@@ -543,6 +543,20 @@ keyspace rad {
     }
   }
 
+  # MVCC-visible logical content generation for one table. A non-empty row
+  # mutation advances this value in the same transaction as its data writes.
+  # An absent key has generation zero.
+  space catalog_table_data_generation {
+    tag x"23"
+    key {
+      table physical_id "t"
+    }
+    value "data generation decimal text"
+    vectors {
+      key { table 42 } = x"72 37 23 2a"
+    }
+  }
+
   space catalog_meta_mode {
     tag x"30"
     key { }

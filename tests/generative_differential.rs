@@ -1,9 +1,11 @@
-//! Correct-by-construction query generation and automatic
-//! shrinking. Every case runs through the chosen physical plan, a forced full
-//! scan plan, unbatched nested correlation, and the independent reference
-//! executor.
+//! Correct-by-construction query generation and automatic shrinking. Every
+//! case runs without cache, through cold and hot caches, through forced full
+//! scans and unbatched nested correlation, and through the independent
+//! reference executor.
 
 mod generative;
+#[path = "oracle/exact.rs"]
+mod exact;
 
 use std::env;
 use std::fs;

@@ -502,6 +502,7 @@ impl DependencyStamp {
         for table in &dependencies.table_existence {
             framed(&mut semantic, table.table_id.as_str().as_bytes());
             semantic.extend_from_slice(&table.generation.get().to_be_bytes());
+            semantic.extend_from_slice(&table.storage_generation.get().to_be_bytes());
         }
         for column in &dependencies.column_values {
             framed(&mut semantic, column.table_id.as_str().as_bytes());

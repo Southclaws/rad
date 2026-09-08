@@ -1,4 +1,4 @@
-//! Deterministic structural identity for bound LIR.
+//! Deterministic structural identity for LIR.
 //!
 //! Fingerprints hash a canonical byte encoding of the bound tree, never wire
 //! JSON. Caller-chosen node IDs, scope labels, binding names, and binder slot
@@ -29,6 +29,7 @@ pub const HASH_SHA256_128: u8 = 1;
 
 const DOMAIN_EXACT: u8 = 0xE1;
 const DOMAIN_FAMILY: u8 = 0xF1;
+const DOMAIN_REQUEST: u8 = 0xA1;
 pub(crate) const DOMAIN_PLAN: u8 = 0xB1;
 
 const TAG_SCAN: u8 = 1;
@@ -193,6 +194,349 @@ pub fn query(query: &bound::Query) -> QueryFingerprints {
         subtrees: canonicalizer.subtrees,
         tables: canonicalizer.tables,
         bindings: canonicalizer.binding_roots,
+    }
+}
+
+/// Exact identity of an unbound query before catalog access.
+///
+/// This identity retains names, scopes, literal text, and declared types. It
+/// can select cached binding work only for an equal request. Binding-map order
+/// is not part of query meaning, so bindings use lexical name order.
+pub fn request(query: &super::unbound::Query) -> Fingerprint {
+    request_with_size(query).0
+}
+
+pub(crate) fn request_with_size(query: &super::unbound::Query) -> (Fingerprint, usize) {
+    let mut payload = RequestWriter::default();
+    payload.byte(TAG_QUERY);
+    payload.byte(cardinality_byte(query.cardinality));
+    request_relation(&mut payload, &query.root);
+    let mut bindings = query.bindings.iter().collect::<Vec<_>>();
+    bindings.sort_unstable_by(|left, right| left.0.cmp(right.0));
+    payload.len(bindings.len());
+    for (name, relation) in bindings {
+        payload.str(name);
+        request_relation(&mut payload, relation);
+    }
+    let encoded_bytes = payload.bytes.len();
+    (finish(DOMAIN_REQUEST, &payload.bytes), encoded_bytes)
+}
+
+#[derive(Default)]
+struct RequestWriter {
+    bytes: Vec<u8>,
+}
+
+impl RequestWriter {
+    fn byte(&mut self, value: u8) {
+        self.bytes.push(value);
+    }
+
+    fn len(&mut self, value: usize) {
+        self.u64(value as u64);
+    }
+
+    fn u64(&mut self, value: u64) {
+        self.bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn str(&mut self, value: &str) {
+        self.len(value.len());
+        self.bytes.extend_from_slice(value.as_bytes());
+    }
+
+    fn optional_kind(&mut self, value: Option<Kind>) {
+        match value {
+            Some(value) => {
+                self.byte(1);
+                self.byte(kind_byte(value));
+            }
+            None => self.byte(0),
+        }
+    }
+}
+
+fn request_relation(payload: &mut RequestWriter, relation: &super::unbound::Relation) {
+    use super::unbound::Relation;
+
+    match relation {
+        Relation::Scan { table, scope } => {
+            payload.byte(TAG_SCAN);
+            payload.str(table);
+            payload.str(scope);
+        }
+        Relation::Rows {
+            scope,
+            columns,
+            values,
+        } => {
+            payload.byte(TAG_ROWS);
+            payload.str(scope);
+            payload.len(columns.len());
+            for column in columns {
+                payload.str(&column.name);
+                payload.byte(kind_byte(column.kind));
+                payload.byte(u8::from(column.nullable));
+            }
+            payload.len(values.len());
+            for row in values {
+                payload.len(row.len());
+                for value in row {
+                    request_raw_scalar(payload, value);
+                }
+            }
+        }
+        Relation::Filter { input, predicate } => {
+            payload.byte(TAG_FILTER);
+            request_relation(payload, input);
+            request_expr(payload, predicate);
+        }
+        Relation::Project {
+            input,
+            scope,
+            spread,
+            fields,
+        } => {
+            payload.byte(TAG_PROJECT);
+            request_relation(payload, input);
+            request_optional_str(payload, scope.as_deref());
+            payload.len(spread.len());
+            for scope in spread {
+                payload.str(scope);
+            }
+            payload.len(fields.len());
+            for field in fields {
+                payload.str(&field.name);
+                request_expr(payload, &field.expression);
+            }
+        }
+        Relation::Join {
+            left,
+            right,
+            kind,
+            on,
+        } => {
+            payload.byte(TAG_JOIN);
+            payload.byte(join_byte(*kind));
+            request_relation(payload, left);
+            request_relation(payload, right);
+            request_expr(payload, on);
+        }
+        Relation::Concatenate { scope, inputs } => {
+            payload.byte(TAG_CONCATENATE);
+            payload.str(scope);
+            payload.len(inputs.len());
+            for input in inputs {
+                request_relation(payload, input);
+            }
+        }
+        Relation::Intersect {
+            scope,
+            left,
+            right,
+            quantifier,
+        } => {
+            payload.byte(TAG_INTERSECT);
+            payload.str(scope);
+            payload.byte(quantifier_byte(*quantifier));
+            request_relation(payload, left);
+            request_relation(payload, right);
+        }
+        Relation::Except {
+            scope,
+            left,
+            right,
+            quantifier,
+        } => {
+            payload.byte(TAG_EXCEPT);
+            payload.str(scope);
+            payload.byte(quantifier_byte(*quantifier));
+            request_relation(payload, left);
+            request_relation(payload, right);
+        }
+        Relation::Aggregate {
+            input,
+            scope,
+            groups,
+            terms,
+        } => {
+            payload.byte(TAG_AGGREGATE);
+            request_relation(payload, input);
+            request_optional_str(payload, scope.as_deref());
+            payload.len(groups.len());
+            for group in groups {
+                payload.str(&group.name);
+                request_expr(payload, &group.expression);
+            }
+            payload.len(terms.len());
+            for term in terms {
+                payload.byte(aggregate_byte(term.function));
+                match &term.argument {
+                    Some(argument) => {
+                        payload.byte(1);
+                        request_expr(payload, argument);
+                    }
+                    None => payload.byte(0),
+                }
+                payload.str(&term.name);
+            }
+        }
+        Relation::Order { input, terms } => {
+            payload.byte(TAG_ORDER);
+            request_relation(payload, input);
+            payload.len(terms.len());
+            for term in terms {
+                request_expr(payload, &term.expression);
+                payload.byte(u8::from(term.descending));
+            }
+        }
+        Relation::Slice {
+            input,
+            offset,
+            limit,
+        } => {
+            payload.byte(TAG_SLICE);
+            request_relation(payload, input);
+            payload.u64(*offset as u64);
+            match limit {
+                Some(limit) => {
+                    payload.byte(1);
+                    payload.u64(*limit as u64);
+                }
+                None => payload.byte(0),
+            }
+        }
+        Relation::Ref { binding, scope } => {
+            payload.byte(TAG_REF);
+            payload.str(binding);
+            payload.str(scope);
+        }
+        Relation::RecursiveRef { binding, scope } => {
+            payload.byte(TAG_BACKREF);
+            payload.str(binding);
+            payload.str(scope);
+        }
+        Relation::Recursive {
+            anchor,
+            step,
+            accumulation,
+        } => {
+            payload.byte(TAG_BINDING);
+            payload.byte(accumulation_byte(*accumulation));
+            request_relation(payload, anchor);
+            request_relation(payload, step);
+        }
+        Relation::Distinct(input) => {
+            payload.byte(TAG_DISTINCT);
+            request_relation(payload, input);
+        }
+    }
+}
+
+fn request_expr(payload: &mut RequestWriter, expression: &super::unbound::Expr) {
+    use super::unbound::Expr;
+
+    match expression {
+        Expr::Literal(literal) => {
+            payload.byte(TAG_EXPR_LITERAL);
+            payload.optional_kind(literal.kind);
+            request_raw_scalar(payload, &literal.raw);
+        }
+        Expr::Column { scope, name } => {
+            payload.byte(TAG_EXPR_SLOT);
+            payload.str(scope);
+            payload.str(name);
+        }
+        Expr::Unary { op, expression } => {
+            payload.byte(TAG_EXPR_UNARY);
+            payload.byte(unary_byte(*op));
+            request_expr(payload, expression);
+        }
+        Expr::Binary { op, left, right } => {
+            payload.byte(TAG_EXPR_BINARY);
+            payload.byte(binary_byte(*op));
+            request_expr(payload, left);
+            request_expr(payload, right);
+        }
+        Expr::Cast { expression, to } => {
+            payload.byte(TAG_EXPR_CAST);
+            payload.byte(kind_byte(*to));
+            request_expr(payload, expression);
+        }
+        Expr::Branch { arms, otherwise } => {
+            payload.byte(TAG_EXPR_BRANCH);
+            payload.len(arms.len());
+            for arm in arms {
+                request_expr(payload, &arm.when);
+                request_expr(payload, &arm.then);
+            }
+            request_expr(payload, otherwise);
+        }
+        Expr::TextMatch {
+            value,
+            parts,
+            comparison,
+        } => {
+            payload.byte(TAG_EXPR_TEXT_MATCH);
+            payload.byte(comparison_byte(*comparison));
+            request_expr(payload, value);
+            payload.len(parts.len());
+            for part in parts {
+                match part {
+                    super::unbound::TextMatchPart::Literal(value) => {
+                        payload.byte(1);
+                        payload.str(value);
+                    }
+                    super::unbound::TextMatchPart::AnyMany => payload.byte(2),
+                }
+            }
+        }
+        Expr::Exists(relation) => {
+            payload.byte(TAG_EXPR_EXISTS);
+            request_relation(payload, relation);
+        }
+        Expr::First(relation) => {
+            payload.byte(TAG_EXPR_FIRST);
+            request_relation(payload, relation);
+        }
+        Expr::Scalar(relation) => {
+            payload.byte(TAG_EXPR_SCALAR);
+            request_relation(payload, relation);
+        }
+        Expr::Array(relation) => {
+            payload.byte(TAG_EXPR_ARRAY);
+            request_relation(payload, relation);
+        }
+    }
+}
+
+fn request_optional_str(payload: &mut RequestWriter, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            payload.byte(1);
+            payload.str(value);
+        }
+        None => payload.byte(0),
+    }
+}
+
+fn request_raw_scalar(payload: &mut RequestWriter, value: &super::unbound::RawScalar) {
+    use super::unbound::RawScalar;
+
+    match value {
+        RawScalar::Null => payload.byte(VALUE_NULL),
+        RawScalar::Text(value) => {
+            payload.byte(VALUE_TEXT);
+            payload.str(value);
+        }
+        RawScalar::Number(value) => {
+            payload.byte(VALUE_INT64);
+            payload.str(value);
+        }
+        RawScalar::Bool(value) => {
+            payload.byte(VALUE_BOOL);
+            payload.byte(u8::from(*value));
+        }
     }
 }
 
@@ -1101,6 +1445,70 @@ mod tests {
         };
         assert_eq!(build(0).exact, build(1_000).exact);
         assert_eq!(build(0).subtrees, build(1_000).subtrees);
+    }
+
+    fn request_query(status: &str) -> super::super::unbound::Query {
+        use super::super::unbound;
+
+        unbound::Query {
+            root: unbound::Relation::Filter {
+                input: Box::new(unbound::Relation::Scan {
+                    table: "tasks".into(),
+                    scope: "task".into(),
+                }),
+                predicate: unbound::Expr::Binary {
+                    op: BinaryOp::Eq,
+                    left: Box::new(unbound::Expr::Column {
+                        scope: "task".into(),
+                        name: "status".into(),
+                    }),
+                    right: Box::new(unbound::Expr::Literal(unbound::Literal {
+                        raw: unbound::RawScalar::Text(status.into()),
+                        kind: Some(Kind::Text),
+                    })),
+                },
+            },
+            cardinality: RootCardinality::Many,
+            bindings: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn request_identity_is_stable_and_literal_sensitive() {
+        assert_eq!(
+            request(&request_query("open")),
+            request(&request_query("open"))
+        );
+        assert_ne!(
+            request(&request_query("open")),
+            request(&request_query("done"))
+        );
+    }
+
+    #[test]
+    fn request_identity_ignores_binding_map_order() {
+        let mut left = request_query("open");
+        left.bindings.insert(
+            "first".into(),
+            super::super::unbound::Relation::Scan {
+                table: "users".into(),
+                scope: "user".into(),
+            },
+        );
+        left.bindings.insert(
+            "second".into(),
+            super::super::unbound::Relation::Scan {
+                table: "boards".into(),
+                scope: "board".into(),
+            },
+        );
+        let mut right = request_query("open");
+        for name in ["second", "first"] {
+            right
+                .bindings
+                .insert(name.into(), left.bindings[name].clone());
+        }
+        assert_eq!(request(&left), request(&right));
     }
 
     #[test]

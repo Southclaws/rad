@@ -19,6 +19,11 @@ spec:
   telemetry:
     diagnostics: summary
     metrics: true
+    traceSamplePercent: 1
+  relationCache:
+    sizeMiB: 128
+    entries: 4096
+    maxResultSizeMiB: 8
   slate:
     decodedCacheSizeMiB: 128
     scanCacheBlocks: false

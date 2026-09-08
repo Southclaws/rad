@@ -168,14 +168,53 @@ fn rad_metric_view(instrument: &Instrument) -> Option<Stream> {
         return None;
     }
     let mut stream = Stream::builder().with_cardinality_limit(256);
-    if instrument.kind() == InstrumentKind::Histogram && name.ends_with("duration") {
-        stream = stream.with_aggregation(Aggregation::ExplicitBucketHistogram {
-            boundaries: vec![
+    if instrument.kind() == InstrumentKind::Histogram {
+        let boundaries = match name {
+            name if name.ends_with("duration") => Some(vec![
                 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
                 60.0, 120.0,
-            ],
-            record_min_max: true,
-        });
+            ]),
+            "rad.relation.cache.cohort.reuse.opportunities" => Some(vec![
+                0.0, 1.0, 2.0, 3.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 1024.0,
+            ]),
+            "rad.relation.cache.shadow.candidate.work" => Some(vec![
+                4_096.0,
+                16_384.0,
+                65_536.0,
+                262_144.0,
+                1_048_576.0,
+                4_194_304.0,
+                16_777_216.0,
+                67_108_864.0,
+                268_435_456.0,
+                1_073_741_824.0,
+            ]),
+            "rad.relation.cache.shadow.candidate.density" => Some(vec![
+                0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 256.0, 1024.0,
+            ]),
+            "rad.relation.cache.result.bytes" | "rad.relation.cache.prepared.candidate.bytes" => {
+                Some(vec![
+                    1_024.0,
+                    4_096.0,
+                    16_384.0,
+                    65_536.0,
+                    262_144.0,
+                    1_048_576.0,
+                    4_194_304.0,
+                    8_388_608.0,
+                    16_777_216.0,
+                    67_108_864.0,
+                    134_217_728.0,
+                ])
+            }
+            _ => None,
+        };
+        if let Some(boundaries) = boundaries {
+            stream = stream.with_aggregation(Aggregation::ExplicitBucketHistogram {
+                boundaries,
+                record_min_max: true,
+            });
+        }
     }
     stream.build().ok()
 }
@@ -208,6 +247,44 @@ struct Instruments {
     execution_parallel_width: Histogram<u64>,
     execution_parallel_batches: Counter<u64>,
     execution_parallel_rows: Counter<u64>,
+    relation_cache_lookups: Counter<u64>,
+    relation_cache_admissions: Counter<u64>,
+    relation_cache_evictions: Counter<u64>,
+    relation_cache_entries: Gauge<u64>,
+    relation_cache_retained_bytes: Gauge<u64>,
+    relation_cache_capacity_entries: Gauge<u64>,
+    relation_cache_capacity_bytes: Gauge<u64>,
+    relation_cache_result_limit_bytes: Gauge<u64>,
+    relation_cache_result_bytes: Histogram<u64>,
+    relation_cache_dependency_lookups: Counter<u64>,
+    relation_cache_dependency_evictions: Counter<u64>,
+    relation_cache_catalog_lookups: Counter<u64>,
+    relation_cache_catalog_evictions: Counter<u64>,
+    relation_cache_catalog_entries: Gauge<u64>,
+    relation_cache_catalog_retained_bytes: Gauge<u64>,
+    relation_cache_prepared_lookups: Counter<u64>,
+    relation_cache_prepared_admissions: Counter<u64>,
+    relation_cache_prepared_evictions: Counter<u64>,
+    relation_cache_prepared_entries: Gauge<u64>,
+    relation_cache_prepared_retained_bytes: Gauge<u64>,
+    relation_cache_prepared_capacity_entries: Gauge<u64>,
+    relation_cache_prepared_capacity_bytes: Gauge<u64>,
+    relation_cache_prepared_plan_limit_bytes: Gauge<u64>,
+    relation_cache_prepared_candidate_bytes: Histogram<u64>,
+    relation_cache_prepared_avoided_binds: Counter<u64>,
+    relation_cache_prepared_avoided_plans: Counter<u64>,
+    relation_cache_avoided_reads: Counter<u64>,
+    relation_cache_avoided_bytes: Counter<u64>,
+    relation_cache_avoided_time: Counter<f64>,
+    relation_cache_coalesced_fills: Counter<u64>,
+    relation_cache_reuse_opportunities: Counter<u64>,
+    relation_cache_cohort_transitions: Counter<u64>,
+    relation_cache_cohort_reuse: Histogram<u64>,
+    relation_cache_shadow_decisions: Counter<u64>,
+    relation_cache_shadow_candidate_work: Histogram<u64>,
+    relation_cache_shadow_candidate_density: Histogram<f64>,
+    relation_cache_shadow_rejected_reuse: Counter<u64>,
+    relation_cache_evidence_evictions: Counter<u64>,
     kv_operations: Counter<u64>,
     kv_operation_duration: Histogram<f64>,
     kv_bytes: Counter<u64>,
@@ -383,6 +460,177 @@ impl Instruments {
             execution_parallel_rows: meter
                 .u64_counter("rad.execution.parallel.rows")
                 .with_description("Rows processed by parallel execution batches")
+                .build(),
+            relation_cache_lookups: meter
+                .u64_counter("rad.relation.cache.lookups")
+                .with_description("Rad relation cache lookups")
+                .build(),
+            relation_cache_admissions: meter
+                .u64_counter("rad.relation.cache.admissions")
+                .with_description("Rad relation cache admission results")
+                .build(),
+            relation_cache_evictions: meter
+                .u64_counter("rad.relation.cache.evictions")
+                .with_description("Rad relation cache removals")
+                .build(),
+            relation_cache_entries: meter
+                .u64_gauge("rad.relation.cache.entries")
+                .with_description("Rad relation cache entries")
+                .build(),
+            relation_cache_retained_bytes: meter
+                .u64_gauge("rad.relation.cache.retained.bytes")
+                .with_unit("By")
+                .with_description("Rad relation cache retained bytes")
+                .build(),
+            relation_cache_capacity_entries: meter
+                .u64_gauge("rad.relation.cache.capacity.entries")
+                .with_description("Rad relation cache entry limit")
+                .build(),
+            relation_cache_capacity_bytes: meter
+                .u64_gauge("rad.relation.cache.capacity.bytes")
+                .with_unit("By")
+                .with_description("Rad relation cache byte limit")
+                .build(),
+            relation_cache_result_limit_bytes: meter
+                .u64_gauge("rad.relation.cache.result.limit.bytes")
+                .with_unit("By")
+                .with_description("Rad relation cache individual result byte limit")
+                .build(),
+            relation_cache_result_bytes: meter
+                .u64_histogram("rad.relation.cache.result.bytes")
+                .with_unit("By")
+                .with_description("Relation cache candidate result bytes")
+                .build(),
+            relation_cache_dependency_lookups: meter
+                .u64_counter("rad.relation.cache.dependency.lookups")
+                .with_description("Relation cache dependency validation lookups")
+                .build(),
+            relation_cache_dependency_evictions: meter
+                .u64_counter("rad.relation.cache.dependency.evictions")
+                .with_description("Entries removed from snapshot dependency validation")
+                .build(),
+            relation_cache_catalog_lookups: meter
+                .u64_counter("rad.relation.cache.catalog.lookups")
+                .with_description("Snapshot catalog metadata cache lookups")
+                .build(),
+            relation_cache_catalog_evictions: meter
+                .u64_counter("rad.relation.cache.catalog.evictions")
+                .with_description("Entries removed from the snapshot catalog metadata cache")
+                .build(),
+            relation_cache_catalog_entries: meter
+                .u64_gauge("rad.relation.cache.catalog.entries")
+                .with_description("Snapshot catalog metadata cache entries")
+                .build(),
+            relation_cache_catalog_retained_bytes: meter
+                .u64_gauge("rad.relation.cache.catalog.retained.bytes")
+                .with_unit("By")
+                .with_description("Snapshot catalog metadata cache retained bytes")
+                .build(),
+            relation_cache_prepared_lookups: meter
+                .u64_counter("rad.relation.cache.prepared.lookups")
+                .with_description("Prepared read cache lookups")
+                .build(),
+            relation_cache_prepared_admissions: meter
+                .u64_counter("rad.relation.cache.prepared.admissions")
+                .with_description("Prepared read cache admission results")
+                .build(),
+            relation_cache_prepared_evictions: meter
+                .u64_counter("rad.relation.cache.prepared.evictions")
+                .with_description("Entries removed from the prepared read cache")
+                .build(),
+            relation_cache_prepared_entries: meter
+                .u64_gauge("rad.relation.cache.prepared.entries")
+                .with_description("Prepared read cache entries")
+                .build(),
+            relation_cache_prepared_retained_bytes: meter
+                .u64_gauge("rad.relation.cache.prepared.retained.bytes")
+                .with_unit("By")
+                .with_description("Prepared read cache retained bytes")
+                .build(),
+            relation_cache_prepared_capacity_entries: meter
+                .u64_gauge("rad.relation.cache.prepared.capacity.entries")
+                .with_description("Prepared read cache entry limit")
+                .build(),
+            relation_cache_prepared_capacity_bytes: meter
+                .u64_gauge("rad.relation.cache.prepared.capacity.bytes")
+                .with_unit("By")
+                .with_description("Prepared read cache byte limit")
+                .build(),
+            relation_cache_prepared_plan_limit_bytes: meter
+                .u64_gauge("rad.relation.cache.prepared.plan.limit.bytes")
+                .with_unit("By")
+                .with_description("Prepared read cache individual plan byte limit")
+                .build(),
+            relation_cache_prepared_candidate_bytes: meter
+                .u64_histogram("rad.relation.cache.prepared.candidate.bytes")
+                .with_unit("By")
+                .with_description("Prepared read cache candidate bytes")
+                .build(),
+            relation_cache_prepared_avoided_binds: meter
+                .u64_counter("rad.relation.cache.prepared.avoided.binds")
+                .with_description("Query binds avoided by the prepared read cache")
+                .build(),
+            relation_cache_prepared_avoided_plans: meter
+                .u64_counter("rad.relation.cache.prepared.avoided.plans")
+                .with_description("Physical plans avoided by the prepared read cache")
+                .build(),
+            relation_cache_avoided_reads: meter
+                .u64_counter("rad.relation.cache.avoided.reads")
+                .with_description("Logical reads avoided by the Rad relation cache")
+                .build(),
+            relation_cache_avoided_bytes: meter
+                .u64_counter("rad.relation.cache.avoided.bytes")
+                .with_unit("By")
+                .with_description("Logical read bytes avoided by the Rad relation cache")
+                .build(),
+            relation_cache_avoided_time: meter
+                .f64_counter("rad.relation.cache.avoided.time")
+                .with_unit("s")
+                .with_description("Execution time avoided by the Rad relation cache")
+                .build(),
+            relation_cache_coalesced_fills: meter
+                .u64_counter("rad.relation.cache.coalesced.fills")
+                .with_description("Rad relation cache fills shared by concurrent requests")
+                .build(),
+            relation_cache_reuse_opportunities: meter
+                .u64_counter("rad.relation.cache.reuse.opportunities")
+                .with_description(
+                    "Requests after the first request for one exact dependency cohort",
+                )
+                .build(),
+            relation_cache_cohort_transitions: meter
+                .u64_counter("rad.relation.cache.cohort.transitions")
+                .with_description("Observed relation cache dependency cohort transitions")
+                .build(),
+            relation_cache_cohort_reuse: meter
+                .u64_histogram("rad.relation.cache.cohort.reuse.opportunities")
+                .with_description(
+                    "Reuse opportunities observed before a dependency cohort is superseded",
+                )
+                .build(),
+            relation_cache_shadow_decisions: meter
+                .u64_counter("rad.relation.cache.shadow.decisions")
+                .with_description(
+                    "Relation cache admission decisions from the inactive policy scorer",
+                )
+                .build(),
+            relation_cache_shadow_candidate_work: meter
+                .u64_histogram("rad.relation.cache.shadow.candidate.work")
+                .with_description(
+                    "Deterministic work units for relation cache admission candidates",
+                )
+                .build(),
+            relation_cache_shadow_candidate_density: meter
+                .f64_histogram("rad.relation.cache.shadow.candidate.density")
+                .with_description("Deterministic work units per retained candidate byte")
+                .build(),
+            relation_cache_shadow_rejected_reuse: meter
+                .u64_counter("rad.relation.cache.shadow.rejected.reuse")
+                .with_description("Reuse opportunities after the shadow policy rejects a candidate")
+                .build(),
+            relation_cache_evidence_evictions: meter
+                .u64_counter("rad.relation.cache.evidence.evictions")
+                .with_description("Entries removed from bounded relation cache policy evidence")
                 .build(),
             kv_operations: meter
                 .u64_counter("rad.kv.operations")
@@ -685,6 +933,7 @@ pub fn program_finished(measurement: ProgramMeasurement<'_>) {
 
 pub fn statement_finished(
     kind: &str,
+    source: crate::engine::exec::observe::StatementSource,
     status: &str,
     planning: Duration,
     execution: Duration,
@@ -696,6 +945,7 @@ pub fn statement_finished(
     };
     let attributes = [
         KeyValue::new("rad.statement.kind", kind.to_owned()),
+        KeyValue::new("rad.statement.source", source.as_str()),
         KeyValue::new("rad.status", status.to_owned()),
     ];
     instruments.statement_executions.add(1, &attributes);
@@ -753,6 +1003,278 @@ pub fn execution_parallel_batch(operator: &str, width: usize, rows: usize) {
     instruments
         .execution_parallel_rows
         .add(rows as u64, &attributes);
+}
+
+pub fn relation_cache_lookup(result: &'static str) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_lookups
+        .add(1, &[KeyValue::new("rad.cache.result", result)]);
+}
+
+pub fn relation_cache_admission(result: &'static str) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_admissions
+        .add(1, &[KeyValue::new("rad.cache.result", result)]);
+}
+
+pub fn relation_cache_eviction(cause: &'static str) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_evictions
+        .add(1, &[KeyValue::new("rad.cache.cause", cause)]);
+}
+
+pub fn relation_cache_residency(entries: usize, retained_bytes: u64) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_entries
+        .record(entries as u64, &[]);
+    instruments
+        .relation_cache_retained_bytes
+        .record(retained_bytes, &[]);
+}
+
+pub fn relation_cache_limits(entries: usize, bytes: u64, result_bytes: u64) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_capacity_entries
+        .record(entries as u64, &[]);
+    instruments.relation_cache_capacity_bytes.record(bytes, &[]);
+    instruments
+        .relation_cache_result_limit_bytes
+        .record(result_bytes, &[]);
+}
+
+pub fn relation_cache_result_size(bytes: usize) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_result_bytes
+        .record(bytes as u64, &[]);
+}
+
+pub fn relation_cache_dependency_lookup(result: &'static str) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_dependency_lookups
+        .add(1, &[KeyValue::new("rad.cache.result", result)]);
+}
+
+pub fn relation_cache_dependency_eviction(count: u64) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_dependency_evictions
+        .add(count, &[]);
+}
+
+pub fn relation_cache_catalog_lookup(result: &'static str) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_catalog_lookups
+        .add(1, &[KeyValue::new("rad.cache.result", result)]);
+}
+
+pub fn relation_cache_catalog_eviction(count: u64) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments.relation_cache_catalog_evictions.add(count, &[]);
+}
+
+pub fn relation_cache_catalog_residency(entries: u64, retained_bytes: u64) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_catalog_entries
+        .record(entries, &[]);
+    instruments
+        .relation_cache_catalog_retained_bytes
+        .record(retained_bytes, &[]);
+}
+
+pub fn relation_cache_prepared_lookup(result: &'static str) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_prepared_lookups
+        .add(1, &[KeyValue::new("rad.cache.result", result)]);
+}
+
+pub fn relation_cache_prepared_admission(result: &'static str) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_prepared_admissions
+        .add(1, &[KeyValue::new("rad.cache.result", result)]);
+}
+
+pub fn relation_cache_prepared_eviction(count: u64) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_prepared_evictions
+        .add(count, &[]);
+}
+
+pub fn relation_cache_prepared_residency(entries: u64, retained_bytes: u64) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_prepared_entries
+        .record(entries, &[]);
+    instruments
+        .relation_cache_prepared_retained_bytes
+        .record(retained_bytes, &[]);
+}
+
+pub fn relation_cache_prepared_limits(entries: u64, bytes: u64, plan_bytes: u64) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_prepared_capacity_entries
+        .record(entries, &[]);
+    instruments
+        .relation_cache_prepared_capacity_bytes
+        .record(bytes, &[]);
+    instruments
+        .relation_cache_prepared_plan_limit_bytes
+        .record(plan_bytes, &[]);
+}
+
+pub fn relation_cache_prepared_candidate(bytes: u64) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_prepared_candidate_bytes
+        .record(bytes, &[]);
+}
+
+pub fn relation_cache_prepared_avoided() {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_prepared_avoided_binds
+        .add(1, &[]);
+    instruments
+        .relation_cache_prepared_avoided_plans
+        .add(1, &[]);
+}
+
+pub fn relation_cache_avoided(reads: u64, bytes: u64, duration: Duration) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments.relation_cache_avoided_reads.add(reads, &[]);
+    instruments.relation_cache_avoided_bytes.add(bytes, &[]);
+    instruments
+        .relation_cache_avoided_time
+        .add(duration.as_secs_f64(), &[]);
+}
+
+pub fn relation_cache_coalesced() {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments.relation_cache_coalesced_fills.add(1, &[]);
+}
+
+pub fn relation_cache_reuse_opportunity() {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments.relation_cache_reuse_opportunities.add(1, &[]);
+}
+
+pub fn relation_cache_cohort_transition(cause: &'static str) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_cohort_transitions
+        .add(1, &[KeyValue::new("rad.cache.cause", cause)]);
+}
+
+pub fn relation_cache_cohort_reuse(reuse_opportunities: u64, outcome: &'static str) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments.relation_cache_cohort_reuse.record(
+        reuse_opportunities,
+        &[KeyValue::new("rad.cache.cohort.outcome", outcome)],
+    );
+}
+
+pub fn relation_cache_shadow_decision(
+    decision: &'static str,
+    reason: &'static str,
+    evidence: &'static str,
+) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments.relation_cache_shadow_decisions.add(
+        1,
+        &[
+            KeyValue::new("rad.cache.decision", decision),
+            KeyValue::new("rad.cache.reason", reason),
+            KeyValue::new("rad.cache.evidence", evidence),
+        ],
+    );
+}
+
+pub fn relation_cache_shadow_candidate(work_units: u64, density: f64) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_shadow_candidate_work
+        .record(work_units, &[]);
+    instruments
+        .relation_cache_shadow_candidate_density
+        .record(density, &[]);
+}
+
+pub fn relation_cache_shadow_rejected_reuse() {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments.relation_cache_shadow_rejected_reuse.add(1, &[]);
+}
+
+pub fn relation_cache_evidence_eviction(cause: &'static str) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .relation_cache_evidence_evictions
+        .add(1, &[KeyValue::new("rad.cache.cause", cause)]);
 }
 
 pub fn storage_cache_observed(

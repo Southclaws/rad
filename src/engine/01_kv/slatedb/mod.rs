@@ -200,7 +200,7 @@ pub struct ReaderStore {
 }
 
 struct ReaderBackend {
-    db: RwLock<Arc<slate_db::DbReader>>,
+    db: RwLock<ActiveReader>,
     path: slate_db::object_store::path::Path,
     object_store: Arc<dyn ObjectStore>,
     options: slate_db::config::DbReaderOptions,
@@ -209,6 +209,20 @@ struct ReaderBackend {
     slate_options: Options,
     scan_tuning: ScanTuning,
     reopen: AsyncMutex<()>,
+}
+
+struct ActiveReader {
+    db: Arc<slate_db::DbReader>,
+    // DbReader::status() clones the complete status, including the manifest.
+    // Transaction start needs only the durable sequence from this receiver.
+    // This receiver must come from `db`. Reader replacement updates the pair
+    // under one write lock. A transaction then clones the matching pair under
+    // one read lock. This prevents an old reader from using a new reader's
+    // sequence as its snapshot fence.
+    //
+    // Copy the required field from `borrow()` before an await point. A retained
+    // watch guard can prevent Slate from publishing a status update.
+    status: tokio::sync::watch::Receiver<slate_db::DbStatus>,
 }
 
 impl ReaderStore {
@@ -231,17 +245,20 @@ impl ReaderStore {
         let scan_tuning = slate_options.scan_tuning()?;
         let telemetry = SlateTelemetry::new();
         let cache = decoded_cache(slate_options.decoded_cache_size_mib);
-        let db = slate_db::DbReader::builder(path.clone(), Arc::clone(&object_store))
-            .with_options(options.clone())
-            .with_filter_policies(slate_options.filter_policies())
-            .with_metrics_recorder(telemetry.recorder())
-            .with_db_cache(Arc::clone(&cache))
-            .build()
-            .await
-            .map_err(map_operation_error)?;
+        let db = Arc::new(
+            slate_db::DbReader::builder(path.clone(), Arc::clone(&object_store))
+                .with_options(options.clone())
+                .with_filter_policies(slate_options.filter_policies())
+                .with_metrics_recorder(telemetry.recorder())
+                .with_db_cache(Arc::clone(&cache))
+                .build()
+                .await
+                .map_err(map_operation_error)?,
+        );
+        let status = db.subscribe();
         Ok(Self {
             reader: Arc::new(ReaderBackend {
-                db: RwLock::new(Arc::new(db)),
+                db: RwLock::new(ActiveReader { db, status }),
                 path,
                 object_store,
                 options,
@@ -258,7 +275,23 @@ impl ReaderStore {
 
 impl ReaderBackend {
     fn current(&self) -> Arc<slate_db::DbReader> {
-        Arc::clone(&self.db.read().expect("reader backend lock poisoned"))
+        Arc::clone(&self.db.read().expect("reader backend lock poisoned").db)
+    }
+
+    fn current_snapshot(
+        &self,
+    ) -> (
+        Arc<slate_db::DbReader>,
+        tokio::sync::watch::Receiver<slate_db::DbStatus>,
+        u64,
+    ) {
+        let current = self.db.read().expect("reader backend lock poisoned");
+        let durable_sequence = current.status.borrow().durable_seq;
+        (
+            Arc::clone(&current.db),
+            current.status.clone(),
+            durable_sequence,
+        )
     }
 
     async fn reopen_after(
@@ -279,7 +312,11 @@ impl ReaderBackend {
                 .build()
                 .await?,
         );
-        *self.db.write().expect("reader backend lock poisoned") = Arc::clone(&replacement);
+        let status = replacement.subscribe();
+        *self.db.write().expect("reader backend lock poisoned") = ActiveReader {
+            db: Arc::clone(&replacement),
+            status,
+        };
         let _ = current.close().await;
         Ok(replacement)
     }
@@ -642,25 +679,26 @@ struct ReaderTransaction {
 struct ReaderSnapshot {
     backend: Arc<ReaderBackend>,
     reader: Arc<slate_db::DbReader>,
+    status: tokio::sync::watch::Receiver<slate_db::DbStatus>,
     durable_sequence: u64,
     scan_tuning: ScanTuning,
 }
 
 impl ReaderSnapshot {
     fn new(backend: Arc<ReaderBackend>) -> Self {
-        let reader = backend.current();
-        let durable_sequence = reader.status().durable_seq;
+        let (reader, status, durable_sequence) = backend.current_snapshot();
         let scan_tuning = backend.scan_tuning;
         Self {
             backend,
             reader,
+            status,
             durable_sequence,
             scan_tuning,
         }
     }
 
     fn validate(&self) -> Result<()> {
-        if self.reader.status().durable_seq == self.durable_sequence {
+        if self.status.borrow().durable_seq == self.durable_sequence {
             Ok(())
         } else {
             Err(Error::message(

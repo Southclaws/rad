@@ -798,6 +798,36 @@ pub fn decode_catalog_reclamation_key(key: &[u8]) -> Option<CatalogReclamationKe
     Some(CatalogReclamationKeyParts { reclamation })
 }
 
+pub const CATALOG_TABLE_DATA_GENERATION_TAG: u8 = 0x23;
+
+/// The `catalog_table_data_generation` space prefix: root magic plus tag.
+pub fn catalog_table_data_generation_prefix() -> Vec<u8> {
+    vec![0x72, 0x37, CATALOG_TABLE_DATA_GENERATION_TAG]
+}
+
+pub fn catalog_table_data_generation_key(table: u64) -> Vec<u8> {
+    let mut key = catalog_table_data_generation_prefix();
+    append_uvarint(&mut key, table);
+    key
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct CatalogTableDataGenerationKeyParts {
+    pub table: u64,
+}
+
+pub fn decode_catalog_table_data_generation_key(
+    key: &[u8],
+) -> Option<CatalogTableDataGenerationKeyParts> {
+    let rest = key.strip_prefix(&[0x72, 0x37, CATALOG_TABLE_DATA_GENERATION_TAG][..])?;
+    let mut position = 0;
+    let table = read_uvarint(rest, &mut position)?;
+    if position != rest.len() {
+        return None;
+    }
+    Some(CatalogTableDataGenerationKeyParts { table })
+}
+
 pub const CATALOG_META_MODE_TAG: u8 = 0x30;
 
 /// The `catalog_meta_mode` space prefix: root magic plus tag.

@@ -96,6 +96,7 @@ type DatabaseSpec struct {
 	Diagnostics DiagnosticLevel
 	// MetricsEnabled defaults to true when it is nil.
 	MetricsEnabled *bool
+	RelationCache  RelationCacheOptions
 	Slate          SlateOptions
 
 	// InternalTLSMode secures the channel readers use to report statistics to
@@ -126,6 +127,12 @@ type SlateObjectCacheOptions struct {
 	CacheOnFlush      bool
 	CacheOnCompaction bool
 	Preload           string
+}
+
+type RelationCacheOptions struct {
+	SizeMiB          int32
+	Entries          int32
+	MaxResultSizeMiB int32
 }
 
 type SlateOptions struct {
@@ -185,6 +192,7 @@ type Database struct {
 	OTelEndpoint   string
 	Diagnostics    DiagnosticLevel
 	MetricsEnabled bool
+	RelationCache  RelationCacheOptions
 	Slate          SlateOptions
 
 	// InternalTransportMode is "tls" or "plaintext", empty without readers.
@@ -338,7 +346,8 @@ func (c *Client) resource(spec DatabaseSpec) (*radv1alpha1.Database, error) {
 				Diagnostics: radv1alpha1.DiagnosticLevel(diagnostics),
 				Metrics:     metrics,
 			},
-			Slate: slateResource(spec.Slate),
+			RelationCache: relationCacheResource(spec.RelationCache),
+			Slate:         slateResource(spec.Slate),
 			InternalTLS: radv1alpha1.InternalTLS{
 				Mode:       radv1alpha1.InternalTLSMode(spec.InternalTLSMode),
 				SecretName: spec.InternalTLSSecret,
@@ -350,6 +359,14 @@ func (c *Client) resource(spec DatabaseSpec) (*radv1alpha1.Database, error) {
 			},
 		},
 	}, nil
+}
+
+func relationCacheResource(options RelationCacheOptions) radv1alpha1.RelationCache {
+	return radv1alpha1.RelationCache{
+		SizeMiB:          defaultInt32(options.SizeMiB, 128),
+		Entries:          defaultInt32(options.Entries, 4096),
+		MaxResultSizeMiB: defaultInt32(options.MaxResultSizeMiB, 8),
+	}
 }
 
 func slateResource(options SlateOptions) radv1alpha1.Slate {
@@ -447,7 +464,12 @@ func databaseView(resource *radv1alpha1.Database) Database {
 		OTelEndpoint:   resource.Spec.Telemetry.Endpoint,
 		Diagnostics:    DiagnosticLevel(resource.Spec.Telemetry.Diagnostics),
 		MetricsEnabled: resource.Spec.Telemetry.Metrics == nil || *resource.Spec.Telemetry.Metrics,
-		Slate:          slateView(resource.Spec.Slate),
+		RelationCache: RelationCacheOptions{
+			SizeMiB:          resource.Spec.RelationCache.SizeMiB,
+			Entries:          resource.Spec.RelationCache.Entries,
+			MaxResultSizeMiB: resource.Spec.RelationCache.MaxResultSizeMiB,
+		},
+		Slate: slateView(resource.Spec.Slate),
 	}
 	if transport := resource.Status.InternalTransport; transport != nil {
 		database.InternalTransportMode = transport.Mode
