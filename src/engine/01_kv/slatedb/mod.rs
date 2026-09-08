@@ -570,7 +570,7 @@ impl Kv for ReaderStore {
 impl TransactionalKv for ReaderStore {
     async fn begin(&self, _isolation: IsolationLevel) -> Result<Box<dyn Transaction>> {
         let lease = self.lifecycle.acquire()?;
-        let snapshot = ReaderSnapshot::new(self.reader.current(), self.reader.scan_tuning);
+        let snapshot = ReaderSnapshot::new(Arc::clone(&self.reader));
         let begin_position = DataPosition::from_sequence(snapshot.durable_sequence);
         Ok(Box::new(ReaderTransaction {
             snapshot,
@@ -640,15 +640,19 @@ struct ReaderTransaction {
 
 #[derive(Clone)]
 struct ReaderSnapshot {
+    backend: Arc<ReaderBackend>,
     reader: Arc<slate_db::DbReader>,
     durable_sequence: u64,
     scan_tuning: ScanTuning,
 }
 
 impl ReaderSnapshot {
-    fn new(reader: Arc<slate_db::DbReader>, scan_tuning: ScanTuning) -> Self {
+    fn new(backend: Arc<ReaderBackend>) -> Self {
+        let reader = backend.current();
         let durable_sequence = reader.status().durable_seq;
+        let scan_tuning = backend.scan_tuning;
         Self {
+            backend,
             reader,
             durable_sequence,
             scan_tuning,
@@ -668,22 +672,45 @@ impl ReaderSnapshot {
 
     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         self.validate()?;
-        let result = self.reader.get(key).await;
-        self.validate()?;
-        result.map_err(map_operation_error)
+        match self.reader.get(key).await {
+            Ok(value) => {
+                self.validate()?;
+                Ok(value)
+            }
+            Err(error) => Err(self.operation_error(error).await),
+        }
     }
 
     async fn scan(&self, request: &ScanRequest) -> Result<slate_db::DbIterator> {
         self.validate()?;
-        let result = self
+        match self
             .reader
             .scan_with_options(
                 request.range.clone(),
                 &scan_options(request, self.scan_tuning),
             )
-            .await;
-        self.validate()?;
-        result.map_err(map_operation_error)
+            .await
+        {
+            Ok(iterator) => {
+                self.validate()?;
+                Ok(iterator)
+            }
+            Err(error) => Err(self.operation_error(error).await),
+        }
+    }
+
+    async fn operation_error(&self, error: slate_db::Error) -> Error {
+        if !reader_must_reopen(&error) {
+            return map_operation_error(error);
+        }
+        match self.backend.reopen_after(&self.reader).await {
+            Ok(_) => Error::source(
+                ErrorKind::Conflict,
+                "reader snapshot became unavailable during the transaction",
+                error,
+            ),
+            Err(error) => map_operation_error(error),
+        }
     }
 }
 
@@ -720,9 +747,9 @@ impl Transaction for ReaderTransaction {
     ) -> Result<Box<dyn KvIterator + 'a>> {
         let request = ScanRequest::access_path(range).with_order(order);
         let iterator = self.snapshot.scan(&request).await?;
-        Ok(Box::new(SlateIterator {
+        Ok(Box::new(ReaderSlateIterator {
             iterator,
-            _lease: None,
+            snapshot: self.snapshot.clone(),
         }))
     }
 
@@ -731,9 +758,9 @@ impl Transaction for ReaderTransaction {
         request: ScanRequest,
     ) -> Result<Box<dyn KvIterator + 'a>> {
         let iterator = self.snapshot.scan(&request).await?;
-        Ok(Box::new(SlateIterator {
+        Ok(Box::new(ReaderSlateIterator {
             iterator,
-            _lease: None,
+            snapshot: self.snapshot.clone(),
         }))
     }
 
@@ -849,6 +876,46 @@ struct SlateIterator {
     _lease: Option<Lease>,
 }
 
+struct ReaderSlateIterator {
+    iterator: slate_db::DbIterator,
+    snapshot: ReaderSnapshot,
+}
+
+#[async_trait]
+impl KvIterator for ReaderSlateIterator {
+    async fn seek_forward(&mut self, next_key: &[u8]) -> Result<()> {
+        match self.iterator.seek(next_key).await {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self.snapshot.operation_error(error).await),
+        }
+    }
+
+    async fn next(&mut self) -> Result<Option<Entry>> {
+        match self.iterator.next().await {
+            Ok(entry) => Ok(entry.map(slate_entry)),
+            Err(error) => Err(self.snapshot.operation_error(error).await),
+        }
+    }
+
+    async fn next_batch(&mut self, limit: usize, output: &mut Vec<Entry>) -> Result<()> {
+        let target = output.len().saturating_add(limit);
+        while output.len() < target {
+            let Some(entry) = self.next().await? else {
+                break;
+            };
+            output.push(entry);
+        }
+        Ok(())
+    }
+}
+
+fn slate_entry(entry: slate_db::KeyValue) -> Entry {
+    Entry {
+        key: entry.key,
+        value: entry.value,
+    }
+}
+
 #[async_trait]
 impl KvIterator for SlateIterator {
     async fn seek_forward(&mut self, next_key: &[u8]) -> Result<()> {
@@ -861,12 +928,7 @@ impl KvIterator for SlateIterator {
     async fn next(&mut self) -> Result<Option<Entry>> {
         let result = self.iterator.next().await;
         result
-            .map(|entry| {
-                entry.map(|entry| Entry {
-                    key: entry.key,
-                    value: entry.value,
-                })
-            })
+            .map(|entry| entry.map(slate_entry))
             .map_err(map_operation_error)
     }
 
@@ -1830,6 +1892,38 @@ mod tests {
         assert_eq!(entries[0].key, Bytes::from_static(b"key"));
         assert_eq!(entries[0].value, Bytes::from_static(b"value"));
 
+        reader.close().await?;
+        writer.close().await
+    }
+
+    #[tokio::test]
+    async fn reader_snapshot_reopens_a_missing_checkpoint_as_a_conflict() -> Result<()> {
+        let objects: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let writer = Store::open("reader-snapshot-reopen", Arc::clone(&objects)).await?;
+        writer
+            .put(Bytes::from_static(b"key"), Bytes::from_static(b"value"))
+            .await?;
+        let reader = ReaderStore::open(
+            "reader-snapshot-reopen",
+            objects,
+            Duration::from_millis(100),
+        )
+        .await?;
+        let failed = reader.reader.current();
+        let snapshot = ReaderSnapshot::new(Arc::clone(&reader.reader));
+
+        let error = snapshot
+            .operation_error(slate_db::Error::data(
+                "checkpoint missing during refresh".into(),
+            ))
+            .await;
+
+        assert_eq!(error.kind(), ErrorKind::Conflict);
+        assert!(!Arc::ptr_eq(&failed, &reader.reader.current()));
+        assert_eq!(
+            reader.get(b"key").await?,
+            Some(Bytes::from_static(b"value"))
+        );
         reader.close().await?;
         writer.close().await
     }

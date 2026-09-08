@@ -983,14 +983,18 @@ components:
 
     InternalProblem:
       description: |
-        A deliberately impoverished internal failure. Wrapped causes,
-        locations, execution context, catalog identity, keys, and values are
-        never exposed. `incident` is an optional opaque log correlation ID.
+        A database failure that prevents the operation from completing. The
+        detail contains the complete available diagnostic, including wrapped
+        causes. `incident` correlates the response with the server log.
       allOf:
         - $ref: "#/components/schemas/ProblemBase"
         - type: object
-          required: [code]
+          required: [code, detail]
           properties:
+            detail:
+              description: The complete available diagnostic for this failure.
+              type: string
+              minLength: 1
             type:
               type: string
               enum: ["urn:rad:problem:internal"]
@@ -1005,9 +1009,16 @@ components:
               enum: [internal]
             reason:
               type: string
-              enum: [internal]
+              enum:
+                - internal
+                - commit_outcome_unknown
+                - catalog_corrupt
+                - catalog_schema_drift
+                - storage_unavailable
+            stage:
+              $ref: "#/components/schemas/ProblemStage"
             incident:
-              description: An opaque identifier correlated with server-side diagnostics.
+              description: An identifier correlated with the server log.
               type: string
 
     Value:

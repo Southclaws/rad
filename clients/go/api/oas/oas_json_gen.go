@@ -3306,10 +3306,8 @@ func (s *InternalProblem) encodeFields(e *jx.Encoder) {
 		s.Status.Encode(e)
 	}
 	{
-		if s.Detail.Set {
-			e.FieldStart("detail")
-			s.Detail.Encode(e)
-		}
+		e.FieldStart("detail")
+		e.Str(s.Detail)
 	}
 	{
 		e.FieldStart("reason")
@@ -3320,6 +3318,12 @@ func (s *InternalProblem) encodeFields(e *jx.Encoder) {
 		s.Code.Encode(e)
 	}
 	{
+		if s.Stage.Set {
+			e.FieldStart("stage")
+			s.Stage.Encode(e)
+		}
+	}
+	{
 		if s.Incident.Set {
 			e.FieldStart("incident")
 			s.Incident.Encode(e)
@@ -3327,14 +3331,15 @@ func (s *InternalProblem) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfInternalProblem = [7]string{
+var jsonFieldsNameOfInternalProblem = [8]string{
 	0: "type",
 	1: "title",
 	2: "status",
 	3: "detail",
 	4: "reason",
 	5: "code",
-	6: "incident",
+	6: "stage",
+	7: "incident",
 }
 
 // Decode decodes InternalProblem from json.
@@ -3377,9 +3382,11 @@ func (s *InternalProblem) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"status\"")
 			}
 		case "detail":
+			requiredBitSet[0] |= 1 << 3
 			if err := func() error {
-				s.Detail.Reset()
-				if err := s.Detail.Decode(d); err != nil {
+				v, err := d.Str()
+				s.Detail = string(v)
+				if err != nil {
 					return err
 				}
 				return nil
@@ -3406,6 +3413,16 @@ func (s *InternalProblem) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"code\"")
 			}
+		case "stage":
+			if err := func() error {
+				s.Stage.Reset()
+				if err := s.Stage.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"stage\"")
+			}
 		case "incident":
 			if err := func() error {
 				s.Incident.Reset()
@@ -3426,7 +3443,7 @@ func (s *InternalProblem) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00110111,
+		0b00111111,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -3528,6 +3545,14 @@ func (s *InternalProblemReason) Decode(d *jx.Decoder) error {
 	switch InternalProblemReason(v) {
 	case InternalProblemReasonInternal:
 		*s = InternalProblemReasonInternal
+	case InternalProblemReasonCommitOutcomeUnknown:
+		*s = InternalProblemReasonCommitOutcomeUnknown
+	case InternalProblemReasonCatalogCorrupt:
+		*s = InternalProblemReasonCatalogCorrupt
+	case InternalProblemReasonCatalogSchemaDrift:
+		*s = InternalProblemReasonCatalogSchemaDrift
+	case InternalProblemReasonStorageUnavailable:
+		*s = InternalProblemReasonStorageUnavailable
 	default:
 		*s = InternalProblemReason(v)
 	}
@@ -4889,6 +4914,39 @@ func (s *OptProblemLocation) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes ProblemStage as json.
+func (o OptProblemStage) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes ProblemStage from json.
+func (o *OptProblemStage) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptProblemStage to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptProblemStage) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptProblemStage) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes ResourceContext as json.
 func (o OptResourceContext) Encode(e *jx.Encoder) {
 	if !o.Set {
@@ -5644,14 +5702,18 @@ func (s Problem) encodeFields(e *jx.Encoder) {
 				s.Status.Encode(e)
 			}
 			{
-				if s.Detail.Set {
-					e.FieldStart("detail")
-					s.Detail.Encode(e)
-				}
+				e.FieldStart("detail")
+				e.Str(s.Detail)
 			}
 			{
 				e.FieldStart("reason")
 				s.Reason.Encode(e)
+			}
+			{
+				if s.Stage.Set {
+					e.FieldStart("stage")
+					s.Stage.Encode(e)
+				}
 			}
 			{
 				if s.Incident.Set {

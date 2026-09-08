@@ -28,15 +28,6 @@ func TestProblemConversionUsesTheCodeDiscriminatedUnion(t *testing.T) {
 				t.Fatalf("union kind = %q, want %q", generated.Type, test.kind)
 			}
 			roundTrip := ProblemFromOAS(generated)
-			if test.code == protocol.CodeInternal {
-				if roundTrip.Reason != protocol.CodeInternal {
-					t.Fatalf("internal reason = %q, want redacted %q", roundTrip.Reason, protocol.CodeInternal)
-				}
-				if roundTrip.Detail != "internal error" {
-					t.Fatalf("internal detail = %q, want redacted detail", roundTrip.Detail)
-				}
-				return
-			}
 			if roundTrip != problem {
 				t.Fatalf("round trip = %#v, want %#v", roundTrip, problem)
 			}

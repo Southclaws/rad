@@ -15,6 +15,10 @@ func ProblemToOAS(p protocol.Problem) oas.Problem {
 	if stage == "" {
 		stage = oas.ProblemStage(protocol.ProblemStagePreflight)
 	}
+	internalStage := oas.OptProblemStage{}
+	if p.Stage != "" {
+		internalStage = oas.NewOptProblemStage(oas.ProblemStage(p.Stage))
+	}
 	switch p.Code {
 	case protocol.CodeExecutionFailed:
 		return oas.NewExecutionFailedProblemProblem(oas.ExecutionFailedProblem{
@@ -51,9 +55,10 @@ func ProblemToOAS(p protocol.Problem) oas.Problem {
 			Type:   oas.InternalProblemTypeUrnRadProblemInternal,
 			Title:  oas.InternalProblemTitleInternalServerError,
 			Status: oas.InternalProblemStatus500,
-			Detail: oas.NewOptString("internal error"),
-			Reason: oas.InternalProblemReasonInternal,
+			Detail: p.Detail,
+			Reason: oas.InternalProblemReason(p.Reason),
 			Code:   oas.InternalProblemCodeInternal,
+			Stage:  internalStage,
 		})
 	default:
 		return oas.NewInvalidProblemProblem(oas.InvalidProblem{
@@ -92,8 +97,8 @@ func ProblemFromOAS(o oas.Problem) protocol.Problem {
 	case oas.InternalProblemProblem:
 		p := o.InternalProblem
 		return problemFromFields(
-			string(p.Type), string(p.Title), int(p.Status), p.Detail.Or(""),
-			string(p.Code), string(p.Reason), "",
+			string(p.Type), string(p.Title), int(p.Status), p.Detail,
+			string(p.Code), string(p.Reason), string(p.Stage.Or("")),
 		)
 	default:
 		p := o.InvalidProblem

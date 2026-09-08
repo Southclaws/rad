@@ -1280,12 +1280,13 @@ type InternalProblem struct {
 	Title InternalProblemTitle `json:"title"`
 	// Merged property.
 	Status InternalProblemStatus `json:"status"`
-	// A human readable explanation specific to this occurrence.
-	Detail OptString `json:"detail"`
+	// Merged property.
+	Detail string `json:"detail"`
 	// Merged property.
 	Reason InternalProblemReason `json:"reason"`
 	Code   InternalProblemCode   `json:"code"`
-	// An opaque identifier correlated with server-side diagnostics.
+	Stage  OptProblemStage       `json:"stage"`
+	// An identifier correlated with the server log.
 	Incident OptString `json:"incident"`
 }
 
@@ -1305,7 +1306,7 @@ func (s *InternalProblem) GetStatus() InternalProblemStatus {
 }
 
 // GetDetail returns the value of Detail.
-func (s *InternalProblem) GetDetail() OptString {
+func (s *InternalProblem) GetDetail() string {
 	return s.Detail
 }
 
@@ -1317,6 +1318,11 @@ func (s *InternalProblem) GetReason() InternalProblemReason {
 // GetCode returns the value of Code.
 func (s *InternalProblem) GetCode() InternalProblemCode {
 	return s.Code
+}
+
+// GetStage returns the value of Stage.
+func (s *InternalProblem) GetStage() OptProblemStage {
+	return s.Stage
 }
 
 // GetIncident returns the value of Incident.
@@ -1340,7 +1346,7 @@ func (s *InternalProblem) SetStatus(val InternalProblemStatus) {
 }
 
 // SetDetail sets the value of Detail.
-func (s *InternalProblem) SetDetail(val OptString) {
+func (s *InternalProblem) SetDetail(val string) {
 	s.Detail = val
 }
 
@@ -1352,6 +1358,11 @@ func (s *InternalProblem) SetReason(val InternalProblemReason) {
 // SetCode sets the value of Code.
 func (s *InternalProblem) SetCode(val InternalProblemCode) {
 	s.Code = val
+}
+
+// SetStage sets the value of Stage.
+func (s *InternalProblem) SetStage(val OptProblemStage) {
+	s.Stage = val
 }
 
 // SetIncident sets the value of Incident.
@@ -1397,13 +1408,21 @@ func (s *InternalProblemCode) UnmarshalText(data []byte) error {
 type InternalProblemReason string
 
 const (
-	InternalProblemReasonInternal InternalProblemReason = "internal"
+	InternalProblemReasonInternal             InternalProblemReason = "internal"
+	InternalProblemReasonCommitOutcomeUnknown InternalProblemReason = "commit_outcome_unknown"
+	InternalProblemReasonCatalogCorrupt       InternalProblemReason = "catalog_corrupt"
+	InternalProblemReasonCatalogSchemaDrift   InternalProblemReason = "catalog_schema_drift"
+	InternalProblemReasonStorageUnavailable   InternalProblemReason = "storage_unavailable"
 )
 
 // AllValues returns all InternalProblemReason values.
 func (InternalProblemReason) AllValues() []InternalProblemReason {
 	return []InternalProblemReason{
 		InternalProblemReasonInternal,
+		InternalProblemReasonCommitOutcomeUnknown,
+		InternalProblemReasonCatalogCorrupt,
+		InternalProblemReasonCatalogSchemaDrift,
+		InternalProblemReasonStorageUnavailable,
 	}
 }
 
@@ -1411,6 +1430,14 @@ func (InternalProblemReason) AllValues() []InternalProblemReason {
 func (s InternalProblemReason) MarshalText() ([]byte, error) {
 	switch s {
 	case InternalProblemReasonInternal:
+		return []byte(s), nil
+	case InternalProblemReasonCommitOutcomeUnknown:
+		return []byte(s), nil
+	case InternalProblemReasonCatalogCorrupt:
+		return []byte(s), nil
+	case InternalProblemReasonCatalogSchemaDrift:
+		return []byte(s), nil
+	case InternalProblemReasonStorageUnavailable:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -1422,6 +1449,18 @@ func (s *InternalProblemReason) UnmarshalText(data []byte) error {
 	switch InternalProblemReason(data) {
 	case InternalProblemReasonInternal:
 		*s = InternalProblemReasonInternal
+		return nil
+	case InternalProblemReasonCommitOutcomeUnknown:
+		*s = InternalProblemReasonCommitOutcomeUnknown
+		return nil
+	case InternalProblemReasonCatalogCorrupt:
+		*s = InternalProblemReasonCatalogCorrupt
+		return nil
+	case InternalProblemReasonCatalogSchemaDrift:
+		*s = InternalProblemReasonCatalogSchemaDrift
+		return nil
+	case InternalProblemReasonStorageUnavailable:
+		*s = InternalProblemReasonStorageUnavailable
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -2560,6 +2599,52 @@ func (o OptProblemLocation) Get() (v ProblemLocation, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptProblemLocation) Or(d ProblemLocation) ProblemLocation {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptProblemStage returns new OptProblemStage with value set to v.
+func NewOptProblemStage(v ProblemStage) OptProblemStage {
+	return OptProblemStage{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptProblemStage is optional ProblemStage.
+type OptProblemStage struct {
+	Value ProblemStage
+	Set   bool
+}
+
+// IsSet returns true if OptProblemStage was set.
+func (o OptProblemStage) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptProblemStage) Reset() {
+	var v ProblemStage
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptProblemStage) SetTo(v ProblemStage) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptProblemStage) Get() (v ProblemStage, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptProblemStage) Or(d ProblemStage) ProblemStage {
 	if v, ok := o.Get(); ok {
 		return v
 	}

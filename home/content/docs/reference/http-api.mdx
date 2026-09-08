@@ -781,9 +781,9 @@ One secondary index, in both definitions and introspection.
 
 #### `InternalProblem`
 
-A deliberately impoverished internal failure. Wrapped causes,
-locations, execution context, catalog identity, keys, and values are
-never exposed. `incident` is an optional opaque log correlation ID.
+A database failure that prevents the operation from completing. The
+detail contains the complete available diagnostic, including wrapped
+causes. `incident` correlates the response with the server log.
 
 #### `InvalidDiagnostic`
 

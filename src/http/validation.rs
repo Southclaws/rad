@@ -19,8 +19,13 @@ pub(super) async fn normalize_generated_rejection(response: Response) -> Respons
 
     let status = response.status();
     let (parts, body) = response.into_parts();
-    let Ok(bytes) = to_bytes(body, MAX_GENERATED_PROBLEM_BYTES).await else {
-        return render(ResponseProblem::internal_transport());
+    let bytes = match to_bytes(body, MAX_GENERATED_PROBLEM_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return render(ResponseProblem::internal_transport(format!(
+                "failed to read the generated HTTP error response: {error}"
+            )));
+        }
     };
     let Ok(problem) = serde_json::from_slice::<ProblemDetails>(&bytes) else {
         return Response::from_parts(parts, Body::from(bytes));
@@ -32,7 +37,10 @@ pub(super) async fn normalize_generated_rejection(response: Response) -> Respons
         return Response::from_parts(parts, Body::from(bytes));
     }
     if status.is_server_error() {
-        return render(ResponseProblem::internal_transport());
+        return render(ResponseProblem::internal_transport(format!(
+            "generated HTTP contract failure: {}",
+            problem.title
+        )));
     }
 
     let location = problem.errors.first().map(|error| Location {
