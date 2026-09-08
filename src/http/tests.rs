@@ -540,7 +540,7 @@ async fn storage_conflict_is_a_typed_retryable_problem_outside_in() {
 }
 
 #[tokio::test]
-async fn internal_storage_failure_is_redacted_outside_in() {
+async fn internal_storage_failure_is_diagnostic_outside_in() {
     let response = fault_router("http-internal", Operation::Begin, KvErrorKind::Internal)
         .await
         .oneshot(post_json("/execute", one_row_program()))
@@ -555,12 +555,20 @@ async fn internal_storage_failure_is_redacted_outside_in() {
     let body = json_body(response).await;
     assert_eq!(body["type"], "urn:rad:problem:internal");
     assert_eq!(body["code"], "internal");
-    assert_eq!(body["reason"], "internal");
+    assert_eq!(body["reason"], "storage_unavailable");
+    assert_eq!(body["stage"], "storage");
     assert_eq!(body["status"], 500);
-    assert_eq!(body["detail"], "internal error");
+    assert_eq!(
+        body["detail"],
+        "exec storage: fault injection: Begin returned Internal"
+    );
+    assert!(
+        body["incident"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
     assert!(body.get("execution").is_none());
     assert!(body.get("conflict").is_none());
-    assert!(!body.to_string().contains("injected"));
 }
 
 #[tokio::test]

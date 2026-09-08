@@ -729,6 +729,29 @@ func (s *InternalProblem) Validate() error {
 		})
 	}
 	if err := func() error {
+		if err := (validate.String{
+			MinLength:     1,
+			MinLengthSet:  true,
+			MaxLength:     0,
+			MaxLengthSet:  false,
+			Email:         false,
+			Hostname:      false,
+			Regex:         nil,
+			MinNumeric:    0,
+			MinNumericSet: false,
+			MaxNumeric:    0,
+			MaxNumericSet: false,
+		}).Validate(string(s.Detail)); err != nil {
+			return errors.Wrap(err, "string")
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "detail",
+			Error: err,
+		})
+	}
+	if err := func() error {
 		if err := s.Reason.Validate(); err != nil {
 			return err
 		}
@@ -750,6 +773,24 @@ func (s *InternalProblem) Validate() error {
 			Error: err,
 		})
 	}
+	if err := func() error {
+		if value, ok := s.Stage.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "stage",
+			Error: err,
+		})
+	}
 	if len(failures) > 0 {
 		return &validate.Error{Fields: failures}
 	}
@@ -768,6 +809,14 @@ func (s InternalProblemCode) Validate() error {
 func (s InternalProblemReason) Validate() error {
 	switch s {
 	case "internal":
+		return nil
+	case "commit_outcome_unknown":
+		return nil
+	case "catalog_corrupt":
+		return nil
+	case "catalog_schema_drift":
+		return nil
+	case "storage_unavailable":
 		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)

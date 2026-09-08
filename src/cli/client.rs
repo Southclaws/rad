@@ -221,7 +221,7 @@ impl ApiError {
             Problem::InternalProblem(problem) => (
                 "internal",
                 problem.reason.as_str(),
-                problem.detail.as_deref(),
+                Some(problem.detail.as_str()),
             ),
         }
     }

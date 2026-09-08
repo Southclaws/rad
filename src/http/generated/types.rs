@@ -1387,19 +1387,21 @@ pub struct InvalidDiagnostic {
     pub location: Option<ProblemLocation>,
     pub reason: String,
 }
-/**A deliberately impoverished internal failure. Wrapped causes,
-locations, execution context, catalog identity, keys, and values are
-never exposed. `incident` is an optional opaque log correlation ID.
+/**A database failure that prevents the operation from completing. The
+detail contains the complete available diagnostic, including wrapped
+causes. `incident` correlates the response with the server log.
 */
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InternalProblem {
-    ///A human readable explanation specific to this occurrence.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-    ///An opaque identifier correlated with server-side diagnostics.
+    ///The complete available diagnostic for this failure.
+    ///Constraint: minLength=1
+    pub detail: String,
+    ///An identifier correlated with the server log.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub incident: Option<String>,
     pub reason: InternalProblemReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<ProblemStage>,
     pub status: i64,
     pub title: InternalProblemTitle,
     pub r#type: InternalProblemType,
@@ -1455,11 +1457,23 @@ pub enum InternalProblemReason {
     #[default]
     #[serde(rename = "internal")]
     Internal,
+    #[serde(rename = "commit_outcome_unknown")]
+    CommitOutcomeUnknown,
+    #[serde(rename = "catalog_corrupt")]
+    CatalogCorrupt,
+    #[serde(rename = "catalog_schema_drift")]
+    CatalogSchemaDrift,
+    #[serde(rename = "storage_unavailable")]
+    StorageUnavailable,
 }
 impl InternalProblemReason {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Internal => "internal",
+            Self::CommitOutcomeUnknown => "commit_outcome_unknown",
+            Self::CatalogCorrupt => "catalog_corrupt",
+            Self::CatalogSchemaDrift => "catalog_schema_drift",
+            Self::StorageUnavailable => "storage_unavailable",
         }
     }
 }

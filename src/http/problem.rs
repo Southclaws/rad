@@ -117,22 +117,84 @@ impl ResponseProblem {
         }
     }
 
-    fn internal(_failure: InternalFailure) -> Self {
-        Self::internal_transport()
-    }
-
-    pub(super) fn internal_transport() -> Self {
+    fn internal(failure: InternalFailure) -> Self {
+        let context = crate::logging::request_context();
+        let incident = (!context.request_id.is_empty()).then_some(context.request_id);
+        let detail = failure.diagnostic().to_owned();
+        tracing::error!(
+            target: "rad",
+            event = "http.internal_error",
+            component = "http",
+            incident = incident.as_deref().unwrap_or_default(),
+            trace_id = context.trace_id,
+            span_id = context.span_id,
+            error_kind = failure.kind().as_str(),
+            error_reason = failure.reason().as_str(),
+            error_stage = ?failure.stage,
+            diagnostic = failure.diagnostic(),
+            message = "HTTP request failed because of an internal error"
+        );
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             body: wire::Problem::InternalProblem(wire::InternalProblem {
-                detail: Some("internal error".into()),
-                incident: None,
-                reason: wire::InternalProblemReason::Internal,
+                detail,
+                incident,
+                reason: internal_reason(failure.reason()),
+                stage: Some(stage(failure.stage)),
                 status: 500,
                 title: wire::InternalProblemTitle::InternalServerError,
                 r#type: wire::InternalProblemType::UrnRadProblemInternal,
             }),
         }
+    }
+
+    pub(super) fn internal_transport(detail: impl Into<String>) -> Self {
+        let detail = detail.into();
+        let context = crate::logging::request_context();
+        let incident = (!context.request_id.is_empty()).then_some(context.request_id);
+        tracing::error!(
+            target: "rad",
+            event = "http.internal_error",
+            component = "http",
+            incident = incident.as_deref().unwrap_or_default(),
+            trace_id = context.trace_id,
+            span_id = context.span_id,
+            error_kind = "internal",
+            error_reason = "internal",
+            diagnostic = detail,
+            message = "HTTP request failed because of an internal error"
+        );
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            body: wire::Problem::InternalProblem(wire::InternalProblem {
+                detail,
+                incident,
+                reason: wire::InternalProblemReason::Internal,
+                stage: None,
+                status: 500,
+                title: wire::InternalProblemTitle::InternalServerError,
+                r#type: wire::InternalProblemType::UrnRadProblemInternal,
+            }),
+        }
+    }
+}
+
+fn internal_reason(value: crate::engine::exec::ErrorReason) -> wire::InternalProblemReason {
+    match value {
+        crate::engine::exec::ErrorReason::CommitOutcomeUnknown => {
+            wire::InternalProblemReason::CommitOutcomeUnknown
+        }
+        crate::engine::exec::ErrorReason::CatalogCorrupt => {
+            wire::InternalProblemReason::CatalogCorrupt
+        }
+        crate::engine::exec::ErrorReason::CatalogSchemaDrift => {
+            wire::InternalProblemReason::CatalogSchemaDrift
+        }
+        crate::engine::exec::ErrorReason::StorageUnavailable => {
+            wire::InternalProblemReason::StorageUnavailable
+        }
+        crate::engine::exec::ErrorReason::Internal => wire::InternalProblemReason::Internal,
+        _ => unreachable!("non-internal reason reached the internal problem mapper"),
     }
 }
 
@@ -315,9 +377,9 @@ mod tests {
         assert_eq!(internal.status, StatusCode::INTERNAL_SERVER_ERROR);
         let value = serde_json::to_value(internal.body).unwrap();
         assert_eq!(value["code"], "internal");
-        assert_eq!(value["reason"], "internal");
-        assert_eq!(value["detail"], "internal error");
-        assert!(!value.to_string().contains("secret storage"));
+        assert_eq!(value["reason"], "storage_unavailable");
+        assert_eq!(value["stage"], "storage");
+        assert_eq!(value["detail"], "secret storage implementation detail");
 
         let malformed = ResponseProblem::invalid(
             InvalidFailure {

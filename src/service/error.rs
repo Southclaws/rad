@@ -223,10 +223,20 @@ pub struct NotFoundFailure {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InternalFailure {
     pub stage: Stage,
+    kind: crate::engine::exec::ErrorKind,
+    reason: crate::engine::exec::ErrorReason,
     diagnostic: String,
 }
 
 impl InternalFailure {
+    pub fn kind(&self) -> crate::engine::exec::ErrorKind {
+        self.kind
+    }
+
+    pub fn reason(&self) -> crate::engine::exec::ErrorReason {
+        self.reason
+    }
+
     pub fn diagnostic(&self) -> &str {
         &self.diagnostic
     }
@@ -323,7 +333,9 @@ impl Failure {
             | ErrorReason::StorageUnavailable
             | ErrorReason::Internal => Self::Internal(InternalFailure {
                 stage,
-                diagnostic: detail,
+                kind: error.kind(),
+                reason: error.reason(),
+                diagnostic: error_diagnostic(error),
             }),
         }
     }
@@ -341,6 +353,20 @@ impl Failure {
             resource,
         })
     }
+}
+
+fn error_diagnostic(error: &Error) -> String {
+    let mut diagnostic = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(error) = source {
+        let detail = error.to_string();
+        if !diagnostic.ends_with(&detail) {
+            diagnostic.push_str(": ");
+            diagnostic.push_str(&detail);
+        }
+        source = error.source();
+    }
+    diagnostic
 }
 
 impl From<&Error> for Failure {
@@ -471,5 +497,19 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn internal_diagnostic_includes_the_source_chain() {
+        let error = exec::Error::source_with_reason(
+            exec::ErrorKind::Storage,
+            exec::ErrorReason::StorageUnavailable,
+            "read object",
+            std::io::Error::other("connection closed"),
+        );
+        let Failure::Internal(failure) = Failure::from_exec(&error) else {
+            panic!("storage failure did not map to an internal failure");
+        };
+        assert_eq!(failure.diagnostic(), "read object: connection closed");
     }
 }
