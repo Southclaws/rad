@@ -236,37 +236,7 @@ impl From<crate::engine::kv::Error> for Error {
 
 impl From<crate::engine::catalog::Error> for Error {
     fn from(error: crate::engine::catalog::Error) -> Self {
-        let (kind, reason) = match error.kind() {
-            crate::engine::catalog::ErrorKind::InvalidInput
-            | crate::engine::catalog::ErrorKind::NotFound => {
-                (ErrorKind::InvalidInput, ErrorReason::Invalid)
-            }
-            crate::engine::catalog::ErrorKind::AlreadyExists => (
-                ErrorKind::ConstraintViolation,
-                ErrorReason::ConstraintViolation,
-            ),
-            crate::engine::catalog::ErrorKind::Conflict => {
-                (ErrorKind::Conflict, ErrorReason::SerializableConflict)
-            }
-            crate::engine::catalog::ErrorKind::TransitionBackpressure => (
-                ErrorKind::TransitionBackpressure,
-                ErrorReason::SchemaTransitionBackpressure,
-            ),
-            crate::engine::catalog::ErrorKind::CommitOutcomeUnknown => (
-                ErrorKind::CommitOutcomeUnknown,
-                ErrorReason::CommitOutcomeUnknown,
-            ),
-            crate::engine::catalog::ErrorKind::CatalogCorrupt
-            | crate::engine::catalog::ErrorKind::CatalogDrift => (
-                ErrorKind::CorruptData,
-                if error.kind() == crate::engine::catalog::ErrorKind::CatalogDrift {
-                    ErrorReason::CatalogSchemaDrift
-                } else {
-                    ErrorReason::CatalogCorrupt
-                },
-            ),
-            _ => (ErrorKind::Storage, ErrorReason::StorageUnavailable),
-        };
+        let (kind, reason) = catalog_error_class(error.kind());
         Self::source_with_reason(kind, reason, format!("exec catalog: {error}"), error)
     }
 }
@@ -293,12 +263,50 @@ impl From<crate::engine::lir::eval::EvalError> for Error {
 
 impl From<crate::engine::planner::Error> for Error {
     fn from(error: crate::engine::planner::Error) -> Self {
-        let kind = match error.class() {
-            crate::engine::planner::ErrorClass::Invalid => ErrorKind::InvalidInput,
-            crate::engine::planner::ErrorClass::Internal => ErrorKind::Internal,
+        let (kind, reason) = match error.catalog_kind() {
+            Some(kind) => catalog_error_class(kind),
+            None => {
+                let kind = match error.class() {
+                    crate::engine::planner::ErrorClass::Invalid => ErrorKind::InvalidInput,
+                    crate::engine::planner::ErrorClass::Internal => ErrorKind::Internal,
+                };
+                (kind, planner_reason(error.reason()))
+            }
         };
-        let reason = planner_reason(error.reason());
         Self::source_with_reason(kind, reason, error.to_string(), error)
+    }
+}
+
+fn catalog_error_class(kind: crate::engine::catalog::ErrorKind) -> (ErrorKind, ErrorReason) {
+    match kind {
+        crate::engine::catalog::ErrorKind::InvalidInput
+        | crate::engine::catalog::ErrorKind::NotFound => {
+            (ErrorKind::InvalidInput, ErrorReason::Invalid)
+        }
+        crate::engine::catalog::ErrorKind::AlreadyExists => (
+            ErrorKind::ConstraintViolation,
+            ErrorReason::ConstraintViolation,
+        ),
+        crate::engine::catalog::ErrorKind::Conflict => {
+            (ErrorKind::Conflict, ErrorReason::SerializableConflict)
+        }
+        crate::engine::catalog::ErrorKind::TransitionBackpressure => (
+            ErrorKind::TransitionBackpressure,
+            ErrorReason::SchemaTransitionBackpressure,
+        ),
+        crate::engine::catalog::ErrorKind::CommitOutcomeUnknown => (
+            ErrorKind::CommitOutcomeUnknown,
+            ErrorReason::CommitOutcomeUnknown,
+        ),
+        crate::engine::catalog::ErrorKind::CatalogCorrupt => {
+            (ErrorKind::CorruptData, ErrorReason::CatalogCorrupt)
+        }
+        crate::engine::catalog::ErrorKind::CatalogDrift => {
+            (ErrorKind::CorruptData, ErrorReason::CatalogSchemaDrift)
+        }
+        crate::engine::catalog::ErrorKind::Storage => {
+            (ErrorKind::Storage, ErrorReason::StorageUnavailable)
+        }
     }
 }
 
@@ -371,5 +379,17 @@ mod tests {
         }
         assert!(!Error::message(ErrorKind::InvalidInput, "fix it").is_conflict());
         assert!(!Error::message(ErrorKind::CommitOutcomeUnknown, "reconcile first").is_conflict());
+    }
+
+    #[test]
+    fn planner_catalog_conflict_keeps_the_retryable_class() {
+        let catalog = crate::engine::catalog::Error::message(
+            crate::engine::catalog::ErrorKind::Conflict,
+            "reader snapshot changed during the transaction",
+        );
+        let planner = crate::engine::planner::Error::from(catalog);
+        let error = Error::from(planner);
+        assert_eq!(error.kind(), ErrorKind::Conflict);
+        assert_eq!(error.reason(), ErrorReason::SerializableConflict);
     }
 }
