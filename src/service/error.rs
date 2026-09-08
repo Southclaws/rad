@@ -224,7 +224,7 @@ pub struct NotFoundFailure {
 pub struct InternalFailure {
     pub stage: Stage,
     kind: crate::engine::exec::ErrorKind,
-    reason: crate::engine::exec::ErrorReason,
+    reason: ErrorReason,
     diagnostic: String,
 }
 
@@ -233,7 +233,7 @@ impl InternalFailure {
         self.kind
     }
 
-    pub fn reason(&self) -> crate::engine::exec::ErrorReason {
+    pub fn reason(&self) -> ErrorReason {
         self.reason
     }
 
