@@ -12,14 +12,15 @@ use crate::engine::catalog::model::{Revision, Schema, SchemaTransition, Table};
 use crate::engine::kv::{IsolationLevel, KvView, Transaction, TransactionView, TransactionalKv};
 use crate::engine::lir::{self, Datum, Row, RowType};
 use crate::engine::planner::bind;
+use crate::engine::planner::bind::BoundStatement;
 use crate::engine::planner::{PlanOptions, PlannerMode, PlanningContext, plan_query_with_context};
 use crate::runtime::{RuntimeEffects, SystemRuntime};
 
 use super::parallel::ExecutionScheduler;
-use super::relation_cache::{CachedWork, DependencyValidation, RelationCache};
+use super::relation_cache::{CachedWork, DependencyValidation, PreparedReadResult, RelationCache};
 use super::{
-    CatalogPolicy, EngineEvent, EngineEventHook, EngineOperation, Executor, Limits,
-    NoopEngineEventHook, Program, ProgramOptions, ProgramResult, ReferenceExecutor, Result,
+    CatalogPolicy, ConditionalQueryResult, EngineEvent, EngineEventHook, EngineOperation, Executor,
+    Limits, NoopEngineEventHook, Program, ProgramOptions, ProgramResult, ReferenceExecutor, Result,
 };
 
 type CatalogObserver = Arc<dyn Fn() + Send + Sync>;
@@ -338,6 +339,178 @@ impl Engine {
     /// Bind and read through one discarded snapshot.
     pub async fn execute(&self, query: lir::Query) -> Result<Datum> {
         self.execute_snapshot(query, PlanOptions::default(), false, CacheAccess::Enabled)
+            .await
+    }
+
+    pub async fn execute_conditional<F>(
+        &self,
+        query: lir::Query,
+        validator_matches: F,
+    ) -> Result<ConditionalQueryResult>
+    where
+        F: FnOnce(&super::QueryValidator) -> bool,
+    {
+        let transaction = self.store.begin(IsolationLevel::Snapshot).await?;
+        // Preparation, validator comparison, and execution use this view. A
+        // commit during this operation cannot mix dependency and row states.
+        let result = {
+            let view = TransactionView(&*transaction);
+            self.execute_conditional_on_view(&view, query, validator_matches)
+                .await
+        };
+        transaction.rollback();
+        result
+    }
+
+    async fn execute_conditional_on_view<F>(
+        &self,
+        view: &dyn KvView,
+        query: lir::Query,
+        validator_matches: F,
+    ) -> Result<ConditionalQueryResult>
+    where
+        F: FnOnce(&super::QueryValidator) -> bool,
+    {
+        let options = PlanOptions {
+            mode: self.planner_mode,
+            ..PlanOptions::default()
+        };
+        let validator_started = Instant::now();
+        let bind_started = self.runtime.monotonic();
+        let prepared = self.prepare_conditional_read(view, &query, options).await?;
+        let bind_duration = self.runtime.monotonic().saturating_sub(bind_started);
+        self.events
+            .reach(EngineEvent::ConditionalQueryPrepared)
+            .await;
+        let validator = prepared.relation_key.query_validator();
+        crate::telemetry::conditional_query_validator_finished(validator_started.elapsed());
+        let unchanged = validator_matches(&validator);
+        self.events
+            .reach(EngineEvent::ConditionalQueryCompared { unchanged })
+            .await;
+        let statement = &prepared.prepared.statement;
+        let plan = statement
+            .plan
+            .as_ref()
+            .expect("a conditional read has a physical plan");
+        let stamp = crate::engine::planner::models::DependencyStamp::of(&plan.dependencies);
+        if unchanged {
+            if let Some(observer) = &self.observer {
+                observer.conditional_reuse(super::observe::ConditionalReuseObservation {
+                    query: prepared.prepared.fingerprints.as_ref().clone(),
+                    stamp,
+                });
+            }
+            return Ok(ConditionalQueryResult::Unchanged { validator });
+        }
+
+        // A matching validator returns before this boundary. Scheduler capacity
+        // and relation execution work are used only for a changed response.
+        let _execution_permit = self.admit_execution().await;
+        let execution_grant = self.execution_scheduler.enter();
+        self.events
+            .reach(EngineEvent::ConditionalQueryExecutionStarted)
+            .await;
+        let counters = super::observe::KvCounters::new(false);
+        let execute_started = self.runtime.monotonic();
+        let output = &plan.output;
+        let cardinality = plan.cardinality;
+        let cached = self
+            .relation_cache
+            .get_or_fill(prepared.relation_key, output, || async {
+                let observed = super::observe::ObservedView::new(view, &counters);
+                let mut executor = Executor::new(&observed, self.limits);
+                executor.set_execution_grant(execution_grant);
+                let started = Instant::now();
+                let frames = executor.run_frames(plan).await?;
+                super::frames::validate_frame_cardinality(cardinality, frames.len())?;
+                Ok((
+                    frames,
+                    CachedWork {
+                        kv: counters.snapshot(),
+                        execution: started.elapsed(),
+                    },
+                ))
+            })
+            .await?;
+        let result = cached.shape(statement.result_cardinality, &statement.result_output)?;
+        let execute_duration = self.runtime.monotonic().saturating_sub(execute_started);
+        let kv = counters.snapshot();
+        if crate::telemetry::enabled() {
+            crate::telemetry::statement_finished(
+                "query",
+                cached.source,
+                "success",
+                bind_duration,
+                execute_duration,
+                cached.len() as u64,
+                &kv,
+            );
+        }
+        if let Some(observer) = &self.observer {
+            observer.statement(super::observe::StatementObservation {
+                source: cached.source,
+                query: prepared.prepared.fingerprints.as_ref().clone(),
+                plan: Some(plan.fingerprint()),
+                phase: super::observe::PhaseTimings {
+                    bind: bind_duration,
+                    execute: execute_duration,
+                },
+                rows: cached.len() as u64,
+                estimate: statement.estimate,
+                stamp,
+                relations: Vec::new(),
+                affected: 0,
+                mutated: None,
+                kv,
+                operators: Vec::new(),
+                physical_storage: None,
+                join_operators: Vec::new(),
+                failure: None,
+            });
+        }
+        Ok(ConditionalQueryResult::Changed { result, validator })
+    }
+
+    async fn prepare_conditional_read(
+        &self,
+        view: &dyn KvView,
+        query: &lir::Query,
+        options: PlanOptions,
+    ) -> Result<PreparedReadResult> {
+        let statistics = self
+            .statistics
+            .as_ref()
+            .map(|provider| provider.planning_stats());
+        self.relation_cache
+            .get_or_prepare_read(view, query, statistics.as_deref(), options, || async {
+                let bound = bind::bind(
+                    &ViewCatalog {
+                        view,
+                        relation_cache: Some(&self.relation_cache),
+                    },
+                    query.clone(),
+                )
+                .await?;
+                let planned = plan_query_with_context(
+                    &bound,
+                    options,
+                    PlanningContext {
+                        statistics: statistics.as_deref(),
+                    },
+                );
+                let result_output = bound.root.output().clone();
+                let result_cardinality = bound.cardinality;
+                Ok(BoundStatement {
+                    name: "query".to_owned(),
+                    result_output,
+                    result_cardinality,
+                    bound,
+                    plan: Some(planned.plan),
+                    estimate: planned.estimate,
+                    target: None,
+                })
+            })
             .await
     }
 

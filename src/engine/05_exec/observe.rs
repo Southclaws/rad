@@ -75,6 +75,12 @@ pub struct StatementObservation {
     pub failure: Option<&'static str>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ConditionalReuseObservation {
+    pub query: QueryFingerprints,
+    pub stamp: crate::engine::planner::models::DependencyStamp,
+}
+
 pub const OPERATOR_TRACE_FORMAT: &str = "rad-operator-trace-v1";
 pub const MAX_OPERATOR_MEASUREMENTS: usize = 256;
 
@@ -942,6 +948,9 @@ pub struct ProgramStatementOutcome {
 
 pub trait ExecutionObserver: Send + Sync {
     fn statement(&self, observation: StatementObservation);
+
+    /// Record query reuse without adding a zero-work execution sample.
+    fn conditional_reuse(&self, _observation: ConditionalReuseObservation) {}
 
     fn captures_programs(&self) -> bool {
         false

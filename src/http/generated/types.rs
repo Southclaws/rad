@@ -1138,6 +1138,16 @@ pub struct SchemaChange {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub table: Option<String>,
 }
+/**The result of a query: one datum, shaped exactly as the root
+materialises. A `many` root is an array of records; `first` is a
+record or `null`; `exactly_one` is a record; `scalar` is a naked
+value or `null`. Nested `first` fields are objects (or `null`) and
+nested `array` fields are arrays, recursively.
+*/
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct QueryResult {
+    pub result: Value,
+}
 /**The result of a program: the declared result statement's datum (shaped
 exactly as its LIR root materialises, as in `QueryResult`), plus a
 per-statement summary in execution order.
@@ -2074,6 +2084,11 @@ validate this raw body against the independent PIR JSON Schema, and
 each statement's relation against the LIR schema.
 */
 pub type Program = serde_json::Value;
+/**An arbitrary JSON object containing one LIR query. The HTTP contract
+does not duplicate the LIR grammar. Servers validate this body against
+the independent LIR JSON Schema.
+*/
+pub type Query = serde_json::Value;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SchemaCompatibilityRequest {
     pub schema_hash: String,

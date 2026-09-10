@@ -50,6 +50,12 @@ type IndexDeleteParams struct {
 	Index string
 }
 
+// QueryParams is parameters of Query operation.
+type QueryParams struct {
+	// Entity tags from an earlier response for this query target.
+	IfNoneMatch OptString `json:",omitempty,omitzero"`
+}
+
 // SchemaTransitionCancelParams is parameters of SchemaTransitionCancel operation.
 type SchemaTransitionCancelParams struct {
 	// The durable transition identity returned when the work started.

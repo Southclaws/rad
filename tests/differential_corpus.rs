@@ -16,7 +16,7 @@ mod exact;
 use rad::engine::catalog;
 use rad::engine::catalog::model::ScalarType;
 use rad::engine::exec::observe::{ExecutionObserver, StatementObservation, StatementSource};
-use rad::engine::exec::{self, CatalogPolicy, Engine, ProgramOptions};
+use rad::engine::exec::{self, CatalogPolicy, ConditionalQueryResult, Engine, ProgramOptions};
 use rad::engine::kv::TransactionalKv;
 use rad::engine::kv::slatedb::Store;
 use rad::engine::lir::{Row, Value};
@@ -465,12 +465,10 @@ async fn run_cache_oracle_case(
         Ok(program) => program,
         Err(_) => return Ok(CacheOracleDisposition::Skipped),
     };
-    if !matches!(
-        program.statements.as_slice(),
-        [exec::Statement::Query { .. }]
-    ) {
-        return Ok(CacheOracleDisposition::Skipped);
-    }
+    let relation = match program.statements.as_slice() {
+        [exec::Statement::Query { relation, .. }] => relation.clone(),
+        _ => return Ok(CacheOracleDisposition::Skipped),
+    };
 
     let store = Arc::new(
         Store::memory(&format!("rust-cache-oracle-{name}"))
@@ -499,12 +497,42 @@ async fn run_cache_oracle_case(
         .await;
     let sources = observer.take_sources();
 
+    let conditional = engine
+        .execute_conditional(relation.clone(), |_| false)
+        .await;
+    let conditional = match conditional {
+        Ok(ConditionalQueryResult::Changed { result, validator }) => {
+            let unchanged = engine
+                .execute_conditional(relation, |current| current == &validator)
+                .await;
+            if !matches!(unchanged, Ok(ConditionalQueryResult::Unchanged { .. })) {
+                return Err(format!(
+                    "matching conditional validator did not skip execution: {unchanged:?}"
+                ));
+            }
+            Ok(result)
+        }
+        Ok(ConditionalQueryResult::Unchanged { .. }) => {
+            return Err("unconditional QUERY returned unchanged".to_owned());
+        }
+        Err(error) => Err(error),
+    };
+
     let result = if !exact::outcomes_eq(&uncached, &cold) || !exact::outcomes_eq(&uncached, &hot) {
         Err(format!(
             "cached and uncached outcomes differ\nuncached: {uncached:?}\n     cold: {cold:?}\n       hot: {hot:?}"
         ))
     } else {
         match &uncached {
+            Ok(expected)
+                if !conditional
+                    .as_ref()
+                    .is_ok_and(|actual| exact::ExactResult::exact_eq(&expected.result, actual)) =>
+            {
+                Err(format!(
+                    "conditional QUERY and uncached outcomes differ\nuncached: {uncached:?}\n    query: {conditional:?}"
+                ))
+            }
             Ok(_)
                 if sources
                     == [

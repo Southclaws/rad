@@ -63,6 +63,11 @@ pub enum GateAction {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EngineEvent {
+    ConditionalQueryPrepared,
+    ConditionalQueryCompared {
+        unchanged: bool,
+    },
+    ConditionalQueryExecutionStarted,
     PhysicalBatchStaged {
         operation: EngineOperation,
         items: usize,

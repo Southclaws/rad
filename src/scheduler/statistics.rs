@@ -261,6 +261,7 @@ fn decay_frequency(count: u32, epochs: u64) -> u32 {
 
 pub enum StatisticsEvent {
     Statement(Box<StatementObservation>),
+    ConditionalReuse(Box<crate::engine::exec::observe::ConditionalReuseObservation>),
     Program(ProgramRecord),
 }
 
@@ -325,6 +326,19 @@ impl ExecutionObserver for StatisticsCollector {
         if self
             .sender
             .try_send(StatisticsEvent::Statement(Box::new(observation)))
+            .is_err()
+        {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn conditional_reuse(
+        &self,
+        observation: crate::engine::exec::observe::ConditionalReuseObservation,
+    ) {
+        if self
+            .sender
+            .try_send(StatisticsEvent::ConditionalReuse(Box::new(observation)))
             .is_err()
         {
             self.dropped.fetch_add(1, Ordering::Relaxed);
@@ -983,6 +997,24 @@ impl HotRegistry {
         self.record_semantic_stamp(family, observation.stamp.semantic);
         self.admit(family, ObservationModelKind::Statement)
             .record_statement(observation, at);
+    }
+
+    pub fn absorb_conditional_reuse(
+        &mut self,
+        observation: &crate::engine::exec::observe::ConditionalReuseObservation,
+    ) {
+        for subtree in &observation.query.subtrees {
+            self.count_appearance(&subtree.family);
+        }
+        if !observation
+            .query
+            .subtrees
+            .iter()
+            .any(|subtree| subtree.family == observation.query.family)
+        {
+            self.count_appearance(&observation.query.family);
+        }
+        self.record_semantic_stamp(observation.query.family, observation.stamp.semantic);
     }
 
     /// Fold one relation's actual cardinality into the model for its own
@@ -2881,6 +2913,9 @@ impl StatisticsRunner {
                         Some(StatisticsEvent::Statement(observation)) => {
                             registry.absorb(&observation, runtime.unix_time());
                         }
+                        Some(StatisticsEvent::ConditionalReuse(observation)) => {
+                            registry.absorb_conditional_reuse(&observation);
+                        }
                         Some(StatisticsEvent::Program(record)) => {
                             registry.absorb_program(record);
                         }
@@ -3658,6 +3693,25 @@ pub(super) mod tests {
         assert_eq!(model.executions, 2);
         assert_eq!(model.execute_micros.count(), 1);
         assert_eq!(model.duration_ewma_micros, 400.0);
+    }
+
+    #[test]
+    fn conditional_reuse_records_frequency_without_an_execution_model() {
+        let mut registry = HotRegistry::new(16);
+        let observed = observation(1, 1, 10);
+        registry.absorb_conditional_reuse(
+            &crate::engine::exec::observe::ConditionalReuseObservation {
+                query: observed.query.clone(),
+                stamp: observed.stamp,
+            },
+        );
+
+        assert_eq!(registry.frequency(&observed.query.family), 1);
+        assert!(
+            registry
+                .model(ObservationModelKind::Statement, &observed.query.family)
+                .is_none()
+        );
     }
 
     #[test]

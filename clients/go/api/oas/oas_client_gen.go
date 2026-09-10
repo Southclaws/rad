@@ -70,6 +70,12 @@ type Invoker interface {
 	//
 	// POST /execute
 	Execute(ctx context.Context, request Program, params ExecuteParams) (ExecuteRes, error)
+	// ExecuteOptions invokes ExecuteOptions operation.
+	//
+	// Describe the operations available at the execute target.
+	//
+	// OPTIONS /execute
+	ExecuteOptions(ctx context.Context) (*ExecuteOptionsOK, error)
 	// GetHealthz invokes GetHealthz operation.
 	//
 	// A cheap check that touches no storage. It always returns `200` with a small status body while the
@@ -167,6 +173,15 @@ type Invoker interface {
 	//
 	// DELETE /tables/{table}/indexes/{index}
 	IndexDelete(ctx context.Context, params IndexDeleteParams) (IndexDeleteRes, error)
+	// Query invokes Query operation.
+	//
+	// Execute one LIR query against one committed snapshot. This operation cannot contain PIR statements
+	// or mutations. A successful response has a weak entity tag for the exact query and its complete
+	// dependency state. A matching `If-None-Match` returns `304` without executing the relation or
+	// serializing its result.
+	//
+	// QUERY /execute
+	Query(ctx context.Context, request Query, params QueryParams) (QueryRes, error)
 	// SchemaCompatibility invokes SchemaCompatibility operation.
 	//
 	// Verify an exact generated-client schema identity.
@@ -633,6 +648,49 @@ func (c *Client) sendExecute(ctx context.Context, request Program, params Execut
 	}()
 
 	result, err := decodeExecuteResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ExecuteOptions invokes ExecuteOptions operation.
+//
+// Describe the operations available at the execute target.
+//
+// OPTIONS /execute
+func (c *Client) ExecuteOptions(ctx context.Context) (*ExecuteOptionsOK, error) {
+	res, err := c.sendExecuteOptions(ctx)
+	return res, err
+}
+
+func (c *Client) sendExecuteOptions(ctx context.Context) (res *ExecuteOptionsOK, err error) {
+
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/execute"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	r, err := ht.NewRequest(ctx, "OPTIONS", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	result, err := decodeExecuteOptionsResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -1122,6 +1180,71 @@ func (c *Client) sendIndexDelete(ctx context.Context, params IndexDeleteParams) 
 	}()
 
 	result, err := decodeIndexDeleteResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// Query invokes Query operation.
+//
+// Execute one LIR query against one committed snapshot. This operation cannot contain PIR statements
+// or mutations. A successful response has a weak entity tag for the exact query and its complete
+// dependency state. A matching `If-None-Match` returns `304` without executing the relation or
+// serializing its result.
+//
+// QUERY /execute
+func (c *Client) Query(ctx context.Context, request Query, params QueryParams) (QueryRes, error) {
+	res, err := c.sendQuery(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendQuery(ctx context.Context, request Query, params QueryParams) (res QueryRes, err error) {
+
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/execute"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	r, err := ht.NewRequest(ctx, "QUERY", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeQueryRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	h := uri.NewHeaderEncoder(r.Header)
+	{
+		cfg := uri.HeaderParameterEncodingConfig{
+			Name:    "If-None-Match",
+			Explode: false,
+		}
+		if err := h.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.IfNoneMatch.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode header")
+		}
+	}
+
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	result, err := decodeQueryResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

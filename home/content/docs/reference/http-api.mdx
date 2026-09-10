@@ -588,7 +588,20 @@ Reading and writing rows against committed state.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| `OPTIONS` | `/execute` | Describe the operations available at the execute target. |
 | `POST` | `/execute` | Run an execution program. |
+| `QUERY` | `/execute` | Run one conditional LIR query. |
+
+#### `OPTIONS` `/execute`
+
+Describe the operations available at the execute target.
+
+**Responses**
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| `204` | No body | The execute target operations and QUERY request content type. |
+| `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
 
 #### `POST` `/execute`
 
@@ -638,6 +651,40 @@ earlier statements).
 | `403` | application/problem+json `Problem` | The operation requires a write instance. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
+| `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
+
+#### `QUERY` `/execute`
+
+Execute one LIR query against one committed snapshot. This operation
+cannot contain PIR statements or mutations. A successful response has
+a weak entity tag for the exact query and its complete dependency
+state. A matching `If-None-Match` returns `304` without executing the
+relation or serializing its result.
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `If-None-Match` | `header` | `string` |  | Entity tags from an earlier response for this query target. |
+
+**Request body**
+
+| Content type | Type | Required | Description |
+| --- | --- | --- | --- |
+| `application/vnd.rad.lir+json` | `Query` | Yes |  |
+
+**Responses**
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| `200` | application/json `Value` | The query result changed or no matching entity tag was supplied. |
+| `304` | No body | The supplied entity tag matches the current query representation. |
+| `400` | application/problem+json `Problem` | The request body was malformed or could not be decoded. |
+| `406` | application/problem+json `Problem` | The Accept header does not permit the query result representation. |
+| `413` | application/problem+json `Problem` | The request body exceeds the server limit. |
+| `415` | application/problem+json `Problem` | The request content type is not the LIR query media type. |
+| `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
+| `500` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
 
 ## Data shapes
@@ -869,6 +916,12 @@ per-statement summary in execution order.
 | `result` | `value` | Yes |  |
 | `statements` | `array of StatementResult` | Yes |  |
 | `plan` | `value` |  | Present only when the request set `show-plan`. Free-form JSON: the query plan for each statement; the physical plan and the planner's access-path decisions, plus a rendered text form. Transport observability metadata, not part of the LIR/PIR IR; its structure is deliberately unspecified here and evolves with the planner. |
+
+#### `Query`
+
+An arbitrary JSON object containing one LIR query. The HTTP contract
+does not duplicate the LIR grammar. Servers validate this body against
+the independent LIR JSON Schema.
 
 #### `QueryResult`
 

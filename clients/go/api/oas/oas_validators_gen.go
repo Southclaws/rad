@@ -1173,6 +1173,46 @@ func (s *ProgramResult) Validate() error {
 	return nil
 }
 
+func (s QueryBadRequest) Validate() error {
+	alias := (Problem)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s QueryNotAcceptable) Validate() error {
+	alias := (Problem)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s QueryRequestEntityTooLarge) Validate() error {
+	alias := (Problem)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s QueryUnprocessableEntity) Validate() error {
+	alias := (Problem)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s QueryUnsupportedMediaType) Validate() error {
+	alias := (Problem)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *SchemaCompatibilityRequest) Validate() error {
 	if s == nil {
 		return validate.ErrNilPointer

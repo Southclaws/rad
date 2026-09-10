@@ -6,9 +6,8 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use serde::Deserialize;
 
-use super::generated::server::ExecuteResponse;
 use super::probes::Probes;
-use super::{generated, problem, result, validation};
+use super::{generated, problem, query, result, validation};
 use crate::engine::catalog::model::Mode;
 use crate::engine::exec::{CatalogPolicy, Engine, Error, ErrorKind, ErrorReason, ProgramOptions};
 use crate::engine::frontend;
@@ -62,8 +61,7 @@ impl Api {
         {
             Ok(value) => value,
             Err(error) => {
-                return execute_problem(problem::ResponseProblem::from_failure((&error).into()))
-                    .into_response();
+                return execute_problem(problem::ResponseProblem::from_failure((&error).into()));
             }
         };
         if !show_plan {
@@ -81,7 +79,6 @@ impl Api {
                 execute_problem(problem::ResponseProblem::from_failure(Failure::from_exec(
                     &error,
                 )))
-                .into_response()
             }
         }
     }
@@ -121,6 +118,7 @@ pub fn router_with_health(
     generated::server::administration_api_router(api.clone())
         .merge(generated::server::catalog_api_router(api.clone()))
         .merge(execute_router(api.clone()))
+        .merge(query::router(api.clone()))
         .merge(generated::server::meta_api_router(api.clone()))
         .merge(generated::server::probes_api_router(Probes::new(health)))
         .merge(generated::server::schema_api_router(api))
@@ -131,6 +129,7 @@ pub fn router_with_health(
         .layer(axum::middleware::map_response(
             validation::normalize_generated_rejection,
         ))
+        .layer(axum::middleware::from_fn(query::response_headers))
         .layer(axum::middleware::from_fn(super::cors::allow_admin_origin))
         .layer(axum::middleware::from_fn(super::context::log_request))
 }
@@ -163,10 +162,10 @@ async fn execute_handler(
     };
     let program = match decode_execute_program(request).await {
         Ok(Some(program)) => program,
-        Ok(None) => return invalid_request("request body is required").into_response(),
+        Ok(None) => return invalid_request("request body is required"),
         Err(ExecuteDecodeError::Request(error)) => return error.into_response(),
         Err(ExecuteDecodeError::Program(error)) => {
-            return invalid_request(format!("invalid PIR program: {error}")).into_response();
+            return invalid_request(format!("invalid PIR program: {error}"));
         }
     };
     api.execute_program(query.show_plan, query.dry_run, program)
@@ -191,20 +190,6 @@ fn decode_execute_query(
     }
     let query = serde_urlencoded::from_str::<ExecuteQuery>(raw)
         .map_err(|_| generated::server::validation::malformed_parameter("/query"))?;
-    if let Some(value) = &query.show_plan {
-        generated::server::validation::validate_parameter(
-            generated::server::validation::VALIDATION_TARGET_23_QUERY_0,
-            "/query/show-plan",
-            value,
-        )?;
-    }
-    if let Some(value) = &query.dry_run {
-        generated::server::validation::validate_parameter(
-            generated::server::validation::VALIDATION_TARGET_24_QUERY_1,
-            "/query/dry-run",
-            value,
-        )?;
-    }
     Ok(query)
 }
 
@@ -283,7 +268,7 @@ fn json_response(status: StatusCode, content_type: &'static str, body: Vec<u8>) 
     response
 }
 
-fn invalid_request(detail: impl Into<String>) -> ExecuteResponse {
+fn invalid_request(detail: impl Into<String>) -> Response {
     execute_problem(problem::ResponseProblem::invalid(
         InvalidFailure {
             stage: Stage::Schema,
@@ -296,14 +281,13 @@ fn invalid_request(detail: impl Into<String>) -> ExecuteResponse {
     ))
 }
 
-fn execute_problem(problem: problem::ResponseProblem) -> ExecuteResponse {
-    match problem.status {
-        StatusCode::BAD_REQUEST => ExecuteResponse::BadRequest(problem.body),
-        StatusCode::FORBIDDEN => ExecuteResponse::Forbidden(problem.body),
-        StatusCode::CONFLICT => ExecuteResponse::Conflict(problem.body),
-        StatusCode::UNPROCESSABLE_ENTITY => ExecuteResponse::UnprocessableEntity(problem.body),
-        status => ExecuteResponse::Default(status, problem.body),
-    }
+fn execute_problem(problem: problem::ResponseProblem) -> Response {
+    let mut response = (problem.status, axum::Json(problem.body)).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/problem+json"),
+    );
+    response
 }
 
 pub(super) fn engine_problem(error: &Error) -> problem::ResponseProblem {

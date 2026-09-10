@@ -3,11 +3,12 @@ use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-// NOTE: Yes this is a scary thing to see in a database!
-// But this is only for the prototype/poc/demo right now. It's for the simple
-// admin/explore/debug UI that Rad runs on "serve". It will be removed.
 pub(super) async fn allow_admin_origin(request: Request, next: Next) -> Response {
-    let mut response = if request.method() == Method::OPTIONS {
+    let preflight = request.method() == Method::OPTIONS
+        && request
+            .headers()
+            .contains_key(header::ACCESS_CONTROL_REQUEST_METHOD);
+    let mut response = if preflight {
         StatusCode::NO_CONTENT.into_response()
     } else {
         next.run(request).await
@@ -19,11 +20,15 @@ pub(super) async fn allow_admin_origin(request: Request, next: Next) -> Response
     );
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_METHODS,
-        HeaderValue::from_static("GET, POST, PATCH, DELETE, OPTIONS"),
+        HeaderValue::from_static("GET, POST, QUERY, PATCH, DELETE, OPTIONS"),
     );
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static("content-type"),
+        HeaderValue::from_static("content-type, if-none-match"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("etag, accept-query"),
     );
     response
 }

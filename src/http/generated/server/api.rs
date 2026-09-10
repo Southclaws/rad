@@ -87,15 +87,18 @@ pub trait CatalogApi: Send + Sync + 'static {
 /// Operations under the `data` tag.
 #[async_trait::async_trait]
 pub trait DataApi: Send + Sync + 'static {
-    /// Run an execution program.
+    /// Run one conditional LIR query.
     ///
-    /// `POST /execute`
-    async fn execute(
+    /// `QUERY /execute`
+    async fn query(
         &self,
-        show_plan: ::std::option::Option<bool>,
-        dry_run: ::std::option::Option<bool>,
-        body: Option<Program>,
-    ) -> ExecuteResponse;
+        if_none_match: ::std::option::Option<String>,
+        body: Query,
+    ) -> QueryResponse;
+    /// Describe the operations available at the execute target.
+    ///
+    /// `OPTIONS /execute`
+    async fn execute_options(&self) -> ExecuteOptionsResponse;
 }
 /// Operations under the `meta` tag.
 #[async_trait::async_trait]

@@ -30,10 +30,14 @@ import (
 
 // Client talks to one Rad server. It is safe for concurrent use.
 type Client struct {
-	http   *http.Client
-	oas    *oas.Client
-	schema schemaCache
-	compat schemaCompatibility
+	http           *http.Client
+	oas            *oas.Client
+	endpoint       string
+	queryIsolation [queryCacheKeyBytes]byte
+	queryCache     QueryCache
+	queryStats     conditionalQueryCounters
+	schema         schemaCache
+	compat         schemaCompatibility
 }
 
 type schemaCompatibility struct {
@@ -58,6 +62,11 @@ func WithTimeout(d time.Duration) Option {
 	return func(c *Client) { c.http.Timeout = d }
 }
 
+// WithQueryCache enables conditional query result retention for this client.
+func WithQueryCache(cache QueryCache) Option {
+	return func(c *Client) { c.queryCache = cache }
+}
+
 // Dial parses a rad(s):// URI and returns a client. No connection is
 // established until the first request; use Ping to verify reachability.
 func Dial(rawurl string, opts ...Option) (*Client, error) {
@@ -66,6 +75,9 @@ func Dial(rawurl string, opts ...Option) (*Client, error) {
 		return nil, err
 	}
 	c := &Client{http: &http.Client{Timeout: 30 * time.Second}}
+	if err := fillQueryIsolation(&c.queryIsolation); err != nil {
+		return nil, err
+	}
 	for _, o := range opts {
 		o(c)
 	}
@@ -74,6 +86,7 @@ func Dial(rawurl string, opts ...Option) (*Client, error) {
 		return nil, err
 	}
 	c.oas = oc
+	c.endpoint = base
 	return c, nil
 }
 
@@ -193,10 +206,8 @@ func decodeRawValue(raw oas.Value) any {
 	return value
 }
 
-// View is the read/write surface generated table handles operate on. Every
-// operation is one PIR program over /execute; there is one implementation,
-// the Client (autocommit). Multi-write atomicity is expressed by submitting a
-// multi-statement program directly, not by a held session.
+// View is the read/write surface generated table handles operate on. Reads use
+// one LIR QUERY request. Writes use one PIR program over POST /execute.
 type View interface {
 	Query(ctx context.Context, q lirwire.Query) ([]protocol.Record, error)
 	QueryDatum(ctx context.Context, q lirwire.Query) (any, error)

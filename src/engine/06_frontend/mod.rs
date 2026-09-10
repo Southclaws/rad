@@ -13,7 +13,7 @@ use crate::engine::exec::{
     CatalogPolicy, Engine, Error, ErrorKind, Program, ProgramOptions, ProgramResult,
 };
 use crate::engine::kv::{Transaction, TransactionView};
-use crate::protocol::generated::pir;
+use crate::protocol::generated::{lir, pir};
 
 /// One frontend session transaction backed by one storage transaction.
 ///
@@ -207,6 +207,21 @@ pub async fn execute_pir(
     let result = execute_program_with_options(engine, program, options).await;
     record_corpus_program(engine, capture, &relational, result.as_ref().ok());
     result
+}
+
+pub async fn execute_lir_conditional<F>(
+    engine: &Engine,
+    query: lir::Query,
+    validator_matches: F,
+) -> crate::engine::exec::Result<crate::engine::exec::ConditionalQueryResult>
+where
+    F: FnOnce(&crate::engine::exec::QueryValidator) -> bool,
+{
+    let query = crate::protocol::lower_lir(query).map_err(|error| {
+        let reason = error.reason();
+        Error::source_with_reason(ErrorKind::InvalidInput, reason, error.to_string(), error)
+    })?;
+    engine.execute_conditional(query, validator_matches).await
 }
 
 pub async fn execute_pir_with_options(

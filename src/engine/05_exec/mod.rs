@@ -35,4 +35,15 @@ pub use program::{
 };
 pub use query::{Executor, Limits};
 pub use reference::ReferenceExecutor;
-pub use relation_cache::RelationCacheLimits;
+pub use relation_cache::{QueryValidator, RelationCacheLimits};
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConditionalQueryResult {
+    Changed {
+        result: crate::engine::lir::Datum,
+        validator: QueryValidator,
+    },
+    Unchanged {
+        validator: QueryValidator,
+    },
+}

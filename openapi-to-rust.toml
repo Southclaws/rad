@@ -31,9 +31,10 @@ operations = [
   "ColumnDelete",
   "IndexCreate",
   "IndexDelete",
-  "Execute",
+  "Query",
+  "ExecuteOptions",
 ]
-prune_models = true
+prune_models = false
 
 [server.validation]
 enabled = true

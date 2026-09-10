@@ -1151,10 +1151,7 @@ mod tests {
                 generation: 1.into(),
             })
             .collect();
-        let cache_key = RelationCacheKey {
-            exact: fingerprint(1),
-            dependencies,
-        };
+        let cache_key = RelationCacheKey::from_key_parts(fingerprint(1), dependencies);
         let profile = DependencyProfile::new(&cache_key);
 
         assert_eq!(profile.generations.len(), GENERATION_VALUE_LIMIT);
@@ -1164,10 +1161,10 @@ mod tests {
     #[test]
     fn dependency_profiles_classify_transition_causes() {
         fn profile(dependency: DependencyGeneration) -> DependencyProfile {
-            DependencyProfile::new(&RelationCacheKey {
-                exact: fingerprint(1),
-                dependencies: vec![dependency],
-            })
+            DependencyProfile::new(&RelationCacheKey::from_key_parts(
+                fingerprint(1),
+                vec![dependency],
+            ))
         }
 
         let table = |existence: u64, storage: u64, data: u64| {
@@ -1223,9 +1220,9 @@ mod tests {
     #[test]
     fn mixed_generation_vectors_do_not_supersede_each_other() {
         fn mixed_key(first: u64, second: u64) -> RelationCacheKey {
-            RelationCacheKey {
-                exact: fingerprint(1),
-                dependencies: vec![
+            RelationCacheKey::from_key_parts(
+                fingerprint(1),
+                vec![
                     DependencyGeneration::Table {
                         table_id: "t1".into(),
                         existence_generation: 1.into(),
@@ -1239,7 +1236,7 @@ mod tests {
                         data_generation: second.into(),
                     },
                 ],
-            }
+            )
         }
 
         let policy = RelationCachePolicy::new(16);

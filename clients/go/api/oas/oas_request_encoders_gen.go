@@ -84,6 +84,20 @@ func encodeIndexCreateRequest(
 	return nil
 }
 
+func encodeQueryRequest(
+	req Query,
+	r *http.Request,
+) error {
+	const contentType = "application/vnd.rad.lir+json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeSchemaCompatibilityRequest(
 	req OptSchemaCompatibilityRequest,
 	r *http.Request,

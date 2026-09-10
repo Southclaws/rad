@@ -787,6 +787,32 @@ type ExecuteForbidden Problem
 
 func (*ExecuteForbidden) executeRes() {}
 
+// Ref: #/components/responses/ExecuteOptionsOK
+type ExecuteOptionsOK struct {
+	AcceptQuery string
+	Allow       string
+}
+
+// GetAcceptQuery returns the value of AcceptQuery.
+func (s *ExecuteOptionsOK) GetAcceptQuery() string {
+	return s.AcceptQuery
+}
+
+// GetAllow returns the value of Allow.
+func (s *ExecuteOptionsOK) GetAllow() string {
+	return s.Allow
+}
+
+// SetAcceptQuery sets the value of AcceptQuery.
+func (s *ExecuteOptionsOK) SetAcceptQuery(val string) {
+	s.AcceptQuery = val
+}
+
+// SetAllow sets the value of Allow.
+func (s *ExecuteOptionsOK) SetAllow(val string) {
+	s.Allow = val
+}
+
 type ExecuteUnprocessableEntity Problem
 
 func (*ExecuteUnprocessableEntity) executeRes() {}
@@ -1576,6 +1602,8 @@ func (s *InternalServerErrorStatusCode) SetStatusCode(val int) {
 func (s *InternalServerErrorStatusCode) SetResponse(val Problem) {
 	s.Response = val
 }
+
+func (*InternalServerErrorStatusCode) queryRes() {}
 
 // One diagnostic within a multi-error invalid problem.
 // Ref: #/components/schemas/InvalidDiagnostic
@@ -3741,6 +3769,139 @@ func (s *ProgramResult) SetPlan(val Value) {
 }
 
 func (*ProgramResult) executeRes() {}
+
+type Query jx.Raw
+
+type QueryBadRequest Problem
+
+func (*QueryBadRequest) queryRes() {}
+
+type QueryNotAcceptable Problem
+
+func (*QueryNotAcceptable) queryRes() {}
+
+// Ref: #/components/responses/QueryNotModified
+type QueryNotModified struct {
+	AcceptQuery  string
+	CacheControl string
+	ETag         string
+	Vary         string
+}
+
+// GetAcceptQuery returns the value of AcceptQuery.
+func (s *QueryNotModified) GetAcceptQuery() string {
+	return s.AcceptQuery
+}
+
+// GetCacheControl returns the value of CacheControl.
+func (s *QueryNotModified) GetCacheControl() string {
+	return s.CacheControl
+}
+
+// GetETag returns the value of ETag.
+func (s *QueryNotModified) GetETag() string {
+	return s.ETag
+}
+
+// GetVary returns the value of Vary.
+func (s *QueryNotModified) GetVary() string {
+	return s.Vary
+}
+
+// SetAcceptQuery sets the value of AcceptQuery.
+func (s *QueryNotModified) SetAcceptQuery(val string) {
+	s.AcceptQuery = val
+}
+
+// SetCacheControl sets the value of CacheControl.
+func (s *QueryNotModified) SetCacheControl(val string) {
+	s.CacheControl = val
+}
+
+// SetETag sets the value of ETag.
+func (s *QueryNotModified) SetETag(val string) {
+	s.ETag = val
+}
+
+// SetVary sets the value of Vary.
+func (s *QueryNotModified) SetVary(val string) {
+	s.Vary = val
+}
+
+func (*QueryNotModified) queryRes() {}
+
+// QueryOKHeaders wraps Value with response headers.
+type QueryOKHeaders struct {
+	AcceptQuery  string
+	CacheControl string
+	ETag         string
+	Vary         string
+	Response     Value
+}
+
+// GetAcceptQuery returns the value of AcceptQuery.
+func (s *QueryOKHeaders) GetAcceptQuery() string {
+	return s.AcceptQuery
+}
+
+// GetCacheControl returns the value of CacheControl.
+func (s *QueryOKHeaders) GetCacheControl() string {
+	return s.CacheControl
+}
+
+// GetETag returns the value of ETag.
+func (s *QueryOKHeaders) GetETag() string {
+	return s.ETag
+}
+
+// GetVary returns the value of Vary.
+func (s *QueryOKHeaders) GetVary() string {
+	return s.Vary
+}
+
+// GetResponse returns the value of Response.
+func (s *QueryOKHeaders) GetResponse() Value {
+	return s.Response
+}
+
+// SetAcceptQuery sets the value of AcceptQuery.
+func (s *QueryOKHeaders) SetAcceptQuery(val string) {
+	s.AcceptQuery = val
+}
+
+// SetCacheControl sets the value of CacheControl.
+func (s *QueryOKHeaders) SetCacheControl(val string) {
+	s.CacheControl = val
+}
+
+// SetETag sets the value of ETag.
+func (s *QueryOKHeaders) SetETag(val string) {
+	s.ETag = val
+}
+
+// SetVary sets the value of Vary.
+func (s *QueryOKHeaders) SetVary(val string) {
+	s.Vary = val
+}
+
+// SetResponse sets the value of Response.
+func (s *QueryOKHeaders) SetResponse(val Value) {
+	s.Response = val
+}
+
+func (*QueryOKHeaders) queryRes() {}
+
+type QueryRequestEntityTooLarge Problem
+
+func (*QueryRequestEntityTooLarge) queryRes() {}
+
+type QueryUnprocessableEntity Problem
+
+func (*QueryUnprocessableEntity) queryRes() {}
+
+type QueryUnsupportedMediaType Problem
+
+func (*QueryUnsupportedMediaType) queryRes() {}
 
 // The addressed API resource, without storage keys or row values.
 // Ref: #/components/schemas/ResourceContext

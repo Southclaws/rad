@@ -1,4 +1,4 @@
-openapi: 3.0.3
+openapi: 3.2.0
 
 info:
   contact:
@@ -497,6 +497,42 @@ paths:
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
   /execute:
+    query:
+      operationId: Query
+      summary: Run one conditional LIR query.
+      description: |
+        Execute one LIR query against one committed snapshot. This operation
+        cannot contain PIR statements or mutations. A successful response has
+        a weak entity tag for the exact query and its complete dependency
+        state. A matching `If-None-Match` returns `304` without executing the
+        relation or serializing its result.
+      tags: [data]
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          description: Entity tags from an earlier response for this query target.
+          schema: { type: string }
+      requestBody: { $ref: "#/components/requestBodies/Query" }
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "200": { $ref: "#/components/responses/QueryOK" }
+        "304": { $ref: "#/components/responses/QueryNotModified" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "406": { $ref: "#/components/responses/NotAcceptable" }
+        "413": { $ref: "#/components/responses/ContentTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "500": { $ref: "#/components/responses/InternalServerError" }
+
+    options:
+      operationId: ExecuteOptions
+      summary: Describe the operations available at the execute target.
+      tags: [data]
+      responses:
+        default: { $ref: "#/components/responses/InternalServerError" }
+        "204": { $ref: "#/components/responses/ExecuteOptionsOK" }
+
     post:
       operationId: Execute
       summary: Run an execution program.
@@ -608,6 +644,12 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Program" }
 
+    Query:
+      required: true
+      content:
+        application/vnd.rad.lir+json:
+          schema: { $ref: "#/components/schemas/Query" }
+
     TableCreate:
       content:
         application/json:
@@ -641,6 +683,21 @@ components:
           schema: { $ref: "#/components/schemas/Problem" }
     BadRequest:
       description: The request body was malformed or could not be decoded.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    NotAcceptable:
+      description: The Accept header does not permit the query result representation.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    ContentTooLarge:
+      description: The request body exceeds the server limit.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    UnsupportedMediaType:
+      description: The request content type is not the LIR query media type.
       content:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
@@ -732,6 +789,58 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ProgramResult" }
+    QueryOK:
+      description: The query result changed or no matching entity tag was supplied.
+      headers:
+        ETag:
+          required: true
+          description: The weak validator for the query result and dependency state.
+          schema: { type: string }
+        Accept-Query:
+          required: true
+          description: The request content type accepted by QUERY.
+          schema: { type: string }
+        Cache-Control:
+          required: true
+          description: Requires validation before reuse and prevents shared-cache retention.
+          schema: { type: string }
+        Vary:
+          required: true
+          description: Request headers that select the representation.
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Value" }
+    QueryNotModified:
+      description: The supplied entity tag matches the current query representation.
+      headers:
+        ETag:
+          required: true
+          description: The current weak validator.
+          schema: { type: string }
+        Accept-Query:
+          required: true
+          description: The request content type accepted by QUERY.
+          schema: { type: string }
+        Cache-Control:
+          required: true
+          description: Requires validation before reuse and prevents shared-cache retention.
+          schema: { type: string }
+        Vary:
+          required: true
+          description: Request headers that select the representation.
+          schema: { type: string }
+    ExecuteOptionsOK:
+      description: The execute target operations and QUERY request content type.
+      headers:
+        Allow:
+          required: true
+          description: The methods available at the execute target.
+          schema: { type: string }
+        Accept-Query:
+          required: true
+          description: The request content type accepted by QUERY.
+          schema: { type: string }
 
   schemas:
     Access:
@@ -1030,6 +1139,12 @@ components:
         `Query`, the HTTP contract does not describe the PIR grammar; servers
         validate this raw body against the independent PIR JSON Schema, and
         each statement's relation against the LIR schema.
+
+    Query:
+      description: |
+        An arbitrary JSON object containing one LIR query. The HTTP contract
+        does not duplicate the LIR grammar. Servers validate this body against
+        the independent LIR JSON Schema.
 
     ColumnDefault:
       description: |

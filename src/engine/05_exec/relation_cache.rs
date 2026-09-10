@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use foyer::{Cache, CacheProperties, Event, EventListener, LfuConfig};
+use sha2::{Digest as _, Sha256};
 use tokio::sync::watch;
 
 use crate::engine::catalog::identity::{
@@ -43,7 +44,8 @@ use super::observe::KvWork;
 use super::observe::StatementSource;
 use super::{Error, ErrorKind, ErrorReason, Result};
 use policy::{CohortToken, RelationCachePolicy};
-use prepared_read::{PreparedReadCache, PreparedReadResult};
+use prepared_read::PreparedReadCache;
+pub(super) use prepared_read::PreparedReadResult;
 use snapshot_catalog::SnapshotCatalogCache;
 
 const DEFAULT_BYTE_LIMIT: usize = 128 * 1024 * 1024;
@@ -53,6 +55,31 @@ const CACHE_SHARDS: usize = 8;
 const ACCOUNTING_PENDING: u8 = 0;
 const ACCOUNTING_RETAINED: u8 = 1;
 const ACCOUNTING_REMOVED: u8 = 2;
+const QUERY_VALIDATOR_DOMAIN: &[u8] = b"rad-query-validator";
+const QUERY_RESULT_REPRESENTATION: &[u8] = b"application/json;rad-datum-v1";
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct QueryValidator([u8; 32]);
+
+impl QueryValidator {
+    fn from_key_parts(exact: Fingerprint, dependencies: &[DependencyGeneration]) -> QueryValidator {
+        // The encoding has explicit tags, lengths, and big-endian integers.
+        // Rust layout and Hash implementations are not stable protocol inputs.
+        let mut hash = Sha256::new();
+        hash_bytes(&mut hash, 1, QUERY_VALIDATOR_DOMAIN);
+        hash_bytes(&mut hash, 2, &exact.to_bytes());
+        hash_u64(&mut hash, 3, dependencies.len() as u64);
+        for dependency in dependencies {
+            dependency.hash_query_validator(&mut hash);
+        }
+        hash_bytes(&mut hash, 4, QUERY_RESULT_REPRESENTATION);
+        QueryValidator(hash.finalize().into())
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RelationCacheLimits {
@@ -204,6 +231,10 @@ enum DependencyGeneration {
 pub(super) struct RelationCacheKey {
     exact: Fingerprint,
     dependencies: Vec<DependencyGeneration>,
+    // Snapshot dependency reuse can return this key for every request at one
+    // storage position. Store the derived validator with the key so a
+    // conditional hit does not repeat the canonical SHA-256 calculation.
+    query_validator: QueryValidator,
 }
 
 impl RelationCacheKey {
@@ -275,13 +306,19 @@ impl RelationCacheKey {
                 generation: dependency.generation,
             }
         }));
+        Self::from_key_parts(exact, generations)
+    }
+
+    fn from_key_parts(exact: Fingerprint, mut dependencies: Vec<DependencyGeneration>) -> Self {
         // Catalog dependency collection order is not part of relation
         // identity. Canonical order also removes duplicate dependency records.
-        generations.sort_unstable();
-        generations.dedup();
+        dependencies.sort_unstable();
+        dependencies.dedup();
+        let query_validator = QueryValidator::from_key_parts(exact, &dependencies);
         Self {
             exact,
-            dependencies: generations,
+            dependencies,
+            query_validator,
         }
     }
 
@@ -298,6 +335,10 @@ impl RelationCacheKey {
                     .map(DependencyGeneration::dynamic_bytes)
                     .fold(0usize, usize::saturating_add),
             )
+    }
+
+    pub(super) fn query_validator(&self) -> QueryValidator {
+        self.query_validator
     }
 }
 
@@ -323,6 +364,69 @@ impl DependencyGeneration {
                 .saturating_add(index_id.as_str().len()),
         }
     }
+
+    fn hash_query_validator(&self, hash: &mut Sha256) {
+        match self {
+            Self::Table {
+                table_id,
+                existence_generation,
+                storage_generation,
+                data_generation,
+            } => {
+                hash_u8(hash, 10, 1);
+                hash_bytes(hash, 11, table_id.as_str().as_bytes());
+                hash_u64(hash, 12, existence_generation.get());
+                hash_u64(hash, 13, storage_generation.get());
+                hash_u64(hash, 14, data_generation.get());
+            }
+            Self::Column {
+                table_id,
+                column_id,
+                generation,
+            } => {
+                hash_u8(hash, 10, 2);
+                hash_bytes(hash, 11, table_id.as_str().as_bytes());
+                hash_bytes(hash, 15, column_id.as_str().as_bytes());
+                hash_u64(hash, 16, generation.get());
+            }
+            Self::Index {
+                table_id,
+                index_id,
+                generation,
+            } => {
+                hash_u8(hash, 10, 3);
+                hash_bytes(hash, 11, table_id.as_str().as_bytes());
+                hash_bytes(hash, 17, index_id.as_str().as_bytes());
+                hash_u64(hash, 18, generation.get());
+            }
+            Self::WriteProtocol {
+                table_id,
+                generation,
+            } => {
+                hash_u8(hash, 10, 4);
+                hash_bytes(hash, 11, table_id.as_str().as_bytes());
+                hash_u64(hash, 19, generation.get());
+            }
+        }
+    }
+}
+
+fn hash_u8(hash: &mut Sha256, tag: u8, value: u8) {
+    hash.update([tag]);
+    hash.update(1u64.to_be_bytes());
+    hash.update([value]);
+}
+
+fn hash_u64(hash: &mut Sha256, tag: u8, value: u64) {
+    hash.update([tag]);
+    hash.update(8u64.to_be_bytes());
+    hash.update(value.to_be_bytes());
+}
+
+fn hash_bytes(hash: &mut Sha256, tag: u8, value: &[u8]) {
+    hash.update([tag]);
+    hash.update((value.len() as u64).to_be_bytes());
+    hash.update(value);
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -739,6 +843,7 @@ pub(super) struct RelationCache {
     policy: RelationCachePolicy,
     metrics: Arc<RelationCacheMetrics>,
     limits: RelationCacheLimits,
+    entry_weight: usize,
     result_byte_limit: usize,
 }
 
@@ -789,6 +894,7 @@ impl RelationCache {
             policy: RelationCachePolicy::new(entry_limit),
             metrics,
             limits,
+            entry_weight,
             result_byte_limit: config.result_byte_limit,
         }
     }
@@ -1077,6 +1183,19 @@ impl RelationCache {
         let retained = key
             .retained_bytes()
             .saturating_add(relation.retained_bytes()) as u64;
+        let weight = (retained as usize).max(self.entry_weight);
+        let shards = self.entries.shards();
+        let shard = self.entries.hash(&key) as usize % shards;
+        let shard_capacity =
+            self.limits.byte_limit / shards + usize::from(shard < self.limits.byte_limit % shards);
+        // Foyer retains one item that is larger than its selected shard. That
+        // behavior can make total retained bytes exceed the configured bound.
+        // Reject the item before insertion so each shard stays within its
+        // share of the total byte limit.
+        if weight > shard_capacity {
+            self.reject_by_policy();
+            return;
+        }
         let entry = self.entries.insert(key, relation);
         let admitted = !entry.is_outdated()
             && entry
@@ -1090,10 +1209,7 @@ impl RelationCache {
                 )
                 .is_ok();
         if !admitted {
-            self.metrics
-                .rejected_by_policy
-                .fetch_add(1, Ordering::Relaxed);
-            crate::telemetry::relation_cache_admission("policy_rejected");
+            self.reject_by_policy();
         } else {
             self.metrics.admissions.fetch_add(1, Ordering::Relaxed);
             self.metrics
@@ -1109,6 +1225,13 @@ impl RelationCache {
             .rejected_too_large
             .fetch_add(1, Ordering::Relaxed);
         crate::telemetry::relation_cache_admission("too_large");
+    }
+
+    fn reject_by_policy(&self) {
+        self.metrics
+            .rejected_by_policy
+            .fetch_add(1, Ordering::Relaxed);
+        crate::telemetry::relation_cache_admission("policy_rejected");
     }
 
     fn record_avoided(work: CachedWork) {
@@ -1179,6 +1302,105 @@ mod tests {
             &dependencies(3),
             &HashMap::from([("t1".into(), data_generation.into())]),
         )
+    }
+
+    fn validator_key() -> RelationCacheKey {
+        RelationCacheKey::from_key_parts(
+            fingerprint(1),
+            vec![
+                DependencyGeneration::Table {
+                    table_id: "t1".into(),
+                    existence_generation: 2.into(),
+                    storage_generation: 3.into(),
+                    data_generation: 4.into(),
+                },
+                DependencyGeneration::Column {
+                    table_id: "t1".into(),
+                    column_id: "c1".into(),
+                    generation: 5.into(),
+                },
+                DependencyGeneration::Index {
+                    table_id: "t1".into(),
+                    index_id: "i1".into(),
+                    generation: 6.into(),
+                },
+                DependencyGeneration::WriteProtocol {
+                    table_id: "t1".into(),
+                    generation: 7.into(),
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn query_validator_covers_every_correctness_key_field() {
+        let original = validator_key();
+        let validator = original.query_validator();
+        assert_eq!(validator, original.clone().query_validator());
+
+        let changed =
+            RelationCacheKey::from_key_parts(fingerprint(2), original.dependencies.clone());
+        assert_ne!(validator, changed.query_validator());
+
+        let replacements = [
+            DependencyGeneration::Table {
+                table_id: "t1".into(),
+                existence_generation: 8.into(),
+                storage_generation: 3.into(),
+                data_generation: 4.into(),
+            },
+            DependencyGeneration::Table {
+                table_id: "t1".into(),
+                existence_generation: 2.into(),
+                storage_generation: 8.into(),
+                data_generation: 4.into(),
+            },
+            DependencyGeneration::Table {
+                table_id: "t1".into(),
+                existence_generation: 2.into(),
+                storage_generation: 3.into(),
+                data_generation: 8.into(),
+            },
+        ];
+        for replacement in replacements {
+            let mut dependencies = original.dependencies.clone();
+            dependencies[0] = replacement;
+            let changed = RelationCacheKey::from_key_parts(original.exact, dependencies);
+            assert_ne!(validator, changed.query_validator());
+        }
+
+        let mut dependencies = original.dependencies.clone();
+        dependencies[1] = DependencyGeneration::Column {
+            table_id: "t1".into(),
+            column_id: "c1".into(),
+            generation: 8.into(),
+        };
+        let changed = RelationCacheKey::from_key_parts(original.exact, dependencies);
+        assert_ne!(validator, changed.query_validator());
+
+        let mut dependencies = original.dependencies.clone();
+        dependencies[2] = DependencyGeneration::Index {
+            table_id: "t1".into(),
+            index_id: "i1".into(),
+            generation: 8.into(),
+        };
+        let changed = RelationCacheKey::from_key_parts(original.exact, dependencies);
+        assert_ne!(validator, changed.query_validator());
+
+        let mut dependencies = original.dependencies.clone();
+        dependencies[3] = DependencyGeneration::WriteProtocol {
+            table_id: "t1".into(),
+            generation: 8.into(),
+        };
+        let changed = RelationCacheKey::from_key_parts(original.exact, dependencies);
+        assert_ne!(validator, changed.query_validator());
+
+        for index in 1..original.dependencies.len() {
+            let mut dependencies = original.dependencies.clone();
+            dependencies.remove(index);
+            let changed = RelationCacheKey::from_key_parts(original.exact, dependencies);
+            assert_ne!(validator, changed.query_validator());
+        }
     }
 
     fn output(slot: usize) -> RowType {
@@ -1575,7 +1797,10 @@ mod tests {
         let stats = cache.stats();
         assert!(stats.entries < 64);
         assert!(stats.evictions + stats.rejected_by_policy > 0);
-        assert!(stats.retained_bytes <= byte_limit as u64);
+        assert!(
+            stats.retained_bytes <= byte_limit as u64,
+            "relation cache exceeds its byte limit: {stats:?}"
+        );
     }
 
     #[tokio::test]

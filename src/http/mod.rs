@@ -18,6 +18,7 @@ mod listener;
 mod meta;
 mod probes;
 mod problem;
+mod query;
 mod result;
 mod schema;
 mod server;

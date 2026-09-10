@@ -206,9 +206,10 @@ pub enum TextComparison {
 }
 
 /// LIR is Rad's low-level intermediate representation: the relation tree a
-/// client sends to `POST /execute`, and the tree the engine binds, plans, and
-/// executes. This schema is its normative specification. The type definitions
-/// and the prose in these descriptions are one artifact and move together.
+/// client sends with `QUERY /execute` or embeds in a PIR program. The engine
+/// binds, plans, and executes this tree. This schema is its normative
+/// specification. The type definitions and descriptions form one specification
+/// and must stay consistent.
 ///
 /// LIR is an internal contract with no external compatibility promise yet; it
 /// may change while the design is hardened. It is deliberately unstable, but at
@@ -389,9 +390,10 @@ struct AnyManyTextMatchPartWireRef {
 }
 
 /// LIR is Rad's low-level intermediate representation: the relation tree a
-/// client sends to `POST /execute`, and the tree the engine binds, plans, and
-/// executes. This schema is its normative specification. The type definitions
-/// and the prose in these descriptions are one artifact and move together.
+/// client sends with `QUERY /execute` or embeds in a PIR program. The engine
+/// binds, plans, and executes this tree. This schema is its normative
+/// specification. The type definitions and descriptions form one specification
+/// and must stay consistent.
 ///
 /// LIR is an internal contract with no external compatibility promise yet; it
 /// may change while the design is hardened. It is deliberately unstable, but at
@@ -660,9 +662,10 @@ struct BoolValueWireRef<'a> {
 }
 
 /// LIR is Rad's low-level intermediate representation: the relation tree a
-/// client sends to `POST /execute`, and the tree the engine binds, plans, and
-/// executes. This schema is its normative specification. The type definitions
-/// and the prose in these descriptions are one artifact and move together.
+/// client sends with `QUERY /execute` or embeds in a PIR program. The engine
+/// binds, plans, and executes this tree. This schema is its normative
+/// specification. The type definitions and descriptions form one specification
+/// and must stay consistent.
 ///
 /// LIR is an internal contract with no external compatibility promise yet; it
 /// may change while the design is hardened. It is deliberately unstable, but at
@@ -1431,9 +1434,10 @@ pub struct AggTerm {
 }
 
 /// LIR is Rad's low-level intermediate representation: the relation tree a
-/// client sends to `POST /execute`, and the tree the engine binds, plans, and
-/// executes. This schema is its normative specification. The type definitions
-/// and the prose in these descriptions are one artifact and move together.
+/// client sends with `QUERY /execute` or embeds in a PIR program. The engine
+/// binds, plans, and executes this tree. This schema is its normative
+/// specification. The type definitions and descriptions form one specification
+/// and must stay consistent.
 ///
 /// LIR is an internal contract with no external compatibility promise yet; it
 /// may change while the design is hardened. It is deliberately unstable, but at
@@ -1743,9 +1747,10 @@ pub struct RowsColumn {
 }
 
 /// LIR is Rad's low-level intermediate representation: the relation tree a
-/// client sends to `POST /execute`, and the tree the engine binds, plans, and
-/// executes. This schema is its normative specification. The type definitions
-/// and the prose in these descriptions are one artifact and move together.
+/// client sends with `QUERY /execute` or embeds in a PIR program. The engine
+/// binds, plans, and executes this tree. This schema is its normative
+/// specification. The type definitions and descriptions form one specification
+/// and must stay consistent.
 ///
 /// LIR is an internal contract with no external compatibility promise yet; it
 /// may change while the design is hardened. It is deliberately unstable, but at

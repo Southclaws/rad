@@ -247,6 +247,9 @@ struct Instruments {
     execution_parallel_width: Histogram<u64>,
     execution_parallel_batches: Counter<u64>,
     execution_parallel_rows: Counter<u64>,
+    conditional_query_requests: Counter<u64>,
+    conditional_query_validator_duration: Histogram<f64>,
+    conditional_query_avoided_executions: Counter<u64>,
     relation_cache_lookups: Counter<u64>,
     relation_cache_admissions: Counter<u64>,
     relation_cache_evictions: Counter<u64>,
@@ -460,6 +463,19 @@ impl Instruments {
             execution_parallel_rows: meter
                 .u64_counter("rad.execution.parallel.rows")
                 .with_description("Rows processed by parallel execution batches")
+                .build(),
+            conditional_query_requests: meter
+                .u64_counter("rad.query.conditional.requests")
+                .with_description("Completed conditional query requests")
+                .build(),
+            conditional_query_validator_duration: meter
+                .f64_histogram("rad.query.conditional.validator.duration")
+                .with_unit("s")
+                .with_description("Conditional query validator preparation duration")
+                .build(),
+            conditional_query_avoided_executions: meter
+                .u64_counter("rad.query.conditional.avoided.executions")
+                .with_description("Relation executions avoided by matching query validators")
                 .build(),
             relation_cache_lookups: meter
                 .u64_counter("rad.relation.cache.lookups")
@@ -1012,6 +1028,32 @@ pub fn relation_cache_lookup(result: &'static str) {
     instruments
         .relation_cache_lookups
         .add(1, &[KeyValue::new("rad.cache.result", result)]);
+}
+
+pub fn conditional_query_finished(outcome: &'static str) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments.conditional_query_requests.add(
+        1,
+        &[KeyValue::new("rad.query.conditional.outcome", outcome)],
+    );
+}
+
+pub fn conditional_query_validator_finished(duration: Duration) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments
+        .conditional_query_validator_duration
+        .record(duration.as_secs_f64(), &[]);
+}
+
+pub fn conditional_query_avoided_execution() {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments.conditional_query_avoided_executions.add(1, &[]);
 }
 
 pub fn relation_cache_admission(result: &'static str) {

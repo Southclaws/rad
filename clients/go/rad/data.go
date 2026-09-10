@@ -1,9 +1,8 @@
 package rad
 
-// The autocommit data path, expressed as PIR programs over POST /execute.
-// A read is a one-statement query program; a single-row write is a
-// one-statement mutation whose input is a one-row `rows` relation. Building
-// those typed relations needs the target table's column types, which the
+// The autocommit data path. Reads use LIR QUERY requests. A single-row write
+// is a one-statement PIR mutation. Its input is a one-row `rows` relation.
+// Building those typed relations needs the target table's column types, which the
 // client caches until a migration or catalog-sensitive execution failure
 // invalidates the view. Relations are built with the lirwire builders and
 // carried in a statement as opaque marshalled bytes.
@@ -173,13 +172,9 @@ func nullableFlag(b bool) *bool {
 	return nil
 }
 
-// execQueryDatum runs a query as a one-statement program.
+// execQueryDatum runs one LIR QUERY request.
 func (c *Client) execQueryDatum(ctx context.Context, q lirwire.Query) (any, error) {
-	rel, err := relationBytes(q)
-	if err != nil {
-		return nil, err
-	}
-	return c.programDatum(ctx, pirwire.Query("q", rel))
+	return c.queryDatum(ctx, q)
 }
 
 func (c *Client) execQuery(ctx context.Context, q lirwire.Query) ([]protocol.Record, error) {
@@ -190,17 +185,13 @@ func (c *Client) execQuery(ctx context.Context, q lirwire.Query) ([]protocol.Rec
 	return datumRecords(d)
 }
 
-// execGet is a point read as a first-cardinality query program.
+// execGet is a point read as a first-cardinality LIR query.
 func (c *Client) execGet(ctx context.Context, table string, key map[string]any) (protocol.Record, bool, error) {
 	q, err := pointRead(table, key)
 	if err != nil {
 		return nil, false, err
 	}
-	rel, err := relationBytes(q)
-	if err != nil {
-		return nil, false, err
-	}
-	d, err := c.programDatum(ctx, pirwire.Query("get", rel))
+	d, err := c.queryDatum(ctx, q)
 	if err != nil {
 		return nil, false, err
 	}

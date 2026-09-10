@@ -1364,16 +1364,19 @@ impl IntoResponse for IndexDeleteResponse {
         }
     }
 }
-/// Response for `POST /execute` (operationId `Execute`).
-pub enum ExecuteResponse {
-    Ok(ProgramResult),
+/// Response for `QUERY /execute` (operationId `Query`).
+pub enum QueryResponse {
+    Ok(Value),
+    NotModified,
     BadRequest(Problem),
-    Forbidden(Problem),
-    Conflict(Problem),
+    Status406(Problem),
+    Status413(Problem),
+    Status415(Problem),
     UnprocessableEntity(Problem),
+    InternalServerError(Problem),
     Default(StatusCode, Problem),
 }
-impl IntoResponse for ExecuteResponse {
+impl IntoResponse for QueryResponse {
     fn into_response(self) -> ::axum::response::Response {
         match self {
             Self::Ok(body) => {
@@ -1388,6 +1391,7 @@ impl IntoResponse for ExecuteResponse {
                     .insert(::axum::http::header::CONTENT_TYPE, content_type);
                 response
             }
+            Self::NotModified => StatusCode::NOT_MODIFIED.into_response(),
             Self::BadRequest(body) => {
                 let mut response = (StatusCode::BAD_REQUEST, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
@@ -1400,8 +1404,13 @@ impl IntoResponse for ExecuteResponse {
                     .insert(::axum::http::header::CONTENT_TYPE, content_type);
                 response
             }
-            Self::Forbidden(body) => {
-                let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
+            Self::Status406(body) => {
+                let mut response = (
+                    StatusCode::from_u16(406u16)
+                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                    Json(body),
+                )
+                    .into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/problem+json".as_bytes(),
                 ) else {
@@ -1412,8 +1421,30 @@ impl IntoResponse for ExecuteResponse {
                     .insert(::axum::http::header::CONTENT_TYPE, content_type);
                 response
             }
-            Self::Conflict(body) => {
-                let mut response = (StatusCode::CONFLICT, Json(body)).into_response();
+            Self::Status413(body) => {
+                let mut response = (
+                    StatusCode::from_u16(413u16)
+                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                    Json(body),
+                )
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Status415(body) => {
+                let mut response = (
+                    StatusCode::from_u16(415u16)
+                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                    Json(body),
+                )
+                    .into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/problem+json".as_bytes(),
                 ) else {
@@ -1437,6 +1468,46 @@ impl IntoResponse for ExecuteResponse {
                     .insert(::axum::http::header::CONTENT_TYPE, content_type);
                 response
             }
+            Self::InternalServerError(body) => {
+                let mut response = (StatusCode::INTERNAL_SERVER_ERROR, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Default(status, body) => {
+                if !(true) {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+                let mut response = (status, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+        }
+    }
+}
+/// Response for `OPTIONS /execute` (operationId `ExecuteOptions`).
+pub enum ExecuteOptionsResponse {
+    NoContent,
+    Default(StatusCode, Problem),
+}
+impl IntoResponse for ExecuteOptionsResponse {
+    fn into_response(self) -> ::axum::response::Response {
+        match self {
+            Self::NoContent => StatusCode::NO_CONTENT.into_response(),
             Self::Default(status, body) => {
                 if !(true) {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();

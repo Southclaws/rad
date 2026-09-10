@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -9,7 +10,7 @@ use tower::ServiceExt;
 
 use super::{router, router_with_location, serve};
 use crate::engine::catalog::model::Mode;
-use crate::engine::exec::Engine;
+use crate::engine::exec::{Engine, EngineEvent, EngineEventHook, RelationCacheLimits};
 use crate::engine::kv::fault::{FaultAction, FaultController, FaultRule, FaultingKv, Operation};
 use crate::engine::kv::slatedb::Store;
 use crate::engine::kv::{ErrorKind as KvErrorKind, TransactionalKv};
@@ -35,6 +36,39 @@ async fn fault_router(name: &str, operation: Operation, kind: KvErrorKind) -> ax
 
 fn post_json(uri: &str, body: Value) -> Request<Body> {
     request_json(Method::POST, uri, body)
+}
+
+fn query_json(body: Value, if_none_match: Option<&str>) -> Request<Body> {
+    let mut request = Request::builder()
+        .method(Method::from_bytes(b"QUERY").unwrap())
+        .uri("/execute")
+        .header(header::CONTENT_TYPE, "application/vnd.rad.lir+json")
+        .header(header::ACCEPT, "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    if let Some(if_none_match) = if_none_match {
+        request
+            .headers_mut()
+            .insert(header::IF_NONE_MATCH, if_none_match.parse().unwrap());
+    }
+    request
+}
+
+fn raw_query(
+    body: impl Into<Body>,
+    content_type: Option<&str>,
+    accept: Option<&str>,
+) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(Method::from_bytes(b"QUERY").unwrap())
+        .uri("/execute");
+    if let Some(content_type) = content_type {
+        builder = builder.header(header::CONTENT_TYPE, content_type);
+    }
+    if let Some(accept) = accept {
+        builder = builder.header(header::ACCEPT, accept);
+    }
+    builder.body(body.into()).unwrap()
 }
 
 fn post_json_with_diagnostics(uri: &str, body: Value, level: &str) -> Request<Body> {
@@ -82,6 +116,529 @@ fn one_row_program() -> Value {
     })
 }
 
+fn one_row_query() -> Value {
+    one_row_program()["statements"][0]["relation"].clone()
+}
+
+fn one_binding_query(value: i64) -> Value {
+    json!({
+        "nodes": {
+            "row": {
+                "kind": "rows",
+                "scope": "bound",
+                "columns": [{"name": "value", "type": "int64"}],
+                "rows": [[value.to_string()]]
+            },
+            "use": {"kind": "ref", "binding": "source", "scope": "used"}
+        },
+        "bindings": {"source": {"kind": "derived", "node": "row"}},
+        "root": {"node": "use", "cardinality": "exactly_one"}
+    })
+}
+
+#[tokio::test]
+async fn query_returns_a_validator_and_skips_an_unchanged_result() {
+    let router = test_router("http-conditional-query", Mode::Direct).await;
+    let changed = router
+        .clone()
+        .oneshot(query_json(one_row_query(), None))
+        .await
+        .unwrap();
+
+    assert_eq!(changed.status(), StatusCode::OK);
+    assert_eq!(
+        changed.headers()[header::CACHE_CONTROL],
+        "private, no-cache"
+    );
+    assert_eq!(
+        changed.headers()["accept-query"],
+        "\"application/vnd.rad.lir+json\""
+    );
+    assert_eq!(
+        changed.headers()[header::VARY],
+        "Accept, Authorization, Content-Encoding, Content-Type"
+    );
+    let entity_tag = changed.headers()[header::ETAG].to_str().unwrap().to_owned();
+    assert!(entity_tag.starts_with("W/\"rad-query-"));
+    assert_eq!(json_body(changed).await, json!({"value": 1}));
+
+    let unchanged = router
+        .oneshot(query_json(one_row_query(), Some(&entity_tag)))
+        .await
+        .unwrap();
+    assert_eq!(unchanged.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(unchanged.headers()[header::ETAG], entity_tag);
+    assert_eq!(
+        unchanged.into_body().collect().await.unwrap().to_bytes(),
+        axum::body::Bytes::new()
+    );
+}
+
+#[tokio::test]
+async fn execute_options_and_cors_advertise_query() {
+    let router = test_router("http-query-options", Mode::Direct).await;
+    let options = router
+        .clone()
+        .oneshot(request(Method::OPTIONS, "/execute"))
+        .await
+        .unwrap();
+    assert_eq!(options.status(), StatusCode::NO_CONTENT);
+    assert_eq!(options.headers()[header::ALLOW], "OPTIONS, POST, QUERY");
+    assert_eq!(
+        options.headers()["accept-query"],
+        "\"application/vnd.rad.lir+json\""
+    );
+
+    let preflight = router
+        .oneshot(
+            Request::builder()
+                .method(Method::OPTIONS)
+                .uri("/execute")
+                .header(header::ACCESS_CONTROL_REQUEST_METHOD, "QUERY")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(preflight.status(), StatusCode::NO_CONTENT);
+    assert!(
+        preflight.headers()[header::ACCESS_CONTROL_ALLOW_METHODS]
+            .to_str()
+            .unwrap()
+            .contains("QUERY")
+    );
+    assert!(
+        preflight.headers()[header::ACCESS_CONTROL_ALLOW_HEADERS]
+            .to_str()
+            .unwrap()
+            .contains("if-none-match")
+    );
+    assert!(
+        preflight.headers()[header::ACCESS_CONTROL_EXPOSE_HEADERS]
+            .to_str()
+            .unwrap()
+            .contains("etag")
+    );
+}
+
+#[tokio::test]
+async fn query_enforces_its_body_and_negotiation_contract() {
+    let router = test_router("http-query-contract", Mode::Direct).await;
+    for (request, expected) in [
+        (
+            raw_query(
+                Body::empty(),
+                Some("application/vnd.rad.lir+json"),
+                Some("application/json"),
+            ),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            raw_query(
+                Body::from("{"),
+                Some("application/vnd.rad.lir+json"),
+                Some("application/json"),
+            ),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            raw_query(
+                Body::from(serde_json::to_vec(&one_row_program()).unwrap()),
+                Some("application/vnd.rad.lir+json"),
+                Some("application/json"),
+            ),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            raw_query(Body::from("{}"), Some("application/json"), None),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ),
+        (
+            raw_query(Body::from("{}"), None, Some("application/json")),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ),
+        (
+            raw_query(
+                Body::from(serde_json::to_vec(&one_row_query()).unwrap()),
+                Some("application/vnd.rad.lir+json"),
+                Some("text/plain"),
+            ),
+            StatusCode::NOT_ACCEPTABLE,
+        ),
+        (
+            raw_query(
+                Body::from(serde_json::to_vec(&one_row_query()).unwrap()),
+                Some("application/vnd.rad.lir+json"),
+                Some("application/json;q=0.0, text/plain"),
+            ),
+            StatusCode::NOT_ACCEPTABLE,
+        ),
+        (
+            raw_query(
+                Body::from(vec![b' '; 4 * 1024 * 1024 + 1]),
+                Some("application/vnd.rad.lir+json"),
+                None,
+            ),
+            StatusCode::PAYLOAD_TOO_LARGE,
+        ),
+    ] {
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), expected);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/problem+json"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("accept-query")
+                .and_then(|value| value.to_str().ok()),
+            Some("\"application/vnd.rad.lir+json\""),
+            "QUERY response status: {expected}"
+        );
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "private, no-cache"
+        );
+        assert_eq!(json_body(response).await["code"], "invalid");
+    }
+}
+
+#[tokio::test]
+async fn query_maps_semantic_and_storage_failures() {
+    let semantic = test_router("http-query-semantic", Mode::Direct)
+        .await
+        .oneshot(query_json(table_count_query("missing"), None))
+        .await
+        .unwrap();
+    assert_eq!(semantic.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let storage = fault_router(
+        "http-query-storage",
+        Operation::Begin,
+        KvErrorKind::Internal,
+    )
+    .await
+    .oneshot(query_json(one_row_query(), None))
+    .await
+    .unwrap();
+    assert_eq!(storage.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn query_uses_weak_entity_tag_comparison() {
+    let router = test_router("http-query-etag-comparison", Mode::Direct).await;
+    let first = router
+        .clone()
+        .oneshot(query_json(one_row_query(), None))
+        .await
+        .unwrap();
+    let weak = first.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let strong = weak.strip_prefix("W/").unwrap();
+
+    for condition in [
+        "*".to_owned(),
+        strong.to_owned(),
+        format!("\"other\", {weak}"),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(query_json(one_row_query(), Some(&condition)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED, "{condition}");
+    }
+
+    let malformed = router
+        .oneshot(query_json(one_row_query(), Some("not-an-entity-tag")))
+        .await
+        .unwrap();
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn query_fingerprint_covers_literals_and_root_cardinality() {
+    let router = test_router("http-query-fingerprint", Mode::Direct).await;
+    let first = router
+        .clone()
+        .oneshot(query_json(one_row_query(), None))
+        .await
+        .unwrap();
+    let entity_tag = first.headers()[header::ETAG].to_str().unwrap().to_owned();
+
+    let mut changed_literal = one_row_query();
+    changed_literal["nodes"]["row"]["rows"] = json!([["2"]]);
+    let literal = router
+        .clone()
+        .oneshot(query_json(changed_literal, Some(&entity_tag)))
+        .await
+        .unwrap();
+    assert_eq!(literal.status(), StatusCode::OK);
+
+    let mut changed_cardinality = one_row_query();
+    changed_cardinality["root"]["cardinality"] = json!("scalar");
+    let cardinality = router
+        .clone()
+        .oneshot(query_json(changed_cardinality, Some(&entity_tag)))
+        .await
+        .unwrap();
+    let status = cardinality.status();
+    let body = json_body(cardinality).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let binding = router
+        .clone()
+        .oneshot(query_json(one_binding_query(1), None))
+        .await
+        .unwrap();
+    assert_eq!(binding.status(), StatusCode::OK);
+    let binding_tag = binding.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let changed_binding = router
+        .oneshot(query_json(one_binding_query(2), Some(&binding_tag)))
+        .await
+        .unwrap();
+    assert_eq!(changed_binding.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn query_validator_survives_relation_cache_eviction() {
+    let store = Arc::new(Store::memory("http-query-cache-eviction").await.unwrap());
+    let engine = Engine::new(store).with_relation_cache_limits(RelationCacheLimits {
+        byte_limit: 1024 * 1024,
+        entry_limit: 1,
+        result_byte_limit: 1024,
+    });
+    let router = router(Arc::new(engine), Mode::Direct);
+    let first = router
+        .clone()
+        .oneshot(query_json(one_binding_query(1), None))
+        .await
+        .unwrap();
+    let entity_tag = first.headers()[header::ETAG].to_str().unwrap().to_owned();
+
+    for value in 2..10 {
+        let response = router
+            .clone()
+            .oneshot(query_json(one_binding_query(value), None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let unchanged = router
+        .oneshot(query_json(one_binding_query(1), Some(&entity_tag)))
+        .await
+        .unwrap();
+    assert_eq!(unchanged.status(), StatusCode::NOT_MODIFIED);
+}
+
+#[tokio::test]
+async fn query_result_matches_post_result() {
+    let router = test_router("http-query-post-equivalence", Mode::Direct).await;
+    let query = router
+        .clone()
+        .oneshot(query_json(one_row_query(), None))
+        .await
+        .unwrap();
+    let query_result = json_body(query).await;
+    let post = router
+        .oneshot(post_json("/execute", one_row_program()))
+        .await
+        .unwrap();
+    assert_eq!(query_result, json_body(post).await["result"]);
+}
+
+#[tokio::test]
+async fn query_validator_uses_dependency_local_generations() {
+    let store = Arc::new(Store::memory("http-query-dependencies").await.unwrap());
+    let api = router(Arc::new(Engine::new(store.clone())), Mode::Direct);
+    for table in ["observed", "unrelated"] {
+        let response = api
+            .clone()
+            .oneshot(post_json("/execute", create_named_table_program(table)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let inserted = api
+        .clone()
+        .oneshot(post_json("/execute", insert_id_program("observed", 1)))
+        .await
+        .unwrap();
+    assert_eq!(inserted.status(), StatusCode::OK);
+
+    let first = api
+        .clone()
+        .oneshot(query_json(table_count_query("observed"), None))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let entity_tag = first.headers()[header::ETAG].to_str().unwrap().to_owned();
+    assert_eq!(json_body(first).await, json!(1));
+
+    let unrelated = api
+        .clone()
+        .oneshot(post_json("/execute", insert_id_program("unrelated", 1)))
+        .await
+        .unwrap();
+    assert_eq!(unrelated.status(), StatusCode::OK);
+    let unchanged = api
+        .clone()
+        .oneshot(query_json(table_count_query("observed"), Some(&entity_tag)))
+        .await
+        .unwrap();
+    assert_eq!(unchanged.status(), StatusCode::NOT_MODIFIED);
+
+    let observed = api
+        .clone()
+        .oneshot(post_json("/execute", insert_id_program("observed", 2)))
+        .await
+        .unwrap();
+    assert_eq!(observed.status(), StatusCode::OK);
+    let changed = api
+        .oneshot(query_json(table_count_query("observed"), Some(&entity_tag)))
+        .await
+        .unwrap();
+    assert_eq!(changed.status(), StatusCode::OK);
+    let changed_tag = changed.headers()[header::ETAG].to_str().unwrap().to_owned();
+    assert_ne!(changed_tag, entity_tag);
+    assert_eq!(json_body(changed).await, json!(2));
+
+    let restarted = router(Arc::new(Engine::new(store)), Mode::Direct)
+        .oneshot(query_json(table_count_query("observed"), None))
+        .await
+        .unwrap();
+    assert_eq!(restarted.status(), StatusCode::OK);
+    assert_eq!(restarted.headers()[header::ETAG], changed_tag);
+}
+
+#[derive(Clone, Copy)]
+enum ConditionalPause {
+    Prepared,
+    Compared,
+    ExecutionStarted,
+}
+
+struct ConditionalPauseHook {
+    target: ConditionalPause,
+    paused: AtomicBool,
+    reached: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+impl ConditionalPauseHook {
+    fn new(target: ConditionalPause) -> Self {
+        Self {
+            target,
+            paused: AtomicBool::new(false),
+            reached: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        }
+    }
+
+    fn matches(&self, event: &EngineEvent) -> bool {
+        matches!(
+            (self.target, event),
+            (
+                ConditionalPause::Prepared,
+                EngineEvent::ConditionalQueryPrepared
+            ) | (
+                ConditionalPause::Compared,
+                EngineEvent::ConditionalQueryCompared { unchanged: false }
+            ) | (
+                ConditionalPause::ExecutionStarted,
+                EngineEvent::ConditionalQueryExecutionStarted
+            )
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl EngineEventHook for ConditionalPauseHook {
+    async fn reach(&self, event: EngineEvent) {
+        if self.matches(&event) && !self.paused.swap(true, Ordering::SeqCst) {
+            self.reached.notify_one();
+            self.release.notified().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn conditional_query_uses_one_snapshot_across_its_skip_boundary() {
+    for (index, target) in [
+        ConditionalPause::Prepared,
+        ConditionalPause::Compared,
+        ConditionalPause::ExecutionStarted,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let store = Arc::new(
+            Store::memory(&format!("http-query-snapshot-{index}"))
+                .await
+                .unwrap(),
+        );
+        let mutations = router(Arc::new(Engine::new(store.clone())), Mode::Direct);
+        assert_eq!(
+            mutations
+                .clone()
+                .oneshot(post_json(
+                    "/execute",
+                    create_named_table_program("observed")
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            mutations
+                .clone()
+                .oneshot(post_json("/execute", insert_id_program("observed", 1)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+
+        let hook = Arc::new(ConditionalPauseHook::new(target));
+        let queries = router(
+            Arc::new(Engine::new(store.clone()).with_event_hook(hook.clone())),
+            Mode::Direct,
+        );
+        let request = tokio::spawn(
+            queries
+                .clone()
+                .oneshot(query_json(table_count_query("observed"), None)),
+        );
+        hook.reached.notified().await;
+        assert_eq!(
+            mutations
+                .oneshot(post_json("/execute", insert_id_program("observed", 2)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        hook.release.notify_one();
+
+        let response = request.await.unwrap().unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let old_tag = response.headers()[header::ETAG]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(json_body(response).await, json!(1));
+
+        let current = router(Arc::new(Engine::new(store)), Mode::Direct)
+            .oneshot(query_json(table_count_query("observed"), Some(&old_tag)))
+            .await
+            .unwrap();
+        assert_eq!(current.status(), StatusCode::OK);
+        assert_eq!(json_body(current).await, json!(2));
+    }
+}
+
 fn create_table_program() -> Value {
     json!({
         "statements": [{
@@ -93,6 +650,55 @@ fn create_table_program() -> Value {
                 "primary_key": ["id"]
             }
         }]
+    })
+}
+
+fn create_named_table_program(table: &str) -> Value {
+    json!({
+        "statements": [{
+            "kind": "create_table",
+            "name": format!("create_{table}"),
+            "table": {
+                "name": table,
+                "columns": [{"name": "id", "type": "int64"}],
+                "primary_key": ["id"]
+            }
+        }]
+    })
+}
+
+fn insert_id_program(table: &str, id: i64) -> Value {
+    json!({
+        "statements": [{
+            "kind": "create",
+            "name": "insert",
+            "table": table,
+            "relation": {
+                "nodes": {
+                    "row": {
+                        "kind": "rows",
+                        "scope": "row",
+                        "columns": [{"name": "id", "type": "int64"}],
+                        "rows": [[id.to_string()]]
+                    }
+                },
+                "root": {"node": "row", "cardinality": "many"}
+            }
+        }]
+    })
+}
+
+fn table_count_query(table: &str) -> Value {
+    json!({
+        "nodes": {
+            "scan": {"kind": "scan", "table": table, "scope": "scan"},
+            "count": {
+                "kind": "aggregate",
+                "input": "scan",
+                "aggs": [{"fn": "count", "as": "count"}]
+            }
+        },
+        "root": {"node": "count", "cardinality": "scalar"}
     })
 }
 
@@ -282,7 +888,7 @@ async fn public_api_allows_the_admin_origin_and_json_preflights() {
     );
     assert_eq!(
         preflight.headers()[header::ACCESS_CONTROL_ALLOW_HEADERS],
-        "content-type"
+        "content-type, if-none-match"
     );
 
     let response = router

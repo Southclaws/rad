@@ -102,27 +102,6 @@ fn __decode_schema_transition_list_query(
         state,
     })
 }
-/// Query parameters for `POST /execute` (operationId `Execute`).
-#[derive(Debug, Default)]
-pub struct ExecuteQuery {
-    pub show_plan: ::std::option::Option<bool>,
-    pub dry_run: ::std::option::Option<bool>,
-}
-fn __decode_execute_query(
-    raw: ::std::option::Option<&str>,
-) -> ::std::result::Result<ExecuteQuery, String> {
-    if let Some(raw) = raw {
-        __validate_urlencoded(raw)?;
-    }
-    let __pairs = __query_pairs(raw);
-    let show_plan = __query_one(&__pairs, "show-plan")?
-        .map(|raw| __decode_query_scalar(&raw, "show-plan"))
-        .transpose()?;
-    let dry_run = __query_one(&__pairs, "dry-run")?
-        .map(|raw| __decode_query_scalar(&raw, "dry-run"))
-        .transpose()?;
-    Ok(ExecuteQuery { show_plan, dry_run })
-}
 /// Build an axum::Router for the `AdministrationApi` trait.
 pub fn administration_api_router<T>(api: T) -> ::axum::Router
 where
@@ -756,61 +735,102 @@ where
     T: DataApi + Clone + Send + Sync + 'static,
 {
     ::axum::Router::new()
-        .route("/execute", ::axum::routing::post(execute_handler::<T>))
+        .route("/execute", ::axum::routing::options(execute_options_handler::<T>))
+        .route(
+            "/execute",
+            ::axum::routing::any(query_handler_custom_method_dispatch::<T>),
+        )
         .layer(::axum::extract::DefaultBodyLimit::max(4194304usize))
         .with_state(api)
 }
-async fn execute_handler<T>(
+async fn query_handler_custom_method_dispatch<T>(
     ::axum::extract::State(api): ::axum::extract::State<T>,
-    ::axum::extract::RawQuery(__raw_query): ::axum::extract::RawQuery,
+    request: ::axum::extract::Request,
+) -> ::axum::response::Response
+where
+    T: DataApi + Clone + Send + Sync + 'static,
+{
+    match request.method().as_str() {
+        "QUERY" => ::axum::handler::Handler::call(query_handler::<T>, request, api).await,
+        _ => {
+            ::axum::response::IntoResponse::into_response(
+                ::axum::http::StatusCode::METHOD_NOT_ALLOWED,
+            )
+        }
+    }
+}
+async fn query_handler<T>(
+    ::axum::extract::State(api): ::axum::extract::State<T>,
+    __headers: ::axum::http::HeaderMap,
     __request: ::axum::extract::Request,
 ) -> ::axum::response::Response
 where
     T: super::api::DataApi + Clone + Send + Sync + 'static,
 {
-    let __q: ExecuteQuery = match __decode_execute_query(__raw_query.as_deref()) {
-        Ok(query) => query,
-        Err(_) => {
+    let mut __values = __headers.get_all("If-None-Match").iter();
+    let if_none_match: ::std::option::Option<String> = match (
+        __values.next(),
+        __values.next(),
+    ) {
+        (Some(value), None) => {
+            match value.to_str() {
+                Ok(raw) => {
+                    match super::validation::decode_parameter(
+                        raw,
+                        super::validation::VALIDATION_TARGET_23_HEADER_0,
+                        "/header/If-None-Match",
+                        true,
+                    ) {
+                        Ok(value) => Some(value),
+                        Err(rejection) => {
+                            return ::axum::response::IntoResponse::into_response(
+                                rejection,
+                            );
+                        }
+                    }
+                }
+                Err(_) => {
+                    return ::axum::response::IntoResponse::into_response(
+                        super::validation::malformed_parameter("/header/If-None-Match"),
+                    );
+                }
+            }
+        }
+        (None, _) => None,
+        _ => {
             return ::axum::response::IntoResponse::into_response(
-                super::validation::malformed_parameter("/query"),
+                super::validation::malformed_parameter("/header/If-None-Match"),
             );
         }
     };
-    if let Some(value) = &__q.show_plan {
-        if let Err(rejection) = super::validation::validate_parameter(
-            super::validation::VALIDATION_TARGET_23_QUERY_0,
-            "/query/show-plan",
-            value,
-        ) {
-            return ::axum::response::IntoResponse::into_response(rejection);
-        }
-    }
-    if let Some(value) = &__q.dry_run {
-        if let Err(rejection) = super::validation::validate_parameter(
-            super::validation::VALIDATION_TARGET_24_QUERY_1,
-            "/query/dry-run",
-            value,
-        ) {
-            return ::axum::response::IntoResponse::into_response(rejection);
-        }
-    }
-    let body: ::std::option::Option<Program> = match super::validation::decode_json_body::<
-        Program,
+    let body: Query = match super::validation::decode_json_body::<
+        Query,
     >(
             __request,
             super::validation::VALIDATION_TARGET_22_BODY,
-            "application/json",
-            false,
+            "application/vnd.rad.lir+json",
+            true,
             4194304usize,
         )
         .await
     {
-        Ok(body) => body,
+        Ok(Some(body)) => body,
+        Ok(None) => {
+            return ::axum::response::IntoResponse::into_response(
+                super::validation::generated_contract_error(),
+            );
+        }
         Err(rejection) => return ::axum::response::IntoResponse::into_response(rejection),
     };
-    ::axum::response::IntoResponse::into_response(
-        api.execute(__q.show_plan, __q.dry_run, body).await,
-    )
+    ::axum::response::IntoResponse::into_response(api.query(if_none_match, body).await)
+}
+async fn execute_options_handler<T>(
+    ::axum::extract::State(api): ::axum::extract::State<T>,
+) -> ::axum::response::Response
+where
+    T: super::api::DataApi + Clone + Send + Sync + 'static,
+{
+    ::axum::response::IntoResponse::into_response(api.execute_options().await)
 }
 /// Build an axum::Router for the `MetaApi` trait.
 pub fn meta_api_router<T>(api: T) -> ::axum::Router

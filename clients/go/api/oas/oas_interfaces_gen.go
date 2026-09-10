@@ -41,6 +41,10 @@ type IndexDeleteRes interface {
 	indexDeleteRes()
 }
 
+type QueryRes interface {
+	queryRes()
+}
+
 type SchemaCompatibilityRes interface {
 	schemaCompatibilityRes()
 }
