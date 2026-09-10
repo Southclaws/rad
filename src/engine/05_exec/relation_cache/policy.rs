@@ -638,10 +638,11 @@ impl ShadowDecision {
     fn evidence_source(self) -> &'static str {
         match self {
             Self::AdmitSecondTouch => EvidenceSource::ExactCohort.as_str(),
-            Self::AdmitLearnedValue => EvidenceSource::ExactHistory.as_str(),
+            Self::AdmitLearnedValue | Self::RejectNoReuseHistory => {
+                EvidenceSource::ExactHistory.as_str()
+            }
             Self::AdmitExpensiveProbation { evidence }
             | Self::RejectInsufficientValue { evidence } => evidence.as_str(),
-            Self::RejectNoReuseHistory => EvidenceSource::ExactHistory.as_str(),
             Self::RejectTooLarge => EvidenceSource::HardLimit.as_str(),
         }
     }

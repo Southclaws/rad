@@ -785,10 +785,10 @@ mod tests {
     }
 }
 
-fn table_definitions(query: &crate::engine::lir::bound::Query) -> Vec<TableDefinitionDependency> {
+fn table_definitions(query: &lir::bound::Query) -> Vec<TableDefinitionDependency> {
     let mut definitions = Vec::new();
-    let mut collect = |relation: &crate::engine::lir::bound::Relation| {
-        if let crate::engine::lir::bound::RelationNode::Scan { table, .. } = &relation.node {
+    let mut collect = |relation: &lir::bound::Relation| {
+        if let lir::bound::RelationNode::Scan { table, .. } = &relation.node {
             definitions.push(TableDefinitionDependency {
                 id: table.id.clone(),
                 name: table.name.clone(),
@@ -796,11 +796,11 @@ fn table_definitions(query: &crate::engine::lir::bound::Query) -> Vec<TableDefin
             });
         }
     };
-    crate::engine::lir::inspect::walk_relation(&query.root, &mut collect, &mut |_| {});
+    lir::inspect::walk_relation(&query.root, &mut collect, &mut |_| {});
     for binding in &query.bindings {
-        crate::engine::lir::inspect::walk_relation(&binding.root, &mut collect, &mut |_| {});
+        lir::inspect::walk_relation(&binding.root, &mut collect, &mut |_| {});
         if let Some(step) = &binding.step {
-            crate::engine::lir::inspect::walk_relation(step, &mut collect, &mut |_| {});
+            lir::inspect::walk_relation(step, &mut collect, &mut |_| {});
         }
     }
     definitions.sort_unstable();

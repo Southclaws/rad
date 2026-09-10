@@ -103,8 +103,8 @@ impl SnapshotCatalogCache {
         &self,
         view: &dyn KvView,
         name: &str,
-        id: &crate::engine::catalog::identity::TableId,
-        definition_generation: crate::engine::catalog::identity::DefinitionGeneration,
+        id: &catalog::identity::TableId,
+        definition_generation: catalog::identity::DefinitionGeneration,
     ) -> catalog::Result<bool> {
         Ok(self.get_table_arc(view, name).await?.is_some_and(|table| {
             table.id == *id && table.definition_generation == definition_generation

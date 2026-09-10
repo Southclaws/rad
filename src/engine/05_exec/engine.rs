@@ -1148,7 +1148,7 @@ async fn execute_on_view(
         executor.set_force_nested(force_nested);
         return executor.execute(&planned.plan).await;
     };
-    let fingerprints = crate::engine::lir::fingerprint::query(&bound);
+    let fingerprints = lir::fingerprint::query(&bound);
     let key = relation_cache
         .key_for_view(
             fingerprints.exact,

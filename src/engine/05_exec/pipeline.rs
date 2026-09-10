@@ -1132,7 +1132,7 @@ async fn build_materialized<'a>(
             });
             Ok((
                 frames,
-                super::relation_cache::CachedWork {
+                CachedWork {
                     kv,
                     execution: started.elapsed(),
                 },
@@ -1145,7 +1145,7 @@ async fn build_materialized<'a>(
     let frames = result.into_frames(&candidate.output);
     if let Some(restore_started) = restore_started {
         crate::telemetry::relation_cache_materialization_restore(
-            super::relation_cache::MaterializationDomain::SubrelationRowsV1.as_str(),
+            MaterializationDomain::SubrelationRowsV1.as_str(),
             restore_started.elapsed(),
         );
     }

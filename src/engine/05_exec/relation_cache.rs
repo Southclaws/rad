@@ -247,7 +247,7 @@ pub(super) struct SubrelationCacheContext<'a> {
 }
 
 impl<'a> SubrelationCacheContext<'a> {
-    pub fn new(
+    pub(super) fn new(
         cache: &'a RelationCache,
         root_key: RelationCacheKey,
         counters: Option<&'a super::observe::KvCounters>,
@@ -309,7 +309,7 @@ impl RelationCacheKey {
     /// Read data generations through the relation's pinned view. Reading a
     /// latest value outside this view can give an old transaction a key for
     /// data that it cannot observe.
-    pub async fn for_view(
+    pub(super) async fn for_view(
         exact: Fingerprint,
         view: &dyn KvView,
         dependencies: &CatalogDependencies,
@@ -965,14 +965,14 @@ impl CachedMaterialization {
 pub(super) struct CachedHashBuildHandle(Arc<CachedMaterialization>);
 
 impl CachedHashBuildHandle {
-    pub fn uncached(value: CachedHashBuild) -> Self {
+    pub(super) fn uncached(value: CachedHashBuild) -> Self {
         Self(Arc::new(CachedMaterialization::hash_join_build(
             value,
             CachedWork::default(),
         )))
     }
 
-    pub fn value(&self) -> &CachedHashBuild {
+    pub(super) fn value(&self) -> &CachedHashBuild {
         self.0.hash_join_build_ref()
     }
 }
@@ -981,13 +981,13 @@ impl CachedHashBuildHandle {
 pub(super) struct CachedGroupedDimensionBuildHandle(Arc<CachedMaterialization>);
 
 impl CachedGroupedDimensionBuildHandle {
-    pub fn uncached(value: CachedGroupedDimensionBuild) -> Self {
+    pub(super) fn uncached(value: CachedGroupedDimensionBuild) -> Self {
         Self(Arc::new(
             CachedMaterialization::grouped_hash_join_dimension(value, CachedWork::default()),
         ))
     }
 
-    pub fn value(&self) -> &CachedGroupedDimensionBuild {
+    pub(super) fn value(&self) -> &CachedGroupedDimensionBuild {
         self.0.grouped_hash_join_dimension_ref()
     }
 }
@@ -1064,9 +1064,8 @@ fn retained_row_bytes(rows: &[Box<[Datum]>], row_capacity: usize) -> usize {
 
 fn datum_dynamic_bytes(datum: &Datum) -> usize {
     match datum {
-        Datum::Null => 0,
         Datum::Scalar(Value::Text(value)) => value.capacity(),
-        Datum::Scalar(_) => 0,
+        Datum::Null | Datum::Scalar(_) => 0,
         Datum::Object(fields) => fields
             .capacity()
             .saturating_mul(size_of::<ObjectField>())
@@ -1095,9 +1094,8 @@ fn datum_dynamic_bytes(datum: &Datum) -> usize {
 
 fn cloned_datum_dynamic_bytes(datum: &Datum) -> usize {
     match datum {
-        Datum::Null => 0,
         Datum::Scalar(Value::Text(value)) => value.len(),
-        Datum::Scalar(_) => 0,
+        Datum::Null | Datum::Scalar(_) => 0,
         Datum::Object(fields) => fields
             .len()
             .saturating_mul(size_of::<ObjectField>())
@@ -1359,7 +1357,7 @@ impl Default for RelationCache {
 }
 
 impl RelationCache {
-    pub fn new(config: RelationCacheLimits) -> Self {
+    pub(super) fn new(config: RelationCacheLimits) -> Self {
         let byte_limit = config.byte_limit.clamp(1, i64::MAX as usize);
         let entry_limit = config.entry_limit.max(1);
         // A minimum weight converts the byte capacity into an entry limit.
@@ -1411,7 +1409,7 @@ impl RelationCache {
     /// Only implicit read-only execution uses this path. An explicit
     /// serializable transaction must read the catalog keys through its own
     /// view so those keys enter its conflict set.
-    pub async fn catalog_table_for_snapshot(
+    pub(super) async fn catalog_table_for_snapshot(
         &self,
         view: &dyn KvView,
         name: &str,
@@ -1462,7 +1460,7 @@ impl RelationCache {
     /// hit skips storage reads but does not skip any value check: the stored
     /// key contains the data generations read through that same snapshot.
     /// Failed validation is sent to current waiters and is not stored.
-    pub async fn key_for_view(
+    pub(super) async fn key_for_view(
         &self,
         exact: Fingerprint,
         view: &dyn KvView,
@@ -1540,7 +1538,7 @@ impl RelationCache {
         }
     }
 
-    pub async fn get_or_fill<F, Fut>(
+    pub(super) async fn get_or_fill<F, Fut>(
         &self,
         key: RelationCacheKey,
         output: &RowType,
@@ -2984,28 +2982,28 @@ enum RelationRows {
 }
 
 impl RelationCacheResult {
-    pub fn executed(frames: Vec<Env>) -> Self {
+    pub(super) fn executed(frames: Vec<Env>) -> Self {
         Self {
             rows: RelationRows::Frames(frames),
             source: StatementSource::Executed,
         }
     }
 
-    pub fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         match &self.rows {
             RelationRows::Frames(frames) => frames.len(),
             RelationRows::Cached(relation) => relation.relation_ref().rows.len(),
         }
     }
 
-    pub fn shape(&self, cardinality: RootCardinality, output: &RowType) -> Result<Datum> {
+    pub(super) fn shape(&self, cardinality: RootCardinality, output: &RowType) -> Result<Datum> {
         match &self.rows {
             RelationRows::Frames(frames) => super::shape_frames(cardinality, output, frames),
             RelationRows::Cached(relation) => relation.relation_ref().shape(cardinality, output),
         }
     }
 
-    pub fn into_frames(self, output: &RowType) -> Vec<Env> {
+    pub(super) fn into_frames(self, output: &RowType) -> Vec<Env> {
         match self.rows {
             RelationRows::Frames(frames) => frames,
             RelationRows::Cached(relation) => relation.relation_ref().restore(output),
