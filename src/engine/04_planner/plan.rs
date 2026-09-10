@@ -11,8 +11,9 @@ use super::physical::{
     AccessCandidate, AccessCost, AccessDecision, AccessDecisionBasis, AccessOrdering,
     AccessQuantity, AccessRejectionReason, AccessRowWork, AttachSpec, BindingPlan, BindingPlanKind,
     BindingStrategy, CrossingKind, JoinCandidate, JoinCost, JoinDecision, JoinDecisionBasis,
-    JoinGraphClassification, JoinGraphCost, JoinGraphRejectionReason, JoinRejectionReason, Node,
-    NodeKind, PhysicalField, Plan, RangeSpec,
+    JoinGraphClassification, JoinGraphCost, JoinGraphRejectionReason, JoinRejectionReason,
+    MaterializationCandidate, MaterializationRepresentation, Node, NodeKind, PhysicalField, Plan,
+    RangeSpec,
 };
 
 pub(super) const DEFAULT_HASH_JOIN_MEMORY_LIMIT_BYTES: u64 = 8 * 1024 * 1024;
@@ -166,7 +167,46 @@ fn plan_query_inner(
         }
     }
     prepare_catalog_dependencies(&mut plan);
+    retain_best_materialization(&mut plan);
     plan
+}
+
+fn retain_best_materialization(plan: &mut Plan) {
+    // A binding can depend on a recursive frontier or a prior materialized
+    // result. Such values need an outer-value identity before they can enter a
+    // shared cache.
+    if !plan.bindings.is_empty() {
+        plan.walk_mut(&mut |node| node.materialization = None);
+        return;
+    }
+    let mut candidate_index = 0usize;
+    let mut best = None;
+    // Inclusive subtree work overlaps. One subrelation candidate prevents one
+    // plan from charging and retaining the same work at nested subrelation
+    // boundaries. Preorder and estimated row count make the choice
+    // deterministic.
+    plan.walk(&mut |node| {
+        let Some(candidate) = &node.materialization else {
+            return;
+        };
+        if !candidate.dependencies.is_empty()
+            && best.is_none_or(|(_, rows)| candidate.estimated_rows > rows)
+        {
+            best = Some((candidate_index, candidate.estimated_rows));
+        }
+        candidate_index = candidate_index.saturating_add(1);
+    });
+    let best = best.map(|(index, _)| index);
+    candidate_index = 0;
+    plan.walk_mut(&mut |node| {
+        if node.materialization.is_none() {
+            return;
+        }
+        if Some(candidate_index) != best {
+            node.materialization = None;
+        }
+        candidate_index = candidate_index.saturating_add(1);
+    });
 }
 
 fn reference_counts(plan: &Plan) -> std::collections::HashMap<String, usize> {
@@ -653,6 +693,7 @@ impl Planner<'_> {
     ) -> Node {
         Node {
             attribution: Some(lir::fingerprint::relation_family(relation)),
+            materialization: None,
             kind: self.plan_kind(relation, required_order, limit),
         }
     }
@@ -992,6 +1033,7 @@ impl Planner<'_> {
         self.allow_join_region_strategy = previous;
         let binary = Node {
             attribution: None,
+            materialization: None,
             kind: binary_kind,
         };
         let statistics = self.statistics;
@@ -1307,11 +1349,46 @@ impl Planner<'_> {
         match chosen {
             1 => {
                 let hash = hash_result.expect("chosen hash join plan");
-                let (planned_left, planned_right, right_output) = if hash.reversed {
-                    (planned_right, planned_left, left.output().clone())
-                } else {
-                    (planned_left, planned_right, right.output().clone())
-                };
+                let (planned_left, mut planned_right, build_relation, right_output) =
+                    if hash.reversed {
+                        (planned_right, planned_left, left, left.output().clone())
+                    } else {
+                        (planned_left, planned_right, right, right.output().clone())
+                    };
+                if materialization_is_safe(build_relation) {
+                    let key_positions = hash
+                        .keys
+                        .iter()
+                        .map(|key| {
+                            right_output
+                                .fields
+                                .iter()
+                                .position(|field| field.slot == key.right.slot)
+                                .and_then(|position| u32::try_from(position).ok())
+                        })
+                        .collect::<Option<Vec<_>>>();
+                    let Some(key_positions) = key_positions else {
+                        return NodeKind::HashJoin {
+                            left: Box::new(planned_left),
+                            right: Box::new(planned_right),
+                            kind,
+                            on: on.clone(),
+                            keys: hash.keys,
+                            right_output,
+                            memory_limit_bytes: self.options.hash_join_memory_limit_bytes,
+                            decision,
+                        };
+                    };
+                    planned_right.materialization = Some(MaterializationCandidate {
+                        exact: lir::fingerprint::relation_fingerprints(build_relation).exact,
+                        output: build_relation.output().clone(),
+                        dependencies: Default::default(),
+                        estimated_rows: hash.cost.build_rows.central,
+                        representation: MaterializationRepresentation::HashJoinBuild {
+                            key_positions,
+                        },
+                    });
+                }
                 NodeKind::HashJoin {
                     left: Box::new(planned_left),
                     right: Box::new(planned_right),
@@ -1643,6 +1720,18 @@ impl Planner<'_> {
     }
 }
 
+fn materialization_is_safe(relation: &bound::Relation) -> bool {
+    if !relation.free_slots().is_empty() || super::memo::contains_recursive_reference(relation) {
+        return false;
+    }
+    let effects = super::memo::relation_effects(relation);
+    effects.pure
+        && effects.deterministic
+        && effects.total
+        && !effects.lazy_ordered_boundary
+        && !effects.relational_crossing
+}
+
 struct AccessPrefixEstimate {
     columns: Vec<String>,
     values: Vec<ConstValue>,
@@ -1746,16 +1835,16 @@ fn grouped_hash_join_aggregate(
         return None;
     }
 
-    let (fact, dimension) = (hash.0, hash.1);
+    let (fact, mut dimension) = (hash.0.clone(), hash.1.clone());
     if hash.2.len() != 1 {
         return None;
     }
     let dimension_key = hash.2.first()?.right.clone();
-    if !dimension_join_key_is_unique(dimension, &dimension_key) {
+    if !dimension_join_key_is_unique(&dimension, &dimension_key) {
         return None;
     }
-    let input_rows = scan_row_estimate(statistics, fact)?;
-    let dimension_rows = scan_row_estimate(statistics, dimension)?;
+    let input_rows = scan_row_estimate(statistics, &fact)?;
+    let dimension_rows = scan_row_estimate(statistics, &dimension)?;
     if input_rows < 4_096 || dimension_rows.saturating_mul(4) > input_rows {
         return None;
     }
@@ -1763,9 +1852,32 @@ fn grouped_hash_join_aggregate(
         return None;
     }
 
+    let key_positions = hash
+        .2
+        .iter()
+        .map(|key| {
+            physical_right
+                .output()
+                .fields
+                .iter()
+                .position(|field| field.slot == key.right.slot)
+                .and_then(|position| u32::try_from(position).ok())
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let group_identity = lir::fingerprint::expressions(
+        physical_right.output(),
+        groups.iter().map(|group| &group.expression),
+    );
+    if let Some(candidate) = &mut dimension.materialization {
+        candidate.representation = MaterializationRepresentation::GroupedHashJoinDimension {
+            key_positions,
+            groups: group_identity,
+        };
+    }
+
     Some(NodeKind::GroupedHashJoinAggregate {
-        fact: Box::new(fact.clone()),
-        dimension: Box::new(dimension.clone()),
+        fact: Box::new(fact),
+        dimension: Box::new(dimension),
         keys: hash.2.clone(),
         fact_is_left,
         groups: groups.to_vec(),
@@ -3312,6 +3424,22 @@ mod tests {
             ),
             "{rendered}"
         );
+        let NodeKind::GroupedHashJoinAggregate { dimension, .. } = &planned.plan.root.kind else {
+            unreachable!("grouped hash join aggregate is selected");
+        };
+        let materialization = dimension
+            .materialization
+            .as_ref()
+            .expect("dimension build is a materialization candidate");
+        assert!(matches!(
+            materialization.representation,
+            MaterializationRepresentation::GroupedHashJoinDimension { .. }
+        ));
+        assert_eq!(materialization.dependencies.table_existence.len(), 1);
+        assert_eq!(
+            materialization.dependencies.table_existence[0].table_id,
+            dimension_table.id
+        );
     }
 
     fn range_stats(
@@ -4629,6 +4757,20 @@ mod tests {
         };
         assert_eq!(probe.scan_table().schema_id, changing.schema_id);
         assert_eq!(build.scan_table().schema_id, stable.schema_id);
+        let materialization = right
+            .materialization
+            .as_ref()
+            .expect("stable build relation is a materialization candidate");
+        assert!(matches!(
+            materialization.representation,
+            MaterializationRepresentation::HashJoinBuild { .. }
+        ));
+        assert_eq!(materialization.output, *build.output());
+        assert_eq!(materialization.dependencies.table_existence.len(), 1);
+        assert_eq!(
+            materialization.dependencies.table_existence[0].table_id,
+            stable.id
+        );
         assert!(decision.candidates[1].chosen);
         assert_eq!(
             decision.candidates[1].decision_basis,

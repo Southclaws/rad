@@ -432,16 +432,82 @@ pub struct PredicateTransferRuntimePolicy {
 /// planner can state that unambiguously. Attribution is inert: it never
 /// affects planning, execution shape, or which path runs, so a plan is
 /// identical whether or not anything is measuring it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Node {
     pub attribution: Option<lir::fingerprint::Fingerprint>,
+    pub materialization: Option<MaterializationCandidate>,
     pub kind: NodeKind,
+}
+
+impl PartialEq for Node {
+    fn eq(&self, other: &Self) -> bool {
+        // Materialization metadata does not change physical plan semantics.
+        // A plan comparison must give the same result when this metadata is
+        // present.
+        self.attribution == other.attribution && self.kind == other.kind
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MaterializationCandidate {
+    // This metadata does not make cache residency part of the prepared plan.
+    // Execution always keeps `Node::kind` as the complete fallback path.
+    pub exact: lir::fingerprint::Fingerprint,
+    pub output: RowType,
+    pub dependencies: CatalogDependencies,
+    pub estimated_rows: u64,
+    pub representation: MaterializationRepresentation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MaterializationRepresentation {
+    Rows,
+    HashJoinBuild {
+        key_positions: Vec<u32>,
+    },
+    GroupedHashJoinDimension {
+        key_positions: Vec<u32>,
+        groups: lir::fingerprint::Fingerprint,
+    },
+}
+
+impl MaterializationRepresentation {
+    pub fn identity_bytes(&self) -> Vec<u8> {
+        // One relation can supply different physical keys and group values.
+        // The cache key must include this canonical contract. The relation
+        // fingerprint alone identifies rows, not their physical lookup form.
+        let mut bytes = Vec::new();
+        match self {
+            Self::Rows => bytes.push(1),
+            Self::HashJoinBuild { key_positions } => {
+                bytes.push(2);
+                encode_positions(&mut bytes, key_positions);
+            }
+            Self::GroupedHashJoinDimension {
+                key_positions,
+                groups,
+            } => {
+                bytes.push(3);
+                encode_positions(&mut bytes, key_positions);
+                bytes.extend_from_slice(&groups.to_bytes());
+            }
+        }
+        bytes
+    }
+}
+
+fn encode_positions(bytes: &mut Vec<u8>, positions: &[u32]) {
+    bytes.extend_from_slice(&(positions.len() as u64).to_be_bytes());
+    for position in positions {
+        bytes.extend_from_slice(&position.to_be_bytes());
+    }
 }
 
 impl From<NodeKind> for Node {
     fn from(kind: NodeKind) -> Self {
         Self {
             attribution: None,
+            materialization: None,
             kind,
         }
     }

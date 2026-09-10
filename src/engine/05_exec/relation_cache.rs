@@ -230,12 +230,79 @@ enum DependencyGeneration {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) struct RelationCacheKey {
+    domain: MaterializationDomain,
     exact: Fingerprint,
+    representation: Vec<u8>,
     dependencies: Vec<DependencyGeneration>,
     // Snapshot dependency reuse can return this key for every request at one
-    // storage position. Store the derived validator with the key so a
+    // storage position. Query result keys store the derived validator so a
     // conditional hit does not repeat the canonical SHA-256 calculation.
-    query_validator: QueryValidator,
+    query_validator: Option<QueryValidator>,
+}
+
+pub(super) struct SubrelationCacheContext<'a> {
+    pub cache: &'a RelationCache,
+    pub root_key: RelationCacheKey,
+    pub counters: Option<&'a super::observe::KvCounters>,
+}
+
+impl<'a> SubrelationCacheContext<'a> {
+    pub fn new(
+        cache: &'a RelationCache,
+        root_key: RelationCacheKey,
+        counters: Option<&'a super::observe::KvCounters>,
+    ) -> Self {
+        Self {
+            cache,
+            root_key,
+            counters,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(super) enum MaterializationDomain {
+    QueryResult,
+    SubrelationRowsV1,
+    HashJoinBuild,
+    GroupedHashJoinDimension,
+}
+
+impl MaterializationDomain {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::QueryResult => "query_result",
+            Self::SubrelationRowsV1 => "subrelation_rows",
+            Self::HashJoinBuild => "hash_join_build",
+            Self::GroupedHashJoinDimension => "grouped_hash_join_dimension",
+        }
+    }
+
+    const fn is_query_result(self) -> bool {
+        matches!(self, Self::QueryResult)
+    }
+
+    fn lookup(self, result: &'static str) {
+        crate::telemetry::relation_cache_materialization_lookup(self.as_str(), result);
+    }
+
+    fn admission(self, result: &'static str) {
+        crate::telemetry::relation_cache_materialization_admission(self.as_str(), result);
+    }
+
+    fn eviction(self, cause: &'static str) {
+        crate::telemetry::relation_cache_materialization_eviction(self.as_str(), cause);
+    }
+
+    fn avoided(self, work: CachedWork) {
+        let reads = work.kv.gets.saturating_add(work.kv.iterated);
+        crate::telemetry::relation_cache_materialization_avoided(
+            self.as_str(),
+            reads,
+            work.kv.bytes_read,
+            work.execution,
+        );
+    }
 }
 
 impl RelationCacheKey {
@@ -311,21 +378,153 @@ impl RelationCacheKey {
         Self::from_key_parts(exact, generations)
     }
 
-    fn from_key_parts(exact: Fingerprint, mut dependencies: Vec<DependencyGeneration>) -> Self {
+    fn from_key_parts(exact: Fingerprint, dependencies: Vec<DependencyGeneration>) -> Self {
+        Self::from_domain_key_parts(MaterializationDomain::QueryResult, exact, dependencies)
+    }
+
+    fn from_domain_key_parts(
+        domain: MaterializationDomain,
+        exact: Fingerprint,
+        mut dependencies: Vec<DependencyGeneration>,
+    ) -> Self {
         // Catalog dependency collection order is not part of relation
         // identity. Canonical order also removes duplicate dependency records.
         dependencies.sort_unstable();
         dependencies.dedup();
-        let query_validator = QueryValidator::from_key_parts(exact, &dependencies);
+        let query_validator = (domain == MaterializationDomain::QueryResult)
+            .then(|| QueryValidator::from_key_parts(exact, &dependencies));
         Self {
+            domain,
             exact,
+            representation: Vec::new(),
             dependencies,
             query_validator,
         }
     }
 
+    pub(super) fn for_subrelation(
+        &self,
+        exact: Fingerprint,
+        dependencies: &CatalogDependencies,
+    ) -> Result<Self> {
+        // Each selected record must match both physical identity and catalog
+        // generation. Matching only the table, column, or index identity can
+        // combine a prepared subtree with a root key from another catalog
+        // state. A missing record is an invalid physical plan invariant.
+        let mut selected = Vec::with_capacity(
+            dependencies.table_existence.len()
+                + dependencies.column_values.len()
+                + dependencies.index_access.len()
+                + dependencies.write_protocols.len(),
+        );
+        for dependency in &dependencies.table_existence {
+            selected.push(
+                self.dependencies
+                    .iter()
+                    .find(|generation| {
+                        matches!(
+                            generation,
+                            DependencyGeneration::Table {
+                                table_id,
+                                existence_generation,
+                                storage_generation,
+                                ..
+                            } if table_id == &dependency.table_id
+                                && existence_generation == &dependency.generation
+                                && storage_generation == &dependency.storage_generation
+                        )
+                    })
+                    .cloned()
+                    .ok_or_else(missing_subrelation_dependency)?,
+            );
+        }
+        for dependency in &dependencies.column_values {
+            selected.push(
+                self.dependencies
+                    .iter()
+                    .find(|generation| {
+                        matches!(
+                            generation,
+                            DependencyGeneration::Column {
+                                table_id,
+                                column_id,
+                                generation,
+                            } if table_id == &dependency.table_id
+                                && column_id == &dependency.column_id
+                                && generation == &dependency.generation
+                        )
+                    })
+                    .cloned()
+                    .ok_or_else(missing_subrelation_dependency)?,
+            );
+        }
+        for dependency in &dependencies.index_access {
+            selected.push(
+                self.dependencies
+                    .iter()
+                    .find(|generation| {
+                        matches!(
+                            generation,
+                            DependencyGeneration::Index {
+                                table_id,
+                                index_id,
+                                generation,
+                            } if table_id == &dependency.table_id
+                                && index_id == &dependency.index_id
+                                && generation == &dependency.generation
+                        )
+                    })
+                    .cloned()
+                    .ok_or_else(missing_subrelation_dependency)?,
+            );
+        }
+        for dependency in &dependencies.write_protocols {
+            selected.push(
+                self.dependencies
+                    .iter()
+                    .find(|generation| {
+                        matches!(
+                            generation,
+                            DependencyGeneration::WriteProtocol {
+                                table_id,
+                                generation,
+                            } if table_id == &dependency.table_id
+                                && generation == &dependency.generation
+                        )
+                    })
+                    .cloned()
+                    .ok_or_else(missing_subrelation_dependency)?,
+            );
+        }
+        Ok(Self::from_domain_key_parts(
+            MaterializationDomain::SubrelationRowsV1,
+            exact,
+            selected,
+        ))
+    }
+
+    pub(super) fn for_physical_subrelation(
+        &self,
+        domain: MaterializationDomain,
+        exact: Fingerprint,
+        dependencies: &CatalogDependencies,
+        representation: Vec<u8>,
+    ) -> Result<Self> {
+        if domain.is_query_result() || domain == MaterializationDomain::SubrelationRowsV1 {
+            return Err(Error::message(
+                ErrorKind::Internal,
+                "exec: physical materialization requires a physical cache domain",
+            ));
+        }
+        let mut key = self.for_subrelation(exact, dependencies)?;
+        key.domain = domain;
+        key.representation = representation;
+        Ok(key)
+    }
+
     fn retained_bytes(&self) -> usize {
         size_of::<Self>()
+            .saturating_add(self.representation.capacity())
             .saturating_add(
                 self.dependencies
                     .capacity()
@@ -341,7 +540,15 @@ impl RelationCacheKey {
 
     pub(super) fn query_validator(&self) -> QueryValidator {
         self.query_validator
+            .expect("query result key has an HTTP validator")
     }
+}
+
+fn missing_subrelation_dependency() -> Error {
+    Error::message(
+        ErrorKind::Internal,
+        "exec: subrelation dependency is absent from the root dependency vector",
+    )
 }
 
 impl DependencyGeneration {
@@ -443,31 +650,18 @@ pub(super) struct CachedWork {
 #[derive(Debug)]
 struct CachedRelation {
     rows: Vec<Box<[Datum]>>,
-    result_bytes: usize,
-    work: CachedWork,
-    accounting_state: AtomicU8,
 }
 
 impl CachedRelation {
-    fn from_frames(output: &RowType, frames: &[Env], work: CachedWork) -> Self {
+    fn from_frames(output: &RowType, frames: &[Env]) -> Self {
         // Execution slots are local planner identities. The same exact LIR can
         // receive different slots in another execution. Store values in output
         // field order, then map them to the current output slots on a hit.
         let mut rows = Vec::with_capacity(frames.len());
         for frame in frames {
-            let mut row = Vec::with_capacity(output.fields.len());
-            for field in &output.fields {
-                row.push(frame.get(field.slot).cloned().unwrap_or(Datum::Null));
-            }
-            rows.push(row.into_boxed_slice());
+            rows.push(positional_row(output, frame));
         }
-        let result_bytes = retained_row_bytes(&rows, rows.capacity());
-        Self {
-            rows,
-            result_bytes,
-            work,
-            accounting_state: AtomicU8::new(ACCOUNTING_PENDING),
-        }
+        Self { rows }
     }
 
     fn restore(&self, output: &RowType) -> Vec<Env> {
@@ -511,8 +705,301 @@ impl CachedRelation {
     }
 
     fn retained_bytes(&self) -> usize {
+        size_of::<Self>().saturating_add(retained_row_bytes(&self.rows, self.rows.capacity()))
+    }
+}
+
+pub(super) fn positional_row(output: &RowType, frame: &Env) -> Box<[Datum]> {
+    output
+        .fields
+        .iter()
+        .map(|field| frame.get(field.slot).cloned().unwrap_or(Datum::Null))
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
+}
+
+#[derive(Debug)]
+pub(super) struct CachedHashEntry {
+    pub key: smallvec::SmallVec<[Value; 4]>,
+    pub rows: Vec<usize>,
+}
+
+#[derive(Debug)]
+pub(super) struct CachedHashBuild {
+    // Hash values are valid only with the RandomState that creates them. Keep
+    // the state and buckets in one immutable value so every probe uses the
+    // correct hash function.
+    pub hash_builder: ahash::RandomState,
+    pub entries: HashMap<u64, Vec<CachedHashEntry>>,
+    // Planner slots belong to one prepared plan. Positional rows let this
+    // value remain valid when another plan uses different slot numbers.
+    pub rows: Vec<Box<[Datum]>>,
+    pub input_row_count: usize,
+    pub execution_retained_bytes: u64,
+}
+
+impl CachedHashBuild {
+    fn retained_bytes(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(retained_row_bytes(&self.rows, self.rows.capacity()))
+            .saturating_add(hash_map_retained_bytes::<u64, Vec<CachedHashEntry>>(
+                self.entries.capacity(),
+            ))
+            .saturating_add(
+                self.entries
+                    .values()
+                    .map(|bucket| {
+                        bucket
+                            .capacity()
+                            .saturating_mul(size_of::<CachedHashEntry>())
+                            .saturating_add(
+                                bucket
+                                    .iter()
+                                    .map(|entry| {
+                                        small_value_vec_retained_bytes(&entry.key).saturating_add(
+                                            entry
+                                                .rows
+                                                .capacity()
+                                                .saturating_mul(size_of::<usize>()),
+                                        )
+                                    })
+                                    .fold(0usize, usize::saturating_add),
+                            )
+                    })
+                    .fold(0usize, usize::saturating_add),
+            )
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct CachedGroupedDimensionEntry {
+    pub key: smallvec::SmallVec<[Value; 4]>,
+    pub group_values: Vec<Value>,
+    pub group_hash: u64,
+    // This position selects request-local aggregate state. The cached entry
+    // stays immutable while concurrent queries use different state arrays.
+    pub position: usize,
+}
+
+#[derive(Debug)]
+pub(super) struct CachedGroupedDimensionBuild {
+    pub hash_builder: ahash::RandomState,
+    pub entries: HashMap<u64, Vec<CachedGroupedDimensionEntry>>,
+    pub row_count: usize,
+    pub input_row_count: usize,
+    pub execution_retained_bytes: u64,
+}
+
+impl CachedGroupedDimensionBuild {
+    fn retained_bytes(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(hash_map_retained_bytes::<
+                u64,
+                Vec<CachedGroupedDimensionEntry>,
+            >(self.entries.capacity()))
+            .saturating_add(
+                self.entries
+                    .values()
+                    .map(|bucket| {
+                        bucket
+                            .capacity()
+                            .saturating_mul(size_of::<CachedGroupedDimensionEntry>())
+                            .saturating_add(
+                                bucket
+                                    .iter()
+                                    .map(|entry| {
+                                        small_value_vec_retained_bytes(&entry.key)
+                                            .saturating_add(
+                                                entry
+                                                    .group_values
+                                                    .capacity()
+                                                    .saturating_mul(size_of::<Value>()),
+                                            )
+                                            .saturating_add(
+                                                entry
+                                                    .group_values
+                                                    .iter()
+                                                    .map(value_dynamic_bytes)
+                                                    .fold(0usize, usize::saturating_add),
+                                            )
+                                    })
+                                    .fold(0usize, usize::saturating_add),
+                            )
+                    })
+                    .fold(0usize, usize::saturating_add),
+            )
+    }
+}
+
+fn hash_map_retained_bytes<K, V>(capacity: usize) -> usize {
+    // HashMap does not expose its allocation size. The bucket estimate rounds
+    // above the load-factor capacity and includes control bytes. This weight
+    // can reject an entry early, but it must not omit bucket storage.
+    let buckets = capacity
+        .saturating_mul(8)
+        .div_ceil(7)
+        .checked_next_power_of_two()
+        .unwrap_or(usize::MAX);
+    buckets
+        .saturating_mul(size_of::<(K, V)>())
+        .saturating_add(buckets.saturating_add(16))
+}
+
+fn small_value_vec_retained_bytes(values: &smallvec::SmallVec<[Value; 4]>) -> usize {
+    let allocation = if values.spilled() {
+        values.capacity().saturating_mul(size_of::<Value>())
+    } else {
+        0
+    };
+    allocation.saturating_add(
+        values
+            .iter()
+            .map(value_dynamic_bytes)
+            .fold(0usize, usize::saturating_add),
+    )
+}
+
+fn value_dynamic_bytes(value: &Value) -> usize {
+    match value {
+        Value::Text(value) => value.capacity(),
+        Value::Int64(_) | Value::Float64(_) | Value::Bool(_) | Value::Null(_) => 0,
+    }
+}
+
+#[derive(Debug)]
+enum CachedValue {
+    Relation(CachedRelation),
+    HashJoinBuild(CachedHashBuild),
+    GroupedHashJoinDimension(CachedGroupedDimensionBuild),
+}
+
+#[derive(Debug)]
+struct CachedMaterialization {
+    value: CachedValue,
+    result_bytes: usize,
+    work: CachedWork,
+    accounting_state: AtomicU8,
+}
+
+impl CachedMaterialization {
+    fn relation(output: &RowType, frames: &[Env], work: CachedWork) -> Self {
+        let relation = CachedRelation::from_frames(output, frames);
+        let result_bytes = relation.retained_bytes();
+        Self {
+            value: CachedValue::Relation(relation),
+            result_bytes,
+            work,
+            accounting_state: AtomicU8::new(ACCOUNTING_PENDING),
+        }
+    }
+
+    fn hash_join_build(value: CachedHashBuild, work: CachedWork) -> Self {
+        let result_bytes = value.retained_bytes();
+        Self {
+            value: CachedValue::HashJoinBuild(value),
+            result_bytes,
+            work,
+            accounting_state: AtomicU8::new(ACCOUNTING_PENDING),
+        }
+    }
+
+    fn grouped_hash_join_dimension(value: CachedGroupedDimensionBuild, work: CachedWork) -> Self {
+        let result_bytes = value.retained_bytes();
+        Self {
+            value: CachedValue::GroupedHashJoinDimension(value),
+            result_bytes,
+            work,
+            accounting_state: AtomicU8::new(ACCOUNTING_PENDING),
+        }
+    }
+
+    fn retained_bytes(&self) -> usize {
         size_of::<Self>().saturating_add(self.result_bytes)
     }
+
+    fn observed_rows_and_keys(&self) -> (usize, usize) {
+        match &self.value {
+            CachedValue::Relation(value) => (value.rows.len(), 0),
+            CachedValue::HashJoinBuild(value) => (
+                value.input_row_count,
+                value
+                    .entries
+                    .values()
+                    .map(Vec::len)
+                    .fold(0usize, usize::saturating_add),
+            ),
+            CachedValue::GroupedHashJoinDimension(value) => (
+                value.input_row_count,
+                value
+                    .entries
+                    .values()
+                    .map(Vec::len)
+                    .fold(0usize, usize::saturating_add),
+            ),
+        }
+    }
+
+    fn relation_ref(&self) -> &CachedRelation {
+        let CachedValue::Relation(value) = &self.value else {
+            unreachable!("relation cache domain has a non-relation value")
+        };
+        value
+    }
+
+    fn hash_join_build_ref(&self) -> &CachedHashBuild {
+        let CachedValue::HashJoinBuild(value) = &self.value else {
+            unreachable!("hash-build cache domain has another value")
+        };
+        value
+    }
+
+    fn grouped_hash_join_dimension_ref(&self) -> &CachedGroupedDimensionBuild {
+        let CachedValue::GroupedHashJoinDimension(value) = &self.value else {
+            unreachable!("grouped-dimension cache domain has another value")
+        };
+        value
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct CachedHashBuildHandle(Arc<CachedMaterialization>);
+
+impl CachedHashBuildHandle {
+    pub fn uncached(value: CachedHashBuild) -> Self {
+        Self(Arc::new(CachedMaterialization::hash_join_build(
+            value,
+            CachedWork::default(),
+        )))
+    }
+
+    pub fn value(&self) -> &CachedHashBuild {
+        self.0.hash_join_build_ref()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct CachedGroupedDimensionBuildHandle(Arc<CachedMaterialization>);
+
+impl CachedGroupedDimensionBuildHandle {
+    pub fn uncached(value: CachedGroupedDimensionBuild) -> Self {
+        Self(Arc::new(
+            CachedMaterialization::grouped_hash_join_dimension(value, CachedWork::default()),
+        ))
+    }
+
+    pub fn value(&self) -> &CachedGroupedDimensionBuild {
+        self.0.grouped_hash_join_dimension_ref()
+    }
+}
+
+pub(super) struct CachedHashBuildResult {
+    pub value: CachedHashBuildHandle,
+    pub source: StatementSource,
+}
+
+pub(super) struct CachedGroupedDimensionBuildResult {
+    pub value: CachedGroupedDimensionBuildHandle,
+    pub source: StatementSource,
 }
 
 fn cached_row_object(output: &RowType, row: &[Datum]) -> Datum {
@@ -639,7 +1126,7 @@ fn cloned_datum_dynamic_bytes(datum: &Datum) -> usize {
 
 #[derive(Clone)]
 enum FlightResult {
-    Success(Arc<CachedRelation>),
+    Success(Arc<CachedMaterialization>),
     Failure(CachedError),
     Cancelled,
 }
@@ -802,6 +1289,13 @@ struct RelationCacheMetrics {
     dependency_misses: AtomicU64,
     dependency_coalesced: AtomicU64,
     dependency_evictions: AtomicU64,
+    subrelation_hits: AtomicU64,
+    subrelation_misses: AtomicU64,
+    subrelation_admissions: AtomicU64,
+    subrelation_rejected_too_large: AtomicU64,
+    subrelation_rejected_by_policy: AtomicU64,
+    subrelation_evictions: AtomicU64,
+    subrelation_coalesced: AtomicU64,
 }
 
 struct CacheEvents {
@@ -810,7 +1304,7 @@ struct CacheEvents {
 
 impl EventListener for CacheEvents {
     type Key = RelationCacheKey;
-    type Value = Arc<CachedRelation>;
+    type Value = Arc<CachedMaterialization>;
 
     fn on_leave(&self, event: Event, key: &Self::Key, value: &Self::Value) {
         let bytes = key.retained_bytes().saturating_add(value.retained_bytes()) as u64;
@@ -828,19 +1322,25 @@ impl EventListener for CacheEvents {
         }
         let cause = match event {
             Event::Evict => {
-                self.metrics.evictions.fetch_add(1, Ordering::Relaxed);
+                if key.domain.is_query_result() {
+                    self.metrics.evictions.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    self.metrics
+                        .subrelation_evictions
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 "capacity"
             }
             Event::Replace => "replace",
             Event::Remove => "remove",
             Event::Clear => "clear",
         };
-        crate::telemetry::relation_cache_eviction(cause);
+        key.domain.eviction(cause);
     }
 }
 
 pub(super) struct RelationCache {
-    entries: Cache<RelationCacheKey, Arc<CachedRelation>>,
+    entries: Cache<RelationCacheKey, Arc<CachedMaterialization>>,
     flights: Mutex<HashMap<RelationCacheKey, Arc<Flight>>>,
     snapshot_dependencies: SnapshotDependencyCache,
     snapshot_catalog: SnapshotCatalogCache,
@@ -870,11 +1370,13 @@ impl RelationCache {
         let entries = Cache::builder(byte_limit)
             .with_shards(shards)
             .with_eviction_config(LfuConfig::default())
-            .with_weighter(move |key: &RelationCacheKey, value: &Arc<CachedRelation>| {
-                key.retained_bytes()
-                    .saturating_add(value.retained_bytes())
-                    .max(entry_weight)
-            })
+            .with_weighter(
+                move |key: &RelationCacheKey, value: &Arc<CachedMaterialization>| {
+                    key.retained_bytes()
+                        .saturating_add(value.retained_bytes())
+                        .max(entry_weight)
+                },
+            )
             .with_event_listener(Arc::new(CacheEvents {
                 metrics: metrics.clone(),
             }))
@@ -1055,8 +1557,14 @@ impl RelationCache {
                 source: StatementSource::RelationCache,
             });
         }
-        self.metrics.misses.fetch_add(1, Ordering::Relaxed);
-        crate::telemetry::relation_cache_lookup("miss");
+        if key.domain.is_query_result() {
+            self.metrics.misses.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.metrics
+                .subrelation_misses
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        key.domain.lookup("miss");
         let mut fill = Some(fill);
         loop {
             // The flight map coalesces only equal correctness keys. Do not use
@@ -1077,12 +1585,18 @@ impl RelationCache {
                 }
             };
             if !owner {
-                self.metrics.coalesced.fetch_add(1, Ordering::Relaxed);
-                crate::telemetry::relation_cache_coalesced();
+                if key.domain.is_query_result() {
+                    self.metrics.coalesced.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    self.metrics
+                        .subrelation_coalesced
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                crate::telemetry::relation_cache_coalesced(key.domain.as_str());
                 match Flight::wait(receiver.expect("a flight waiter has a receiver")).await {
                     FlightResult::Success(relation) => {
                         self.policy.observe_coalesced_reuse(cohort);
-                        Self::record_avoided(relation.work);
+                        key.domain.avoided(relation.work);
                         return Ok(RelationCacheResult {
                             rows: RelationRows::Cached(relation),
                             source: StatementSource::RelationCache,
@@ -1105,25 +1619,34 @@ impl RelationCache {
             let result = fill.take().expect("relation cache fill runs once")().await;
             match result {
                 Ok((frames, work)) => {
+                    crate::telemetry::relation_cache_materialization_fill(
+                        key.domain.as_str(),
+                        work.execution,
+                        frames.len(),
+                        0,
+                    );
                     let estimated_bytes = estimated_result_bytes(output, &frames);
-                    crate::telemetry::relation_cache_result_size(estimated_bytes);
+                    crate::telemetry::relation_cache_materialization_result_size(
+                        key.domain.as_str(),
+                        estimated_bytes,
+                    );
                     if estimated_bytes > self.result_byte_limit {
                         self.policy.observe_fill(
                             cohort,
                             work,
                             estimated_bytes,
                             key.retained_bytes()
-                                .saturating_add(size_of::<CachedRelation>())
+                                .saturating_add(size_of::<CachedMaterialization>())
                                 .saturating_add(estimated_bytes),
                             self.result_byte_limit,
                         );
-                        self.reject_too_large();
+                        self.reject_too_large(key.domain);
                         // Waiter registration and flight removal use the same
                         // lock. After detach returns zero, no waiter can still
                         // require a portable copy of this result.
                         if owner.detach() > 0 {
                             let relation =
-                                Arc::new(CachedRelation::from_frames(output, &frames, work));
+                                Arc::new(CachedMaterialization::relation(output, &frames, work));
                             owner.publish(FlightResult::Success(relation));
                         }
                         return Ok(RelationCacheResult {
@@ -1131,7 +1654,7 @@ impl RelationCache {
                             source: StatementSource::Executed,
                         });
                     }
-                    let relation = Arc::new(CachedRelation::from_frames(output, &frames, work));
+                    let relation = Arc::new(CachedMaterialization::relation(output, &frames, work));
                     self.policy.observe_fill(
                         cohort,
                         work,
@@ -1160,12 +1683,184 @@ impl RelationCache {
         }
     }
 
-    fn get(&self, key: &RelationCacheKey, cohort: CohortToken) -> Option<Arc<CachedRelation>> {
+    pub(super) async fn get_or_fill_hash_build<F, Fut>(
+        &self,
+        key: RelationCacheKey,
+        fill: F,
+    ) -> Result<CachedHashBuildResult>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<(CachedHashBuild, CachedWork)>>,
+    {
+        if key.domain != MaterializationDomain::HashJoinBuild {
+            return Err(Error::message(
+                ErrorKind::Internal,
+                "exec: hash-build lookup has an incorrect cache domain",
+            ));
+        }
+        let result = self
+            .get_or_fill_physical(key, || async {
+                let (value, work) = fill().await?;
+                Ok(CachedMaterialization::hash_join_build(value, work))
+            })
+            .await?;
+        if !matches!(&result.0.value, CachedValue::HashJoinBuild(_)) {
+            return Err(Error::message(
+                ErrorKind::Internal,
+                "exec: hash-build cache entry has an incorrect value",
+            ));
+        }
+        Ok(CachedHashBuildResult {
+            value: CachedHashBuildHandle(result.0),
+            source: result.1,
+        })
+    }
+
+    pub(super) async fn get_or_fill_grouped_dimension<F, Fut>(
+        &self,
+        key: RelationCacheKey,
+        fill: F,
+    ) -> Result<CachedGroupedDimensionBuildResult>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<(CachedGroupedDimensionBuild, CachedWork)>>,
+    {
+        if key.domain != MaterializationDomain::GroupedHashJoinDimension {
+            return Err(Error::message(
+                ErrorKind::Internal,
+                "exec: grouped-dimension lookup has an incorrect cache domain",
+            ));
+        }
+        let result = self
+            .get_or_fill_physical(key, || async {
+                let (value, work) = fill().await?;
+                Ok(CachedMaterialization::grouped_hash_join_dimension(
+                    value, work,
+                ))
+            })
+            .await?;
+        if !matches!(&result.0.value, CachedValue::GroupedHashJoinDimension(_)) {
+            return Err(Error::message(
+                ErrorKind::Internal,
+                "exec: grouped-dimension cache entry has an incorrect value",
+            ));
+        }
+        Ok(CachedGroupedDimensionBuildResult {
+            value: CachedGroupedDimensionBuildHandle(result.0),
+            source: result.1,
+        })
+    }
+
+    async fn get_or_fill_physical<F, Fut>(
+        &self,
+        key: RelationCacheKey,
+        fill: F,
+    ) -> Result<(Arc<CachedMaterialization>, StatementSource)>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<CachedMaterialization>>,
+    {
+        let cohort = self.policy.observe_request(&key);
+        if let Some(value) = self.get(&key, cohort) {
+            return Ok((value, StatementSource::RelationCache));
+        }
+        self.metrics
+            .subrelation_misses
+            .fetch_add(1, Ordering::Relaxed);
+        key.domain.lookup("miss");
+        let mut fill = Some(fill);
+        loop {
+            let (flight, owner, receiver) = {
+                let mut flights = self
+                    .flights
+                    .lock()
+                    .expect("relation cache flight lock poisoned");
+                if let Some(flight) = flights.get(&key) {
+                    let receiver = flight.subscribe();
+                    (flight.clone(), false, Some(receiver))
+                } else {
+                    let flight = Arc::new(Flight::new());
+                    flights.insert(key.clone(), flight.clone());
+                    (flight, true, None)
+                }
+            };
+            if !owner {
+                self.metrics
+                    .subrelation_coalesced
+                    .fetch_add(1, Ordering::Relaxed);
+                crate::telemetry::relation_cache_coalesced(key.domain.as_str());
+                match Flight::wait(receiver.expect("a flight waiter has a receiver")).await {
+                    FlightResult::Success(value) => {
+                        self.policy.observe_coalesced_reuse(cohort);
+                        key.domain.avoided(value.work);
+                        return Ok((value, StatementSource::RelationCache));
+                    }
+                    FlightResult::Failure(error) => return Err(error.restore()),
+                    FlightResult::Cancelled => continue,
+                }
+            }
+            let mut owner = FlightOwner::new(self, key.clone(), flight);
+            if let Some(value) = self.get_after_miss(&key, cohort) {
+                owner.finish(FlightResult::Success(value.clone()));
+                return Ok((value, StatementSource::RelationCache));
+            }
+            match fill
+                .take()
+                .expect("physical materialization fill runs once")()
+            .await
+            {
+                Ok(value) => {
+                    let value = Arc::new(value);
+                    let (rows, keys) = value.observed_rows_and_keys();
+                    crate::telemetry::relation_cache_materialization_fill(
+                        key.domain.as_str(),
+                        value.work.execution,
+                        rows,
+                        keys,
+                    );
+                    crate::telemetry::relation_cache_materialization_result_size(
+                        key.domain.as_str(),
+                        value.result_bytes,
+                    );
+                    self.policy.observe_fill(
+                        cohort,
+                        value.work,
+                        value.result_bytes,
+                        key.retained_bytes().saturating_add(value.retained_bytes()),
+                        self.result_byte_limit,
+                    );
+                    if value.result_bytes > self.result_byte_limit {
+                        self.reject_too_large(key.domain);
+                    } else {
+                        self.admit(key.clone(), value.clone());
+                    }
+                    owner.finish(FlightResult::Success(value.clone()));
+                    return Ok((value, StatementSource::Executed));
+                }
+                Err(error) => {
+                    owner.finish(FlightResult::Failure(CachedError::capture(&error)));
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    fn get(
+        &self,
+        key: &RelationCacheKey,
+        cohort: CohortToken,
+    ) -> Option<Arc<CachedMaterialization>> {
         let relation = self.entries.get(key)?.value().clone();
         self.policy.observe_cache_hit(cohort);
-        self.metrics.hits.fetch_add(1, Ordering::Relaxed);
-        crate::telemetry::relation_cache_lookup("hit");
-        Self::record_avoided(relation.work);
+        if key.domain.is_query_result() {
+            self.metrics.hits.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.metrics
+                .subrelation_hits
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        key.domain.lookup("hit");
+        key.domain.avoided(relation.work);
         Some(relation)
     }
 
@@ -1173,16 +1868,17 @@ impl RelationCache {
         &self,
         key: &RelationCacheKey,
         cohort: CohortToken,
-    ) -> Option<Arc<CachedRelation>> {
+    ) -> Option<Arc<CachedMaterialization>> {
         let relation = self.entries.get(key)?.value().clone();
         self.policy.observe_cache_hit(cohort);
-        Self::record_avoided(relation.work);
+        key.domain.avoided(relation.work);
         Some(relation)
     }
 
-    fn admit(&self, key: RelationCacheKey, relation: Arc<CachedRelation>) {
+    fn admit(&self, key: RelationCacheKey, relation: Arc<CachedMaterialization>) {
+        let domain = key.domain;
         if relation.result_bytes > self.result_byte_limit {
-            self.reject_too_large();
+            self.reject_too_large(domain);
             return;
         }
         let retained = key
@@ -1198,7 +1894,7 @@ impl RelationCache {
         // Reject the item before insertion so each shard stays within its
         // share of the total byte limit.
         if weight > shard_capacity {
-            self.reject_by_policy();
+            self.reject_by_policy(domain);
             return;
         }
         let entry = self.entries.insert(key, relation);
@@ -1214,34 +1910,47 @@ impl RelationCache {
                 )
                 .is_ok();
         if !admitted {
-            self.reject_by_policy();
+            self.reject_by_policy(domain);
         } else {
-            self.metrics.admissions.fetch_add(1, Ordering::Relaxed);
+            if domain.is_query_result() {
+                self.metrics.admissions.fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.metrics
+                    .subrelation_admissions
+                    .fetch_add(1, Ordering::Relaxed);
+            }
             self.metrics
                 .retained_bytes
                 .fetch_add(retained as i64, Ordering::Relaxed);
-            crate::telemetry::relation_cache_admission("admitted");
+            domain.admission("admitted");
         }
         self.record_residency();
     }
 
-    fn reject_too_large(&self) {
-        self.metrics
-            .rejected_too_large
-            .fetch_add(1, Ordering::Relaxed);
-        crate::telemetry::relation_cache_admission("too_large");
+    fn reject_too_large(&self, domain: MaterializationDomain) {
+        if domain.is_query_result() {
+            self.metrics
+                .rejected_too_large
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.metrics
+                .subrelation_rejected_too_large
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        domain.admission("too_large");
     }
 
-    fn reject_by_policy(&self) {
-        self.metrics
-            .rejected_by_policy
-            .fetch_add(1, Ordering::Relaxed);
-        crate::telemetry::relation_cache_admission("policy_rejected");
-    }
-
-    fn record_avoided(work: CachedWork) {
-        let reads = work.kv.gets.saturating_add(work.kv.iterated);
-        crate::telemetry::relation_cache_avoided(reads, work.kv.bytes_read, work.execution);
+    fn reject_by_policy(&self, domain: MaterializationDomain) {
+        if domain.is_query_result() {
+            self.metrics
+                .rejected_by_policy
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.metrics
+                .subrelation_rejected_by_policy
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        domain.admission("policy_rejected");
     }
 
     fn record_residency(&self) {
@@ -1428,6 +2137,16 @@ mod tests {
         let mut frame = Env::new();
         frame.insert(SlotId(slot), Datum::scalar(Value::Text(value)));
         vec![frame]
+    }
+
+    fn empty_hash_build() -> CachedHashBuild {
+        CachedHashBuild {
+            hash_builder: ahash::RandomState::new(),
+            entries: HashMap::new(),
+            rows: Vec::new(),
+            input_row_count: 0,
+            execution_retained_bytes: 0,
+        }
     }
 
     fn config() -> RelationCacheLimits {
@@ -1696,9 +2415,12 @@ mod tests {
         let output = output(0);
         let frames = text_frames(0, "value".repeat(20));
         let estimated = estimated_result_bytes(&output, &frames);
-        let relation = CachedRelation::from_frames(&output, &frames, CachedWork::default());
+        let relation = CachedRelation::from_frames(&output, &frames);
 
-        assert_eq!(estimated, relation.result_bytes);
+        assert_eq!(
+            estimated,
+            retained_row_bytes(&relation.rows, relation.rows.capacity())
+        );
     }
 
     #[test]
@@ -1722,6 +2444,90 @@ mod tests {
                 &data_generations,
             )
         );
+    }
+
+    #[test]
+    fn subrelation_key_uses_only_its_dependency_generations() {
+        let stable_dependencies = dependencies(3);
+        let mut changing_dependencies = dependencies(3);
+        changing_dependencies.table_existence[0].table_id = "t2".into();
+        changing_dependencies.table_existence[0].table_name = "orders".into();
+        let mut root_dependencies = stable_dependencies.clone();
+        root_dependencies.merge(&changing_dependencies);
+        let root = RelationCacheKey::from_generations(
+            fingerprint(1),
+            &root_dependencies,
+            &HashMap::from([
+                ("t1".into(), TableDataGeneration::test_value(7)),
+                ("t2".into(), TableDataGeneration::test_value(10)),
+            ]),
+        );
+        let advanced_root = RelationCacheKey::from_generations(
+            fingerprint(1),
+            &root_dependencies,
+            &HashMap::from([
+                ("t1".into(), TableDataGeneration::test_value(7)),
+                ("t2".into(), TableDataGeneration::test_value(11)),
+            ]),
+        );
+
+        let first = root
+            .for_subrelation(fingerprint(2), &stable_dependencies)
+            .unwrap();
+        let after_unrelated_change = advanced_root
+            .for_subrelation(fingerprint(2), &stable_dependencies)
+            .unwrap();
+
+        assert_eq!(first, after_unrelated_change);
+        assert_eq!(first.domain, MaterializationDomain::SubrelationRowsV1);
+        assert_ne!(first, root);
+        assert_ne!(
+            first,
+            advanced_root
+                .for_subrelation(fingerprint(3), &stable_dependencies)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn policy_separates_query_results_from_row_subrelations() {
+        let cache = RelationCache::default();
+        let root = key(1, 7);
+        let subrelation = root
+            .for_subrelation(fingerprint(1), &dependencies(3))
+            .unwrap();
+
+        cache.policy.observe_request(&root);
+        cache.policy.observe_request(&subrelation);
+
+        assert_eq!(cache.policy.stats().exact_entries, 2);
+    }
+
+    #[test]
+    fn physical_subrelation_key_includes_its_representation() {
+        let root = key(1, 7);
+        let first = root
+            .for_physical_subrelation(
+                MaterializationDomain::HashJoinBuild,
+                fingerprint(2),
+                &dependencies(3),
+                vec![1, 2],
+            )
+            .unwrap();
+        let second = root
+            .for_physical_subrelation(
+                MaterializationDomain::HashJoinBuild,
+                fingerprint(2),
+                &dependencies(3),
+                vec![1, 3],
+            )
+            .unwrap();
+
+        assert_ne!(first, second);
+        let cache = RelationCache::default();
+        cache.policy.observe_request(&first);
+        cache.policy.observe_request(&second);
+        assert_eq!(cache.policy.stats().exact_entries, 2);
     }
 
     #[tokio::test]
@@ -1865,6 +2671,93 @@ mod tests {
         assert_eq!(policy.reuse_opportunities, 1);
         assert_eq!(policy.coalesced_reuses, 1);
         assert_eq!(policy.fills, 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_hash_build_misses_share_one_fill() {
+        let cache = Arc::new(RelationCache::new(config()));
+        let cache_key = key(1, 1)
+            .for_physical_subrelation(
+                MaterializationDomain::HashJoinBuild,
+                fingerprint(2),
+                &dependencies(3),
+                vec![1],
+            )
+            .unwrap();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let fills = Arc::new(AtomicUsize::new(0));
+        let first = {
+            let cache = cache.clone();
+            let cache_key = cache_key.clone();
+            let started = started.clone();
+            let release = release.clone();
+            let fills = fills.clone();
+            tokio::spawn(async move {
+                cache
+                    .get_or_fill_hash_build(cache_key, || async move {
+                        fills.fetch_add(1, Ordering::Relaxed);
+                        started.notify_one();
+                        release.notified().await;
+                        Ok((empty_hash_build(), CachedWork::default()))
+                    })
+                    .await
+            })
+        };
+        started.notified().await;
+        let second = {
+            let cache = cache.clone();
+            let fills = fills.clone();
+            tokio::spawn(async move {
+                cache
+                    .get_or_fill_hash_build(cache_key, || async move {
+                        fills.fetch_add(1, Ordering::Relaxed);
+                        Ok((empty_hash_build(), CachedWork::default()))
+                    })
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        release.notify_waiters();
+
+        let first = first.await.unwrap().unwrap();
+        let second = second.await.unwrap().unwrap();
+        assert_eq!(first.value.value().rows.len(), 0);
+        assert_eq!(second.value.value().rows.len(), 0);
+        assert_eq!(fills.load(Ordering::Relaxed), 1);
+        assert_eq!(cache.stats().subrelation_coalesced, 1);
+    }
+
+    #[tokio::test]
+    async fn oversized_hash_builds_are_not_admitted() {
+        let cache = RelationCache::new(RelationCacheLimits {
+            result_byte_limit: 1,
+            ..config()
+        });
+        let cache_key = key(1, 1)
+            .for_physical_subrelation(
+                MaterializationDomain::HashJoinBuild,
+                fingerprint(2),
+                &dependencies(3),
+                vec![1],
+            )
+            .unwrap();
+        let fills = AtomicUsize::new(0);
+        for _ in 0..2 {
+            cache
+                .get_or_fill_hash_build(cache_key.clone(), || async {
+                    fills.fetch_add(1, Ordering::Relaxed);
+                    Ok((empty_hash_build(), CachedWork::default()))
+                })
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(fills.load(Ordering::Relaxed), 2);
+        let stats = cache.stats();
+        assert_eq!(stats.subrelation_misses, 2);
+        assert_eq!(stats.subrelation_rejected_too_large, 2);
+        assert_eq!(stats.entries, 0);
     }
 
     #[tokio::test]
@@ -2087,7 +2980,7 @@ pub(super) struct RelationCacheResult {
 #[derive(Debug)]
 enum RelationRows {
     Frames(Vec<Env>),
-    Cached(Arc<CachedRelation>),
+    Cached(Arc<CachedMaterialization>),
 }
 
 impl RelationCacheResult {
@@ -2101,21 +2994,21 @@ impl RelationCacheResult {
     pub fn len(&self) -> usize {
         match &self.rows {
             RelationRows::Frames(frames) => frames.len(),
-            RelationRows::Cached(relation) => relation.rows.len(),
+            RelationRows::Cached(relation) => relation.relation_ref().rows.len(),
         }
     }
 
     pub fn shape(&self, cardinality: RootCardinality, output: &RowType) -> Result<Datum> {
         match &self.rows {
             RelationRows::Frames(frames) => super::shape_frames(cardinality, output, frames),
-            RelationRows::Cached(relation) => relation.shape(cardinality, output),
+            RelationRows::Cached(relation) => relation.relation_ref().shape(cardinality, output),
         }
     }
 
     pub fn into_frames(self, output: &RowType) -> Vec<Env> {
         match self.rows {
             RelationRows::Frames(frames) => frames,
-            RelationRows::Cached(relation) => relation.restore(output),
+            RelationRows::Cached(relation) => relation.relation_ref().restore(output),
         }
     }
 }
@@ -2136,6 +3029,13 @@ pub(super) struct RelationCacheStats {
     pub dependency_misses: u64,
     pub dependency_coalesced: u64,
     pub dependency_evictions: u64,
+    pub subrelation_hits: u64,
+    pub subrelation_misses: u64,
+    pub subrelation_admissions: u64,
+    pub subrelation_rejected_too_large: u64,
+    pub subrelation_rejected_by_policy: u64,
+    pub subrelation_evictions: u64,
+    pub subrelation_coalesced: u64,
     pub catalog_hits: u64,
     pub catalog_misses: u64,
     pub catalog_coalesced: u64,
@@ -2172,6 +3072,19 @@ impl RelationCache {
             dependency_misses: self.metrics.dependency_misses.load(Ordering::Relaxed),
             dependency_coalesced: self.metrics.dependency_coalesced.load(Ordering::Relaxed),
             dependency_evictions: self.metrics.dependency_evictions.load(Ordering::Relaxed),
+            subrelation_hits: self.metrics.subrelation_hits.load(Ordering::Relaxed),
+            subrelation_misses: self.metrics.subrelation_misses.load(Ordering::Relaxed),
+            subrelation_admissions: self.metrics.subrelation_admissions.load(Ordering::Relaxed),
+            subrelation_rejected_too_large: self
+                .metrics
+                .subrelation_rejected_too_large
+                .load(Ordering::Relaxed),
+            subrelation_rejected_by_policy: self
+                .metrics
+                .subrelation_rejected_by_policy
+                .load(Ordering::Relaxed),
+            subrelation_evictions: self.metrics.subrelation_evictions.load(Ordering::Relaxed),
+            subrelation_coalesced: self.metrics.subrelation_coalesced.load(Ordering::Relaxed),
             catalog_hits: catalog.hits,
             catalog_misses: catalog.misses,
             catalog_coalesced: catalog.coalesced,

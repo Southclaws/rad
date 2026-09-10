@@ -415,12 +415,14 @@ impl Engine {
         let execute_started = self.runtime.monotonic();
         let output = &plan.output;
         let cardinality = plan.cardinality;
+        let subrelation_root_key = prepared.relation_key.clone();
         let cached = self
             .relation_cache
             .get_or_fill(prepared.relation_key, output, || async {
                 let observed = super::observe::ObservedView::new(view, &counters);
                 let mut executor = Executor::new(&observed, self.limits);
                 executor.set_execution_grant(execution_grant);
+                executor.use_subrelation_cache(&self.relation_cache, subrelation_root_key);
                 let started = Instant::now();
                 let frames = executor.run_frames(plan).await?;
                 super::frames::validate_frame_cardinality(cardinality, frames.len())?;
@@ -1157,12 +1159,14 @@ async fn execute_on_view(
         .await?;
     let output = &planned.plan.output;
     let cardinality = planned.plan.cardinality;
+    let subrelation_root_key = key.clone();
     let cached = relation_cache
         .get_or_fill(key, output, || async {
             let counters = super::observe::KvCounters::new(false);
             let observed = super::observe::ObservedView::new(view, &counters);
             let mut executor = Executor::new(&observed, limits);
             executor.set_execution_grant(execution_grant);
+            executor.use_subrelation_cache(relation_cache, subrelation_root_key);
             let started = Instant::now();
             let frames = executor.run_frames(&planned.plan).await?;
             super::frames::validate_frame_cardinality(cardinality, frames.len())?;
@@ -1217,7 +1221,8 @@ mod tests {
     use crate::engine::kv::Kv;
     use crate::engine::kv::slatedb::Store;
     use crate::engine::lir::{
-        BinaryOp, Expr, Field, Kind, Literal, RawScalar, Relation, RootCardinality, Type, Value,
+        self, BinaryOp, Expr, Field, Kind, Literal, RawScalar, Relation, RootCardinality, Type,
+        Value,
     };
     use crate::runtime::RuntimeEffects;
 
@@ -1239,6 +1244,206 @@ mod tests {
                 .expect("UUID queue lock poisoned")
                 .pop_front()
                 .expect("test supplied enough UUIDs")
+        }
+    }
+
+    struct FixedPlannerStats(Arc<crate::engine::planner::models::PlannerStats>);
+
+    impl crate::engine::planner::estimator::StatisticsProvider for FixedPlannerStats {
+        fn planning_stats(&self) -> Arc<crate::engine::planner::models::PlannerStats> {
+            self.0.clone()
+        }
+    }
+
+    fn join_cache_table(id: u32, name: &str) -> TableDef {
+        TableDef {
+            id: SchemaId::new(id).unwrap(),
+            name: name.into(),
+            columns: vec![
+                ColumnDef {
+                    id: SchemaId::new(id * 10 + 1).unwrap(),
+                    name: "id".into(),
+                    scalar_type: ScalarType::Text,
+                    nullable: false,
+                    format: String::new(),
+                    default: None,
+                },
+                ColumnDef {
+                    id: SchemaId::new(id * 10 + 2).unwrap(),
+                    name: "customer_id".into(),
+                    scalar_type: ScalarType::Text,
+                    nullable: true,
+                    format: String::new(),
+                    default: None,
+                },
+            ],
+            primary_key: vec!["id".into()],
+            indexes: Vec::new(),
+            foreign_keys: Vec::new(),
+        }
+    }
+
+    fn complete_join_stats(
+        table: &crate::engine::catalog::model::Table,
+        rows: u64,
+    ) -> crate::engine::planner::models::PlannerStats {
+        use crate::engine::planner::models::{
+            ColumnSynopsis, PlannerStats, SynopsisCoverage, SynopsisModel,
+        };
+
+        let mut statistics = PlannerStats::empty();
+        statistics.synopsis_models.insert(
+            table.schema_id,
+            SynopsisModel {
+                table: table.schema_id,
+                observed_rows: rows,
+                coverage: SynopsisCoverage::Complete,
+                sample_size: rows,
+                changes_since_collection: 0,
+                table_existence_generation: table.existence_generation.get(),
+                collected_at_unix_micros: 0,
+                catalog_version: 1,
+                columns: table
+                    .columns
+                    .iter()
+                    .map(|column| ColumnSynopsis {
+                        column: column.schema_id,
+                        value_generation: column.value_generation.get(),
+                        null_fraction: 0.0,
+                        null_count: 0,
+                        distinct: rows.max(1),
+                        distinct_is_exact: false,
+                        average_width: 8,
+                        maximum_width: Some(8),
+                        minimum: None,
+                        maximum: None,
+                        most_common_values: Vec::new(),
+                        range_distribution: None,
+                        degree_sequence: None,
+                    })
+                    .collect(),
+                column_groups: Vec::new(),
+                predicate_conditioned_degrees: Vec::new(),
+            },
+        );
+        statistics
+    }
+
+    fn customer_orders_query() -> lir::Query {
+        let joined = Relation::Join {
+            left: Box::new(Relation::Scan {
+                table: "customers".into(),
+                scope: "customer".into(),
+            }),
+            right: Box::new(Relation::Scan {
+                table: "orders".into(),
+                scope: "order".into(),
+            }),
+            kind: crate::engine::lir::JoinKind::Inner,
+            on: Expr::Binary {
+                op: BinaryOp::Eq,
+                left: Box::new(Expr::Column {
+                    scope: "customer".into(),
+                    name: "customer_id".into(),
+                }),
+                right: Box::new(Expr::Column {
+                    scope: "order".into(),
+                    name: "customer_id".into(),
+                }),
+            },
+        };
+        let projected = Relation::Project {
+            input: Box::new(joined),
+            scope: Some("result".into()),
+            spread: Vec::new(),
+            fields: vec![
+                crate::engine::lir::ProjectField {
+                    name: "customer_id".into(),
+                    expression: Expr::Column {
+                        scope: "customer".into(),
+                        name: "id".into(),
+                    },
+                },
+                crate::engine::lir::ProjectField {
+                    name: "order_id".into(),
+                    expression: Expr::Column {
+                        scope: "order".into(),
+                        name: "id".into(),
+                    },
+                },
+            ],
+        };
+        lir::Query {
+            root: Relation::Order {
+                input: Box::new(projected),
+                terms: vec![crate::engine::lir::OrderTerm {
+                    expression: Expr::Column {
+                        scope: "result".into(),
+                        name: "order_id".into(),
+                    },
+                    descending: false,
+                }],
+            },
+            cardinality: RootCardinality::Many,
+            bindings: HashMap::new(),
+        }
+    }
+
+    fn customer_order_summary_query() -> lir::Query {
+        let joined = Relation::Join {
+            left: Box::new(Relation::Scan {
+                table: "customers".into(),
+                scope: "customer".into(),
+            }),
+            right: Box::new(Relation::Scan {
+                table: "orders".into(),
+                scope: "order".into(),
+            }),
+            kind: crate::engine::lir::JoinKind::Inner,
+            on: Expr::Binary {
+                op: BinaryOp::Eq,
+                left: Box::new(Expr::Column {
+                    scope: "customer".into(),
+                    name: "id".into(),
+                }),
+                right: Box::new(Expr::Column {
+                    scope: "order".into(),
+                    name: "customer_id".into(),
+                }),
+            },
+        };
+        let aggregate = Relation::Aggregate {
+            input: Box::new(joined),
+            scope: Some("summary".into()),
+            groups: vec![lir::GroupTerm {
+                name: "customer_id".into(),
+                expression: Expr::Column {
+                    scope: "customer".into(),
+                    name: "id".into(),
+                },
+            }],
+            terms: vec![lir::AggregateTerm {
+                function: lir::AggregateFunction::Count,
+                argument: Some(Expr::Column {
+                    scope: "order".into(),
+                    name: "id".into(),
+                }),
+                name: "order_count".into(),
+            }],
+        };
+        lir::Query {
+            root: Relation::Order {
+                input: Box::new(aggregate),
+                terms: vec![lir::OrderTerm {
+                    expression: Expr::Column {
+                        scope: "summary".into(),
+                        name: "customer_id".into(),
+                    },
+                    descending: false,
+                }],
+            },
+            cardinality: RootCardinality::Many,
+            bindings: HashMap::new(),
         }
     }
 
@@ -1751,6 +1956,200 @@ mod tests {
         transaction.rollback();
         assert_eq!(engine.relation_cache.stats().hits, 2);
         assert_eq!(engine.relation_cache.stats().misses, 4);
+        store.close().await.unwrap();
+    }
+
+    async fn assert_stable_hash_build_reuses_artifact_after_probe_data_changes(store: Arc<Store>) {
+        let catalog = catalog::Catalog::new(store.clone());
+        let customers = catalog
+            .create_table(join_cache_table(10, "customers"))
+            .await
+            .unwrap();
+        catalog
+            .create_table(join_cache_table(20, "orders"))
+            .await
+            .unwrap();
+        let statistics = complete_join_stats(&customers, 3);
+        let engine = Engine::new(store.clone())
+            .with_statistics_provider(Arc::new(FixedPlannerStats(Arc::new(statistics))));
+        engine
+            .create_many(
+                "customers",
+                vec![
+                    Row::from([
+                        ("id".into(), Value::Text("c1".into())),
+                        ("customer_id".into(), Value::Text("shared".into())),
+                    ]),
+                    Row::from([
+                        ("id".into(), Value::Text("c2".into())),
+                        ("customer_id".into(), Value::Text("shared".into())),
+                    ]),
+                    Row::from([
+                        ("id".into(), Value::Text("c3".into())),
+                        ("customer_id".into(), Value::Null(ScalarType::Text)),
+                    ]),
+                ],
+            )
+            .await
+            .unwrap();
+        engine
+            .create(
+                "orders",
+                Row::from([
+                    ("id".into(), Value::Text("o1".into())),
+                    ("customer_id".into(), Value::Text("shared".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        let query = customer_orders_query();
+
+        let first = engine.execute(query.clone()).await.unwrap();
+        engine
+            .create(
+                "orders",
+                Row::from([
+                    ("id".into(), Value::Text("o2".into())),
+                    ("customer_id".into(), Value::Text("shared".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        let second = engine.execute(query.clone()).await.unwrap();
+        let uncached = engine.execute_uncached(query.clone()).await.unwrap();
+
+        assert!(matches!(first, Datum::Array(ref rows) if rows.len() == 2));
+        assert!(matches!(second, Datum::Array(ref rows) if rows.len() == 4));
+        assert_eq!(second, uncached);
+        let cache = engine.relation_cache_stats();
+        assert_eq!(cache.misses, 2);
+        assert_eq!(cache.subrelation_misses, 1);
+        assert_eq!(cache.subrelation_admissions, 1);
+        assert_eq!(cache.subrelation_hits, 1);
+        engine
+            .create(
+                "customers",
+                Row::from([
+                    ("id".into(), Value::Text("c4".into())),
+                    ("customer_id".into(), Value::Text("shared".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        let third = engine.execute(query.clone()).await.unwrap();
+        assert!(matches!(third, Datum::Array(ref rows) if rows.len() == 6));
+        assert_eq!(third, engine.execute_uncached(query).await.unwrap());
+        let cache = engine.relation_cache_stats();
+        assert_eq!(cache.misses, 3);
+        assert_eq!(cache.subrelation_misses, 2);
+        assert_eq!(cache.subrelation_admissions, 2);
+        assert_eq!(cache.subrelation_hits, 1);
+        store.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stable_hash_build_reuses_artifact_after_probe_data_changes_in_memory() {
+        let store = Arc::new(Store::memory("exec-subrelation-cache").await.unwrap());
+        assert_stable_hash_build_reuses_artifact_after_probe_data_changes(store).await;
+    }
+
+    #[tokio::test]
+    async fn stable_hash_build_reuses_artifact_after_probe_data_changes_in_file_storage() {
+        let directory = TempDir::new().unwrap();
+        let objects: Arc<dyn ObjectStore> = Arc::new(
+            LocalFileSystem::new_with_prefix(directory.path()).expect("local object-store root"),
+        );
+        let store = Arc::new(
+            Store::open("exec-subrelation-cache", objects)
+                .await
+                .unwrap(),
+        );
+        assert_stable_hash_build_reuses_artifact_after_probe_data_changes(store).await;
+    }
+
+    #[tokio::test]
+    async fn grouped_hash_build_reuses_dimension_after_fact_data_changes() {
+        let store = Arc::new(Store::memory("exec-grouped-dimension-cache").await.unwrap());
+        let catalog = catalog::Catalog::new(store.clone());
+        let customers = catalog
+            .create_table(join_cache_table(10, "customers"))
+            .await
+            .unwrap();
+        let orders = catalog
+            .create_table(join_cache_table(20, "orders"))
+            .await
+            .unwrap();
+        let mut statistics = complete_join_stats(&customers, 2);
+        statistics
+            .synopsis_models
+            .extend(complete_join_stats(&orders, 5_000).synopsis_models);
+        let engine = Engine::new(store.clone())
+            .with_statistics_provider(Arc::new(FixedPlannerStats(Arc::new(statistics))));
+        engine
+            .create_many(
+                "customers",
+                vec![
+                    Row::from([
+                        ("id".into(), Value::Text("c1".into())),
+                        ("customer_id".into(), Value::Text("c1".into())),
+                    ]),
+                    Row::from([
+                        ("id".into(), Value::Text("c2".into())),
+                        ("customer_id".into(), Value::Text("c2".into())),
+                    ]),
+                ],
+            )
+            .await
+            .unwrap();
+        engine
+            .create(
+                "orders",
+                Row::from([
+                    ("id".into(), Value::Text("o1".into())),
+                    ("customer_id".into(), Value::Text("c1".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        let query = customer_order_summary_query();
+
+        let first = engine.execute(query.clone()).await.unwrap();
+        engine
+            .create(
+                "orders",
+                Row::from([
+                    ("id".into(), Value::Text("o2".into())),
+                    ("customer_id".into(), Value::Text("c2".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        let second = engine.execute(query.clone()).await.unwrap();
+        let uncached = engine.execute_uncached(query.clone()).await.unwrap();
+
+        assert!(matches!(first, Datum::Array(ref rows) if rows.len() == 1));
+        assert!(matches!(second, Datum::Array(ref rows) if rows.len() == 2));
+        assert_eq!(second, uncached);
+        let cache = engine.relation_cache_stats();
+        assert_eq!(cache.subrelation_misses, 1);
+        assert_eq!(cache.subrelation_admissions, 1);
+        assert_eq!(cache.subrelation_hits, 1);
+
+        engine
+            .create(
+                "customers",
+                Row::from([
+                    ("id".into(), Value::Text("c3".into())),
+                    ("customer_id".into(), Value::Text("c3".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(engine.execute(query).await.unwrap(), second);
+        let cache = engine.relation_cache_stats();
+        assert_eq!(cache.subrelation_misses, 2);
+        assert_eq!(cache.subrelation_admissions, 2);
+        assert_eq!(cache.subrelation_hits, 1);
         store.close().await.unwrap();
     }
 

@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use sha2::{Digest as _, Sha256};
 use smallvec::SmallVec;
 
-use super::{CachedWork, DependencyGeneration, RelationCacheKey};
+use super::{CachedWork, DependencyGeneration, MaterializationDomain, RelationCacheKey};
 use crate::engine::lir::fingerprint::Fingerprint;
 
 const COHORT_LIMIT_PER_EXACT: usize = 4;
@@ -41,9 +41,11 @@ const ITERATED_ROW_WORK_UNITS: u64 = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CohortToken {
-    exact: Fingerprint,
+    identity: PolicyIdentity,
     cohort: [u8; 16],
 }
+
+type PolicyIdentity = (MaterializationDomain, Fingerprint, [u8; 16]);
 
 pub(super) struct RelationCachePolicy {
     shards: Box<[Mutex<PolicyShard>]>,
@@ -67,15 +69,16 @@ impl RelationCachePolicy {
 
     pub(super) fn observe_request(&self, key: &RelationCacheKey) -> CohortToken {
         let profile = DependencyProfile::new(key);
+        let identity = (key.domain, key.exact, representation_profile(key));
         let token = CohortToken {
-            exact: key.exact,
+            identity,
             cohort: profile.cohort,
         };
         let events = self
-            .shard(key.exact)
+            .shard(identity)
             .lock()
             .expect("relation cache policy lock poisoned")
-            .observe_request(key.exact, profile);
+            .observe_request(identity, profile);
         if let Some(cause) = events.transition {
             crate::telemetry::relation_cache_cohort_transition(cause.as_str());
         }
@@ -107,7 +110,7 @@ impl RelationCachePolicy {
         let work_units = deterministic_work(work);
         let fill = {
             let mut shard = self
-                .shard(token.exact)
+                .shard(token.identity)
                 .lock()
                 .expect("relation cache policy lock poisoned");
             shard.observe_fill(
@@ -129,13 +132,13 @@ impl RelationCachePolicy {
         );
     }
 
-    fn shard(&self, exact: Fingerprint) -> &Mutex<PolicyShard> {
-        &self.shards[usize::from(exact.digest[0]) % self.shards.len()]
+    fn shard(&self, identity: PolicyIdentity) -> &Mutex<PolicyShard> {
+        &self.shards[usize::from(identity.1.digest[0] ^ identity.2[0]) % self.shards.len()]
     }
 
     fn observe_success(&self, token: CohortToken, source: SuccessSource) {
         let events = self
-            .shard(token.exact)
+            .shard(token.identity)
             .lock()
             .expect("relation cache policy lock poisoned")
             .observe_success(token, source);
@@ -211,6 +214,16 @@ impl RelationCachePolicy {
     }
 }
 
+fn representation_profile(key: &RelationCacheKey) -> [u8; 16] {
+    let mut hash = Sha256::new();
+    hash.update((key.representation.len() as u64).to_be_bytes());
+    hash.update(&key.representation);
+    let digest = hash.finalize();
+    let mut profile = [0u8; 16];
+    profile.copy_from_slice(&digest[..16]);
+    profile
+}
+
 fn deterministic_work(work: CachedWork) -> u64 {
     // These units compare candidates inside one process. They are not time or
     // storage bytes. Fixed weights keep the decision independent of host load,
@@ -228,8 +241,8 @@ fn deterministic_work(work: CachedWork) -> u64 {
 struct PolicyShard {
     exact_limit: usize,
     next_sequence: u64,
-    exact: BTreeMap<Fingerprint, ExactEvidence>,
-    recency: BTreeSet<(u64, Fingerprint)>,
+    exact: BTreeMap<PolicyIdentity, ExactEvidence>,
+    recency: BTreeSet<(u64, PolicyIdentity)>,
 }
 
 impl PolicyShard {
@@ -244,7 +257,7 @@ impl PolicyShard {
 
     fn observe_request(
         &mut self,
-        exact_fingerprint: Fingerprint,
+        identity: PolicyIdentity,
         profile: DependencyProfile,
     ) -> RequestEvents {
         // The sequence is local to this shard. It gives deterministic recency
@@ -256,9 +269,8 @@ impl PolicyShard {
             .expect("relation cache policy sequence overflow");
         let sequence = self.next_sequence;
         let mut events = RequestEvents::default();
-        if let Some(exact) = self.exact.get(&exact_fingerprint) {
-            self.recency
-                .remove(&(exact.last_seen_sequence, exact_fingerprint));
+        if let Some(exact) = self.exact.get(&identity) {
+            self.recency.remove(&(exact.last_seen_sequence, identity));
         } else {
             if self.exact.len() == self.exact_limit {
                 let (_, evicted) = self
@@ -272,15 +284,15 @@ impl PolicyShard {
                     .evidence_evictions
                     .push(EvidenceEviction::ExactCapacity);
             }
-            self.exact.insert(exact_fingerprint, ExactEvidence::new());
+            self.exact.insert(identity, ExactEvidence::new());
         }
         let exact = self
             .exact
-            .get_mut(&exact_fingerprint)
+            .get_mut(&identity)
             .expect("exact policy evidence is present");
         exact.last_seen_sequence = sequence;
         exact.observe_request(profile, sequence, &mut events);
-        self.recency.insert((sequence, exact_fingerprint));
+        self.recency.insert((sequence, identity));
         events
     }
 
@@ -292,7 +304,7 @@ impl PolicyShard {
         retained_bytes: usize,
         result_byte_limit: usize,
     ) -> FillEvents {
-        let Some(exact) = self.exact.get_mut(&token.exact) else {
+        let Some(exact) = self.exact.get_mut(&token.identity) else {
             return FillEvents {
                 decision: ShadowDecision::for_candidate(CandidateEvidence {
                     successful_requests: 1,
@@ -346,7 +358,7 @@ impl PolicyShard {
     }
 
     fn observe_success(&mut self, token: CohortToken, source: SuccessSource) -> SuccessEvents {
-        let Some(exact) = self.exact.get_mut(&token.exact) else {
+        let Some(exact) = self.exact.get_mut(&token.identity) else {
             return SuccessEvents::default();
         };
         let Some(cohort) = exact

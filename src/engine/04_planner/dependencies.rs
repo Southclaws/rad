@@ -49,6 +49,57 @@ pub(super) fn prepare_catalog_dependencies(plan: &mut Plan) {
         _ => {}
     });
     plan.dependencies = dependencies;
+    plan.walk_mut(&mut |node| {
+        if node.materialization.is_none() {
+            return;
+        }
+        let dependencies = dependencies_for_node(node);
+        node.materialization
+            .as_mut()
+            .expect("materialization candidate is present")
+            .dependencies = dependencies;
+    });
+}
+
+fn dependencies_for_node(node: &super::physical::Node) -> CatalogDependencies {
+    let mut dependencies = CatalogDependencies::default();
+    node.walk(&mut |node| match &node.kind {
+        NodeKind::PrimaryKeyGet {
+            scan,
+            decode_columns,
+            ..
+        }
+        | NodeKind::TableScan {
+            scan,
+            decode_columns,
+            ..
+        } => {
+            let table = scan.scan_table();
+            let mut columns = decode_columns.clone();
+            if matches!(node.kind, NodeKind::PrimaryKeyGet { .. }) {
+                append_named_columns(&mut columns, table, &table.primary_key);
+            }
+            dependencies.add_table_read(table, &columns);
+        }
+        NodeKind::IndexRangeScan {
+            scan,
+            index,
+            decode_columns,
+            ..
+        } => {
+            let table = scan.scan_table();
+            let mut columns = decode_columns.clone();
+            let names = table
+                .index_column_names(index)
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            append_named_columns(&mut columns, table, &names);
+            dependencies.add_index_read(table, index, &columns);
+        }
+        _ => {}
+    });
+    dependencies
 }
 
 fn required_slots(plan: &Plan) -> SlotSet {

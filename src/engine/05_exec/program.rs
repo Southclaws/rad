@@ -782,6 +782,7 @@ async fn run_statements(
             let execute_started = measuring.then(|| runtime.monotonic());
             let counters = (measuring || cache_key.is_some())
                 .then(|| super::observe::KvCounters::new(collect_plan));
+            let subrelation_cache = cache_key.as_ref().map(|(cache, key)| (*cache, key.clone()));
             let mut binding_rows = Vec::new();
             let mut measured = Vec::new();
             let mut join_operators = Vec::new();
@@ -805,6 +806,7 @@ async fn run_statements(
                         measure_operators,
                         &mut operators,
                         execution_grant,
+                        subrelation_cache.clone(),
                     )
                     .await
                 } else {
@@ -824,6 +826,7 @@ async fn run_statements(
                         measure_operators,
                         &mut operators,
                         execution_grant,
+                        subrelation_cache.clone(),
                     )
                     .await
                 }
@@ -1194,6 +1197,10 @@ async fn run_relational(
     measure_operators: bool,
     operators: &mut Vec<super::observe::OperatorMeasurement>,
     execution_grant: &super::parallel::ExecutionGrant,
+    subrelation_cache: Option<(
+        &super::relation_cache::RelationCache,
+        super::relation_cache::RelationCacheKey,
+    )>,
 ) -> Result<Vec<Env>> {
     let input = match path {
         ExecutionPath::Production => {
@@ -1205,6 +1212,9 @@ async fn run_relational(
             executor.set_execution_grant(execution_grant.clone());
             if let Some(kv_counters) = kv_counters {
                 executor.observe_kv_work(kv_counters);
+            }
+            if let Some((cache, root_key)) = subrelation_cache {
+                executor.use_subrelation_cache(cache, root_key);
             }
             if measure_relations {
                 executor.enable_measurements();

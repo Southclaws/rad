@@ -13,7 +13,9 @@ use crate::engine::lir::{
     BinaryOp, Datum, JoinKind, Kind, RowType, SetQuantifier, SlotId, TriBool, Value,
 };
 use crate::engine::planner::analysis::EquiJoinKey;
-use crate::engine::planner::physical::{Node, NodeKind, PhysicalField};
+use crate::engine::planner::physical::{
+    MaterializationRepresentation, Node, NodeKind, PhysicalField,
+};
 
 use super::frames::{
     column_values_to_frame, merge as merge_frames, new_frame, remap_positional, row_to_frame,
@@ -30,6 +32,10 @@ use super::parallel::ExecutionGrant;
 use super::parallel::ExecutionScheduleEvent;
 use super::parallel::WorkRequest;
 use super::query::resolve_constant;
+use super::relation_cache::{
+    CachedGroupedDimensionBuild, CachedGroupedDimensionBuildHandle, CachedGroupedDimensionEntry,
+    CachedHashBuild, CachedHashBuildHandle, CachedHashEntry, CachedWork, MaterializationDomain,
+};
 use super::row_store::{self, RowIterator};
 use super::set;
 use super::{Error, ErrorKind, Result};
@@ -124,6 +130,7 @@ pub(super) async fn execute_measured(
     next_operator_id: &mut u32,
     parent_operator_id: Option<u32>,
     measure_operators: bool,
+    subrelation_cache: Option<&super::relation_cache::SubrelationCacheContext<'_>>,
     execution_grant: &ExecutionGrant,
 ) -> Result<Vec<Env>> {
     let mut tallies = Vec::new();
@@ -141,7 +148,11 @@ pub(super) async fn execute_measured(
         parent_operator_id,
         measure_operators,
         None,
-        Some(execution_grant.clone()),
+        BuildResources {
+            execution_grant: Some(execution_grant.clone()),
+            subrelation_cache,
+            bypass_materialization: false,
+        },
     )
     .await?;
     let mut frames = Vec::new();
@@ -168,6 +179,7 @@ pub(super) async fn execute(
     node: &Node,
     outer: &Env,
     join_measurements: &mut Vec<super::observe::JoinOperatorMeasurement>,
+    subrelation_cache: Option<&super::relation_cache::SubrelationCacheContext<'_>>,
     execution_grant: &ExecutionGrant,
 ) -> Result<Vec<Env>> {
     let mut tallies = Vec::new();
@@ -186,7 +198,11 @@ pub(super) async fn execute(
         None,
         false,
         None,
-        Some(execution_grant.clone()),
+        BuildResources {
+            execution_grant: Some(execution_grant.clone()),
+            subrelation_cache,
+            bypass_materialization: false,
+        },
     )
     .await?;
     let mut frames = Vec::new();
@@ -196,6 +212,13 @@ pub(super) async fn execute(
     drop(operator);
     join_measurements.extend(join_tallies.iter().map(JoinTally::snapshot));
     Ok(frames)
+}
+
+#[derive(Clone)]
+struct BuildResources<'a> {
+    execution_grant: Option<ExecutionGrant>,
+    subrelation_cache: Option<&'a super::relation_cache::SubrelationCacheContext<'a>>,
+    bypass_materialization: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -212,8 +235,32 @@ async fn build<'a>(
     parent_operator_id: Option<u32>,
     measure_operators: bool,
     parent_operator_span: Option<&tracing::Span>,
-    execution_grant: Option<ExecutionGrant>,
+    resources: BuildResources<'a>,
 ) -> Result<Box<dyn Operator + 'a>> {
+    if node
+        .materialization
+        .as_ref()
+        .is_some_and(|candidate| candidate.representation == MaterializationRepresentation::Rows)
+        && !resources.bypass_materialization
+        && resources.subrelation_cache.is_some()
+    {
+        return build_materialized(
+            view,
+            node,
+            outer,
+            tallies,
+            join_tallies,
+            measure,
+            operator_tallies,
+            next_operator_id,
+            parent_operator_id,
+            measure_operators,
+            parent_operator_span,
+            resources,
+        )
+        .await;
+    }
+    let execution_grant = resources;
     let operator_tally = measure_operators.then(|| {
         let operator_id = *next_operator_id;
         *next_operator_id = next_operator_id.saturating_add(1);
@@ -483,50 +530,150 @@ async fn build<'a>(
             terms,
             memory_limit_bytes,
             ..
-        } => Box::new(GroupedHashJoinAggregate {
-            fact: Some(
-                build(
-                    view,
-                    fact,
-                    outer.clone(),
-                    tallies,
-                    join_tallies,
-                    measure,
-                    operator_tallies,
-                    next_operator_id,
-                    child_parent_id,
-                    measure_operators,
-                    child_parent_span,
-                    execution_grant.clone(),
+        } => {
+            let fact_operator = build(
+                view,
+                fact,
+                outer.clone(),
+                tallies,
+                join_tallies,
+                measure,
+                operator_tallies,
+                next_operator_id,
+                child_parent_id,
+                measure_operators,
+                child_parent_span,
+                execution_grant.clone(),
+            )
+            .await?;
+            let cached_cardinality = if measure {
+                dimension.attribution.map(|attribution| {
+                    let tally = Tally::default();
+                    tallies.push((attribution, tally.clone()));
+                    tally
+                })
+            } else {
+                None
+            };
+            let physical_key = match (
+                execution_grant.subrelation_cache,
+                dimension.materialization.as_ref(),
+            ) {
+                (Some(context), Some(candidate))
+                    if matches!(
+                        candidate.representation,
+                        MaterializationRepresentation::GroupedHashJoinDimension { .. }
+                    ) =>
+                {
+                    Some((
+                        context,
+                        context.root_key.for_physical_subrelation(
+                            MaterializationDomain::GroupedHashJoinDimension,
+                            candidate.exact,
+                            &candidate.dependencies,
+                            candidate.representation.identity_bytes(),
+                        )?,
+                    ))
+                }
+                _ => None,
+            };
+            let mut dimension_resources = execution_grant.clone();
+            dimension_resources.bypass_materialization = true;
+            let dimensions = if let Some((context, key)) = physical_key {
+                let result = context
+                    .cache
+                    .get_or_fill_grouped_dimension(key, || async {
+                        let before = context.counters.map(|counters| counters.snapshot());
+                        let started = Instant::now();
+                        let dimension = build(
+                            view,
+                            dimension,
+                            outer.clone(),
+                            tallies,
+                            join_tallies,
+                            measure,
+                            operator_tallies,
+                            next_operator_id,
+                            child_parent_id,
+                            measure_operators,
+                            child_parent_span,
+                            dimension_resources,
+                        )
+                        .await?;
+                        let value = collect_grouped_dimension(
+                            dimension,
+                            keys,
+                            *fact_is_left,
+                            groups,
+                            *memory_limit_bytes,
+                        )
+                        .await?;
+                        let kv = context.counters.map_or_else(Default::default, |counters| {
+                            counters
+                                .snapshot()
+                                .delta_since(before.expect("initial KV counters are present"))
+                        });
+                        Ok((
+                            value,
+                            CachedWork {
+                                kv,
+                                execution: started.elapsed(),
+                            },
+                        ))
+                    })
+                    .await?;
+                if result.source == super::observe::StatementSource::RelationCache {
+                    let attach_started = Instant::now();
+                    if let Some(cardinality) = &cached_cardinality {
+                        cardinality.rows.store(
+                            result.value.value().input_row_count as u64,
+                            atomic::Ordering::Relaxed,
+                        );
+                        cardinality.exhausted.store(true, atomic::Ordering::Relaxed);
+                    }
+                    crate::telemetry::relation_cache_materialization_attach(
+                        MaterializationDomain::GroupedHashJoinDimension.as_str(),
+                        attach_started.elapsed(),
+                    );
+                }
+                Some(result.value)
+            } else {
+                None
+            };
+            let dimension = if dimensions.is_none() {
+                Some(
+                    build(
+                        view,
+                        dimension,
+                        outer.clone(),
+                        tallies,
+                        join_tallies,
+                        measure,
+                        operator_tallies,
+                        next_operator_id,
+                        child_parent_id,
+                        measure_operators,
+                        child_parent_span,
+                        execution_grant.clone(),
+                    )
+                    .await?,
                 )
-                .await?,
-            ),
-            dimension: Some(
-                build(
-                    view,
-                    dimension,
-                    outer.clone(),
-                    tallies,
-                    join_tallies,
-                    measure,
-                    operator_tallies,
-                    next_operator_id,
-                    child_parent_id,
-                    measure_operators,
-                    child_parent_span,
-                    execution_grant.clone(),
-                )
-                .await?,
-            ),
-            keys: keys.clone(),
-            fact_is_left: *fact_is_left,
-            groups: groups.clone(),
-            terms: terms.clone(),
-            outer,
-            output: std::collections::VecDeque::new(),
-            hash_builder: ahash::RandomState::new(),
-            memory_limit_bytes: *memory_limit_bytes,
-        }),
+            } else {
+                None
+            };
+            Box::new(GroupedHashJoinAggregate {
+                fact: Some(fact_operator),
+                dimension,
+                dimensions,
+                keys: keys.clone(),
+                fact_is_left: *fact_is_left,
+                groups: groups.clone(),
+                terms: terms.clone(),
+                outer,
+                output: std::collections::VecDeque::new(),
+                memory_limit_bytes: *memory_limit_bytes,
+            })
+        }
         NodeKind::NestedLoopJoin {
             left,
             right,
@@ -605,23 +752,122 @@ async fn build<'a>(
             } else {
                 JoinTally::disabled("HashJoin")
             };
-            Box::new(HashJoin {
-                left: build(
-                    view,
-                    left,
-                    outer.clone(),
-                    tallies,
-                    join_tallies,
-                    measure,
-                    operator_tallies,
-                    next_operator_id,
-                    child_parent_id,
-                    measure_operators,
-                    child_parent_span,
-                    execution_grant.clone(),
-                )
-                .await?,
-                right: Some(
+            let left_operator = build(
+                view,
+                left,
+                outer.clone(),
+                tallies,
+                join_tallies,
+                measure,
+                operator_tallies,
+                next_operator_id,
+                child_parent_id,
+                measure_operators,
+                child_parent_span,
+                execution_grant.clone(),
+            )
+            .await?;
+            let cached_cardinality = if measure {
+                right.attribution.map(|attribution| {
+                    let tally = Tally::default();
+                    tallies.push((attribution, tally.clone()));
+                    tally
+                })
+            } else {
+                None
+            };
+            let physical_key = match (
+                execution_grant.subrelation_cache,
+                right.materialization.as_ref(),
+            ) {
+                (Some(context), Some(candidate))
+                    if matches!(
+                        candidate.representation,
+                        MaterializationRepresentation::HashJoinBuild { .. }
+                    ) =>
+                {
+                    Some((
+                        context,
+                        context.root_key.for_physical_subrelation(
+                            MaterializationDomain::HashJoinBuild,
+                            candidate.exact,
+                            &candidate.dependencies,
+                            candidate.representation.identity_bytes(),
+                        )?,
+                    ))
+                }
+                _ => None,
+            };
+            let mut right_resources = execution_grant.clone();
+            right_resources.bypass_materialization = true;
+            let cached_build = if let Some((context, key)) = physical_key {
+                let result = context
+                    .cache
+                    .get_or_fill_hash_build(key, || async {
+                        let before = context.counters.map(|counters| counters.snapshot());
+                        let started = Instant::now();
+                        let right = build(
+                            view,
+                            right,
+                            outer.clone(),
+                            tallies,
+                            join_tallies,
+                            measure,
+                            operator_tallies,
+                            next_operator_id,
+                            child_parent_id,
+                            measure_operators,
+                            child_parent_span,
+                            right_resources,
+                        )
+                        .await?;
+                        let value = collect_hash_build(
+                            right,
+                            keys,
+                            right_output,
+                            *memory_limit_bytes,
+                            &tally,
+                        )
+                        .await?;
+                        let kv = context.counters.map_or_else(Default::default, |counters| {
+                            counters
+                                .snapshot()
+                                .delta_since(before.expect("initial KV counters are present"))
+                        });
+                        Ok((
+                            value,
+                            CachedWork {
+                                kv,
+                                execution: started.elapsed(),
+                            },
+                        ))
+                    })
+                    .await?;
+                if result.source == super::observe::StatementSource::RelationCache {
+                    let attach_started = Instant::now();
+                    let value = result.value.value();
+                    tally.add_build_rows(value.input_row_count);
+                    tally.retain(value.execution_retained_bytes);
+                    if let Some(cardinality) = &cached_cardinality {
+                        cardinality
+                            .rows
+                            .store(value.input_row_count as u64, atomic::Ordering::Relaxed);
+                        cardinality.exhausted.store(true, atomic::Ordering::Relaxed);
+                    }
+                    crate::telemetry::relation_cache_materialization_attach(
+                        MaterializationDomain::HashJoinBuild.as_str(),
+                        attach_started.elapsed(),
+                    );
+                }
+                Some(Arc::new(BoundHashBuild::new(
+                    result.value,
+                    right_output.clone(),
+                )))
+            } else {
+                None
+            };
+            let right = if cached_build.is_none() {
+                Some(
                     build(
                         view,
                         right,
@@ -637,22 +883,28 @@ async fn build<'a>(
                         execution_grant.clone(),
                     )
                     .await?,
-                ),
+                )
+            } else {
+                None
+            };
+            Box::new(HashJoin {
+                left: left_operator,
+                right,
                 kind: *kind,
                 residual_predicate: (!join_predicate_is_keys(on, keys)).then(|| on.clone()),
                 keys: keys.clone(),
                 right_output: right_output.clone(),
                 memory_limit_bytes: *memory_limit_bytes,
-                entries: Arc::new(HashMap::new()),
-                hash_builder: ahash::RandomState::new(),
+                build: cached_build,
                 current_left: None,
                 current_hash: 0,
                 current_entry: 0,
                 current_row: 0,
                 matched: false,
-                retained_bytes: 0,
                 tally,
-                execution_grant: execution_grant.unwrap_or_else(ExecutionGrant::serial),
+                execution_grant: execution_grant
+                    .execution_grant
+                    .unwrap_or_else(ExecutionGrant::serial),
                 parallel_output: std::collections::VecDeque::new(),
                 left_exhausted: false,
                 parallel_batch_sequence: 0,
@@ -817,6 +1069,130 @@ async fn build<'a>(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn build_materialized<'a>(
+    view: &'a dyn KvView,
+    node: &'a Node,
+    outer: Env,
+    tallies: &mut Vec<(Fingerprint, Tally)>,
+    join_tallies: &mut Vec<JoinTally>,
+    measure: bool,
+    operator_tallies: &mut Vec<OperatorTally>,
+    next_operator_id: &mut u32,
+    parent_operator_id: Option<u32>,
+    measure_operators: bool,
+    parent_operator_span: Option<&tracing::Span>,
+    resources: BuildResources<'a>,
+) -> Result<Box<dyn Operator + 'a>> {
+    let candidate = node
+        .materialization
+        .as_ref()
+        .expect("materialization candidate is present");
+    let context = resources
+        .subrelation_cache
+        .expect("subrelation cache context is present");
+    // The root key and this candidate come from one physical plan and one
+    // pinned view. Selecting a subset of the root vector keeps this lookup on
+    // that view without a second catalog or data-generation read.
+    let key = context
+        .root_key
+        .for_subrelation(candidate.exact, &candidate.dependencies)?;
+    let mut fill_resources = resources.clone();
+    fill_resources.bypass_materialization = true;
+    let lookup_started = measure_operators.then(Instant::now);
+    let result = context
+        .cache
+        .get_or_fill(key, &candidate.output, || async {
+            let before = context.counters.map(|counters| counters.snapshot());
+            let started = Instant::now();
+            let mut operator = build(
+                view,
+                node,
+                outer,
+                tallies,
+                join_tallies,
+                measure,
+                operator_tallies,
+                next_operator_id,
+                parent_operator_id,
+                measure_operators,
+                parent_operator_span,
+                fill_resources,
+            )
+            .await?;
+            let mut frames = Vec::new();
+            while let Some(frame) = operator.next().await? {
+                frames.push(frame);
+            }
+            drop(operator);
+            let kv = context.counters.map_or_else(Default::default, |counters| {
+                counters
+                    .snapshot()
+                    .delta_since(before.expect("initial KV counters are present"))
+            });
+            Ok((
+                frames,
+                super::relation_cache::CachedWork {
+                    kv,
+                    execution: started.elapsed(),
+                },
+            ))
+        })
+        .await?;
+    let source = result.source;
+    let restore_started =
+        (source == super::observe::StatementSource::RelationCache).then(Instant::now);
+    let frames = result.into_frames(&candidate.output);
+    if let Some(restore_started) = restore_started {
+        crate::telemetry::relation_cache_materialization_restore(
+            super::relation_cache::MaterializationDomain::SubrelationRowsV1.as_str(),
+            restore_started.elapsed(),
+        );
+    }
+    let mut operator: Box<dyn Operator + 'a> = Box::new(MaterializedRows {
+        rows: frames.into_iter(),
+    });
+    if source == super::observe::StatementSource::RelationCache {
+        if measure && let Some(attribution) = node.attribution {
+            let tally = Tally::default();
+            tallies.push((attribution, tally.clone()));
+            operator = Box::new(Counting {
+                inner: operator,
+                tally,
+            });
+        }
+        if measure_operators {
+            let operator_id = *next_operator_id;
+            *next_operator_id = next_operator_id.saturating_add(1);
+            let tally = OperatorTally::new(
+                operator_id,
+                parent_operator_id,
+                "CachedRelation",
+                node.attribution,
+                false,
+            );
+            tally.open_nanos.store(
+                duration_nanos(
+                    lookup_started
+                        .expect("measured materialization lookup has a timer")
+                        .elapsed(),
+                ),
+                atomic::Ordering::Relaxed,
+            );
+            let runtime_span = super::observe::OperatorRuntimeSpan::new(
+                operator_id,
+                parent_operator_id,
+                "CachedRelation",
+                node.attribution,
+                parent_operator_span,
+            );
+            operator_tallies.push(tally.clone());
+            operator = finish_operator(Some(tally), Some(runtime_span), None, operator);
+        }
+    }
+    Ok(operator)
+}
+
 fn finish_operator<'a>(
     tally: Option<OperatorTally>,
     runtime_span: Option<super::observe::OperatorRuntimeSpan>,
@@ -958,6 +1334,13 @@ impl JoinTally {
     fn add_build_row(&self) {
         if self.enabled {
             self.build_rows.fetch_add(1, atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn add_build_rows(&self, rows: usize) {
+        if self.enabled {
+            self.build_rows
+                .fetch_add(rows as u64, atomic::Ordering::Relaxed);
         }
     }
 
@@ -1252,6 +1635,22 @@ impl Operator for Counting<'_> {
 }
 
 struct Empty;
+
+struct MaterializedRows {
+    rows: std::vec::IntoIter<Env>,
+}
+
+#[async_trait]
+impl Operator for MaterializedRows {
+    async fn next(&mut self) -> Result<Option<Env>> {
+        Ok(self.rows.next())
+    }
+
+    async fn next_batch(&mut self, limit: usize, output: &mut Vec<Env>) -> Result<()> {
+        output.extend(self.rows.by_ref().take(limit));
+        Ok(())
+    }
+}
 
 #[async_trait]
 impl Operator for Empty {
@@ -1738,13 +2137,6 @@ fn aggregate_slot_value<'a>(
         .map_err(Into::into)
 }
 
-struct DimensionAggregateEntry {
-    key: smallvec::SmallVec<[Value; 4]>,
-    group_values: Vec<Value>,
-    group_hash: u64,
-    group_position: Option<usize>,
-}
-
 enum DecodedAggregateInput {
     CountAll,
     Slot(usize),
@@ -1971,18 +2363,18 @@ type IdentityHashMap<V> = HashMap<u64, V, BuildHasherDefault<IdentityHasher>>;
 struct GroupedHashJoinAggregate<'a> {
     fact: Option<Box<dyn Operator + 'a>>,
     dimension: Option<Box<dyn Operator + 'a>>,
+    dimensions: Option<CachedGroupedDimensionBuildHandle>,
     keys: Vec<EquiJoinKey>,
     fact_is_left: bool,
     groups: Vec<bound::BoundGroupTerm>,
     terms: Vec<bound::BoundAggregateTerm>,
     outer: Env,
     output: std::collections::VecDeque<Env>,
-    hash_builder: ahash::RandomState,
     memory_limit_bytes: u64,
 }
 
 fn ensure_aggregate_group_for_dimension(
-    entry: &DimensionAggregateEntry,
+    entry: &CachedGroupedDimensionEntry,
     terms: &[bound::BoundAggregateTerm],
     final_groups: &mut IdentityHashMap<Vec<AggregateGroup>>,
     order: &mut Vec<(u64, usize)>,
@@ -2021,14 +2413,15 @@ fn ensure_aggregate_group_for_dimension(
 }
 
 fn aggregate_group_for_dimension<'a>(
-    entry: &mut DimensionAggregateEntry,
+    entry: &CachedGroupedDimensionEntry,
+    group_positions: &mut [Option<usize>],
     terms: &[bound::BoundAggregateTerm],
     final_groups: &'a mut IdentityHashMap<Vec<AggregateGroup>>,
     order: &mut Vec<(u64, usize)>,
     retained_bytes: &mut u64,
     memory_limit_bytes: u64,
 ) -> Result<&'a mut AggregateGroup> {
-    let position = match entry.group_position {
+    let position = match group_positions[entry.position] {
         Some(position) => position,
         None => {
             let position = ensure_aggregate_group_for_dimension(
@@ -2039,7 +2432,7 @@ fn aggregate_group_for_dimension<'a>(
                 retained_bytes,
                 memory_limit_bytes,
             )?;
-            entry.group_position = Some(position);
+            group_positions[entry.position] = Some(position);
             position
         }
     };
@@ -2048,48 +2441,84 @@ fn aggregate_group_for_dimension<'a>(
         .expect("aggregate group exists")[position])
 }
 
+async fn collect_grouped_dimension(
+    mut dimension: Box<dyn Operator + '_>,
+    keys: &[EquiJoinKey],
+    fact_is_left: bool,
+    groups: &[bound::BoundGroupTerm],
+    memory_limit_bytes: u64,
+) -> Result<CachedGroupedDimensionBuild> {
+    let hash_builder = ahash::RandomState::new();
+    let mut entries = HashMap::<u64, Vec<CachedGroupedDimensionEntry>>::new();
+    let mut retained_bytes = 0u64;
+    let mut row_count = 0usize;
+    let mut input_row_count = 0usize;
+    while let Some(frame) = dimension.next().await? {
+        input_row_count = input_row_count.saturating_add(1);
+        let Some(values) = join_value_refs(&frame, keys, !fact_is_left)? else {
+            continue;
+        };
+        let hash = hash_scalar_values(values.iter().copied().map(Some), &hash_builder);
+        retained_bytes = retained_bytes.saturating_add(256);
+        if retained_bytes > memory_limit_bytes {
+            return Err(Error::message(
+                ErrorKind::Runtime,
+                format!(
+                    "exec: grouped hash join aggregate retained byte limit {memory_limit_bytes} exceeded"
+                ),
+            ));
+        }
+        let group_values = groups
+            .iter()
+            .map(|group| evaluate(&group.expression, &frame).map_err(Into::into))
+            .collect::<Result<Vec<_>>>()?;
+        let group_hash = aggregate_group_hash(None, Some(&group_values), &hash_builder);
+        entries
+            .entry(hash)
+            .or_default()
+            .push(CachedGroupedDimensionEntry {
+                key: values.into_iter().cloned().collect(),
+                group_values,
+                group_hash,
+                position: row_count,
+            });
+        row_count = row_count.saturating_add(1);
+    }
+    Ok(CachedGroupedDimensionBuild {
+        hash_builder,
+        entries,
+        row_count,
+        input_row_count,
+        execution_retained_bytes: retained_bytes,
+    })
+}
+
 #[async_trait]
 impl Operator for GroupedHashJoinAggregate<'_> {
     async fn next(&mut self) -> Result<Option<Env>> {
         if let Some(mut fact) = self.fact.take() {
-            let mut dimensions = IdentityHashMap::<Vec<DimensionAggregateEntry>>::default();
-            let mut retained_bytes = 0u64;
-            let mut dimension = self
-                .dimension
-                .take()
-                .expect("grouped hash join aggregate has a dimension input");
-            while let Some(frame) = dimension.next().await? {
-                let Some(values) = join_value_refs(&frame, &self.keys, !self.fact_is_left)? else {
-                    continue;
-                };
-                let hash = hash_scalar_values(values.iter().copied().map(Some), &self.hash_builder);
-                retained_bytes = retained_bytes.saturating_add(256);
-                if retained_bytes > self.memory_limit_bytes {
-                    return Err(Error::message(
-                        ErrorKind::Runtime,
-                        format!(
-                            "exec: grouped hash join aggregate retained byte limit {} exceeded",
-                            self.memory_limit_bytes
-                        ),
-                    ));
-                }
-                let group_values = self
-                    .groups
-                    .iter()
-                    .map(|group| evaluate(&group.expression, &frame).map_err(Into::into))
-                    .collect::<Result<Vec<_>>>()?;
-                let group_hash =
-                    aggregate_group_hash(None, Some(&group_values), &self.hash_builder);
-                dimensions
-                    .entry(hash)
-                    .or_default()
-                    .push(DimensionAggregateEntry {
-                        key: values.into_iter().cloned().collect(),
-                        group_values,
-                        group_hash,
-                        group_position: None,
-                    });
+            if self.dimensions.is_none() {
+                let dimension = self
+                    .dimension
+                    .take()
+                    .expect("grouped hash join aggregate has a dimension input");
+                let dimensions = collect_grouped_dimension(
+                    dimension,
+                    &self.keys,
+                    self.fact_is_left,
+                    &self.groups,
+                    self.memory_limit_bytes,
+                )
+                .await?;
+                self.dimensions = Some(CachedGroupedDimensionBuildHandle::uncached(dimensions));
             }
+            let dimensions = self
+                .dimensions
+                .as_ref()
+                .expect("grouped dimension build is present")
+                .value();
+            let mut retained_bytes = dimensions.execution_retained_bytes;
+            let mut group_positions = vec![None; dimensions.row_count];
 
             let mut final_groups = IdentityHashMap::<Vec<AggregateGroup>>::default();
             let mut order = Vec::new();
@@ -2110,8 +2539,8 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                         let Some(values) = decoded_access.join_values_ref(&row) else {
                             continue;
                         };
-                        let dimension_hash = values.hash(&self.hash_builder);
-                        let Some(entries) = dimensions.get_mut(&dimension_hash) else {
+                        let dimension_hash = values.hash(&dimensions.hash_builder);
+                        let Some(entries) = dimensions.entries.get(&dimension_hash) else {
                             continue;
                         };
                         for entry in entries {
@@ -2120,6 +2549,7 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                             }
                             let group = aggregate_group_for_dimension(
                                 entry,
+                                &mut group_positions,
                                 &self.terms,
                                 &mut final_groups,
                                 &mut order,
@@ -2148,9 +2578,9 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                         };
                         let dimension_hash = hash_scalar_values(
                             values.iter().copied().map(Some),
-                            &self.hash_builder,
+                            &dimensions.hash_builder,
                         );
-                        let Some(entries) = dimensions.get_mut(&dimension_hash) else {
+                        let Some(entries) = dimensions.entries.get(&dimension_hash) else {
                             continue;
                         };
                         for entry in entries {
@@ -2159,6 +2589,7 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                             }
                             let group = aggregate_group_for_dimension(
                                 entry,
+                                &mut group_positions,
                                 &self.terms,
                                 &mut final_groups,
                                 &mut order,
@@ -2184,9 +2615,9 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                         };
                         let dimension_hash = hash_scalar_values(
                             values.iter().copied().map(Some),
-                            &self.hash_builder,
+                            &dimensions.hash_builder,
                         );
-                        let Some(entries) = dimensions.get_mut(&dimension_hash) else {
+                        let Some(entries) = dimensions.entries.get(&dimension_hash) else {
                             continue;
                         };
                         for entry in entries {
@@ -2195,6 +2626,7 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                             }
                             let group = aggregate_group_for_dimension(
                                 entry,
+                                &mut group_positions,
                                 &self.terms,
                                 &mut final_groups,
                                 &mut order,
@@ -2318,9 +2750,41 @@ impl Operator for NestedLoopJoin<'_> {
     }
 }
 
-struct HashEntry {
-    key: smallvec::SmallVec<[Value; 4]>,
-    rows: Vec<Env>,
+struct BoundHashBuild {
+    value: CachedHashBuildHandle,
+    output: RowType,
+    rows: Vec<std::sync::OnceLock<Box<Env>>>,
+}
+
+impl BoundHashBuild {
+    fn new(value: CachedHashBuildHandle, output: RowType) -> Self {
+        let rows = (0..value.value().rows.len())
+            .map(|_| std::sync::OnceLock::new())
+            .collect();
+        Self {
+            value,
+            output,
+            rows,
+        }
+    }
+
+    fn row(&self, index: usize) -> &Env {
+        // A probe needs plan-local slots for residual predicates and output.
+        // Restore each matching row at most once. The box keeps the empty
+        // request-local index small when most build rows do not match.
+        self.rows[index].get_or_init(|| {
+            let mut frame = Env::new();
+            for (field, datum) in self
+                .output
+                .fields
+                .iter()
+                .zip(self.value.value().rows[index].iter())
+            {
+                frame.insert(field.slot, datum.clone());
+            }
+            Box::new(frame)
+        })
+    }
 }
 
 struct HashJoin<'a> {
@@ -2331,14 +2795,12 @@ struct HashJoin<'a> {
     keys: Vec<EquiJoinKey>,
     right_output: RowType,
     memory_limit_bytes: u64,
-    entries: Arc<HashMap<u64, Vec<HashEntry>>>,
-    hash_builder: ahash::RandomState,
+    build: Option<Arc<BoundHashBuild>>,
     current_left: Option<Env>,
     current_hash: u64,
     current_entry: usize,
     current_row: usize,
     matched: bool,
-    retained_bytes: u64,
     tally: JoinTally,
     execution_grant: ExecutionGrant,
     parallel_output: std::collections::VecDeque<Env>,
@@ -2347,46 +2809,76 @@ struct HashJoin<'a> {
     serial_probe_rows_until_retry: usize,
 }
 
-impl<'a> HashJoin<'a> {
-    async fn build(&mut self, mut right: Box<dyn Operator + 'a>) -> Result<()> {
-        let entries = Arc::get_mut(&mut self.entries).expect("hash join build owns its table");
-        while let Some(frame) = right.next().await? {
-            self.tally.add_build_row();
-            let Some(values) = join_value_refs(&frame, &self.keys, false)? else {
-                continue;
-            };
-            let hash = hash_scalar_values(values.iter().copied().map(Some), &self.hash_builder);
-            let entries = entries.entry(hash).or_default();
-            let mut matching = None;
-            for (index, entry) in entries.iter().enumerate() {
-                self.tally.add_key_comparison();
-                if join_values_equal(&entry.key, &values)? {
-                    matching = Some(index);
-                    break;
-                }
+async fn collect_hash_build(
+    mut right: Box<dyn Operator + '_>,
+    keys: &[EquiJoinKey],
+    right_output: &RowType,
+    memory_limit_bytes: u64,
+    tally: &JoinTally,
+) -> Result<CachedHashBuild> {
+    let hash_builder = ahash::RandomState::new();
+    let mut entries = HashMap::<u64, Vec<CachedHashEntry>>::new();
+    let mut rows = Vec::new();
+    let mut input_row_count = 0usize;
+    let mut retained_bytes = 0u64;
+    while let Some(frame) = right.next().await? {
+        tally.add_build_row();
+        input_row_count = input_row_count.saturating_add(1);
+        let Some(values) = join_value_refs(&frame, keys, false)? else {
+            continue;
+        };
+        let hash = hash_scalar_values(values.iter().copied().map(Some), &hash_builder);
+        let bucket = entries.entry(hash).or_default();
+        let mut matching = None;
+        for (index, entry) in bucket.iter().enumerate() {
+            tally.add_key_comparison();
+            if join_values_equal(&entry.key, &values)? {
+                matching = Some(index);
+                break;
             }
-            let index = matching.unwrap_or_else(|| {
-                entries.push(HashEntry {
-                    key: values.into_iter().cloned().collect(),
-                    rows: Vec::new(),
-                });
-                entries.len() - 1
-            });
-            self.retained_bytes = self
-                .retained_bytes
-                .saturating_add(frame_retained_bytes(&frame));
-            if self.retained_bytes > self.memory_limit_bytes {
-                return Err(Error::message(
-                    ErrorKind::Runtime,
-                    format!(
-                        "exec: hash join retained byte limit {} exceeded",
-                        self.memory_limit_bytes
-                    ),
-                ));
-            }
-            self.tally.retain(self.retained_bytes);
-            entries[index].rows.push(frame);
         }
+        let index = matching.unwrap_or_else(|| {
+            bucket.push(CachedHashEntry {
+                key: values.into_iter().cloned().collect(),
+                rows: Vec::new(),
+            });
+            bucket.len() - 1
+        });
+        retained_bytes = retained_bytes.saturating_add(frame_retained_bytes(&frame));
+        if retained_bytes > memory_limit_bytes {
+            return Err(Error::message(
+                ErrorKind::Runtime,
+                format!("exec: hash join retained byte limit {memory_limit_bytes} exceeded"),
+            ));
+        }
+        tally.retain(retained_bytes);
+        let row = rows.len();
+        rows.push(super::relation_cache::positional_row(right_output, &frame));
+        bucket[index].rows.push(row);
+    }
+    Ok(CachedHashBuild {
+        hash_builder,
+        entries,
+        rows,
+        input_row_count,
+        execution_retained_bytes: retained_bytes,
+    })
+}
+
+impl<'a> HashJoin<'a> {
+    async fn build(&mut self, right: Box<dyn Operator + 'a>) -> Result<()> {
+        let build = collect_hash_build(
+            right,
+            &self.keys,
+            &self.right_output,
+            self.memory_limit_bytes,
+            &self.tally,
+        )
+        .await?;
+        self.build = Some(Arc::new(BoundHashBuild::new(
+            CachedHashBuildHandle::uncached(build),
+            self.right_output.clone(),
+        )));
         Ok(())
     }
 
@@ -2437,8 +2929,11 @@ impl<'a> HashJoin<'a> {
             if rows.is_empty() {
                 break;
             }
-            let entries = self.entries.clone();
-            let hash_builder = self.hash_builder.clone();
+            let build = self
+                .build
+                .as_ref()
+                .expect("hash join build is present")
+                .clone();
             let kind = self.kind;
             let residual_predicate = self.residual_predicate.clone();
             let keys = self.keys.clone();
@@ -2449,8 +2944,7 @@ impl<'a> HashJoin<'a> {
                 let _permit = permit;
                 probe_hash_rows(HashProbeInput {
                     rows,
-                    entries,
-                    hash_builder,
+                    build,
                     kind,
                     residual_predicate,
                     keys,
@@ -2512,8 +3006,18 @@ impl<'a> Operator for HashJoin<'a> {
                     "rad.debug.join.build_rows",
                     self.tally.build_rows.load(atomic::Ordering::Relaxed),
                 );
-                span.record("rad.debug.join.retained_bytes", self.retained_bytes);
-                span.record("rad.debug.join.hash_buckets", self.entries.len() as u64);
+                span.record(
+                    "rad.debug.join.retained_bytes",
+                    self.build
+                        .as_ref()
+                        .map_or(0, |build| build.value.value().execution_retained_bytes),
+                );
+                span.record(
+                    "rad.debug.join.hash_buckets",
+                    self.build
+                        .as_ref()
+                        .map_or(0, |build| build.value.value().entries.len() as u64),
+                );
                 span.record(
                     "rad.status",
                     if result.is_ok() { "success" } else { "error" },
@@ -2549,12 +3053,16 @@ impl<'a> Operator for HashJoin<'a> {
                     self.serial_probe_rows_until_retry.saturating_sub(1);
                 self.tally.add_probe_row();
                 let values = join_value_refs(&left, &self.keys, true)?;
+                let build = self.build.as_ref().expect("hash join build is present");
                 self.current_hash = values.as_ref().map_or(0, |values| {
-                    hash_scalar_values(values.iter().copied().map(Some), &self.hash_builder)
+                    hash_scalar_values(
+                        values.iter().copied().map(Some),
+                        &build.value.value().hash_builder,
+                    )
                 });
                 self.current_entry = usize::MAX;
                 if let Some(values) = values.as_ref()
-                    && let Some(entries) = self.entries.get(&self.current_hash)
+                    && let Some(entries) = build.value.value().entries.get(&self.current_hash)
                 {
                     for (index, entry) in entries.iter().enumerate() {
                         self.tally.add_key_comparison();
@@ -2570,20 +3078,36 @@ impl<'a> Operator for HashJoin<'a> {
                 self.matched = false;
             }
             while self.current_entry != usize::MAX {
-                let Some(right) = self
+                let Some(right_index) = self
+                    .build
+                    .as_ref()
+                    .expect("hash join build is present")
+                    .value
+                    .value()
                     .entries
                     .get(&self.current_hash)
                     .and_then(|entries| entries.get(self.current_entry))
                     .and_then(|entry| entry.rows.get(self.current_row))
+                    .copied()
                 else {
                     break;
                 };
                 self.current_row += 1;
                 let last_match = self
+                    .build
+                    .as_ref()
+                    .expect("hash join build is present")
+                    .value
+                    .value()
                     .entries
                     .get(&self.current_hash)
                     .and_then(|entries| entries.get(self.current_entry))
                     .is_some_and(|entry| self.current_row == entry.rows.len());
+                let right = self
+                    .build
+                    .as_ref()
+                    .expect("hash join build is present")
+                    .row(right_index);
                 let left = self.current_left.as_ref().expect("left row");
                 if let Some(predicate) = &self.residual_predicate
                     && crate::engine::lir::eval::evaluate_join_predicate(predicate, left, right)?
@@ -2613,8 +3137,7 @@ impl<'a> Operator for HashJoin<'a> {
 
 struct HashProbeInput {
     rows: Vec<Env>,
-    entries: Arc<HashMap<u64, Vec<HashEntry>>>,
-    hash_builder: ahash::RandomState,
+    build: Arc<BoundHashBuild>,
     kind: JoinKind,
     residual_predicate: Option<bound::Expr>,
     keys: Vec<EquiJoinKey>,
@@ -2629,8 +3152,11 @@ fn probe_hash_rows(input: HashProbeInput) -> Result<Vec<Env>> {
         let values = join_value_refs(&left, &input.keys, true)?;
         let mut matching = None;
         if let Some(values) = values.as_ref() {
-            let hash = hash_scalar_values(values.iter().copied().map(Some), &input.hash_builder);
-            if let Some(entries) = input.entries.get(&hash) {
+            let hash = hash_scalar_values(
+                values.iter().copied().map(Some),
+                &input.build.value.value().hash_builder,
+            );
+            if let Some(entries) = input.build.value.value().entries.get(&hash) {
                 for entry in entries {
                     input.tally.add_key_comparison();
                     if join_values_equal(&entry.key, values)? {
@@ -2643,7 +3169,8 @@ fn probe_hash_rows(input: HashProbeInput) -> Result<Vec<Env>> {
         drop(values);
         let mut matched = false;
         if let Some(entry) = matching {
-            if let [right] = entry.rows.as_slice() {
+            if let [right_index] = entry.rows.as_slice() {
+                let right = input.build.row(*right_index);
                 let accepted = if let Some(predicate) = &input.residual_predicate {
                     crate::engine::lir::eval::evaluate_join_predicate(predicate, &left, right)?
                         == TriBool::True
@@ -2663,7 +3190,8 @@ fn probe_hash_rows(input: HashProbeInput) -> Result<Vec<Env>> {
                 }
                 continue;
             }
-            for right in &entry.rows {
+            for right_index in &entry.rows {
+                let right = input.build.row(*right_index);
                 if let Some(predicate) = &input.residual_predicate
                     && crate::engine::lir::eval::evaluate_join_predicate(predicate, &left, right)?
                         != TriBool::True

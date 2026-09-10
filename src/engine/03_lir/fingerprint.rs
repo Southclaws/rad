@@ -31,6 +31,7 @@ const DOMAIN_EXACT: u8 = 0xE1;
 const DOMAIN_FAMILY: u8 = 0xF1;
 const DOMAIN_REQUEST: u8 = 0xA1;
 pub(crate) const DOMAIN_PLAN: u8 = 0xB1;
+const DOMAIN_EXPRESSIONS: u8 = 0xC1;
 
 const TAG_SCAN: u8 = 1;
 const TAG_ROWS: u8 = 2;
@@ -549,6 +550,22 @@ pub fn relation_family(relation: &Relation) -> Fingerprint {
 
 pub fn relation_fingerprints(relation: &Relation) -> RelationFingerprints {
     Canonicalizer::new(&[]).relation(relation)
+}
+
+pub(crate) fn expressions<'a>(
+    input: &super::RowType,
+    expressions: impl IntoIterator<Item = &'a Expr>,
+) -> Fingerprint {
+    let expressions = expressions.into_iter().collect::<Vec<_>>();
+    let mut payload = Pair::default();
+    payload.u64(expressions.len() as u64);
+    let mut canonicalizer = Canonicalizer::new(&[]);
+    canonicalizer.scoped(input.slots(), |canonicalizer| {
+        for expression in expressions {
+            canonicalizer.expr(&mut payload, expression);
+        }
+    });
+    finish(DOMAIN_EXPRESSIONS, &payload.exact)
 }
 
 pub(crate) fn finish(domain: u8, payload: &[u8]) -> Fingerprint {
@@ -1108,7 +1125,7 @@ mod tests {
     use crate::engine::catalog::model::{Column, ScalarType, Table};
 
     use super::super::bound::Relation;
-    use super::super::{Field, RootCardinality, Type};
+    use super::super::{Field, RootCardinality, RowType, Type};
     use super::*;
 
     fn table(name: &str, schema_id: u32) -> Table {
@@ -1509,6 +1526,50 @@ mod tests {
                 .insert(name.into(), left.bindings[name].clone());
         }
         assert_eq!(request(&left), request(&right));
+    }
+
+    #[test]
+    fn expression_identity_normalizes_slot_numbers() {
+        let left_input = RowType {
+            fields: vec![
+                Field {
+                    name: "first".into(),
+                    slot: SlotId(4),
+                    value_type: Type::scalar(Kind::Text, false),
+                },
+                Field {
+                    name: "second".into(),
+                    slot: SlotId(8),
+                    value_type: Type::scalar(Kind::Int64, false),
+                },
+            ],
+        };
+        let right_input = RowType {
+            fields: vec![
+                Field {
+                    name: "first".into(),
+                    slot: SlotId(40),
+                    value_type: Type::scalar(Kind::Text, false),
+                },
+                Field {
+                    name: "second".into(),
+                    slot: SlotId(80),
+                    value_type: Type::scalar(Kind::Int64, false),
+                },
+            ],
+        };
+        let left = Expr::slot(SlotId(8), "second", Type::scalar(Kind::Int64, false));
+        let right = Expr::slot(SlotId(80), "second", Type::scalar(Kind::Int64, false));
+        let other = Expr::slot(SlotId(40), "first", Type::scalar(Kind::Text, false));
+
+        assert_eq!(
+            expressions(&left_input, [&left]),
+            expressions(&right_input, [&right])
+        );
+        assert_ne!(
+            expressions(&right_input, [&right]),
+            expressions(&right_input, [&other])
+        );
     }
 
     #[test]

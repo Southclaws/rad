@@ -177,6 +177,19 @@ fn rad_metric_view(instrument: &Instrument) -> Option<Stream> {
             "rad.relation.cache.cohort.reuse.opportunities" => Some(vec![
                 0.0, 1.0, 2.0, 3.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 1024.0,
             ]),
+            "rad.relation.cache.artifact.rows" | "rad.relation.cache.artifact.keys" => Some(vec![
+                1.0,
+                4.0,
+                16.0,
+                64.0,
+                256.0,
+                1_024.0,
+                4_096.0,
+                16_384.0,
+                65_536.0,
+                262_144.0,
+                1_048_576.0,
+            ]),
             "rad.relation.cache.shadow.candidate.work" => Some(vec![
                 4_096.0,
                 16_384.0,
@@ -259,6 +272,11 @@ struct Instruments {
     relation_cache_capacity_bytes: Gauge<u64>,
     relation_cache_result_limit_bytes: Gauge<u64>,
     relation_cache_result_bytes: Histogram<u64>,
+    relation_cache_fill_duration: Histogram<f64>,
+    relation_cache_attach_duration: Histogram<f64>,
+    relation_cache_restore_duration: Histogram<f64>,
+    relation_cache_artifact_rows: Histogram<u64>,
+    relation_cache_artifact_keys: Histogram<u64>,
     relation_cache_dependency_lookups: Counter<u64>,
     relation_cache_dependency_evictions: Counter<u64>,
     relation_cache_catalog_lookups: Counter<u64>,
@@ -516,6 +534,29 @@ impl Instruments {
                 .u64_histogram("rad.relation.cache.result.bytes")
                 .with_unit("By")
                 .with_description("Relation cache candidate result bytes")
+                .build(),
+            relation_cache_fill_duration: meter
+                .f64_histogram("rad.relation.cache.fill.duration")
+                .with_unit("s")
+                .with_description("Relation cache materialization fill duration")
+                .build(),
+            relation_cache_attach_duration: meter
+                .f64_histogram("rad.relation.cache.attach.duration")
+                .with_unit("s")
+                .with_description("Relation cache physical materialization attachment duration")
+                .build(),
+            relation_cache_restore_duration: meter
+                .f64_histogram("rad.relation.cache.restore.duration")
+                .with_unit("s")
+                .with_description("Relation cache result restoration duration")
+                .build(),
+            relation_cache_artifact_rows: meter
+                .u64_histogram("rad.relation.cache.artifact.rows")
+                .with_description("Rows observed by a relation cache materialization")
+                .build(),
+            relation_cache_artifact_keys: meter
+                .u64_histogram("rad.relation.cache.artifact.keys")
+                .with_description("Keys retained by a relation cache materialization")
                 .build(),
             relation_cache_dependency_lookups: meter
                 .u64_counter("rad.relation.cache.dependency.lookups")
@@ -1022,12 +1063,20 @@ pub fn execution_parallel_batch(operator: &str, width: usize, rows: usize) {
 }
 
 pub fn relation_cache_lookup(result: &'static str) {
+    relation_cache_materialization_lookup("query_result", result);
+}
+
+pub fn relation_cache_materialization_lookup(materialization: &'static str, result: &'static str) {
     let Some(instruments) = INSTRUMENTS.get() else {
         return;
     };
-    instruments
-        .relation_cache_lookups
-        .add(1, &[KeyValue::new("rad.cache.result", result)]);
+    instruments.relation_cache_lookups.add(
+        1,
+        &[
+            KeyValue::new("rad.cache.materialization", materialization),
+            KeyValue::new("rad.cache.result", result),
+        ],
+    );
 }
 
 pub fn conditional_query_finished(outcome: &'static str) {
@@ -1057,21 +1106,40 @@ pub fn conditional_query_avoided_execution() {
 }
 
 pub fn relation_cache_admission(result: &'static str) {
+    relation_cache_materialization_admission("query_result", result);
+}
+
+pub fn relation_cache_materialization_admission(
+    materialization: &'static str,
+    result: &'static str,
+) {
     let Some(instruments) = INSTRUMENTS.get() else {
         return;
     };
-    instruments
-        .relation_cache_admissions
-        .add(1, &[KeyValue::new("rad.cache.result", result)]);
+    instruments.relation_cache_admissions.add(
+        1,
+        &[
+            KeyValue::new("rad.cache.materialization", materialization),
+            KeyValue::new("rad.cache.result", result),
+        ],
+    );
 }
 
 pub fn relation_cache_eviction(cause: &'static str) {
+    relation_cache_materialization_eviction("query_result", cause);
+}
+
+pub fn relation_cache_materialization_eviction(materialization: &'static str, cause: &'static str) {
     let Some(instruments) = INSTRUMENTS.get() else {
         return;
     };
-    instruments
-        .relation_cache_evictions
-        .add(1, &[KeyValue::new("rad.cache.cause", cause)]);
+    instruments.relation_cache_evictions.add(
+        1,
+        &[
+            KeyValue::new("rad.cache.materialization", materialization),
+            KeyValue::new("rad.cache.cause", cause),
+        ],
+    );
 }
 
 pub fn relation_cache_residency(entries: usize, retained_bytes: u64) {
@@ -1100,12 +1168,58 @@ pub fn relation_cache_limits(entries: usize, bytes: u64, result_bytes: u64) {
 }
 
 pub fn relation_cache_result_size(bytes: usize) {
+    relation_cache_materialization_result_size("query_result", bytes);
+}
+
+pub fn relation_cache_materialization_result_size(materialization: &'static str, bytes: usize) {
     let Some(instruments) = INSTRUMENTS.get() else {
         return;
     };
+    instruments.relation_cache_result_bytes.record(
+        bytes as u64,
+        &[KeyValue::new("rad.cache.materialization", materialization)],
+    );
+}
+
+pub fn relation_cache_materialization_restore(materialization: &'static str, duration: Duration) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments.relation_cache_restore_duration.record(
+        duration.as_secs_f64(),
+        &[KeyValue::new("rad.cache.materialization", materialization)],
+    );
+}
+
+pub fn relation_cache_materialization_attach(materialization: &'static str, duration: Duration) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments.relation_cache_attach_duration.record(
+        duration.as_secs_f64(),
+        &[KeyValue::new("rad.cache.materialization", materialization)],
+    );
+}
+
+pub fn relation_cache_materialization_fill(
+    materialization: &'static str,
+    duration: Duration,
+    rows: usize,
+    keys: usize,
+) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    let attributes = [KeyValue::new("rad.cache.materialization", materialization)];
     instruments
-        .relation_cache_result_bytes
-        .record(bytes as u64, &[]);
+        .relation_cache_fill_duration
+        .record(duration.as_secs_f64(), &attributes);
+    instruments
+        .relation_cache_artifact_rows
+        .record(rows as u64, &attributes);
+    instruments
+        .relation_cache_artifact_keys
+        .record(keys as u64, &attributes);
 }
 
 pub fn relation_cache_dependency_lookup(result: &'static str) {
@@ -1230,21 +1344,38 @@ pub fn relation_cache_prepared_avoided() {
 }
 
 pub fn relation_cache_avoided(reads: u64, bytes: u64, duration: Duration) {
-    let Some(instruments) = INSTRUMENTS.get() else {
-        return;
-    };
-    instruments.relation_cache_avoided_reads.add(reads, &[]);
-    instruments.relation_cache_avoided_bytes.add(bytes, &[]);
-    instruments
-        .relation_cache_avoided_time
-        .add(duration.as_secs_f64(), &[]);
+    relation_cache_materialization_avoided("query_result", reads, bytes, duration);
 }
 
-pub fn relation_cache_coalesced() {
+pub fn relation_cache_materialization_avoided(
+    materialization: &'static str,
+    reads: u64,
+    bytes: u64,
+    duration: Duration,
+) {
     let Some(instruments) = INSTRUMENTS.get() else {
         return;
     };
-    instruments.relation_cache_coalesced_fills.add(1, &[]);
+    let attributes = [KeyValue::new("rad.cache.materialization", materialization)];
+    instruments
+        .relation_cache_avoided_reads
+        .add(reads, &attributes);
+    instruments
+        .relation_cache_avoided_bytes
+        .add(bytes, &attributes);
+    instruments
+        .relation_cache_avoided_time
+        .add(duration.as_secs_f64(), &attributes);
+}
+
+pub fn relation_cache_coalesced(materialization: &'static str) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments.relation_cache_coalesced_fills.add(
+        1,
+        &[KeyValue::new("rad.cache.materialization", materialization)],
+    );
 }
 
 pub fn relation_cache_reuse_opportunity() {

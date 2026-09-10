@@ -108,6 +108,7 @@ pub struct Executor<'a> {
     current_operator_id: Option<u32>,
     current_operator_span: Option<tracing::Span>,
     predicate_transfer_inputs: Vec<Vec<Vec<Env>>>,
+    subrelation_cache: Option<super::relation_cache::SubrelationCacheContext<'a>>,
     execution_grant: super::parallel::ExecutionGrant,
 }
 
@@ -194,6 +195,7 @@ impl<'a> Executor<'a> {
             current_operator_id: None,
             current_operator_span: None,
             predicate_transfer_inputs: Vec::new(),
+            subrelation_cache: None,
             execution_grant: super::parallel::ExecutionGrant::serial(),
         }
     }
@@ -212,6 +214,18 @@ impl<'a> Executor<'a> {
 
     pub fn observe_kv_work(&mut self, counters: &'a super::observe::KvCounters) {
         self.kv_counters = Some(counters);
+    }
+
+    pub(super) fn use_subrelation_cache(
+        &mut self,
+        cache: &'a super::relation_cache::RelationCache,
+        root_key: super::relation_cache::RelationCacheKey,
+    ) {
+        self.subrelation_cache = Some(super::relation_cache::SubrelationCacheContext::new(
+            cache,
+            root_key,
+            self.kv_counters,
+        ));
     }
 
     fn kv_work(&self) -> super::observe::KvWork {
@@ -564,6 +578,7 @@ impl<'a> Executor<'a> {
                     &mut self.next_operator_id,
                     self.current_operator_id,
                     self.measure_operators,
+                    self.subrelation_cache.as_ref(),
                     &self.execution_grant,
                 )
                 .await
@@ -573,6 +588,7 @@ impl<'a> Executor<'a> {
                     node,
                     outer,
                     &mut self.join_measurements,
+                    self.subrelation_cache.as_ref(),
                     &self.execution_grant,
                 )
                 .await
