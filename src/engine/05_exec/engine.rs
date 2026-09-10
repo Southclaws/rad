@@ -2606,7 +2606,10 @@ mod tests {
             catalog::store::read_table_data_generation(&*store, &table.id)
                 .await
                 .unwrap()
-                .get()
+                .stripes()
+                .iter()
+                .map(|generation| generation.get())
+                .sum::<u64>()
         };
 
         assert_eq!(generation().await, 0);

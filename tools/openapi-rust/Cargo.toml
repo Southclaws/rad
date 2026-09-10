@@ -1,0 +1,12 @@
+[package]
+name = "rad-openapi-rust"
+version = "0.1.0"
+edition = "2024"
+description = "Rust HTTP binding generator for the Rad OpenAPI contract"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+openapi-to-rust = { version = "=0.12.0", default-features = false }
+serde_json = "1.0.140"

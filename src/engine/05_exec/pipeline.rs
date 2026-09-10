@@ -1742,6 +1742,7 @@ struct DimensionAggregateEntry {
     key: smallvec::SmallVec<[Value; 4]>,
     group_values: Vec<Value>,
     group_hash: u64,
+    group_position: Option<usize>,
 }
 
 enum DecodedAggregateInput {
@@ -1757,6 +1758,34 @@ enum DecodedAggregateInput {
 struct DecodedFactAccess {
     join: smallvec::SmallVec<[usize; 4]>,
     aggregates: Vec<DecodedAggregateInput>,
+}
+
+enum DecodedJoinValues<'a> {
+    One(super::codec::DecodedValueRef<'a>),
+    Many(smallvec::SmallVec<[super::codec::DecodedValueRef<'a>; 4]>),
+}
+
+impl DecodedJoinValues<'_> {
+    fn hash(&self, hash_builder: &ahash::RandomState) -> u64 {
+        match self {
+            Self::One(value) => {
+                hash_decoded_scalar_values(std::iter::once(Some(*value)), hash_builder)
+            }
+            Self::Many(values) => {
+                hash_decoded_scalar_values(values.iter().copied().map(Some), hash_builder)
+            }
+        }
+    }
+
+    fn matches(&self, stored: &[Value]) -> Result<bool> {
+        match self {
+            Self::One(value) => {
+                debug_assert_eq!(stored.len(), 1);
+                join_decoded_value_equal(&stored[0], *value)
+            }
+            Self::Many(values) => join_decoded_values_equal(stored, values),
+        }
+    }
 }
 
 impl DecodedFactAccess {
@@ -1858,11 +1887,19 @@ impl DecodedFactAccess {
     fn join_values_ref<'a>(
         &self,
         row: &super::codec::DecodedRowRef<'a>,
-    ) -> Option<smallvec::SmallVec<[super::codec::DecodedValueRef<'a>; 4]>> {
+    ) -> Option<DecodedJoinValues<'a>> {
+        if let [position] = self.join.as_slice() {
+            return row
+                .get(*position)
+                .copied()
+                .filter(|value| !value.is_null())
+                .map(DecodedJoinValues::One);
+        }
         self.join
             .iter()
             .map(|position| row.get(*position).copied().filter(|value| !value.is_null()))
-            .collect()
+            .collect::<Option<_>>()
+            .map(DecodedJoinValues::Many)
     }
 
     fn observe_ref(
@@ -1944,14 +1981,14 @@ struct GroupedHashJoinAggregate<'a> {
     memory_limit_bytes: u64,
 }
 
-fn aggregate_group_for_dimension<'a>(
+fn ensure_aggregate_group_for_dimension(
     entry: &DimensionAggregateEntry,
     terms: &[bound::BoundAggregateTerm],
-    final_groups: &'a mut IdentityHashMap<Vec<AggregateGroup>>,
+    final_groups: &mut IdentityHashMap<Vec<AggregateGroup>>,
     order: &mut Vec<(u64, usize)>,
     retained_bytes: &mut u64,
     memory_limit_bytes: u64,
-) -> Result<&'a mut AggregateGroup> {
+) -> Result<usize> {
     let hash = entry.group_hash;
     let bucket = final_groups.entry(hash).or_default();
     let position = bucket
@@ -1980,7 +2017,35 @@ fn aggregate_group_for_dimension<'a>(
             position
         }
     };
-    Ok(&mut bucket[position])
+    Ok(position)
+}
+
+fn aggregate_group_for_dimension<'a>(
+    entry: &mut DimensionAggregateEntry,
+    terms: &[bound::BoundAggregateTerm],
+    final_groups: &'a mut IdentityHashMap<Vec<AggregateGroup>>,
+    order: &mut Vec<(u64, usize)>,
+    retained_bytes: &mut u64,
+    memory_limit_bytes: u64,
+) -> Result<&'a mut AggregateGroup> {
+    let position = match entry.group_position {
+        Some(position) => position,
+        None => {
+            let position = ensure_aggregate_group_for_dimension(
+                entry,
+                terms,
+                final_groups,
+                order,
+                retained_bytes,
+                memory_limit_bytes,
+            )?;
+            entry.group_position = Some(position);
+            position
+        }
+    };
+    Ok(&mut final_groups
+        .get_mut(&entry.group_hash)
+        .expect("aggregate group exists")[position])
 }
 
 #[async_trait]
@@ -2022,6 +2087,7 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                         key: values.into_iter().cloned().collect(),
                         group_values,
                         group_hash,
+                        group_position: None,
                     });
             }
 
@@ -2044,15 +2110,12 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                         let Some(values) = decoded_access.join_values_ref(&row) else {
                             continue;
                         };
-                        let dimension_hash = hash_decoded_scalar_values(
-                            values.iter().copied().map(Some),
-                            &self.hash_builder,
-                        );
-                        let Some(entries) = dimensions.get(&dimension_hash) else {
+                        let dimension_hash = values.hash(&self.hash_builder);
+                        let Some(entries) = dimensions.get_mut(&dimension_hash) else {
                             continue;
                         };
                         for entry in entries {
-                            if !join_decoded_values_equal(&entry.key, &values)? {
+                            if !values.matches(&entry.key)? {
                                 continue;
                             }
                             let group = aggregate_group_for_dimension(
@@ -2087,7 +2150,7 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                             values.iter().copied().map(Some),
                             &self.hash_builder,
                         );
-                        let Some(entries) = dimensions.get(&dimension_hash) else {
+                        let Some(entries) = dimensions.get_mut(&dimension_hash) else {
                             continue;
                         };
                         for entry in entries {
@@ -2123,7 +2186,7 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                             values.iter().copied().map(Some),
                             &self.hash_builder,
                         );
-                        let Some(entries) = dimensions.get(&dimension_hash) else {
+                        let Some(entries) = dimensions.get_mut(&dimension_hash) else {
                             continue;
                         };
                         for entry in entries {
@@ -2838,30 +2901,34 @@ fn join_decoded_values_equal(
 ) -> Result<bool> {
     debug_assert_eq!(stored.len(), candidate.len());
     for (stored, candidate) in stored.iter().zip(candidate) {
-        let equal = match (stored, candidate) {
-            (Value::Text(left), super::codec::DecodedValueRef::Text(right)) => left == right,
-            (Value::Int64(left), super::codec::DecodedValueRef::Int64(right)) => left == right,
-            (Value::Float64(left), super::codec::DecodedValueRef::Float64(right)) => {
-                left == right || (left.is_nan() && right.is_nan())
-            }
-            (Value::Bool(left), super::codec::DecodedValueRef::Bool(right)) => left == right,
-            (Value::Null(_), super::codec::DecodedValueRef::Null(_)) => false,
-            (left, right) => {
-                return Err(Error::message(
-                    ErrorKind::Internal,
-                    format!(
-                        "exec: cannot compare join values {:?} and {:?}",
-                        left.scalar_type(),
-                        decoded_scalar_type(*right)
-                    ),
-                ));
-            }
-        };
-        if !equal {
+        if !join_decoded_value_equal(stored, *candidate)? {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+fn join_decoded_value_equal(
+    stored: &Value,
+    candidate: super::codec::DecodedValueRef<'_>,
+) -> Result<bool> {
+    match (stored, candidate) {
+        (Value::Text(left), super::codec::DecodedValueRef::Text(right)) => Ok(left == right),
+        (Value::Int64(left), super::codec::DecodedValueRef::Int64(right)) => Ok(*left == right),
+        (Value::Float64(left), super::codec::DecodedValueRef::Float64(right)) => {
+            Ok(*left == right || (left.is_nan() && right.is_nan()))
+        }
+        (Value::Bool(left), super::codec::DecodedValueRef::Bool(right)) => Ok(*left == right),
+        (Value::Null(_), super::codec::DecodedValueRef::Null(_)) => Ok(false),
+        (left, right) => Err(Error::message(
+            ErrorKind::Internal,
+            format!(
+                "exec: cannot compare join values {:?} and {:?}",
+                left.scalar_type(),
+                decoded_scalar_type(right)
+            ),
+        )),
+    }
 }
 
 fn decoded_scalar_type(value: super::codec::DecodedValueRef<'_>) -> ScalarType {

@@ -2644,6 +2644,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "openapi-to-rust"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31db574503ba5de85cdae6b20ee27cc871b711275c6afbb38a559a27a998e99c"
+dependencies = [
+ "heck 0.5.0",
+ "jsonschema",
+ "once_cell",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "syn 2.0.119",
+ "thiserror 2.0.19",
+ "toml",
+ "toml_edit",
+ "url",
+]
+
+[[package]]
 name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3021,6 +3044,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prettyplease"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3248,6 +3281,14 @@ dependencies = [
  "url",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rad-openapi-rust"
+version = "0.1.0"
+dependencies = [
+ "openapi-to-rust",
+ "serde_json",
 ]
 
 [[package]]

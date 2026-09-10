@@ -1,5 +1,5 @@
 [workspace]
-members = ["tools/keyform"]
+members = ["tools/keyform", "tools/openapi-rust"]
 exclude = ["fuzz"]
 
 [package]

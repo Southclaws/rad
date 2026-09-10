@@ -777,7 +777,7 @@ where
                 Ok(raw) => {
                     match super::validation::decode_parameter(
                         raw,
-                        super::validation::VALIDATION_TARGET_23_HEADER_0,
+                        super::validation::VALIDATION_TARGET_22_HEADER_0,
                         "/header/If-None-Match",
                         true,
                     ) {
@@ -803,24 +803,24 @@ where
             );
         }
     };
-    let body: Query = match super::validation::decode_json_body::<
-        Query,
-    >(
+    let body: ::std::option::Option<bytes::Bytes> = match super::validation::decode_binary_body(
             __request,
-            super::validation::VALIDATION_TARGET_22_BODY,
             "application/vnd.rad.lir+json",
             true,
             4194304usize,
         )
         .await
     {
-        Ok(Some(body)) => body,
-        Ok(None) => {
+        Ok(body) => body,
+        Err(rejection) => return ::axum::response::IntoResponse::into_response(rejection),
+    };
+    let body = match body {
+        Some(body) => body,
+        None => {
             return ::axum::response::IntoResponse::into_response(
                 super::validation::generated_contract_error(),
             );
         }
-        Err(rejection) => return ::axum::response::IntoResponse::into_response(rejection),
     };
     ::axum::response::IntoResponse::into_response(api.query(if_none_match, body).await)
 }

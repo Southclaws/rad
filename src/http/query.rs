@@ -8,7 +8,6 @@ use base64::Engine as _;
 use headers::{ETag, Header as _, IfNoneMatch};
 
 use super::generated::server::{DataApi, ExecuteOptionsResponse, QueryResponse};
-use super::generated::types::Query;
 use super::server::Api;
 use super::{generated, problem};
 use crate::engine::exec::{ConditionalQueryResult, Error, ErrorKind, ErrorReason, QueryValidator};
@@ -103,14 +102,14 @@ fn set_query_response_headers(response: &mut Response, entity_tag: Option<Header
 
 #[async_trait::async_trait]
 impl DataApi for Api {
-    async fn query(&self, if_none_match: Option<String>, body: Query) -> QueryResponse {
+    async fn query(&self, if_none_match: Option<String>, body: bytes::Bytes) -> QueryResponse {
         let condition = match parse_if_none_match(if_none_match.as_deref()) {
             Ok(condition) => condition,
             Err(()) => {
                 return QueryResponse::BadRequest(query_problem(ResponseProblemKind::BadRequest));
             }
         };
-        let query = match serde_json::from_value::<lir::Query>(body) {
+        let query = match serde_json::from_slice::<lir::Query>(&body) {
             Ok(query) => query,
             Err(error) => {
                 return QueryResponse::BadRequest(invalid_problem(
@@ -127,7 +126,7 @@ impl DataApi for Api {
         .await;
         match result {
             Ok(ConditionalQueryResult::Changed { result, validator }) => {
-                let result = match crate::service::result_json::datum(&result) {
+                let result = match super::result::encode_datum(&result) {
                     Ok(result) => result,
                     Err(error) => {
                         let error = Error::source_with_reason(
@@ -140,7 +139,7 @@ impl DataApi for Api {
                     }
                 };
                 set_entity_tag(&validator);
-                QueryResponse::Ok(result)
+                QueryResponse::Ok(result.into())
             }
             Ok(ConditionalQueryResult::Unchanged { validator }) => {
                 set_entity_tag(&validator);
@@ -262,7 +261,12 @@ fn query_problem(kind: ResponseProblemKind) -> generated::types::Problem {
             StatusCode::NOT_ACCEPTABLE,
             "the Accept header does not permit application/json",
         ),
-        ResponseProblemKind::Internal => problem::ResponseProblem::internal_transport().body,
+        ResponseProblemKind::Internal => {
+            problem::ResponseProblem::internal_transport(
+                "QUERY response validator is not a valid HTTP header",
+            )
+            .body
+        }
     }
 }
 

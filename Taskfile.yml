@@ -180,7 +180,7 @@ tasks:
   generate:http:
     desc: Regenerate server and Go client HTTP bindings from the normative OpenAPI specification
     cmds:
-      - openapi-to-rust generate --config openapi-to-rust.toml
+      - cargo run --locked --package rad-openapi-rust -- --config openapi-to-rust.toml
       - go generate ./clients/go/api
       - go run ./tools/openapidoc -input api/openapi.yaml -output home/content/docs/reference/http-api.mdx
 
@@ -221,14 +221,13 @@ tasks:
   check:http:
     desc: Check HTTP bindings for OpenAPI generation drift
     cmds:
-      - openapi-to-rust generate --config openapi-to-rust.toml --check
+      - cargo run --locked --package rad-openapi-rust -- --config openapi-to-rust.toml --check
 
   install:codegen:
     desc: Install the exact generators used by Rad
     cmds:
       - go install github.com/Southclaws/schemancer@dce16f80a18feb5578e70f669e7bb0a8d2314d36
       - go install github.com/opencli-dev/opencli/tools/opencli@5aac59dcf3018ccd0b0506b49c3b880ee01ba81e
-      - cargo install --force --locked --version '=0.12.0' openapi-to-rust
 
   check:codegen:
     desc: Check CLI, LIR, PIR, and HTTP bindings for generator drift

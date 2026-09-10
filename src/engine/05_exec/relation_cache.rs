@@ -30,11 +30,12 @@ use sha2::{Digest as _, Sha256};
 use tokio::sync::watch;
 
 use crate::engine::catalog::identity::{
-    AccessGeneration, ColumnId, DataGeneration, ExistenceGeneration, IndexId, StorageGeneration,
-    TableId, ValueGeneration, WriteProtocolGeneration,
+    AccessGeneration, ColumnId, ExistenceGeneration, IndexId, StorageGeneration, TableId,
+    ValueGeneration, WriteProtocolGeneration,
 };
 use crate::engine::catalog::model::CatalogDependencies;
 use crate::engine::catalog::store;
+use crate::engine::catalog::store::TableDataGeneration;
 use crate::engine::kv::{DataPosition, KvView};
 use crate::engine::lir::eval::Env;
 use crate::engine::lir::fingerprint::Fingerprint;
@@ -209,7 +210,7 @@ enum DependencyGeneration {
         table_id: TableId,
         existence_generation: ExistenceGeneration,
         storage_generation: StorageGeneration,
-        data_generation: DataGeneration,
+        data_generation: TableDataGeneration,
     },
     Column {
         table_id: TableId,
@@ -253,8 +254,9 @@ impl RelationCacheKey {
         store::admit_catalog_dependencies(view, dependencies).await?;
         let mut data_generations = HashMap::with_capacity(dependencies.table_existence.len());
         for dependency in &dependencies.table_existence {
-            // This tracked point read is also the logical data conflict fence
-            // for a cache hit. Every committed row mutation writes this key.
+            // This tracked range read is also the logical data conflict fence
+            // for a cache hit. Every committed row mutation writes at least
+            // one stripe in this range.
             let generation = store::read_table_data_generation(view, &dependency.table_id).await?;
             data_generations.insert(dependency.table_id.clone(), generation);
         }
@@ -268,7 +270,7 @@ impl RelationCacheKey {
     fn from_generations(
         exact: Fingerprint,
         dependencies: &CatalogDependencies,
-        data_generations: &HashMap<TableId, DataGeneration>,
+        data_generations: &HashMap<TableId, TableDataGeneration>,
     ) -> Self {
         let mut generations = Vec::with_capacity(
             dependencies.table_existence.len()
@@ -377,7 +379,10 @@ impl DependencyGeneration {
                 hash_bytes(hash, 11, table_id.as_str().as_bytes());
                 hash_u64(hash, 12, existence_generation.get());
                 hash_u64(hash, 13, storage_generation.get());
-                hash_u64(hash, 14, data_generation.get());
+                hash_u64(hash, 14, data_generation.stripes().len() as u64);
+                for generation in data_generation.stripes() {
+                    hash_u64(hash, 20, generation.get());
+                }
             }
             Self::Column {
                 table_id,
@@ -1495,7 +1500,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first, second);
-        assert_eq!(pinned_counters.snapshot().gets, 2);
+        assert_eq!(pinned_counters.snapshot().gets, 1);
+        assert_eq!(pinned_counters.snapshot().scans, 1);
 
         let writer = store
             .begin(IsolationLevel::SerializableSnapshot)
@@ -1503,9 +1509,13 @@ mod tests {
             .unwrap();
         {
             let mut writer_view = TransactionView(&*writer);
-            store::advance_table_data_generation(&mut writer_view, &TableId::from("t1"))
-                .await
-                .unwrap();
+            store::advance_table_data_generation(
+                &mut writer_view,
+                &TableId::from("t1"),
+                [&b"row-1"[..]],
+            )
+            .await
+            .unwrap();
         }
         writer.commit().await.unwrap();
 
@@ -1537,8 +1547,10 @@ mod tests {
         let stats = cache.stats();
         assert_eq!(stats.dependency_hits, 2);
         assert_eq!(stats.dependency_misses, 2);
-        assert_eq!(pinned_counters.snapshot().gets, 2);
-        assert_eq!(current_counters.snapshot().gets, 2);
+        assert_eq!(pinned_counters.snapshot().gets, 1);
+        assert_eq!(pinned_counters.snapshot().scans, 1);
+        assert_eq!(current_counters.snapshot().gets, 1);
+        assert_eq!(current_counters.snapshot().scans, 1);
         current.rollback();
         pinned.rollback();
         store.close().await.unwrap();
@@ -1570,7 +1582,8 @@ mod tests {
         let stats = cache.stats();
         assert_eq!(stats.dependency_hits, 0);
         assert_eq!(stats.dependency_misses, 0);
-        assert_eq!(counters.snapshot().gets, 4);
+        assert_eq!(counters.snapshot().gets, 2);
+        assert_eq!(counters.snapshot().scans, 2);
         transaction.rollback();
         store.close().await.unwrap();
     }
@@ -1603,7 +1616,8 @@ mod tests {
             )
         );
         assert_eq!(first.unwrap(), second.unwrap());
-        assert_eq!(counters.snapshot().gets, 2);
+        assert_eq!(counters.snapshot().gets, 1);
+        assert_eq!(counters.snapshot().scans, 1);
         assert_eq!(cache.stats().dependency_coalesced, 1);
 
         transaction.rollback();
@@ -1691,7 +1705,7 @@ mod tests {
     fn key_changes_with_identity_data_and_physical_generations() {
         let first_dependencies = dependencies(3);
         let second_dependencies = dependencies(4);
-        let data_generations = HashMap::from([("t1".into(), DataGeneration::from(7))]);
+        let data_generations = HashMap::from([("t1".into(), TableDataGeneration::test_value(7))]);
         let first = RelationCacheKey::from_generations(
             fingerprint(1),
             &first_dependencies,

@@ -151,11 +151,11 @@ pub fn describe_key(key: &[u8]) -> Option<String> {
                 parts.reclamation
             ))
         }
-        keys::CATALOG_TABLE_DATA_GENERATION_TAG => {
-            let parts = keys::decode_catalog_table_data_generation_key(key)?;
+        keys::CATALOG_TABLE_DATA_GENERATION_STRIPE_TAG => {
+            let parts = keys::decode_catalog_table_data_generation_stripe_key(key)?;
             Some(format!(
-                "catalog_table_data_generation/table=t{}",
-                parts.table
+                "catalog_table_data_generation_stripe/table=t{}/stripe={}",
+                parts.table, parts.stripe
             ))
         }
         keys::CATALOG_META_MODE_TAG => (rest.len() == 1).then(|| "catalog_meta_mode".to_owned()),

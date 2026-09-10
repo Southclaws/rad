@@ -1366,7 +1366,7 @@ impl IntoResponse for IndexDeleteResponse {
 }
 /// Response for `QUERY /execute` (operationId `Query`).
 pub enum QueryResponse {
-    Ok(Value),
+    Ok(bytes::Bytes),
     NotModified,
     BadRequest(Problem),
     Status406(Problem),
@@ -1380,7 +1380,7 @@ impl IntoResponse for QueryResponse {
     fn into_response(self) -> ::axum::response::Response {
         match self {
             Self::Ok(body) => {
-                let mut response = (StatusCode::OK, Json(body)).into_response();
+                let mut response = (StatusCode::OK, body).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
                 ) else {

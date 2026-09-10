@@ -56,7 +56,12 @@ pub(super) async fn create(
         constraints::check_unique_indexes(view, table, row, primary_key).await?;
     }
     if !stored.is_empty() {
-        store::advance_table_data_generation(view, &table.id).await?;
+        store::advance_table_data_generation(
+            view,
+            &table.id,
+            primary_keys.iter().map(Vec::as_slice),
+        )
+        .await?;
     }
     Ok(stored)
 }
@@ -126,7 +131,14 @@ pub(super) async fn update(
         .await?;
     }
     if !pending.is_empty() {
-        store::advance_table_data_generation(view, &table.id).await?;
+        store::advance_table_data_generation(
+            view,
+            &table.id,
+            pending
+                .iter()
+                .map(|mutation| mutation.primary_key.as_slice()),
+        )
+        .await?;
     }
     Ok(pending.into_iter().map(|mutation| mutation.after).collect())
 }
@@ -146,7 +158,12 @@ pub(super) async fn delete(
         constraints::check_no_references(view, table, &target.before).await?;
     }
     if !targets.is_empty() {
-        store::advance_table_data_generation(view, &table.id).await?;
+        store::advance_table_data_generation(
+            view,
+            &table.id,
+            targets.iter().map(|target| target.primary_key.as_slice()),
+        )
+        .await?;
     }
     Ok(targets.into_iter().map(|target| target.before).collect())
 }

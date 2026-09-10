@@ -153,9 +153,9 @@
     },
     {
       "invariants": [],
-      "key": "table:physical_id(t)",
-      "name": "catalog_table_data_generation",
-      "tag": "23",
+      "key": "table:physical_id(t) stripe:uvarint",
+      "name": "catalog_table_data_generation_stripe",
+      "tag": "24",
       "value": "data generation decimal text"
     },
     {

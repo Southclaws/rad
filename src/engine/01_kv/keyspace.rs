@@ -144,9 +144,9 @@ pub const KEYSPACES: &[Keyspace] = &[
         value: "json schema catalog/reclamation.v1",
     },
     Keyspace {
-        name: "catalog_table_data_generation",
-        tag: 0x23,
-        key: "table:physical_id(t)",
+        name: "catalog_table_data_generation_stripe",
+        tag: 0x24,
+        key: "table:physical_id(t) stripe:uvarint",
         value: "data generation decimal text",
     },
     Keyspace {

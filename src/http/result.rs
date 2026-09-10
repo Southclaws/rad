@@ -19,6 +19,10 @@ pub(super) fn encode(value: &ProgramResult) -> Result<Vec<u8>, EncodeError> {
     serde_json::to_vec(&ProgramResultJson(value)).map_err(Into::into)
 }
 
+pub(super) fn encode_datum(value: &Datum) -> Result<Vec<u8>, EncodeError> {
+    serde_json::to_vec(&DatumJson(value)).map_err(Into::into)
+}
+
 struct ProgramResultJson<'a>(&'a ProgramResult);
 
 impl Serialize for ProgramResultJson<'_> {
@@ -211,6 +215,22 @@ mod tests {
                 "result": {"items": [{"value": i64::MAX}]},
                 "statements": [{"name": "read", "affected": 1, "control": null}]
             })
+        );
+    }
+
+    #[test]
+    fn encodes_a_query_datum_without_an_intermediate_json_tree() {
+        let value = Datum::Object(vec![ObjectField {
+            name: "items".into(),
+            datum: Datum::Array(vec![Datum::Object(vec![ObjectField {
+                name: "value".into(),
+                datum: Datum::Scalar(Value::Int64(i64::MAX)),
+            }])]),
+        }]);
+
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&encode_datum(&value).unwrap()).unwrap(),
+            json!({"items": [{"value": i64::MAX}]})
         );
     }
 

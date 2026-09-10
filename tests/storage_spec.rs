@@ -1312,12 +1312,13 @@ fn catalog_reclamation_key_vectors() {
 }
 
 #[test]
-fn catalog_table_data_generation_key_vectors() {
-    let key = rad::engine::kv::keys::catalog_table_data_generation_key(42);
-    assert_eq!(key, &[0x72, 0x37, 0x23, 0x2a]);
-    let parts = rad::engine::kv::keys::decode_catalog_table_data_generation_key(&key)
+fn catalog_table_data_generation_stripe_key_vectors() {
+    let key = rad::engine::kv::keys::catalog_table_data_generation_stripe_key(42, 7);
+    assert_eq!(key, &[0x72, 0x37, 0x24, 0x2a, 0x07]);
+    let parts = rad::engine::kv::keys::decode_catalog_table_data_generation_stripe_key(&key)
         .expect("vector decodes");
     assert_eq!(parts.table, 42);
+    assert_eq!(parts.stripe, 7);
     assert!(rad::engine::exec::key_describe::describe_key(&key).is_some());
 }
 

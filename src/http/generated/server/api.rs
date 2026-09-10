@@ -93,7 +93,7 @@ pub trait DataApi: Send + Sync + 'static {
     async fn query(
         &self,
         if_none_match: ::std::option::Option<String>,
-        body: Query,
+        body: bytes::Bytes,
     ) -> QueryResponse;
     /// Describe the operations available at the execute target.
     ///

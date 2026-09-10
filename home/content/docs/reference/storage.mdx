@@ -42,7 +42,7 @@ field tables below document the `record` member of each contract.
 | `20` | `catalog_transition_violation` | `transition:physical_id(tr) row_identity:bytes` | cause text |
 | `21` | `catalog_retention_pin` | `pin:text` | [`catalog/retention_pin.v1`](#catalogretention_pinv1) |
 | `22` | `catalog_reclamation` | `reclamation:text` | [`catalog/reclamation.v1`](#catalogreclamationv1) |
-| `23` | `catalog_table_data_generation` | `table:physical_id(t)` | data generation decimal text |
+| `24` | `catalog_table_data_generation_stripe` | `table:physical_id(t) stripe:uvarint` | data generation decimal text |
 | `30` | `catalog_meta_mode` | `(the tag is the whole key)` | catalog mode text: direct or schema |
 | `31` | `catalog_meta_next_id` | `(the tag is the whole key)` | next physical identity decimal text |
 | `32` | `catalog_meta_schema_version` | `(the tag is the whole key)` | current schema version decimal text |

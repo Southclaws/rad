@@ -716,19 +716,26 @@ impl DependencyProfile {
                     update_identity(&mut data, TABLE_TAG, &identity);
                     update_generation(&mut cohort, existence_generation.get());
                     update_generation(&mut cohort, storage_generation.get());
-                    update_generation(&mut cohort, data_generation.get());
+                    for generation in data_generation.stripes() {
+                        update_generation(&mut cohort, generation.get());
+                    }
                     update_generation(&mut semantic, existence_generation.get());
                     update_generation(&mut storage, storage_generation.get());
-                    update_generation(&mut data, data_generation.get());
-                    for generation in [
-                        existence_generation.get(),
-                        storage_generation.get(),
-                        data_generation.get(),
-                    ] {
+                    for generation in data_generation.stripes() {
+                        update_generation(&mut data, generation.get());
+                    }
+                    for generation in [existence_generation.get(), storage_generation.get()] {
                         record_generation(
                             &mut generations,
                             &mut complete_generation_vector,
                             generation,
+                        );
+                    }
+                    for generation in data_generation.stripes() {
+                        record_generation(
+                            &mut generations,
+                            &mut complete_generation_vector,
+                            generation.get(),
                         );
                     }
                 }
@@ -994,8 +1001,8 @@ pub(super) struct PolicyStats {
 mod tests {
     use std::collections::HashMap;
 
-    use crate::engine::catalog::identity::DataGeneration;
     use crate::engine::catalog::model::{CatalogDependencies, TableExistenceDependency};
+    use crate::engine::catalog::store::TableDataGeneration;
     use crate::engine::lir::fingerprint::Fingerprint;
 
     use super::*;
@@ -1019,7 +1026,10 @@ mod tests {
         RelationCacheKey::from_generations(
             fingerprint(seed),
             &dependencies,
-            &HashMap::from([("t1".into(), DataGeneration::from(data_generation))]),
+            &HashMap::from([(
+                "t1".into(),
+                TableDataGeneration::test_value(data_generation),
+            )]),
         )
     }
 

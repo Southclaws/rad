@@ -2763,6 +2763,9 @@ fn bounded_hash_join_winner(candidates: &[JoinCandidate], structural: usize) -> 
             && candidate.cost.is_some()
     })?;
     let hash = candidates[hash_index].cost?;
+    if nested.build_rows.upper_bound.is_none() && hash.build_rows.upper_bound.is_some() {
+        return Some(hash_index);
+    }
     let hash_input_work = hash
         .build_rows
         .upper_bound?
@@ -4627,6 +4630,59 @@ mod tests {
         assert_eq!(probe.scan_table().schema_id, changing.schema_id);
         assert_eq!(build.scan_table().schema_id, stable.schema_id);
         assert!(decision.candidates[1].chosen);
+        assert_eq!(
+            decision.candidates[1].decision_basis,
+            Some(JoinDecisionBasis::BoundedBuild)
+        );
+    }
+
+    #[test]
+    fn bounded_hash_join_uses_known_build_when_probe_evidence_is_missing() {
+        let stable = join_table(10, "stable-table", "stable_items");
+        let changing = join_table(20, "changing-table", "changing_items");
+        let query = join_relation(
+            stable.clone(),
+            changing.clone(),
+            "board_id",
+            "board_id",
+            lir::JoinKind::Inner,
+        );
+        let mut statistics = PlannerStats::empty();
+        add_join_synopsis(
+            &mut statistics,
+            &stable,
+            200,
+            "board_id",
+            &[("a", 100), ("b", 100)],
+        );
+
+        let planned = plan_query_with_context(
+            &query,
+            PlanOptions {
+                mode: PlannerMode::Cost,
+                ..PlanOptions::default()
+            },
+            PlanningContext {
+                statistics: Some(&statistics),
+            },
+        );
+        let NodeKind::HashJoin {
+            left,
+            right,
+            decision,
+            ..
+        } = &planned.plan.root.kind
+        else {
+            panic!("expected hash join")
+        };
+        let NodeKind::TableScan { scan: probe, .. } = &left.kind else {
+            panic!("expected changing probe scan")
+        };
+        let NodeKind::TableScan { scan: build, .. } = &right.kind else {
+            panic!("expected stable build scan")
+        };
+        assert_eq!(probe.scan_table().schema_id, changing.schema_id);
+        assert_eq!(build.scan_table().schema_id, stable.schema_id);
         assert_eq!(
             decision.candidates[1].decision_basis,
             Some(JoinDecisionBasis::BoundedBuild)

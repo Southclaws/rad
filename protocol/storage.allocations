@@ -24,7 +24,7 @@ space 1f catalog_transition_unique_violation
 space 20 catalog_transition_violation
 space 21 catalog_retention_pin
 space 22 catalog_reclamation
-space 23 catalog_table_data_generation
+space 24 catalog_table_data_generation_stripe
 space 30 catalog_meta_mode
 space 31 catalog_meta_next_id
 space 32 catalog_meta_schema_version
@@ -64,7 +64,7 @@ vector catalog_reclamation 9bfa6f637814df83
 vector catalog_retention_pin de5bb318e6729a77
 vector catalog_schema_revision dc043ea1b9d16066
 vector catalog_table 8b2a1d40c293c51c
-vector catalog_table_data_generation af635d0275d2398f
+vector catalog_table_data_generation_stripe b6f9d3e37d53a5e0
 vector catalog_table_head 9b6645685a6f71e9
 vector catalog_table_name cb5116e98e428d5b
 vector catalog_table_object 75765b545dc398f4
