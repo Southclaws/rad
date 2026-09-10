@@ -44,15 +44,16 @@ impl Env {
     }
 
     pub fn set_scalars(&mut self, slots: &[SlotId], values: impl IntoIterator<Item = Value>) {
+        self.set_datums(slots, values.into_iter().map(Datum::scalar));
+    }
+
+    pub fn set_datums(&mut self, slots: &[SlotId], values: impl IntoIterator<Item = Datum>) {
         if slots
             .iter()
             .enumerate()
             .all(|(index, slot)| slot.0 == index)
         {
-            let segment = values
-                .into_iter()
-                .map(|value| Some(Datum::scalar(value)))
-                .collect::<Vec<_>>();
+            let segment = values.into_iter().map(Some).collect::<Vec<_>>();
             debug_assert_eq!(segment.len(), slots.len());
             self.segments.push(Arc::new(segment));
             return;
@@ -65,7 +66,7 @@ impl Env {
         let mut values = values.into_iter();
         let mut value_count = 0;
         for (slot, value) in slots.iter().zip(values.by_ref()) {
-            segment[slot.0] = Some(Datum::scalar(value));
+            segment[slot.0] = Some(value);
             value_count += 1;
         }
         debug_assert_eq!(value_count, slots.len());

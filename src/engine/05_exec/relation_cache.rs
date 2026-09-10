@@ -665,13 +665,16 @@ impl CachedRelation {
     }
 
     fn restore(&self, output: &RowType) -> Vec<Env> {
+        let slots = output
+            .fields
+            .iter()
+            .map(|field| field.slot)
+            .collect::<Vec<_>>();
         self.rows
             .iter()
             .map(|row| {
                 let mut frame = Env::new();
-                for (field, datum) in output.fields.iter().zip(row.iter()) {
-                    frame.insert(field.slot, datum.clone());
-                }
+                frame.set_datums(&slots, row.iter().cloned());
                 frame
             })
             .collect()

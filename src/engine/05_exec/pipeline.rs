@@ -579,7 +579,7 @@ async fn build<'a>(
             };
             let mut dimension_resources = execution_grant.clone();
             dimension_resources.bypass_materialization = true;
-            let dimensions = if let Some((context, key)) = physical_key {
+            let (dimensions, group_positions) = if let Some((context, key)) = physical_key {
                 let result = context
                     .cache
                     .get_or_fill_grouped_dimension(key, || async {
@@ -622,8 +622,9 @@ async fn build<'a>(
                         ))
                     })
                     .await?;
+                let attach_started = Instant::now();
+                let group_positions = GroupPositions::new(result.value.value().row_count);
                 if result.source == super::observe::StatementSource::RelationCache {
-                    let attach_started = Instant::now();
                     if let Some(cardinality) = &cached_cardinality {
                         cardinality.rows.store(
                             result.value.value().input_row_count as u64,
@@ -636,9 +637,9 @@ async fn build<'a>(
                         attach_started.elapsed(),
                     );
                 }
-                Some(result.value)
+                (Some(result.value), Some(group_positions))
             } else {
-                None
+                (None, None)
             };
             let dimension = if dimensions.is_none() {
                 Some(
@@ -665,6 +666,7 @@ async fn build<'a>(
                 fact: Some(fact_operator),
                 dimension,
                 dimensions,
+                group_positions,
                 keys: keys.clone(),
                 fact_is_left: *fact_is_left,
                 groups: groups.clone(),
@@ -843,9 +845,10 @@ async fn build<'a>(
                         ))
                     })
                     .await?;
+                let attach_started = Instant::now();
+                let bound_build = Arc::new(BoundHashBuild::new(result.value, right_output));
                 if result.source == super::observe::StatementSource::RelationCache {
-                    let attach_started = Instant::now();
-                    let value = result.value.value();
+                    let value = bound_build.value.value();
                     tally.add_build_rows(value.input_row_count);
                     tally.retain(value.execution_retained_bytes);
                     if let Some(cardinality) = &cached_cardinality {
@@ -859,10 +862,7 @@ async fn build<'a>(
                         attach_started.elapsed(),
                     );
                 }
-                Some(Arc::new(BoundHashBuild::new(
-                    result.value,
-                    right_output.clone(),
-                )))
+                Some(bound_build)
             } else {
                 None
             };
@@ -2360,10 +2360,58 @@ impl Hasher for IdentityHasher {
 
 type IdentityHashMap<V> = HashMap<u64, V, BuildHasherDefault<IdentityHasher>>;
 
+// One page bounds the allocation for a sparse probe. A dense probe allocates
+// less than one unused page, while the empty index has 256 times fewer cells.
+const MATERIALIZATION_STATE_PAGE_ROWS: usize = 256;
+
+fn materialization_state_page_count(row_count: usize) -> usize {
+    row_count.div_ceil(MATERIALIZATION_STATE_PAGE_ROWS)
+}
+
+struct GroupPositions {
+    pages: Box<[Option<GroupPositionPage>]>,
+}
+
+type GroupPositionPage = Box<[Option<usize>; MATERIALIZATION_STATE_PAGE_ROWS]>;
+
+impl GroupPositions {
+    fn new(row_count: usize) -> Self {
+        let pages = (0..materialization_state_page_count(row_count))
+            .map(|_| None)
+            .collect();
+        Self { pages }
+    }
+
+    fn get(&self, index: usize) -> Option<usize> {
+        let page = index / MATERIALIZATION_STATE_PAGE_ROWS;
+        let offset = index % MATERIALIZATION_STATE_PAGE_ROWS;
+        self.pages
+            .get(page)
+            .and_then(Option::as_deref)
+            .and_then(|positions| positions.get(offset))
+            .copied()
+            .flatten()
+    }
+
+    fn set(&mut self, index: usize, position: usize) {
+        let page = index / MATERIALIZATION_STATE_PAGE_ROWS;
+        let offset = index % MATERIALIZATION_STATE_PAGE_ROWS;
+        let positions = self.pages[page]
+            .get_or_insert_with(|| Box::new([None; MATERIALIZATION_STATE_PAGE_ROWS]));
+        positions[offset] = Some(position);
+    }
+
+    #[cfg(test)]
+    fn initialized_page_count(&self) -> usize {
+        self.pages.iter().filter(|page| page.is_some()).count()
+    }
+}
+
 struct GroupedHashJoinAggregate<'a> {
     fact: Option<Box<dyn Operator + 'a>>,
     dimension: Option<Box<dyn Operator + 'a>>,
     dimensions: Option<CachedGroupedDimensionBuildHandle>,
+    group_positions: Option<GroupPositions>,
     keys: Vec<EquiJoinKey>,
     fact_is_left: bool,
     groups: Vec<bound::BoundGroupTerm>,
@@ -2414,14 +2462,14 @@ fn ensure_aggregate_group_for_dimension(
 
 fn aggregate_group_for_dimension<'a>(
     entry: &CachedGroupedDimensionEntry,
-    group_positions: &mut [Option<usize>],
+    group_positions: &mut GroupPositions,
     terms: &[bound::BoundAggregateTerm],
     final_groups: &'a mut IdentityHashMap<Vec<AggregateGroup>>,
     order: &mut Vec<(u64, usize)>,
     retained_bytes: &mut u64,
     memory_limit_bytes: u64,
 ) -> Result<&'a mut AggregateGroup> {
-    let position = match group_positions[entry.position] {
+    let position = match group_positions.get(entry.position) {
         Some(position) => position,
         None => {
             let position = ensure_aggregate_group_for_dimension(
@@ -2432,7 +2480,7 @@ fn aggregate_group_for_dimension<'a>(
                 retained_bytes,
                 memory_limit_bytes,
             )?;
-            group_positions[entry.position] = Some(position);
+            group_positions.set(entry.position, position);
             position
         }
     };
@@ -2510,6 +2558,7 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                     self.memory_limit_bytes,
                 )
                 .await?;
+                self.group_positions = Some(GroupPositions::new(dimensions.row_count));
                 self.dimensions = Some(CachedGroupedDimensionBuildHandle::uncached(dimensions));
             }
             let dimensions = self
@@ -2518,7 +2567,10 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                 .expect("grouped dimension build is present")
                 .value();
             let mut retained_bytes = dimensions.execution_retained_bytes;
-            let mut group_positions = vec![None; dimensions.row_count];
+            let mut group_positions = self
+                .group_positions
+                .take()
+                .expect("grouped dimension positions are present");
 
             let mut final_groups = IdentityHashMap::<Vec<AggregateGroup>>::default();
             let mut order = Vec::new();
@@ -2752,38 +2804,41 @@ impl Operator for NestedLoopJoin<'_> {
 
 struct BoundHashBuild {
     value: CachedHashBuildHandle,
-    output: RowType,
-    rows: Vec<std::sync::OnceLock<Box<Env>>>,
+    slots: Box<[SlotId]>,
+    // A page keeps each restored frame at a stable address. Concurrent probes
+    // can share the frame after its complete initialization.
+    rows: Box<[std::sync::OnceLock<BoundHashBuildPage>]>,
 }
 
+type BoundHashBuildPage = Box<[std::sync::OnceLock<Box<Env>>; MATERIALIZATION_STATE_PAGE_ROWS]>;
+
 impl BoundHashBuild {
-    fn new(value: CachedHashBuildHandle, output: RowType) -> Self {
-        let rows = (0..value.value().rows.len())
+    fn new(value: CachedHashBuildHandle, output: &RowType) -> Self {
+        let rows = (0..materialization_state_page_count(value.value().rows.len()))
             .map(|_| std::sync::OnceLock::new())
             .collect();
         Self {
             value,
-            output,
+            slots: output.fields.iter().map(|field| field.slot).collect(),
             rows,
         }
     }
 
     fn row(&self, index: usize) -> &Env {
-        // A probe needs plan-local slots for residual predicates and output.
-        // Restore each matching row at most once. The box keeps the empty
-        // request-local index small when most build rows do not match.
-        self.rows[index].get_or_init(|| {
+        let page_index = index / MATERIALIZATION_STATE_PAGE_ROWS;
+        let page_offset = index % MATERIALIZATION_STATE_PAGE_ROWS;
+        let page = self.rows[page_index]
+            .get_or_init(|| Box::new(std::array::from_fn(|_| std::sync::OnceLock::new())));
+        page[page_offset].get_or_init(|| {
             let mut frame = Env::new();
-            for (field, datum) in self
-                .output
-                .fields
-                .iter()
-                .zip(self.value.value().rows[index].iter())
-            {
-                frame.insert(field.slot, datum.clone());
-            }
+            frame.set_datums(&self.slots, self.value.value().rows[index].iter().cloned());
             Box::new(frame)
         })
+    }
+
+    #[cfg(test)]
+    fn initialized_page_count(&self) -> usize {
+        self.rows.iter().filter(|page| page.get().is_some()).count()
     }
 }
 
@@ -2877,7 +2932,7 @@ impl<'a> HashJoin<'a> {
         .await?;
         self.build = Some(Arc::new(BoundHashBuild::new(
             CachedHashBuildHandle::uncached(build),
-            self.right_output.clone(),
+            &self.right_output,
         )));
         Ok(())
     }
@@ -3581,5 +3636,92 @@ impl Operator for SetOperator<'_> {
             }
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::lir::{Field, Type};
+
+    fn cached_hash_build(row_count: usize) -> BoundHashBuild {
+        let rows = (0..row_count)
+            .map(|value| vec![Datum::scalar(Value::Int64(value as i64))].into_boxed_slice())
+            .collect();
+        BoundHashBuild::new(
+            CachedHashBuildHandle::uncached(CachedHashBuild {
+                hash_builder: ahash::RandomState::new(),
+                entries: HashMap::new(),
+                rows,
+                input_row_count: row_count,
+                execution_retained_bytes: 0,
+            }),
+            &RowType {
+                fields: vec![Field {
+                    name: "value".into(),
+                    slot: SlotId(3),
+                    value_type: Type::scalar(Kind::Int64, false),
+                }],
+            },
+        )
+    }
+
+    #[test]
+    fn bound_hash_build_initializes_only_accessed_pages() {
+        let build = cached_hash_build(1_025);
+        assert_eq!(build.initialized_page_count(), 0);
+
+        assert_eq!(
+            build.row(0).get(SlotId(3)),
+            Some(&Datum::scalar(Value::Int64(0)))
+        );
+        let first = build.row(255);
+        assert!(std::ptr::eq(first, build.row(255)));
+        assert_eq!(build.initialized_page_count(), 1);
+
+        assert_eq!(
+            build.row(256).get(SlotId(3)),
+            Some(&Datum::scalar(Value::Int64(256)))
+        );
+        assert_eq!(build.initialized_page_count(), 2);
+
+        assert_eq!(
+            build.row(1_024).get(SlotId(3)),
+            Some(&Datum::scalar(Value::Int64(1_024)))
+        );
+        assert_eq!(build.initialized_page_count(), 3);
+    }
+
+    #[test]
+    fn bound_hash_build_initializes_one_frame_for_concurrent_probes() {
+        let build = cached_hash_build(1_025);
+        let addresses = std::thread::scope(|scope| {
+            (0..8)
+                .map(|_| scope.spawn(|| build.row(513) as *const Env as usize))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|thread| thread.join().expect("probe thread succeeds"))
+                .collect::<Vec<_>>()
+        });
+
+        assert!(addresses.iter().all(|address| *address == addresses[0]));
+        assert_eq!(build.initialized_page_count(), 1);
+    }
+
+    #[test]
+    fn group_positions_initializes_only_accessed_pages() {
+        let mut positions = GroupPositions::new(1_025);
+        assert_eq!(positions.initialized_page_count(), 0);
+        assert_eq!(positions.get(700), None);
+
+        positions.set(700, 11);
+        positions.set(701, 12);
+        assert_eq!(positions.get(700), Some(11));
+        assert_eq!(positions.get(701), Some(12));
+        assert_eq!(positions.initialized_page_count(), 1);
+
+        positions.set(1_024, 13);
+        assert_eq!(positions.get(1_024), Some(13));
+        assert_eq!(positions.initialized_page_count(), 2);
     }
 }
