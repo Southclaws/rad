@@ -433,7 +433,7 @@ pub(super) fn validate_dependencies(
 fn validate_default(
     name: &str,
     scalar_type: ScalarType,
-    default: Option<&super::super::model::DefaultValue>,
+    default: Option<&DefaultValue>,
 ) -> Result<()> {
     if let Some(function) = default.and_then(|value| value.function)
         && !matches!(

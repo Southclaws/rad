@@ -18,7 +18,7 @@ pub(super) async fn prepare_create(
     let mut rows = input
         .iter()
         .map(|row| prepare_stateless(table, row, runtime))
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Vec<_>>();
     for row in &rows {
         validate_before_increment(table, row)?;
     }
@@ -91,7 +91,7 @@ pub(super) async fn raise_increment_floors(
     Ok(())
 }
 
-fn prepare_stateless(table: &Table, row: &Row, runtime: &dyn RuntimeEffects) -> Result<Row> {
+fn prepare_stateless(table: &Table, row: &Row, runtime: &dyn RuntimeEffects) -> Row {
     let mut with_defaults = row.clone();
     for column in &table.columns {
         if with_defaults.contains_key(&column.name) {
@@ -109,7 +109,7 @@ fn prepare_stateless(table: &Table, row: &Row, runtime: &dyn RuntimeEffects) -> 
         };
         with_defaults.insert(column.name.clone(), value);
     }
-    Ok(with_defaults)
+    with_defaults
 }
 
 fn validate_before_increment(table: &Table, row: &Row) -> Result<()> {
