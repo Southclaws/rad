@@ -640,6 +640,7 @@ impl Backend {
                     SessionSetting::ExtraFloatDigits => "3".into(),
                     SessionSetting::SearchPath => "public".into(),
                     SessionSetting::TransactionIsolation => "serializable".into(),
+                    SessionSetting::ServerVersionNum => "170000".into(),
                 };
                 query_response_with_tag(
                     vec![text_column(setting.name(), false)],
@@ -864,6 +865,7 @@ enum SessionSetting {
     ExtraFloatDigits,
     SearchPath,
     TransactionIsolation,
+    ServerVersionNum,
 }
 
 impl SessionSetting {
@@ -873,6 +875,7 @@ impl SessionSetting {
             Self::ExtraFloatDigits => "extra_float_digits",
             Self::SearchPath => "search_path",
             Self::TransactionIsolation => "transaction_isolation",
+            Self::ServerVersionNum => "server_version_num",
         }
     }
 }
@@ -1076,6 +1079,9 @@ fn resettable_setting(name: &str) -> Option<SessionSetting> {
 }
 
 fn showable_setting(name: &str) -> Option<SessionSetting> {
+    if name == "server_version_num" {
+        return Some(SessionSetting::ServerVersionNum);
+    }
     resettable_setting(name).or_else(|| {
         matches!(
             name,
@@ -2734,6 +2740,10 @@ mod tests {
         assert!(matches!(
             session_command("SHOW TRANSACTION ISOLATION LEVEL").unwrap(),
             Some(SessionCommand::Show(SessionSetting::TransactionIsolation))
+        ));
+        assert!(matches!(
+            session_command("SHOW server_version_num").unwrap(),
+            Some(SessionCommand::Show(SessionSetting::ServerVersionNum))
         ));
         assert!(matches!(
             session_command(
