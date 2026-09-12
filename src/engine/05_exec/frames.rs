@@ -1,5 +1,6 @@
 //! Shared execution-frame mechanics.
 
+use smallvec::SmallVec;
 use std::cmp::Ordering;
 
 use crate::engine::catalog::model::Column;
@@ -74,7 +75,10 @@ pub(super) fn row_to_frame(relation: &bound::Relation, row: &Row, outer: &Env) -
     frame
 }
 
-pub(super) fn scan_slots(relation: &bound::Relation, columns: &[Column]) -> Result<Vec<SlotId>> {
+pub(super) fn scan_slots(
+    relation: &bound::Relation,
+    columns: &[Column],
+) -> Result<SmallVec<[SlotId; 8]>> {
     columns
         .iter()
         .map(|column| {

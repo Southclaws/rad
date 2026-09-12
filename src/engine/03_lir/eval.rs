@@ -44,15 +44,16 @@ impl Env {
     }
 
     pub fn set_scalars(&mut self, slots: &[SlotId], values: impl IntoIterator<Item = Value>) {
+        self.set_datums(slots, values.into_iter().map(Datum::scalar));
+    }
+
+    pub fn set_datums(&mut self, slots: &[SlotId], values: impl IntoIterator<Item = Datum>) {
         if slots
             .iter()
             .enumerate()
             .all(|(index, slot)| slot.0 == index)
         {
-            let segment = values
-                .into_iter()
-                .map(|value| Some(Datum::scalar(value)))
-                .collect::<Vec<_>>();
+            let segment = values.into_iter().map(Some).collect::<Vec<_>>();
             debug_assert_eq!(segment.len(), slots.len());
             self.segments.push(Arc::new(segment));
             return;
@@ -65,7 +66,7 @@ impl Env {
         let mut values = values.into_iter();
         let mut value_count = 0;
         for (slot, value) in slots.iter().zip(values.by_ref()) {
-            segment[slot.0] = Some(Datum::scalar(value));
+            segment[slot.0] = Some(value);
             value_count += 1;
         }
         debug_assert_eq!(value_count, slots.len());
@@ -661,14 +662,14 @@ pub type Result<T> = std::result::Result<T, EvalError>;
 
 /// Shared full-row identity for distinct, recursion, intersect, and except.
 pub struct CanonicalRowSet {
-    slots: Vec<SlotId>,
+    slots: smallvec::SmallVec<[SlotId; 4]>,
     seen: HashSet<CanonicalRowKey>,
 }
 
 impl CanonicalRowSet {
-    pub fn new(fields: Vec<Field>) -> Self {
+    pub fn new(fields: &[Field]) -> Self {
         Self {
-            slots: fields.into_iter().map(|field| field.slot).collect(),
+            slots: fields.iter().map(|field| field.slot).collect(),
             seen: HashSet::new(),
         }
     }
@@ -1342,7 +1343,7 @@ mod tests {
                 value_type: Type::scalar(Kind::Int64, true),
             },
         ];
-        let mut set = CanonicalRowSet::new(fields);
+        let mut set = CanonicalRowSet::new(&fields);
         let mut row = Env::new();
         row.set_scalar(SlotId(0), Value::Text("x".into()));
         row.set_scalar(SlotId(1), Value::Int64(1));
@@ -1404,7 +1405,7 @@ mod tests {
             canonical_row_key(&nested_field, &two)
         );
 
-        let mut set = CanonicalRowSet::new(nested_field);
+        let mut set = CanonicalRowSet::new(&nested_field);
         assert!(set.insert(&one));
         assert!(set.insert(&two));
         assert!(!set.insert(&one));

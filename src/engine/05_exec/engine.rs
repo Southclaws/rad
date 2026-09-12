@@ -37,6 +37,7 @@ pub struct Engine {
     limits: Limits,
     pub(super) runtime: Arc<dyn RuntimeEffects>,
     pub(super) events: Arc<dyn EngineEventHook>,
+    cache_events_enabled: bool,
     pub(super) observer: Option<Arc<dyn super::observe::ExecutionObserver>>,
     pub(super) statistics: Option<Arc<dyn crate::engine::planner::estimator::StatisticsProvider>>,
     planner_mode: PlannerMode,
@@ -105,6 +106,7 @@ impl Engine {
             limits: Limits::default(),
             runtime,
             events: Arc::new(NoopEngineEventHook),
+            cache_events_enabled: false,
             observer: None,
             statistics: None,
             planner_mode: PlannerMode::Cost,
@@ -150,6 +152,7 @@ impl Engine {
             limits,
             runtime,
             events: Arc::new(NoopEngineEventHook),
+            cache_events_enabled: false,
             observer: None,
             statistics: None,
             planner_mode: PlannerMode::Cost,
@@ -162,6 +165,9 @@ impl Engine {
 
     pub fn with_relation_cache_limits(mut self, limits: super::RelationCacheLimits) -> Self {
         self.relation_cache = RelationCache::new(limits);
+        if self.cache_events_enabled {
+            self.relation_cache.enable_semantic_events();
+        }
         self
     }
 
@@ -173,7 +179,9 @@ impl Engine {
     /// Install a semantic event hook before sharing the engine. Production
     /// uses the no-op hook; deterministic tests may suspend at these points.
     pub fn with_event_hook(mut self, events: Arc<dyn EngineEventHook>) -> Self {
+        self.relation_cache.enable_semantic_events();
         self.events = events;
+        self.cache_events_enabled = true;
         self
     }
 
@@ -416,13 +424,17 @@ impl Engine {
         let output = &plan.output;
         let cardinality = plan.cardinality;
         let subrelation_root_key = prepared.relation_key.clone();
-        let cached = self
+        let mut cached = self
             .relation_cache
             .get_or_fill(prepared.relation_key, output, || async {
                 let observed = super::observe::ObservedView::new(view, &counters);
                 let mut executor = Executor::new(&observed, self.limits);
                 executor.set_execution_grant(execution_grant);
-                executor.use_subrelation_cache(&self.relation_cache, subrelation_root_key);
+                executor.use_subrelation_cache(
+                    &self.relation_cache,
+                    subrelation_root_key,
+                    self.cache_events_enabled.then_some(&self.events),
+                );
                 let started = Instant::now();
                 let frames = executor.run_frames(plan).await?;
                 super::frames::validate_frame_cardinality(cardinality, frames.len())?;
@@ -435,6 +447,11 @@ impl Engine {
                 ))
             })
             .await?;
+        super::relation_cache::reach_semantic_events(
+            self.cache_events_enabled.then_some(&self.events),
+            cached.take_events(),
+        )
+        .await;
         let result = cached.shape(statement.result_cardinality, &statement.result_output)?;
         let execute_duration = self.runtime.monotonic().saturating_sub(execute_started);
         let kv = counters.snapshot();
@@ -592,6 +609,7 @@ impl Engine {
                 .map(|provider| provider.planning_stats()),
             execution_grant,
             None,
+            None,
         )
         .await
     }
@@ -696,6 +714,7 @@ impl Engine {
                 },
                 collect_plan: false,
                 execution_grant,
+                cache_events: self.cache_events_enabled.then_some(&self.events),
             },
         )
         .await
@@ -842,6 +861,7 @@ impl Engine {
                             plan_options,
                             collect_plan: options.collect_plan,
                             execution_grant,
+                            cache_events: self.cache_events_enabled.then_some(&self.events),
                         },
                     )
                     .await
@@ -1041,6 +1061,7 @@ impl Engine {
                     .map(|provider| provider.planning_stats()),
                 execution_grant,
                 relation_cache,
+                self.cache_events_enabled.then_some(&self.events),
             )
             .await
         };
@@ -1126,6 +1147,7 @@ async fn execute_on_view(
     statistics: Option<Arc<crate::engine::planner::models::PlannerStats>>,
     execution_grant: super::parallel::ExecutionGrant,
     relation_cache: Option<&RelationCache>,
+    cache_events: Option<&Arc<dyn EngineEventHook>>,
 ) -> Result<Datum> {
     let bound = bind::bind(
         &ViewCatalog {
@@ -1160,13 +1182,13 @@ async fn execute_on_view(
     let output = &planned.plan.output;
     let cardinality = planned.plan.cardinality;
     let subrelation_root_key = key.clone();
-    let cached = relation_cache
+    let mut cached = relation_cache
         .get_or_fill(key, output, || async {
             let counters = super::observe::KvCounters::new(false);
             let observed = super::observe::ObservedView::new(view, &counters);
             let mut executor = Executor::new(&observed, limits);
             executor.set_execution_grant(execution_grant);
-            executor.use_subrelation_cache(relation_cache, subrelation_root_key);
+            executor.use_subrelation_cache(relation_cache, subrelation_root_key, cache_events);
             let started = Instant::now();
             let frames = executor.run_frames(&planned.plan).await?;
             super::frames::validate_frame_cardinality(cardinality, frames.len())?;
@@ -1179,6 +1201,7 @@ async fn execute_on_view(
             ))
         })
         .await?;
+    super::relation_cache::reach_semantic_events(cache_events, cached.take_events()).await;
     cached.shape(cardinality, output)
 }
 
@@ -1386,6 +1409,81 @@ mod tests {
             },
             cardinality: RootCardinality::Many,
             bindings: HashMap::new(),
+        }
+    }
+
+    fn recursive_edge_query() -> lir::Query {
+        let anchor = Relation::Project {
+            input: Box::new(Relation::Scan {
+                table: "seeds".into(),
+                scope: "seed".into(),
+            }),
+            scope: Some("anchor".into()),
+            spread: Vec::new(),
+            fields: vec![crate::engine::lir::ProjectField {
+                name: "id".into(),
+                expression: Expr::Column {
+                    scope: "seed".into(),
+                    name: "id".into(),
+                },
+            }],
+        };
+        let step = Relation::Project {
+            input: Box::new(Relation::Join {
+                left: Box::new(Relation::RecursiveRef {
+                    binding: "reachable".into(),
+                    scope: "frontier".into(),
+                }),
+                right: Box::new(Relation::Scan {
+                    table: "edges".into(),
+                    scope: "edge".into(),
+                }),
+                kind: crate::engine::lir::JoinKind::Inner,
+                on: Expr::Binary {
+                    op: BinaryOp::Eq,
+                    left: Box::new(Expr::Column {
+                        scope: "frontier".into(),
+                        name: "id".into(),
+                    }),
+                    right: Box::new(Expr::Column {
+                        scope: "edge".into(),
+                        name: "customer_id".into(),
+                    }),
+                },
+            }),
+            scope: Some("step".into()),
+            spread: Vec::new(),
+            fields: vec![crate::engine::lir::ProjectField {
+                name: "id".into(),
+                expression: Expr::Column {
+                    scope: "edge".into(),
+                    name: "id".into(),
+                },
+            }],
+        };
+        lir::Query {
+            root: Relation::Order {
+                input: Box::new(Relation::Ref {
+                    binding: "reachable".into(),
+                    scope: "result".into(),
+                }),
+                terms: vec![crate::engine::lir::OrderTerm {
+                    expression: Expr::Column {
+                        scope: "result".into(),
+                        name: "id".into(),
+                    },
+                    descending: false,
+                }],
+            },
+            cardinality: RootCardinality::Many,
+            bindings: HashMap::from([(
+                "reachable".into(),
+                Relation::Recursive {
+                    anchor: Box::new(anchor),
+                    step: Box::new(step),
+                    accumulation: crate::engine::lir::RecursiveAccumulation::New,
+                },
+            )]),
         }
     }
 
@@ -2065,6 +2163,129 @@ mod tests {
                 .unwrap(),
         );
         assert_stable_hash_build_reuses_artifact_after_probe_data_changes(store).await;
+    }
+
+    async fn assert_recursive_step_reuses_stable_hash_build(store: Arc<Store>) {
+        let catalog = catalog::Catalog::new(store.clone());
+        catalog
+            .create_table(join_cache_table(10, "seeds"))
+            .await
+            .unwrap();
+        let edges = catalog
+            .create_table(join_cache_table(20, "edges"))
+            .await
+            .unwrap();
+        let statistics = complete_join_stats(&edges, 3);
+        let engine = Engine::new(store.clone())
+            .with_statistics_provider(Arc::new(FixedPlannerStats(Arc::new(statistics))));
+        engine
+            .create(
+                "seeds",
+                Row::from([
+                    ("id".into(), Value::Text("n0".into())),
+                    ("customer_id".into(), Value::Null(ScalarType::Text)),
+                ]),
+            )
+            .await
+            .unwrap();
+        engine
+            .create_many(
+                "edges",
+                vec![
+                    Row::from([
+                        ("id".into(), Value::Text("n1".into())),
+                        ("customer_id".into(), Value::Text("n0".into())),
+                    ]),
+                    Row::from([
+                        ("id".into(), Value::Text("n2".into())),
+                        ("customer_id".into(), Value::Text("n1".into())),
+                    ]),
+                    Row::from([
+                        ("id".into(), Value::Text("n3".into())),
+                        ("customer_id".into(), Value::Text("n2".into())),
+                    ]),
+                ],
+            )
+            .await
+            .unwrap();
+        let query = recursive_edge_query();
+
+        let first = engine.execute(query.clone()).await.unwrap();
+        assert!(matches!(first, Datum::Array(ref rows) if rows.len() == 4));
+        let first_cache = engine.relation_cache_stats();
+        assert_eq!(first_cache.subrelation_misses, 1);
+        assert_eq!(first_cache.subrelation_admissions, 1);
+        assert_eq!(first_cache.subrelation_hits, 3);
+
+        engine
+            .create(
+                "seeds",
+                Row::from([
+                    ("id".into(), Value::Text("z0".into())),
+                    ("customer_id".into(), Value::Null(ScalarType::Text)),
+                ]),
+            )
+            .await
+            .unwrap();
+        let second = engine.execute(query.clone()).await.unwrap();
+        assert!(matches!(second, Datum::Array(ref rows) if rows.len() == 5));
+        assert_eq!(
+            second,
+            engine.execute_uncached(query.clone()).await.unwrap()
+        );
+        assert_eq!(
+            second,
+            engine.execute_reference(query.clone()).await.unwrap()
+        );
+        let second_cache = engine.relation_cache_stats();
+        assert_eq!(second_cache.misses, 2);
+        assert_eq!(second_cache.subrelation_misses, 1);
+        assert_eq!(second_cache.subrelation_admissions, 1);
+        assert!(second_cache.subrelation_hits > first_cache.subrelation_hits);
+
+        engine
+            .create(
+                "edges",
+                Row::from([
+                    ("id".into(), Value::Text("n4".into())),
+                    ("customer_id".into(), Value::Text("n3".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        let third = engine.execute(query.clone()).await.unwrap();
+        assert!(matches!(third, Datum::Array(ref rows) if rows.len() == 6));
+        assert_eq!(third, engine.execute_uncached(query.clone()).await.unwrap());
+        assert_eq!(third, engine.execute_reference(query).await.unwrap());
+        let third_cache = engine.relation_cache_stats();
+        assert_eq!(third_cache.misses, 3);
+        assert_eq!(third_cache.subrelation_misses, 2);
+        assert_eq!(third_cache.subrelation_admissions, 2);
+        store.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn recursive_step_reuses_stable_hash_build_in_memory() {
+        let store = Arc::new(
+            Store::memory("exec-recursive-subrelation-cache")
+                .await
+                .unwrap(),
+        );
+        assert_recursive_step_reuses_stable_hash_build(store).await;
+    }
+
+    #[tokio::test]
+    async fn recursive_step_reuses_stable_hash_build_in_file_storage() {
+        let directory = TempDir::new().unwrap();
+        let objects: Arc<dyn ObjectStore> = Arc::new(
+            LocalFileSystem::new_with_prefix(directory.path()).expect("local object-store root"),
+        );
+        let store = Arc::new(
+            Store::open("exec-recursive-subrelation-cache", objects)
+                .await
+                .unwrap(),
+        );
+        assert_recursive_step_reuses_stable_hash_build(store).await;
     }
 
     #[tokio::test]

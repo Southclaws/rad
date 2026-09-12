@@ -1,6 +1,7 @@
 //! Executor-facing physical operator tree.
 
 use serde::Serialize;
+use smallvec::{SmallVec, smallvec};
 
 use crate::engine::catalog::model::{CatalogDependencies, Column, Index};
 use crate::engine::lir::bound::{self, BoundAggregateTerm, BoundGroupTerm, BoundOrderTerm};
@@ -17,8 +18,20 @@ pub struct Plan {
     pub cardinality: RootCardinality,
     pub output: RowType,
     pub dependencies: CatalogDependencies,
+    pub materialization_selection: MaterializationSelection,
     pub next_slot: SlotId,
     pub memo: super::memo::MemoReport,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MaterializationSelection {
+    // Selection metadata does not change the fallback operator tree or the
+    // physical plan fingerprint.
+    pub selected: u32,
+    pub overlap_rejected: u32,
+    pub budget_rejected: u32,
+    pub estimated_work: u64,
+    pub estimated_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -456,6 +469,8 @@ pub struct MaterializationCandidate {
     pub output: RowType,
     pub dependencies: CatalogDependencies,
     pub estimated_rows: u64,
+    pub estimated_avoided_work: u64,
+    pub estimated_retained_bytes: u64,
     pub representation: MaterializationRepresentation,
 }
 
@@ -472,11 +487,11 @@ pub enum MaterializationRepresentation {
 }
 
 impl MaterializationRepresentation {
-    pub fn identity_bytes(&self) -> Vec<u8> {
+    pub fn identity_bytes(&self) -> SmallVec<[u8; 64]> {
         // One relation can supply different physical keys and group values.
         // The cache key must include this canonical contract. The relation
         // fingerprint alone identifies rows, not their physical lookup form.
-        let mut bytes = Vec::new();
+        let mut bytes = SmallVec::new();
         match self {
             Self::Rows => bytes.push(1),
             Self::HashJoinBuild { key_positions } => {
@@ -496,7 +511,7 @@ impl MaterializationRepresentation {
     }
 }
 
-fn encode_positions(bytes: &mut Vec<u8>, positions: &[u32]) {
+fn encode_positions(bytes: &mut SmallVec<[u8; 64]>, positions: &[u32]) {
     bytes.extend_from_slice(&(positions.len() as u64).to_be_bytes());
     for position in positions {
         bytes.extend_from_slice(&position.to_be_bytes());
@@ -1088,7 +1103,7 @@ fn encode_plan_node(
 }
 
 impl Node {
-    pub fn children(&self) -> Vec<&Self> {
+    pub fn children(&self) -> SmallVec<[&Self; 4]> {
         match &self.kind {
             NodeKind::PrimaryKeyGet { .. }
             | NodeKind::TableScan { .. }
@@ -1096,14 +1111,14 @@ impl Node {
             | NodeKind::IndexRangeScan { .. }
             | NodeKind::Reference { .. }
             | NodeKind::RecursiveReference { .. }
-            | NodeKind::PredicateTransferInput { .. } => Vec::new(),
+            | NodeKind::PredicateTransferInput { .. } => SmallVec::new(),
             NodeKind::Filter { input, .. }
             | NodeKind::Project { input, .. }
             | NodeKind::Sort { input, .. }
             | NodeKind::Slice { input, .. }
             | NodeKind::Distinct { input, .. }
             | NodeKind::Aggregate { input, .. }
-            | NodeKind::JoinGraphChoice { input, .. } => vec![input],
+            | NodeKind::JoinGraphChoice { input, .. } => smallvec![&**input],
             NodeKind::Attach {
                 input,
                 specifications,
@@ -1116,10 +1131,10 @@ impl Node {
             | NodeKind::HashJoin { left, right, .. }
             | NodeKind::IndexedLookupJoin { left, right, .. }
             | NodeKind::Intersect { left, right, .. }
-            | NodeKind::Except { left, right, .. } => vec![left, right],
+            | NodeKind::Except { left, right, .. } => smallvec![&**left, &**right],
             NodeKind::GroupedHashJoinAggregate {
                 fact, dimension, ..
-            } => vec![fact, dimension],
+            } => smallvec![&**fact, &**dimension],
             NodeKind::Concatenate { inputs, .. }
             | NodeKind::ShreddedYannakakisJoin { inputs, .. }
             | NodeKind::PredicateTransferJoin { inputs, .. } => inputs.iter().collect(),
@@ -1133,7 +1148,7 @@ impl Node {
         }
     }
 
-    fn children_mut(&mut self) -> Vec<&mut Self> {
+    pub(super) fn children_mut(&mut self) -> SmallVec<[&mut Self; 4]> {
         match &mut self.kind {
             NodeKind::PrimaryKeyGet { .. }
             | NodeKind::TableScan { .. }
@@ -1141,32 +1156,35 @@ impl Node {
             | NodeKind::IndexRangeScan { .. }
             | NodeKind::Reference { .. }
             | NodeKind::RecursiveReference { .. }
-            | NodeKind::PredicateTransferInput { .. } => Vec::new(),
+            | NodeKind::PredicateTransferInput { .. } => SmallVec::new(),
             NodeKind::Filter { input, .. }
             | NodeKind::Project { input, .. }
             | NodeKind::Sort { input, .. }
             | NodeKind::Slice { input, .. }
             | NodeKind::Distinct { input, .. }
             | NodeKind::Aggregate { input, .. }
-            | NodeKind::JoinGraphChoice { input, .. } => vec![input],
+            | NodeKind::JoinGraphChoice { input, .. } => smallvec![&mut **input],
             NodeKind::Attach {
                 input,
                 specifications,
-            } => std::iter::once(&mut **input)
-                .chain(
+            } => {
+                let mut children = SmallVec::with_capacity(specifications.len() + 1);
+                children.push(&mut **input);
+                children.extend(
                     specifications
                         .iter_mut()
                         .map(|specification| &mut specification.plan),
-                )
-                .collect(),
+                );
+                children
+            }
             NodeKind::NestedLoopJoin { left, right, .. }
             | NodeKind::HashJoin { left, right, .. }
             | NodeKind::IndexedLookupJoin { left, right, .. }
             | NodeKind::Intersect { left, right, .. }
-            | NodeKind::Except { left, right, .. } => vec![left, right],
+            | NodeKind::Except { left, right, .. } => smallvec![&mut **left, &mut **right],
             NodeKind::GroupedHashJoinAggregate {
                 fact, dimension, ..
-            } => vec![fact, dimension],
+            } => smallvec![&mut **fact, &mut **dimension],
             NodeKind::Concatenate { inputs, .. }
             | NodeKind::ShreddedYannakakisJoin { inputs, .. }
             | NodeKind::PredicateTransferJoin { inputs, .. } => inputs.iter_mut().collect(),
@@ -1259,6 +1277,7 @@ mod tests {
             cardinality: RootCardinality::Many,
             output,
             dependencies: CatalogDependencies::default(),
+            materialization_selection: MaterializationSelection::default(),
             next_slot: SlotId(4),
             memo: crate::engine::planner::memo::MemoReport::default(),
         };

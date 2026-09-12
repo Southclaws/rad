@@ -2,6 +2,8 @@
 
 use crate::engine::lir::bound::{self, RelationNode};
 use crate::engine::lir::{self, SlotId};
+use smallvec::SmallVec;
+use std::collections::BTreeMap;
 
 use super::analysis::{self, ConstValue, ScanConstraints};
 use super::dependencies::prepare_catalog_dependencies;
@@ -12,11 +14,13 @@ use super::physical::{
     AccessQuantity, AccessRejectionReason, AccessRowWork, AttachSpec, BindingPlan, BindingPlanKind,
     BindingStrategy, CrossingKind, JoinCandidate, JoinCost, JoinDecision, JoinDecisionBasis,
     JoinGraphClassification, JoinGraphCost, JoinGraphRejectionReason, JoinRejectionReason,
-    MaterializationCandidate, MaterializationRepresentation, Node, NodeKind, PhysicalField, Plan,
-    RangeSpec,
+    MaterializationCandidate, MaterializationRepresentation, MaterializationSelection, Node,
+    NodeKind, PhysicalField, Plan, RangeSpec,
 };
 
 pub(super) const DEFAULT_HASH_JOIN_MEMORY_LIMIT_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_MATERIALIZATIONS_PER_PLAN: usize = 4;
+const MATERIALIZATION_SELECTION_BYTE_BUCKETS: u64 = 256;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PlannerMode {
@@ -153,6 +157,7 @@ fn plan_query_inner(
         cardinality: query.cardinality,
         output: query.root.output().clone(),
         dependencies: Default::default(),
+        materialization_selection: MaterializationSelection::default(),
         next_slot: planner.next_slot,
         memo: memo.finish(),
     };
@@ -167,46 +172,267 @@ fn plan_query_inner(
         }
     }
     prepare_catalog_dependencies(&mut plan);
-    retain_best_materialization(&mut plan);
+    select_materializations(&mut plan, options.hash_join_memory_limit_bytes);
     plan
 }
 
-fn retain_best_materialization(plan: &mut Plan) {
-    // A binding can depend on a recursive frontier or a prior materialized
-    // result. Such values need an outer-value identity before they can enter a
-    // shared cache.
-    if !plan.bindings.is_empty() {
-        plan.walk_mut(&mut |node| node.materialization = None);
-        return;
-    }
-    let mut candidate_index = 0usize;
-    let mut best = None;
-    // Inclusive subtree work overlaps. One subrelation candidate prevents one
-    // plan from charging and retaining the same work at nested subrelation
-    // boundaries. Preorder and estimated row count make the choice
-    // deterministic.
-    plan.walk(&mut |node| {
-        let Some(candidate) = &node.materialization else {
-            return;
-        };
-        if !candidate.dependencies.is_empty()
-            && best.is_none_or(|(_, rows)| candidate.estimated_rows > rows)
-        {
-            best = Some((candidate_index, candidate.estimated_rows));
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct MaterializationChoice {
+    indices: SmallVec<[usize; MAX_MATERIALIZATIONS_PER_PLAN]>,
+    estimated_work: u64,
+    estimated_bytes: u64,
+    byte_buckets: usize,
+}
+
+type MaterializationChoices = Vec<MaterializationChoice>;
+
+#[derive(Clone, Debug)]
+struct MaterializationDescriptor {
+    index: usize,
+    path: SmallVec<[usize; 4]>,
+    eligible: bool,
+}
+
+fn select_materializations(plan: &mut Plan, estimated_byte_limit: u64) {
+    // Byte buckets bound planner work for large join trees. Every candidate
+    // rounds up, so quantization cannot admit more estimated bytes than the
+    // existing hash-join memory limit.
+    let byte_quantum = estimated_byte_limit
+        .saturating_add(MATERIALIZATION_SELECTION_BYTE_BUCKETS - 1)
+        .checked_div(MATERIALIZATION_SELECTION_BYTE_BUCKETS)
+        .unwrap_or(0)
+        .max(1);
+    let byte_buckets = estimated_byte_limit.checked_div(byte_quantum).unwrap_or(0) as usize;
+    let mut descriptors = Vec::new();
+    let mut choices = vec![MaterializationChoice::default()];
+    let mut root_index = 0usize;
+    for binding in &plan.bindings {
+        match &binding.kind {
+            BindingPlanKind::Derived { plan, .. } => {
+                add_materialization_root(
+                    plan,
+                    root_index,
+                    &mut choices,
+                    &mut descriptors,
+                    byte_quantum,
+                    byte_buckets,
+                );
+                root_index = root_index.saturating_add(1);
+            }
+            BindingPlanKind::Recursive { anchor, step, .. } => {
+                for root in [&**anchor, &**step] {
+                    add_materialization_root(
+                        root,
+                        root_index,
+                        &mut choices,
+                        &mut descriptors,
+                        byte_quantum,
+                        byte_buckets,
+                    );
+                    root_index = root_index.saturating_add(1);
+                }
+            }
         }
-        candidate_index = candidate_index.saturating_add(1);
-    });
-    let best = best.map(|(index, _)| index);
-    candidate_index = 0;
+    }
+    add_materialization_root(
+        &plan.root,
+        root_index,
+        &mut choices,
+        &mut descriptors,
+        byte_quantum,
+        byte_buckets,
+    );
+    let selected = choices
+        .into_iter()
+        .max_by(compare_materialization_choices)
+        .unwrap_or_default();
+    let selected_indices = &selected.indices;
+    let selected_paths = descriptors
+        .iter()
+        .filter(|candidate| selected_indices.binary_search(&candidate.index).is_ok())
+        .map(|candidate| candidate.path.as_slice())
+        .collect::<SmallVec<[&[usize]; MAX_MATERIALIZATIONS_PER_PLAN]>>();
+    let mut overlap_rejected = 0u32;
+    let mut budget_rejected = 0u32;
+    for candidate in descriptors.iter().filter(|candidate| {
+        candidate.eligible && selected_indices.binary_search(&candidate.index).is_err()
+    }) {
+        if selected_paths.iter().any(|selected| {
+            path_is_prefix(selected, &candidate.path) || path_is_prefix(&candidate.path, selected)
+        }) {
+            overlap_rejected = overlap_rejected.saturating_add(1);
+        } else {
+            budget_rejected = budget_rejected.saturating_add(1);
+        }
+    }
+
+    let mut candidate_index = 0usize;
     plan.walk_mut(&mut |node| {
         if node.materialization.is_none() {
             return;
         }
-        if Some(candidate_index) != best {
+        if selected_indices.binary_search(&candidate_index).is_err() {
             node.materialization = None;
         }
         candidate_index = candidate_index.saturating_add(1);
     });
+    plan.materialization_selection = MaterializationSelection {
+        selected: selected.indices.len().try_into().unwrap_or(u32::MAX),
+        overlap_rejected,
+        budget_rejected,
+        estimated_work: selected.estimated_work,
+        estimated_bytes: selected.estimated_bytes,
+    };
+}
+
+fn add_materialization_root(
+    root: &Node,
+    root_index: usize,
+    choices: &mut MaterializationChoices,
+    descriptors: &mut Vec<MaterializationDescriptor>,
+    byte_quantum: u64,
+    byte_buckets: usize,
+) {
+    // Each binding root, recursive anchor, recursive step, and query root has
+    // a separate path prefix. Separate trees cannot overlap. All trees use the
+    // same plan limits.
+    let root_choices = materialization_choices(
+        root,
+        &mut SmallVec::from_slice(&[root_index]),
+        descriptors,
+        byte_quantum,
+        byte_buckets,
+    );
+    *choices = combine_materialization_choices(std::mem::take(choices), root_choices, byte_buckets);
+}
+
+fn materialization_choices(
+    node: &Node,
+    path: &mut SmallVec<[usize; 4]>,
+    descriptors: &mut Vec<MaterializationDescriptor>,
+    byte_quantum: u64,
+    byte_buckets: usize,
+) -> MaterializationChoices {
+    let candidate_index = node.materialization.as_ref().map(|candidate| {
+        let index = descriptors.len();
+        descriptors.push(MaterializationDescriptor {
+            index,
+            path: path.clone(),
+            eligible: !candidate.dependencies.is_empty()
+                && candidate.estimated_avoided_work > 0
+                && candidate.estimated_retained_bytes > 0,
+        });
+        index
+    });
+
+    let mut skipped = None;
+    for (child_index, child) in node.children().into_iter().enumerate() {
+        path.push(child_index);
+        let child_choices =
+            materialization_choices(child, path, descriptors, byte_quantum, byte_buckets);
+        path.pop();
+        skipped = Some(match skipped {
+            None => child_choices,
+            Some(skipped) => combine_materialization_choices(skipped, child_choices, byte_buckets),
+        });
+    }
+    let mut skipped = skipped.unwrap_or_else(|| vec![MaterializationChoice::default()]);
+
+    if let (Some(index), Some(candidate)) = (candidate_index, node.materialization.as_ref())
+        && descriptors[index].eligible
+        && candidate.estimated_retained_bytes <= byte_quantum.saturating_mul(byte_buckets as u64)
+    {
+        // A selected node replaces its complete subtree. Descendant choices
+        // cannot be in the same set because their avoided work overlaps.
+        let buckets = candidate
+            .estimated_retained_bytes
+            .saturating_add(byte_quantum - 1)
+            .checked_div(byte_quantum)
+            .unwrap_or(0)
+            .max(1) as usize;
+        insert_materialization_choice(
+            &mut skipped,
+            MaterializationChoice {
+                indices: SmallVec::from_slice(&[index]),
+                estimated_work: candidate.estimated_avoided_work,
+                estimated_bytes: candidate.estimated_retained_bytes,
+                byte_buckets: buckets,
+            },
+        );
+    }
+    skipped
+}
+
+fn combine_materialization_choices(
+    left: MaterializationChoices,
+    right: MaterializationChoices,
+    byte_buckets: usize,
+) -> MaterializationChoices {
+    // One slot keeps the best choice for an exact count and byte charge. The
+    // fixed limits prevent an unbounded sibling subset search. The sparse map
+    // avoids a dense allocation when a plan has few candidates.
+    let mut combined = BTreeMap::new();
+    for left in left {
+        for right in &right {
+            let count = left.indices.len().saturating_add(right.indices.len());
+            let buckets = left.byte_buckets.saturating_add(right.byte_buckets);
+            if count > MAX_MATERIALIZATIONS_PER_PLAN || buckets > byte_buckets {
+                continue;
+            }
+            let mut indices = left.indices.clone();
+            indices.extend_from_slice(&right.indices);
+            let candidate = MaterializationChoice {
+                indices,
+                estimated_work: left.estimated_work.saturating_add(right.estimated_work),
+                estimated_bytes: left.estimated_bytes.saturating_add(right.estimated_bytes),
+                byte_buckets: buckets,
+            };
+            match combined.entry((count, buckets)) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(candidate);
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    if compare_materialization_choices(&candidate, entry.get()).is_gt() {
+                        entry.insert(candidate);
+                    }
+                }
+            }
+        }
+    }
+    combined.into_values().collect()
+}
+
+fn insert_materialization_choice(
+    choices: &mut MaterializationChoices,
+    candidate: MaterializationChoice,
+) {
+    if let Some(slot) = choices.iter_mut().find(|choice| {
+        choice.indices.len() == candidate.indices.len()
+            && choice.byte_buckets == candidate.byte_buckets
+    }) {
+        if compare_materialization_choices(&candidate, slot).is_gt() {
+            *slot = candidate;
+        }
+    } else {
+        choices.push(candidate);
+    }
+}
+
+fn compare_materialization_choices(
+    left: &MaterializationChoice,
+    right: &MaterializationChoice,
+) -> std::cmp::Ordering {
+    // Work is the primary benefit. Lower byte use and fewer entries reduce
+    // cache pressure. Preorder is the final stable tie rule.
+    left.estimated_work
+        .cmp(&right.estimated_work)
+        .then_with(|| right.estimated_bytes.cmp(&left.estimated_bytes))
+        .then_with(|| right.indices.len().cmp(&left.indices.len()))
+        .then_with(|| right.indices.cmp(&left.indices))
+}
+
+fn path_is_prefix(prefix: &[usize], path: &[usize]) -> bool {
+    prefix.len() <= path.len() && prefix == &path[..prefix.len()]
 }
 
 fn reference_counts(plan: &Plan) -> std::collections::HashMap<String, usize> {
@@ -1275,11 +1501,19 @@ impl Planner<'_> {
             && strict_chosen.is_none())
         .then(|| robust_join_cost_winner(&candidates, structural_fallback))
         .flatten();
+        let stable_recursive_hash_build =
+            super::memo::contains_recursive_reference(left) && materialization_is_safe(right);
         let bounded_hash_chosen = (self.options.mode == PlannerMode::Cost
             && !self.options.full_scan_only
             && strict_chosen.is_none()
             && robust_chosen.is_none())
-        .then(|| bounded_hash_join_winner(&candidates, structural_fallback))
+        .then(|| {
+            bounded_hash_join_winner(
+                &candidates,
+                structural_fallback,
+                stable_recursive_hash_build,
+            )
+        })
         .flatten();
         let chosen = if recursive_indexed_lookup {
             structural_fallback
@@ -1379,11 +1613,18 @@ impl Planner<'_> {
                             decision,
                         };
                     };
+                    let estimated_subtree_work =
+                        memo_physical_metrics(build_relation, &planned_right, &[])
+                            .logical_row_operations
+                            .map_or(hash.cost.build_rows.central, |work| work.central);
                     planned_right.materialization = Some(MaterializationCandidate {
                         exact: lir::fingerprint::relation_fingerprints(build_relation).exact,
                         output: build_relation.output().clone(),
                         dependencies: Default::default(),
                         estimated_rows: hash.cost.build_rows.central,
+                        estimated_avoided_work: estimated_subtree_work
+                            .saturating_add(hash.cost.build_rows.central),
+                        estimated_retained_bytes: hash.memory_bytes,
                         representation: MaterializationRepresentation::HashJoinBuild {
                             key_positions,
                         },
@@ -1721,7 +1962,10 @@ impl Planner<'_> {
 }
 
 fn materialization_is_safe(relation: &bound::Relation) -> bool {
-    if !relation.free_slots().is_empty() || super::memo::contains_recursive_reference(relation) {
+    // A shared artifact key has no identity for a binding value or an outer
+    // value. The complete candidate relation must depend only on persistent
+    // catalog data and constants that its exact fingerprint identifies.
+    if !relation.free_slots().is_empty() || super::memo::contains_binding_reference(relation) {
         return false;
     }
     let effects = super::memo::relation_effects(relation);
@@ -2867,7 +3111,11 @@ fn robust_join_cost_winner(candidates: &[JoinCandidate], structural: usize) -> O
         .map(|(index, _, _, _)| index)
 }
 
-fn bounded_hash_join_winner(candidates: &[JoinCandidate], structural: usize) -> Option<usize> {
+fn bounded_hash_join_winner(
+    candidates: &[JoinCandidate],
+    structural: usize,
+    stable_recursive_build: bool,
+) -> Option<usize> {
     let nested = candidates.get(structural)?.cost?;
     let hash_index = candidates.iter().position(|candidate| {
         candidate.method == "HashJoin"
@@ -2876,6 +3124,15 @@ fn bounded_hash_join_winner(candidates: &[JoinCandidate], structural: usize) -> 
     })?;
     let hash = candidates[hash_index].cost?;
     if nested.build_rows.upper_bound.is_none() && hash.build_rows.upper_bound.is_some() {
+        return Some(hash_index);
+    }
+    // The executor calls a recursive step only when its frontier is not empty.
+    // A bounded build with at least two rows makes one hash probe cheaper than
+    // one nested comparison pass. The same artifact can serve later steps.
+    if stable_recursive_build
+        && hash.build_rows.lower_bound > 1
+        && hash.build_rows.upper_bound.is_some()
+    {
         return Some(hash_index);
     }
     let hash_input_work = hash
@@ -3287,6 +3544,393 @@ mod tests {
     use super::*;
     use crate::engine::planner::test_support::{column, query, scan, table};
 
+    fn materialization_candidate(
+        marker: u64,
+        estimated_work: u64,
+        estimated_bytes: u64,
+    ) -> MaterializationCandidate {
+        let relation = scan();
+        let table = relation.scan_table();
+        let mut dependencies = crate::engine::catalog::model::CatalogDependencies::default();
+        dependencies.add_table_read(table, &table.columns);
+        MaterializationCandidate {
+            exact: lir::fingerprint::relation_fingerprints(&relation).exact,
+            output: relation.output().clone(),
+            dependencies,
+            estimated_rows: marker,
+            estimated_avoided_work: estimated_work,
+            estimated_retained_bytes: estimated_bytes,
+            representation: MaterializationRepresentation::HashJoinBuild {
+                key_positions: Vec::new(),
+            },
+        }
+    }
+
+    fn materialization_branch(
+        candidate: Option<MaterializationCandidate>,
+        inputs: Vec<Node>,
+    ) -> Node {
+        let output = scan().output().clone();
+        Node {
+            attribution: None,
+            materialization: candidate,
+            kind: NodeKind::Concatenate {
+                input_outputs: vec![output.clone(); inputs.len()],
+                inputs,
+                output,
+            },
+        }
+    }
+
+    fn materialization_plan(root: Node) -> Plan {
+        Plan {
+            bindings: Vec::new(),
+            root,
+            cardinality: lir::RootCardinality::Many,
+            output: scan().output().clone(),
+            dependencies: Default::default(),
+            materialization_selection: MaterializationSelection::default(),
+            next_slot: SlotId(3),
+            memo: MemoSession::new(MemoLimits::default()).finish(),
+        }
+    }
+
+    fn selected_materialization_markers(plan: &Plan) -> Vec<u64> {
+        let mut markers = Vec::new();
+        plan.walk(&mut |node| {
+            if let Some(candidate) = &node.materialization {
+                markers.push(candidate.estimated_rows);
+            }
+        });
+        markers
+    }
+
+    #[test]
+    fn materialization_selection_keeps_independent_siblings() {
+        let mut plan = materialization_plan(materialization_branch(
+            None,
+            vec![
+                materialization_branch(Some(materialization_candidate(1, 20, 10)), Vec::new()),
+                materialization_branch(Some(materialization_candidate(2, 30, 10)), Vec::new()),
+            ],
+        ));
+
+        select_materializations(&mut plan, 100);
+
+        assert_eq!(selected_materialization_markers(&plan), vec![1, 2]);
+        assert_eq!(plan.materialization_selection.selected, 2);
+        assert_eq!(plan.materialization_selection.estimated_work, 50);
+        assert_eq!(plan.materialization_selection.estimated_bytes, 20);
+    }
+
+    #[test]
+    fn materialization_selection_excludes_nested_candidates() {
+        let nested = materialization_branch(
+            Some(materialization_candidate(1, 100, 80)),
+            vec![
+                materialization_branch(Some(materialization_candidate(2, 60, 40)), Vec::new()),
+                materialization_branch(Some(materialization_candidate(3, 60, 40)), Vec::new()),
+            ],
+        );
+        let mut plan = materialization_plan(materialization_branch(None, vec![nested]));
+
+        select_materializations(&mut plan, 100);
+
+        assert_eq!(selected_materialization_markers(&plan), vec![2, 3]);
+        assert_eq!(plan.materialization_selection.selected, 2);
+        assert_eq!(plan.materialization_selection.overlap_rejected, 1);
+    }
+
+    #[test]
+    fn materialization_selection_uses_preorder_for_equal_candidates() {
+        let inputs = (0..6)
+            .map(|marker| {
+                materialization_branch(Some(materialization_candidate(marker, 10, 10)), Vec::new())
+            })
+            .collect();
+        let mut plan = materialization_plan(materialization_branch(None, inputs));
+
+        select_materializations(&mut plan, 100);
+
+        assert_eq!(selected_materialization_markers(&plan), vec![0, 1, 2, 3]);
+        assert_eq!(plan.materialization_selection.selected, 4);
+        assert_eq!(plan.materialization_selection.budget_rejected, 2);
+    }
+
+    #[test]
+    fn materialization_selection_respects_the_plan_byte_budget() {
+        let mut plan = materialization_plan(materialization_branch(
+            None,
+            vec![
+                materialization_branch(Some(materialization_candidate(1, 100, 80)), Vec::new()),
+                materialization_branch(Some(materialization_candidate(2, 90, 30)), Vec::new()),
+                materialization_branch(Some(materialization_candidate(3, 80, 30)), Vec::new()),
+            ],
+        ));
+
+        select_materializations(&mut plan, 60);
+
+        assert_eq!(selected_materialization_markers(&plan), vec![2, 3]);
+        assert_eq!(plan.materialization_selection.estimated_bytes, 60);
+        assert_eq!(plan.materialization_selection.budget_rejected, 1);
+    }
+
+    #[test]
+    fn materialization_selection_uses_the_complete_plan_forest() {
+        let output = scan().output().clone();
+        let mut plan = materialization_plan(materialization_branch(
+            Some(materialization_candidate(4, 10, 10)),
+            Vec::new(),
+        ));
+        plan.bindings = vec![
+            BindingPlan {
+                name: "derived".into(),
+                output: output.clone(),
+                sensitive: false,
+                kind: BindingPlanKind::Derived {
+                    plan: Box::new(materialization_branch(
+                        Some(materialization_candidate(1, 10, 10)),
+                        Vec::new(),
+                    )),
+                    strategy: BindingStrategy::Replay,
+                },
+            },
+            BindingPlan {
+                name: "recursive".into(),
+                output: output.clone(),
+                sensitive: false,
+                kind: BindingPlanKind::Recursive {
+                    anchor: Box::new(materialization_branch(
+                        Some(materialization_candidate(2, 10, 10)),
+                        Vec::new(),
+                    )),
+                    step: Box::new(materialization_branch(
+                        Some(materialization_candidate(3, 10, 10)),
+                        Vec::new(),
+                    )),
+                    step_output: output,
+                    accumulation: lir::RecursiveAccumulation::New,
+                },
+            },
+        ];
+
+        select_materializations(&mut plan, 100);
+
+        assert_eq!(selected_materialization_markers(&plan), vec![1, 2, 3, 4]);
+        assert_eq!(plan.materialization_selection.selected, 4);
+        assert_eq!(plan.materialization_selection.estimated_work, 40);
+        assert_eq!(plan.materialization_selection.estimated_bytes, 40);
+    }
+
+    #[derive(Clone)]
+    struct ReferenceMaterialization {
+        descriptor_index: usize,
+        marker: u64,
+        path: Vec<usize>,
+        eligible: bool,
+        estimated_work: u64,
+        estimated_bytes: u64,
+    }
+
+    fn generated_materialization_tree(
+        state: &mut u64,
+        depth: usize,
+        path: &mut Vec<usize>,
+        next_marker: &mut u64,
+        candidates: &mut Vec<ReferenceMaterialization>,
+    ) -> Node {
+        let marker = *next_marker;
+        *next_marker = next_marker.saturating_add(1);
+        let has_candidate = !next_generated_value(state).is_multiple_of(5);
+        let estimated_work = next_generated_value(state) % 200;
+        let estimated_bytes = next_generated_value(state) % 700;
+        let has_dependencies = !next_generated_value(state).is_multiple_of(7);
+        let candidate = has_candidate.then(|| {
+            let mut candidate = materialization_candidate(marker, estimated_work, estimated_bytes);
+            if !has_dependencies {
+                candidate.dependencies = Default::default();
+            }
+            candidates.push(ReferenceMaterialization {
+                descriptor_index: candidates.len(),
+                marker,
+                path: path.clone(),
+                eligible: has_dependencies && estimated_work > 0 && estimated_bytes > 0,
+                estimated_work,
+                estimated_bytes,
+            });
+            candidate
+        });
+        let child_count = if depth == 0 {
+            0
+        } else {
+            next_generated_value(state) as usize % 3
+        };
+        let mut children = Vec::with_capacity(child_count);
+        for child_index in 0..child_count {
+            path.push(child_index);
+            children.push(generated_materialization_tree(
+                state,
+                depth - 1,
+                path,
+                next_marker,
+                candidates,
+            ));
+            path.pop();
+        }
+        materialization_branch(candidate, children)
+    }
+
+    fn next_generated_value(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut value = *state;
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
+    }
+
+    fn exhaustive_materialization_choice(
+        candidates: &[ReferenceMaterialization],
+        estimated_byte_limit: u64,
+    ) -> MaterializationChoice {
+        let byte_quantum = estimated_byte_limit
+            .saturating_add(MATERIALIZATION_SELECTION_BYTE_BUCKETS - 1)
+            .checked_div(MATERIALIZATION_SELECTION_BYTE_BUCKETS)
+            .unwrap_or(0)
+            .max(1);
+        let byte_buckets = estimated_byte_limit.checked_div(byte_quantum).unwrap_or(0) as usize;
+        let mut best = MaterializationChoice::default();
+        for subset in 0usize..(1usize << candidates.len()) {
+            let selected = candidates
+                .iter()
+                .filter(|candidate| subset & (1 << candidate.descriptor_index) != 0)
+                .collect::<Vec<_>>();
+            if selected.len() > MAX_MATERIALIZATIONS_PER_PLAN
+                || selected.iter().any(|candidate| !candidate.eligible)
+                || selected.iter().enumerate().any(|(index, left)| {
+                    selected[index + 1..].iter().any(|right| {
+                        path_is_prefix(&left.path, &right.path)
+                            || path_is_prefix(&right.path, &left.path)
+                    })
+                })
+            {
+                continue;
+            }
+            let buckets = selected.iter().fold(0usize, |total, candidate| {
+                total.saturating_add(
+                    candidate
+                        .estimated_bytes
+                        .saturating_add(byte_quantum - 1)
+                        .checked_div(byte_quantum)
+                        .unwrap_or(0)
+                        .max(1) as usize,
+                )
+            });
+            if buckets > byte_buckets {
+                continue;
+            }
+            let choice = MaterializationChoice {
+                indices: selected
+                    .iter()
+                    .map(|candidate| candidate.descriptor_index)
+                    .collect(),
+                estimated_work: selected.iter().fold(0u64, |total, candidate| {
+                    total.saturating_add(candidate.estimated_work)
+                }),
+                estimated_bytes: selected.iter().fold(0u64, |total, candidate| {
+                    total.saturating_add(candidate.estimated_bytes)
+                }),
+                byte_buckets: buckets,
+            };
+            if compare_materialization_choices(&choice, &best).is_gt() {
+                best = choice;
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn generated_materialization_selection_matches_exhaustive_search() {
+        for seed in 0..1_024u64 {
+            let mut state = seed;
+            let mut candidates = Vec::new();
+            let mut next_marker = 0;
+            let root = generated_materialization_tree(
+                &mut state,
+                3,
+                &mut vec![0],
+                &mut next_marker,
+                &mut candidates,
+            );
+            let estimated_byte_limit = next_generated_value(&mut state) % 1_024;
+            let expected = exhaustive_materialization_choice(&candidates, estimated_byte_limit);
+            let expected_markers = expected
+                .indices
+                .iter()
+                .map(|index| candidates[*index].marker)
+                .collect::<Vec<_>>();
+
+            let mut first = materialization_plan(root.clone());
+            let mut second = materialization_plan(root);
+            select_materializations(&mut first, estimated_byte_limit);
+            select_materializations(&mut second, estimated_byte_limit);
+
+            assert_eq!(
+                selected_materialization_markers(&first),
+                expected_markers,
+                "seed {seed}, byte limit {estimated_byte_limit}"
+            );
+            assert_eq!(
+                selected_materialization_markers(&first),
+                selected_materialization_markers(&second),
+                "seed {seed}, byte limit {estimated_byte_limit}"
+            );
+            assert_eq!(
+                first.materialization_selection,
+                second.materialization_selection
+            );
+            assert_eq!(
+                first.materialization_selection.estimated_work,
+                expected.estimated_work
+            );
+            assert_eq!(
+                first.materialization_selection.estimated_bytes,
+                expected.estimated_bytes
+            );
+        }
+    }
+
+    #[test]
+    fn shared_materialization_rejects_execution_local_values() {
+        let stable = scan();
+        assert!(materialization_is_safe(&stable));
+
+        let fields = stable.output().fields.clone();
+        let canonical = fields.iter().map(|field| field.slot).collect::<Vec<_>>();
+        let derived = bound::Relation::reference(
+            "derived",
+            "derived-scope",
+            fields.clone(),
+            canonical.clone(),
+        );
+        let frontier =
+            bound::Relation::recursive_reference("recursive", "frontier", fields, canonical);
+        assert!(!materialization_is_safe(&derived));
+        assert!(!materialization_is_safe(&frontier));
+        let crossing = bound::Relation::filter(scan(), bound::Expr::exists(derived));
+        assert!(super::super::memo::contains_binding_reference(&crossing));
+
+        let outer = bound::Relation::filter(
+            stable,
+            bound::Expr::binary(
+                BinaryOp::Eq,
+                bound::Expr::slot(SlotId(99), "outer.id", Type::scalar(Kind::Text, false)),
+                bound::Expr::literal(Value::Text("one".into())),
+            ),
+        );
+        assert!(!outer.free_slots().is_empty());
+        assert!(!materialization_is_safe(&outer));
+    }
+
     fn complete_stats(
         table: &crate::engine::catalog::model::Table,
         observed_rows: u64,
@@ -3549,9 +4193,30 @@ mod tests {
         right_column: &str,
         kind: lir::JoinKind,
     ) -> bound::Query {
-        let left = bound::Relation::scan(left_table, "left", vec![SlotId(0), SlotId(1), SlotId(2)]);
-        let right =
-            bound::Relation::scan(right_table, "right", vec![SlotId(3), SlotId(4), SlotId(5)]);
+        query(
+            joined_relation(left_table, right_table, left_column, right_column, kind, 0),
+            6,
+        )
+    }
+
+    fn joined_relation(
+        left_table: crate::engine::catalog::model::Table,
+        right_table: crate::engine::catalog::model::Table,
+        left_column: &str,
+        right_column: &str,
+        kind: lir::JoinKind,
+        first_slot: usize,
+    ) -> bound::Relation {
+        let left = bound::Relation::scan(
+            left_table,
+            format!("left-{first_slot}"),
+            (first_slot..first_slot + 3).map(SlotId).collect(),
+        );
+        let right = bound::Relation::scan(
+            right_table,
+            format!("right-{first_slot}"),
+            (first_slot + 3..first_slot + 6).map(SlotId).collect(),
+        );
         let left_key = left.output().lookup(left_column).unwrap();
         let right_key = right.output().lookup(right_column).unwrap();
         let on = bound::Expr::binary(
@@ -3567,7 +4232,7 @@ mod tests {
                 right_key.value_type.clone(),
             ),
         );
-        query(bound::Relation::join(left, right, kind, on), 6)
+        bound::Relation::join(left, right, kind, on)
     }
 
     fn add_join_synopsis(
@@ -4549,6 +5214,114 @@ mod tests {
     }
 
     #[test]
+    fn recursive_step_selects_a_stable_hash_build() {
+        use crate::engine::lir::{Field, RecursiveAccumulation, RowType};
+
+        let stable = join_table(10, "stable-table", "stable_items");
+        let anchor_field = Field {
+            name: "status".into(),
+            slot: SlotId(0),
+            value_type: Type::scalar(Kind::Text, false),
+        };
+        let anchor = bound::Relation::rows(
+            "anchor",
+            vec![anchor_field.clone()],
+            vec![vec![Value::Text("open".into())]],
+        );
+        let frontier = bound::Relation::recursive_reference(
+            "walk",
+            "frontier",
+            vec![Field {
+                name: "status".into(),
+                slot: SlotId(1),
+                value_type: Type::scalar(Kind::Text, false),
+            }],
+            vec![SlotId(0)],
+        );
+        let base = bound::Relation::scan(
+            stable.clone(),
+            "base",
+            vec![SlotId(2), SlotId(3), SlotId(4)],
+        );
+        let joined = bound::Relation::join(
+            frontier,
+            base.clone(),
+            lir::JoinKind::Inner,
+            bound::Expr::binary(
+                BinaryOp::Eq,
+                bound::Expr::slot(
+                    SlotId(1),
+                    "frontier.status",
+                    Type::scalar(Kind::Text, false),
+                ),
+                column(&base, "status"),
+            ),
+        );
+        let step = bound::Relation::project(
+            joined,
+            "step",
+            vec![bound::ProjectField {
+                name: "status".into(),
+                slot: SlotId(5),
+                expression: column(&base, "status"),
+            }],
+        );
+        let root = bound::Relation::reference(
+            "walk",
+            "result",
+            vec![Field {
+                name: "status".into(),
+                slot: SlotId(6),
+                value_type: Type::scalar(Kind::Text, false),
+            }],
+            vec![SlotId(0)],
+        );
+        let mut statistics = PlannerStats::empty();
+        add_join_synopsis(&mut statistics, &stable, 200, "status", &[("open", 100)]);
+        let planned = plan_query_with_context(
+            &bound::Query {
+                root,
+                cardinality: lir::RootCardinality::Many,
+                bindings: vec![bound::Binding {
+                    name: "walk".into(),
+                    root: anchor,
+                    output: RowType {
+                        fields: vec![anchor_field],
+                    },
+                    plan_sensitive: false,
+                    recursive: true,
+                    step: Some(step),
+                    accumulation: Some(RecursiveAccumulation::New),
+                }],
+                next_slot: SlotId(7),
+            },
+            PlanOptions {
+                mode: PlannerMode::Cost,
+                ..PlanOptions::default()
+            },
+            PlanningContext {
+                statistics: Some(&statistics),
+            },
+        );
+
+        let BindingPlanKind::Recursive { anchor, step, .. } = &planned.plan.bindings[0].kind else {
+            panic!("expected recursive binding")
+        };
+        assert!(anchor.materialization.is_none());
+        let NodeKind::Project { input, .. } = &step.kind else {
+            panic!("expected recursive projection")
+        };
+        let NodeKind::HashJoin { left, right, .. } = &input.kind else {
+            panic!("expected recursive hash join: {input:#?}")
+        };
+        assert!(matches!(left.kind, NodeKind::RecursiveReference { .. }));
+        assert!(left.materialization.is_none());
+        assert!(matches!(right.kind, NodeKind::TableScan { .. }));
+        assert!(right.materialization.is_some());
+        assert_eq!(planned.plan.materialization_selection.selected, 1);
+    }
+
+    #[test]
     fn recursive_frontier_drives_a_composite_index_prefix_lookup() {
         use crate::engine::lir::Field;
 
@@ -4776,6 +5549,89 @@ mod tests {
             decision.candidates[1].decision_basis,
             Some(JoinDecisionBasis::BoundedBuild)
         );
+    }
+
+    #[test]
+    fn concatenate_selects_both_hash_build_siblings() {
+        use crate::engine::lir::Field;
+
+        let stable_a = join_table(10, "stable-a-table", "stable_a_items");
+        let changing_a = join_table(20, "changing-a-table", "changing_a_items");
+        let stable_b = join_table(30, "stable-b-table", "stable_b_items");
+        let changing_b = join_table(40, "changing-b-table", "changing_b_items");
+        let left = joined_relation(
+            stable_a.clone(),
+            changing_a.clone(),
+            "board_id",
+            "board_id",
+            lir::JoinKind::Inner,
+            0,
+        );
+        let right = joined_relation(
+            stable_b.clone(),
+            changing_b.clone(),
+            "board_id",
+            "board_id",
+            lir::JoinKind::Inner,
+            6,
+        );
+        let output = left
+            .output()
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(index, field)| Field {
+                name: field.name.clone(),
+                slot: SlotId(12 + index),
+                value_type: field.value_type.clone(),
+            })
+            .collect();
+        let query = query(
+            bound::Relation::concatenate(vec![left, right], "all", output),
+            18,
+        );
+        let mut statistics = PlannerStats::empty();
+        for (table, rows) in [
+            (&stable_a, 200),
+            (&changing_a, 25_000),
+            (&stable_b, 300),
+            (&changing_b, 30_000),
+        ] {
+            add_join_synopsis(&mut statistics, table, rows, "board_id", &[]);
+        }
+        for table in [&changing_a, &changing_b] {
+            let synopsis = statistics
+                .synopsis_models
+                .get_mut(&table.schema_id)
+                .unwrap();
+            synopsis.coverage = SynopsisCoverage::PrefixLimit;
+            synopsis.changes_since_collection = 626;
+        }
+
+        let planned = plan_query_with_context(
+            &query,
+            PlanOptions {
+                mode: PlannerMode::Cost,
+                ..PlanOptions::default()
+            },
+            PlanningContext {
+                statistics: Some(&statistics),
+            },
+        );
+
+        let NodeKind::Concatenate { inputs, .. } = &planned.plan.root.kind else {
+            panic!("expected concatenate")
+        };
+        assert_eq!(inputs.len(), 2);
+        for input in inputs {
+            let NodeKind::HashJoin { right, .. } = &input.kind else {
+                panic!("expected hash join")
+            };
+            assert!(right.materialization.is_some());
+        }
+        assert_eq!(planned.plan.materialization_selection.selected, 2);
+        assert_eq!(planned.plan.materialization_selection.overlap_rejected, 0);
+        assert_eq!(planned.plan.materialization_selection.budget_rejected, 0);
     }
 
     #[test]

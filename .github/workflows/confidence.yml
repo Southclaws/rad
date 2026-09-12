@@ -65,6 +65,11 @@ jobs:
           set -euo pipefail
           export RAD_DST_SECONDS="$((RAD_DST_SECONDS * 60))"
           mkdir -p "$RAD_TEST_ARTIFACT_DIR"
+          cargo test --locked --test reader_snapshot_simulation -- --nocapture
+          cargo test --locked --test relation_cache_determinism -- --nocapture
+          cargo test --locked --test storage_simulation -- --nocapture
+          cargo test --locked --test storage_fault_campaign -- --nocapture
+          cargo test --locked --test statistics_simulation -- --nocapture
           cargo test --locked --test schema_scheduler_simulation turmoil_schema_work_soak -- --exact --ignored --nocapture \
             2>&1 | tee "$RAD_TEST_ARTIFACT_DIR/run.log"
 

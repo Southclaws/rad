@@ -66,6 +66,11 @@ jobs:
           mkdir -p "$RAD_TEST_ARTIFACT_DIR"
           printf '{"format":"rad-overnight-wave-v1","revision":"%s","campaign":"dst","wave":%d,"requested_minutes":%d,"seed_start":%d}\n' \
             "$GITHUB_SHA" "$WAVE" "$CAMPAIGN_MINUTES" "$RAD_DST_SEED_START" > "$RAD_TEST_ARTIFACT_DIR/context.json"
+          cargo test --locked --test reader_snapshot_simulation -- --nocapture
+          cargo test --locked --test relation_cache_determinism -- --nocapture
+          cargo test --locked --test storage_simulation -- --nocapture
+          cargo test --locked --test storage_fault_campaign -- --nocapture
+          cargo test --locked --test statistics_simulation -- --nocapture
           cargo test --locked --test schema_scheduler_simulation turmoil_schema_work_soak -- --exact --ignored --nocapture \
             2>&1 | tee "$RAD_TEST_ARTIFACT_DIR/run.log"
 

@@ -1151,7 +1151,7 @@ impl<'a> Context<'a> {
                 combined
             };
         let mut aggregate_expressions = ExpressionCompiler::new(self, ExpressionEnv::default())
-            .with_output(aggregate_scope.clone(), aggregate_columns.clone())
+            .with_output(aggregate_scope, aggregate_columns.clone())
             .with_substitutions(substitutions);
         if let Some(having) = &select.having {
             relation = Relation::Filter {
@@ -1470,7 +1470,7 @@ impl<'a> Context<'a> {
                 apply_column_aliases(&mut scope, alias.as_ref())?;
                 Ok((
                     Relation::Scan {
-                        table: table.name.clone(),
+                        table: table.name,
                         scope: label,
                     },
                     scope,
@@ -1819,7 +1819,7 @@ impl<'a> Context<'a> {
             on,
         };
         let env = ExpressionEnv::local(
-            vec![row_scope.clone(), target_scope.clone()],
+            vec![row_scope.clone(), target_scope],
             &ExpressionEnv::default(),
         );
         let mut expressions = ExpressionCompiler::new(self, env);
@@ -3148,7 +3148,7 @@ fn projection(
         let count = names.entry(wire.clone()).or_default();
         *count += 1;
         if *count == 1 {
-            wire.clone()
+            wire
         } else {
             format!("{wire}_{}", *count)
         }

@@ -28,6 +28,12 @@ pub(super) enum ExecutionPath {
     Reference,
 }
 
+type SubrelationCacheExecution<'a> = (
+    &'a super::relation_cache::RelationCache,
+    super::relation_cache::RelationCacheKey,
+    Option<&'a Arc<dyn super::EngineEventHook>>,
+);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CatalogPolicy {
     Forbidden,
@@ -475,6 +481,7 @@ pub(super) struct RunContext<'a> {
     pub plan_options: crate::engine::planner::PlanOptions,
     pub collect_plan: bool,
     pub execution_grant: super::parallel::ExecutionGrant,
+    pub cache_events: Option<&'a Arc<dyn super::EngineEventHook>>,
 }
 
 pub(super) async fn run(
@@ -501,6 +508,7 @@ pub(super) async fn run(
         context.execution_grant,
         context.relation_cache,
         context.dependency_validation,
+        context.cache_events,
     ))
     .await
 }
@@ -528,6 +536,7 @@ pub(super) async fn run_reference(
         super::parallel::ExecutionGrant::serial(),
         None,
         super::relation_cache::DependencyValidation::Transaction,
+        None,
     ))
     .await
 }
@@ -548,6 +557,7 @@ async fn run_with_path(
     execution_grant: super::parallel::ExecutionGrant,
     relation_cache: Option<&super::relation_cache::RelationCache>,
     dependency_validation: super::relation_cache::DependencyValidation,
+    cache_events: Option<&Arc<dyn super::EngineEventHook>>,
 ) -> Result<ProgramResult> {
     let mut binder = ProgramBinder::new(relational_names(program))?;
     let mut bindings = HashMap::<String, Vec<Env>>::new();
@@ -576,6 +586,7 @@ async fn run_with_path(
         &execution_grant,
         relation_cache,
         dependency_validation,
+        cache_events,
         &mut plans,
     ))
     .await?;
@@ -627,6 +638,7 @@ async fn run_statements(
     execution_grant: &super::parallel::ExecutionGrant,
     relation_cache: Option<&super::relation_cache::RelationCache>,
     dependency_validation: super::relation_cache::DependencyValidation,
+    cache_events: Option<&Arc<dyn super::EngineEventHook>>,
     plans: &mut Vec<StatementPlan>,
 ) -> Result<()> {
     let mut catalog_changed = false;
@@ -782,7 +794,9 @@ async fn run_statements(
             let execute_started = measuring.then(|| runtime.monotonic());
             let counters = (measuring || cache_key.is_some())
                 .then(|| super::observe::KvCounters::new(collect_plan));
-            let subrelation_cache = cache_key.as_ref().map(|(cache, key)| (*cache, key.clone()));
+            let subrelation_cache = cache_key
+                .as_ref()
+                .map(|(cache, key)| (*cache, key.clone(), cache_events));
             let mut binding_rows = Vec::new();
             let mut measured = Vec::new();
             let mut join_operators = Vec::new();
@@ -833,7 +847,7 @@ async fn run_statements(
             };
             let execution = async {
                 if let Some((cache, key)) = cache_key {
-                    cache
+                    let mut cached = cache
                         .get_or_fill(key, &bound.result_output, || async {
                             let started = runtime.monotonic();
                             let frames = relational.await?;
@@ -852,7 +866,13 @@ async fn run_statements(
                                 },
                             ))
                         })
-                        .await
+                        .await?;
+                    super::relation_cache::reach_semantic_events(
+                        cache_events,
+                        cached.take_events(),
+                    )
+                    .await;
+                    Ok(cached)
                 } else {
                     relational
                         .await
@@ -1197,10 +1217,7 @@ async fn run_relational(
     measure_operators: bool,
     operators: &mut Vec<super::observe::OperatorMeasurement>,
     execution_grant: &super::parallel::ExecutionGrant,
-    subrelation_cache: Option<(
-        &super::relation_cache::RelationCache,
-        super::relation_cache::RelationCacheKey,
-    )>,
+    subrelation_cache: Option<SubrelationCacheExecution<'_>>,
 ) -> Result<Vec<Env>> {
     let input = match path {
         ExecutionPath::Production => {
@@ -1213,8 +1230,8 @@ async fn run_relational(
             if let Some(kv_counters) = kv_counters {
                 executor.observe_kv_work(kv_counters);
             }
-            if let Some((cache, root_key)) = subrelation_cache {
-                executor.use_subrelation_cache(cache, root_key);
+            if let Some((cache, root_key, events)) = subrelation_cache {
+                executor.use_subrelation_cache(cache, root_key, events);
             }
             if measure_relations {
                 executor.enable_measurements();

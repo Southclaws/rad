@@ -13,6 +13,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::Serialize;
+use smallvec::{SmallVec, smallvec};
 
 use crate::engine::lir::bound::{self, RelationNode};
 use crate::engine::lir::fingerprint::{self, Fingerprint};
@@ -923,10 +924,10 @@ pub(crate) fn relation_effects(relation: &bound::Relation) -> ExpressionEffects 
     effects
 }
 
-fn direct_expressions(relation: &bound::Relation) -> Vec<&bound::Expr> {
+fn direct_expressions(relation: &bound::Relation) -> SmallVec<[&bound::Expr; 4]> {
     match &relation.node {
         RelationNode::Filter { predicate, .. } | RelationNode::Join { on: predicate, .. } => {
-            vec![predicate]
+            smallvec![predicate]
         }
         RelationNode::Project { fields, .. } => {
             fields.iter().map(|field| &field.expression).collect()
@@ -937,7 +938,7 @@ fn direct_expressions(relation: &bound::Relation) -> Vec<&bound::Expr> {
             .chain(terms.iter().filter_map(|term| term.argument.as_ref()))
             .collect(),
         RelationNode::Order { terms, .. } => terms.iter().map(|term| &term.expression).collect(),
-        _ => Vec::new(),
+        _ => SmallVec::new(),
     }
 }
 
@@ -999,11 +1000,29 @@ pub(crate) fn expression_effects(expression: &bound::Expr) -> ExpressionEffects 
 }
 
 pub(crate) fn contains_recursive_reference(relation: &bound::Relation) -> bool {
-    matches!(relation.node, RelationNode::RecursiveRef { .. })
+    contains_reference(relation, |node| {
+        matches!(node, RelationNode::RecursiveRef { .. })
+    })
+}
+
+pub(crate) fn contains_binding_reference(relation: &bound::Relation) -> bool {
+    contains_reference(relation, |node| {
+        matches!(
+            node,
+            RelationNode::Ref { .. } | RelationNode::RecursiveRef { .. }
+        )
+    })
+}
+
+fn contains_reference(
+    relation: &bound::Relation,
+    predicate: impl Copy + Fn(&RelationNode) -> bool,
+) -> bool {
+    predicate(&relation.node)
         || relation
             .inputs()
             .into_iter()
-            .any(contains_recursive_reference)
+            .any(|input| contains_reference(input, predicate))
         || direct_expressions(relation).into_iter().any(|expression| {
             let mut found = false;
             crate::engine::lir::inspect::walk_expression(expression, &mut |expression| {
@@ -1014,7 +1033,7 @@ pub(crate) fn contains_recursive_reference(relation: &bound::Relation) -> bool {
                     | bound::Expr::Array { relation, .. } => Some(relation),
                     _ => None,
                 };
-                found |= nested.is_some_and(|relation| contains_recursive_reference(relation));
+                found |= nested.is_some_and(|relation| contains_reference(relation, predicate));
             });
             found
         })

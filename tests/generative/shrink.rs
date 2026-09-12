@@ -1,6 +1,7 @@
 use super::{
-    Case, ModelCase, ProgramCase, SemanticModelCase, TestResult, check, check_invalid,
-    check_invalid_program, check_metamorphic, check_model, check_program, check_semantic_model,
+    CacheCase, Case, ModelCase, ProgramCase, SemanticModelCase, TestResult, check, check_cache,
+    check_invalid, check_invalid_program, check_metamorphic, check_model, check_program,
+    check_semantic_model,
 };
 
 /// Minimize a failing choice tape while regenerating a valid case after every
@@ -57,6 +58,54 @@ pub async fn minimize(original: &Case, budget: usize) -> TestResult<Case> {
         }
     }
     Ok(original.regenerate(current))
+}
+
+pub async fn minimize_cache(original: &CacheCase, budget: usize) -> TestResult<CacheCase> {
+    let mut current = original.decisions.clone();
+    let mut attempts = 0;
+    let mut granularity = 2;
+    while current.len() > 1 && attempts < budget {
+        let chunk = current.len().div_ceil(granularity);
+        let mut reduced = false;
+        let mut start = 0;
+        while start < current.len() && attempts < budget {
+            let end = (start + chunk).min(current.len());
+            let mut candidate = current.clone();
+            candidate.drain(start..end);
+            attempts += 1;
+            if cache_still_fails(&candidate).await {
+                current = candidate;
+                granularity = 2;
+                reduced = true;
+                break;
+            }
+            start = end;
+        }
+        if !reduced {
+            if granularity >= current.len() {
+                break;
+            }
+            granularity = (granularity * 2).min(current.len());
+        }
+    }
+    for index in 0..current.len() {
+        if attempts >= budget {
+            break;
+        }
+        for value in reductions(current[index]) {
+            if attempts >= budget {
+                break;
+            }
+            let mut candidate = current.clone();
+            candidate[index] = value;
+            attempts += 1;
+            if cache_still_fails(&candidate).await {
+                current = candidate;
+                break;
+            }
+        }
+    }
+    Ok(CacheCase::generate(current))
 }
 
 /// Minimize a failing PIR decision tape while rebuilding a complete valid
@@ -331,6 +380,12 @@ pub async fn minimize_semantic_model(
 
 async fn still_fails(original: &Case, decisions: &[u64]) -> bool {
     check(&original.regenerate(decisions.to_vec()))
+        .await
+        .is_err()
+}
+
+async fn cache_still_fails(decisions: &[u64]) -> bool {
+    check_cache(&CacheCase::generate(decisions.to_vec()))
         .await
         .is_err()
 }

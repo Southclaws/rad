@@ -25,7 +25,11 @@ mod write;
 
 pub use engine::Engine;
 pub use error::{Error, ErrorKind, ErrorReason, Result};
-pub use events::{EngineEvent, EngineEventHook, EngineOperation, GateAction, NoopEngineEventHook};
+pub use events::{
+    EngineEvent, EngineEventHook, EngineOperation, GateAction, NoopEngineEventHook,
+    RelationCacheAdmissionResult, RelationCacheEvictionCause, RelationCacheLookupResult,
+    RelationCacheMaterialization,
+};
 pub use frames::shape_frames;
 pub(crate) use program::resolve_default;
 pub use program::{

@@ -18,8 +18,8 @@ use crate::engine::planner::physical::{
 };
 
 use super::frames::{
-    column_values_to_frame, merge as merge_frames, new_frame, remap_positional, row_to_frame,
-    scan_slots, sort as sort_frames,
+    column_values_to_frame, merge as merge_frames, new_frame, remap_canonical, remap_positional,
+    row_to_frame, scan_slots, sort as sort_frames,
 };
 use std::collections::HashMap;
 use std::hash::{BuildHasher as _, BuildHasherDefault, Hasher};
@@ -96,7 +96,8 @@ pub(super) fn supports(node: &Node) -> bool {
         NodeKind::PrimaryKeyGet { .. }
         | NodeKind::TableScan { .. }
         | NodeKind::Rows(_)
-        | NodeKind::IndexRangeScan { .. } => true,
+        | NodeKind::IndexRangeScan { .. }
+        | NodeKind::RecursiveReference { .. } => true,
         NodeKind::Filter { input, .. }
         | NodeKind::Project { input, .. }
         | NodeKind::Sort { input, .. }
@@ -124,6 +125,7 @@ pub(super) async fn execute_measured(
     view: &dyn KvView,
     node: &Node,
     outer: &Env,
+    frontier: &HashMap<String, Vec<Env>>,
     measured: &mut Vec<(Fingerprint, u64)>,
     join_measurements: &mut Vec<super::observe::JoinOperatorMeasurement>,
     operator_measurements: &mut Vec<super::observe::OperatorMeasurement>,
@@ -151,6 +153,7 @@ pub(super) async fn execute_measured(
         BuildResources {
             execution_grant: Some(execution_grant.clone()),
             subrelation_cache,
+            frontier,
             bypass_materialization: false,
         },
     )
@@ -178,6 +181,7 @@ pub(super) async fn execute(
     view: &dyn KvView,
     node: &Node,
     outer: &Env,
+    frontier: &HashMap<String, Vec<Env>>,
     join_measurements: &mut Vec<super::observe::JoinOperatorMeasurement>,
     subrelation_cache: Option<&super::relation_cache::SubrelationCacheContext<'_>>,
     execution_grant: &ExecutionGrant,
@@ -201,6 +205,7 @@ pub(super) async fn execute(
         BuildResources {
             execution_grant: Some(execution_grant.clone()),
             subrelation_cache,
+            frontier,
             bypass_materialization: false,
         },
     )
@@ -218,6 +223,7 @@ pub(super) async fn execute(
 struct BuildResources<'a> {
     execution_grant: Option<ExecutionGrant>,
     subrelation_cache: Option<&'a super::relation_cache::SubrelationCacheContext<'a>>,
+    frontier: &'a HashMap<String, Vec<Env>>,
     bypass_materialization: bool,
 }
 
@@ -314,9 +320,9 @@ async fn build<'a>(
             }
             Box::new(PrimaryKeyGet {
                 view,
-                scan: (**scan).clone(),
+                scan,
                 key: values,
-                columns: decode_columns.clone(),
+                columns: decode_columns,
                 outer,
                 done: false,
             })
@@ -384,10 +390,28 @@ async fn build<'a>(
             })
         }
         NodeKind::Rows(relation) => Box::new(Rows {
-            relation: relation.clone(),
+            relation,
             outer,
             position: 0,
         }),
+        NodeKind::RecursiveReference {
+            binding,
+            output,
+            canonical,
+        } => {
+            // The recursive driver cannot replace the frontier while this
+            // pipeline borrows it. Remap one row at a time so an iteration
+            // does not allocate and retain a second frontier.
+            Box::new(RecursiveRows {
+                rows: execution_grant
+                    .frontier
+                    .get(binding)
+                    .map(|rows| rows.iter()),
+                output,
+                canonical,
+                outer,
+            })
+        }
         NodeKind::Filter { input, predicate } => Box::new(Filter {
             input: build(
                 view,
@@ -404,7 +428,7 @@ async fn build<'a>(
                 execution_grant.clone(),
             )
             .await?,
-            predicate: predicate.clone(),
+            predicate,
         }),
         NodeKind::Project { input, fields } => Box::new(Project {
             input: build(
@@ -422,7 +446,7 @@ async fn build<'a>(
                 execution_grant.clone(),
             )
             .await?,
-            fields: fields.clone(),
+            fields,
             outer,
         }),
         NodeKind::Sort { input, terms } => {
@@ -444,7 +468,7 @@ async fn build<'a>(
             input.enable_bounded_read_ahead();
             Box::new(Sort {
                 input: Some(input),
-                terms: terms.clone(),
+                terms,
                 frames: Vec::new(),
                 position: 0,
             })
@@ -488,7 +512,7 @@ async fn build<'a>(
                 execution_grant.clone(),
             )
             .await?,
-            seen: CanonicalRowSet::new(output.fields.clone()),
+            seen: CanonicalRowSet::new(&output.fields),
         }),
         NodeKind::Aggregate {
             input,
@@ -512,8 +536,8 @@ async fn build<'a>(
                 )
                 .await?,
             ),
-            groups: groups.clone(),
-            terms: terms.clone(),
+            groups,
+            terms,
             outer,
             output: std::collections::VecDeque::new(),
             hash_builder: ahash::RandomState::new(),
@@ -579,10 +603,28 @@ async fn build<'a>(
             };
             let mut dimension_resources = execution_grant.clone();
             dimension_resources.bypass_materialization = true;
-            let dimensions = if let Some((context, key)) = physical_key {
-                let result = context
+            let (dimensions, group_positions) = if let Some((context, key)) = physical_key {
+                let materialization = super::RelationCacheMaterialization::GroupedHashJoinDimension;
+                let relation = dimension
+                    .materialization
+                    .as_ref()
+                    .expect("grouped dimension materialization is present")
+                    .exact;
+                context
+                    .reach(super::EngineEvent::SubrelationCacheLookupStarted {
+                        materialization,
+                        relation,
+                    })
+                    .await;
+                let mut result = context
                     .cache
                     .get_or_fill_grouped_dimension(key, || async {
+                        context
+                            .reach(super::EngineEvent::SubrelationCacheFillStarted {
+                                materialization,
+                                relation,
+                            })
+                            .await;
                         let before = context.counters.map(|counters| counters.snapshot());
                         let started = Instant::now();
                         let dimension = build(
@@ -613,6 +655,12 @@ async fn build<'a>(
                                 .snapshot()
                                 .delta_since(before.expect("initial KV counters are present"))
                         });
+                        context
+                            .reach(super::EngineEvent::SubrelationCacheFillReady {
+                                materialization,
+                                relation,
+                            })
+                            .await;
                         Ok((
                             value,
                             CachedWork {
@@ -621,9 +669,30 @@ async fn build<'a>(
                             },
                         ))
                     })
-                    .await?;
+                    .await;
+                if let Ok(result) = &mut result {
+                    context.reach_all(result.take_events()).await;
+                }
+                let lookup_result = match &result {
+                    Ok(result)
+                        if result.source == super::observe::StatementSource::RelationCache =>
+                    {
+                        super::RelationCacheLookupResult::Reused
+                    }
+                    Ok(_) => super::RelationCacheLookupResult::Filled,
+                    Err(_) => super::RelationCacheLookupResult::Failed,
+                };
+                context
+                    .reach(super::EngineEvent::SubrelationCacheLookupCompleted {
+                        materialization,
+                        relation,
+                        result: lookup_result,
+                    })
+                    .await;
+                let result = result?;
+                let attach_started = Instant::now();
+                let group_positions = GroupPositions::new(result.value.value().row_count);
                 if result.source == super::observe::StatementSource::RelationCache {
-                    let attach_started = Instant::now();
                     if let Some(cardinality) = &cached_cardinality {
                         cardinality.rows.store(
                             result.value.value().input_row_count as u64,
@@ -636,9 +705,9 @@ async fn build<'a>(
                         attach_started.elapsed(),
                     );
                 }
-                Some(result.value)
+                (Some(result.value), Some(group_positions))
             } else {
-                None
+                (None, None)
             };
             let dimension = if dimensions.is_none() {
                 Some(
@@ -665,10 +734,11 @@ async fn build<'a>(
                 fact: Some(fact_operator),
                 dimension,
                 dimensions,
-                keys: keys.clone(),
+                group_positions,
+                keys,
                 fact_is_left: *fact_is_left,
-                groups: groups.clone(),
-                terms: terms.clone(),
+                groups,
+                terms,
                 outer,
                 output: std::collections::VecDeque::new(),
                 memory_limit_bytes: *memory_limit_bytes,
@@ -724,9 +794,9 @@ async fn build<'a>(
                     .await?,
                 ),
                 kind: *kind,
-                predicate: on.clone(),
-                keys: keys.clone(),
-                right_output: right_output.clone(),
+                predicate: on,
+                keys,
+                right_output,
                 right_rows: Vec::new(),
                 current_left: None,
                 right_position: 0,
@@ -801,9 +871,27 @@ async fn build<'a>(
             let mut right_resources = execution_grant.clone();
             right_resources.bypass_materialization = true;
             let cached_build = if let Some((context, key)) = physical_key {
-                let result = context
+                let materialization = super::RelationCacheMaterialization::HashJoinBuild;
+                let relation = right
+                    .materialization
+                    .as_ref()
+                    .expect("hash-build materialization is present")
+                    .exact;
+                context
+                    .reach(super::EngineEvent::SubrelationCacheLookupStarted {
+                        materialization,
+                        relation,
+                    })
+                    .await;
+                let mut result = context
                     .cache
                     .get_or_fill_hash_build(key, || async {
+                        context
+                            .reach(super::EngineEvent::SubrelationCacheFillStarted {
+                                materialization,
+                                relation,
+                            })
+                            .await;
                         let before = context.counters.map(|counters| counters.snapshot());
                         let started = Instant::now();
                         let right = build(
@@ -834,6 +922,12 @@ async fn build<'a>(
                                 .snapshot()
                                 .delta_since(before.expect("initial KV counters are present"))
                         });
+                        context
+                            .reach(super::EngineEvent::SubrelationCacheFillReady {
+                                materialization,
+                                relation,
+                            })
+                            .await;
                         Ok((
                             value,
                             CachedWork {
@@ -842,10 +936,31 @@ async fn build<'a>(
                             },
                         ))
                     })
-                    .await?;
+                    .await;
+                if let Ok(result) = &mut result {
+                    context.reach_all(result.take_events()).await;
+                }
+                let lookup_result = match &result {
+                    Ok(result)
+                        if result.source == super::observe::StatementSource::RelationCache =>
+                    {
+                        super::RelationCacheLookupResult::Reused
+                    }
+                    Ok(_) => super::RelationCacheLookupResult::Filled,
+                    Err(_) => super::RelationCacheLookupResult::Failed,
+                };
+                context
+                    .reach(super::EngineEvent::SubrelationCacheLookupCompleted {
+                        materialization,
+                        relation,
+                        result: lookup_result,
+                    })
+                    .await;
+                let result = result?;
+                let attach_started = Instant::now();
+                let bound_build = Arc::new(BoundHashBuild::new(result.value, right_output));
                 if result.source == super::observe::StatementSource::RelationCache {
-                    let attach_started = Instant::now();
-                    let value = result.value.value();
+                    let value = bound_build.value.value();
                     tally.add_build_rows(value.input_row_count);
                     tally.retain(value.execution_retained_bytes);
                     if let Some(cardinality) = &cached_cardinality {
@@ -859,10 +974,7 @@ async fn build<'a>(
                         attach_started.elapsed(),
                     );
                 }
-                Some(Arc::new(BoundHashBuild::new(
-                    result.value,
-                    right_output.clone(),
-                )))
+                Some(bound_build)
             } else {
                 None
             };
@@ -891,9 +1003,9 @@ async fn build<'a>(
                 left: left_operator,
                 right,
                 kind: *kind,
-                residual_predicate: (!join_predicate_is_keys(on, keys)).then(|| on.clone()),
-                keys: keys.clone(),
-                right_output: right_output.clone(),
+                residual_predicate: (!join_predicate_is_keys(on, keys)).then_some(on),
+                keys,
+                right_output,
                 memory_limit_bytes: *memory_limit_bytes,
                 build: cached_build,
                 current_left: None,
@@ -909,6 +1021,7 @@ async fn build<'a>(
                 left_exhausted: false,
                 parallel_batch_sequence: 0,
                 serial_probe_rows_until_retry: 0,
+                parallel_plan: None,
             })
         }
         NodeKind::Concatenate {
@@ -938,8 +1051,8 @@ async fn build<'a>(
             }
             Box::new(Concatenate {
                 inputs: operators,
-                input_outputs: input_outputs.clone(),
-                output: output.clone(),
+                input_outputs,
+                output,
                 outer,
                 position: 0,
             })
@@ -984,9 +1097,9 @@ async fn build<'a>(
             .await?,
             *quantifier,
             false,
-            left_output.clone(),
-            right_output.clone(),
-            output.clone(),
+            left_output,
+            right_output,
+            output,
             outer,
         )),
         NodeKind::Except {
@@ -1029,9 +1142,9 @@ async fn build<'a>(
             .await?,
             *quantifier,
             true,
-            left_output.clone(),
-            right_output.clone(),
-            output.clone(),
+            left_output,
+            right_output,
+            output,
             outer,
         )),
         _ => {
@@ -1100,9 +1213,23 @@ async fn build_materialized<'a>(
     let mut fill_resources = resources.clone();
     fill_resources.bypass_materialization = true;
     let lookup_started = measure_operators.then(Instant::now);
-    let result = context
+    let materialization = super::RelationCacheMaterialization::Rows;
+    let relation = candidate.exact;
+    context
+        .reach(super::EngineEvent::SubrelationCacheLookupStarted {
+            materialization,
+            relation,
+        })
+        .await;
+    let mut result = context
         .cache
         .get_or_fill(key, &candidate.output, || async {
+            context
+                .reach(super::EngineEvent::SubrelationCacheFillStarted {
+                    materialization,
+                    relation,
+                })
+                .await;
             let before = context.counters.map(|counters| counters.snapshot());
             let started = Instant::now();
             let mut operator = build(
@@ -1130,6 +1257,12 @@ async fn build_materialized<'a>(
                     .snapshot()
                     .delta_since(before.expect("initial KV counters are present"))
             });
+            context
+                .reach(super::EngineEvent::SubrelationCacheFillReady {
+                    materialization,
+                    relation,
+                })
+                .await;
             Ok((
                 frames,
                 CachedWork {
@@ -1138,7 +1271,25 @@ async fn build_materialized<'a>(
                 },
             ))
         })
-        .await?;
+        .await;
+    if let Ok(result) = &mut result {
+        context.reach_all(result.take_events()).await;
+    }
+    let lookup_result = match &result {
+        Ok(result) if result.source == super::observe::StatementSource::RelationCache => {
+            super::RelationCacheLookupResult::Reused
+        }
+        Ok(_) => super::RelationCacheLookupResult::Filled,
+        Err(_) => super::RelationCacheLookupResult::Failed,
+    };
+    context
+        .reach(super::EngineEvent::SubrelationCacheLookupCompleted {
+            materialization,
+            relation,
+            result: lookup_result,
+        })
+        .await;
+    let result = result?;
     let source = result.source;
     let restore_started =
         (source == super::observe::StatementSource::RelationCache).then(Instant::now);
@@ -1640,6 +1791,13 @@ struct MaterializedRows {
     rows: std::vec::IntoIter<Env>,
 }
 
+struct RecursiveRows<'a> {
+    rows: Option<std::slice::Iter<'a, Env>>,
+    output: &'a RowType,
+    canonical: &'a [SlotId],
+    outer: Env,
+}
+
 #[async_trait]
 impl Operator for MaterializedRows {
     async fn next(&mut self) -> Result<Option<Env>> {
@@ -1653,6 +1811,17 @@ impl Operator for MaterializedRows {
 }
 
 #[async_trait]
+impl Operator for RecursiveRows<'_> {
+    async fn next(&mut self) -> Result<Option<Env>> {
+        Ok(self
+            .rows
+            .as_mut()
+            .and_then(Iterator::next)
+            .map(|frame| remap_canonical(self.output, self.canonical, frame, &self.outer)))
+    }
+}
+
+#[async_trait]
 impl Operator for Empty {
     async fn next(&mut self) -> Result<Option<Env>> {
         Ok(None)
@@ -1661,9 +1830,9 @@ impl Operator for Empty {
 
 struct PrimaryKeyGet<'a> {
     view: &'a dyn KvView,
-    scan: bound::Relation,
+    scan: &'a bound::Relation,
     key: crate::engine::lir::Row,
-    columns: Vec<crate::engine::catalog::model::Column>,
+    columns: &'a [crate::engine::catalog::model::Column],
     outer: Env,
     done: bool,
 }
@@ -1676,16 +1845,16 @@ impl Operator for PrimaryKeyGet<'_> {
         }
         self.done = true;
         Ok(
-            row_store::get_columns(self.view, self.scan.scan_table(), &self.key, &self.columns)
+            row_store::get_columns(self.view, self.scan.scan_table(), &self.key, self.columns)
                 .await?
-                .map(|row| row_to_frame(&self.scan, &row, &self.outer)),
+                .map(|row| row_to_frame(self.scan, &row, &self.outer)),
         )
     }
 }
 
 struct RowScan<'a> {
     iterator: Box<dyn RowIterator + 'a>,
-    slots: Vec<SlotId>,
+    slots: smallvec::SmallVec<[SlotId; 8]>,
     outer: Env,
     values_batch: Vec<super::codec::DecodedRow>,
 }
@@ -1738,14 +1907,14 @@ impl Operator for RowScan<'_> {
     }
 }
 
-struct Rows {
-    relation: bound::Relation,
+struct Rows<'a> {
+    relation: &'a bound::Relation,
     outer: Env,
     position: usize,
 }
 
 #[async_trait]
-impl Operator for Rows {
+impl Operator for Rows<'_> {
     async fn next(&mut self) -> Result<Option<Env>> {
         let RelationNode::Rows { values, .. } = &self.relation.node else {
             unreachable!()
@@ -1764,14 +1933,14 @@ impl Operator for Rows {
 
 struct Filter<'a> {
     input: Box<dyn Operator + 'a>,
-    predicate: bound::Expr,
+    predicate: &'a bound::Expr,
 }
 
 #[async_trait]
 impl Operator for Filter<'_> {
     async fn next(&mut self) -> Result<Option<Env>> {
         while let Some(frame) = self.input.next().await? {
-            if evaluate_predicate(&self.predicate, &frame)? == TriBool::True {
+            if evaluate_predicate(self.predicate, &frame)? == TriBool::True {
                 return Ok(Some(frame));
             }
         }
@@ -1785,7 +1954,7 @@ impl Operator for Filter<'_> {
 
 struct Project<'a> {
     input: Box<dyn Operator + 'a>,
-    fields: Vec<PhysicalField>,
+    fields: &'a [PhysicalField],
     outer: Env,
 }
 
@@ -1796,7 +1965,7 @@ impl Operator for Project<'_> {
             return Ok(None);
         };
         let mut output = new_frame(&self.outer);
-        for field in &self.fields {
+        for field in self.fields {
             output.insert(field.slot, evaluate_datum(&field.expression, &input)?);
         }
         Ok(Some(output))
@@ -1837,7 +2006,7 @@ impl Operator for Slice<'_> {
 
 struct Sort<'a> {
     input: Option<Box<dyn Operator + 'a>>,
-    terms: Vec<bound::BoundOrderTerm>,
+    terms: &'a [bound::BoundOrderTerm],
     frames: Vec<Env>,
     position: usize,
 }
@@ -1885,7 +2054,7 @@ impl Operator for Sort<'_> {
             );
             #[cfg(debug_assertions)]
             let _entered = sort_span.enter();
-            sort_frames(&mut self.frames, &self.terms)?;
+            sort_frames(&mut self.frames, self.terms)?;
             #[cfg(debug_assertions)]
             sort_span.record("rad.status", "success");
         }
@@ -1931,8 +2100,8 @@ struct AggregateGroup {
 
 struct Aggregate<'a> {
     input: Option<Box<dyn Operator + 'a>>,
-    groups: Vec<bound::BoundGroupTerm>,
-    terms: Vec<bound::BoundAggregateTerm>,
+    groups: &'a [bound::BoundGroupTerm],
+    terms: &'a [bound::BoundAggregateTerm],
     outer: Env,
     output: std::collections::VecDeque<Env>,
     hash_builder: ahash::RandomState,
@@ -1955,8 +2124,8 @@ impl Operator for Aggregate<'_> {
                 for frame in input_batch.drain(..) {
                     accumulate_aggregate_frame(
                         &frame,
-                        &self.groups,
-                        &self.terms,
+                        self.groups,
+                        self.terms,
                         self.groups_are_slots,
                         &self.hash_builder,
                         &mut by_hash,
@@ -2360,14 +2529,62 @@ impl Hasher for IdentityHasher {
 
 type IdentityHashMap<V> = HashMap<u64, V, BuildHasherDefault<IdentityHasher>>;
 
+// One page bounds the allocation for a sparse probe. A dense probe allocates
+// less than one unused page, while the empty index has 256 times fewer cells.
+const MATERIALIZATION_STATE_PAGE_ROWS: usize = 256;
+
+fn materialization_state_page_count(row_count: usize) -> usize {
+    row_count.div_ceil(MATERIALIZATION_STATE_PAGE_ROWS)
+}
+
+struct GroupPositions {
+    pages: Box<[Option<GroupPositionPage>]>,
+}
+
+type GroupPositionPage = Box<[Option<usize>; MATERIALIZATION_STATE_PAGE_ROWS]>;
+
+impl GroupPositions {
+    fn new(row_count: usize) -> Self {
+        let pages = (0..materialization_state_page_count(row_count))
+            .map(|_| None)
+            .collect();
+        Self { pages }
+    }
+
+    fn get(&self, index: usize) -> Option<usize> {
+        let page = index / MATERIALIZATION_STATE_PAGE_ROWS;
+        let offset = index % MATERIALIZATION_STATE_PAGE_ROWS;
+        self.pages
+            .get(page)
+            .and_then(Option::as_deref)
+            .and_then(|positions| positions.get(offset))
+            .copied()
+            .flatten()
+    }
+
+    fn set(&mut self, index: usize, position: usize) {
+        let page = index / MATERIALIZATION_STATE_PAGE_ROWS;
+        let offset = index % MATERIALIZATION_STATE_PAGE_ROWS;
+        let positions = self.pages[page]
+            .get_or_insert_with(|| Box::new([None; MATERIALIZATION_STATE_PAGE_ROWS]));
+        positions[offset] = Some(position);
+    }
+
+    #[cfg(test)]
+    fn initialized_page_count(&self) -> usize {
+        self.pages.iter().filter(|page| page.is_some()).count()
+    }
+}
+
 struct GroupedHashJoinAggregate<'a> {
     fact: Option<Box<dyn Operator + 'a>>,
     dimension: Option<Box<dyn Operator + 'a>>,
     dimensions: Option<CachedGroupedDimensionBuildHandle>,
-    keys: Vec<EquiJoinKey>,
+    group_positions: Option<GroupPositions>,
+    keys: &'a [EquiJoinKey],
     fact_is_left: bool,
-    groups: Vec<bound::BoundGroupTerm>,
-    terms: Vec<bound::BoundAggregateTerm>,
+    groups: &'a [bound::BoundGroupTerm],
+    terms: &'a [bound::BoundAggregateTerm],
     outer: Env,
     output: std::collections::VecDeque<Env>,
     memory_limit_bytes: u64,
@@ -2414,14 +2631,14 @@ fn ensure_aggregate_group_for_dimension(
 
 fn aggregate_group_for_dimension<'a>(
     entry: &CachedGroupedDimensionEntry,
-    group_positions: &mut [Option<usize>],
+    group_positions: &mut GroupPositions,
     terms: &[bound::BoundAggregateTerm],
     final_groups: &'a mut IdentityHashMap<Vec<AggregateGroup>>,
     order: &mut Vec<(u64, usize)>,
     retained_bytes: &mut u64,
     memory_limit_bytes: u64,
 ) -> Result<&'a mut AggregateGroup> {
-    let position = match group_positions[entry.position] {
+    let position = match group_positions.get(entry.position) {
         Some(position) => position,
         None => {
             let position = ensure_aggregate_group_for_dimension(
@@ -2432,7 +2649,7 @@ fn aggregate_group_for_dimension<'a>(
                 retained_bytes,
                 memory_limit_bytes,
             )?;
-            group_positions[entry.position] = Some(position);
+            group_positions.set(entry.position, position);
             position
         }
     };
@@ -2504,12 +2721,13 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                     .expect("grouped hash join aggregate has a dimension input");
                 let dimensions = collect_grouped_dimension(
                     dimension,
-                    &self.keys,
+                    self.keys,
                     self.fact_is_left,
-                    &self.groups,
+                    self.groups,
                     self.memory_limit_bytes,
                 )
                 .await?;
+                self.group_positions = Some(GroupPositions::new(dimensions.row_count));
                 self.dimensions = Some(CachedGroupedDimensionBuildHandle::uncached(dimensions));
             }
             let dimensions = self
@@ -2518,12 +2736,15 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                 .expect("grouped dimension build is present")
                 .value();
             let mut retained_bytes = dimensions.execution_retained_bytes;
-            let mut group_positions = vec![None; dimensions.row_count];
+            let mut group_positions = self
+                .group_positions
+                .take()
+                .expect("grouped dimension positions are present");
 
             let mut final_groups = IdentityHashMap::<Vec<AggregateGroup>>::default();
             let mut order = Vec::new();
             let decoded_access = fact.decoded_slots().and_then(|slots| {
-                DecodedFactAccess::new(slots, &self.keys, self.fact_is_left, &self.terms)
+                DecodedFactAccess::new(slots, self.keys, self.fact_is_left, self.terms)
             });
             let raw_access = decoded_access.as_ref().zip(fact.raw_decoder());
             if let Some((decoded_access, decoder)) = raw_access {
@@ -2550,7 +2771,7 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                             let group = aggregate_group_for_dimension(
                                 entry,
                                 &mut group_positions,
-                                &self.terms,
+                                self.terms,
                                 &mut final_groups,
                                 &mut order,
                                 &mut retained_bytes,
@@ -2558,7 +2779,7 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                             )?;
                             decoded_access.observe_ref(
                                 &row,
-                                &self.terms,
+                                self.terms,
                                 &mut group.accumulators,
                             )?;
                         }
@@ -2590,13 +2811,13 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                             let group = aggregate_group_for_dimension(
                                 entry,
                                 &mut group_positions,
-                                &self.terms,
+                                self.terms,
                                 &mut final_groups,
                                 &mut order,
                                 &mut retained_bytes,
                                 self.memory_limit_bytes,
                             )?;
-                            decoded_access.observe(&row, &self.terms, &mut group.accumulators)?;
+                            decoded_access.observe(&row, self.terms, &mut group.accumulators)?;
                         }
                     }
                 }
@@ -2609,7 +2830,7 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                         break;
                     }
                     for frame in fact_batch.drain(..) {
-                        let Some(values) = join_value_refs(&frame, &self.keys, self.fact_is_left)?
+                        let Some(values) = join_value_refs(&frame, self.keys, self.fact_is_left)?
                         else {
                             continue;
                         };
@@ -2627,7 +2848,7 @@ impl Operator for GroupedHashJoinAggregate<'_> {
                             let group = aggregate_group_for_dimension(
                                 entry,
                                 &mut group_positions,
-                                &self.terms,
+                                self.terms,
                                 &mut final_groups,
                                 &mut order,
                                 &mut retained_bytes,
@@ -2666,8 +2887,8 @@ impl Operator for GroupedHashJoinAggregate<'_> {
 
 struct Concatenate<'a> {
     inputs: Vec<Box<dyn Operator + 'a>>,
-    input_outputs: Vec<RowType>,
-    output: RowType,
+    input_outputs: &'a [RowType],
+    output: &'a RowType,
     outer: Env,
     position: usize,
 }
@@ -2678,7 +2899,7 @@ impl Operator for Concatenate<'_> {
         while let Some(input) = self.inputs.get_mut(self.position) {
             if let Some(frame) = input.next().await? {
                 return Ok(Some(remap_positional(
-                    &self.output,
+                    self.output,
                     &self.input_outputs[self.position],
                     &frame,
                     &self.outer,
@@ -2694,9 +2915,9 @@ struct NestedLoopJoin<'a> {
     left: Box<dyn Operator + 'a>,
     right: Option<Box<dyn Operator + 'a>>,
     kind: JoinKind,
-    predicate: bound::Expr,
-    keys: Vec<EquiJoinKey>,
-    right_output: RowType,
+    predicate: &'a bound::Expr,
+    keys: &'a [EquiJoinKey],
+    right_output: &'a RowType,
     right_rows: Vec<Env>,
     current_left: Option<Env>,
     right_position: usize,
@@ -2731,7 +2952,7 @@ impl Operator for NestedLoopJoin<'_> {
             while let Some(right) = self.right_rows.get(self.right_position) {
                 self.right_position += 1;
                 let left = self.current_left.as_ref().expect("left row");
-                if evaluate_join_predicate(&self.predicate, &self.keys, left, right, &self.tally)?
+                if evaluate_join_predicate(self.predicate, self.keys, left, right, &self.tally)?
                     == TriBool::True
                 {
                     self.matched = true;
@@ -2752,38 +2973,41 @@ impl Operator for NestedLoopJoin<'_> {
 
 struct BoundHashBuild {
     value: CachedHashBuildHandle,
-    output: RowType,
-    rows: Vec<std::sync::OnceLock<Box<Env>>>,
+    slots: Box<[SlotId]>,
+    // A page keeps each restored frame at a stable address. Concurrent probes
+    // can share the frame after its complete initialization.
+    rows: Box<[std::sync::OnceLock<BoundHashBuildPage>]>,
 }
 
+type BoundHashBuildPage = Box<[std::sync::OnceLock<Box<Env>>; MATERIALIZATION_STATE_PAGE_ROWS]>;
+
 impl BoundHashBuild {
-    fn new(value: CachedHashBuildHandle, output: RowType) -> Self {
-        let rows = (0..value.value().rows.len())
+    fn new(value: CachedHashBuildHandle, output: &RowType) -> Self {
+        let rows = (0..materialization_state_page_count(value.value().rows.len()))
             .map(|_| std::sync::OnceLock::new())
             .collect();
         Self {
             value,
-            output,
+            slots: output.fields.iter().map(|field| field.slot).collect(),
             rows,
         }
     }
 
     fn row(&self, index: usize) -> &Env {
-        // A probe needs plan-local slots for residual predicates and output.
-        // Restore each matching row at most once. The box keeps the empty
-        // request-local index small when most build rows do not match.
-        self.rows[index].get_or_init(|| {
+        let page_index = index / MATERIALIZATION_STATE_PAGE_ROWS;
+        let page_offset = index % MATERIALIZATION_STATE_PAGE_ROWS;
+        let page = self.rows[page_index]
+            .get_or_init(|| Box::new(std::array::from_fn(|_| std::sync::OnceLock::new())));
+        page[page_offset].get_or_init(|| {
             let mut frame = Env::new();
-            for (field, datum) in self
-                .output
-                .fields
-                .iter()
-                .zip(self.value.value().rows[index].iter())
-            {
-                frame.insert(field.slot, datum.clone());
-            }
+            frame.set_datums(&self.slots, self.value.value().rows[index].iter().cloned());
             Box::new(frame)
         })
+    }
+
+    #[cfg(test)]
+    fn initialized_page_count(&self) -> usize {
+        self.rows.iter().filter(|page| page.get().is_some()).count()
     }
 }
 
@@ -2791,9 +3015,9 @@ struct HashJoin<'a> {
     left: Box<dyn Operator + 'a>,
     right: Option<Box<dyn Operator + 'a>>,
     kind: JoinKind,
-    residual_predicate: Option<bound::Expr>,
-    keys: Vec<EquiJoinKey>,
-    right_output: RowType,
+    residual_predicate: Option<&'a bound::Expr>,
+    keys: &'a [EquiJoinKey],
+    right_output: &'a RowType,
     memory_limit_bytes: u64,
     build: Option<Arc<BoundHashBuild>>,
     current_left: Option<Env>,
@@ -2807,6 +3031,7 @@ struct HashJoin<'a> {
     left_exhausted: bool,
     parallel_batch_sequence: u64,
     serial_probe_rows_until_retry: usize,
+    parallel_plan: Option<Arc<HashProbePlan>>,
 }
 
 async fn collect_hash_build(
@@ -2869,15 +3094,15 @@ impl<'a> HashJoin<'a> {
     async fn build(&mut self, right: Box<dyn Operator + 'a>) -> Result<()> {
         let build = collect_hash_build(
             right,
-            &self.keys,
-            &self.right_output,
+            self.keys,
+            self.right_output,
             self.memory_limit_bytes,
             &self.tally,
         )
         .await?;
         self.build = Some(Arc::new(BoundHashBuild::new(
             CachedHashBuildHandle::uncached(build),
-            self.right_output.clone(),
+            self.right_output,
         )));
         Ok(())
     }
@@ -2924,6 +3149,15 @@ impl<'a> HashJoin<'a> {
         let mut left_rows = left_rows.into_iter();
         let mut helpers = lease.into_helpers().into_iter();
         let mut tasks = Vec::with_capacity(width);
+        // Blocking tasks require owned metadata with a static lifetime. One
+        // shared copy serves all worker batches. Serial probes borrow the plan.
+        let parallel_plan = Arc::clone(self.parallel_plan.get_or_insert_with(|| {
+            Arc::new(HashProbePlan {
+                residual_predicate: self.residual_predicate.cloned(),
+                keys: self.keys.to_vec(),
+                right_output: self.right_output.clone(),
+            })
+        }));
         for index in 0..width {
             let rows = left_rows.by_ref().take(chunk_rows).collect::<Vec<_>>();
             if rows.is_empty() {
@@ -2935,9 +3169,7 @@ impl<'a> HashJoin<'a> {
                 .expect("hash join build is present")
                 .clone();
             let kind = self.kind;
-            let residual_predicate = self.residual_predicate.clone();
-            let keys = self.keys.clone();
-            let right_output = self.right_output.clone();
+            let plan = Arc::clone(&parallel_plan);
             let tally = self.tally.clone();
             let permit = (index > 0).then(|| helpers.next()).flatten();
             tasks.push(tokio::task::spawn_blocking(move || {
@@ -2946,9 +3178,7 @@ impl<'a> HashJoin<'a> {
                     rows,
                     build,
                     kind,
-                    residual_predicate,
-                    keys,
-                    right_output,
+                    plan,
                     tally,
                 })
             }));
@@ -3052,7 +3282,7 @@ impl<'a> Operator for HashJoin<'a> {
                 self.serial_probe_rows_until_retry =
                     self.serial_probe_rows_until_retry.saturating_sub(1);
                 self.tally.add_probe_row();
-                let values = join_value_refs(&left, &self.keys, true)?;
+                let values = join_value_refs(&left, self.keys, true)?;
                 let build = self.build.as_ref().expect("hash join build is present");
                 self.current_hash = values.as_ref().map_or(0, |values| {
                     hash_scalar_values(
@@ -3109,7 +3339,7 @@ impl<'a> Operator for HashJoin<'a> {
                     .expect("hash join build is present")
                     .row(right_index);
                 let left = self.current_left.as_ref().expect("left row");
-                if let Some(predicate) = &self.residual_predicate
+                if let Some(predicate) = self.residual_predicate
                     && crate::engine::lir::eval::evaluate_join_predicate(predicate, left, right)?
                         != TriBool::True
                 {
@@ -3139,17 +3369,21 @@ struct HashProbeInput {
     rows: Vec<Env>,
     build: Arc<BoundHashBuild>,
     kind: JoinKind,
+    plan: Arc<HashProbePlan>,
+    tally: JoinTally,
+}
+
+struct HashProbePlan {
     residual_predicate: Option<bound::Expr>,
     keys: Vec<EquiJoinKey>,
     right_output: RowType,
-    tally: JoinTally,
 }
 
 fn probe_hash_rows(input: HashProbeInput) -> Result<Vec<Env>> {
     let mut output = Vec::with_capacity(input.rows.len());
     for mut left in input.rows {
         input.tally.add_probe_row();
-        let values = join_value_refs(&left, &input.keys, true)?;
+        let values = join_value_refs(&left, &input.plan.keys, true)?;
         let mut matching = None;
         if let Some(values) = values.as_ref() {
             let hash = hash_scalar_values(
@@ -3171,7 +3405,7 @@ fn probe_hash_rows(input: HashProbeInput) -> Result<Vec<Env>> {
         if let Some(entry) = matching {
             if let [right_index] = entry.rows.as_slice() {
                 let right = input.build.row(*right_index);
-                let accepted = if let Some(predicate) = &input.residual_predicate {
+                let accepted = if let Some(predicate) = &input.plan.residual_predicate {
                     crate::engine::lir::eval::evaluate_join_predicate(predicate, &left, right)?
                         == TriBool::True
                 } else {
@@ -3183,7 +3417,7 @@ fn probe_hash_rows(input: HashProbeInput) -> Result<Vec<Env>> {
                     continue;
                 }
                 if input.kind == JoinKind::Left {
-                    for field in &input.right_output.fields {
+                    for field in &input.plan.right_output.fields {
                         left.insert(field.slot, Datum::Null);
                     }
                     output.push(left);
@@ -3192,7 +3426,7 @@ fn probe_hash_rows(input: HashProbeInput) -> Result<Vec<Env>> {
             }
             for right_index in &entry.rows {
                 let right = input.build.row(*right_index);
-                if let Some(predicate) = &input.residual_predicate
+                if let Some(predicate) = &input.plan.residual_predicate
                     && crate::engine::lir::eval::evaluate_join_predicate(predicate, &left, right)?
                         != TriBool::True
                 {
@@ -3204,7 +3438,7 @@ fn probe_hash_rows(input: HashProbeInput) -> Result<Vec<Env>> {
         }
         if input.kind == JoinKind::Left && !matched {
             let mut padded = left;
-            for field in &input.right_output.fields {
+            for field in &input.plan.right_output.fields {
                 padded.insert(field.slot, Datum::Null);
             }
             output.push(padded);
@@ -3531,9 +3765,9 @@ fn datum_retained_bytes(datum: &Datum) -> u64 {
 struct SetOperator<'a> {
     left: Box<dyn Operator + 'a>,
     right: Option<Box<dyn Operator + 'a>>,
-    left_output: RowType,
-    right_output: RowType,
-    output: RowType,
+    left_output: &'a RowType,
+    right_output: &'a RowType,
+    output: &'a RowType,
     outer: Env,
     state: set::State,
 }
@@ -3545,9 +3779,9 @@ impl<'a> SetOperator<'a> {
         right: Box<dyn Operator + 'a>,
         quantifier: SetQuantifier,
         subtract: bool,
-        left_output: RowType,
-        right_output: RowType,
-        output: RowType,
+        left_output: &'a RowType,
+        right_output: &'a RowType,
+        output: &'a RowType,
         outer: Env,
     ) -> Self {
         Self {
@@ -3567,19 +3801,106 @@ impl Operator for SetOperator<'_> {
     async fn next(&mut self) -> Result<Option<Env>> {
         if let Some(mut right) = self.right.take() {
             while let Some(frame) = right.next().await? {
-                self.state.add_right(&self.right_output, &frame);
+                self.state.add_right(self.right_output, &frame);
             }
         }
         while let Some(frame) = self.left.next().await? {
-            if self.state.keep_left(&self.left_output, &frame) {
+            if self.state.keep_left(self.left_output, &frame) {
                 return Ok(Some(remap_positional(
-                    &self.output,
-                    &self.left_output,
+                    self.output,
+                    self.left_output,
                     &frame,
                     &self.outer,
                 )));
             }
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::lir::{Field, Type};
+
+    fn cached_hash_build(row_count: usize) -> BoundHashBuild {
+        let rows = (0..row_count)
+            .map(|value| vec![Datum::scalar(Value::Int64(value as i64))].into_boxed_slice())
+            .collect();
+        BoundHashBuild::new(
+            CachedHashBuildHandle::uncached(CachedHashBuild {
+                hash_builder: ahash::RandomState::new(),
+                entries: HashMap::new(),
+                rows,
+                input_row_count: row_count,
+                execution_retained_bytes: 0,
+            }),
+            &RowType {
+                fields: vec![Field {
+                    name: "value".into(),
+                    slot: SlotId(3),
+                    value_type: Type::scalar(Kind::Int64, false),
+                }],
+            },
+        )
+    }
+
+    #[test]
+    fn bound_hash_build_initializes_only_accessed_pages() {
+        let build = cached_hash_build(1_025);
+        assert_eq!(build.initialized_page_count(), 0);
+
+        assert_eq!(
+            build.row(0).get(SlotId(3)),
+            Some(&Datum::scalar(Value::Int64(0)))
+        );
+        let first = build.row(255);
+        assert!(std::ptr::eq(first, build.row(255)));
+        assert_eq!(build.initialized_page_count(), 1);
+
+        assert_eq!(
+            build.row(256).get(SlotId(3)),
+            Some(&Datum::scalar(Value::Int64(256)))
+        );
+        assert_eq!(build.initialized_page_count(), 2);
+
+        assert_eq!(
+            build.row(1_024).get(SlotId(3)),
+            Some(&Datum::scalar(Value::Int64(1_024)))
+        );
+        assert_eq!(build.initialized_page_count(), 3);
+    }
+
+    #[test]
+    fn bound_hash_build_initializes_one_frame_for_concurrent_probes() {
+        let build = cached_hash_build(1_025);
+        let addresses = std::thread::scope(|scope| {
+            (0..8)
+                .map(|_| scope.spawn(|| build.row(513) as *const Env as usize))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|thread| thread.join().expect("probe thread succeeds"))
+                .collect::<Vec<_>>()
+        });
+
+        assert!(addresses.iter().all(|address| *address == addresses[0]));
+        assert_eq!(build.initialized_page_count(), 1);
+    }
+
+    #[test]
+    fn group_positions_initializes_only_accessed_pages() {
+        let mut positions = GroupPositions::new(1_025);
+        assert_eq!(positions.initialized_page_count(), 0);
+        assert_eq!(positions.get(700), None);
+
+        positions.set(700, 11);
+        positions.set(701, 12);
+        assert_eq!(positions.get(700), Some(11));
+        assert_eq!(positions.get(701), Some(12));
+        assert_eq!(positions.initialized_page_count(), 1);
+
+        positions.set(1_024, 13);
+        assert_eq!(positions.get(1_024), Some(13));
+        assert_eq!(positions.initialized_page_count(), 2);
     }
 }

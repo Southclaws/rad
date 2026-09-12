@@ -6,6 +6,7 @@
 //! outside this executor.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use async_recursion::async_recursion;
@@ -220,11 +221,13 @@ impl<'a> Executor<'a> {
         &mut self,
         cache: &'a super::relation_cache::RelationCache,
         root_key: super::relation_cache::RelationCacheKey,
+        events: Option<&'a Arc<dyn super::EngineEventHook>>,
     ) {
         self.subrelation_cache = Some(super::relation_cache::SubrelationCacheContext::new(
             cache,
             root_key,
             self.kv_counters,
+            events,
         ));
     }
 
@@ -319,6 +322,20 @@ impl<'a> Executor<'a> {
 
     pub async fn run_frames(&mut self, plan: &Plan) -> Result<Vec<Env>> {
         admit_catalog_dependencies(self.view, &plan.dependencies).await?;
+        if let Some(subrelation_cache) = &self.subrelation_cache {
+            crate::telemetry::relation_cache_materialization_selection(
+                plan.materialization_selection.selected,
+                plan.materialization_selection.overlap_rejected,
+                plan.materialization_selection.budget_rejected,
+            );
+            subrelation_cache
+                .reach(super::EngineEvent::RelationCacheCandidatesSelected {
+                    selected: plan.materialization_selection.selected,
+                    overlap_rejected: plan.materialization_selection.overlap_rejected,
+                    budget_rejected: plan.materialization_selection.budget_rejected,
+                })
+                .await;
+        }
         self.commit_bindings(&plan.bindings).await?;
         self.execute_node(&plan.root, &Env::new()).await
     }
@@ -572,6 +589,7 @@ impl<'a> Executor<'a> {
                     self.view,
                     node,
                     outer,
+                    &self.frontier,
                     &mut self.measured,
                     &mut self.join_measurements,
                     &mut self.operator_measurements,
@@ -587,6 +605,7 @@ impl<'a> Executor<'a> {
                     self.view,
                     node,
                     outer,
+                    &self.frontier,
                     &mut self.join_measurements,
                     self.subrelation_cache.as_ref(),
                     &self.execution_grant,
@@ -959,7 +978,7 @@ impl<'a> Executor<'a> {
                 .await
             }
             NodeKind::Distinct { input, output } => {
-                let mut seen = CanonicalRowSet::new(output.fields.clone());
+                let mut seen = CanonicalRowSet::new(&output.fields);
                 Ok(self
                     .execute_node(input, outer)
                     .await?
@@ -1328,7 +1347,7 @@ impl<'a> Executor<'a> {
         let step_slots = slots_by_name(step_output);
         let canonical = &binding.output;
         let mut seen = (accumulation == RecursiveAccumulation::New)
-            .then(|| CanonicalRowSet::new(canonical.fields.clone()));
+            .then(|| CanonicalRowSet::new(&canonical.fields));
         let diagnostics = !recursive_span.is_disabled();
         let mut result = Vec::new();
         let mut frontier = Vec::new();
