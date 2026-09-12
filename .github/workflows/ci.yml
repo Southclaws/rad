@@ -342,6 +342,96 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  storyden-postgres:
+    name: Storyden PostgreSQL compatibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: target
+      DATABASE_URL: postgresql://default:default@127.0.0.1:5432/postgres?sslmode=disable
+    steps:
+      - name: Check out Rad
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Check out Storyden main
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: Southclaws/storyden
+          ref: main
+          path: storyden
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal
+
+      - name: Install Storyden Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: storyden/go.mod
+          cache: true
+          cache-dependency-path: storyden/go.sum
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: native
+          save-if: false
+
+      - name: Record compatibility test inputs
+        run: |
+          set -euo pipefail
+          artifact_dir="$GITHUB_WORKSPACE/artifacts/storyden"
+          mkdir -p "$artifact_dir"
+          storyden_revision="$(git -C storyden rev-parse HEAD)"
+          printf '{"format":"rad-storyden-postgres-v1","rad_revision":"%s","storyden_revision":"%s","kv_store":"memory","database_url_scheme":"postgresql"}\n' \
+            "$RAD_TESTED_REVISION" "$storyden_revision" > "$artifact_dir/manifest.json"
+
+      - name: Build Rad
+        run: cargo build --locked --bin rad
+
+      - name: Start Rad PostgreSQL frontend
+        run: |
+          set -euo pipefail
+          artifact_dir="$GITHUB_WORKSPACE/artifacts/storyden"
+          target/debug/rad serve \
+            --storage memory \
+            --frontend postgres \
+            --postgres-addr 127.0.0.1:5432 \
+            --log-programs \
+            > "$artifact_dir/rad.log" 2>&1 &
+          echo "$!" > "$artifact_dir/rad.pid"
+          curl --fail --silent --show-error \
+            --retry 60 --retry-all-errors --retry-connrefused --retry-delay 1 \
+            http://127.0.0.1:7237/readyz
+
+      - name: Run complete Storyden backend suite
+        working-directory: storyden
+        run: |
+          set -o pipefail
+          go test -p 4 ./... 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/storyden/tests.log"
+
+      - name: Stop Rad
+        if: always()
+        run: |
+          pid_file="$GITHUB_WORKSPACE/artifacts/storyden/rad.pid"
+          if [[ -f "$pid_file" ]]; then
+            pid="$(<"$pid_file")"
+            if kill -0 "$pid" 2>/dev/null; then
+              kill "$pid"
+            fi
+          fi
+
+      - name: Retain Storyden compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rad-storyden-postgres-${{ github.sha }}-${{ github.run_attempt }}
+          path: artifacts/storyden
+          if-no-files-found: error
+          retention-days: 30
+
   determinism:
     name: byte-identical DST replay
     runs-on: ubuntu-24.04-arm
