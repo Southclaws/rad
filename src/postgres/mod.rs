@@ -1,7 +1,9 @@
 //! PostgreSQL wire-protocol compatibility frontend.
 
 use std::fmt::Debug;
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
@@ -46,6 +48,7 @@ impl Server {
                 engine,
                 parser: Arc::new(ParserBackend { catalog }),
                 mode,
+                transaction_admission: Arc::new(Mutex::new(())),
             }),
         }
     }
@@ -175,6 +178,7 @@ struct Backend {
     engine: Arc<Engine>,
     parser: Arc<ParserBackend>,
     mode: Mode,
+    transaction_admission: Arc<Mutex<()>>,
 }
 
 #[async_trait]
@@ -354,6 +358,15 @@ impl Backend {
                         .map_err(|error| engine_error_with_sql(error, &sql))
                     } else {
                         drop(state);
+                        let effectful = program
+                            .statements
+                            .iter()
+                            .any(|statement| statement.effectful());
+                        let _transaction_admission = if effectful {
+                            Some(self.transaction_admission.lock().await)
+                        } else {
+                            None
+                        };
                         let current_span = tracing::Span::current();
                         let (trace_id, span_id) = crate::telemetry::span_ids(&current_span);
                         let context = crate::logging::RequestContext {
@@ -371,14 +384,16 @@ impl Backend {
                             catalog: catalog_policy,
                             ..crate::engine::exec::ProgramOptions::default()
                         };
-                        Box::pin(crate::logging::with_request_context(
-                            context,
-                            crate::engine::frontend::execute_program_with_options(
-                                &self.engine,
-                                program,
-                                options,
-                            ),
-                        ))
+                        Box::pin(crate::logging::with_request_context(context, async {
+                            retry_implicit_transaction(|| {
+                                crate::engine::frontend::execute_program_with_options(
+                                    &self.engine,
+                                    program.clone(),
+                                    options.clone(),
+                                )
+                            })
+                            .await
+                        }))
                         .await
                         .map_err(|error| engine_error_with_sql(error, &sql))
                     }?;
@@ -443,10 +458,21 @@ impl Backend {
         let session = session(client);
         match control {
             TransactionControl::Begin => {
+                {
+                    let state = session.lock().await;
+                    if state.transaction.is_some() {
+                        return Ok(Response::TransactionStart(Tag::new("BEGIN")));
+                    }
+                }
+                // Rad transactions use serializable snapshots. Admit explicit
+                // transactions before opening the snapshot so ordinary PostgreSQL
+                // clients wait instead of surfacing avoidable serialization errors.
+                let admission = self.transaction_admission.clone().lock_owned().await;
                 let mut state = session.lock().await;
                 if state.transaction.is_none() {
                     state.transaction =
                         Some(Tx::begin(self.engine.clone()).await.map_err(engine_error)?);
+                    state.transaction_admission = Some(admission);
                     state.failed = false;
                     tracing::debug!(
                         target: "rad",
@@ -460,13 +486,18 @@ impl Backend {
                 Ok(Response::TransactionStart(Tag::new("BEGIN")))
             }
             TransactionControl::Commit => {
-                let (transaction, failed) = {
+                let (transaction, failed, transaction_admission) = {
                     let mut state = session.lock().await;
                     let failed =
                         state.failed || client.transaction_status() == TransactionStatus::Error;
                     state.failed = false;
-                    (state.transaction.take(), failed)
+                    (
+                        state.transaction.take(),
+                        failed,
+                        state.transaction_admission.take(),
+                    )
                 };
+                let _transaction_admission = transaction_admission;
                 match transaction {
                     Some(transaction) if failed => {
                         let transaction_id = transaction.id().to_owned();
@@ -495,11 +526,12 @@ impl Backend {
                 }
             }
             TransactionControl::Rollback => {
-                let transaction = {
+                let (transaction, transaction_admission) = {
                     let mut state = session.lock().await;
                     state.failed = false;
-                    state.transaction.take()
+                    (state.transaction.take(), state.transaction_admission.take())
                 };
+                let _transaction_admission = transaction_admission;
                 if let Some(transaction) = transaction {
                     let transaction_id = transaction.id().to_owned();
                     transaction.rollback();
@@ -514,6 +546,28 @@ impl Backend {
             }
         }
     }
+}
+
+const IMPLICIT_TRANSACTION_ATTEMPTS: usize = 32;
+
+async fn retry_implicit_transaction<T, F, Fut>(mut operation: F) -> crate::engine::exec::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = crate::engine::exec::Result<T>>,
+{
+    for attempt in 0..IMPLICIT_TRANSACTION_ATTEMPTS {
+        match operation().await {
+            Err(error)
+                if error.reason() == ErrorReason::SerializableConflict
+                    && attempt + 1 < IMPLICIT_TRANSACTION_ATTEMPTS =>
+            {
+                let delay_ms = 1_u64 << attempt.min(4);
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the final implicit transaction attempt always returns")
 }
 
 fn log_transaction_completed(
@@ -659,6 +713,7 @@ enum TransactionControl {
 #[derive(Default)]
 struct Session {
     transaction: Option<Tx>,
+    transaction_admission: Option<tokio::sync::OwnedMutexGuard<()>>,
     failed: bool,
 }
 
@@ -732,6 +787,7 @@ enum CatalogKind {
     Version,
     Settings,
     Schemas,
+    TableWithoutColumn,
     TableCount,
     Tables,
     Columns,
@@ -776,6 +832,15 @@ impl CatalogPlan {
                     text_column("schema_name", false),
                     text_column("comment", true),
                 ],
+            )
+        } else if normalized.starts_with("select exists")
+            && normalized.contains("information_schema.tables")
+            && normalized.contains("and not exists")
+            && normalized.contains("information_schema.columns")
+        {
+            (
+                CatalogKind::TableWithoutColumn,
+                vec![bool_column("?column?", false)],
             )
         } else if normalized.contains("count(*)")
             && normalized.contains("information_schema.tables")
@@ -834,13 +899,25 @@ impl CatalogPlan {
             CatalogKind::Version => vec![vec![text("170000")]],
             CatalogKind::Settings => vec![vec![text("170000"), text("heap"), Datum::Null]],
             CatalogKind::Schemas => vec![vec![text("public"), Datum::Null]],
+            CatalogKind::TableWithoutColumn => {
+                let table_name = parameter_text(parameters, 0);
+                let column_name = parameter_text(parameters, 1);
+                let required = table_name.is_some_and(|table_name| {
+                    tables
+                        .iter()
+                        .find(|table| table.name == table_name)
+                        .is_some_and(|table| {
+                            column_name
+                                .is_none_or(|column_name| table.column(column_name).is_none())
+                        })
+                });
+                vec![vec![Datum::Scalar(Value::Bool(required))]]
+            }
             CatalogKind::TableCount => {
                 let requested = parameters
-                    .last()
-                    .and_then(|parameter| match &parameter.value {
-                        RawScalar::Text(value) => Some(value.as_str()),
-                        _ => None,
-                    });
+                    .len()
+                    .checked_sub(1)
+                    .and_then(|index| parameter_text(parameters, index));
                 let count = requested.map_or(tables.len(), |name| {
                     usize::from(tables.iter().any(|table| table.name == name))
                 });
@@ -996,6 +1073,15 @@ impl CatalogPlan {
             rows,
         })
     }
+}
+
+fn parameter_text(parameters: &[Parameter], index: usize) -> Option<&str> {
+    parameters
+        .get(index)
+        .and_then(|parameter| match &parameter.value {
+            RawScalar::Text(value) => Some(value.as_str()),
+            _ => None,
+        })
 }
 
 fn fields(columns: Vec<ResultColumn>, format: Option<&Format>) -> Vec<FieldInfo> {
@@ -1518,8 +1604,44 @@ fn default_datum(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::catalog::identity::{
+        DefinitionGeneration, ExistenceGeneration, SchemaId, StorageGeneration, ValueGeneration,
+        WriteProtocolGeneration,
+    };
+    use crate::engine::catalog::model::Column;
     use crate::engine::kv::TransactionalKv;
     use crate::engine::kv::slatedb::Store;
+
+    fn table_with_columns(name: &str, columns: &[&str]) -> Table {
+        Table {
+            id: format!("{name}-table").into(),
+            schema_id: SchemaId::new(1).unwrap(),
+            name: name.into(),
+            definition_generation: DefinitionGeneration::ZERO,
+            existence_generation: ExistenceGeneration::from(1),
+            write_protocol_generation: WriteProtocolGeneration::from(1),
+            storage_generation: StorageGeneration::INITIAL,
+            columns: columns
+                .iter()
+                .enumerate()
+                .map(|(index, name)| Column {
+                    id: format!("column-{index}").into(),
+                    schema_id: SchemaId::new(1).unwrap(),
+                    name: (*name).into(),
+                    value_generation: ValueGeneration::from(1),
+                    scalar_type: ScalarType::Int64,
+                    nullable: false,
+                    format: String::new(),
+                    insert_default: None,
+                    missing_value: None,
+                })
+                .collect(),
+            primary_key: Vec::new(),
+            indexes: Vec::new(),
+            foreign_keys: Vec::new(),
+            constraints: Vec::new(),
+        }
+    }
 
     #[test]
     fn recognizes_atlas_catalog_queries_without_a_generic_sql_lowering() {
@@ -1530,6 +1652,88 @@ mod tests {
         assert!(matches!(tables.kind, CatalogKind::Tables));
         assert_eq!(tables.parameter_count, 1);
         assert_eq!(tables.columns[2].name, "table_name");
+    }
+
+    #[test]
+    fn storyden_catalog_probe_checks_for_a_missing_column() {
+        let probe = CatalogPlan::recognize(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1) AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2)",
+        )
+        .unwrap();
+        let parameters = [
+            Parameter {
+                scalar_type: ScalarType::Text,
+                value: RawScalar::Text("robot_session_messages".into()),
+            },
+            Parameter {
+                scalar_type: ScalarType::Text,
+                value: RawScalar::Text("sequence".into()),
+            },
+        ];
+
+        let empty = probe.execute(&[], &parameters).unwrap();
+        let missing = probe
+            .execute(
+                &[table_with_columns("robot_session_messages", &["id"])],
+                &parameters,
+            )
+            .unwrap();
+        let present = probe
+            .execute(
+                &[table_with_columns(
+                    "robot_session_messages",
+                    &["id", "sequence"],
+                )],
+                &parameters,
+            )
+            .unwrap();
+
+        assert_eq!(empty.columns, vec![bool_column("?column?", false)]);
+        assert_eq!(empty.rows, vec![vec![Datum::Scalar(Value::Bool(false))]]);
+        assert_eq!(missing.rows, vec![vec![Datum::Scalar(Value::Bool(true))]]);
+        assert_eq!(present.rows, vec![vec![Datum::Scalar(Value::Bool(false))]]);
+    }
+
+    #[tokio::test]
+    async fn implicit_transactions_retry_serializable_conflicts() {
+        let mut attempts = 0;
+        let result = retry_implicit_transaction(|| {
+            attempts += 1;
+            let attempt = attempts;
+            async move {
+                if attempt < 3 {
+                    Err(crate::engine::exec::Error::message(
+                        crate::engine::exec::ErrorKind::Conflict,
+                        "retry",
+                    ))
+                } else {
+                    Ok(7)
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(result.unwrap(), 7);
+        assert_eq!(attempts, 3);
+    }
+
+    #[tokio::test]
+    async fn implicit_transactions_do_not_retry_other_errors() {
+        let mut attempts = 0;
+        let error = retry_implicit_transaction(|| {
+            attempts += 1;
+            async {
+                Err::<(), _>(crate::engine::exec::Error::message(
+                    crate::engine::exec::ErrorKind::ConstraintViolation,
+                    "constraint",
+                ))
+            }
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.reason(), ErrorReason::ConstraintViolation);
+        assert_eq!(attempts, 1);
     }
 
     #[tokio::test]

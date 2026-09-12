@@ -2803,6 +2803,7 @@ impl<'context, 'catalog> ExpressionCompiler<'context, 'catalog> {
         insensitive: bool,
         negated: bool,
     ) -> Result<CompiledExpr> {
+        let (value, insensitive) = case_folded_like_value(value, insensitive)?;
         let value = self.compile(value, Some(ScalarType::Text))?;
         let pattern = self.pattern_value(pattern)?;
         let escape = escape
@@ -3335,6 +3336,32 @@ fn is_aggregate_function(function: &sqlparser::ast::Function) -> bool {
     })
 }
 
+fn case_folded_like_value(expression: &SqlExpr, insensitive: bool) -> Result<(&SqlExpr, bool)> {
+    if insensitive {
+        return Ok((expression, true));
+    }
+    let SqlExpr::Function(function) = expression else {
+        return Ok((expression, false));
+    };
+    if !object_name(&function.name).is_ok_and(|name| name.eq_ignore_ascii_case("lower")) {
+        return Ok((expression, false));
+    }
+    if function.over.is_some() || function.filter.is_some() {
+        return Err(Error::Unsupported(
+            "LOWER with window or filter clauses is not supported".into(),
+        ));
+    }
+    let FunctionArguments::List(arguments) = &function.args else {
+        return Err(Error::Unsupported(
+            "LOWER arguments are not supported".into(),
+        ));
+    };
+    let [FunctionArg::Unnamed(FunctionArgExpr::Expr(argument))] = arguments.args.as_slice() else {
+        return Err(Error::Invalid("LOWER needs one argument".into()));
+    };
+    Ok((argument, true))
+}
+
 fn limit(
     clause: Option<&LimitClause>,
     expressions: &mut ExpressionCompiler<'_, '_>,
@@ -3371,12 +3398,20 @@ fn usize_expression(
     expression: &SqlExpr,
     compiler: &mut ExpressionCompiler<'_, '_>,
 ) -> Result<usize> {
+    let unbound_parameter = compiler.context.parameters.is_none()
+        && matches!(
+            expression,
+            SqlExpr::Value(value) if matches!(value.value, SqlValue::Placeholder(_))
+        );
     let expression = compiler.compile(expression, Some(ScalarType::Int64))?;
     let Expr::Literal(Literal {
         raw: RawScalar::Number(value),
         ..
     }) = expression.expr
     else {
+        if unbound_parameter {
+            return Ok(0);
+        }
         return Err(Error::Invalid(
             "LIMIT/OFFSET must be a bound integer".into(),
         ));
@@ -4599,6 +4634,61 @@ mod tests {
         assert_eq!(table.columns[1].format, "jsonb");
         assert_eq!(table.columns[2].scalar_type, ScalarType::Int64);
         assert_eq!(table.columns[2].format, "timestamptz");
+    }
+
+    #[test]
+    fn storyden_search_lowers_case_insensitive_like_and_bound_limit() {
+        let table = users();
+        let prepared = prepare(
+            "SELECT id FROM users WHERE lower(name) LIKE $1 ESCAPE '\\' ORDER BY id LIMIT $2",
+            std::slice::from_ref(&table),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.parameter_types(),
+            &[ScalarType::Text, ScalarType::Int64]
+        );
+
+        let compiled = compile(
+            &prepared,
+            std::slice::from_ref(&table),
+            &[
+                Parameter {
+                    scalar_type: ScalarType::Text,
+                    value: RawScalar::Text("%southclaws%".into()),
+                },
+                Parameter {
+                    scalar_type: ScalarType::Int64,
+                    value: RawScalar::Number("51".into()),
+                },
+            ],
+        )
+        .unwrap();
+        let program = compiled.program.unwrap();
+        let Statement::Query { relation, .. } = &program.statements[0] else {
+            panic!("expected query statement")
+        };
+        let Relation::Project { input, .. } = &relation.root else {
+            panic!("expected projected query")
+        };
+        let Relation::Slice { input, limit, .. } = input.as_ref() else {
+            panic!("expected limited query")
+        };
+        assert_eq!(*limit, Some(51));
+        let Relation::Order { input, .. } = input.as_ref() else {
+            panic!("expected ordered query")
+        };
+        let Relation::Filter { predicate, .. } = input.as_ref() else {
+            panic!("expected filtered query")
+        };
+        assert!(matches!(
+            predicate,
+            Expr::TextMatch {
+                comparison: TextComparison::UnicodeSimpleFold,
+                ..
+            }
+        ));
     }
 
     #[test]
