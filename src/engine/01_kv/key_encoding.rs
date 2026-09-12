@@ -3,6 +3,7 @@ pub const TAG_BOOL: u8 = 0x02;
 pub const TAG_I64: u8 = 0x03;
 pub const TAG_F64: u8 = 0x04;
 pub const TAG_TEXT: u8 = 0x05;
+pub const TAG_BYTES: u8 = 0x06;
 
 const ESCAPE: u8 = 0x00;
 const ESCAPED_FF: u8 = 0xff;
@@ -10,9 +11,19 @@ const TERMINATOR: u8 = 0x01;
 
 /// Encodes text so that byte order matches UTF-8 lexicographic order.
 pub fn encode_text(value: &str) -> Vec<u8> {
+    encode_escaped(TAG_TEXT, value.as_bytes())
+}
+
+/// Encodes arbitrary bytes so byte order remains lexicographic and tuples are
+/// self-delimiting even when a value contains zero bytes.
+pub fn encode_bytes(value: &[u8]) -> Vec<u8> {
+    encode_escaped(TAG_BYTES, value)
+}
+
+fn encode_escaped(tag: u8, value: &[u8]) -> Vec<u8> {
     let mut encoded = Vec::with_capacity(value.len() + 3);
-    encoded.push(TAG_TEXT);
-    for byte in value.bytes() {
+    encoded.push(tag);
+    for byte in value.iter().copied() {
         if byte == ESCAPE {
             encoded.extend_from_slice(&[ESCAPE, ESCAPED_FF]);
         } else {
@@ -125,6 +136,7 @@ mod tests {
         assert_eq!(encode_f64(f64::NAN), None);
         assert!(encode_text("app") < encode_text("apple"));
         assert!(encode_text("a\0") < encode_text("a\0b"));
+        assert!(encode_bytes(b"a\0") < encode_bytes(b"a\0b"));
     }
 
     #[test]
@@ -168,6 +180,17 @@ mod tests {
                 pair[1]
             );
         }
+    }
+
+    #[test]
+    fn bytes_encoding_is_self_delimiting_and_preserves_binary_order() {
+        let ordered: [&[u8]; 8] = [
+            b"", b"\0", b"\0\0", b"\0\xff", b"a", b"a\0", b"a\xff", b"\xff",
+        ];
+        for pair in ordered.windows(2) {
+            assert!(encode_bytes(pair[0]) < encode_bytes(pair[1]));
+        }
+        assert!(!encode_bytes(b"a\0b").starts_with(&encode_bytes(b"a")));
     }
 
     #[test]

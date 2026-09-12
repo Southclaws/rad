@@ -221,6 +221,26 @@
       ],
       "type": "object"
     },
+    "BytesValue": {
+      "additionalProperties": false,
+      "description": "An arbitrary byte sequence encoded as canonical padded RFC 4648 base64,\nor a bytes NULL when `value` is absent. A context-free LIR literal has no\ncatalog format metadata, so identifier text is not accepted here.\n",
+      "properties": {
+        "type": {
+          "const": "bytes",
+          "type": "string"
+        },
+        "value": {
+          "contentEncoding": "base64",
+          "description": "Canonical padded base64; absent for a NULL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "BytesValue",
+      "type": "object"
+    },
     "CastExpr": {
       "additionalProperties": false,
       "description": "Convert `expr` to the scalar type `to`. The conversion is explicit; the\nresult is nullable exactly when the operand is.\n",
@@ -246,7 +266,7 @@
       "type": "object"
     },
     "Cell": {
-      "description": "One schema-directed scalar payload, used inside a `rows` relation where\neach column already declares its type. A string is decoded against the\ncorresponding `RowsColumn.type` — numbers as lossless strings, `bool` as\n\"true\"/\"false\", so precision survives and the type is never repeated per\ncell; JSON null is a typed NULL, valid only when that column is nullable.\nUnlike `Value`, a cell carries no type of its own — the column supplies\nit once for the whole column.\n",
+      "description": "One schema-directed scalar payload, used inside a `rows` relation where\neach column already declares its type. A string is decoded against the\ncorresponding `RowsColumn.type` — numbers as lossless strings, `bool` as\n\"true\"/\"false\", and `bytes` as canonical padded base64, so precision\nsurvives and the type is never repeated per cell; JSON null is a typed\nNULL, valid only when that column is nullable.\nUnlike `Value`, a cell carries no type of its own — the column supplies\nit once for the whole column.\n",
       "title": "Cell",
       "type": [
         "string",
@@ -1106,12 +1126,13 @@
       "type": "object"
     },
     "ScalarType": {
-      "description": "The logical type of a scalar value: `text`, `int64`, `float64`, or\n`bool`.\n",
+      "description": "The logical type of a scalar value: `text`, `int64`, `float64`, `bool`,\nor `bytes`.\n",
       "enum": [
         "text",
         "int64",
         "float64",
-        "bool"
+        "bool",
+        "bytes"
       ],
       "title": "ScalarType",
       "type": "string"
@@ -1289,6 +1310,9 @@
         },
         {
           "$ref": "#/$defs/BoolValue"
+        },
+        {
+          "$ref": "#/$defs/BytesValue"
         }
       ],
       "title": "Value"

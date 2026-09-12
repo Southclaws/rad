@@ -4,8 +4,12 @@ package tracker
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
+	"strings"
 
 	"github.com/Southclaws/rad/clients/go/protocol"
 	"github.com/Southclaws/rad/clients/go/protocol/lirwire"
@@ -13,8 +17,8 @@ import (
 )
 
 const SchemaVersion uint64 = 1
-const SchemaHash = "sha256:82199fcd831adec16d68d6b2604983b7140e8d786a15f75c85d85bf538108796"
-const RawSchema = "tables:\n- id: 1\n  name: users\n  columns:\n  - id: 1\n    name: id\n    type: string\n    format: uuid\n    default: uuid()\n  - id: 2\n    name: username\n    type: string\n  - id: 3\n    name: display_name\n    type: string\n    nullable: true\n  - id: 4\n    name: password_hash\n    type: string\n  - id: 5\n    name: email\n    type: string\n    nullable: true\n    format: email\n  - id: 6\n    name: created_at\n    type: int64\n    format: unix_ms\n    default: now_ms()\n  primary_key:\n  - id\n  indexes:\n  - name: users_username_uq\n    columns:\n    - username\n    unique: true\n- id: 2\n  name: sessions\n  columns:\n  - id: 1\n    name: token\n    type: string\n    format: uuid\n    default: uuid()\n  - id: 2\n    name: user_id\n    type: string\n  - id: 3\n    name: created_at\n    type: int64\n    format: unix_ms\n    default: now_ms()\n  - id: 4\n    name: expires_at\n    type: int64\n    format: unix_ms\n  primary_key:\n  - token\n  indexes:\n  - name: sessions_user_id_idx\n    columns:\n    - user_id\n    unique: false\n  foreign_keys:\n  - name: sessions_user_id_fk\n    columns:\n    - user_id\n    ref_table: users\n    ref_columns:\n    - id\n- id: 3\n  name: teams\n  columns:\n  - id: 1\n    name: id\n    type: string\n    format: uuid\n    default: uuid()\n  - id: 2\n    name: name\n    type: string\n  - id: 3\n    name: created_at\n    type: int64\n    format: unix_ms\n    default: now_ms()\n  primary_key:\n  - id\n  indexes:\n  - name: teams_name_uq\n    columns:\n    - name\n    unique: true\n- id: 4\n  name: team_members\n  columns:\n  - id: 1\n    name: team_id\n    type: string\n  - id: 2\n    name: user_id\n    type: string\n  - id: 3\n    name: role\n    type: string\n    default: member\n  - id: 4\n    name: joined_at\n    type: int64\n    format: unix_ms\n    default: now_ms()\n  primary_key:\n  - team_id\n  - user_id\n  indexes:\n  - name: team_members_user_id_idx\n    columns:\n    - user_id\n    unique: false\n  foreign_keys:\n  - name: team_members_team_id_fk\n    columns:\n    - team_id\n    ref_table: teams\n    ref_columns:\n    - id\n  - name: team_members_user_id_fk\n    columns:\n    - user_id\n    ref_table: users\n    ref_columns:\n    - id\n- id: 5\n  name: boards\n  columns:\n  - id: 1\n    name: id\n    type: string\n    format: uuid\n    default: uuid()\n  - id: 2\n    name: team_id\n    type: string\n  - id: 3\n    name: name\n    type: string\n  - id: 4\n    name: archived\n    type: bool\n    default: false\n  - id: 5\n    name: created_at\n    type: int64\n    format: unix_ms\n    default: now_ms()\n  primary_key:\n  - id\n  indexes:\n  - name: boards_team_id_name_uq\n    columns:\n    - team_id\n    - name\n    unique: true\n  foreign_keys:\n  - name: boards_team_id_fk\n    columns:\n    - team_id\n    ref_table: teams\n    ref_columns:\n    - id\n- id: 6\n  name: tasks\n  columns:\n  - id: 1\n    name: id\n    type: string\n    format: uuid\n    default: uuid()\n  - id: 2\n    name: board_id\n    type: string\n  - id: 3\n    name: title\n    type: string\n  - id: 4\n    name: description\n    type: string\n    nullable: true\n  - id: 5\n    name: status\n    type: string\n    default: todo\n  - id: 6\n    name: priority\n    type: int64\n    default: 2\n  - id: 7\n    name: estimate\n    type: float64\n    nullable: true\n  - id: 8\n    name: assignee_id\n    type: string\n    nullable: true\n  - id: 9\n    name: creator_id\n    type: string\n  - id: 10\n    name: parent_id\n    type: string\n    nullable: true\n  - id: 11\n    name: due_at\n    type: int64\n    nullable: true\n    format: unix_ms\n  - id: 12\n    name: created_at\n    type: int64\n    format: unix_ms\n    default: now_ms()\n  primary_key:\n  - id\n  indexes:\n  - name: tasks_assignee_id_idx\n    columns:\n    - assignee_id\n    unique: false\n  - name: tasks_assignee_id_status_idx\n    columns:\n    - assignee_id\n    - status\n    unique: false\n  - name: tasks_board_id_status_idx\n    columns:\n    - board_id\n    - status\n    unique: false\n  - name: tasks_parent_id_idx\n    columns:\n    - parent_id\n    unique: false\n  foreign_keys:\n  - name: tasks_assignee_id_fk\n    columns:\n    - assignee_id\n    ref_table: users\n    ref_columns:\n    - id\n  - name: tasks_board_id_fk\n    columns:\n    - board_id\n    ref_table: boards\n    ref_columns:\n    - id\n  - name: tasks_creator_id_fk\n    columns:\n    - creator_id\n    ref_table: users\n    ref_columns:\n    - id\n  - name: tasks_parent_id_fk\n    columns:\n    - parent_id\n    ref_table: tasks\n    ref_columns:\n    - id\n- id: 7\n  name: comments\n  columns:\n  - id: 1\n    name: id\n    type: string\n    format: uuid\n    default: uuid()\n  - id: 2\n    name: task_id\n    type: string\n  - id: 3\n    name: author_id\n    type: string\n  - id: 4\n    name: body\n    type: string\n  - id: 5\n    name: created_at\n    type: int64\n    format: unix_ms\n    default: now_ms()\n  primary_key:\n  - id\n  indexes:\n  - name: comments_task_id_idx\n    columns:\n    - task_id\n    unique: false\n  foreign_keys:\n  - name: comments_author_id_fk\n    columns:\n    - author_id\n    ref_table: users\n    ref_columns:\n    - id\n  - name: comments_task_id_fk\n    columns:\n    - task_id\n    ref_table: tasks\n    ref_columns:\n    - id\n- id: 8\n  name: labels\n  columns:\n  - id: 1\n    name: id\n    type: string\n    format: uuid\n    default: uuid()\n  - id: 2\n    name: team_id\n    type: string\n  - id: 3\n    name: name\n    type: string\n  - id: 4\n    name: hex_color\n    type: string\n    default: \"#8899aa\"\n  primary_key:\n  - id\n  indexes:\n  - name: labels_team_id_name_uq\n    columns:\n    - team_id\n    - name\n    unique: true\n  foreign_keys:\n  - name: labels_team_id_fk\n    columns:\n    - team_id\n    ref_table: teams\n    ref_columns:\n    - id\n- id: 9\n  name: task_labels\n  columns:\n  - id: 1\n    name: task_id\n    type: string\n  - id: 2\n    name: label_id\n    type: string\n  primary_key:\n  - task_id\n  - label_id\n  indexes:\n  - name: task_labels_label_id_idx\n    columns:\n    - label_id\n    unique: false\n  foreign_keys:\n  - name: task_labels_label_id_fk\n    columns:\n    - label_id\n    ref_table: labels\n    ref_columns:\n    - id\n  - name: task_labels_task_id_fk\n    columns:\n    - task_id\n    ref_table: tasks\n    ref_columns:\n    - id\n"
+const SchemaHash = "sha256:55f35ec0320ca311b4aa0aecb34b0a1ca652759844fbb2bff606639013a5c7fb"
+const RawSchema = "tables:\n- id: 1\n  name: users\n  columns:\n  - id: 1\n    name: id\n    type: bytes\n    format: uuid\n    default: uuid_v7()\n  - id: 2\n    name: username\n    type: string\n  - id: 3\n    name: display_name\n    type: string\n    nullable: true\n  - id: 4\n    name: password_hash\n    type: string\n  - id: 5\n    name: email\n    type: string\n    nullable: true\n    format: email\n  - id: 6\n    name: created_at\n    type: int64\n    format: unix_ms\n    default: now_ms()\n  primary_key:\n  - id\n  indexes:\n  - name: users_username_uq\n    columns:\n    - username\n    unique: true\n- id: 2\n  name: sessions\n  columns:\n  - id: 1\n    name: token\n    type: bytes\n    format: uuid\n    default: uuid_v7()\n  - id: 2\n    name: user_id\n    type: bytes\n    format: uuid\n  - id: 3\n    name: created_at\n    type: int64\n    format: unix_ms\n    default: now_ms()\n  - id: 4\n    name: expires_at\n    type: int64\n    format: unix_ms\n  primary_key:\n  - token\n  indexes:\n  - name: sessions_user_id_idx\n    columns:\n    - user_id\n  foreign_keys:\n  - name: sessions_user_id_fk\n    columns:\n    - user_id\n    ref_table: users\n    ref_columns:\n    - id\n- id: 3\n  name: teams\n  columns:\n  - id: 1\n    name: id\n    type: bytes\n    format: uuid\n    default: uuid_v7()\n  - id: 2\n    name: name\n    type: string\n  - id: 3\n    name: created_at\n    type: int64\n    format: unix_ms\n    default: now_ms()\n  primary_key:\n  - id\n  indexes:\n  - name: teams_name_uq\n    columns:\n    - name\n    unique: true\n- id: 4\n  name: team_members\n  columns:\n  - id: 1\n    name: team_id\n    type: bytes\n    format: uuid\n  - id: 2\n    name: user_id\n    type: bytes\n    format: uuid\n  - id: 3\n    name: role\n    type: string\n    default: member\n  - id: 4\n    name: joined_at\n    type: int64\n    format: unix_ms\n    default: now_ms()\n  primary_key:\n  - team_id\n  - user_id\n  indexes:\n  - name: team_members_user_id_idx\n    columns:\n    - user_id\n  foreign_keys:\n  - name: team_members_team_id_fk\n    columns:\n    - team_id\n    ref_table: teams\n    ref_columns:\n    - id\n  - name: team_members_user_id_fk\n    columns:\n    - user_id\n    ref_table: users\n    ref_columns:\n    - id\n- id: 5\n  name: boards\n  columns:\n  - id: 1\n    name: id\n    type: bytes\n    format: uuid\n    default: uuid_v7()\n  - id: 2\n    name: team_id\n    type: bytes\n    format: uuid\n  - id: 3\n    name: name\n    type: string\n  - id: 4\n    name: archived\n    type: bool\n    default: false\n  - id: 5\n    name: created_at\n    type: int64\n    format: unix_ms\n    default: now_ms()\n  primary_key:\n  - id\n  indexes:\n  - name: boards_team_id_name_uq\n    columns:\n    - team_id\n    - name\n    unique: true\n  foreign_keys:\n  - name: boards_team_id_fk\n    columns:\n    - team_id\n    ref_table: teams\n    ref_columns:\n    - id\n- id: 6\n  name: tasks\n  columns:\n  - id: 1\n    name: id\n    type: bytes\n    format: uuid\n    default: uuid_v7()\n  - id: 2\n    name: board_id\n    type: bytes\n    format: uuid\n  - id: 3\n    name: title\n    type: string\n  - id: 4\n    name: description\n    type: string\n    nullable: true\n  - id: 5\n    name: status\n    type: string\n    default: todo\n  - id: 6\n    name: priority\n    type: int64\n    default: 2\n  - id: 7\n    name: estimate\n    type: float64\n    nullable: true\n  - id: 8\n    name: assignee_id\n    type: bytes\n    nullable: true\n    format: uuid\n  - id: 9\n    name: creator_id\n    type: bytes\n    format: uuid\n  - id: 10\n    name: parent_id\n    type: bytes\n    nullable: true\n    format: uuid\n  - id: 11\n    name: due_at\n    type: int64\n    nullable: true\n    format: unix_ms\n  - id: 12\n    name: created_at\n    type: int64\n    format: unix_ms\n    default: now_ms()\n  primary_key:\n  - id\n  indexes:\n  - name: tasks_assignee_id_idx\n    columns:\n    - assignee_id\n  - name: tasks_assignee_id_status_idx\n    columns:\n    - assignee_id\n    - status\n  - name: tasks_board_id_status_idx\n    columns:\n    - board_id\n    - status\n  - name: tasks_parent_id_idx\n    columns:\n    - parent_id\n  foreign_keys:\n  - name: tasks_assignee_id_fk\n    columns:\n    - assignee_id\n    ref_table: users\n    ref_columns:\n    - id\n  - name: tasks_board_id_fk\n    columns:\n    - board_id\n    ref_table: boards\n    ref_columns:\n    - id\n  - name: tasks_creator_id_fk\n    columns:\n    - creator_id\n    ref_table: users\n    ref_columns:\n    - id\n  - name: tasks_parent_id_fk\n    columns:\n    - parent_id\n    ref_table: tasks\n    ref_columns:\n    - id\n- id: 7\n  name: comments\n  columns:\n  - id: 1\n    name: id\n    type: bytes\n    format: uuid\n    default: uuid_v7()\n  - id: 2\n    name: task_id\n    type: bytes\n    format: uuid\n  - id: 3\n    name: author_id\n    type: bytes\n    format: uuid\n  - id: 4\n    name: body\n    type: string\n  - id: 5\n    name: created_at\n    type: int64\n    format: unix_ms\n    default: now_ms()\n  primary_key:\n  - id\n  indexes:\n  - name: comments_task_id_idx\n    columns:\n    - task_id\n  foreign_keys:\n  - name: comments_author_id_fk\n    columns:\n    - author_id\n    ref_table: users\n    ref_columns:\n    - id\n  - name: comments_task_id_fk\n    columns:\n    - task_id\n    ref_table: tasks\n    ref_columns:\n    - id\n- id: 8\n  name: labels\n  columns:\n  - id: 1\n    name: id\n    type: bytes\n    format: uuid\n    default: uuid_v7()\n  - id: 2\n    name: team_id\n    type: bytes\n    format: uuid\n  - id: 3\n    name: name\n    type: string\n  - id: 4\n    name: hex_color\n    type: string\n    default: '#8899aa'\n  primary_key:\n  - id\n  indexes:\n  - name: labels_team_id_name_uq\n    columns:\n    - team_id\n    - name\n    unique: true\n  foreign_keys:\n  - name: labels_team_id_fk\n    columns:\n    - team_id\n    ref_table: teams\n    ref_columns:\n    - id\n- id: 9\n  name: task_labels\n  columns:\n  - id: 1\n    name: task_id\n    type: bytes\n    format: uuid\n  - id: 2\n    name: label_id\n    type: bytes\n    format: uuid\n  primary_key:\n  - task_id\n  - label_id\n  indexes:\n  - name: task_labels_label_id_idx\n    columns:\n    - label_id\n  foreign_keys:\n  - name: task_labels_label_id_fk\n    columns:\n    - label_id\n    ref_table: labels\n    ref_columns:\n    - id\n  - name: task_labels_task_id_fk\n    columns:\n    - task_id\n    ref_table: tasks\n    ref_columns:\n    - id\n"
 
 // Client is the database handle: Connect to a Rad server, then use the
 // table handles. All methods are safe for concurrent use.
@@ -255,6 +259,62 @@ func recBool(m protocol.Record, k string) bool {
 	return b
 }
 
+func recBytes(m protocol.Record, k string) []byte {
+	s, _ := m[k].(string)
+	b, _ := base64.StdEncoding.DecodeString(s)
+	return b
+}
+
+func recUUID(m protocol.Record, k string) [16]byte {
+	var out [16]byte
+	s, _ := m[k].(string)
+	if len(s) != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
+		return out
+	}
+	b, err := hex.DecodeString(strings.ReplaceAll(s, "-", ""))
+	if err == nil && len(b) == len(out) {
+		copy(out[:], b)
+	}
+	return out
+}
+
+func recULID(m protocol.Record, k string) [16]byte {
+	var out [16]byte
+	s, _ := m[k].(string)
+	if len(s) != 26 {
+		return out
+	}
+	parseIdentifierBits(out[:], s, "0123456789ABCDEFGHJKMNPQRSTVWXYZ")
+	return out
+}
+
+func recXID(m protocol.Record, k string) [12]byte {
+	var out [12]byte
+	s, _ := m[k].(string)
+	if len(s) != 20 {
+		return out
+	}
+	parseIdentifierBits(out[:], s, "0123456789abcdefghijklmnopqrstuv")
+	return out
+}
+
+func parseIdentifierBits(out []byte, s, alphabet string) {
+	value := new(big.Int)
+	radix := big.NewInt(32)
+	digit := new(big.Int)
+	for _, r := range s {
+		index := strings.IndexRune(alphabet, r)
+		if index < 0 {
+			return
+		}
+		value.Mul(value, radix)
+		value.Add(value, digit.SetInt64(int64(index)))
+	}
+	if value.BitLen() <= len(out)*8 {
+		value.FillBytes(out)
+	}
+}
+
 func recInt64(m protocol.Record, k string) int64 {
 	n, _ := m[k].(json.Number)
 	i, _ := n.Int64()
@@ -299,10 +359,42 @@ func recBoolPtr(m protocol.Record, k string) *bool {
 	return &v
 }
 
+func recBytesPtr(m protocol.Record, k string) *[]byte {
+	if m[k] == nil {
+		return nil
+	}
+	v := recBytes(m, k)
+	return &v
+}
+
+func recUUIDPtr(m protocol.Record, k string) *[16]byte {
+	if m[k] == nil {
+		return nil
+	}
+	v := recUUID(m, k)
+	return &v
+}
+
+func recULIDPtr(m protocol.Record, k string) *[16]byte {
+	if m[k] == nil {
+		return nil
+	}
+	v := recULID(m, k)
+	return &v
+}
+
+func recXIDPtr(m protocol.Record, k string) *[12]byte {
+	if m[k] == nil {
+		return nil
+	}
+	v := recXID(m, k)
+	return &v
+}
+
 // User is one row of "users". Relation fields are populated only when the
 // corresponding Include* option was used on the query.
 type User struct {
-	ID              string       `json:"id"`
+	ID              [16]byte     `json:"id"`
 	Username        string       `json:"username"`
 	DisplayName     *string      `json:"display_name,omitempty"`
 	PasswordHash    string       `json:"password_hash"`
@@ -318,7 +410,7 @@ type User struct {
 // UserCreate is the input to Create. Pointer fields are optional:
 // nil defers to the column default or NULL.
 type UserCreate struct {
-	ID           *string
+	ID           *[16]byte
 	Username     string
 	DisplayName  *string
 	PasswordHash string
@@ -364,7 +456,7 @@ func (t UserTable) Create(ctx context.Context, in UserCreate) (User, error) {
 	return userFromRecord(rec), nil
 }
 
-func (t UserTable) Get(ctx context.Context, id string) (User, bool, error) {
+func (t UserTable) Get(ctx context.Context, id [16]byte) (User, bool, error) {
 	rec, found, err := t.v.Get(ctx, "users", map[string]any{"id": id})
 	if err != nil || !found {
 		return User{}, false, err
@@ -372,7 +464,7 @@ func (t UserTable) Get(ctx context.Context, id string) (User, bool, error) {
 	return userFromRecord(rec), true, nil
 }
 
-func (t UserTable) Update(ctx context.Context, id string, patch UserPatch) (User, bool, error) {
+func (t UserTable) Update(ctx context.Context, id [16]byte, patch UserPatch) (User, bool, error) {
 	set := map[string]any{}
 	var clear []string
 	if patch.Username != nil {
@@ -403,7 +495,7 @@ func (t UserTable) Update(ctx context.Context, id string, patch UserPatch) (User
 	return userFromRecord(rec), true, nil
 }
 
-func (t UserTable) Delete(ctx context.Context, id string) (bool, error) {
+func (t UserTable) Delete(ctx context.Context, id [16]byte) (bool, error) {
 	return t.v.Delete(ctx, "users", map[string]any{"id": id})
 }
 
@@ -428,32 +520,32 @@ type UserQuery struct {
 	spec querySpec
 }
 
-func (q *UserQuery) IDEq(v string) *UserQuery {
+func (q *UserQuery) IDEq(v [16]byte) *UserQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) IDNe(v string) *UserQuery {
+func (q *UserQuery) IDNe(v [16]byte) *UserQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) IDLt(v string) *UserQuery {
+func (q *UserQuery) IDLt(v [16]byte) *UserQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) IDLte(v string) *UserQuery {
+func (q *UserQuery) IDLte(v [16]byte) *UserQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) IDGt(v string) *UserQuery {
+func (q *UserQuery) IDGt(v [16]byte) *UserQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *UserQuery) IDGte(v string) *UserQuery {
+func (q *UserQuery) IDGte(v [16]byte) *UserQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
@@ -785,21 +877,21 @@ func (q *UserQuery) Count(ctx context.Context) (int64, error) {
 }
 
 // MinID is the smallest "id" over matching rows (nil when none).
-func (q *UserQuery) MinID(ctx context.Context) (*string, error) {
+func (q *UserQuery) MinID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxID is the largest "id" over matching rows (nil when none).
-func (q *UserQuery) MaxID(ctx context.Context) (*string, error) {
+func (q *UserQuery) MaxID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinUsername is the smallest "username" over matching rows (nil when none).
@@ -912,7 +1004,7 @@ func (q *UserQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 
 // UserCountByID is one per-id row count.
 type UserCountByID struct {
-	ID    string
+	ID    [16]byte
 	Count int64
 }
 
@@ -927,7 +1019,7 @@ func (q *UserQuery) CountByID(ctx context.Context) ([]UserCountByID, error) {
 	}
 	out := make([]UserCountByID, len(recs))
 	for i, r := range recs {
-		out[i] = UserCountByID{ID: recString(r, "id"), Count: recInt64(r, "count")}
+		out[i] = UserCountByID{ID: recUUID(r, "id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
@@ -1047,32 +1139,32 @@ type UserInclude struct {
 	spec includeSpec
 }
 
-func (b *UserInclude) IDEq(v string) *UserInclude {
+func (b *UserInclude) IDEq(v [16]byte) *UserInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) IDNe(v string) *UserInclude {
+func (b *UserInclude) IDNe(v [16]byte) *UserInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) IDLt(v string) *UserInclude {
+func (b *UserInclude) IDLt(v [16]byte) *UserInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) IDLte(v string) *UserInclude {
+func (b *UserInclude) IDLte(v [16]byte) *UserInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) IDGt(v string) *UserInclude {
+func (b *UserInclude) IDGt(v [16]byte) *UserInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *UserInclude) IDGte(v string) *UserInclude {
+func (b *UserInclude) IDGte(v [16]byte) *UserInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
@@ -1342,7 +1434,7 @@ func (b *UserInclude) IncludeComments(opts ...func(*CommentInclude)) *UserInclud
 
 func userFromRecord(rec protocol.Record) User {
 	m := User{}
-	m.ID = recString(rec, "id")
+	m.ID = recUUID(rec, "id")
 	m.Username = recString(rec, "username")
 	m.DisplayName = recStringPtr(rec, "display_name")
 	m.PasswordHash = recString(rec, "password_hash")
@@ -1389,18 +1481,18 @@ func userFromRecord(rec protocol.Record) User {
 // Session is one row of "sessions". Relation fields are populated only when the
 // corresponding Include* option was used on the query.
 type Session struct {
-	Token     string `json:"token"`
-	UserID    string `json:"user_id"`
-	CreatedAt int64  `json:"created_at"`
-	ExpiresAt int64  `json:"expires_at"`
-	User      *User  `json:"user,omitempty"`
+	Token     [16]byte `json:"token"`
+	UserID    [16]byte `json:"user_id"`
+	CreatedAt int64    `json:"created_at"`
+	ExpiresAt int64    `json:"expires_at"`
+	User      *User    `json:"user,omitempty"`
 }
 
 // SessionCreate is the input to Create. Pointer fields are optional:
 // nil defers to the column default or NULL.
 type SessionCreate struct {
-	Token     *string
-	UserID    string
+	Token     *[16]byte
+	UserID    [16]byte
 	CreatedAt *int64
 	ExpiresAt int64
 }
@@ -1408,7 +1500,7 @@ type SessionCreate struct {
 // SessionPatch is the input to Update. Nil fields are left untouched;
 // Clear* sets a nullable column to NULL.
 type SessionPatch struct {
-	UserID    *string
+	UserID    *[16]byte
 	CreatedAt *int64
 	ExpiresAt *int64
 }
@@ -1433,7 +1525,7 @@ func (t SessionTable) Create(ctx context.Context, in SessionCreate) (Session, er
 	return sessionFromRecord(rec), nil
 }
 
-func (t SessionTable) Get(ctx context.Context, token string) (Session, bool, error) {
+func (t SessionTable) Get(ctx context.Context, token [16]byte) (Session, bool, error) {
 	rec, found, err := t.v.Get(ctx, "sessions", map[string]any{"token": token})
 	if err != nil || !found {
 		return Session{}, false, err
@@ -1441,7 +1533,7 @@ func (t SessionTable) Get(ctx context.Context, token string) (Session, bool, err
 	return sessionFromRecord(rec), true, nil
 }
 
-func (t SessionTable) Update(ctx context.Context, token string, patch SessionPatch) (Session, bool, error) {
+func (t SessionTable) Update(ctx context.Context, token [16]byte, patch SessionPatch) (Session, bool, error) {
 	set := map[string]any{}
 	var clear []string
 	if patch.UserID != nil {
@@ -1460,7 +1552,7 @@ func (t SessionTable) Update(ctx context.Context, token string, patch SessionPat
 	return sessionFromRecord(rec), true, nil
 }
 
-func (t SessionTable) Delete(ctx context.Context, token string) (bool, error) {
+func (t SessionTable) Delete(ctx context.Context, token [16]byte) (bool, error) {
 	return t.v.Delete(ctx, "sessions", map[string]any{"token": token})
 }
 
@@ -1474,61 +1566,61 @@ type SessionQuery struct {
 	spec querySpec
 }
 
-func (q *SessionQuery) TokenEq(v string) *SessionQuery {
+func (q *SessionQuery) TokenEq(v [16]byte) *SessionQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "token"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *SessionQuery) TokenNe(v string) *SessionQuery {
+func (q *SessionQuery) TokenNe(v [16]byte) *SessionQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "token"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *SessionQuery) TokenLt(v string) *SessionQuery {
+func (q *SessionQuery) TokenLt(v [16]byte) *SessionQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "token"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *SessionQuery) TokenLte(v string) *SessionQuery {
+func (q *SessionQuery) TokenLte(v [16]byte) *SessionQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "token"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *SessionQuery) TokenGt(v string) *SessionQuery {
+func (q *SessionQuery) TokenGt(v [16]byte) *SessionQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "token"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *SessionQuery) TokenGte(v string) *SessionQuery {
+func (q *SessionQuery) TokenGte(v [16]byte) *SessionQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "token"), lirwire.LitOf(v)))
 	return q
 }
-func (q *SessionQuery) UserIDEq(v string) *SessionQuery {
+func (q *SessionQuery) UserIDEq(v [16]byte) *SessionQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *SessionQuery) UserIDNe(v string) *SessionQuery {
+func (q *SessionQuery) UserIDNe(v [16]byte) *SessionQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *SessionQuery) UserIDLt(v string) *SessionQuery {
+func (q *SessionQuery) UserIDLt(v [16]byte) *SessionQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *SessionQuery) UserIDLte(v string) *SessionQuery {
+func (q *SessionQuery) UserIDLte(v [16]byte) *SessionQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *SessionQuery) UserIDGt(v string) *SessionQuery {
+func (q *SessionQuery) UserIDGt(v [16]byte) *SessionQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *SessionQuery) UserIDGte(v string) *SessionQuery {
+func (q *SessionQuery) UserIDGte(v [16]byte) *SessionQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return q
 }
@@ -1691,39 +1783,39 @@ func (q *SessionQuery) Count(ctx context.Context) (int64, error) {
 }
 
 // MinToken is the smallest "token" over matching rows (nil when none).
-func (q *SessionQuery) MinToken(ctx context.Context) (*string, error) {
+func (q *SessionQuery) MinToken(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "token")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxToken is the largest "token" over matching rows (nil when none).
-func (q *SessionQuery) MaxToken(ctx context.Context) (*string, error) {
+func (q *SessionQuery) MaxToken(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "token")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinUserID is the smallest "user_id" over matching rows (nil when none).
-func (q *SessionQuery) MinUserID(ctx context.Context) (*string, error) {
+func (q *SessionQuery) MinUserID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "user_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxUserID is the largest "user_id" over matching rows (nil when none).
-func (q *SessionQuery) MaxUserID(ctx context.Context) (*string, error) {
+func (q *SessionQuery) MaxUserID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "user_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // SumCreatedAt totals "created_at" over matching rows (nil when none).
@@ -1800,7 +1892,7 @@ func (q *SessionQuery) MaxExpiresAt(ctx context.Context) (*int64, error) {
 
 // SessionCountByToken is one per-token row count.
 type SessionCountByToken struct {
-	Token string
+	Token [16]byte
 	Count int64
 }
 
@@ -1815,14 +1907,14 @@ func (q *SessionQuery) CountByToken(ctx context.Context) ([]SessionCountByToken,
 	}
 	out := make([]SessionCountByToken, len(recs))
 	for i, r := range recs {
-		out[i] = SessionCountByToken{Token: recString(r, "token"), Count: recInt64(r, "count")}
+		out[i] = SessionCountByToken{Token: recUUID(r, "token"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
 
 // SessionCountByUserID is one per-user_id row count.
 type SessionCountByUserID struct {
-	UserID string
+	UserID [16]byte
 	Count  int64
 }
 
@@ -1837,7 +1929,7 @@ func (q *SessionQuery) CountByUserID(ctx context.Context) ([]SessionCountByUserI
 	}
 	out := make([]SessionCountByUserID, len(recs))
 	for i, r := range recs {
-		out[i] = SessionCountByUserID{UserID: recString(r, "user_id"), Count: recInt64(r, "count")}
+		out[i] = SessionCountByUserID{UserID: recUUID(r, "user_id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
@@ -1891,61 +1983,61 @@ type SessionInclude struct {
 	spec includeSpec
 }
 
-func (b *SessionInclude) TokenEq(v string) *SessionInclude {
+func (b *SessionInclude) TokenEq(v [16]byte) *SessionInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "token"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *SessionInclude) TokenNe(v string) *SessionInclude {
+func (b *SessionInclude) TokenNe(v [16]byte) *SessionInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "token"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *SessionInclude) TokenLt(v string) *SessionInclude {
+func (b *SessionInclude) TokenLt(v [16]byte) *SessionInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "token"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *SessionInclude) TokenLte(v string) *SessionInclude {
+func (b *SessionInclude) TokenLte(v [16]byte) *SessionInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "token"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *SessionInclude) TokenGt(v string) *SessionInclude {
+func (b *SessionInclude) TokenGt(v [16]byte) *SessionInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "token"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *SessionInclude) TokenGte(v string) *SessionInclude {
+func (b *SessionInclude) TokenGte(v [16]byte) *SessionInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "token"), lirwire.LitOf(v)))
 	return b
 }
-func (b *SessionInclude) UserIDEq(v string) *SessionInclude {
+func (b *SessionInclude) UserIDEq(v [16]byte) *SessionInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *SessionInclude) UserIDNe(v string) *SessionInclude {
+func (b *SessionInclude) UserIDNe(v [16]byte) *SessionInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *SessionInclude) UserIDLt(v string) *SessionInclude {
+func (b *SessionInclude) UserIDLt(v [16]byte) *SessionInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *SessionInclude) UserIDLte(v string) *SessionInclude {
+func (b *SessionInclude) UserIDLte(v [16]byte) *SessionInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *SessionInclude) UserIDGt(v string) *SessionInclude {
+func (b *SessionInclude) UserIDGt(v [16]byte) *SessionInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *SessionInclude) UserIDGte(v string) *SessionInclude {
+func (b *SessionInclude) UserIDGte(v [16]byte) *SessionInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return b
 }
@@ -2061,8 +2153,8 @@ func (b *SessionInclude) IncludeUser(opts ...func(*UserInclude)) *SessionInclude
 
 func sessionFromRecord(rec protocol.Record) Session {
 	m := Session{}
-	m.Token = recString(rec, "token")
-	m.UserID = recString(rec, "user_id")
+	m.Token = recUUID(rec, "token")
+	m.UserID = recUUID(rec, "user_id")
 	m.CreatedAt = recInt64(rec, "created_at")
 	m.ExpiresAt = recInt64(rec, "expires_at")
 	if parent, ok := rec["user"].(map[string]any); ok {
@@ -2075,7 +2167,7 @@ func sessionFromRecord(rec protocol.Record) Session {
 // Team is one row of "teams". Relation fields are populated only when the
 // corresponding Include* option was used on the query.
 type Team struct {
-	ID          string       `json:"id"`
+	ID          [16]byte     `json:"id"`
 	Name        string       `json:"name"`
 	CreatedAt   int64        `json:"created_at"`
 	TeamMembers []TeamMember `json:"team_members,omitempty"`
@@ -2086,7 +2178,7 @@ type Team struct {
 // TeamCreate is the input to Create. Pointer fields are optional:
 // nil defers to the column default or NULL.
 type TeamCreate struct {
-	ID        *string
+	ID        *[16]byte
 	Name      string
 	CreatedAt *int64
 }
@@ -2117,7 +2209,7 @@ func (t TeamTable) Create(ctx context.Context, in TeamCreate) (Team, error) {
 	return teamFromRecord(rec), nil
 }
 
-func (t TeamTable) Get(ctx context.Context, id string) (Team, bool, error) {
+func (t TeamTable) Get(ctx context.Context, id [16]byte) (Team, bool, error) {
 	rec, found, err := t.v.Get(ctx, "teams", map[string]any{"id": id})
 	if err != nil || !found {
 		return Team{}, false, err
@@ -2125,7 +2217,7 @@ func (t TeamTable) Get(ctx context.Context, id string) (Team, bool, error) {
 	return teamFromRecord(rec), true, nil
 }
 
-func (t TeamTable) Update(ctx context.Context, id string, patch TeamPatch) (Team, bool, error) {
+func (t TeamTable) Update(ctx context.Context, id [16]byte, patch TeamPatch) (Team, bool, error) {
 	set := map[string]any{}
 	var clear []string
 	if patch.Name != nil {
@@ -2141,7 +2233,7 @@ func (t TeamTable) Update(ctx context.Context, id string, patch TeamPatch) (Team
 	return teamFromRecord(rec), true, nil
 }
 
-func (t TeamTable) Delete(ctx context.Context, id string) (bool, error) {
+func (t TeamTable) Delete(ctx context.Context, id [16]byte) (bool, error) {
 	return t.v.Delete(ctx, "teams", map[string]any{"id": id})
 }
 
@@ -2166,32 +2258,32 @@ type TeamQuery struct {
 	spec querySpec
 }
 
-func (q *TeamQuery) IDEq(v string) *TeamQuery {
+func (q *TeamQuery) IDEq(v [16]byte) *TeamQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TeamQuery) IDNe(v string) *TeamQuery {
+func (q *TeamQuery) IDNe(v [16]byte) *TeamQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TeamQuery) IDLt(v string) *TeamQuery {
+func (q *TeamQuery) IDLt(v [16]byte) *TeamQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TeamQuery) IDLte(v string) *TeamQuery {
+func (q *TeamQuery) IDLte(v [16]byte) *TeamQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TeamQuery) IDGt(v string) *TeamQuery {
+func (q *TeamQuery) IDGt(v [16]byte) *TeamQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TeamQuery) IDGte(v string) *TeamQuery {
+func (q *TeamQuery) IDGte(v [16]byte) *TeamQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
@@ -2367,21 +2459,21 @@ func (q *TeamQuery) Count(ctx context.Context) (int64, error) {
 }
 
 // MinID is the smallest "id" over matching rows (nil when none).
-func (q *TeamQuery) MinID(ctx context.Context) (*string, error) {
+func (q *TeamQuery) MinID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxID is the largest "id" over matching rows (nil when none).
-func (q *TeamQuery) MaxID(ctx context.Context) (*string, error) {
+func (q *TeamQuery) MaxID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinName is the smallest "name" over matching rows (nil when none).
@@ -2440,7 +2532,7 @@ func (q *TeamQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 
 // TeamCountByID is one per-id row count.
 type TeamCountByID struct {
-	ID    string
+	ID    [16]byte
 	Count int64
 }
 
@@ -2455,7 +2547,7 @@ func (q *TeamQuery) CountByID(ctx context.Context) ([]TeamCountByID, error) {
 	}
 	out := make([]TeamCountByID, len(recs))
 	for i, r := range recs {
-		out[i] = TeamCountByID{ID: recString(r, "id"), Count: recInt64(r, "count")}
+		out[i] = TeamCountByID{ID: recUUID(r, "id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
@@ -2509,32 +2601,32 @@ type TeamInclude struct {
 	spec includeSpec
 }
 
-func (b *TeamInclude) IDEq(v string) *TeamInclude {
+func (b *TeamInclude) IDEq(v [16]byte) *TeamInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TeamInclude) IDNe(v string) *TeamInclude {
+func (b *TeamInclude) IDNe(v [16]byte) *TeamInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TeamInclude) IDLt(v string) *TeamInclude {
+func (b *TeamInclude) IDLt(v [16]byte) *TeamInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TeamInclude) IDLte(v string) *TeamInclude {
+func (b *TeamInclude) IDLte(v [16]byte) *TeamInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TeamInclude) IDGt(v string) *TeamInclude {
+func (b *TeamInclude) IDGt(v [16]byte) *TeamInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TeamInclude) IDGte(v string) *TeamInclude {
+func (b *TeamInclude) IDGte(v [16]byte) *TeamInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
@@ -2654,7 +2746,7 @@ func (b *TeamInclude) IncludeLabels(opts ...func(*LabelInclude)) *TeamInclude {
 
 func teamFromRecord(rec protocol.Record) Team {
 	m := Team{}
-	m.ID = recString(rec, "id")
+	m.ID = recUUID(rec, "id")
 	m.Name = recString(rec, "name")
 	m.CreatedAt = recInt64(rec, "created_at")
 	if kids, ok := rec["team_members"].([]any); ok {
@@ -2684,19 +2776,19 @@ func teamFromRecord(rec protocol.Record) Team {
 // TeamMember is one row of "team_members". Relation fields are populated only when the
 // corresponding Include* option was used on the query.
 type TeamMember struct {
-	TeamID   string `json:"team_id"`
-	UserID   string `json:"user_id"`
-	Role     string `json:"role"`
-	JoinedAt int64  `json:"joined_at"`
-	Team     *Team  `json:"team,omitempty"`
-	User     *User  `json:"user,omitempty"`
+	TeamID   [16]byte `json:"team_id"`
+	UserID   [16]byte `json:"user_id"`
+	Role     string   `json:"role"`
+	JoinedAt int64    `json:"joined_at"`
+	Team     *Team    `json:"team,omitempty"`
+	User     *User    `json:"user,omitempty"`
 }
 
 // TeamMemberCreate is the input to Create. Pointer fields are optional:
 // nil defers to the column default or NULL.
 type TeamMemberCreate struct {
-	TeamID   string
-	UserID   string
+	TeamID   [16]byte
+	UserID   [16]byte
 	Role     *string
 	JoinedAt *int64
 }
@@ -2728,7 +2820,7 @@ func (t TeamMemberTable) Create(ctx context.Context, in TeamMemberCreate) (TeamM
 	return teamMemberFromRecord(rec), nil
 }
 
-func (t TeamMemberTable) Get(ctx context.Context, teamID string, userID string) (TeamMember, bool, error) {
+func (t TeamMemberTable) Get(ctx context.Context, teamID [16]byte, userID [16]byte) (TeamMember, bool, error) {
 	rec, found, err := t.v.Get(ctx, "team_members", map[string]any{"team_id": teamID, "user_id": userID})
 	if err != nil || !found {
 		return TeamMember{}, false, err
@@ -2736,7 +2828,7 @@ func (t TeamMemberTable) Get(ctx context.Context, teamID string, userID string) 
 	return teamMemberFromRecord(rec), true, nil
 }
 
-func (t TeamMemberTable) Update(ctx context.Context, teamID string, userID string, patch TeamMemberPatch) (TeamMember, bool, error) {
+func (t TeamMemberTable) Update(ctx context.Context, teamID [16]byte, userID [16]byte, patch TeamMemberPatch) (TeamMember, bool, error) {
 	set := map[string]any{}
 	var clear []string
 	if patch.Role != nil {
@@ -2752,7 +2844,7 @@ func (t TeamMemberTable) Update(ctx context.Context, teamID string, userID strin
 	return teamMemberFromRecord(rec), true, nil
 }
 
-func (t TeamMemberTable) Delete(ctx context.Context, teamID string, userID string) (bool, error) {
+func (t TeamMemberTable) Delete(ctx context.Context, teamID [16]byte, userID [16]byte) (bool, error) {
 	return t.v.Delete(ctx, "team_members", map[string]any{"team_id": teamID, "user_id": userID})
 }
 
@@ -2766,61 +2858,61 @@ type TeamMemberQuery struct {
 	spec querySpec
 }
 
-func (q *TeamMemberQuery) TeamIDEq(v string) *TeamMemberQuery {
+func (q *TeamMemberQuery) TeamIDEq(v [16]byte) *TeamMemberQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TeamMemberQuery) TeamIDNe(v string) *TeamMemberQuery {
+func (q *TeamMemberQuery) TeamIDNe(v [16]byte) *TeamMemberQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TeamMemberQuery) TeamIDLt(v string) *TeamMemberQuery {
+func (q *TeamMemberQuery) TeamIDLt(v [16]byte) *TeamMemberQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TeamMemberQuery) TeamIDLte(v string) *TeamMemberQuery {
+func (q *TeamMemberQuery) TeamIDLte(v [16]byte) *TeamMemberQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TeamMemberQuery) TeamIDGt(v string) *TeamMemberQuery {
+func (q *TeamMemberQuery) TeamIDGt(v [16]byte) *TeamMemberQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TeamMemberQuery) TeamIDGte(v string) *TeamMemberQuery {
+func (q *TeamMemberQuery) TeamIDGte(v [16]byte) *TeamMemberQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
-func (q *TeamMemberQuery) UserIDEq(v string) *TeamMemberQuery {
+func (q *TeamMemberQuery) UserIDEq(v [16]byte) *TeamMemberQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TeamMemberQuery) UserIDNe(v string) *TeamMemberQuery {
+func (q *TeamMemberQuery) UserIDNe(v [16]byte) *TeamMemberQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TeamMemberQuery) UserIDLt(v string) *TeamMemberQuery {
+func (q *TeamMemberQuery) UserIDLt(v [16]byte) *TeamMemberQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TeamMemberQuery) UserIDLte(v string) *TeamMemberQuery {
+func (q *TeamMemberQuery) UserIDLte(v [16]byte) *TeamMemberQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TeamMemberQuery) UserIDGt(v string) *TeamMemberQuery {
+func (q *TeamMemberQuery) UserIDGt(v [16]byte) *TeamMemberQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TeamMemberQuery) UserIDGte(v string) *TeamMemberQuery {
+func (q *TeamMemberQuery) UserIDGte(v [16]byte) *TeamMemberQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return q
 }
@@ -2997,39 +3089,39 @@ func (q *TeamMemberQuery) Count(ctx context.Context) (int64, error) {
 }
 
 // MinTeamID is the smallest "team_id" over matching rows (nil when none).
-func (q *TeamMemberQuery) MinTeamID(ctx context.Context) (*string, error) {
+func (q *TeamMemberQuery) MinTeamID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "team_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxTeamID is the largest "team_id" over matching rows (nil when none).
-func (q *TeamMemberQuery) MaxTeamID(ctx context.Context) (*string, error) {
+func (q *TeamMemberQuery) MaxTeamID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "team_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinUserID is the smallest "user_id" over matching rows (nil when none).
-func (q *TeamMemberQuery) MinUserID(ctx context.Context) (*string, error) {
+func (q *TeamMemberQuery) MinUserID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "user_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxUserID is the largest "user_id" over matching rows (nil when none).
-func (q *TeamMemberQuery) MaxUserID(ctx context.Context) (*string, error) {
+func (q *TeamMemberQuery) MaxUserID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "user_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinRole is the smallest "role" over matching rows (nil when none).
@@ -3088,7 +3180,7 @@ func (q *TeamMemberQuery) MaxJoinedAt(ctx context.Context) (*int64, error) {
 
 // TeamMemberCountByTeamID is one per-team_id row count.
 type TeamMemberCountByTeamID struct {
-	TeamID string
+	TeamID [16]byte
 	Count  int64
 }
 
@@ -3103,14 +3195,14 @@ func (q *TeamMemberQuery) CountByTeamID(ctx context.Context) ([]TeamMemberCountB
 	}
 	out := make([]TeamMemberCountByTeamID, len(recs))
 	for i, r := range recs {
-		out[i] = TeamMemberCountByTeamID{TeamID: recString(r, "team_id"), Count: recInt64(r, "count")}
+		out[i] = TeamMemberCountByTeamID{TeamID: recUUID(r, "team_id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
 
 // TeamMemberCountByUserID is one per-user_id row count.
 type TeamMemberCountByUserID struct {
-	UserID string
+	UserID [16]byte
 	Count  int64
 }
 
@@ -3125,7 +3217,7 @@ func (q *TeamMemberQuery) CountByUserID(ctx context.Context) ([]TeamMemberCountB
 	}
 	out := make([]TeamMemberCountByUserID, len(recs))
 	for i, r := range recs {
-		out[i] = TeamMemberCountByUserID{UserID: recString(r, "user_id"), Count: recInt64(r, "count")}
+		out[i] = TeamMemberCountByUserID{UserID: recUUID(r, "user_id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
@@ -3179,61 +3271,61 @@ type TeamMemberInclude struct {
 	spec includeSpec
 }
 
-func (b *TeamMemberInclude) TeamIDEq(v string) *TeamMemberInclude {
+func (b *TeamMemberInclude) TeamIDEq(v [16]byte) *TeamMemberInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TeamMemberInclude) TeamIDNe(v string) *TeamMemberInclude {
+func (b *TeamMemberInclude) TeamIDNe(v [16]byte) *TeamMemberInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TeamMemberInclude) TeamIDLt(v string) *TeamMemberInclude {
+func (b *TeamMemberInclude) TeamIDLt(v [16]byte) *TeamMemberInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TeamMemberInclude) TeamIDLte(v string) *TeamMemberInclude {
+func (b *TeamMemberInclude) TeamIDLte(v [16]byte) *TeamMemberInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TeamMemberInclude) TeamIDGt(v string) *TeamMemberInclude {
+func (b *TeamMemberInclude) TeamIDGt(v [16]byte) *TeamMemberInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TeamMemberInclude) TeamIDGte(v string) *TeamMemberInclude {
+func (b *TeamMemberInclude) TeamIDGte(v [16]byte) *TeamMemberInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
-func (b *TeamMemberInclude) UserIDEq(v string) *TeamMemberInclude {
+func (b *TeamMemberInclude) UserIDEq(v [16]byte) *TeamMemberInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TeamMemberInclude) UserIDNe(v string) *TeamMemberInclude {
+func (b *TeamMemberInclude) UserIDNe(v [16]byte) *TeamMemberInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TeamMemberInclude) UserIDLt(v string) *TeamMemberInclude {
+func (b *TeamMemberInclude) UserIDLt(v [16]byte) *TeamMemberInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TeamMemberInclude) UserIDLte(v string) *TeamMemberInclude {
+func (b *TeamMemberInclude) UserIDLte(v [16]byte) *TeamMemberInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TeamMemberInclude) UserIDGt(v string) *TeamMemberInclude {
+func (b *TeamMemberInclude) UserIDGt(v [16]byte) *TeamMemberInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TeamMemberInclude) UserIDGte(v string) *TeamMemberInclude {
+func (b *TeamMemberInclude) UserIDGte(v [16]byte) *TeamMemberInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "user_id"), lirwire.LitOf(v)))
 	return b
 }
@@ -3357,8 +3449,8 @@ func (b *TeamMemberInclude) IncludeUser(opts ...func(*UserInclude)) *TeamMemberI
 
 func teamMemberFromRecord(rec protocol.Record) TeamMember {
 	m := TeamMember{}
-	m.TeamID = recString(rec, "team_id")
-	m.UserID = recString(rec, "user_id")
+	m.TeamID = recUUID(rec, "team_id")
+	m.UserID = recUUID(rec, "user_id")
 	m.Role = recString(rec, "role")
 	m.JoinedAt = recInt64(rec, "joined_at")
 	if parent, ok := rec["team"].(map[string]any); ok {
@@ -3375,20 +3467,20 @@ func teamMemberFromRecord(rec protocol.Record) TeamMember {
 // Board is one row of "boards". Relation fields are populated only when the
 // corresponding Include* option was used on the query.
 type Board struct {
-	ID        string `json:"id"`
-	TeamID    string `json:"team_id"`
-	Name      string `json:"name"`
-	Archived  bool   `json:"archived"`
-	CreatedAt int64  `json:"created_at"`
-	Team      *Team  `json:"team,omitempty"`
-	Tasks     []Task `json:"tasks,omitempty"`
+	ID        [16]byte `json:"id"`
+	TeamID    [16]byte `json:"team_id"`
+	Name      string   `json:"name"`
+	Archived  bool     `json:"archived"`
+	CreatedAt int64    `json:"created_at"`
+	Team      *Team    `json:"team,omitempty"`
+	Tasks     []Task   `json:"tasks,omitempty"`
 }
 
 // BoardCreate is the input to Create. Pointer fields are optional:
 // nil defers to the column default or NULL.
 type BoardCreate struct {
-	ID        *string
-	TeamID    string
+	ID        *[16]byte
+	TeamID    [16]byte
 	Name      string
 	Archived  *bool
 	CreatedAt *int64
@@ -3397,7 +3489,7 @@ type BoardCreate struct {
 // BoardPatch is the input to Update. Nil fields are left untouched;
 // Clear* sets a nullable column to NULL.
 type BoardPatch struct {
-	TeamID    *string
+	TeamID    *[16]byte
 	Name      *string
 	Archived  *bool
 	CreatedAt *int64
@@ -3426,7 +3518,7 @@ func (t BoardTable) Create(ctx context.Context, in BoardCreate) (Board, error) {
 	return boardFromRecord(rec), nil
 }
 
-func (t BoardTable) Get(ctx context.Context, id string) (Board, bool, error) {
+func (t BoardTable) Get(ctx context.Context, id [16]byte) (Board, bool, error) {
 	rec, found, err := t.v.Get(ctx, "boards", map[string]any{"id": id})
 	if err != nil || !found {
 		return Board{}, false, err
@@ -3434,7 +3526,7 @@ func (t BoardTable) Get(ctx context.Context, id string) (Board, bool, error) {
 	return boardFromRecord(rec), true, nil
 }
 
-func (t BoardTable) Update(ctx context.Context, id string, patch BoardPatch) (Board, bool, error) {
+func (t BoardTable) Update(ctx context.Context, id [16]byte, patch BoardPatch) (Board, bool, error) {
 	set := map[string]any{}
 	var clear []string
 	if patch.TeamID != nil {
@@ -3456,12 +3548,12 @@ func (t BoardTable) Update(ctx context.Context, id string, patch BoardPatch) (Bo
 	return boardFromRecord(rec), true, nil
 }
 
-func (t BoardTable) Delete(ctx context.Context, id string) (bool, error) {
+func (t BoardTable) Delete(ctx context.Context, id [16]byte) (bool, error) {
 	return t.v.Delete(ctx, "boards", map[string]any{"id": id})
 }
 
 // ByTeamIDName finds the row by the unique index on (team_id, name).
-func (t BoardTable) ByTeamIDName(ctx context.Context, teamID string, name string) (Board, bool, error) {
+func (t BoardTable) ByTeamIDName(ctx context.Context, teamID [16]byte, name string) (Board, bool, error) {
 	recs, err := t.v.Query(ctx, assemble(querySpec{table: "boards", orders: []lirwire.OrderTerm{{Expr: lirwire.Col("", "id")}}, limit: 1, limitSet: true, filters: []lirwire.Expr{
 		lirwire.Binary("eq", lirwire.Col("", "team_id"), lirwire.LitOf(teamID)),
 		lirwire.Binary("eq", lirwire.Col("", "name"), lirwire.LitOf(name)),
@@ -3482,61 +3574,61 @@ type BoardQuery struct {
 	spec querySpec
 }
 
-func (q *BoardQuery) IDEq(v string) *BoardQuery {
+func (q *BoardQuery) IDEq(v [16]byte) *BoardQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *BoardQuery) IDNe(v string) *BoardQuery {
+func (q *BoardQuery) IDNe(v [16]byte) *BoardQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *BoardQuery) IDLt(v string) *BoardQuery {
+func (q *BoardQuery) IDLt(v [16]byte) *BoardQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *BoardQuery) IDLte(v string) *BoardQuery {
+func (q *BoardQuery) IDLte(v [16]byte) *BoardQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *BoardQuery) IDGt(v string) *BoardQuery {
+func (q *BoardQuery) IDGt(v [16]byte) *BoardQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *BoardQuery) IDGte(v string) *BoardQuery {
+func (q *BoardQuery) IDGte(v [16]byte) *BoardQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
-func (q *BoardQuery) TeamIDEq(v string) *BoardQuery {
+func (q *BoardQuery) TeamIDEq(v [16]byte) *BoardQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *BoardQuery) TeamIDNe(v string) *BoardQuery {
+func (q *BoardQuery) TeamIDNe(v [16]byte) *BoardQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *BoardQuery) TeamIDLt(v string) *BoardQuery {
+func (q *BoardQuery) TeamIDLt(v [16]byte) *BoardQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *BoardQuery) TeamIDLte(v string) *BoardQuery {
+func (q *BoardQuery) TeamIDLte(v [16]byte) *BoardQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *BoardQuery) TeamIDGt(v string) *BoardQuery {
+func (q *BoardQuery) TeamIDGt(v [16]byte) *BoardQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *BoardQuery) TeamIDGte(v string) *BoardQuery {
+func (q *BoardQuery) TeamIDGte(v [16]byte) *BoardQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
@@ -3728,39 +3820,39 @@ func (q *BoardQuery) Count(ctx context.Context) (int64, error) {
 }
 
 // MinID is the smallest "id" over matching rows (nil when none).
-func (q *BoardQuery) MinID(ctx context.Context) (*string, error) {
+func (q *BoardQuery) MinID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxID is the largest "id" over matching rows (nil when none).
-func (q *BoardQuery) MaxID(ctx context.Context) (*string, error) {
+func (q *BoardQuery) MaxID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinTeamID is the smallest "team_id" over matching rows (nil when none).
-func (q *BoardQuery) MinTeamID(ctx context.Context) (*string, error) {
+func (q *BoardQuery) MinTeamID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "team_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxTeamID is the largest "team_id" over matching rows (nil when none).
-func (q *BoardQuery) MaxTeamID(ctx context.Context) (*string, error) {
+func (q *BoardQuery) MaxTeamID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "team_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinName is the smallest "name" over matching rows (nil when none).
@@ -3837,7 +3929,7 @@ func (q *BoardQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 
 // BoardCountByID is one per-id row count.
 type BoardCountByID struct {
-	ID    string
+	ID    [16]byte
 	Count int64
 }
 
@@ -3852,14 +3944,14 @@ func (q *BoardQuery) CountByID(ctx context.Context) ([]BoardCountByID, error) {
 	}
 	out := make([]BoardCountByID, len(recs))
 	for i, r := range recs {
-		out[i] = BoardCountByID{ID: recString(r, "id"), Count: recInt64(r, "count")}
+		out[i] = BoardCountByID{ID: recUUID(r, "id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
 
 // BoardCountByTeamID is one per-team_id row count.
 type BoardCountByTeamID struct {
-	TeamID string
+	TeamID [16]byte
 	Count  int64
 }
 
@@ -3874,7 +3966,7 @@ func (q *BoardQuery) CountByTeamID(ctx context.Context) ([]BoardCountByTeamID, e
 	}
 	out := make([]BoardCountByTeamID, len(recs))
 	for i, r := range recs {
-		out[i] = BoardCountByTeamID{TeamID: recString(r, "team_id"), Count: recInt64(r, "count")}
+		out[i] = BoardCountByTeamID{TeamID: recUUID(r, "team_id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
@@ -3950,61 +4042,61 @@ type BoardInclude struct {
 	spec includeSpec
 }
 
-func (b *BoardInclude) IDEq(v string) *BoardInclude {
+func (b *BoardInclude) IDEq(v [16]byte) *BoardInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *BoardInclude) IDNe(v string) *BoardInclude {
+func (b *BoardInclude) IDNe(v [16]byte) *BoardInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *BoardInclude) IDLt(v string) *BoardInclude {
+func (b *BoardInclude) IDLt(v [16]byte) *BoardInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *BoardInclude) IDLte(v string) *BoardInclude {
+func (b *BoardInclude) IDLte(v [16]byte) *BoardInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *BoardInclude) IDGt(v string) *BoardInclude {
+func (b *BoardInclude) IDGt(v [16]byte) *BoardInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *BoardInclude) IDGte(v string) *BoardInclude {
+func (b *BoardInclude) IDGte(v [16]byte) *BoardInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
-func (b *BoardInclude) TeamIDEq(v string) *BoardInclude {
+func (b *BoardInclude) TeamIDEq(v [16]byte) *BoardInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *BoardInclude) TeamIDNe(v string) *BoardInclude {
+func (b *BoardInclude) TeamIDNe(v [16]byte) *BoardInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *BoardInclude) TeamIDLt(v string) *BoardInclude {
+func (b *BoardInclude) TeamIDLt(v [16]byte) *BoardInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *BoardInclude) TeamIDLte(v string) *BoardInclude {
+func (b *BoardInclude) TeamIDLte(v [16]byte) *BoardInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *BoardInclude) TeamIDGt(v string) *BoardInclude {
+func (b *BoardInclude) TeamIDGt(v [16]byte) *BoardInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *BoardInclude) TeamIDGte(v string) *BoardInclude {
+func (b *BoardInclude) TeamIDGte(v [16]byte) *BoardInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
@@ -4143,8 +4235,8 @@ func (b *BoardInclude) IncludeTasks(opts ...func(*TaskInclude)) *BoardInclude {
 
 func boardFromRecord(rec protocol.Record) Board {
 	m := Board{}
-	m.ID = recString(rec, "id")
-	m.TeamID = recString(rec, "team_id")
+	m.ID = recUUID(rec, "id")
+	m.TeamID = recUUID(rec, "team_id")
 	m.Name = recString(rec, "name")
 	m.Archived = recBool(rec, "archived")
 	m.CreatedAt = recInt64(rec, "created_at")
@@ -4165,16 +4257,16 @@ func boardFromRecord(rec protocol.Record) Board {
 // Task is one row of "tasks". Relation fields are populated only when the
 // corresponding Include* option was used on the query.
 type Task struct {
-	ID          string      `json:"id"`
-	BoardID     string      `json:"board_id"`
+	ID          [16]byte    `json:"id"`
+	BoardID     [16]byte    `json:"board_id"`
 	Title       string      `json:"title"`
 	Description *string     `json:"description,omitempty"`
 	Status      string      `json:"status"`
 	Priority    int64       `json:"priority"`
 	Estimate    *float64    `json:"estimate,omitempty"`
-	AssigneeID  *string     `json:"assignee_id,omitempty"`
-	CreatorID   string      `json:"creator_id"`
-	ParentID    *string     `json:"parent_id,omitempty"`
+	AssigneeID  *[16]byte   `json:"assignee_id,omitempty"`
+	CreatorID   [16]byte    `json:"creator_id"`
+	ParentID    *[16]byte   `json:"parent_id,omitempty"`
 	DueAt       *int64      `json:"due_at,omitempty"`
 	CreatedAt   int64       `json:"created_at"`
 	Assignee    *User       `json:"assignee,omitempty"`
@@ -4189,16 +4281,16 @@ type Task struct {
 // TaskCreate is the input to Create. Pointer fields are optional:
 // nil defers to the column default or NULL.
 type TaskCreate struct {
-	ID          *string
-	BoardID     string
+	ID          *[16]byte
+	BoardID     [16]byte
 	Title       string
 	Description *string
 	Status      *string
 	Priority    *int64
 	Estimate    *float64
-	AssigneeID  *string
-	CreatorID   string
-	ParentID    *string
+	AssigneeID  *[16]byte
+	CreatorID   [16]byte
+	ParentID    *[16]byte
 	DueAt       *int64
 	CreatedAt   *int64
 }
@@ -4206,15 +4298,15 @@ type TaskCreate struct {
 // TaskPatch is the input to Update. Nil fields are left untouched;
 // Clear* sets a nullable column to NULL.
 type TaskPatch struct {
-	BoardID          *string
+	BoardID          *[16]byte
 	Title            *string
 	Description      *string
 	Status           *string
 	Priority         *int64
 	Estimate         *float64
-	AssigneeID       *string
-	CreatorID        *string
-	ParentID         *string
+	AssigneeID       *[16]byte
+	CreatorID        *[16]byte
+	ParentID         *[16]byte
 	DueAt            *int64
 	CreatedAt        *int64
 	ClearDescription bool
@@ -4266,7 +4358,7 @@ func (t TaskTable) Create(ctx context.Context, in TaskCreate) (Task, error) {
 	return taskFromRecord(rec), nil
 }
 
-func (t TaskTable) Get(ctx context.Context, id string) (Task, bool, error) {
+func (t TaskTable) Get(ctx context.Context, id [16]byte) (Task, bool, error) {
 	rec, found, err := t.v.Get(ctx, "tasks", map[string]any{"id": id})
 	if err != nil || !found {
 		return Task{}, false, err
@@ -4274,7 +4366,7 @@ func (t TaskTable) Get(ctx context.Context, id string) (Task, bool, error) {
 	return taskFromRecord(rec), true, nil
 }
 
-func (t TaskTable) Update(ctx context.Context, id string, patch TaskPatch) (Task, bool, error) {
+func (t TaskTable) Update(ctx context.Context, id [16]byte, patch TaskPatch) (Task, bool, error) {
 	set := map[string]any{}
 	var clear []string
 	if patch.BoardID != nil {
@@ -4332,7 +4424,7 @@ func (t TaskTable) Update(ctx context.Context, id string, patch TaskPatch) (Task
 	return taskFromRecord(rec), true, nil
 }
 
-func (t TaskTable) Delete(ctx context.Context, id string) (bool, error) {
+func (t TaskTable) Delete(ctx context.Context, id [16]byte) (bool, error) {
 	return t.v.Delete(ctx, "tasks", map[string]any{"id": id})
 }
 
@@ -4346,61 +4438,61 @@ type TaskQuery struct {
 	spec querySpec
 }
 
-func (q *TaskQuery) IDEq(v string) *TaskQuery {
+func (q *TaskQuery) IDEq(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) IDNe(v string) *TaskQuery {
+func (q *TaskQuery) IDNe(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) IDLt(v string) *TaskQuery {
+func (q *TaskQuery) IDLt(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) IDLte(v string) *TaskQuery {
+func (q *TaskQuery) IDLte(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) IDGt(v string) *TaskQuery {
+func (q *TaskQuery) IDGt(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) IDGte(v string) *TaskQuery {
+func (q *TaskQuery) IDGte(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
-func (q *TaskQuery) BoardIDEq(v string) *TaskQuery {
+func (q *TaskQuery) BoardIDEq(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "board_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) BoardIDNe(v string) *TaskQuery {
+func (q *TaskQuery) BoardIDNe(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "board_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) BoardIDLt(v string) *TaskQuery {
+func (q *TaskQuery) BoardIDLt(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "board_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) BoardIDLte(v string) *TaskQuery {
+func (q *TaskQuery) BoardIDLte(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "board_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) BoardIDGt(v string) *TaskQuery {
+func (q *TaskQuery) BoardIDGt(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "board_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) BoardIDGte(v string) *TaskQuery {
+func (q *TaskQuery) BoardIDGte(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "board_id"), lirwire.LitOf(v)))
 	return q
 }
@@ -4569,32 +4661,32 @@ func (q *TaskQuery) EstimateNotNull() *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Unary("is_not_null", lirwire.Col("", "estimate")))
 	return q
 }
-func (q *TaskQuery) AssigneeIDEq(v string) *TaskQuery {
+func (q *TaskQuery) AssigneeIDEq(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "assignee_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) AssigneeIDNe(v string) *TaskQuery {
+func (q *TaskQuery) AssigneeIDNe(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "assignee_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) AssigneeIDLt(v string) *TaskQuery {
+func (q *TaskQuery) AssigneeIDLt(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "assignee_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) AssigneeIDLte(v string) *TaskQuery {
+func (q *TaskQuery) AssigneeIDLte(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "assignee_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) AssigneeIDGt(v string) *TaskQuery {
+func (q *TaskQuery) AssigneeIDGt(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "assignee_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) AssigneeIDGte(v string) *TaskQuery {
+func (q *TaskQuery) AssigneeIDGte(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "assignee_id"), lirwire.LitOf(v)))
 	return q
 }
@@ -4608,61 +4700,61 @@ func (q *TaskQuery) AssigneeIDNotNull() *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Unary("is_not_null", lirwire.Col("", "assignee_id")))
 	return q
 }
-func (q *TaskQuery) CreatorIDEq(v string) *TaskQuery {
+func (q *TaskQuery) CreatorIDEq(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "creator_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) CreatorIDNe(v string) *TaskQuery {
+func (q *TaskQuery) CreatorIDNe(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "creator_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) CreatorIDLt(v string) *TaskQuery {
+func (q *TaskQuery) CreatorIDLt(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "creator_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) CreatorIDLte(v string) *TaskQuery {
+func (q *TaskQuery) CreatorIDLte(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "creator_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) CreatorIDGt(v string) *TaskQuery {
+func (q *TaskQuery) CreatorIDGt(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "creator_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) CreatorIDGte(v string) *TaskQuery {
+func (q *TaskQuery) CreatorIDGte(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "creator_id"), lirwire.LitOf(v)))
 	return q
 }
-func (q *TaskQuery) ParentIDEq(v string) *TaskQuery {
+func (q *TaskQuery) ParentIDEq(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "parent_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) ParentIDNe(v string) *TaskQuery {
+func (q *TaskQuery) ParentIDNe(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "parent_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) ParentIDLt(v string) *TaskQuery {
+func (q *TaskQuery) ParentIDLt(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "parent_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) ParentIDLte(v string) *TaskQuery {
+func (q *TaskQuery) ParentIDLte(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "parent_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) ParentIDGt(v string) *TaskQuery {
+func (q *TaskQuery) ParentIDGt(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "parent_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskQuery) ParentIDGte(v string) *TaskQuery {
+func (q *TaskQuery) ParentIDGte(v [16]byte) *TaskQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "parent_id"), lirwire.LitOf(v)))
 	return q
 }
@@ -4983,39 +5075,39 @@ func (q *TaskQuery) Count(ctx context.Context) (int64, error) {
 }
 
 // MinID is the smallest "id" over matching rows (nil when none).
-func (q *TaskQuery) MinID(ctx context.Context) (*string, error) {
+func (q *TaskQuery) MinID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxID is the largest "id" over matching rows (nil when none).
-func (q *TaskQuery) MaxID(ctx context.Context) (*string, error) {
+func (q *TaskQuery) MaxID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinBoardID is the smallest "board_id" over matching rows (nil when none).
-func (q *TaskQuery) MinBoardID(ctx context.Context) (*string, error) {
+func (q *TaskQuery) MinBoardID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "board_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxBoardID is the largest "board_id" over matching rows (nil when none).
-func (q *TaskQuery) MaxBoardID(ctx context.Context) (*string, error) {
+func (q *TaskQuery) MaxBoardID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "board_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinTitle is the smallest "title" over matching rows (nil when none).
@@ -5145,57 +5237,57 @@ func (q *TaskQuery) MaxEstimate(ctx context.Context) (*float64, error) {
 }
 
 // MinAssigneeID is the smallest "assignee_id" over matching rows (nil when none).
-func (q *TaskQuery) MinAssigneeID(ctx context.Context) (*string, error) {
+func (q *TaskQuery) MinAssigneeID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "assignee_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxAssigneeID is the largest "assignee_id" over matching rows (nil when none).
-func (q *TaskQuery) MaxAssigneeID(ctx context.Context) (*string, error) {
+func (q *TaskQuery) MaxAssigneeID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "assignee_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinCreatorID is the smallest "creator_id" over matching rows (nil when none).
-func (q *TaskQuery) MinCreatorID(ctx context.Context) (*string, error) {
+func (q *TaskQuery) MinCreatorID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "creator_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxCreatorID is the largest "creator_id" over matching rows (nil when none).
-func (q *TaskQuery) MaxCreatorID(ctx context.Context) (*string, error) {
+func (q *TaskQuery) MaxCreatorID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "creator_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinParentID is the smallest "parent_id" over matching rows (nil when none).
-func (q *TaskQuery) MinParentID(ctx context.Context) (*string, error) {
+func (q *TaskQuery) MinParentID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "parent_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxParentID is the largest "parent_id" over matching rows (nil when none).
-func (q *TaskQuery) MaxParentID(ctx context.Context) (*string, error) {
+func (q *TaskQuery) MaxParentID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "parent_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // SumDueAt totals "due_at" over matching rows (nil when none).
@@ -5272,7 +5364,7 @@ func (q *TaskQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 
 // TaskCountByID is one per-id row count.
 type TaskCountByID struct {
-	ID    string
+	ID    [16]byte
 	Count int64
 }
 
@@ -5287,14 +5379,14 @@ func (q *TaskQuery) CountByID(ctx context.Context) ([]TaskCountByID, error) {
 	}
 	out := make([]TaskCountByID, len(recs))
 	for i, r := range recs {
-		out[i] = TaskCountByID{ID: recString(r, "id"), Count: recInt64(r, "count")}
+		out[i] = TaskCountByID{ID: recUUID(r, "id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
 
 // TaskCountByBoardID is one per-board_id row count.
 type TaskCountByBoardID struct {
-	BoardID string
+	BoardID [16]byte
 	Count   int64
 }
 
@@ -5309,7 +5401,7 @@ func (q *TaskQuery) CountByBoardID(ctx context.Context) ([]TaskCountByBoardID, e
 	}
 	out := make([]TaskCountByBoardID, len(recs))
 	for i, r := range recs {
-		out[i] = TaskCountByBoardID{BoardID: recString(r, "board_id"), Count: recInt64(r, "count")}
+		out[i] = TaskCountByBoardID{BoardID: recUUID(r, "board_id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
@@ -5426,7 +5518,7 @@ func (q *TaskQuery) CountByEstimate(ctx context.Context) ([]TaskCountByEstimate,
 
 // TaskCountByAssigneeID is one per-assignee_id row count.
 type TaskCountByAssigneeID struct {
-	AssigneeID *string
+	AssigneeID *[16]byte
 	Count      int64
 }
 
@@ -5441,14 +5533,14 @@ func (q *TaskQuery) CountByAssigneeID(ctx context.Context) ([]TaskCountByAssigne
 	}
 	out := make([]TaskCountByAssigneeID, len(recs))
 	for i, r := range recs {
-		out[i] = TaskCountByAssigneeID{AssigneeID: recStringPtr(r, "assignee_id"), Count: recInt64(r, "count")}
+		out[i] = TaskCountByAssigneeID{AssigneeID: recUUIDPtr(r, "assignee_id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
 
 // TaskCountByCreatorID is one per-creator_id row count.
 type TaskCountByCreatorID struct {
-	CreatorID string
+	CreatorID [16]byte
 	Count     int64
 }
 
@@ -5463,14 +5555,14 @@ func (q *TaskQuery) CountByCreatorID(ctx context.Context) ([]TaskCountByCreatorI
 	}
 	out := make([]TaskCountByCreatorID, len(recs))
 	for i, r := range recs {
-		out[i] = TaskCountByCreatorID{CreatorID: recString(r, "creator_id"), Count: recInt64(r, "count")}
+		out[i] = TaskCountByCreatorID{CreatorID: recUUID(r, "creator_id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
 
 // TaskCountByParentID is one per-parent_id row count.
 type TaskCountByParentID struct {
-	ParentID *string
+	ParentID *[16]byte
 	Count    int64
 }
 
@@ -5485,7 +5577,7 @@ func (q *TaskQuery) CountByParentID(ctx context.Context) ([]TaskCountByParentID,
 	}
 	out := make([]TaskCountByParentID, len(recs))
 	for i, r := range recs {
-		out[i] = TaskCountByParentID{ParentID: recStringPtr(r, "parent_id"), Count: recInt64(r, "count")}
+		out[i] = TaskCountByParentID{ParentID: recUUIDPtr(r, "parent_id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
@@ -5539,61 +5631,61 @@ type TaskInclude struct {
 	spec includeSpec
 }
 
-func (b *TaskInclude) IDEq(v string) *TaskInclude {
+func (b *TaskInclude) IDEq(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) IDNe(v string) *TaskInclude {
+func (b *TaskInclude) IDNe(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) IDLt(v string) *TaskInclude {
+func (b *TaskInclude) IDLt(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) IDLte(v string) *TaskInclude {
+func (b *TaskInclude) IDLte(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) IDGt(v string) *TaskInclude {
+func (b *TaskInclude) IDGt(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) IDGte(v string) *TaskInclude {
+func (b *TaskInclude) IDGte(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
-func (b *TaskInclude) BoardIDEq(v string) *TaskInclude {
+func (b *TaskInclude) BoardIDEq(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "board_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) BoardIDNe(v string) *TaskInclude {
+func (b *TaskInclude) BoardIDNe(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "board_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) BoardIDLt(v string) *TaskInclude {
+func (b *TaskInclude) BoardIDLt(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "board_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) BoardIDLte(v string) *TaskInclude {
+func (b *TaskInclude) BoardIDLte(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "board_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) BoardIDGt(v string) *TaskInclude {
+func (b *TaskInclude) BoardIDGt(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "board_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) BoardIDGte(v string) *TaskInclude {
+func (b *TaskInclude) BoardIDGte(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "board_id"), lirwire.LitOf(v)))
 	return b
 }
@@ -5762,32 +5854,32 @@ func (b *TaskInclude) EstimateNotNull() *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Unary("is_not_null", lirwire.Col("", "estimate")))
 	return b
 }
-func (b *TaskInclude) AssigneeIDEq(v string) *TaskInclude {
+func (b *TaskInclude) AssigneeIDEq(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "assignee_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) AssigneeIDNe(v string) *TaskInclude {
+func (b *TaskInclude) AssigneeIDNe(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "assignee_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) AssigneeIDLt(v string) *TaskInclude {
+func (b *TaskInclude) AssigneeIDLt(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "assignee_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) AssigneeIDLte(v string) *TaskInclude {
+func (b *TaskInclude) AssigneeIDLte(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "assignee_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) AssigneeIDGt(v string) *TaskInclude {
+func (b *TaskInclude) AssigneeIDGt(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "assignee_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) AssigneeIDGte(v string) *TaskInclude {
+func (b *TaskInclude) AssigneeIDGte(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "assignee_id"), lirwire.LitOf(v)))
 	return b
 }
@@ -5801,61 +5893,61 @@ func (b *TaskInclude) AssigneeIDNotNull() *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Unary("is_not_null", lirwire.Col("", "assignee_id")))
 	return b
 }
-func (b *TaskInclude) CreatorIDEq(v string) *TaskInclude {
+func (b *TaskInclude) CreatorIDEq(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "creator_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) CreatorIDNe(v string) *TaskInclude {
+func (b *TaskInclude) CreatorIDNe(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "creator_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) CreatorIDLt(v string) *TaskInclude {
+func (b *TaskInclude) CreatorIDLt(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "creator_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) CreatorIDLte(v string) *TaskInclude {
+func (b *TaskInclude) CreatorIDLte(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "creator_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) CreatorIDGt(v string) *TaskInclude {
+func (b *TaskInclude) CreatorIDGt(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "creator_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) CreatorIDGte(v string) *TaskInclude {
+func (b *TaskInclude) CreatorIDGte(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "creator_id"), lirwire.LitOf(v)))
 	return b
 }
-func (b *TaskInclude) ParentIDEq(v string) *TaskInclude {
+func (b *TaskInclude) ParentIDEq(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "parent_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) ParentIDNe(v string) *TaskInclude {
+func (b *TaskInclude) ParentIDNe(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "parent_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) ParentIDLt(v string) *TaskInclude {
+func (b *TaskInclude) ParentIDLt(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "parent_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) ParentIDLte(v string) *TaskInclude {
+func (b *TaskInclude) ParentIDLte(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "parent_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) ParentIDGt(v string) *TaskInclude {
+func (b *TaskInclude) ParentIDGt(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "parent_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskInclude) ParentIDGte(v string) *TaskInclude {
+func (b *TaskInclude) ParentIDGte(v [16]byte) *TaskInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "parent_id"), lirwire.LitOf(v)))
 	return b
 }
@@ -6108,16 +6200,16 @@ func (b *TaskInclude) IncludeTaskLabels(opts ...func(*TaskLabelInclude)) *TaskIn
 
 func taskFromRecord(rec protocol.Record) Task {
 	m := Task{}
-	m.ID = recString(rec, "id")
-	m.BoardID = recString(rec, "board_id")
+	m.ID = recUUID(rec, "id")
+	m.BoardID = recUUID(rec, "board_id")
 	m.Title = recString(rec, "title")
 	m.Description = recStringPtr(rec, "description")
 	m.Status = recString(rec, "status")
 	m.Priority = recInt64(rec, "priority")
 	m.Estimate = recFloat64Ptr(rec, "estimate")
-	m.AssigneeID = recStringPtr(rec, "assignee_id")
-	m.CreatorID = recString(rec, "creator_id")
-	m.ParentID = recStringPtr(rec, "parent_id")
+	m.AssigneeID = recUUIDPtr(rec, "assignee_id")
+	m.CreatorID = recUUID(rec, "creator_id")
+	m.ParentID = recUUIDPtr(rec, "parent_id")
 	m.DueAt = recInt64Ptr(rec, "due_at")
 	m.CreatedAt = recInt64(rec, "created_at")
 	if parent, ok := rec["assignee"].(map[string]any); ok {
@@ -6163,21 +6255,21 @@ func taskFromRecord(rec protocol.Record) Task {
 // Comment is one row of "comments". Relation fields are populated only when the
 // corresponding Include* option was used on the query.
 type Comment struct {
-	ID        string `json:"id"`
-	TaskID    string `json:"task_id"`
-	AuthorID  string `json:"author_id"`
-	Body      string `json:"body"`
-	CreatedAt int64  `json:"created_at"`
-	Author    *User  `json:"author,omitempty"`
-	Task      *Task  `json:"task,omitempty"`
+	ID        [16]byte `json:"id"`
+	TaskID    [16]byte `json:"task_id"`
+	AuthorID  [16]byte `json:"author_id"`
+	Body      string   `json:"body"`
+	CreatedAt int64    `json:"created_at"`
+	Author    *User    `json:"author,omitempty"`
+	Task      *Task    `json:"task,omitempty"`
 }
 
 // CommentCreate is the input to Create. Pointer fields are optional:
 // nil defers to the column default or NULL.
 type CommentCreate struct {
-	ID        *string
-	TaskID    string
-	AuthorID  string
+	ID        *[16]byte
+	TaskID    [16]byte
+	AuthorID  [16]byte
 	Body      string
 	CreatedAt *int64
 }
@@ -6185,8 +6277,8 @@ type CommentCreate struct {
 // CommentPatch is the input to Update. Nil fields are left untouched;
 // Clear* sets a nullable column to NULL.
 type CommentPatch struct {
-	TaskID    *string
-	AuthorID  *string
+	TaskID    *[16]byte
+	AuthorID  *[16]byte
 	Body      *string
 	CreatedAt *int64
 }
@@ -6212,7 +6304,7 @@ func (t CommentTable) Create(ctx context.Context, in CommentCreate) (Comment, er
 	return commentFromRecord(rec), nil
 }
 
-func (t CommentTable) Get(ctx context.Context, id string) (Comment, bool, error) {
+func (t CommentTable) Get(ctx context.Context, id [16]byte) (Comment, bool, error) {
 	rec, found, err := t.v.Get(ctx, "comments", map[string]any{"id": id})
 	if err != nil || !found {
 		return Comment{}, false, err
@@ -6220,7 +6312,7 @@ func (t CommentTable) Get(ctx context.Context, id string) (Comment, bool, error)
 	return commentFromRecord(rec), true, nil
 }
 
-func (t CommentTable) Update(ctx context.Context, id string, patch CommentPatch) (Comment, bool, error) {
+func (t CommentTable) Update(ctx context.Context, id [16]byte, patch CommentPatch) (Comment, bool, error) {
 	set := map[string]any{}
 	var clear []string
 	if patch.TaskID != nil {
@@ -6242,7 +6334,7 @@ func (t CommentTable) Update(ctx context.Context, id string, patch CommentPatch)
 	return commentFromRecord(rec), true, nil
 }
 
-func (t CommentTable) Delete(ctx context.Context, id string) (bool, error) {
+func (t CommentTable) Delete(ctx context.Context, id [16]byte) (bool, error) {
 	return t.v.Delete(ctx, "comments", map[string]any{"id": id})
 }
 
@@ -6256,90 +6348,90 @@ type CommentQuery struct {
 	spec querySpec
 }
 
-func (q *CommentQuery) IDEq(v string) *CommentQuery {
+func (q *CommentQuery) IDEq(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *CommentQuery) IDNe(v string) *CommentQuery {
+func (q *CommentQuery) IDNe(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *CommentQuery) IDLt(v string) *CommentQuery {
+func (q *CommentQuery) IDLt(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *CommentQuery) IDLte(v string) *CommentQuery {
+func (q *CommentQuery) IDLte(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *CommentQuery) IDGt(v string) *CommentQuery {
+func (q *CommentQuery) IDGt(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *CommentQuery) IDGte(v string) *CommentQuery {
+func (q *CommentQuery) IDGte(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
-func (q *CommentQuery) TaskIDEq(v string) *CommentQuery {
+func (q *CommentQuery) TaskIDEq(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *CommentQuery) TaskIDNe(v string) *CommentQuery {
+func (q *CommentQuery) TaskIDNe(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *CommentQuery) TaskIDLt(v string) *CommentQuery {
+func (q *CommentQuery) TaskIDLt(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *CommentQuery) TaskIDLte(v string) *CommentQuery {
+func (q *CommentQuery) TaskIDLte(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *CommentQuery) TaskIDGt(v string) *CommentQuery {
+func (q *CommentQuery) TaskIDGt(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *CommentQuery) TaskIDGte(v string) *CommentQuery {
+func (q *CommentQuery) TaskIDGte(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return q
 }
-func (q *CommentQuery) AuthorIDEq(v string) *CommentQuery {
+func (q *CommentQuery) AuthorIDEq(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "author_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *CommentQuery) AuthorIDNe(v string) *CommentQuery {
+func (q *CommentQuery) AuthorIDNe(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "author_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *CommentQuery) AuthorIDLt(v string) *CommentQuery {
+func (q *CommentQuery) AuthorIDLt(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "author_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *CommentQuery) AuthorIDLte(v string) *CommentQuery {
+func (q *CommentQuery) AuthorIDLte(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "author_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *CommentQuery) AuthorIDGt(v string) *CommentQuery {
+func (q *CommentQuery) AuthorIDGt(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "author_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *CommentQuery) AuthorIDGte(v string) *CommentQuery {
+func (q *CommentQuery) AuthorIDGte(v [16]byte) *CommentQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "author_id"), lirwire.LitOf(v)))
 	return q
 }
@@ -6522,57 +6614,57 @@ func (q *CommentQuery) Count(ctx context.Context) (int64, error) {
 }
 
 // MinID is the smallest "id" over matching rows (nil when none).
-func (q *CommentQuery) MinID(ctx context.Context) (*string, error) {
+func (q *CommentQuery) MinID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxID is the largest "id" over matching rows (nil when none).
-func (q *CommentQuery) MaxID(ctx context.Context) (*string, error) {
+func (q *CommentQuery) MaxID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinTaskID is the smallest "task_id" over matching rows (nil when none).
-func (q *CommentQuery) MinTaskID(ctx context.Context) (*string, error) {
+func (q *CommentQuery) MinTaskID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "task_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxTaskID is the largest "task_id" over matching rows (nil when none).
-func (q *CommentQuery) MaxTaskID(ctx context.Context) (*string, error) {
+func (q *CommentQuery) MaxTaskID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "task_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinAuthorID is the smallest "author_id" over matching rows (nil when none).
-func (q *CommentQuery) MinAuthorID(ctx context.Context) (*string, error) {
+func (q *CommentQuery) MinAuthorID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "author_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxAuthorID is the largest "author_id" over matching rows (nil when none).
-func (q *CommentQuery) MaxAuthorID(ctx context.Context) (*string, error) {
+func (q *CommentQuery) MaxAuthorID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "author_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinBody is the smallest "body" over matching rows (nil when none).
@@ -6631,7 +6723,7 @@ func (q *CommentQuery) MaxCreatedAt(ctx context.Context) (*int64, error) {
 
 // CommentCountByID is one per-id row count.
 type CommentCountByID struct {
-	ID    string
+	ID    [16]byte
 	Count int64
 }
 
@@ -6646,14 +6738,14 @@ func (q *CommentQuery) CountByID(ctx context.Context) ([]CommentCountByID, error
 	}
 	out := make([]CommentCountByID, len(recs))
 	for i, r := range recs {
-		out[i] = CommentCountByID{ID: recString(r, "id"), Count: recInt64(r, "count")}
+		out[i] = CommentCountByID{ID: recUUID(r, "id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
 
 // CommentCountByTaskID is one per-task_id row count.
 type CommentCountByTaskID struct {
-	TaskID string
+	TaskID [16]byte
 	Count  int64
 }
 
@@ -6668,14 +6760,14 @@ func (q *CommentQuery) CountByTaskID(ctx context.Context) ([]CommentCountByTaskI
 	}
 	out := make([]CommentCountByTaskID, len(recs))
 	for i, r := range recs {
-		out[i] = CommentCountByTaskID{TaskID: recString(r, "task_id"), Count: recInt64(r, "count")}
+		out[i] = CommentCountByTaskID{TaskID: recUUID(r, "task_id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
 
 // CommentCountByAuthorID is one per-author_id row count.
 type CommentCountByAuthorID struct {
-	AuthorID string
+	AuthorID [16]byte
 	Count    int64
 }
 
@@ -6690,7 +6782,7 @@ func (q *CommentQuery) CountByAuthorID(ctx context.Context) ([]CommentCountByAut
 	}
 	out := make([]CommentCountByAuthorID, len(recs))
 	for i, r := range recs {
-		out[i] = CommentCountByAuthorID{AuthorID: recString(r, "author_id"), Count: recInt64(r, "count")}
+		out[i] = CommentCountByAuthorID{AuthorID: recUUID(r, "author_id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
@@ -6744,90 +6836,90 @@ type CommentInclude struct {
 	spec includeSpec
 }
 
-func (b *CommentInclude) IDEq(v string) *CommentInclude {
+func (b *CommentInclude) IDEq(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *CommentInclude) IDNe(v string) *CommentInclude {
+func (b *CommentInclude) IDNe(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *CommentInclude) IDLt(v string) *CommentInclude {
+func (b *CommentInclude) IDLt(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *CommentInclude) IDLte(v string) *CommentInclude {
+func (b *CommentInclude) IDLte(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *CommentInclude) IDGt(v string) *CommentInclude {
+func (b *CommentInclude) IDGt(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *CommentInclude) IDGte(v string) *CommentInclude {
+func (b *CommentInclude) IDGte(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
-func (b *CommentInclude) TaskIDEq(v string) *CommentInclude {
+func (b *CommentInclude) TaskIDEq(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *CommentInclude) TaskIDNe(v string) *CommentInclude {
+func (b *CommentInclude) TaskIDNe(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *CommentInclude) TaskIDLt(v string) *CommentInclude {
+func (b *CommentInclude) TaskIDLt(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *CommentInclude) TaskIDLte(v string) *CommentInclude {
+func (b *CommentInclude) TaskIDLte(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *CommentInclude) TaskIDGt(v string) *CommentInclude {
+func (b *CommentInclude) TaskIDGt(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *CommentInclude) TaskIDGte(v string) *CommentInclude {
+func (b *CommentInclude) TaskIDGte(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return b
 }
-func (b *CommentInclude) AuthorIDEq(v string) *CommentInclude {
+func (b *CommentInclude) AuthorIDEq(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "author_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *CommentInclude) AuthorIDNe(v string) *CommentInclude {
+func (b *CommentInclude) AuthorIDNe(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "author_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *CommentInclude) AuthorIDLt(v string) *CommentInclude {
+func (b *CommentInclude) AuthorIDLt(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "author_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *CommentInclude) AuthorIDLte(v string) *CommentInclude {
+func (b *CommentInclude) AuthorIDLte(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "author_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *CommentInclude) AuthorIDGt(v string) *CommentInclude {
+func (b *CommentInclude) AuthorIDGt(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "author_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *CommentInclude) AuthorIDGte(v string) *CommentInclude {
+func (b *CommentInclude) AuthorIDGte(v [16]byte) *CommentInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "author_id"), lirwire.LitOf(v)))
 	return b
 }
@@ -6960,9 +7052,9 @@ func (b *CommentInclude) IncludeTask(opts ...func(*TaskInclude)) *CommentInclude
 
 func commentFromRecord(rec protocol.Record) Comment {
 	m := Comment{}
-	m.ID = recString(rec, "id")
-	m.TaskID = recString(rec, "task_id")
-	m.AuthorID = recString(rec, "author_id")
+	m.ID = recUUID(rec, "id")
+	m.TaskID = recUUID(rec, "task_id")
+	m.AuthorID = recUUID(rec, "author_id")
 	m.Body = recString(rec, "body")
 	m.CreatedAt = recInt64(rec, "created_at")
 	if parent, ok := rec["author"].(map[string]any); ok {
@@ -6979,8 +7071,8 @@ func commentFromRecord(rec protocol.Record) Comment {
 // Label is one row of "labels". Relation fields are populated only when the
 // corresponding Include* option was used on the query.
 type Label struct {
-	ID         string      `json:"id"`
-	TeamID     string      `json:"team_id"`
+	ID         [16]byte    `json:"id"`
+	TeamID     [16]byte    `json:"team_id"`
 	Name       string      `json:"name"`
 	HexColor   string      `json:"hex_color"`
 	Team       *Team       `json:"team,omitempty"`
@@ -6990,8 +7082,8 @@ type Label struct {
 // LabelCreate is the input to Create. Pointer fields are optional:
 // nil defers to the column default or NULL.
 type LabelCreate struct {
-	ID       *string
-	TeamID   string
+	ID       *[16]byte
+	TeamID   [16]byte
 	Name     string
 	HexColor *string
 }
@@ -6999,7 +7091,7 @@ type LabelCreate struct {
 // LabelPatch is the input to Update. Nil fields are left untouched;
 // Clear* sets a nullable column to NULL.
 type LabelPatch struct {
-	TeamID   *string
+	TeamID   *[16]byte
 	Name     *string
 	HexColor *string
 }
@@ -7024,7 +7116,7 @@ func (t LabelTable) Create(ctx context.Context, in LabelCreate) (Label, error) {
 	return labelFromRecord(rec), nil
 }
 
-func (t LabelTable) Get(ctx context.Context, id string) (Label, bool, error) {
+func (t LabelTable) Get(ctx context.Context, id [16]byte) (Label, bool, error) {
 	rec, found, err := t.v.Get(ctx, "labels", map[string]any{"id": id})
 	if err != nil || !found {
 		return Label{}, false, err
@@ -7032,7 +7124,7 @@ func (t LabelTable) Get(ctx context.Context, id string) (Label, bool, error) {
 	return labelFromRecord(rec), true, nil
 }
 
-func (t LabelTable) Update(ctx context.Context, id string, patch LabelPatch) (Label, bool, error) {
+func (t LabelTable) Update(ctx context.Context, id [16]byte, patch LabelPatch) (Label, bool, error) {
 	set := map[string]any{}
 	var clear []string
 	if patch.TeamID != nil {
@@ -7051,12 +7143,12 @@ func (t LabelTable) Update(ctx context.Context, id string, patch LabelPatch) (La
 	return labelFromRecord(rec), true, nil
 }
 
-func (t LabelTable) Delete(ctx context.Context, id string) (bool, error) {
+func (t LabelTable) Delete(ctx context.Context, id [16]byte) (bool, error) {
 	return t.v.Delete(ctx, "labels", map[string]any{"id": id})
 }
 
 // ByTeamIDName finds the row by the unique index on (team_id, name).
-func (t LabelTable) ByTeamIDName(ctx context.Context, teamID string, name string) (Label, bool, error) {
+func (t LabelTable) ByTeamIDName(ctx context.Context, teamID [16]byte, name string) (Label, bool, error) {
 	recs, err := t.v.Query(ctx, assemble(querySpec{table: "labels", orders: []lirwire.OrderTerm{{Expr: lirwire.Col("", "id")}}, limit: 1, limitSet: true, filters: []lirwire.Expr{
 		lirwire.Binary("eq", lirwire.Col("", "team_id"), lirwire.LitOf(teamID)),
 		lirwire.Binary("eq", lirwire.Col("", "name"), lirwire.LitOf(name)),
@@ -7077,61 +7169,61 @@ type LabelQuery struct {
 	spec querySpec
 }
 
-func (q *LabelQuery) IDEq(v string) *LabelQuery {
+func (q *LabelQuery) IDEq(v [16]byte) *LabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *LabelQuery) IDNe(v string) *LabelQuery {
+func (q *LabelQuery) IDNe(v [16]byte) *LabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *LabelQuery) IDLt(v string) *LabelQuery {
+func (q *LabelQuery) IDLt(v [16]byte) *LabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *LabelQuery) IDLte(v string) *LabelQuery {
+func (q *LabelQuery) IDLte(v [16]byte) *LabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *LabelQuery) IDGt(v string) *LabelQuery {
+func (q *LabelQuery) IDGt(v [16]byte) *LabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *LabelQuery) IDGte(v string) *LabelQuery {
+func (q *LabelQuery) IDGte(v [16]byte) *LabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return q
 }
-func (q *LabelQuery) TeamIDEq(v string) *LabelQuery {
+func (q *LabelQuery) TeamIDEq(v [16]byte) *LabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *LabelQuery) TeamIDNe(v string) *LabelQuery {
+func (q *LabelQuery) TeamIDNe(v [16]byte) *LabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *LabelQuery) TeamIDLt(v string) *LabelQuery {
+func (q *LabelQuery) TeamIDLt(v [16]byte) *LabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *LabelQuery) TeamIDLte(v string) *LabelQuery {
+func (q *LabelQuery) TeamIDLte(v [16]byte) *LabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *LabelQuery) TeamIDGt(v string) *LabelQuery {
+func (q *LabelQuery) TeamIDGt(v [16]byte) *LabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *LabelQuery) TeamIDGte(v string) *LabelQuery {
+func (q *LabelQuery) TeamIDGte(v [16]byte) *LabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return q
 }
@@ -7305,39 +7397,39 @@ func (q *LabelQuery) Count(ctx context.Context) (int64, error) {
 }
 
 // MinID is the smallest "id" over matching rows (nil when none).
-func (q *LabelQuery) MinID(ctx context.Context) (*string, error) {
+func (q *LabelQuery) MinID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxID is the largest "id" over matching rows (nil when none).
-func (q *LabelQuery) MaxID(ctx context.Context) (*string, error) {
+func (q *LabelQuery) MaxID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinTeamID is the smallest "team_id" over matching rows (nil when none).
-func (q *LabelQuery) MinTeamID(ctx context.Context) (*string, error) {
+func (q *LabelQuery) MinTeamID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "team_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxTeamID is the largest "team_id" over matching rows (nil when none).
-func (q *LabelQuery) MaxTeamID(ctx context.Context) (*string, error) {
+func (q *LabelQuery) MaxTeamID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "team_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinName is the smallest "name" over matching rows (nil when none).
@@ -7378,7 +7470,7 @@ func (q *LabelQuery) MaxHexColor(ctx context.Context) (*string, error) {
 
 // LabelCountByID is one per-id row count.
 type LabelCountByID struct {
-	ID    string
+	ID    [16]byte
 	Count int64
 }
 
@@ -7393,14 +7485,14 @@ func (q *LabelQuery) CountByID(ctx context.Context) ([]LabelCountByID, error) {
 	}
 	out := make([]LabelCountByID, len(recs))
 	for i, r := range recs {
-		out[i] = LabelCountByID{ID: recString(r, "id"), Count: recInt64(r, "count")}
+		out[i] = LabelCountByID{ID: recUUID(r, "id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
 
 // LabelCountByTeamID is one per-team_id row count.
 type LabelCountByTeamID struct {
-	TeamID string
+	TeamID [16]byte
 	Count  int64
 }
 
@@ -7415,7 +7507,7 @@ func (q *LabelQuery) CountByTeamID(ctx context.Context) ([]LabelCountByTeamID, e
 	}
 	out := make([]LabelCountByTeamID, len(recs))
 	for i, r := range recs {
-		out[i] = LabelCountByTeamID{TeamID: recString(r, "team_id"), Count: recInt64(r, "count")}
+		out[i] = LabelCountByTeamID{TeamID: recUUID(r, "team_id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
@@ -7469,61 +7561,61 @@ type LabelInclude struct {
 	spec includeSpec
 }
 
-func (b *LabelInclude) IDEq(v string) *LabelInclude {
+func (b *LabelInclude) IDEq(v [16]byte) *LabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *LabelInclude) IDNe(v string) *LabelInclude {
+func (b *LabelInclude) IDNe(v [16]byte) *LabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *LabelInclude) IDLt(v string) *LabelInclude {
+func (b *LabelInclude) IDLt(v [16]byte) *LabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *LabelInclude) IDLte(v string) *LabelInclude {
+func (b *LabelInclude) IDLte(v [16]byte) *LabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *LabelInclude) IDGt(v string) *LabelInclude {
+func (b *LabelInclude) IDGt(v [16]byte) *LabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *LabelInclude) IDGte(v string) *LabelInclude {
+func (b *LabelInclude) IDGte(v [16]byte) *LabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "id"), lirwire.LitOf(v)))
 	return b
 }
-func (b *LabelInclude) TeamIDEq(v string) *LabelInclude {
+func (b *LabelInclude) TeamIDEq(v [16]byte) *LabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *LabelInclude) TeamIDNe(v string) *LabelInclude {
+func (b *LabelInclude) TeamIDNe(v [16]byte) *LabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *LabelInclude) TeamIDLt(v string) *LabelInclude {
+func (b *LabelInclude) TeamIDLt(v [16]byte) *LabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *LabelInclude) TeamIDLte(v string) *LabelInclude {
+func (b *LabelInclude) TeamIDLte(v [16]byte) *LabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *LabelInclude) TeamIDGt(v string) *LabelInclude {
+func (b *LabelInclude) TeamIDGt(v [16]byte) *LabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *LabelInclude) TeamIDGte(v string) *LabelInclude {
+func (b *LabelInclude) TeamIDGte(v [16]byte) *LabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "team_id"), lirwire.LitOf(v)))
 	return b
 }
@@ -7644,8 +7736,8 @@ func (b *LabelInclude) IncludeTaskLabels(opts ...func(*TaskLabelInclude)) *Label
 
 func labelFromRecord(rec protocol.Record) Label {
 	m := Label{}
-	m.ID = recString(rec, "id")
-	m.TeamID = recString(rec, "team_id")
+	m.ID = recUUID(rec, "id")
+	m.TeamID = recUUID(rec, "team_id")
 	m.Name = recString(rec, "name")
 	m.HexColor = recString(rec, "hex_color")
 	if parent, ok := rec["team"].(map[string]any); ok {
@@ -7665,17 +7757,17 @@ func labelFromRecord(rec protocol.Record) Label {
 // TaskLabel is one row of "task_labels". Relation fields are populated only when the
 // corresponding Include* option was used on the query.
 type TaskLabel struct {
-	TaskID  string `json:"task_id"`
-	LabelID string `json:"label_id"`
-	Label   *Label `json:"label,omitempty"`
-	Task    *Task  `json:"task,omitempty"`
+	TaskID  [16]byte `json:"task_id"`
+	LabelID [16]byte `json:"label_id"`
+	Label   *Label   `json:"label,omitempty"`
+	Task    *Task    `json:"task,omitempty"`
 }
 
 // TaskLabelCreate is the input to Create. Pointer fields are optional:
 // nil defers to the column default or NULL.
 type TaskLabelCreate struct {
-	TaskID  string
-	LabelID string
+	TaskID  [16]byte
+	LabelID [16]byte
 }
 
 // TaskLabelPatch is the input to Update. Nil fields are left untouched;
@@ -7697,7 +7789,7 @@ func (t TaskLabelTable) Create(ctx context.Context, in TaskLabelCreate) (TaskLab
 	return taskLabelFromRecord(rec), nil
 }
 
-func (t TaskLabelTable) Get(ctx context.Context, taskID string, labelID string) (TaskLabel, bool, error) {
+func (t TaskLabelTable) Get(ctx context.Context, taskID [16]byte, labelID [16]byte) (TaskLabel, bool, error) {
 	rec, found, err := t.v.Get(ctx, "task_labels", map[string]any{"task_id": taskID, "label_id": labelID})
 	if err != nil || !found {
 		return TaskLabel{}, false, err
@@ -7705,7 +7797,7 @@ func (t TaskLabelTable) Get(ctx context.Context, taskID string, labelID string) 
 	return taskLabelFromRecord(rec), true, nil
 }
 
-func (t TaskLabelTable) Update(ctx context.Context, taskID string, labelID string, patch TaskLabelPatch) (TaskLabel, bool, error) {
+func (t TaskLabelTable) Update(ctx context.Context, taskID [16]byte, labelID [16]byte, patch TaskLabelPatch) (TaskLabel, bool, error) {
 	set := map[string]any{}
 	var clear []string
 	rec, found, err := t.v.Update(ctx, "task_labels", map[string]any{"task_id": taskID, "label_id": labelID}, set, clear)
@@ -7715,7 +7807,7 @@ func (t TaskLabelTable) Update(ctx context.Context, taskID string, labelID strin
 	return taskLabelFromRecord(rec), true, nil
 }
 
-func (t TaskLabelTable) Delete(ctx context.Context, taskID string, labelID string) (bool, error) {
+func (t TaskLabelTable) Delete(ctx context.Context, taskID [16]byte, labelID [16]byte) (bool, error) {
 	return t.v.Delete(ctx, "task_labels", map[string]any{"task_id": taskID, "label_id": labelID})
 }
 
@@ -7729,61 +7821,61 @@ type TaskLabelQuery struct {
 	spec querySpec
 }
 
-func (q *TaskLabelQuery) TaskIDEq(v string) *TaskLabelQuery {
+func (q *TaskLabelQuery) TaskIDEq(v [16]byte) *TaskLabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskLabelQuery) TaskIDNe(v string) *TaskLabelQuery {
+func (q *TaskLabelQuery) TaskIDNe(v [16]byte) *TaskLabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskLabelQuery) TaskIDLt(v string) *TaskLabelQuery {
+func (q *TaskLabelQuery) TaskIDLt(v [16]byte) *TaskLabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskLabelQuery) TaskIDLte(v string) *TaskLabelQuery {
+func (q *TaskLabelQuery) TaskIDLte(v [16]byte) *TaskLabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskLabelQuery) TaskIDGt(v string) *TaskLabelQuery {
+func (q *TaskLabelQuery) TaskIDGt(v [16]byte) *TaskLabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskLabelQuery) TaskIDGte(v string) *TaskLabelQuery {
+func (q *TaskLabelQuery) TaskIDGte(v [16]byte) *TaskLabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return q
 }
-func (q *TaskLabelQuery) LabelIDEq(v string) *TaskLabelQuery {
+func (q *TaskLabelQuery) LabelIDEq(v [16]byte) *TaskLabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("eq", lirwire.Col("", "label_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskLabelQuery) LabelIDNe(v string) *TaskLabelQuery {
+func (q *TaskLabelQuery) LabelIDNe(v [16]byte) *TaskLabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("ne", lirwire.Col("", "label_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskLabelQuery) LabelIDLt(v string) *TaskLabelQuery {
+func (q *TaskLabelQuery) LabelIDLt(v [16]byte) *TaskLabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lt", lirwire.Col("", "label_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskLabelQuery) LabelIDLte(v string) *TaskLabelQuery {
+func (q *TaskLabelQuery) LabelIDLte(v [16]byte) *TaskLabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("lte", lirwire.Col("", "label_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskLabelQuery) LabelIDGt(v string) *TaskLabelQuery {
+func (q *TaskLabelQuery) LabelIDGt(v [16]byte) *TaskLabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gt", lirwire.Col("", "label_id"), lirwire.LitOf(v)))
 	return q
 }
 
-func (q *TaskLabelQuery) LabelIDGte(v string) *TaskLabelQuery {
+func (q *TaskLabelQuery) LabelIDGte(v [16]byte) *TaskLabelQuery {
 	q.spec.filters = append(q.spec.filters, lirwire.Binary("gte", lirwire.Col("", "label_id"), lirwire.LitOf(v)))
 	return q
 }
@@ -7884,44 +7976,44 @@ func (q *TaskLabelQuery) Count(ctx context.Context) (int64, error) {
 }
 
 // MinTaskID is the smallest "task_id" over matching rows (nil when none).
-func (q *TaskLabelQuery) MinTaskID(ctx context.Context) (*string, error) {
+func (q *TaskLabelQuery) MinTaskID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "task_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxTaskID is the largest "task_id" over matching rows (nil when none).
-func (q *TaskLabelQuery) MaxTaskID(ctx context.Context) (*string, error) {
+func (q *TaskLabelQuery) MaxTaskID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "task_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MinLabelID is the smallest "label_id" over matching rows (nil when none).
-func (q *TaskLabelQuery) MinLabelID(ctx context.Context) (*string, error) {
+func (q *TaskLabelQuery) MinLabelID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "min", Arg: ptrExpr(lirwire.Col("", "label_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // MaxLabelID is the largest "label_id" over matching rows (nil when none).
-func (q *TaskLabelQuery) MaxLabelID(ctx context.Context) (*string, error) {
+func (q *TaskLabelQuery) MaxLabelID(ctx context.Context) (*[16]byte, error) {
 	rec, err := q.fold(ctx, []lirwire.AggTerm{{Fn: "max", Arg: ptrExpr(lirwire.Col("", "label_id")), As: "v"}})
 	if err != nil {
 		return nil, err
 	}
-	return recStringPtr(rec, "v"), nil
+	return recUUIDPtr(rec, "v"), nil
 }
 
 // TaskLabelCountByTaskID is one per-task_id row count.
 type TaskLabelCountByTaskID struct {
-	TaskID string
+	TaskID [16]byte
 	Count  int64
 }
 
@@ -7936,14 +8028,14 @@ func (q *TaskLabelQuery) CountByTaskID(ctx context.Context) ([]TaskLabelCountByT
 	}
 	out := make([]TaskLabelCountByTaskID, len(recs))
 	for i, r := range recs {
-		out[i] = TaskLabelCountByTaskID{TaskID: recString(r, "task_id"), Count: recInt64(r, "count")}
+		out[i] = TaskLabelCountByTaskID{TaskID: recUUID(r, "task_id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
 
 // TaskLabelCountByLabelID is one per-label_id row count.
 type TaskLabelCountByLabelID struct {
-	LabelID string
+	LabelID [16]byte
 	Count   int64
 }
 
@@ -7958,7 +8050,7 @@ func (q *TaskLabelQuery) CountByLabelID(ctx context.Context) ([]TaskLabelCountBy
 	}
 	out := make([]TaskLabelCountByLabelID, len(recs))
 	for i, r := range recs {
-		out[i] = TaskLabelCountByLabelID{LabelID: recString(r, "label_id"), Count: recInt64(r, "count")}
+		out[i] = TaskLabelCountByLabelID{LabelID: recUUID(r, "label_id"), Count: recInt64(r, "count")}
 	}
 	return out, nil
 }
@@ -7968,61 +8060,61 @@ type TaskLabelInclude struct {
 	spec includeSpec
 }
 
-func (b *TaskLabelInclude) TaskIDEq(v string) *TaskLabelInclude {
+func (b *TaskLabelInclude) TaskIDEq(v [16]byte) *TaskLabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskLabelInclude) TaskIDNe(v string) *TaskLabelInclude {
+func (b *TaskLabelInclude) TaskIDNe(v [16]byte) *TaskLabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskLabelInclude) TaskIDLt(v string) *TaskLabelInclude {
+func (b *TaskLabelInclude) TaskIDLt(v [16]byte) *TaskLabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskLabelInclude) TaskIDLte(v string) *TaskLabelInclude {
+func (b *TaskLabelInclude) TaskIDLte(v [16]byte) *TaskLabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskLabelInclude) TaskIDGt(v string) *TaskLabelInclude {
+func (b *TaskLabelInclude) TaskIDGt(v [16]byte) *TaskLabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskLabelInclude) TaskIDGte(v string) *TaskLabelInclude {
+func (b *TaskLabelInclude) TaskIDGte(v [16]byte) *TaskLabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "task_id"), lirwire.LitOf(v)))
 	return b
 }
-func (b *TaskLabelInclude) LabelIDEq(v string) *TaskLabelInclude {
+func (b *TaskLabelInclude) LabelIDEq(v [16]byte) *TaskLabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("eq", lirwire.Col("", "label_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskLabelInclude) LabelIDNe(v string) *TaskLabelInclude {
+func (b *TaskLabelInclude) LabelIDNe(v [16]byte) *TaskLabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("ne", lirwire.Col("", "label_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskLabelInclude) LabelIDLt(v string) *TaskLabelInclude {
+func (b *TaskLabelInclude) LabelIDLt(v [16]byte) *TaskLabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lt", lirwire.Col("", "label_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskLabelInclude) LabelIDLte(v string) *TaskLabelInclude {
+func (b *TaskLabelInclude) LabelIDLte(v [16]byte) *TaskLabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("lte", lirwire.Col("", "label_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskLabelInclude) LabelIDGt(v string) *TaskLabelInclude {
+func (b *TaskLabelInclude) LabelIDGt(v [16]byte) *TaskLabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gt", lirwire.Col("", "label_id"), lirwire.LitOf(v)))
 	return b
 }
 
-func (b *TaskLabelInclude) LabelIDGte(v string) *TaskLabelInclude {
+func (b *TaskLabelInclude) LabelIDGte(v [16]byte) *TaskLabelInclude {
 	b.spec.filters = append(b.spec.filters, lirwire.Binary("gte", lirwire.Col("", "label_id"), lirwire.LitOf(v)))
 	return b
 }
@@ -8070,8 +8162,8 @@ func (b *TaskLabelInclude) IncludeTask(opts ...func(*TaskInclude)) *TaskLabelInc
 
 func taskLabelFromRecord(rec protocol.Record) TaskLabel {
 	m := TaskLabel{}
-	m.TaskID = recString(rec, "task_id")
-	m.LabelID = recString(rec, "label_id")
+	m.TaskID = recUUID(rec, "task_id")
+	m.LabelID = recUUID(rec, "label_id")
 	if parent, ok := rec["label"].(map[string]any); ok {
 		v := labelFromRecord(parent)
 		m.Label = &v

@@ -7,6 +7,7 @@ pub mod fnv;
 pub mod health;
 pub mod http;
 pub mod internal;
+pub mod identifiers;
 pub mod logging;
 pub mod postgres;
 pub mod protocol;

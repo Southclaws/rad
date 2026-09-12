@@ -4,9 +4,9 @@ tables:
   columns:
   - id: 1
     name: id
-    type: string
+    type: bytes
     format: uuid
-    default: uuid()
+    default: uuid_v7()
   - id: 2
     name: username
     type: string
@@ -39,12 +39,13 @@ tables:
   columns:
   - id: 1
     name: token
-    type: string
+    type: bytes
     format: uuid
-    default: uuid()
+    default: uuid_v7()
   - id: 2
     name: user_id
-    type: string
+    type: bytes
+    format: uuid
   - id: 3
     name: created_at
     type: int64
@@ -60,7 +61,6 @@ tables:
   - name: sessions_user_id_idx
     columns:
     - user_id
-    unique: false
   foreign_keys:
   - name: sessions_user_id_fk
     columns:
@@ -73,9 +73,9 @@ tables:
   columns:
   - id: 1
     name: id
-    type: string
+    type: bytes
     format: uuid
-    default: uuid()
+    default: uuid_v7()
   - id: 2
     name: name
     type: string
@@ -96,10 +96,12 @@ tables:
   columns:
   - id: 1
     name: team_id
-    type: string
+    type: bytes
+    format: uuid
   - id: 2
     name: user_id
-    type: string
+    type: bytes
+    format: uuid
   - id: 3
     name: role
     type: string
@@ -116,7 +118,6 @@ tables:
   - name: team_members_user_id_idx
     columns:
     - user_id
-    unique: false
   foreign_keys:
   - name: team_members_team_id_fk
     columns:
@@ -135,12 +136,13 @@ tables:
   columns:
   - id: 1
     name: id
-    type: string
+    type: bytes
     format: uuid
-    default: uuid()
+    default: uuid_v7()
   - id: 2
     name: team_id
-    type: string
+    type: bytes
+    format: uuid
   - id: 3
     name: name
     type: string
@@ -173,12 +175,13 @@ tables:
   columns:
   - id: 1
     name: id
-    type: string
+    type: bytes
     format: uuid
-    default: uuid()
+    default: uuid_v7()
   - id: 2
     name: board_id
-    type: string
+    type: bytes
+    format: uuid
   - id: 3
     name: title
     type: string
@@ -200,15 +203,18 @@ tables:
     nullable: true
   - id: 8
     name: assignee_id
-    type: string
+    type: bytes
     nullable: true
+    format: uuid
   - id: 9
     name: creator_id
-    type: string
+    type: bytes
+    format: uuid
   - id: 10
     name: parent_id
-    type: string
+    type: bytes
     nullable: true
+    format: uuid
   - id: 11
     name: due_at
     type: int64
@@ -225,21 +231,17 @@ tables:
   - name: tasks_assignee_id_idx
     columns:
     - assignee_id
-    unique: false
   - name: tasks_assignee_id_status_idx
     columns:
     - assignee_id
     - status
-    unique: false
   - name: tasks_board_id_status_idx
     columns:
     - board_id
     - status
-    unique: false
   - name: tasks_parent_id_idx
     columns:
     - parent_id
-    unique: false
   foreign_keys:
   - name: tasks_assignee_id_fk
     columns:
@@ -270,15 +272,17 @@ tables:
   columns:
   - id: 1
     name: id
-    type: string
+    type: bytes
     format: uuid
-    default: uuid()
+    default: uuid_v7()
   - id: 2
     name: task_id
-    type: string
+    type: bytes
+    format: uuid
   - id: 3
     name: author_id
-    type: string
+    type: bytes
+    format: uuid
   - id: 4
     name: body
     type: string
@@ -293,7 +297,6 @@ tables:
   - name: comments_task_id_idx
     columns:
     - task_id
-    unique: false
   foreign_keys:
   - name: comments_author_id_fk
     columns:
@@ -312,19 +315,20 @@ tables:
   columns:
   - id: 1
     name: id
-    type: string
+    type: bytes
     format: uuid
-    default: uuid()
+    default: uuid_v7()
   - id: 2
     name: team_id
-    type: string
+    type: bytes
+    format: uuid
   - id: 3
     name: name
     type: string
   - id: 4
     name: hex_color
     type: string
-    default: "#8899aa"
+    default: '#8899aa'
   primary_key:
   - id
   indexes:
@@ -345,10 +349,12 @@ tables:
   columns:
   - id: 1
     name: task_id
-    type: string
+    type: bytes
+    format: uuid
   - id: 2
     name: label_id
-    type: string
+    type: bytes
+    format: uuid
   primary_key:
   - task_id
   - label_id
@@ -356,7 +362,6 @@ tables:
   - name: task_labels_label_id_idx
     columns:
     - label_id
-    unique: false
   foreign_keys:
   - name: task_labels_label_id_fk
     columns:

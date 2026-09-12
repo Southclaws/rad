@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use rad::engine::catalog::model::{ScalarType, Schema};
-use rad::engine::lir::{Row, Value};
+use rad::engine::lir::{BytesValue, Row, Value};
 
 use super::Choices;
 
@@ -28,7 +28,7 @@ pub fn generate(schema: &Schema, choices: &mut Choices<'_>) -> BTreeMap<String, 
                         parents[choices.index(parents.len())]["id"].clone()
                     }
                 } else {
-                    scalar(column.scalar_type, column.nullable, choices)
+                    scalar(column, choices)
                 };
                 row.insert(column.name.clone(), value);
             }
@@ -39,16 +39,28 @@ pub fn generate(schema: &Schema, choices: &mut Choices<'_>) -> BTreeMap<String, 
     output
 }
 
-fn scalar(scalar_type: ScalarType, nullable: bool, choices: &mut Choices<'_>) -> Value {
-    if nullable && choices.chance(4) {
-        return Value::Null(scalar_type);
+fn scalar(column: &rad::engine::catalog::model::ColumnDef, choices: &mut Choices<'_>) -> Value {
+    if column.nullable && choices.chance(4) {
+        return Value::Null(column.scalar_type);
     }
-    match scalar_type {
+    match column.scalar_type {
         ScalarType::Text => Value::Text(["", "a", "b", "c"][choices.index(4)].into()),
         ScalarType::Int64 => {
             Value::Int64([i64::MIN, -2, -1, 0, 1, 2, 100, i64::MAX][choices.index(8)])
         }
         ScalarType::Float64 => Value::Float64([-1.5, -0.0, 0.0, 1.5, 2.5][choices.index(5)]),
         ScalarType::Bool => Value::Bool(choices.coin()),
+        ScalarType::Bytes => {
+            let length = match column.format.as_str() {
+                "uuid" | "ulid" => 16,
+                "xid" => 12,
+                _ => [0, 1, 2, 3][choices.index(4)],
+            };
+            Value::Bytes(BytesValue::raw(
+                (0..length)
+                    .map(|index| (choices.index(256) ^ index) as u8)
+                    .collect::<Vec<_>>(),
+            ))
+        }
     }
 }

@@ -88,7 +88,8 @@
             "string",
             "int64",
             "float64",
-            "bool"
+            "bool",
+            "bytes"
           ]
         },
         "nullable": {
@@ -117,7 +118,7 @@
             "number",
             "boolean"
           ],
-          "description": "Literal of the column's type, or a generator: uuid(), now_ms()"
+          "description": "Literal of the column's type, or a generator: uuid_v4(), uuid_v7(), ulid(), xid(), now_ms(), increment(). Raw byte literals use padded base64; uuid, ulid, and xid formats use canonical text."
         }
       }
     },

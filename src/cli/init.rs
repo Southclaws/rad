@@ -15,7 +15,7 @@ tables:
   - id: 1
     name: users
     columns:
-      - { id: 1, name: id, type: string, pk: true, default: uuid() }
+      - { id: 1, name: id, type: bytes, format: uuid, pk: true, default: uuid_v7() }
       - { id: 2, name: handle, type: string, unique: true }
       - { id: 3, name: joined_at, type: int64, format: unix_ms, default: now_ms() }
 "#;

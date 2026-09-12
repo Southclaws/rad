@@ -95,13 +95,7 @@ pub(super) async fn inspect(
                     .await?
                     .iter()
                     .filter(|row| {
-                        codec::convert_value(
-                            &row[&source.name],
-                            definition.scalar_type,
-                            definition.nullable,
-                            definition.conversion,
-                        )
-                        .is_err()
+                        codec::convert_replacement_value(&row[&source.name], definition).is_err()
                     })
                     .count() as u64;
                 if count > 0 {
@@ -235,17 +229,16 @@ fn duplicate_keys(
                     .default
                     .as_ref()
                     .and_then(|default| {
-                        codec::literal_default_value(desired_column.scalar_type, default)
+                        codec::literal_default_value(
+                            desired_column.scalar_type,
+                            &desired_column.format,
+                            default,
+                        )
                     })
                     .unwrap_or(Value::Null(desired_column.scalar_type))
             };
             if let Some(replacement) = replacements.get(&(current.schema_id, desired_column.id)) {
-                match codec::convert_value(
-                    &value,
-                    replacement.scalar_type,
-                    replacement.nullable,
-                    replacement.conversion,
-                ) {
+                match codec::convert_replacement_value(&value, replacement) {
                     Ok(converted) => value = converted,
                     Err(_) => {
                         conversion_invalid = true;

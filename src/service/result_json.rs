@@ -18,6 +18,8 @@ pub enum EncodeError {
     Json(#[from] serde_json::Error),
     #[error("statement affected count exceeds the HTTP wire format")]
     AffectedCountOverflow,
+    #[error("result contains malformed formatted bytes: {0}")]
+    InvalidIdentifier(#[source] crate::identifiers::Error),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -115,6 +117,11 @@ fn scalar(value: &Value) -> Result<JsonValue, EncodeError> {
             JsonValue::Number(Number::from_f64(*value).ok_or(EncodeError::NonFiniteFloat)?)
         }
         Value::Bool(value) => JsonValue::Bool(*value),
+        Value::Bytes(value) => JsonValue::String(match value.format() {
+            Some(format) => crate::identifiers::render(format, value.as_slice())
+                .map_err(EncodeError::InvalidIdentifier)?,
+            None => crate::identifiers::encode_base64(value.as_slice()),
+        }),
         Value::Null(_) => JsonValue::Null,
     })
 }
@@ -126,6 +133,8 @@ mod tests {
     use super::*;
     use crate::engine::catalog::model::ScalarType;
     use crate::engine::exec::StatementResult;
+    use crate::engine::lir::BytesValue;
+    use crate::identifiers::Format;
 
     #[test]
     fn encodes_nested_results_without_losing_int64_or_null_shape() {
@@ -176,6 +185,32 @@ mod tests {
             ])),
             Err(EncodeError::DuplicateField(field)) if field == "x"
         ));
+        assert!(matches!(
+            datum(&Datum::Scalar(Value::Bytes(BytesValue::formatted(
+                [0; 15],
+                Format::Uuid,
+            )))),
+            Err(EncodeError::InvalidIdentifier(_))
+        ));
+    }
+
+    #[test]
+    fn byte_results_use_base64_or_their_known_format() {
+        let value = Datum::Array(vec![
+            Datum::Scalar(Value::Bytes(BytesValue::raw([0, 0xff]))),
+            Datum::Scalar(Value::Bytes(BytesValue::formatted([0; 16], Format::Uuid))),
+            Datum::Scalar(Value::Bytes(BytesValue::formatted([0; 16], Format::Ulid))),
+            Datum::Scalar(Value::Bytes(BytesValue::formatted([0; 12], Format::Xid))),
+        ]);
+        assert_eq!(
+            datum(&value).unwrap(),
+            json!([
+                "AP8=",
+                "00000000-0000-0000-0000-000000000000",
+                "00000000000000000000000000",
+                "00000000000000000000"
+            ])
+        );
     }
 
     #[test]

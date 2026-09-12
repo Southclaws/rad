@@ -12,13 +12,14 @@ impl From<usize> for SlotId {
     }
 }
 
-/// Static LIR kinds. The four scalar variants mirror catalog scalar types.
+/// Static LIR kinds. The scalar variants mirror catalog scalar types.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Kind {
     Text,
     Int64,
     Float64,
     Bool,
+    Bytes,
     Row,
     Array,
 }
@@ -30,11 +31,15 @@ impl Kind {
             ScalarType::Int64 => Self::Int64,
             ScalarType::Float64 => Self::Float64,
             ScalarType::Bool => Self::Bool,
+            ScalarType::Bytes => Self::Bytes,
         }
     }
 
     pub fn is_scalar(self) -> bool {
-        matches!(self, Self::Text | Self::Int64 | Self::Float64 | Self::Bool)
+        matches!(
+            self,
+            Self::Text | Self::Int64 | Self::Float64 | Self::Bool | Self::Bytes
+        )
     }
 
     pub fn is_numeric(self) -> bool {
@@ -47,6 +52,7 @@ impl Kind {
             Self::Int64 => Some(ScalarType::Int64),
             Self::Float64 => Some(ScalarType::Float64),
             Self::Bool => Some(ScalarType::Bool),
+            Self::Bytes => Some(ScalarType::Bytes),
             Self::Row | Self::Array => None,
         }
     }
@@ -59,6 +65,7 @@ impl fmt::Display for Kind {
             Self::Int64 => "int64",
             Self::Float64 => "float64",
             Self::Bool => "bool",
+            Self::Bytes => "bytes",
             Self::Row => "row",
             Self::Array => "array",
         })

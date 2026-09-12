@@ -75,7 +75,9 @@ tracing-logfmt = "0.3.7"
 tracing-opentelemetry = { version = "0.33.0", default-features = false }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json", "time"] }
 url = "2"
-uuid = { version = "1.17.0", features = ["v4"] }
+ulid = "1.2.1"
+uuid = { version = "1.17.0", features = ["v4", "v7"] }
+xid = "1.1.1"
 
 [dev-dependencies]
 rcgen = "0.14"

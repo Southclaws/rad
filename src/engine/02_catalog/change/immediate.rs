@@ -751,19 +751,19 @@ mod tests {
             ColumnDraft {
                 id: None,
                 name: "required".into(),
-                scalar_type: ScalarType::Text,
+                scalar_type: ScalarType::Bytes,
                 nullable: false,
-                format: String::new(),
+                format: "uuid".into(),
                 default: None,
             },
             ColumnDraft {
                 id: None,
                 name: "generated".into(),
-                scalar_type: ScalarType::Text,
+                scalar_type: ScalarType::Bytes,
                 nullable: false,
-                format: String::new(),
+                format: "uuid".into(),
                 default: Some(DefaultValue {
-                    function: Some(DefaultFunction::Uuid),
+                    function: Some(DefaultFunction::UuidV4),
                     ..DefaultValue::default()
                 }),
             },

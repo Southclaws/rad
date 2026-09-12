@@ -49,13 +49,14 @@ pub(super) fn table_draft(value: wire::TableDef) -> Result<TableDraft, String> {
 
 pub(super) fn column_draft(value: wire::ColumnDef) -> Result<ColumnDraft, String> {
     let scalar_type = scalar_type(&value.r#type)?;
+    let format = value.format.unwrap_or_default();
     Ok(ColumnDraft {
         id: optional_schema_id(value.id, "column")?,
         name: value.name.clone(),
         scalar_type,
         nullable: value.nullable.unwrap_or(false),
-        format: value.format.unwrap_or_default(),
-        default: column_default(&value.name, scalar_type, value.default)?,
+        default: column_default(&value.name, scalar_type, &format, value.default)?,
+        format,
     })
 }
 
@@ -93,6 +94,7 @@ fn scalar_type(value: &str) -> Result<crate::engine::catalog::model::ScalarType,
         "int64" => Ok(ScalarType::Int64),
         "float64" => Ok(ScalarType::Float64),
         "bool" => Ok(ScalarType::Bool),
+        "bytes" => Ok(ScalarType::Bytes),
         _ => Err(format!("unsupported column type {value:?}")),
     }
 }
@@ -100,6 +102,7 @@ fn scalar_type(value: &str) -> Result<crate::engine::catalog::model::ScalarType,
 fn column_default(
     column: &str,
     scalar_type: crate::engine::catalog::model::ScalarType,
+    format: &str,
     value: Option<wire::ColumnDefault>,
 ) -> Result<Option<DefaultValue>, String> {
     let Some(value) = value else {
@@ -112,7 +115,10 @@ fn column_default(
         (None, None) => Err(format!("column {column:?}: default must set func or value")),
         (Some(function), None) => {
             let function = match function {
-                wire::ColumnDefaultFunc::Uuid => DefaultFunction::Uuid,
+                wire::ColumnDefaultFunc::UuidV4 => DefaultFunction::UuidV4,
+                wire::ColumnDefaultFunc::UuidV7 => DefaultFunction::UuidV7,
+                wire::ColumnDefaultFunc::Ulid => DefaultFunction::Ulid,
+                wire::ColumnDefaultFunc::Xid => DefaultFunction::Xid,
                 wire::ColumnDefaultFunc::NowMs => DefaultFunction::NowMs,
                 wire::ColumnDefaultFunc::Increment => DefaultFunction::Increment,
             };
@@ -145,6 +151,19 @@ fn column_default(
                     output.bool_value = value
                         .as_bool()
                         .ok_or_else(|| format!("column {column:?}: default expects a boolean"))?;
+                }
+                ScalarType::Bytes => {
+                    let text = value.as_str().ok_or_else(|| {
+                        format!("column {column:?}: bytes default expects a string")
+                    })?;
+                    output.bytes =
+                        if let Some(format) = crate::identifiers::Format::recognize(format) {
+                            crate::identifiers::parse(format, text)
+                                .map_err(|error| error.to_string())?
+                        } else {
+                            crate::identifiers::decode_base64(text)
+                                .map_err(|error| error.to_string())?
+                        };
                 }
             }
             Ok(Some(output))
@@ -182,7 +201,11 @@ fn table_info(
             .columns
             .iter()
             .map(|column| wire::ColumnInfo {
-                default: default_wire(column.scalar_type, column.insert_default.as_ref()),
+                default: default_wire(
+                    column.scalar_type,
+                    &column.format,
+                    column.insert_default.as_ref(),
+                ),
                 format: (!column.format.is_empty()).then(|| column.format.clone()),
                 id: i64::from(column.schema_id.get()),
                 name: column.name.clone(),
@@ -262,7 +285,7 @@ fn table_definition(table: &TableDef) -> wire::TableDef {
 
 fn column_definition(column: &ColumnDef) -> wire::ColumnDef {
     wire::ColumnDef {
-        default: default_wire(column.scalar_type, column.default.as_ref()),
+        default: default_wire(column.scalar_type, &column.format, column.default.as_ref()),
         format: (!column.format.is_empty()).then(|| column.format.clone()),
         id: Some(i64::from(column.id.get())),
         name: column.name.clone(),
@@ -273,13 +296,17 @@ fn column_definition(column: &ColumnDef) -> wire::ColumnDef {
 
 fn default_wire(
     scalar_type: crate::engine::catalog::model::ScalarType,
+    format: &str,
     value: Option<&DefaultValue>,
 ) -> Option<wire::ColumnDefault> {
     let value = value?;
     if let Some(function) = value.function {
         return Some(wire::ColumnDefault {
             func: Some(match function {
-                DefaultFunction::Uuid => wire::ColumnDefaultFunc::Uuid,
+                DefaultFunction::UuidV4 => wire::ColumnDefaultFunc::UuidV4,
+                DefaultFunction::UuidV7 => wire::ColumnDefaultFunc::UuidV7,
+                DefaultFunction::Ulid => wire::ColumnDefaultFunc::Ulid,
+                DefaultFunction::Xid => wire::ColumnDefaultFunc::Xid,
                 DefaultFunction::NowMs => wire::ColumnDefaultFunc::NowMs,
                 DefaultFunction::Increment => wire::ColumnDefaultFunc::Increment,
             }),
@@ -294,6 +321,11 @@ fn default_wire(
             ScalarType::Int64 => json!(value.int64),
             ScalarType::Float64 => json!(value.float64),
             ScalarType::Bool => json!(value.bool_value),
+            ScalarType::Bytes => json!(match crate::identifiers::Format::recognize(format) {
+                Some(format) => crate::identifiers::render(format, &value.bytes)
+                    .expect("catalog validates formatted bytes defaults"),
+                None => crate::identifiers::encode_base64(&value.bytes),
+            }),
         }),
     })
 }
@@ -305,6 +337,7 @@ fn scalar_type_wire(value: crate::engine::catalog::model::ScalarType) -> &'stati
         ScalarType::Int64 => "int64",
         ScalarType::Float64 => "float64",
         ScalarType::Bool => "bool",
+        ScalarType::Bytes => "bytes",
     }
 }
 
@@ -581,7 +614,7 @@ fn column_draft_json(value: &ColumnDraft) -> Value {
         output["format"] = json!(value.format);
     }
     if let Some(default) = &value.default {
-        output["default"] = default_value_json(value.scalar_type, default);
+        output["default"] = default_value_json(value.scalar_type, &value.format, default);
     }
     output
 }
@@ -601,7 +634,7 @@ fn replacement_json(value: &crate::engine::catalog::model::ColumnReplacementDef)
         output["format"] = json!(value.format);
     }
     if let Some(default) = &value.default {
-        output["default"] = default_value_json(value.scalar_type, default);
+        output["default"] = default_value_json(value.scalar_type, &value.format, default);
     }
     output
 }
@@ -610,7 +643,7 @@ fn default_spec_json(value: &DefaultSpec) -> Value {
     match value {
         DefaultSpec::Generator(function) => json!({
             "kind": "generator",
-            "func": match function { DefaultFunction::Uuid => "uuid", DefaultFunction::NowMs => "now_ms", DefaultFunction::Increment => "increment" }
+            "func": default_function_name(*function)
         }),
         DefaultSpec::Text(value) => json!({"kind": "literal", "value": value}),
         DefaultSpec::Number(value) => {
@@ -623,20 +656,106 @@ fn default_spec_json(value: &DefaultSpec) -> Value {
 
 fn default_value_json(
     scalar_type: crate::engine::catalog::model::ScalarType,
+    format: &str,
     value: &DefaultValue,
 ) -> Value {
     if let Some(function) = value.function {
         return json!({
             "kind": "generator",
-            "func": match function { DefaultFunction::Uuid => "uuid", DefaultFunction::NowMs => "now_ms", DefaultFunction::Increment => "increment" }
+            "func": default_function_name(function)
         });
     }
-    let value = default_wire(scalar_type, Some(value))
+    let value = default_wire(scalar_type, format, Some(value))
         .and_then(|value| value.value)
         .unwrap_or(Value::Null);
     json!({"kind": "literal", "value": value})
 }
 
+fn default_function_name(function: DefaultFunction) -> &'static str {
+    match function {
+        DefaultFunction::UuidV4 => "uuid_v4",
+        DefaultFunction::UuidV7 => "uuid_v7",
+        DefaultFunction::Ulid => "ulid",
+        DefaultFunction::Xid => "xid",
+        DefaultFunction::NowMs => "now_ms",
+        DefaultFunction::Increment => "increment",
+    }
+}
+
 fn wire_integer(value: u64, role: &'static str) -> Result<i64, EncodeError> {
     i64::try_from(value).map_err(|_| EncodeError::Integer(role))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bytes_column(format: Option<&str>, value: &str) -> wire::ColumnDef {
+        wire::ColumnDef {
+            default: Some(wire::ColumnDefault {
+                func: None,
+                value: Some(json!(value)),
+            }),
+            format: format.map(str::to_owned),
+            id: Some(1),
+            name: "payload".into(),
+            nullable: None,
+            r#type: "bytes".into(),
+        }
+    }
+
+    #[test]
+    fn byte_defaults_use_base64_or_identifier_porcelain_at_the_http_boundary() {
+        let raw = column_draft(bytes_column(None, "AP8=")).unwrap();
+        assert_eq!(raw.default.unwrap().bytes, [0, 0xff]);
+
+        for (format, text, length) in [
+            ("uuid", "00000000-0000-0000-0000-000000000000", 16),
+            ("ulid", "00000000000000000000000000", 16),
+            ("xid", "00000000000000000000", 12),
+        ] {
+            let column = column_draft(bytes_column(Some(format), text)).unwrap();
+            assert_eq!(column.default.unwrap().bytes, vec![0; length]);
+        }
+
+        for column in [
+            bytes_column(None, "/w"),
+            bytes_column(Some("uuid"), "not-a-uuid"),
+            bytes_column(Some("ulid"), "80000000000000000000000000"),
+            bytes_column(Some("xid"), "0000000000000000000A"),
+        ] {
+            assert!(column_draft(column).is_err());
+        }
+    }
+
+    #[test]
+    fn byte_defaults_and_generators_round_trip_through_http_models() {
+        let literal = ColumnDef {
+            id: SchemaId::new(1).unwrap(),
+            name: "id".into(),
+            scalar_type: crate::engine::catalog::model::ScalarType::Bytes,
+            nullable: false,
+            format: "uuid".into(),
+            default: Some(DefaultValue {
+                bytes: vec![0; 16],
+                ..DefaultValue::default()
+            }),
+        };
+        assert_eq!(
+            column_definition(&literal).default.unwrap().value,
+            Some(json!("00000000-0000-0000-0000-000000000000"))
+        );
+
+        let generated = ColumnDef {
+            default: Some(DefaultValue {
+                function: Some(DefaultFunction::UuidV7),
+                ..DefaultValue::default()
+            }),
+            ..literal
+        };
+        assert_eq!(
+            column_definition(&generated).default.unwrap().func,
+            Some(wire::ColumnDefaultFunc::UuidV7)
+        );
+    }
 }

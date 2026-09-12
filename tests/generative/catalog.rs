@@ -1,15 +1,16 @@
 use rad::engine::catalog::identity::SchemaId;
 use rad::engine::catalog::model::{
-    ColumnDef, ForeignKeyDef, IndexDef, ScalarType, Schema, TableDef,
+    ColumnDef, DefaultFunction, DefaultValue, ForeignKeyDef, IndexDef, ScalarType, Schema, TableDef,
 };
 
 use super::Choices;
 
-const TYPES: [ScalarType; 4] = [
+const TYPES: [ScalarType; 5] = [
     ScalarType::Text,
     ScalarType::Int64,
     ScalarType::Float64,
     ScalarType::Bool,
+    ScalarType::Bytes,
 ];
 
 pub fn generate(choices: &mut Choices<'_>) -> Schema {
@@ -20,12 +21,36 @@ pub fn generate(choices: &mut Choices<'_>) -> Schema {
         let value_columns = choices.range(1, 5);
         let mut columns = vec![column(1, "id", ScalarType::Text, false)];
         for column_index in 0..value_columns {
-            columns.push(column(
+            let mut column = column(
                 (column_index + 2) as u32,
                 &format!("c{column_index}"),
                 TYPES[choices.index(TYPES.len())],
                 choices.coin(),
-            ));
+            );
+            if column.scalar_type == ScalarType::Bytes {
+                match choices.index(7) {
+                    0 => column.format = "application/octet-stream".into(),
+                    1 => column.format = "uuid".into(),
+                    2 => {
+                        column.format = "uuid".into();
+                        column.default = generated(DefaultFunction::UuidV4);
+                    }
+                    3 => {
+                        column.format = "uuid".into();
+                        column.default = generated(DefaultFunction::UuidV7);
+                    }
+                    4 => {
+                        column.format = "ulid".into();
+                        column.default = generated(DefaultFunction::Ulid);
+                    }
+                    5 => {
+                        column.format = "xid".into();
+                        column.default = generated(DefaultFunction::Xid);
+                    }
+                    _ => {}
+                }
+            }
+            columns.push(column);
         }
 
         let mut foreign_keys = Vec::new();
@@ -64,6 +89,13 @@ pub fn generate(choices: &mut Choices<'_>) -> Schema {
         });
     }
     Schema::from_definitions(tables)
+}
+
+fn generated(function: DefaultFunction) -> Option<DefaultValue> {
+    Some(DefaultValue {
+        function: Some(function),
+        ..DefaultValue::default()
+    })
 }
 
 fn column(id_value: u32, name: &str, scalar_type: ScalarType, nullable: bool) -> ColumnDef {

@@ -568,6 +568,17 @@ they are rejected at bind time.
 | `else` | `Expr` | Yes | The result when no predicate matches. |
 | `kind` | `branch` | Yes |  |
 
+#### `BytesValue`
+
+An arbitrary byte sequence encoded as canonical padded RFC 4648 base64,
+or a bytes NULL when `value` is absent. A context-free LIR literal has no
+catalog format metadata, so identifier text is not accepted here.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `bytes` | Yes |  |
+| `value` | `string` |  | Canonical padded base64; absent for a NULL. |
+
 #### `CastExpr`
 
 Convert `expr` to the scalar type `to`. The conversion is explicit; the
@@ -853,8 +864,9 @@ A boolean value, or a bool NULL when `value` is absent.
 One schema-directed scalar payload, used inside a `rows` relation where
 each column already declares its type. A string is decoded against the
 corresponding `RowsColumn.type`; numbers as lossless strings, `bool` as
-"true"/"false", so precision survives and the type is never repeated per
-cell; JSON null is a typed NULL, valid only when that column is nullable.
+"true"/"false", and `bytes` as canonical padded base64, so precision
+survives and the type is never repeated per cell; JSON null is a typed
+NULL, valid only when that column is nullable.
 Unlike `Value`, a cell carries no type of its own; the column supplies
 it once for the whole column.
 
@@ -884,8 +896,8 @@ invalid; a bound the pattern cannot express, so the binder enforces it.
 
 #### `ScalarType`
 
-The logical type of a scalar value: `text`, `int64`, `float64`, or
-`bool`.
+The logical type of a scalar value: `text`, `int64`, `float64`, `bool`,
+or `bytes`.
 
 #### `TextValue`
 
@@ -908,4 +920,4 @@ empty string is a present `text` value, not a NULL. A naked NULL of no
 particular type is not representable; cast it to give it one. A value's
 `type` must match the scalar type its context expects.
 
-**Variants:** `TextValue`, `Int64Value`, `Float64Value`, `BoolValue`
+**Variants:** `TextValue`, `Int64Value`, `Float64Value`, `BoolValue`, `BytesValue`

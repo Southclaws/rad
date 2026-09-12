@@ -6,7 +6,7 @@ use crate::engine::catalog::model::{
 };
 use crate::engine::kv::key_encoding;
 use crate::engine::kv::keys;
-use crate::engine::lir::{Row, Value};
+use crate::engine::lir::{BytesValue, Row, Value};
 
 use super::{Error, ErrorKind, Result};
 
@@ -103,6 +103,7 @@ pub fn encode_value(value: &Value) -> Result<Vec<u8>> {
                 .to_vec()
         }
         Value::Bool(value) => key_encoding::encode_bool(*value).to_vec(),
+        Value::Bytes(value) => key_encoding::encode_bytes(value.as_slice()),
     })
 }
 
@@ -203,16 +204,34 @@ pub fn decode_value(input: &[u8]) -> Result<(Value, usize)> {
             Ok((Value::Float64(value), 9))
         }
         key_encoding::TAG_TEXT => decode_text(input),
+        key_encoding::TAG_BYTES => decode_bytes(input),
         _ => Err(corrupt(format!("exec: unknown key value tag 0x{tag:02x}"))),
     }
 }
 
 fn decode_text(input: &[u8]) -> Result<(Value, usize)> {
+    let (bytes, position) = decode_escaped(input, "text")?;
+    let text = String::from_utf8(bytes).map_err(|error| {
+        Error::source(
+            ErrorKind::CorruptData,
+            "exec: invalid UTF-8 key text",
+            error,
+        )
+    })?;
+    Ok((Value::Text(text), position))
+}
+
+fn decode_bytes(input: &[u8]) -> Result<(Value, usize)> {
+    let (bytes, position) = decode_escaped(input, "bytes")?;
+    Ok((Value::Bytes(BytesValue::raw(bytes)), position))
+}
+
+fn decode_escaped(input: &[u8], kind: &str) -> Result<(Vec<u8>, usize)> {
     let mut bytes = Vec::new();
     let mut position = 1;
     loop {
         let Some(byte) = input.get(position).copied() else {
-            return Err(corrupt("exec: unterminated text key value"));
+            return Err(corrupt(format!("exec: unterminated {kind} key value")));
         };
         position += 1;
         if byte != 0 {
@@ -226,16 +245,9 @@ fn decode_text(input: &[u8]) -> Result<(Value, usize)> {
             }
             Some(0x01) => {
                 position += 1;
-                let text = String::from_utf8(bytes).map_err(|error| {
-                    Error::source(
-                        ErrorKind::CorruptData,
-                        "exec: invalid UTF-8 key text",
-                        error,
-                    )
-                })?;
-                return Ok((Value::Text(text), position));
+                return Ok((bytes, position));
             }
-            _ => return Err(corrupt("exec: malformed text key escape")),
+            _ => return Err(corrupt(format!("exec: malformed {kind} key escape"))),
         }
     }
 }
@@ -301,6 +313,7 @@ pub(super) type DecodedRow = smallvec::SmallVec<[Value; 4]>;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum DecodedValueRef<'a> {
     Text(&'a str),
+    Bytes(&'a [u8], Option<crate::identifiers::Format>),
     Int64(i64),
     Float64(f64),
     Bool(bool),
@@ -315,6 +328,8 @@ impl DecodedValueRef<'_> {
     pub(super) fn to_value(self) -> Value {
         match self {
             Self::Text(value) => Value::Text(value.to_owned()),
+            Self::Bytes(value, Some(format)) => Value::Bytes(BytesValue::formatted(value, format)),
+            Self::Bytes(value, None) => Value::Bytes(BytesValue::raw(value)),
             Self::Int64(value) => Value::Int64(value),
             Self::Float64(value) => Value::Float64(value),
             Self::Bool(value) => Value::Bool(value),
@@ -401,8 +416,8 @@ impl RowDecoder {
                 .filter(|end| *end <= raw.len())
                 .ok_or_else(|| corrupt(format!("codec: truncated payload for column ID {id}")))?;
             if let Some(index) = requested {
-                values[index] = Some(decode_payload(
-                    self.columns[index].scalar_type,
+                values[index] = Some(decode_column_payload(
+                    &self.columns[index],
                     &raw[position..end],
                 )?);
             }
@@ -471,7 +486,7 @@ impl RowDecoder {
                 .ok_or_else(|| corrupt(format!("codec: truncated payload for column ID {id}")))?;
             if let Some(index) = requested {
                 values[index] = Some(decode_payload_ref(
-                    self.columns[index].scalar_type,
+                    &self.columns[index],
                     &raw[position..end],
                 )?);
             }
@@ -497,7 +512,7 @@ pub fn decode_missing_value(column: &Column) -> Result<Value> {
     let Some(default) = &column.missing_value else {
         return Ok(Value::Null(column.scalar_type));
     };
-    literal_default_value(column.scalar_type, default)
+    literal_default_value(column.scalar_type, &column.format, default)
         .ok_or_else(|| corrupt("codec: historical missing value cannot use a generator"))
 }
 
@@ -542,8 +557,8 @@ pub fn read_column_value(raw: &[u8], column: &Column) -> Result<Value> {
     if field.is_null {
         return Ok(Value::Null(column.scalar_type));
     }
-    decode_payload(
-        column.scalar_type,
+    decode_column_payload(
+        column,
         field
             .payload
             .as_deref()
@@ -568,7 +583,52 @@ pub fn convert_column_value(
     target: &Column,
     conversion: ColumnConversion,
 ) -> Result<Value> {
-    convert_value(value, target.scalar_type, target.nullable, conversion)
+    convert_value_with_format(
+        value,
+        target.scalar_type,
+        target.nullable,
+        &target.format,
+        conversion,
+    )
+}
+
+pub(crate) fn convert_replacement_value(
+    value: &Value,
+    target: &crate::engine::catalog::model::ColumnReplacementDef,
+) -> Result<Value> {
+    convert_value_with_format(
+        value,
+        target.scalar_type,
+        target.nullable,
+        &target.format,
+        target.conversion,
+    )
+}
+
+fn convert_value_with_format(
+    value: &Value,
+    target_type: ScalarType,
+    target_nullable: bool,
+    target_format: &str,
+    conversion: ColumnConversion,
+) -> Result<Value> {
+    let converted = convert_value(value, target_type, target_nullable, conversion)?;
+    let Value::Bytes(bytes) = converted else {
+        return Ok(converted);
+    };
+    let Some(format) = crate::identifiers::Format::recognize(target_format) else {
+        return Ok(Value::Bytes(BytesValue::raw(bytes.into_vec())));
+    };
+    crate::identifiers::validate(format, bytes.as_slice()).map_err(|error| {
+        Error::message(
+            ErrorKind::ConstraintViolation,
+            format!("codec: value is incompatible with target format: {error}"),
+        )
+    })?;
+    Ok(Value::Bytes(BytesValue::formatted(
+        bytes.into_vec(),
+        format,
+    )))
 }
 
 pub(crate) fn convert_value(
@@ -730,6 +790,7 @@ fn encode_physical_fields(fields: &[PhysicalField]) -> Vec<u8> {
 
 pub(crate) fn literal_default_value(
     value_type: ScalarType,
+    format: &str,
     default: &DefaultValue,
 ) -> Option<Value> {
     if default.function.is_some() {
@@ -740,6 +801,7 @@ pub(crate) fn literal_default_value(
         ScalarType::Int64 => Value::Int64(default.int64),
         ScalarType::Float64 => Value::Float64(default.float64),
         ScalarType::Bool => Value::Bool(default.bool_value),
+        ScalarType::Bytes => formatted_bytes(default.bytes.clone(), format).ok()?,
     })
 }
 
@@ -774,6 +836,7 @@ fn encode_payload(value: &Value) -> Result<Vec<u8>> {
             ));
         }
         Value::Bool(value) => vec![u8::from(*value)],
+        Value::Bytes(value) => value.as_slice().to_vec(),
         Value::Null(_) => unreachable!("null payloads have no body"),
     })
 }
@@ -799,6 +862,7 @@ fn decode_payload(value_type: ScalarType, payload: &[u8]) -> Result<Value> {
         }
         ScalarType::Bool if payload == [0] => Ok(Value::Bool(false)),
         ScalarType::Bool if payload == [1] => Ok(Value::Bool(true)),
+        ScalarType::Bytes => Ok(Value::Bytes(BytesValue::raw(payload))),
         _ => Err(corrupt(format!(
             "codec: malformed {value_type:?} payload of {} bytes",
             payload.len()
@@ -806,8 +870,25 @@ fn decode_payload(value_type: ScalarType, payload: &[u8]) -> Result<Value> {
     }
 }
 
-fn decode_payload_ref(value_type: ScalarType, payload: &[u8]) -> Result<DecodedValueRef<'_>> {
-    match value_type {
+fn decode_column_payload(column: &Column, payload: &[u8]) -> Result<Value> {
+    let value = decode_payload(column.scalar_type, payload)?;
+    match value {
+        Value::Bytes(value) => formatted_bytes(value.into_vec(), &column.format),
+        value => Ok(value),
+    }
+}
+
+fn formatted_bytes(bytes: Vec<u8>, format: &str) -> Result<Value> {
+    let Some(format) = crate::identifiers::Format::recognize(format) else {
+        return Ok(Value::Bytes(BytesValue::raw(bytes)));
+    };
+    crate::identifiers::validate(format, &bytes)
+        .map_err(|error| corrupt(format!("codec: malformed persisted identifier: {error}")))?;
+    Ok(Value::Bytes(BytesValue::formatted(bytes, format)))
+}
+
+fn decode_payload_ref<'a>(column: &Column, payload: &'a [u8]) -> Result<DecodedValueRef<'a>> {
+    match column.scalar_type {
         ScalarType::Text => std::str::from_utf8(payload)
             .map(DecodedValueRef::Text)
             .map_err(|error| {
@@ -827,8 +908,18 @@ fn decode_payload_ref(value_type: ScalarType, payload: &[u8]) -> Result<DecodedV
         }
         ScalarType::Bool if payload == [0] => Ok(DecodedValueRef::Bool(false)),
         ScalarType::Bool if payload == [1] => Ok(DecodedValueRef::Bool(true)),
+        ScalarType::Bytes => {
+            let format = crate::identifiers::Format::recognize(&column.format);
+            if let Some(format) = format {
+                crate::identifiers::validate(format, payload).map_err(|error| {
+                    corrupt(format!("codec: malformed persisted identifier: {error}"))
+                })?;
+            }
+            Ok(DecodedValueRef::Bytes(payload, format))
+        }
         _ => Err(corrupt(format!(
-            "codec: malformed {value_type:?} payload of {} bytes",
+            "codec: malformed {:?} payload of {} bytes",
+            column.scalar_type,
             payload.len()
         ))),
     }
@@ -848,6 +939,15 @@ fn decode_missing_value_ref(column: &Column) -> Result<DecodedValueRef<'_>> {
         ScalarType::Int64 => DecodedValueRef::Int64(default.int64),
         ScalarType::Float64 => DecodedValueRef::Float64(default.float64),
         ScalarType::Bool => DecodedValueRef::Bool(default.bool_value),
+        ScalarType::Bytes => {
+            let format = crate::identifiers::Format::recognize(&column.format);
+            if let Some(format) = format {
+                crate::identifiers::validate(format, &default.bytes).map_err(|error| {
+                    corrupt(format!("codec: malformed persisted identifier: {error}"))
+                })?;
+            }
+            DecodedValueRef::Bytes(&default.bytes, format)
+        }
     })
 }
 
@@ -1043,6 +1143,44 @@ mod tests {
     }
 
     #[test]
+    fn formatted_identifier_columns_reject_malformed_persisted_widths() {
+        let mut id = column("c1", 1, "id", ScalarType::Bytes);
+        id.format = "uuid".into();
+        let table = table(vec![id]);
+
+        let valid = marshal_row(
+            &table,
+            &Row::from([("id".into(), Value::Bytes(BytesValue::raw([0_u8; 16])))]),
+        )
+        .unwrap();
+        assert_eq!(
+            unmarshal_row(&table, &valid).unwrap()["id"],
+            Value::Bytes(BytesValue::formatted(
+                [0_u8; 16],
+                crate::identifiers::Format::Uuid,
+            ))
+        );
+
+        let malformed = marshal_row(
+            &table,
+            &Row::from([("id".into(), Value::Bytes(BytesValue::raw([0_u8; 15])))]),
+        )
+        .unwrap();
+        assert_eq!(
+            unmarshal_row(&table, &malformed).unwrap_err().kind(),
+            ErrorKind::CorruptData
+        );
+        assert_eq!(
+            RowDecoder::new(&table, &table.columns)
+                .unwrap()
+                .decode_ref(&malformed)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::CorruptData
+        );
+    }
+
+    #[test]
     fn tuple_codec_round_trips_ordered_primitives_and_rejects_non_finite_floats() {
         let values = vec![
             Value::Null(ScalarType::Int64),
@@ -1135,6 +1273,12 @@ mod tests {
             ],
             vec![Value::Bool(false), Value::Bool(true)],
             vec![
+                Value::Bytes(BytesValue::raw([])),
+                Value::Bytes(BytesValue::raw([0])),
+                Value::Bytes(BytesValue::raw([0, 0xff])),
+                Value::Bytes(BytesValue::raw([1])),
+            ],
+            vec![
                 Value::Float64(-f64::MAX),
                 Value::Float64(-0.0),
                 Value::Float64(0.0),
@@ -1155,6 +1299,7 @@ mod tests {
             ScalarType::Int64,
             ScalarType::Float64,
             ScalarType::Bool,
+            ScalarType::Bytes,
         ] {
             let null = Value::Null(scalar_type);
             assert_key_round_trip(&null);
@@ -1316,6 +1461,33 @@ mod tests {
                 target.scalar_type
             );
         }
+    }
+
+    #[test]
+    fn strict_bytes_conversion_validates_and_applies_the_target_format() {
+        let mut uuid = column("c1", 1, "value", ScalarType::Bytes);
+        uuid.format = "uuid".into();
+        let converted = convert_column_value(
+            &Value::Bytes(BytesValue::raw([0_u8; 16])),
+            &uuid,
+            ColumnConversion::StrictBuiltin,
+        )
+        .unwrap();
+        let Value::Bytes(converted) = converted else {
+            unreachable!()
+        };
+        assert_eq!(converted.format(), Some(crate::identifiers::Format::Uuid));
+
+        assert_eq!(
+            convert_column_value(
+                &Value::Bytes(BytesValue::raw([0_u8; 15])),
+                &uuid,
+                ColumnConversion::StrictBuiltin,
+            )
+            .unwrap_err()
+            .kind(),
+            ErrorKind::ConstraintViolation
+        );
     }
 
     #[test]

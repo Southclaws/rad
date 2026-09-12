@@ -441,8 +441,14 @@ func (s *ColumnDefaultFunc) Decode(d *jx.Decoder) error {
 	}
 	// Try to use constant string.
 	switch ColumnDefaultFunc(v) {
-	case ColumnDefaultFuncUUID:
-		*s = ColumnDefaultFuncUUID
+	case ColumnDefaultFuncUUIDV4:
+		*s = ColumnDefaultFuncUUIDV4
+	case ColumnDefaultFuncUUIDV7:
+		*s = ColumnDefaultFuncUUIDV7
+	case ColumnDefaultFuncUlid:
+		*s = ColumnDefaultFuncUlid
+	case ColumnDefaultFuncXid:
+		*s = ColumnDefaultFuncXid
 	case ColumnDefaultFuncNowMs:
 		*s = ColumnDefaultFuncNowMs
 	case ColumnDefaultFuncIncrement:

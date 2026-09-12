@@ -4,7 +4,7 @@ use crate::engine::catalog::model::{ScalarType, TransitionKind, TransitionState}
 use crate::engine::catalog::schema;
 use crate::engine::exec::{Engine, ErrorKind, Statement};
 use crate::engine::kv::slatedb::Store;
-use crate::engine::lir::{Row, Value};
+use crate::engine::lir::{BytesValue, Row, Value};
 
 use super::{Migration, MigrationState};
 
@@ -254,6 +254,56 @@ tables:
     assert_eq!(
         migration.apply_plan(destructive, true).await.unwrap().state,
         MigrationState::Ready
+    );
+}
+
+#[tokio::test]
+async fn known_identifier_format_replacement_rejects_existing_wrong_width_bytes() {
+    let store = Arc::new(
+        Store::memory("frontend-migration-bytes-format")
+            .await
+            .unwrap(),
+    );
+    let engine = Engine::new(store);
+    let migration = Migration::new(&engine);
+    let initial = parse(
+        r#"
+tables:
+  - id: 1
+    name: items
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: payload, type: bytes }
+"#,
+    );
+    migration.apply(&initial, false).await.unwrap();
+    engine
+        .create(
+            "items",
+            Row::from([
+                ("id".into(), Value::Text("bad".into())),
+                ("payload".into(), Value::Bytes(BytesValue::raw([0_u8; 15]))),
+            ]),
+        )
+        .await
+        .unwrap();
+
+    let formatted = parse(
+        r#"
+tables:
+  - id: 1
+    name: items
+    columns:
+      - { id: 1, name: id, type: string, pk: true }
+      - { id: 2, name: payload, type: bytes, format: uuid }
+"#,
+    );
+    let plan = migration.plan(&formatted).await.unwrap();
+    assert_eq!(plan.blocking[0].kind, "column_conversion");
+    assert_eq!(plan.blocking[0].rows, 1);
+    assert_eq!(
+        migration.apply_plan(plan, false).await.unwrap_err().kind(),
+        ErrorKind::ConstraintViolation
     );
 }
 

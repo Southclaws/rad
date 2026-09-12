@@ -90,7 +90,11 @@ pub enum DefaultSpec {
 }
 
 impl DefaultSpec {
-    pub(crate) fn from_catalog(value: &DefaultValue, scalar_type: ScalarType) -> Self {
+    pub(crate) fn from_catalog(
+        value: &DefaultValue,
+        scalar_type: ScalarType,
+        format: &str,
+    ) -> Self {
         if let Some(function) = value.function {
             return Self::Generator(function);
         }
@@ -99,6 +103,15 @@ impl DefaultSpec {
             ScalarType::Int64 => Self::Number(value.int64.to_string()),
             ScalarType::Float64 => Self::Number(value.float64.to_string()),
             ScalarType::Bool => Self::Bool(value.bool_value),
+            ScalarType::Bytes => {
+                Self::Text(crate::identifiers::Format::recognize(format).map_or_else(
+                    || crate::identifiers::encode_base64(&value.bytes),
+                    |format| {
+                        crate::identifiers::render(format, &value.bytes)
+                            .expect("catalog identifier default was validated")
+                    },
+                ))
+            }
         }
     }
 }
@@ -1360,7 +1373,7 @@ async fn apply_catalog(
             let (_, column) = mutation.column_by_schema_id(*table_id, *column_id).await?;
             let default = default
                 .clone()
-                .map(|default| resolve_default(default, column.scalar_type))
+                .map(|default| resolve_default(default, column.scalar_type, &column.format))
                 .transpose()?;
             mutation
                 .change_column_insert_default_by_schema_id(*table_id, *column_id, default)
@@ -1447,17 +1460,36 @@ async fn apply_catalog(
     Ok(transition)
 }
 
-pub(crate) fn resolve_default(spec: DefaultSpec, scalar_type: ScalarType) -> Result<DefaultValue> {
+pub(crate) fn resolve_default(
+    spec: DefaultSpec,
+    scalar_type: ScalarType,
+    format: &str,
+) -> Result<DefaultValue> {
     let mismatch = || {
         input(format!(
             "catalog: literal default is not compatible with {scalar_type:?}"
         ))
     };
     Ok(match (spec, scalar_type) {
-        (DefaultSpec::Generator(DefaultFunction::Uuid), ScalarType::Text) => DefaultValue {
-            function: Some(DefaultFunction::Uuid),
+        (
+            DefaultSpec::Generator(function @ (DefaultFunction::UuidV4 | DefaultFunction::UuidV7)),
+            ScalarType::Bytes,
+        ) if format == "uuid" => DefaultValue {
+            function: Some(function),
             ..DefaultValue::default()
         },
+        (DefaultSpec::Generator(DefaultFunction::Ulid), ScalarType::Bytes) if format == "ulid" => {
+            DefaultValue {
+                function: Some(DefaultFunction::Ulid),
+                ..DefaultValue::default()
+            }
+        }
+        (DefaultSpec::Generator(DefaultFunction::Xid), ScalarType::Bytes) if format == "xid" => {
+            DefaultValue {
+                function: Some(DefaultFunction::Xid),
+                ..DefaultValue::default()
+            }
+        }
         (DefaultSpec::Generator(DefaultFunction::NowMs), ScalarType::Int64) => DefaultValue {
             function: Some(DefaultFunction::NowMs),
             ..DefaultValue::default()
@@ -1472,6 +1504,16 @@ pub(crate) fn resolve_default(spec: DefaultSpec, scalar_type: ScalarType) -> Res
         },
         (DefaultSpec::Bool(bool_value), ScalarType::Bool) => DefaultValue {
             bool_value,
+            ..DefaultValue::default()
+        },
+        (DefaultSpec::Text(text), ScalarType::Bytes) => DefaultValue {
+            bytes: if let Some(format) = crate::identifiers::Format::recognize(format) {
+                crate::identifiers::parse(format, &text)
+                    .map_err(|error| input(format!("catalog: {error}")))?
+            } else {
+                crate::identifiers::decode_base64(&text)
+                    .map_err(|error| input(format!("catalog: invalid bytes default: {error}")))?
+            },
             ..DefaultValue::default()
         },
         (DefaultSpec::Number(number), ScalarType::Int64) => DefaultValue {
@@ -3205,16 +3247,18 @@ mod tests {
     fn unresolved_wire_defaults_populate_exactly_the_typed_catalog_field() {
         let cases = [
             (
-                DefaultSpec::Generator(DefaultFunction::Uuid),
-                ScalarType::Text,
+                DefaultSpec::Generator(DefaultFunction::UuidV4),
+                ScalarType::Bytes,
+                "uuid",
                 DefaultValue {
-                    function: Some(DefaultFunction::Uuid),
+                    function: Some(DefaultFunction::UuidV4),
                     ..DefaultValue::default()
                 },
             ),
             (
                 DefaultSpec::Generator(DefaultFunction::NowMs),
                 ScalarType::Int64,
+                "",
                 DefaultValue {
                     function: Some(DefaultFunction::NowMs),
                     ..DefaultValue::default()
@@ -3223,6 +3267,7 @@ mod tests {
             (
                 DefaultSpec::Generator(DefaultFunction::Increment),
                 ScalarType::Int64,
+                "",
                 DefaultValue {
                     function: Some(DefaultFunction::Increment),
                     ..DefaultValue::default()
@@ -3231,6 +3276,7 @@ mod tests {
             (
                 DefaultSpec::Text("rad".into()),
                 ScalarType::Text,
+                "",
                 DefaultValue {
                     text: "rad".into(),
                     ..DefaultValue::default()
@@ -3239,6 +3285,7 @@ mod tests {
             (
                 DefaultSpec::Number("-17".into()),
                 ScalarType::Int64,
+                "",
                 DefaultValue {
                     int64: -17,
                     ..DefaultValue::default()
@@ -3247,6 +3294,7 @@ mod tests {
             (
                 DefaultSpec::Number("1.25".into()),
                 ScalarType::Float64,
+                "",
                 DefaultValue {
                     float64: 1.25,
                     ..DefaultValue::default()
@@ -3255,44 +3303,55 @@ mod tests {
             (
                 DefaultSpec::Bool(true),
                 ScalarType::Bool,
+                "",
                 DefaultValue {
                     bool_value: true,
                     ..DefaultValue::default()
                 },
             ),
         ];
-        for (spec, scalar_type, expected) in cases {
-            assert_eq!(DefaultSpec::from_catalog(&expected, scalar_type), spec);
-            assert_eq!(resolve_default(spec, scalar_type).unwrap(), expected);
+        for (spec, scalar_type, format, expected) in cases {
+            assert_eq!(
+                DefaultSpec::from_catalog(&expected, scalar_type, format),
+                spec
+            );
+            assert_eq!(
+                resolve_default(spec, scalar_type, format).unwrap(),
+                expected
+            );
         }
     }
 
     #[test]
     fn unresolved_wire_defaults_reject_mismatched_and_invalid_values() {
-        for (spec, scalar_type) in [
-            (DefaultSpec::Text("1".into()), ScalarType::Int64),
-            (DefaultSpec::Bool(true), ScalarType::Text),
-            (DefaultSpec::Number("1".into()), ScalarType::Bool),
+        for (spec, scalar_type, format) in [
+            (DefaultSpec::Text("1".into()), ScalarType::Int64, ""),
+            (DefaultSpec::Bool(true), ScalarType::Text, ""),
+            (DefaultSpec::Number("1".into()), ScalarType::Bool, ""),
             (
-                DefaultSpec::Generator(DefaultFunction::Uuid),
+                DefaultSpec::Generator(DefaultFunction::UuidV4),
                 ScalarType::Int64,
+                "uuid",
             ),
             (
                 DefaultSpec::Generator(DefaultFunction::NowMs),
                 ScalarType::Text,
+                "",
             ),
             (
                 DefaultSpec::Generator(DefaultFunction::Increment),
                 ScalarType::Text,
+                "",
             ),
             (
                 DefaultSpec::Number("not-a-number".into()),
                 ScalarType::Int64,
+                "",
             ),
-            (DefaultSpec::Number("NaN".into()), ScalarType::Float64),
-            (DefaultSpec::Number("inf".into()), ScalarType::Float64),
+            (DefaultSpec::Number("NaN".into()), ScalarType::Float64, ""),
+            (DefaultSpec::Number("inf".into()), ScalarType::Float64, ""),
         ] {
-            assert!(resolve_default(spec, scalar_type).is_err());
+            assert!(resolve_default(spec, scalar_type, format).is_err());
         }
     }
 }

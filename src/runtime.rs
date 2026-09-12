@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::identifiers::{self, Generator};
+
 /// Clock and generated-identifier effects used by catalog and data work.
 ///
 /// Implementations must be safe to call concurrently. A deterministic
@@ -18,6 +20,13 @@ use uuid::Uuid;
 pub trait RuntimeEffects: Send + Sync {
     fn now(&self) -> DateTime<Utc>;
     fn new_uuid(&self) -> Uuid;
+    fn new_identifier(&self, generator: Generator) -> Vec<u8> {
+        identifiers::generate_deterministic(
+            generator,
+            self.now().timestamp_millis().max(0) as u64,
+            self.new_uuid().into_bytes(),
+        )
+    }
 
     /// Wall time since the Unix epoch. Durable recency fields use this value.
     fn unix_time(&self) -> Duration {
@@ -44,6 +53,10 @@ impl RuntimeEffects for SystemRuntime {
 
     fn new_uuid(&self) -> Uuid {
         Uuid::new_v4()
+    }
+
+    fn new_identifier(&self, generator: Generator) -> Vec<u8> {
+        identifiers::generate_system(generator)
     }
 
     fn monotonic(&self) -> Duration {

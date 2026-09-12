@@ -21,7 +21,7 @@
 # int64 encode differently in each family.
 #
 # Key tuples are permanently self-describing: every scalar carries its type
-# tag, and the cross-type tag order (null < bool < int64 < float64 < text)
+# tag, and the cross-type tag order (null < bool < int64 < float64 < text < bytes)
 # is fixed. A future scalar type takes the next free tag and sorts after
 # every existing type; existing tags never reorder. The allocation registry
 # enforces this.
@@ -30,7 +30,7 @@ format storage v1
 
 domain scalar {
   comparator "rad::engine::lir::Value::compare"
-  cases null bool int64 float64 text
+  cases null bool int64 float64 text bytes
 }
 
 # Base-128 varint, least-significant group first, continuation high bit.
@@ -98,6 +98,13 @@ codec ordered_scalar {
     escape x"00" -> x"00 ff"
     terminator x"00 01"
   }
+  case bytes {
+    tag x"06"
+    const "TAG_BYTES"
+    encoder "encode_bytes" form vec
+    escape x"00" -> x"00 ff"
+    terminator x"00 01"
+  }
   vectors {
     accept x"01" = null
     accept x"02 00" = false
@@ -106,12 +113,15 @@ codec ordered_scalar {
     accept x"04 7f ff ff ff ff ff ff ff" = float -0.0 "the key layer distinguishes the zero signs; the semantic layer above erases them"
     accept x"05 00 01" = text ""
     accept x"05 61 00 ff 62 00 01" = text "a\0b"
+    accept x"06 00 01" = bytes x""
+    accept x"06 61 00 ff 62 00 01" = bytes x"61 00 62"
     order null < false < true
     order int -1 < int 0 < int 1
     order float -0.0 < float 0.0
     order float -1.7976931348623157e308 < float -1.5 < float 1.5 < float 1.7976931348623157e308
     order text "" < text "a" < text "a\0" < text "a\0b" < text "app" < text "apple" < text "b"
-    order null < false < int 9223372036854775807 < float -1.7976931348623157e308 < text ""
+    order bytes x"" < bytes x"00" < bytes x"00 ff" < bytes x"01"
+    order null < false < int 9223372036854775807 < float -1.7976931348623157e308 < text "" < bytes x""
   }
 }
 
@@ -143,6 +153,8 @@ codec semantic_scalar {
     accept x"05 00 01" = text ""
     accept x"05 61 00 01" = text "a"
     accept x"05 61 00 ff 62 00 01" = text "a\0b"
+    accept x"06 00 01" = bytes x""
+    accept x"06 00 ff ff 00 01" = bytes x"00 ff"
     reject x"" "truncated encoded value"
     reject x"ff" "unknown tag"
     reject x"02" "truncated bool"
@@ -154,6 +166,9 @@ codec semantic_scalar {
     reject x"05 61" "unterminated text"
     reject x"05 61 00" "truncated text escape"
     reject x"05 61 00 02" "malformed text escape"
+    reject x"06 61" "unterminated bytes"
+    reject x"06 61 00" "truncated bytes escape"
+    reject x"06 61 00 02" "malformed bytes escape"
   }
 }
 
@@ -186,6 +201,9 @@ codec compact_payload {
   case text {
     payload "raw UTF-8 bytes, no escaping, no terminator"
   }
+  case bytes {
+    payload "raw bytes, no escaping, no terminator"
+  }
 }
 
 # The conformance schema record laws and vectors run against. The first
@@ -195,6 +213,7 @@ fixture table fuzz_rows {
   column c2 2 "count" int64
   column c3 3 "ready" bool
   column c4 4 "score" float64
+  column c5 5 "payload" bytes
 }
 
 # One stored row. Physical column IDs are `c` followed by a positive decimal

@@ -1,7 +1,8 @@
 use crate::engine::catalog::model::{DefaultFunction, Table};
 use crate::engine::catalog::store;
 use crate::engine::kv::KvView;
-use crate::engine::lir::{Row, Value};
+use crate::engine::lir::{BytesValue, Row, Value};
+use crate::identifiers::{self, Generator};
 use crate::runtime::RuntimeEffects;
 
 use super::super::{Error, ErrorKind, ErrorReason, Result, codec};
@@ -101,15 +102,25 @@ fn prepare_stateless(table: &Table, row: &Row, runtime: &dyn RuntimeEffects) -> 
             continue;
         };
         let value = match default.function {
-            Some(DefaultFunction::Uuid) => Value::Text(runtime.new_uuid().to_string()),
+            Some(DefaultFunction::UuidV4) => generated(runtime, Generator::UuidV4),
+            Some(DefaultFunction::UuidV7) => generated(runtime, Generator::UuidV7),
+            Some(DefaultFunction::Ulid) => generated(runtime, Generator::Ulid),
+            Some(DefaultFunction::Xid) => generated(runtime, Generator::Xid),
             Some(DefaultFunction::NowMs) => Value::Int64(runtime.now().timestamp_millis()),
             Some(DefaultFunction::Increment) => continue,
-            None => codec::literal_default_value(column.scalar_type, default)
+            None => codec::literal_default_value(column.scalar_type, &column.format, default)
                 .expect("literal default has no generator"),
         };
         with_defaults.insert(column.name.clone(), value);
     }
     with_defaults
+}
+
+fn generated(runtime: &dyn RuntimeEffects, generator: Generator) -> Value {
+    Value::Bytes(BytesValue::formatted(
+        runtime.new_identifier(generator),
+        generator.format(),
+    ))
 }
 
 fn validate_before_increment(table: &Table, row: &Row) -> Result<()> {
@@ -179,7 +190,14 @@ pub(super) fn normalize(table: &Table, row: &Row) -> Result<Row> {
             continue;
         }
         let value = value.expect("non-null value checked");
-        normalized.insert(column.name.clone(), value.clone());
+        let value = match value {
+            Value::Bytes(value) => match identifiers::Format::recognize(&column.format) {
+                Some(format) => Value::Bytes(BytesValue::formatted(value.as_slice(), format)),
+                None => Value::Bytes(value.clone()),
+            },
+            value => value.clone(),
+        };
+        normalized.insert(column.name.clone(), value);
     }
     Ok(normalized)
 }
@@ -209,6 +227,16 @@ fn validate_column(
                 value.scalar_type()
             ),
         ));
+    }
+    if let Value::Bytes(value) = value
+        && let Some(format) = identifiers::Format::recognize(&column.format)
+    {
+        identifiers::validate(format, value.as_slice()).map_err(|error| {
+            Error::message(
+                ErrorKind::InvalidInput,
+                format!("exec: column {:?}: {error}", column.name),
+            )
+        })?;
     }
     Ok(())
 }

@@ -1182,6 +1182,11 @@ fn encode_synopsis_values<'a>(values: impl Iterator<Item = &'a SynopsisValue>) -
                 output.extend_from_slice(&bits.to_be_bytes());
             }
             SynopsisValue::Bool(value) => output.extend_from_slice(&[4, u8::from(*value)]),
+            SynopsisValue::Bytes(value) => {
+                output.push(5);
+                output.extend_from_slice(&(value.len() as u64).to_be_bytes());
+                output.extend_from_slice(value);
+            }
         }
     }
     output
@@ -1430,6 +1435,11 @@ fn encode_values<'a>(values: impl Iterator<Item = Option<&'a Value>>) -> Option<
                 output.extend_from_slice(&bits.to_be_bytes());
             }
             Value::Bool(value) => output.extend_from_slice(&[4, u8::from(*value)]),
+            Value::Bytes(value) => {
+                output.push(5);
+                output.extend_from_slice(&(value.as_slice().len() as u64).to_be_bytes());
+                output.extend_from_slice(value.as_slice());
+            }
             Value::Null(_) => return None,
         }
     }

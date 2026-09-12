@@ -714,6 +714,9 @@ fn generated_value(scalar_type: ScalarType, nullable: bool, choices: &mut Choice
         ScalarType::Int64 => Value::Int64([-2, -1, 0, 1, 2][choices.index(5)]),
         ScalarType::Float64 => Value::Float64([-1.5, -0.0, 0.0, 1.5, 2.5][choices.index(5)]),
         ScalarType::Bool => Value::Bool(choices.coin()),
+        ScalarType::Bytes => Value::Bytes(rad::engine::lir::BytesValue::raw(
+            [vec![], vec![0], vec![0, 0xff], vec![1, 2, 3]][choices.index(4)].clone(),
+        )),
     }
 }
 
@@ -806,6 +809,7 @@ fn scalar_kind(value: ScalarType) -> Kind {
         ScalarType::Int64 => Kind::Int64,
         ScalarType::Float64 => Kind::Float64,
         ScalarType::Bool => Kind::Bool,
+        ScalarType::Bytes => Kind::Bytes,
     }
 }
 
@@ -816,6 +820,7 @@ fn raw(value: &Value) -> RawScalar {
         Value::Int64(value) => RawScalar::Number(value.to_string()),
         Value::Float64(value) => RawScalar::Number(value.to_string()),
         Value::Bool(value) => RawScalar::Bool(*value),
+        Value::Bytes(value) => RawScalar::Bytes(value.as_slice().to_vec()),
     }
 }
 
@@ -828,6 +833,7 @@ fn literal(value: &Value) -> Expr {
             Value::Int64(_) => Kind::Int64,
             Value::Float64(_) => Kind::Float64,
             Value::Bool(_) => Kind::Bool,
+            Value::Bytes(_) => Kind::Bytes,
         }),
     })
 }

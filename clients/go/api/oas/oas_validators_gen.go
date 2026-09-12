@@ -134,7 +134,13 @@ func (s *ColumnDefault) Validate() error {
 
 func (s ColumnDefaultFunc) Validate() error {
 	switch s {
-	case "uuid":
+	case "uuid_v4":
+		return nil
+	case "uuid_v7":
+		return nil
+	case "ulid":
+		return nil
+	case "xid":
 		return nil
 	case "now_ms":
 		return nil

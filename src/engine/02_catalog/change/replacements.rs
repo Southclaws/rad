@@ -41,9 +41,10 @@ impl Mutation<'_> {
                 }
             }
         }
-        validate_default(
+        validate_column_semantics(
             &source.name,
             definition.scalar_type,
+            &definition.format,
             definition.default.as_ref(),
         )?;
         if source
@@ -425,28 +426,6 @@ pub(super) fn validate_dependencies(
         return Err(input(format!(
             "catalog: cannot make column {:?} nullable while a valid constraint requires non-null values",
             source.name
-        )));
-    }
-    Ok(())
-}
-
-fn validate_default(
-    name: &str,
-    scalar_type: ScalarType,
-    default: Option<&DefaultValue>,
-) -> Result<()> {
-    if let Some(function) = default.and_then(|value| value.function)
-        && !matches!(
-            (function, scalar_type),
-            (DefaultFunction::Uuid, ScalarType::Text)
-                | (
-                    DefaultFunction::NowMs | DefaultFunction::Increment,
-                    ScalarType::Int64
-                )
-        )
-    {
-        return Err(input(format!(
-            "catalog: column {name:?}: default function does not support {scalar_type:?}"
         )));
     }
     Ok(())

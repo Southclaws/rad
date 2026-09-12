@@ -91,7 +91,7 @@ properties:
             type:
               description: Scalar type of every stored cell in this column.
               type: string
-              enum: [text, int64, float64, bool]
+              enum: [text, int64, float64, bool, bytes]
             nullable:
               description: Whether stored cells may be null.
               type: boolean
@@ -110,7 +110,7 @@ properties:
                     Generator function. Present when the default is generated
                     per row instead of a literal.
                   type: string
-                  enum: [uuid, now_ms, increment]
+                  enum: [uuid_v4, uuid_v7, ulid, xid, now_ms, increment]
                 text:
                   description: Literal used when the column type is text.
                   type: string
@@ -123,6 +123,14 @@ properties:
                 bool:
                   description: Literal used when the column type is bool.
                   type: boolean
+                bytes:
+                  description: Literal bytes as unsigned octets.
+                  type: array
+                  items:
+                    description: One unsigned octet.
+                    type: integer
+                    minimum: 0
+                    maximum: 255
             missing_value:
               description: >-
                 Literal supplied for cells absent from stored rows, so column
@@ -138,7 +146,7 @@ properties:
                     present in the shape because the default-value form is
                     shared.
                   type: string
-                  enum: [uuid, now_ms, increment]
+                  enum: [uuid_v4, uuid_v7, ulid, xid, now_ms, increment]
                 text:
                   description: Literal used when the column type is text.
                   type: string
@@ -151,6 +159,14 @@ properties:
                 bool:
                   description: Literal used when the column type is bool.
                   type: boolean
+                bytes:
+                  description: Literal bytes as unsigned octets.
+                  type: array
+                  items:
+                    description: One unsigned octet.
+                    type: integer
+                    minimum: 0
+                    maximum: 255
       primary_key:
         description: >-
           Column names forming the primary key, in key order. The encoded

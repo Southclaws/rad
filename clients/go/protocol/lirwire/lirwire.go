@@ -15,8 +15,8 @@ type BranchArm struct {
 	When Expr `json:"when"`
 }
 
-// The logical type of a scalar value: `text`, `int64`, `float64`, or
-// `bool`.
+// The logical type of a scalar value: `text`, `int64`, `float64`, `bool`,
+// or `bytes`.
 type ScalarType string
 
 const (
@@ -24,6 +24,7 @@ const (
 	ScalarTypeInt64   ScalarType = "int64"
 	ScalarTypeFloat64 ScalarType = "float64"
 	ScalarTypeBool    ScalarType = "bool"
+	ScalarTypeBytes   ScalarType = "bytes"
 )
 
 var ScalarTypeValues = []ScalarType{
@@ -31,6 +32,7 @@ var ScalarTypeValues = []ScalarType{
 	ScalarTypeInt64,
 	ScalarTypeFloat64,
 	ScalarTypeBool,
+	ScalarTypeBytes,
 }
 
 // The equality relation used for literal spans in a `text_match`: exact
@@ -306,6 +308,8 @@ func (w *Value) UnmarshalJSON(data []byte) error {
 		v = &Float64Value{}
 	case "bool":
 		v = &BoolValue{}
+	case "bytes":
+		v = &BytesValue{}
 	default:
 		return fmt.Errorf("Value: unknown type %q", peek.Type)
 	}
@@ -367,6 +371,19 @@ type BoolValue struct {
 func (BoolValue) isValue() {}
 
 func (BoolValue) ValueType() string { return "bool" }
+
+// An arbitrary byte sequence encoded as canonical padded RFC 4648 base64,
+// or a bytes NULL when `value` is absent. A context-free LIR literal has no
+// catalog format metadata, so identifier text is not accepted here.
+type BytesValue struct {
+	Type string `json:"type"`
+	// Canonical padded base64; absent for a NULL.
+	Value *string `json:"value,omitempty"`
+}
+
+func (BytesValue) isValue() {}
+
+func (BytesValue) ValueType() string { return "bytes" }
 
 // LIR is Rad's low-level intermediate representation: the relation tree a
 // client sends with `QUERY /execute` or embeds in a PIR program. The engine
@@ -952,8 +969,9 @@ func (RecursiveBinding) BindingType() string { return "recursive" }
 // One schema-directed scalar payload, used inside a `rows` relation where
 // each column already declares its type. A string is decoded against the
 // corresponding `RowsColumn.type` — numbers as lossless strings, `bool` as
-// "true"/"false", so precision survives and the type is never repeated per
-// cell; JSON null is a typed NULL, valid only when that column is nullable.
+// "true"/"false", and `bytes` as canonical padded base64, so precision
+// survives and the type is never repeated per cell; JSON null is a typed
+// NULL, valid only when that column is nullable.
 // Unlike `Value`, a cell carries no type of its own — the column supplies
 // it once for the whole column.
 type Cell = *string

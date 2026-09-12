@@ -323,6 +323,9 @@ pub(super) fn coerce_literal(raw: RawScalar, wanted: &Type) -> Result<bound::Exp
         (RawScalar::Null, scalar_type) => Value::Null(scalar_type),
         (RawScalar::Text(value), ScalarType::Text) => Value::Text(value),
         (RawScalar::Bool(value), ScalarType::Bool) => Value::Bool(value),
+        (RawScalar::Bytes(value), ScalarType::Bytes) => {
+            Value::Bytes(lir::BytesValue::raw(value))
+        }
         (RawScalar::Number(value), ScalarType::Int64) => {
             Value::Int64(value.parse().map_err(|_| {
                 invalid(
@@ -366,6 +369,7 @@ fn scalar_type_name(scalar_type: ScalarType) -> &'static str {
         ScalarType::Int64 => "int64",
         ScalarType::Float64 => "float64",
         ScalarType::Bool => "bool",
+        ScalarType::Bytes => "bytes",
     }
 }
 
@@ -375,6 +379,7 @@ fn raw_scalar_type_name(raw: &RawScalar) -> &'static str {
         RawScalar::Text(_) => "string",
         RawScalar::Number(_) => "json.Number",
         RawScalar::Bool(_) => "bool",
+        RawScalar::Bytes(_) => "bytes",
     }
 }
 
@@ -386,6 +391,7 @@ fn infer_literal(raw: RawScalar) -> Result<Value> {
         )),
         RawScalar::Text(value) => Ok(Value::Text(value)),
         RawScalar::Bool(value) => Ok(Value::Bool(value)),
+        RawScalar::Bytes(value) => Ok(Value::Bytes(lir::BytesValue::raw(value))),
         RawScalar::Number(value) => {
             if let Ok(integer) = value.parse::<i64>() {
                 Ok(Value::Int64(integer))

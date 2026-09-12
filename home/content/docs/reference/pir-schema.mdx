@@ -607,7 +607,7 @@ GeneratorDefault
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `func` | `uuid \| now_ms \| increment` | Yes | A builtin generator; `uuid` requires text, while `now_ms` and `increment` require int64. |
+| `func` | `uuid_v4 \| uuid_v7 \| ulid \| xid \| now_ms \| increment` | Yes | A builtin generator. `uuid_v4`, `uuid_v7`, `ulid`, and `xid` require a bytes column with the matching identifier format; `now_ms` and `increment` require int64. |
 | `kind` | `generator` | Yes |  |
 
 #### `IndexDefinition`

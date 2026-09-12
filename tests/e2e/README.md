@@ -29,7 +29,7 @@ Keeps each fixture self-contained and fast, and means a fixture never breaks
 because an unrelated table changed shape. Same YAML format `rad schema migrate`
 consumes (see `examples/demo/rad.schema.yaml` for the full-featured reference).
 
-Omit `default: uuid()` / `default: now_ms()` on any column whose value feeds
+Omit identifier / `now_ms()` generators on any column whose value feeds
 into `result` or an assertion's `expect` — see Determinism below.
 
 ## `seed.json`
@@ -128,9 +128,9 @@ and `expect` are compared as an exact sequence.
 
 Every value that flows into `result` or an assertion's `expect` must be
 explicit in `seed.json` or `program`, not left to a generated default —
-`uuid()` ids and `now_ms()` timestamps are non-reproducible, so schemas in
+Generated identifiers and `now_ms()` timestamps are non-reproducible, so schemas in
 this directory should supply ids and timestamps as plain literals instead
-(e.g. `"team-eng"`, `1000`) rather than declaring `default: uuid()` /
+(e.g. `"team-eng"`, `1000`) rather than declaring an identifier generator /
 `default: now_ms()` on columns the fixture asserts against.
 
 ## Adding a fixture

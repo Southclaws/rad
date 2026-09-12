@@ -8,6 +8,62 @@ func recBool(m protocol.Record, k string) bool {
 	return b
 }
 
+func recBytes(m protocol.Record, k string) []byte {
+	s, _ := m[k].(string)
+	b, _ := base64.StdEncoding.DecodeString(s)
+	return b
+}
+
+func recUUID(m protocol.Record, k string) [16]byte {
+	var out [16]byte
+	s, _ := m[k].(string)
+	if len(s) != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
+		return out
+	}
+	b, err := hex.DecodeString(strings.ReplaceAll(s, "-", ""))
+	if err == nil && len(b) == len(out) {
+		copy(out[:], b)
+	}
+	return out
+}
+
+func recULID(m protocol.Record, k string) [16]byte {
+	var out [16]byte
+	s, _ := m[k].(string)
+	if len(s) != 26 {
+		return out
+	}
+	parseIdentifierBits(out[:], s, "0123456789ABCDEFGHJKMNPQRSTVWXYZ")
+	return out
+}
+
+func recXID(m protocol.Record, k string) [12]byte {
+	var out [12]byte
+	s, _ := m[k].(string)
+	if len(s) != 20 {
+		return out
+	}
+	parseIdentifierBits(out[:], s, "0123456789abcdefghijklmnopqrstuv")
+	return out
+}
+
+func parseIdentifierBits(out []byte, s, alphabet string) {
+	value := new(big.Int)
+	radix := big.NewInt(32)
+	digit := new(big.Int)
+	for _, r := range s {
+		index := strings.IndexRune(alphabet, r)
+		if index < 0 {
+			return
+		}
+		value.Mul(value, radix)
+		value.Add(value, digit.SetInt64(int64(index)))
+	}
+	if value.BitLen() <= len(out)*8 {
+		value.FillBytes(out)
+	}
+}
+
 func recInt64(m protocol.Record, k string) int64 {
 	n, _ := m[k].(json.Number)
 	i, _ := n.Int64()
@@ -49,5 +105,37 @@ func recBoolPtr(m protocol.Record, k string) *bool {
 		return nil
 	}
 	v := recBool(m, k)
+	return &v
+}
+
+func recBytesPtr(m protocol.Record, k string) *[]byte {
+	if m[k] == nil {
+		return nil
+	}
+	v := recBytes(m, k)
+	return &v
+}
+
+func recUUIDPtr(m protocol.Record, k string) *[16]byte {
+	if m[k] == nil {
+		return nil
+	}
+	v := recUUID(m, k)
+	return &v
+}
+
+func recULIDPtr(m protocol.Record, k string) *[16]byte {
+	if m[k] == nil {
+		return nil
+	}
+	v := recULID(m, k)
+	return &v
+}
+
+func recXIDPtr(m protocol.Record, k string) *[12]byte {
+	if m[k] == nil {
+		return nil
+	}
+	v := recXID(m, k)
 	return &v
 }

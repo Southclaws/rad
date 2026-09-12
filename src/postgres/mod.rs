@@ -1182,6 +1182,10 @@ fn decode_parameters_inner(portal: &Portal<PgPrepared>) -> PgWireResult<Vec<Para
                     .parameter::<bool>(index, &pg_type)?
                     .map(RawScalar::Bool)
                     .unwrap_or(RawScalar::Null),
+                ScalarType::Bytes => portal
+                    .parameter::<Vec<u8>>(index, &pg_type)?
+                    .map(RawScalar::Bytes)
+                    .unwrap_or(RawScalar::Null),
             };
             Ok(Parameter { scalar_type, value })
         })
@@ -1218,6 +1222,7 @@ fn pg_type(value: ScalarType) -> Type {
         ScalarType::Int64 => Type::INT8,
         ScalarType::Float64 => Type::FLOAT8,
         ScalarType::Bool => Type::BOOL,
+        ScalarType::Bytes => Type::BYTEA,
     }
 }
 
@@ -1483,6 +1488,7 @@ fn catalog_type(scalar_type: ScalarType, format: &str) -> (&'static str, &'stati
             ScalarType::Int64 => ("bigint", "bigint", 20),
             ScalarType::Float64 => ("double precision", "double precision", 701),
             ScalarType::Bool => ("boolean", "boolean", 16),
+            ScalarType::Bytes => ("bytea", "bytea", 17),
         },
     }
 }
@@ -1490,14 +1496,17 @@ fn catalog_type(scalar_type: ScalarType, format: &str) -> (&'static str, &'stati
 fn default_datum(
     default: Option<&crate::engine::catalog::model::DefaultValue>,
     scalar_type: ScalarType,
-    _format: &str,
+    format: &str,
 ) -> Datum {
     let Some(default) = default else {
         return Datum::Null;
     };
     if let Some(function) = default.function {
         return text(match function {
-            crate::engine::catalog::model::DefaultFunction::Uuid => "gen_random_uuid()",
+            crate::engine::catalog::model::DefaultFunction::UuidV4 => "gen_random_uuid()",
+            crate::engine::catalog::model::DefaultFunction::UuidV7 => "uuidv7()",
+            crate::engine::catalog::model::DefaultFunction::Ulid => "ulid()",
+            crate::engine::catalog::model::DefaultFunction::Xid => "xid()",
             crate::engine::catalog::model::DefaultFunction::NowMs => "CURRENT_TIMESTAMP",
             crate::engine::catalog::model::DefaultFunction::Increment => "increment()",
         });
@@ -1513,6 +1522,25 @@ fn default_datum(
         }
         ScalarType::Float64 => text(&default.float64.to_string()),
         ScalarType::Bool => text(if default.bool_value { "true" } else { "false" }),
+        ScalarType::Bytes => {
+            if let Some(format) = crate::identifiers::Format::recognize(format) {
+                text(&format!(
+                    "'{}'::{}",
+                    crate::identifiers::render(format, &default.bytes)
+                        .expect("catalog validates formatted bytes defaults"),
+                    format.name()
+                ))
+            } else {
+                text(&format!(
+                    "'\\x{}'::bytea",
+                    default
+                        .bytes
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                ))
+            }
+        }
     }
 }
 

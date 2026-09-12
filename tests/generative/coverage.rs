@@ -221,12 +221,33 @@ fn catalog_generator_reaches_each_declared_shape() {
                     ScalarType::Int64 => "column.int64",
                     ScalarType::Float64 => "column.float64",
                     ScalarType::Bool => "column.bool",
+                    ScalarType::Bytes => "column.bytes",
                 });
                 features.insert(if column.nullable {
                     "column.nullable"
                 } else {
                     "column.required"
                 });
+                if !column.format.is_empty() {
+                    features.insert(match column.format.as_str() {
+                        "uuid" => "format.uuid",
+                        "ulid" => "format.ulid",
+                        "xid" => "format.xid",
+                        _ => "format.unknown",
+                    });
+                }
+                if let Some(function) = column.default.as_ref().and_then(|value| value.function) {
+                    features.insert(match function {
+                        rad::engine::catalog::model::DefaultFunction::UuidV4 => "generator.uuid_v4",
+                        rad::engine::catalog::model::DefaultFunction::UuidV7 => "generator.uuid_v7",
+                        rad::engine::catalog::model::DefaultFunction::Ulid => "generator.ulid",
+                        rad::engine::catalog::model::DefaultFunction::Xid => "generator.xid",
+                        rad::engine::catalog::model::DefaultFunction::NowMs => "generator.now_ms",
+                        rad::engine::catalog::model::DefaultFunction::Increment => {
+                            "generator.increment"
+                        }
+                    });
+                }
             }
         }
         for row in case.data.values().flatten() {
@@ -249,11 +270,20 @@ fn catalog_generator_reaches_each_declared_shape() {
         "catalog.index",
         "catalog.multiple_tables",
         "column.bool",
+        "column.bytes",
         "column.float64",
         "column.int64",
         "column.nullable",
         "column.required",
         "column.text",
+        "format.ulid",
+        "format.unknown",
+        "format.uuid",
+        "format.xid",
+        "generator.ulid",
+        "generator.uuid_v4",
+        "generator.uuid_v7",
+        "generator.xid",
         "data.empty_table",
         "data.null",
         "data.populated_table",

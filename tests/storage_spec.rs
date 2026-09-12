@@ -35,13 +35,21 @@ fn generated_text(state: &mut u64) -> String {
 }
 
 fn generated_scalar(state: &mut u64) -> Value {
-    match splitmix64(state) % 6 {
+    match splitmix64(state) % 7 {
         0 => Value::Null(ScalarType::Text),
         1 => Value::Bool(splitmix64(state) % 2 == 1),
         2 => Value::Int64(splitmix64(state) as i64),
         3 => {
             let value = f64::from_bits(splitmix64(state));
             Value::Float64(if value.is_finite() { value } else { 0.5 })
+        }
+        4 => {
+            let length = (splitmix64(state) % 24) as usize;
+            Value::Bytes(rad::engine::lir::BytesValue::raw(
+                (0..length)
+                    .map(|_| splitmix64(state) as u8)
+                    .collect::<Vec<_>>(),
+            ))
         }
         _ => Value::Text(generated_text(state)),
     }
@@ -70,6 +78,7 @@ fn kv_encode(value: &Value) -> Option<Vec<u8>> {
         Value::Int64(value) => rad::engine::kv::key_encoding::encode_i64(*value).to_vec(),
         Value::Float64(value) => rad::engine::kv::key_encoding::encode_f64(*value)?.to_vec(),
         Value::Text(value) => rad::engine::kv::key_encoding::encode_text(value),
+        Value::Bytes(value) => rad::engine::kv::key_encoding::encode_bytes(value.as_slice()),
     })
 }
 
@@ -101,6 +110,7 @@ fn fuzz_rows_table() -> Table {
             fuzz_rows_column("c2", 2, "count", ScalarType::Int64),
             fuzz_rows_column("c3", 3, "ready", ScalarType::Bool),
             fuzz_rows_column("c4", 4, "score", ScalarType::Float64),
+            fuzz_rows_column("c5", 5, "payload", ScalarType::Bytes),
         ],
         primary_key: vec!["id".into()],
         indexes: Vec::new(),
@@ -288,6 +298,11 @@ fn ordered_scalar_tags_pin_the_cross_type_order() {
         0x05,
         "tag for text"
     );
+    assert_eq!(
+        rad::engine::kv::key_encoding::TAG_BYTES,
+        0x06,
+        "tag for bytes"
+    );
 }
 
 #[test]
@@ -320,6 +335,20 @@ fn ordered_scalar_vectors() {
     assert_eq!(
         kv_encode(&Value::Text("a\0b".into())).expect("vector value encodes"),
         &[0x05, 0x61, 0x00, 0xff, 0x62, 0x00, 0x01]
+    );
+    assert_eq!(
+        kv_encode(&Value::Bytes(rad::engine::lir::BytesValue::raw(
+            Vec::<u8>::new()
+        )))
+        .expect("vector value encodes"),
+        &[0x06, 0x00, 0x01]
+    );
+    assert_eq!(
+        kv_encode(&Value::Bytes(rad::engine::lir::BytesValue::raw(vec![
+            0x61, 0x00, 0x62
+        ])))
+        .expect("vector value encodes"),
+        &[0x06, 0x61, 0x00, 0xff, 0x62, 0x00, 0x01]
     );
     let ordered_0 = kv_encode(&Value::Null(ScalarType::Text)).expect("order vector encodes");
     let ordered_1 = kv_encode(&Value::Bool(false)).expect("order vector encodes");
@@ -356,17 +385,37 @@ fn ordered_scalar_vectors() {
     assert!(ordered_15 < ordered_16, "order vector must ascend");
     assert!(ordered_16 < ordered_17, "order vector must ascend");
     assert!(ordered_17 < ordered_18, "order vector must ascend");
-    let ordered_19 = kv_encode(&Value::Null(ScalarType::Text)).expect("order vector encodes");
-    let ordered_20 = kv_encode(&Value::Bool(false)).expect("order vector encodes");
-    let ordered_21 =
-        kv_encode(&Value::Int64(9223372036854775807_i64)).expect("order vector encodes");
-    let ordered_22 =
-        kv_encode(&Value::Float64(-1.7976931348623157e308_f64)).expect("order vector encodes");
-    let ordered_23 = kv_encode(&Value::Text("".into())).expect("order vector encodes");
+    let ordered_19 = kv_encode(&Value::Bytes(rad::engine::lir::BytesValue::raw(
+        Vec::<u8>::new(),
+    )))
+    .expect("order vector encodes");
+    let ordered_20 = kv_encode(&Value::Bytes(rad::engine::lir::BytesValue::raw(vec![0x00])))
+        .expect("order vector encodes");
+    let ordered_21 = kv_encode(&Value::Bytes(rad::engine::lir::BytesValue::raw(vec![
+        0x00, 0xff,
+    ])))
+    .expect("order vector encodes");
+    let ordered_22 = kv_encode(&Value::Bytes(rad::engine::lir::BytesValue::raw(vec![0x01])))
+        .expect("order vector encodes");
     assert!(ordered_19 < ordered_20, "order vector must ascend");
     assert!(ordered_20 < ordered_21, "order vector must ascend");
     assert!(ordered_21 < ordered_22, "order vector must ascend");
-    assert!(ordered_22 < ordered_23, "order vector must ascend");
+    let ordered_23 = kv_encode(&Value::Null(ScalarType::Text)).expect("order vector encodes");
+    let ordered_24 = kv_encode(&Value::Bool(false)).expect("order vector encodes");
+    let ordered_25 =
+        kv_encode(&Value::Int64(9223372036854775807_i64)).expect("order vector encodes");
+    let ordered_26 =
+        kv_encode(&Value::Float64(-1.7976931348623157e308_f64)).expect("order vector encodes");
+    let ordered_27 = kv_encode(&Value::Text("".into())).expect("order vector encodes");
+    let ordered_28 = kv_encode(&Value::Bytes(rad::engine::lir::BytesValue::raw(
+        Vec::<u8>::new(),
+    )))
+    .expect("order vector encodes");
+    assert!(ordered_23 < ordered_24, "order vector must ascend");
+    assert!(ordered_24 < ordered_25, "order vector must ascend");
+    assert!(ordered_25 < ordered_26, "order vector must ascend");
+    assert!(ordered_26 < ordered_27, "order vector must ascend");
+    assert!(ordered_27 < ordered_28, "order vector must ascend");
 }
 
 #[test]
@@ -529,6 +578,26 @@ fn semantic_scalar_vectors() {
         rad::engine::exec::codec::encode_value(&expected).expect("accept vector encodes"),
         bytes
     );
+    let bytes: &[u8] = &[0x06, 0x00, 0x01];
+    let expected = Value::Bytes(rad::engine::lir::BytesValue::raw(Vec::<u8>::new()));
+    let (decoded, consumed) =
+        rad::engine::exec::codec::decode_value(bytes).expect("accept vector decodes");
+    assert_eq!(consumed, bytes.len());
+    assert_eq!(decoded, expected);
+    assert_eq!(
+        rad::engine::exec::codec::encode_value(&expected).expect("accept vector encodes"),
+        bytes
+    );
+    let bytes: &[u8] = &[0x06, 0x00, 0xff, 0xff, 0x00, 0x01];
+    let expected = Value::Bytes(rad::engine::lir::BytesValue::raw(vec![0x00, 0xff]));
+    let (decoded, consumed) =
+        rad::engine::exec::codec::decode_value(bytes).expect("accept vector decodes");
+    assert_eq!(consumed, bytes.len());
+    assert_eq!(decoded, expected);
+    assert_eq!(
+        rad::engine::exec::codec::encode_value(&expected).expect("accept vector encodes"),
+        bytes
+    );
     // reject: truncated encoded value
     assert!(
         rad::engine::exec::codec::decode_value(&[]).is_err(),
@@ -592,6 +661,21 @@ fn semantic_scalar_vectors() {
     assert!(
         rad::engine::exec::codec::decode_value(&[0x05, 0x61, 0x00, 0x02]).is_err(),
         "malformed text escape"
+    );
+    // reject: unterminated bytes
+    assert!(
+        rad::engine::exec::codec::decode_value(&[0x06, 0x61]).is_err(),
+        "unterminated bytes"
+    );
+    // reject: truncated bytes escape
+    assert!(
+        rad::engine::exec::codec::decode_value(&[0x06, 0x61, 0x00]).is_err(),
+        "truncated bytes escape"
+    );
+    // reject: malformed bytes escape
+    assert!(
+        rad::engine::exec::codec::decode_value(&[0x06, 0x61, 0x00, 0x02]).is_err(),
+        "malformed bytes escape"
     );
 }
 
@@ -711,6 +795,7 @@ fn row_body_vectors() {
         ("count".into(), Value::Int64(7_i64)),
         ("ready".into(), Value::Bool(true)),
         ("score".into(), Value::Float64(1.5_f64)),
+        ("payload".into(), Value::Null(ScalarType::Bytes)),
     ]);
     assert_eq!(
         rad::engine::exec::codec::unmarshal_row(&table, bytes).expect("accept vector decodes"),
@@ -723,6 +808,7 @@ fn row_body_vectors() {
         ("count".into(), Value::Null(ScalarType::Int64)),
         ("ready".into(), Value::Null(ScalarType::Bool)),
         ("score".into(), Value::Null(ScalarType::Float64)),
+        ("payload".into(), Value::Null(ScalarType::Bytes)),
     ]);
     assert_eq!(
         rad::engine::exec::codec::unmarshal_row(&table, bytes).expect("accept vector decodes"),
@@ -735,6 +821,7 @@ fn row_body_vectors() {
         ("count".into(), Value::Null(ScalarType::Int64)),
         ("ready".into(), Value::Null(ScalarType::Bool)),
         ("score".into(), Value::Null(ScalarType::Float64)),
+        ("payload".into(), Value::Null(ScalarType::Bytes)),
     ]);
     assert_eq!(
         rad::engine::exec::codec::unmarshal_row(&table, bytes).expect("accept vector decodes"),
@@ -867,6 +954,14 @@ fn row_body_round_trip_and_canonical_bytes_for_seeded_samples() {
                     let value = f64::from_bits(splitmix64(&mut state));
                     Value::Float64(if value.is_finite() { value } else { 0.5 })
                 }
+                (_, ScalarType::Bytes) => {
+                    let length = (splitmix64(&mut state) % 24) as usize;
+                    Value::Bytes(rad::engine::lir::BytesValue::raw(
+                        (0..length)
+                            .map(|_| splitmix64(&mut state) as u8)
+                            .collect::<Vec<_>>(),
+                    ))
+                }
             };
             row.insert(column.name.clone(), value);
         }
@@ -946,6 +1041,7 @@ fn row_body_cell_operations_form_an_algebra() {
                 ScalarType::Int64 => Value::Int64(i64::MIN),
                 ScalarType::Bool => Value::Bool(true),
                 ScalarType::Float64 => Value::Float64(-0.0),
+                ScalarType::Bytes => Value::Bytes(rad::engine::lir::BytesValue::raw([0, 0xff, 1])),
             };
             let _ = rad::engine::exec::codec::read_column_value(input, column);
             for value in [representative, Value::Null(column.scalar_type)] {

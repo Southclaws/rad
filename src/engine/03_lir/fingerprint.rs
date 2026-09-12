@@ -68,6 +68,7 @@ const VALUE_INT64: u8 = 2;
 const VALUE_FLOAT64: u8 = 3;
 const VALUE_BOOL: u8 = 4;
 const VALUE_NULL: u8 = 5;
+const VALUE_BYTES: u8 = 6;
 const VALUE_PLACEHOLDER: u8 = 6;
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -538,6 +539,11 @@ fn request_raw_scalar(payload: &mut RequestWriter, value: &super::unbound::RawSc
             payload.byte(VALUE_BOOL);
             payload.byte(u8::from(*value));
         }
+        RawScalar::Bytes(value) => {
+            payload.byte(VALUE_BYTES);
+            payload.len(value.len());
+            payload.bytes.extend_from_slice(value);
+        }
     }
 }
 
@@ -639,6 +645,12 @@ impl Pair {
                 self.exact.push(VALUE_BOOL);
                 self.exact.push(u8::from(*value));
             }
+            Value::Bytes(value) => {
+                self.exact.push(VALUE_BYTES);
+                self.exact
+                    .extend_from_slice(&(value.as_slice().len() as u64).to_be_bytes());
+                self.exact.extend_from_slice(value.as_slice());
+            }
             Value::Null(scalar_type) => {
                 self.exact.push(VALUE_NULL);
                 self.exact.push(scalar_type_byte(*scalar_type));
@@ -667,6 +679,7 @@ fn scalar_type_byte(value: crate::engine::catalog::model::ScalarType) -> u8 {
         ScalarType::Int64 => 2,
         ScalarType::Float64 => 3,
         ScalarType::Bool => 4,
+        ScalarType::Bytes => 5,
     }
 }
 
@@ -678,6 +691,7 @@ fn kind_byte(value: Kind) -> u8 {
         Kind::Bool => 4,
         Kind::Row => 5,
         Kind::Array => 6,
+        Kind::Bytes => 7,
     }
 }
 

@@ -157,6 +157,62 @@ fn pir_increment_default_round_trips_and_lowers_with_type_checking() {
 }
 
 #[test]
+fn bytes_literals_round_trip_as_canonical_base64() {
+    let raw = r#"{
+        "nodes": {
+            "row": {
+                "kind": "rows",
+                "scope": "row",
+                "columns": [{"name": "payload", "type": "bytes"}],
+                "rows": [["AP8="]]
+            },
+            "project": {
+                "kind": "project",
+                "input": "row",
+                "fields": [{
+                    "as": "literal",
+                    "expr": {"kind": "lit", "value": {"type": "bytes", "value": "AP8="}}
+                }]
+            }
+        },
+        "root": {"node": "project", "cardinality": "many"}
+    }"#;
+    let wire = serde_json::from_str::<lir::Query>(raw).unwrap();
+    let encoded = serde_json::to_string(&wire).unwrap();
+    assert!(encoded.contains(r#""type":"bytes","value":"AP8=""#));
+    assert!(super::lower_lir(wire).is_ok());
+
+    for invalid in [raw.replace("AP8=", "_P8="), raw.replace("AP8=", "AP8")] {
+        let wire = serde_json::from_str::<lir::Query>(&invalid).unwrap();
+        assert!(super::lower_lir(wire).is_err());
+    }
+}
+
+#[test]
+fn explicit_identifier_generators_lower_only_for_matching_bytes_formats() {
+    for (function, format) in [
+        ("uuid_v4", "uuid"),
+        ("uuid_v7", "uuid"),
+        ("ulid", "ulid"),
+        ("xid", "xid"),
+    ] {
+        let raw = format!(
+            r#"{{"statements":[{{"kind":"create_table","name":"create","table":{{"name":"items","columns":[{{"name":"id","type":"bytes","format":"{format}","default":{{"kind":"generator","func":"{function}"}}}}],"primary_key":["id"]}}}}]}}"#
+        );
+        let wire = serde_json::from_str::<pir::Program>(&raw).unwrap();
+        assert!(super::lower_pir(wire).is_ok(), "{function}");
+    }
+
+    for raw in [
+        r#"{"statements":[{"kind":"create_table","name":"create","table":{"name":"items","columns":[{"name":"id","type":"text","format":"uuid","default":{"kind":"generator","func":"uuid_v4"}}],"primary_key":["id"]}}]}"#,
+        r#"{"statements":[{"kind":"create_table","name":"create","table":{"name":"items","columns":[{"name":"id","type":"bytes","format":"ulid","default":{"kind":"generator","func":"uuid_v7"}}],"primary_key":["id"]}}]}"#,
+    ] {
+        let wire = serde_json::from_str::<pir::Program>(raw).unwrap();
+        assert!(super::lower_pir(wire).is_err());
+    }
+}
+
+#[test]
 fn omitted_text_match_comparison_lowers_to_exact() {
     let raw = r#"{
         "nodes": {

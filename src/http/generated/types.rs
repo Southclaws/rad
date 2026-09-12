@@ -966,7 +966,7 @@ pub struct SchemaDocument {
 }
 /**A new table's definition, mirroring a `rad.schema.yaml` entry as JSON. The
 direct API may omit logical IDs for the catalog to allocate. Column
-types are `text`, `int64`, `float64`, or `bool`; the primary key is
+types are `text`, `int64`, `float64`, `bool`, or `bytes`; the primary key is
 required and its columns must not be nullable.
 */
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1959,7 +1959,7 @@ impl AsRef<str> for ConflictObject {
 pub struct ColumnInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<ColumnDefault>,
-    ///An optional semantic hint such as `uuid` or `unix_ms`.
+    ///An optional semantic hint such as `uuid`, `ulid`, `xid`, or `unix_ms`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
     ///The stable logical column identity within its table.
@@ -1968,7 +1968,7 @@ pub struct ColumnInfo {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nullable: Option<bool>,
-    ///The column's storage type, one of `text`, `int64`, `float64`, or `bool`.
+    ///The column's storage type, one of `text`, `int64`, `float64`, `bool`, or `bytes`.
     pub r#type: String,
 }
 ///A column definition for a direct catalog create operation.
@@ -1976,7 +1976,7 @@ pub struct ColumnInfo {
 pub struct ColumnDef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<ColumnDefault>,
-    ///An optional semantic hint such as `uuid` or `unix_ms`.
+    ///An optional semantic hint such as `uuid`, `ulid`, `xid`, or `unix_ms`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
     ///An optional stable logical identity; direct mode allocates one when omitted.
@@ -1986,7 +1986,7 @@ pub struct ColumnDef {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nullable: Option<bool>,
-    ///The column's storage type, one of `text`, `int64`, `float64`, or `bool`.
+    ///The column's storage type, one of `text`, `int64`, `float64`, `bool`, or `bytes`.
     pub r#type: String,
 }
 impl ColumnDef {
@@ -2049,27 +2049,34 @@ impl ColumnDefBuilder {
     }
 }
 /**A column default, applied when an insert omits the column: either a
-builtin generator named by `func` (`uuid` on text columns, `now_ms`
-or `increment` on int64 columns) or a literal `value` of the column's type. Exactly
-one of the two is set.
+builtin generator named by `func` (`uuid_v4` or `uuid_v7` on
+`bytes format: uuid`, `ulid` on `bytes format: ulid`, `xid` on
+`bytes format: xid`, and `now_ms` or `increment` on int64 columns)
+or a literal `value` of the column's type. Exactly one is set.
 */
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ColumnDefault {
-    ///A builtin generator: `uuid`, `now_ms`, or `increment`.
+    ///A builtin generator.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub func: Option<ColumnDefaultFunc>,
-    ///A literal of the column's type.
+    ///A literal of the column's type. Formatted byte columns use their canonical identifier text; unformatted bytes use padded base64.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<Value>,
 }
 ///An arbitrary JSON value carried by the HTTP protocol.
 pub type Value = serde_json::Value;
-///A builtin generator: `uuid`, `now_ms`, or `increment`.
+///A builtin generator.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum ColumnDefaultFunc {
     #[default]
-    #[serde(rename = "uuid")]
-    Uuid,
+    #[serde(rename = "uuid_v4")]
+    UuidV4,
+    #[serde(rename = "uuid_v7")]
+    UuidV7,
+    #[serde(rename = "ulid")]
+    Ulid,
+    #[serde(rename = "xid")]
+    Xid,
     #[serde(rename = "now_ms")]
     NowMs,
     #[serde(rename = "increment")]
@@ -2078,7 +2085,10 @@ pub enum ColumnDefaultFunc {
 impl ColumnDefaultFunc {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Uuid => "uuid",
+            Self::UuidV4 => "uuid_v4",
+            Self::UuidV7 => "uuid_v7",
+            Self::Ulid => "ulid",
+            Self::Xid => "xid",
             Self::NowMs => "now_ms",
             Self::Increment => "increment",
         }

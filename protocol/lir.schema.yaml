@@ -1259,10 +1259,10 @@ $defs:
   ScalarType:
     title: ScalarType
     description: |
-      The logical type of a scalar value: `text`, `int64`, `float64`, or
-      `bool`.
+      The logical type of a scalar value: `text`, `int64`, `float64`, `bool`,
+      or `bytes`.
     type: string
-    enum: [text, int64, float64, bool]
+    enum: [text, int64, float64, bool, bytes]
 
   Value:
     title: Value
@@ -1281,6 +1281,7 @@ $defs:
       - { $ref: "#/$defs/Int64Value" }
       - { $ref: "#/$defs/Float64Value" }
       - { $ref: "#/$defs/BoolValue" }
+      - { $ref: "#/$defs/BytesValue" }
 
   TextValue:
     title: TextValue
@@ -1339,14 +1340,31 @@ $defs:
         description: The boolean value; absent for a NULL.
         type: boolean
 
+  BytesValue:
+    title: BytesValue
+    description: |
+      An arbitrary byte sequence encoded as canonical padded RFC 4648 base64,
+      or a bytes NULL when `value` is absent. A context-free LIR literal has no
+      catalog format metadata, so identifier text is not accepted here.
+    type: object
+    additionalProperties: false
+    required: [type]
+    properties:
+      type: { type: string, const: bytes }
+      value:
+        description: Canonical padded base64; absent for a NULL.
+        type: string
+        contentEncoding: base64
+
   Cell:
     title: Cell
     description: |
       One schema-directed scalar payload, used inside a `rows` relation where
       each column already declares its type. A string is decoded against the
       corresponding `RowsColumn.type` — numbers as lossless strings, `bool` as
-      "true"/"false", so precision survives and the type is never repeated per
-      cell; JSON null is a typed NULL, valid only when that column is nullable.
+      "true"/"false", and `bytes` as canonical padded base64, so precision
+      survives and the type is never repeated per cell; JSON null is a typed
+      NULL, valid only when that column is nullable.
       Unlike `Value`, a cell carries no type of its own — the column supplies
       it once for the whole column.
     type: [string, "null"]

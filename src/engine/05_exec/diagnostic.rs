@@ -487,6 +487,7 @@ fn raw_value_with_kind(
                 RawScalar::Text(_) => "?text".to_owned(),
                 RawScalar::Number(_) => "?number".to_owned(),
                 RawScalar::Bool(_) => "?bool".to_owned(),
+                RawScalar::Bytes(_) => "?bytes".to_owned(),
             },
         });
     }
@@ -494,6 +495,7 @@ fn raw_value_with_kind(
         RawScalar::Null => Value::Null,
         RawScalar::Text(value) | RawScalar::Number(value) => Value::String(value.clone()),
         RawScalar::Bool(value) => Value::Bool(*value),
+        RawScalar::Bytes(value) => Value::String(crate::identifiers::encode_base64(value)),
     }
 }
 

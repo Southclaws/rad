@@ -12,7 +12,7 @@ tables:
   - id: 1
     name: users
     columns:
-      - { id: 1, name: id, type: string, pk: true, default: uuid() }
+      - { id: 1, name: id, type: bytes, format: uuid, pk: true, default: uuid_v7() }
       - { id: 2, name: handle, type: string, unique: true }
       - { id: 3, name: bio, type: string, nullable: true }
       - { id: 4, name: created_at, type: int64, format: unix_ms, default: now_ms() }
@@ -84,13 +84,14 @@ engine questions and are explained in [Catalog MVCC](/docs/engine/catalog-mvcc).
 
 ## What the file can express
 
-Column types are `string`, `int64`, `float64`, and `bool`. A column can declare
-`nullable`, `format`, a literal `default`, `uuid()`, `now_ms()`, or
-`increment()` where the type permits it. `increment()` is valid on `int64`
-columns and generates values from one when a create omits the column. Use `pk`,
-`unique`, `index`, and `ref` for common single-column definitions, or the
-table-level `primary_key`, `indexes`, and `foreign_keys` forms for compound
-definitions. `format` is metadata; it does not validate stored values.
+Column types are `string`, `int64`, `float64`, `bool`, and `bytes`. Raw bytes
+cross LIR and application JSON as canonical padded base64. The built-in
+`uuid`, `ulid`, and `xid` formats validate fixed-width bytes and render their
+conventional text; unknown formats remain advisory metadata. Their generator
+defaults are `uuid_v4()`, `uuid_v7()`, `ulid()`, and `xid()` respectively.
+`now_ms()` and `increment()` apply to `int64`. Use `pk`, `unique`, `index`, and
+`ref` for common single-column definitions, or the table-level `primary_key`,
+`indexes`, and `foreign_keys` forms for compound definitions.
 
 `increment()` does not imply a primary key or uniqueness. Explicit values raise
 its durable high-water mark but lower and negative values never rewind it;
@@ -109,7 +110,7 @@ The current migration support is deliberately smaller than the file format:
 | Add a non-null column with a literal default | Immediate; old missing cells keep the value recorded at introduction |
 | Add a nullable column with a generator default | Immediate; old rows read `NULL`, while new inserts run the generator |
 | Add a non-null column without a literal default | Rejected, including when it has only a generator default |
-| Change an insert default | Immediate for literals, `uuid()`, and `now_ms()`; `increment()` cannot be added, removed, or replaced on an existing column |
+| Change an insert default | Immediate for literals and stateless generators; `increment()` cannot be added, removed, or replaced on an existing column |
 | Add a unique or non-unique index | Durable online index build |
 | Change column type, format, or non-null to nullable | Durable online column replacement with strict conversion |
 | Change nullable to required | Durable not-null validation |

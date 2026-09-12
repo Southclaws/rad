@@ -3,7 +3,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rad::engine::catalog::model::{ScalarType, Schema};
+use rad::engine::catalog::model::{DefaultFunction, ScalarType, Schema};
 use rad::engine::lir::{
     AggregateFunction, BinaryOp, Expr, JoinKind, Kind, Query, RawScalar, Relation, RootCardinality,
     SetQuantifier, TextComparison, TextMatchPart, UnaryOp, Value,
@@ -112,6 +112,7 @@ fn value_json(value: &Value) -> Json {
         Value::Int64(value) => (*value).into(),
         Value::Float64(value) => json!(value),
         Value::Bool(value) => (*value).into(),
+        Value::Bytes(value) => Json::String(rad::identifiers::encode_base64(value.as_slice())),
         Value::Null(_) => Json::Null,
     }
 }
@@ -129,6 +130,7 @@ fn schema_yaml(schema: &Schema) -> String {
                 ScalarType::Int64 => "int64",
                 ScalarType::Float64 => "float64",
                 ScalarType::Bool => "bool",
+                ScalarType::Bytes => "bytes",
             };
             output.push_str(&format!(
                 "      - {{ id: {}, name: {}, type: {}",
@@ -139,6 +141,20 @@ fn schema_yaml(schema: &Schema) -> String {
             }
             if column.nullable {
                 output.push_str(", nullable: true");
+            }
+            if !column.format.is_empty() {
+                output.push_str(&format!(", format: {}", column.format));
+            }
+            if let Some(function) = column.default.as_ref().and_then(|value| value.function) {
+                let function = match function {
+                    DefaultFunction::UuidV4 => "uuid_v4",
+                    DefaultFunction::UuidV7 => "uuid_v7",
+                    DefaultFunction::Ulid => "ulid",
+                    DefaultFunction::Xid => "xid",
+                    DefaultFunction::NowMs => "now_ms",
+                    DefaultFunction::Increment => "increment",
+                };
+                output.push_str(&format!(", default: {function}()"));
             }
             output.push_str(" }\n");
         }
@@ -370,6 +386,7 @@ impl WireBuilder {
                         // only guaranteed for the original generated case.
                         RawScalar::Number(_) | RawScalar::Null => None,
                         RawScalar::Bool(_) => Some(Kind::Bool),
+                        RawScalar::Bytes(_) => Some(Kind::Bytes),
                     })
                     .ok_or_else(|| "literal has no recoverable wire type".to_string())?;
                 let mut value = json!({"type":kind_name(kind)?});
@@ -377,6 +394,9 @@ impl WireBuilder {
                     RawScalar::Null => {}
                     RawScalar::Text(text) | RawScalar::Number(text) => value["value"] = json!(text),
                     RawScalar::Bool(boolean) => value["value"] = json!(boolean),
+                    RawScalar::Bytes(bytes) => {
+                        value["value"] = json!(rad::identifiers::encode_base64(bytes));
+                    }
                 }
                 json!({"kind":"lit", "value":value})
             }
@@ -417,6 +437,7 @@ fn kind_name(kind: Kind) -> TestResult<&'static str> {
         Kind::Int64 => Ok("int64"),
         Kind::Float64 => Ok("float64"),
         Kind::Bool => Ok("bool"),
+        Kind::Bytes => Ok("bytes"),
         Kind::Row | Kind::Array => Err(format!("{kind} is not a wire scalar")),
     }
 }
@@ -426,6 +447,7 @@ fn cell_json(value: &RawScalar) -> TestResult<Json> {
         RawScalar::Null => Json::Null,
         RawScalar::Text(value) | RawScalar::Number(value) => json!(value),
         RawScalar::Bool(value) => json!(value.to_string()),
+        RawScalar::Bytes(value) => json!(rad::identifiers::encode_base64(value)),
     })
 }
 

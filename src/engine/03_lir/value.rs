@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::engine::catalog::model::ScalarType;
+use crate::identifiers;
 
 use super::SlotId;
 
@@ -13,7 +14,48 @@ pub enum Value {
     Int64(i64),
     Float64(f64),
     Bool(bool),
+    Bytes(BytesValue),
     Null(ScalarType),
+}
+
+#[derive(Clone, Debug)]
+pub struct BytesValue {
+    bytes: Vec<u8>,
+    format: Option<identifiers::Format>,
+}
+
+impl BytesValue {
+    pub fn raw(bytes: impl Into<Vec<u8>>) -> Self {
+        Self {
+            bytes: bytes.into(),
+            format: None,
+        }
+    }
+
+    pub fn formatted(bytes: impl Into<Vec<u8>>, format: identifiers::Format) -> Self {
+        Self {
+            bytes: bytes.into(),
+            format: Some(format),
+        }
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn into_vec(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    pub fn format(&self) -> Option<identifiers::Format> {
+        self.format
+    }
+}
+
+impl PartialEq for BytesValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes == other.bytes
+    }
 }
 
 impl Value {
@@ -23,6 +65,7 @@ impl Value {
             Self::Int64(_) => ScalarType::Int64,
             Self::Float64(_) => ScalarType::Float64,
             Self::Bool(_) => ScalarType::Bool,
+            Self::Bytes(_) => ScalarType::Bytes,
             Self::Null(value_type) => *value_type,
         }
     }
@@ -60,6 +103,7 @@ impl Value {
                 None => Ordering::Greater,
             },
             (Self::Bool(left), Self::Bool(right)) => left.cmp(right),
+            (Self::Bytes(left), Self::Bytes(right)) => left.as_slice().cmp(right.as_slice()),
             _ => unreachable!("equal scalar types have matching variants"),
         })
     }
@@ -72,6 +116,19 @@ impl fmt::Display for Value {
             Self::Int64(value) => write!(formatter, "{value}"),
             Self::Float64(value) => write!(formatter, "{value}"),
             Self::Bool(value) => write!(formatter, "{value}"),
+            Self::Bytes(value) => {
+                if let Some(format) = value.format() {
+                    let rendered =
+                        identifiers::render(format, value.as_slice()).map_err(|_| fmt::Error)?;
+                    write!(formatter, "{rendered:?}")
+                } else {
+                    write!(
+                        formatter,
+                        "b64{:?}",
+                        identifiers::encode_base64(value.as_slice())
+                    )
+                }
+            }
             Self::Null(_) => formatter.write_str("NULL"),
         }
     }
@@ -127,6 +184,7 @@ mod tests {
             Value::Int64(0),
             Value::Float64(-0.0),
             Value::Bool(false),
+            Value::Bytes(BytesValue::raw(Vec::new())),
         ] {
             assert!(!value.is_null(), "{value:?} was classified as NULL");
         }
@@ -136,6 +194,7 @@ mod tests {
             ScalarType::Int64,
             ScalarType::Float64,
             ScalarType::Bool,
+            ScalarType::Bytes,
         ] {
             assert!(Value::Null(scalar_type).is_null());
         }
@@ -156,6 +215,11 @@ mod tests {
             (Value::Float64(f64::NAN), Value::Float64(f64::NAN), false),
             (Value::Bool(false), Value::Bool(false), true),
             (Value::Bool(false), Value::Bool(true), false),
+            (
+                Value::Bytes(BytesValue::raw([0, 0xff])),
+                Value::Bytes(BytesValue::formatted([0, 0xff], identifiers::Format::Uuid)),
+                true,
+            ),
             (
                 Value::Null(ScalarType::Text),
                 Value::Text("value".into()),
@@ -204,6 +268,11 @@ mod tests {
         assert_order(&Value::Float64(-0.0), &Value::Float64(0.0), Ordering::Equal);
         assert_order(&Value::Bool(false), &Value::Bool(true), Ordering::Less);
         assert_order(
+            &Value::Bytes(BytesValue::raw([0, 0xff])),
+            &Value::Bytes(BytesValue::raw([1, 0])),
+            Ordering::Less,
+        );
+        assert_order(
             &Value::Float64(f64::NAN),
             &Value::Float64(f64::NAN),
             Ordering::Equal,
@@ -230,6 +299,7 @@ mod tests {
             (Value::Int64(-7), "-7"),
             (Value::Float64(-0.0), "-0"),
             (Value::Bool(true), "true"),
+            (Value::Bytes(BytesValue::raw([0, 0xff])), "b64\"AP8=\""),
             (Value::Null(ScalarType::Float64), "NULL"),
         ];
 

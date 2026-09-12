@@ -652,6 +652,7 @@ enum OracleCell {
     Int64(i64),
     Float64(u64),
     Bool(bool),
+    Bytes(Vec<u8>),
     Object(Vec<(String, OracleCell)>),
     Array(Vec<OracleCell>),
 }
@@ -689,6 +690,7 @@ impl OracleCell {
                 value.to_bits()
             }),
             Value::Bool(value) => Self::Bool(*value),
+            Value::Bytes(value) => Self::Bytes(value.as_slice().to_vec()),
         }
     }
 }

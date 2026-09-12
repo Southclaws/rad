@@ -549,6 +549,7 @@ fn parse_value(parser: &mut Parser) -> Result<SpecValue> {
             Ok(SpecValue::Float(text))
         }
         "text" => Ok(SpecValue::Text(parser.string()?)),
+        "bytes" => Ok(SpecValue::Bytes(parser.hex_bytes()?)),
         "row" => {
             parser.expect(Token::LBrace)?;
             let mut fields = Vec::new();

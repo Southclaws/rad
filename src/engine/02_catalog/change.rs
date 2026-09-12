@@ -376,23 +376,46 @@ struct AssignedColumn {
 }
 
 fn validate_column_definition(column: &AssignedColumn) -> Result<()> {
-    if let Some(default) = &column.default
-        && let Some(function) = default.function
-    {
-        let valid = matches!(
-            (function, column.scalar_type),
-            (DefaultFunction::Uuid, ScalarType::Text)
-                | (
-                    DefaultFunction::NowMs | DefaultFunction::Increment,
-                    ScalarType::Int64
-                )
-        );
+    validate_column_semantics(
+        &column.name,
+        column.scalar_type,
+        &column.format,
+        column.default.as_ref(),
+    )
+}
+
+pub(super) fn validate_column_semantics(
+    name: &str,
+    scalar_type: ScalarType,
+    format: &str,
+    default: Option<&super::model::DefaultValue>,
+) -> Result<()> {
+    let known_format = crate::identifiers::Format::recognize(format);
+    if known_format.is_some() && scalar_type != ScalarType::Bytes {
+        return Err(input(format!(
+            "catalog: column {name:?}: format {format:?} requires Bytes"
+        )));
+    }
+    if let Some(function) = default.and_then(|value| value.function) {
+        let valid = match function {
+            DefaultFunction::UuidV4 | DefaultFunction::UuidV7 => {
+                scalar_type == ScalarType::Bytes && format == "uuid"
+            }
+            DefaultFunction::Ulid => scalar_type == ScalarType::Bytes && format == "ulid",
+            DefaultFunction::Xid => scalar_type == ScalarType::Bytes && format == "xid",
+            DefaultFunction::NowMs | DefaultFunction::Increment => scalar_type == ScalarType::Int64,
+        };
         if !valid {
             return Err(input(format!(
-                "catalog: column {:?}: default function does not support {:?}",
-                column.name, column.scalar_type
+                "catalog: column {name:?}: default function {function:?} is incompatible with {scalar_type:?} format {format:?}"
             )));
         }
+    } else if scalar_type == ScalarType::Bytes
+        && let Some(format) = known_format
+        && let Some(default) = default
+    {
+        crate::identifiers::validate(format, &default.bytes)
+            .map_err(|error| input(format!("catalog: column {name:?}: {error}")))?;
     }
     Ok(())
 }
@@ -600,11 +623,11 @@ mod tests {
             columns: vec![ColumnDraft {
                 id: None,
                 name: "id".into(),
-                scalar_type: ScalarType::Text,
+                scalar_type: ScalarType::Bytes,
                 nullable: false,
                 format: "uuid".into(),
                 default: Some(DefaultValue {
-                    function: Some(DefaultFunction::Uuid),
+                    function: Some(DefaultFunction::UuidV4),
                     ..DefaultValue::default()
                 }),
             }],
@@ -738,6 +761,36 @@ mod tests {
         });
         cases.push((value, "type mismatch"));
 
+        let mut value = base.clone();
+        value.columns[0].format = "uuid".into();
+        cases.push((value, "requires Bytes"));
+
+        let mut value = base.clone();
+        value.columns[0].scalar_type = ScalarType::Bytes;
+        value.columns[0].default = Some(DefaultValue {
+            function: Some(DefaultFunction::UuidV4),
+            ..DefaultValue::default()
+        });
+        cases.push((value, "incompatible"));
+
+        let mut value = base.clone();
+        value.columns[0].scalar_type = ScalarType::Bytes;
+        value.columns[0].format = "xid".into();
+        value.columns[0].default = Some(DefaultValue {
+            function: Some(DefaultFunction::UuidV7),
+            ..DefaultValue::default()
+        });
+        cases.push((value, "incompatible"));
+
+        let mut value = base.clone();
+        value.columns[0].scalar_type = ScalarType::Bytes;
+        value.columns[0].format = "uuid".into();
+        value.columns[0].default = Some(DefaultValue {
+            bytes: vec![0; 15],
+            ..DefaultValue::default()
+        });
+        cases.push((value, "expected 16 canonical bytes"));
+
         for (draft, expected) in cases {
             let name = draft.name.clone();
             let error = service.create_table(draft).await.unwrap_err();
@@ -765,9 +818,9 @@ mod tests {
         draft.columns.push(ColumnDraft {
             id: None,
             name: "parent_id".into(),
-            scalar_type: ScalarType::Text,
+            scalar_type: ScalarType::Bytes,
             nullable: true,
-            format: String::new(),
+            format: "uuid".into(),
             default: None,
         });
         draft.foreign_keys.push(ForeignKeyDef {

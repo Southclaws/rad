@@ -28,7 +28,7 @@ tables:
   - id: 1
     name: users
     columns:
-      - { id: 1, name: id, type: string, pk: true, default: uuid(), format: uuid }
+      - { id: 1, name: id, type: bytes, pk: true, default: uuid_v7(), format: uuid }
       - { id: 2, name: handle, type: string, unique: true }
       - { id: 3, name: created_at, type: int64, default: now_ms(), format: unix_ms }
 ```
@@ -39,8 +39,11 @@ Identifiers use lowercase ASCII letters, digits, and underscores, starting with 
 - `int64`
 - `float64`
 - `bool`
+- `bytes`
 
-Set `nullable: true` only when `NULL` is valid. `format` is semantic metadata and does not validate stored values.
+Set `nullable: true` only when `NULL` is valid. Unknown `format` values remain
+advisory metadata. The built-in `uuid`, `ulid`, and `xid` formats require
+`bytes` and validate canonical identifier input.
 
 ## Keys, indexes, and foreign keys
 
@@ -69,10 +72,15 @@ Referenced columns must be the referenced table's complete primary key. Primary-
 
 ## Defaults and formats
 
-Literal defaults must match the column type. Generator defaults are:
+Literal defaults must match the column type. Raw byte literals use canonical
+padded base64. Formatted identifier literals use their conventional text.
+Generator defaults are:
 
-- `uuid()` on `string`
+- `uuid_v4()` or `uuid_v7()` on `bytes format: uuid`
+- `ulid()` on `bytes format: ulid`
+- `xid()` on `bytes format: xid`
 - `now_ms()` on `int64`
+- `increment()` on `int64`
 
 A generator runs for new omitted writes. It does not backfill old rows merely because it is added.
 

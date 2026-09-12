@@ -14,7 +14,7 @@ use rad::engine::catalog;
 use rad::engine::catalog::identity::{SchemaId, TransitionId};
 use rad::engine::catalog::model::{
     Column, ColumnConversion, ColumnDef, ColumnReplacementDef, ConstraintDef, ConstraintKind,
-    IndexDef, ScalarType, TableDef, TransitionState,
+    DefaultFunction, DefaultValue, IndexDef, ScalarType, TableDef, TransitionState,
 };
 use rad::engine::exec::{
     CatalogPolicy, Engine, EngineEvent, EngineEventHook, EngineOperation, ErrorReason, Program,
@@ -1168,6 +1168,10 @@ async fn seed_scenario(
                         Scenario::ConstraintValidation | Scenario::CancelledConstraint
                     ),
                 )?,
+                identifier_column(3, "uuid4", "uuid", DefaultFunction::UuidV4)?,
+                identifier_column(4, "uuid7", "uuid", DefaultFunction::UuidV7)?,
+                identifier_column(5, "ulid", "ulid", DefaultFunction::Ulid)?,
+                identifier_column(6, "xid", "xid", DefaultFunction::Xid)?,
             ],
             primary_key: vec!["id".into()],
             indexes: Vec::new(),
@@ -1347,6 +1351,25 @@ fn column(
     })
 }
 
+fn identifier_column(
+    id: u32,
+    name: &str,
+    format: &str,
+    function: DefaultFunction,
+) -> turmoil::Result<ColumnDef> {
+    Ok(ColumnDef {
+        id: SchemaId::new(id)?,
+        name: name.into(),
+        scalar_type: ScalarType::Bytes,
+        nullable: false,
+        format: format.into(),
+        default: Some(DefaultValue {
+            function: Some(function),
+            ..DefaultValue::default()
+        }),
+    })
+}
+
 fn scheduler_config() -> SchemaJobConfig {
     SchemaJobConfig {
         transition_batch_size: 1,
@@ -1498,7 +1521,7 @@ struct SeededRuntime {
 }
 
 impl SeededRuntime {
-    const ALGORITHM: &str = "logical-milliseconds-and-uuid-sequence-v1";
+    const ALGORITHM: &str = "logical-milliseconds-and-identifier-sequence-v2";
 
     fn new(seed: u64) -> Self {
         Self {
@@ -1506,6 +1529,22 @@ impl SeededRuntime {
             clock: AtomicU64::new(0),
             identifiers: AtomicU64::new(0),
         }
+    }
+}
+
+#[test]
+fn seeded_runtime_replays_every_identifier_generator() {
+    let first = SeededRuntime::new(42);
+    let second = SeededRuntime::new(42);
+    for generator in [
+        rad::identifiers::Generator::UuidV4,
+        rad::identifiers::Generator::UuidV7,
+        rad::identifiers::Generator::Ulid,
+        rad::identifiers::Generator::Xid,
+    ] {
+        let expected = first.new_identifier(generator);
+        assert_eq!(second.new_identifier(generator), expected);
+        assert_eq!(expected.len(), generator.format().byte_len());
     }
 }
 
@@ -1521,6 +1560,17 @@ impl RuntimeEffects for SeededRuntime {
     fn new_uuid(&self) -> Uuid {
         let sequence = self.identifiers.fetch_add(1, Ordering::SeqCst) + 1;
         Uuid::from_u128((u128::from(self.seed) << 64) | u128::from(sequence))
+    }
+
+    fn new_identifier(&self, generator: rad::identifiers::Generator) -> Vec<u8> {
+        let sequence = self.identifiers.fetch_add(1, Ordering::SeqCst) + 1;
+        let unix_millis = u64::try_from(self.now().timestamp_millis())
+            .expect("DST identifier timestamp is non-negative");
+        rad::identifiers::generate_deterministic(
+            generator,
+            unix_millis,
+            (u128::from(self.seed) << 64 | u128::from(sequence)).to_be_bytes(),
+        )
     }
 }
 

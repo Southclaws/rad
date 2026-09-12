@@ -78,8 +78,14 @@ pub enum ColumnReplacementDefinitionConversion {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum GeneratorDefaultFunc {
-    #[serde(rename = "uuid")]
-    UUID,
+    #[serde(rename = "uuid_v4")]
+    UUIDV4,
+    #[serde(rename = "uuid_v7")]
+    UUIDV7,
+    #[serde(rename = "ulid")]
+    Ulid,
+    #[serde(rename = "xid")]
+    Xid,
     #[serde(rename = "now_ms")]
     NowMs,
     #[serde(rename = "increment")]
@@ -268,7 +274,9 @@ impl<'de> Deserialize<'de> for ColumnDefault {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeneratorDefault {
-    /// A builtin generator; `uuid` requires text, while `now_ms` and `increment` require int64.
+    /// A builtin generator. `uuid_v4`, `uuid_v7`, `ulid`, and `xid`
+    /// require a bytes column with the matching identifier format;
+    /// `now_ms` and `increment` require int64.
     pub func: GeneratorDefaultFunc,
 }
 
@@ -335,6 +343,8 @@ pub enum ColumnType {
     Float64,
     #[serde(rename = "bool")]
     Bool,
+    #[serde(rename = "bytes")]
+    Bytes,
 }
 
 /// A human-authored stable logical identity. Table IDs are unique for the
