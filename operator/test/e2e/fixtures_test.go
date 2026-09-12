@@ -39,7 +39,7 @@ const (
 	rustfsCreds = "rustfsadmin"
 	curlPodName = "rad-e2e-curl"
 	curlImage   = "curlimages/curl:8.10.1"
-	mcImage     = "minio/mc:latest"
+	mcImage     = "quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727"
 )
 
 type harness struct {
