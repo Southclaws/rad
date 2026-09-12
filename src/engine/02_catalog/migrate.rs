@@ -320,6 +320,21 @@ fn diff_table(
             continue;
         };
         let default_changed = existing.insert_default != wanted.default;
+        if default_changed
+            && (existing
+                .insert_default
+                .as_ref()
+                .is_some_and(DefaultValue::is_increment)
+                || wanted
+                    .default
+                    .as_ref()
+                    .is_some_and(DefaultValue::is_increment))
+        {
+            return Err(input(format!(
+                "migrate: increment generator on column {name:?}.{:?} is immutable",
+                wanted.name
+            )));
+        }
         let physical_change = existing.scalar_type != wanted.scalar_type
             || existing.format != wanted.format
             || (!existing.nullable && wanted.nullable);
@@ -853,6 +868,24 @@ tables:
         assert_eq!(
             strings(&diff(&physical(initial), &desired(&renamed)).unwrap()),
             ["rename column parents.id -> parent_key"]
+        );
+    }
+
+    #[test]
+    fn increment_defaults_are_immutable_on_existing_columns() {
+        let increment = r#"tables: [{id: 1, name: items, columns: [{id: 1, name: id, type: int64, pk: true, default: increment()}]}]"#;
+        let without = increment.replace(", default: increment()", "");
+        assert!(
+            diff(&physical(increment), &desired(&without))
+                .unwrap_err()
+                .to_string()
+                .contains("increment generator")
+        );
+        assert!(
+            diff(&physical(&without), &desired(increment))
+                .unwrap_err()
+                .to_string()
+                .contains("increment generator")
         );
     }
 

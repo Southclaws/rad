@@ -182,7 +182,7 @@ func (w *ColumnDefault) UnmarshalJSON(data []byte) error {
 }
 
 type GeneratorDefault struct {
-	// A builtin generator; `uuid` requires text and `now_ms` requires int64.
+	// A builtin generator; `uuid` requires text, while `now_ms` and `increment` require int64.
 	Func string `json:"func"`
 	Kind string `json:"kind"`
 }

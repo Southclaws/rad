@@ -1462,6 +1462,10 @@ pub(crate) fn resolve_default(spec: DefaultSpec, scalar_type: ScalarType) -> Res
             function: Some(DefaultFunction::NowMs),
             ..DefaultValue::default()
         },
+        (DefaultSpec::Generator(DefaultFunction::Increment), ScalarType::Int64) => DefaultValue {
+            function: Some(DefaultFunction::Increment),
+            ..DefaultValue::default()
+        },
         (DefaultSpec::Text(text), ScalarType::Text) => DefaultValue {
             text,
             ..DefaultValue::default()
@@ -3217,6 +3221,14 @@ mod tests {
                 },
             ),
             (
+                DefaultSpec::Generator(DefaultFunction::Increment),
+                ScalarType::Int64,
+                DefaultValue {
+                    function: Some(DefaultFunction::Increment),
+                    ..DefaultValue::default()
+                },
+            ),
+            (
                 DefaultSpec::Text("rad".into()),
                 ScalarType::Text,
                 DefaultValue {
@@ -3267,6 +3279,10 @@ mod tests {
             ),
             (
                 DefaultSpec::Generator(DefaultFunction::NowMs),
+                ScalarType::Text,
+            ),
+            (
+                DefaultSpec::Generator(DefaultFunction::Increment),
                 ScalarType::Text,
             ),
             (

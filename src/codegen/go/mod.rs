@@ -579,7 +579,7 @@ tables:
       - { id: 1, name: id, type: string, pk: true }
       - { id: 2, name: name, type: string, unique: true }
       - { id: 3, name: parent_id, type: string, nullable: true }
-      - { id: 4, name: rank, type: int64, default: 0 }
+      - { id: 4, name: rank, type: int64, default: increment() }
     foreign_keys:
       - name: categories_parent_id_fk
         columns: [parent_id]
@@ -609,6 +609,7 @@ tables:
             "const SchemaHash = \"sha256:accepted\"",
             "const RawSchema = \"tables: []\\n\"",
             "type Category struct",
+            "type CategoryCreate struct",
             "IncludeParent",
             "IncludeCategories",
             "lirwire.",
@@ -620,6 +621,19 @@ tables:
                 "missing {expected:?} in generated source:\n{source}"
             );
         }
+        let create = source
+            .split_once("type CategoryCreate struct {")
+            .unwrap()
+            .1
+            .split_once('}')
+            .unwrap()
+            .0;
+        assert!(
+            create
+                .lines()
+                .any(|line| line.split_whitespace().eq(["Rank", "*int64"])),
+            "default-generated Rank must be optional on create:\n{create}"
+        );
         for forbidden in [
             "protocol.Eq",
             "protocol.Col(",

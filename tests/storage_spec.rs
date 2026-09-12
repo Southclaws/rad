@@ -982,7 +982,7 @@ fn row_body_cell_operations_form_an_algebra() {
 #[test]
 fn keyspace_registry_is_coherent() {
     let spaces = rad::engine::kv::keyspace::KEYSPACES;
-    assert_eq!(spaces.len(), 40);
+    assert_eq!(spaces.len(), 41);
     for space in spaces {
         assert!(!space.value.is_empty());
         assert!(
@@ -1308,6 +1308,17 @@ fn catalog_reclamation_key_vectors() {
     let parts =
         rad::engine::kv::keys::decode_catalog_reclamation_key(&key).expect("vector decodes");
     assert_eq!(parts.reclamation, "table-t1");
+    assert!(rad::engine::exec::key_describe::describe_key(&key).is_some());
+}
+
+#[test]
+fn catalog_column_increment_key_vectors() {
+    let key = rad::engine::kv::keys::catalog_column_increment_key(42, 7);
+    assert_eq!(key, &[0x72, 0x37, 0x23, 0x2a, 0x00, 0x00, 0x00, 0x07]);
+    let parts =
+        rad::engine::kv::keys::decode_catalog_column_increment_key(&key).expect("vector decodes");
+    assert_eq!(parts.table, 42);
+    assert_eq!(parts.column, 7);
     assert!(rad::engine::exec::key_describe::describe_key(&key).is_some());
 }
 

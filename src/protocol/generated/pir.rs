@@ -82,6 +82,8 @@ pub enum GeneratorDefaultFunc {
     UUID,
     #[serde(rename = "now_ms")]
     NowMs,
+    #[serde(rename = "increment")]
+    Increment,
 }
 
 /// A non-empty catalog name. PIR deliberately does not impose identifier
@@ -266,7 +268,7 @@ impl<'de> Deserialize<'de> for ColumnDefault {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeneratorDefault {
-    /// A builtin generator; `uuid` requires text and `now_ms` requires int64.
+    /// A builtin generator; `uuid` requires text, while `now_ms` and `increment` require int64.
     pub func: GeneratorDefaultFunc,
 }
 

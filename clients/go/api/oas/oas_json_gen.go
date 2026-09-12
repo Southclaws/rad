@@ -425,6 +425,48 @@ func (s *ColumnDefault) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes ColumnDefaultFunc as json.
+func (s ColumnDefaultFunc) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes ColumnDefaultFunc from json.
+func (s *ColumnDefaultFunc) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ColumnDefaultFunc to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch ColumnDefaultFunc(v) {
+	case ColumnDefaultFuncUUID:
+		*s = ColumnDefaultFuncUUID
+	case ColumnDefaultFuncNowMs:
+		*s = ColumnDefaultFuncNowMs
+	case ColumnDefaultFuncIncrement:
+		*s = ColumnDefaultFuncIncrement
+	default:
+		*s = ColumnDefaultFunc(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s ColumnDefaultFunc) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ColumnDefaultFunc) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes ColumnDeleteConflict as json.
 func (s ColumnDeleteConflict) Encode(e *jx.Encoder) {
 	unwrapped := Problem(s)
@@ -4609,6 +4651,39 @@ func (s OptColumnDefault) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptColumnDefault) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes ColumnDefaultFunc as json.
+func (o OptColumnDefaultFunc) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes ColumnDefaultFunc from json.
+func (o *OptColumnDefaultFunc) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptColumnDefaultFunc to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptColumnDefaultFunc) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptColumnDefaultFunc) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

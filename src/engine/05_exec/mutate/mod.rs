@@ -24,8 +24,7 @@ pub(super) async fn create(
     let mut primary_keys = Vec::with_capacity(input.len());
     let mut seen = HashSet::new();
 
-    for input in input {
-        let row = defaults::prepare(table, input, runtime)?;
+    for row in defaults::prepare_create(view, table, input, runtime).await? {
         let primary_key = codec::encode_row_tuple(&row, &table.primary_key)?;
         if !seen.insert(primary_key.clone()) {
             return Err(Error::message(
@@ -107,6 +106,12 @@ pub(super) async fn update(
             primary_key,
         });
     }
+
+    let assigned = pending
+        .iter()
+        .map(|mutation| &mutation.assigned)
+        .collect::<Vec<_>>();
+    defaults::raise_increment_floors(view, table, &assigned).await?;
 
     for mutation in &pending {
         write::replace(

@@ -121,6 +121,42 @@ fn pir_wire_is_a_closed_statement_union_and_preserves_catalog_variants() {
 }
 
 #[test]
+fn pir_increment_default_round_trips_and_lowers_with_type_checking() {
+    let raw = r#"{
+        "statements": [{
+            "kind": "create_table",
+            "name": "create_items",
+            "table": {
+                "name": "items",
+                "columns": [{
+                    "name": "id",
+                    "type": "int64",
+                    "default": {"kind": "generator", "func": "increment"}
+                }],
+                "primary_key": ["id"]
+            }
+        }]
+    }"#;
+    let wire = serde_json::from_str::<pir::Program>(raw).unwrap();
+    let encoded = serde_json::to_string(&wire).unwrap();
+    assert!(encoded.contains(r#""func":"increment""#));
+    let lowered = super::lower_pir(wire).unwrap();
+    let crate::engine::exec::Statement::CreateTable { table, .. } = &lowered.statements[0] else {
+        panic!("expected create-table statement")
+    };
+    assert!(
+        table.columns[0]
+            .default
+            .as_ref()
+            .is_some_and(crate::engine::catalog::model::DefaultValue::is_increment)
+    );
+
+    let invalid = raw.replace(r#""type": "int64""#, r#""type": "text""#);
+    let wire = serde_json::from_str::<pir::Program>(&invalid).unwrap();
+    assert!(super::lower_pir(wire).is_err());
+}
+
+#[test]
 fn omitted_text_match_comparison_lowers_to_exact() {
     let raw = r#"{
         "nodes": {

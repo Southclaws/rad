@@ -151,6 +151,13 @@ pub fn describe_key(key: &[u8]) -> Option<String> {
                 parts.reclamation
             ))
         }
+        keys::CATALOG_COLUMN_INCREMENT_TAG => {
+            let parts = keys::decode_catalog_column_increment_key(key)?;
+            Some(format!(
+                "catalog_column_increment/table=t{}/column={}",
+                parts.table, parts.column
+            ))
+        }
         keys::CATALOG_TABLE_DATA_GENERATION_STRIPE_TAG => {
             let parts = keys::decode_catalog_table_data_generation_stripe_key(key)?;
             Some(format!(

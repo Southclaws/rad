@@ -253,6 +253,7 @@ fn lower_default_spec(
             DefaultSpec::Generator(match default.func {
                 pir_wire::GeneratorDefaultFunc::UUID => DefaultFunction::Uuid,
                 pir_wire::GeneratorDefaultFunc::NowMs => DefaultFunction::NowMs,
+                pir_wire::GeneratorDefaultFunc::Increment => DefaultFunction::Increment,
             })
         }
         pir_wire::ColumnDefault::LiteralDefault(default) => {

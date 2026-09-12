@@ -96,7 +96,7 @@ properties:
                           func:
                             description: Generator function for per-row defaults.
                             type: string
-                            enum: [uuid, now_ms]
+                            enum: [uuid, now_ms, increment]
                           text:
                             description: Literal used when the column type is text.
                             type: string

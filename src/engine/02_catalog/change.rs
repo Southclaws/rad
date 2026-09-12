@@ -381,7 +381,11 @@ fn validate_column_definition(column: &AssignedColumn) -> Result<()> {
     {
         let valid = matches!(
             (function, column.scalar_type),
-            (DefaultFunction::Uuid, ScalarType::Text) | (DefaultFunction::NowMs, ScalarType::Int64)
+            (DefaultFunction::Uuid, ScalarType::Text)
+                | (
+                    DefaultFunction::NowMs | DefaultFunction::Increment,
+                    ScalarType::Int64
+                )
         );
         if !valid {
             return Err(input(format!(

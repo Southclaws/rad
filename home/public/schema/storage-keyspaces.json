@@ -153,6 +153,13 @@
     },
     {
       "invariants": [],
+      "key": "table:physical_id(t) column:be32",
+      "name": "catalog_column_increment",
+      "tag": "23",
+      "value": "last committed non-negative int64 decimal text"
+    },
+    {
+      "invariants": [],
       "key": "table:physical_id(t) stripe:uvarint",
       "name": "catalog_table_data_generation_stripe",
       "tag": "24",

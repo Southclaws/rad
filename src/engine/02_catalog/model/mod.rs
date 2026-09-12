@@ -93,6 +93,7 @@ pub enum ScalarType {
 pub enum DefaultFunction {
     Uuid,
     NowMs,
+    Increment,
 }
 
 /// The durable/catalog representation of an authored column default.
@@ -110,6 +111,12 @@ pub struct DefaultValue {
     pub float64: f64,
     #[serde(default, rename = "bool", skip_serializing_if = "is_false")]
     pub bool_value: bool,
+}
+
+impl DefaultValue {
+    pub fn is_increment(&self) -> bool {
+        self.function == Some(DefaultFunction::Increment)
+    }
 }
 
 fn is_i64_zero(value: &i64) -> bool {

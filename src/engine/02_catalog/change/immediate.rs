@@ -151,6 +151,16 @@ impl Mutation<'_> {
         if column.insert_default == value {
             return Ok(table);
         }
+        if column
+            .insert_default
+            .as_ref()
+            .is_some_and(DefaultValue::is_increment)
+            || value.as_ref().is_some_and(DefaultValue::is_increment)
+        {
+            return Err(input(format!(
+                "catalog: increment generator on column {column_name:?} is immutable"
+            )));
+        }
         for transition in store::list_transitions(self.view).await? {
             if transition.table_id == table.id
                 && transition.kind == TransitionKind::ColumnReplacement
@@ -302,6 +312,15 @@ impl Mutation<'_> {
         }
         store::advance_table_existence_fence(self.view, &deleting).await?;
         self.retire_table(&deleting).await?;
+        for column in &deleting.columns {
+            if column
+                .insert_default
+                .as_ref()
+                .is_some_and(DefaultValue::is_increment)
+            {
+                store::delete_column_increment(self.view, &deleting.id, column.schema_id).await?;
+            }
+        }
         store::delete_table_metadata(self.view, &deleting.id).await?;
         store::delete_table_name(self.view, table_name).await?;
         self.mark_schema_changed();
@@ -353,6 +372,13 @@ impl Mutation<'_> {
         }
         store::advance_column_value_fence(self.view, &table, &column).await?;
         self.retire_column(&table, &column.id).await?;
+        if column
+            .insert_default
+            .as_ref()
+            .is_some_and(DefaultValue::is_increment)
+        {
+            store::delete_column_increment(self.view, &table.id, column.schema_id).await?;
+        }
         table.columns.retain(|candidate| candidate.id != column.id);
         table
             .constraints

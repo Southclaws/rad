@@ -24,6 +24,7 @@ space 1f catalog_transition_unique_violation
 space 20 catalog_transition_violation
 space 21 catalog_retention_pin
 space 22 catalog_reclamation
+space 23 catalog_column_increment
 space 24 catalog_table_data_generation_stripe
 space 30 catalog_meta_mode
 space 31 catalog_meta_next_id
@@ -50,6 +51,7 @@ scalar ordered_scalar.int64 03
 scalar ordered_scalar.null 01
 scalar ordered_scalar.text 05
 record row_body 52
+vector catalog_column_increment 21b650455791a6a0
 vector catalog_fence_column_value 4d26c3d1fbe7bc94
 vector catalog_fence_index_access 84930c9ea1f23dd4
 vector catalog_fence_table_existence da4e31aa86b3b3ed
@@ -222,7 +224,7 @@ schema catalog/revision.v1 record.schema.tables[].columns[] object optional
 schema catalog/revision.v1 record.schema.tables[].columns[].default object optional
 schema catalog/revision.v1 record.schema.tables[].columns[].default.bool boolean optional
 schema catalog/revision.v1 record.schema.tables[].columns[].default.float64 number optional
-schema catalog/revision.v1 record.schema.tables[].columns[].default.func string optional enum:uuid|now_ms
+schema catalog/revision.v1 record.schema.tables[].columns[].default.func string optional enum:uuid|now_ms|increment
 schema catalog/revision.v1 record.schema.tables[].columns[].default.int64 integer optional
 schema catalog/revision.v1 record.schema.tables[].columns[].default.text string optional
 schema catalog/revision.v1 record.schema.tables[].columns[].format string optional
@@ -258,13 +260,13 @@ schema catalog/table.v1 record.columns[].id string required
 schema catalog/table.v1 record.columns[].insert_default object optional
 schema catalog/table.v1 record.columns[].insert_default.bool boolean optional
 schema catalog/table.v1 record.columns[].insert_default.float64 number optional
-schema catalog/table.v1 record.columns[].insert_default.func string optional enum:uuid|now_ms
+schema catalog/table.v1 record.columns[].insert_default.func string optional enum:uuid|now_ms|increment
 schema catalog/table.v1 record.columns[].insert_default.int64 integer optional
 schema catalog/table.v1 record.columns[].insert_default.text string optional
 schema catalog/table.v1 record.columns[].missing_value object optional
 schema catalog/table.v1 record.columns[].missing_value.bool boolean optional
 schema catalog/table.v1 record.columns[].missing_value.float64 number optional
-schema catalog/table.v1 record.columns[].missing_value.func string optional enum:uuid|now_ms
+schema catalog/table.v1 record.columns[].missing_value.func string optional enum:uuid|now_ms|increment
 schema catalog/table.v1 record.columns[].missing_value.int64 integer optional
 schema catalog/table.v1 record.columns[].missing_value.text string optional
 schema catalog/table.v1 record.columns[].name string required
@@ -328,13 +330,13 @@ schema catalog/transition.v1 record.column_replacement.source.id string required
 schema catalog/transition.v1 record.column_replacement.source.insert_default object optional
 schema catalog/transition.v1 record.column_replacement.source.insert_default.bool boolean optional
 schema catalog/transition.v1 record.column_replacement.source.insert_default.float64 number optional
-schema catalog/transition.v1 record.column_replacement.source.insert_default.func string optional enum:uuid|now_ms
+schema catalog/transition.v1 record.column_replacement.source.insert_default.func string optional enum:uuid|now_ms|increment
 schema catalog/transition.v1 record.column_replacement.source.insert_default.int64 integer optional
 schema catalog/transition.v1 record.column_replacement.source.insert_default.text string optional
 schema catalog/transition.v1 record.column_replacement.source.missing_value object optional
 schema catalog/transition.v1 record.column_replacement.source.missing_value.bool boolean optional
 schema catalog/transition.v1 record.column_replacement.source.missing_value.float64 number optional
-schema catalog/transition.v1 record.column_replacement.source.missing_value.func string optional enum:uuid|now_ms
+schema catalog/transition.v1 record.column_replacement.source.missing_value.func string optional enum:uuid|now_ms|increment
 schema catalog/transition.v1 record.column_replacement.source.missing_value.int64 integer optional
 schema catalog/transition.v1 record.column_replacement.source.missing_value.text string optional
 schema catalog/transition.v1 record.column_replacement.source.name string required
@@ -348,13 +350,13 @@ schema catalog/transition.v1 record.column_replacement.target.id string required
 schema catalog/transition.v1 record.column_replacement.target.insert_default object optional
 schema catalog/transition.v1 record.column_replacement.target.insert_default.bool boolean optional
 schema catalog/transition.v1 record.column_replacement.target.insert_default.float64 number optional
-schema catalog/transition.v1 record.column_replacement.target.insert_default.func string optional enum:uuid|now_ms
+schema catalog/transition.v1 record.column_replacement.target.insert_default.func string optional enum:uuid|now_ms|increment
 schema catalog/transition.v1 record.column_replacement.target.insert_default.int64 integer optional
 schema catalog/transition.v1 record.column_replacement.target.insert_default.text string optional
 schema catalog/transition.v1 record.column_replacement.target.missing_value object optional
 schema catalog/transition.v1 record.column_replacement.target.missing_value.bool boolean optional
 schema catalog/transition.v1 record.column_replacement.target.missing_value.float64 number optional
-schema catalog/transition.v1 record.column_replacement.target.missing_value.func string optional enum:uuid|now_ms
+schema catalog/transition.v1 record.column_replacement.target.missing_value.func string optional enum:uuid|now_ms|increment
 schema catalog/transition.v1 record.column_replacement.target.missing_value.int64 integer optional
 schema catalog/transition.v1 record.column_replacement.target.missing_value.text string optional
 schema catalog/transition.v1 record.column_replacement.target.name string required
@@ -368,7 +370,7 @@ schema catalog/transition.v1 record.column_replacement_request.conversion string
 schema catalog/transition.v1 record.column_replacement_request.default object optional
 schema catalog/transition.v1 record.column_replacement_request.default.bool boolean optional
 schema catalog/transition.v1 record.column_replacement_request.default.float64 number optional
-schema catalog/transition.v1 record.column_replacement_request.default.func string optional enum:uuid|now_ms
+schema catalog/transition.v1 record.column_replacement_request.default.func string optional enum:uuid|now_ms|increment
 schema catalog/transition.v1 record.column_replacement_request.default.int64 integer optional
 schema catalog/transition.v1 record.column_replacement_request.default.text string optional
 schema catalog/transition.v1 record.column_replacement_request.format string optional
@@ -443,13 +445,13 @@ schema catalog/write_protocol.v1 record.column_replacements[].replacement.source
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.insert_default object optional
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.insert_default.bool boolean optional
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.insert_default.float64 number optional
-schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.insert_default.func string optional enum:uuid|now_ms
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.insert_default.func string optional enum:uuid|now_ms|increment
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.insert_default.int64 integer optional
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.insert_default.text string optional
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.missing_value object optional
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.missing_value.bool boolean optional
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.missing_value.float64 number optional
-schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.missing_value.func string optional enum:uuid|now_ms
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.missing_value.func string optional enum:uuid|now_ms|increment
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.missing_value.int64 integer optional
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.missing_value.text string optional
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.source.name string required
@@ -463,13 +465,13 @@ schema catalog/write_protocol.v1 record.column_replacements[].replacement.target
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.insert_default object optional
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.insert_default.bool boolean optional
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.insert_default.float64 number optional
-schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.insert_default.func string optional enum:uuid|now_ms
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.insert_default.func string optional enum:uuid|now_ms|increment
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.insert_default.int64 integer optional
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.insert_default.text string optional
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.missing_value object optional
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.missing_value.bool boolean optional
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.missing_value.float64 number optional
-schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.missing_value.func string optional enum:uuid|now_ms
+schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.missing_value.func string optional enum:uuid|now_ms|increment
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.missing_value.int64 integer optional
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.missing_value.text string optional
 schema catalog/write_protocol.v1 record.column_replacements[].replacement.target.name string required

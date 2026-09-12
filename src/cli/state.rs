@@ -246,6 +246,7 @@ fn decode_default(
         let function = match function.as_str() {
             "uuid" => DefaultFunction::Uuid,
             "now_ms" => DefaultFunction::NowMs,
+            "increment" => DefaultFunction::Increment,
             value => return Err(format!("unknown default function {value:?}").into()),
         };
         return Ok(Some(DefaultValue {

@@ -396,10 +396,11 @@
       "additionalProperties": false,
       "properties": {
         "func": {
-          "description": "A builtin generator; `uuid` requires text and `now_ms` requires int64.",
+          "description": "A builtin generator; `uuid` requires text, while `now_ms` and `increment` require int64.",
           "enum": [
             "uuid",
-            "now_ms"
+            "now_ms",
+            "increment"
           ],
           "type": "string"
         },

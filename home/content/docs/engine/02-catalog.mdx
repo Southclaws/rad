@@ -109,6 +109,12 @@ immutable historical missing value. Changing the current insert default affects
 future omitted writes only. Old sparse rows do not silently acquire the new
 default.
 
+An `increment()` default owns a transactional high-water mark keyed by the
+table's physical identity and the column's stable schema identity. Renames and
+physical column replacement therefore preserve it. Removing the column or table
+removes the mark, and a new schema identity starts again from one. The generator
+itself is immutable after the column is created.
+
 Type, format, and nullable relaxation changes receive a new physical column and
 use the strict built-in replacement protocol. Nullable-to-not-null changes use
 constraint validation. Primary-key changes, existing-table foreign-key

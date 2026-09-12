@@ -24,9 +24,8 @@ type Invoker interface {
 	// ColumnCreate invokes ColumnCreate operation.
 	//
 	// Append a column. Because existing rows have no value for it, the column must be nullable or carry a
-	// literal default; generator defaults (`uuid()`, `now_ms()`) are rejected on new columns of existing
-	// tables since they would produce a different value on every read of an old row. On a schema-managed
-	// database this operation is always rejected.
+	// literal default. A nullable column may use a generator default; historical rows remain NULL while
+	// new creates run the generator. On a schema-managed database this operation is always rejected.
 	//
 	// POST /tables/{table}/columns
 	ColumnCreate(ctx context.Context, request OptColumnDef, params ColumnCreateParams) (ColumnCreateRes, error)
@@ -322,9 +321,8 @@ func (c *Client) requestURL(ctx context.Context) *url.URL {
 // ColumnCreate invokes ColumnCreate operation.
 //
 // Append a column. Because existing rows have no value for it, the column must be nullable or carry a
-// literal default; generator defaults (`uuid()`, `now_ms()`) are rejected on new columns of existing
-// tables since they would produce a different value on every read of an old row. On a schema-managed
-// database this operation is always rejected.
+// literal default. A nullable column may use a generator default; historical rows remain NULL while
+// new creates run the generator. On a schema-managed database this operation is always rejected.
 //
 // POST /tables/{table}/columns
 func (c *Client) ColumnCreate(ctx context.Context, request OptColumnDef, params ColumnCreateParams) (ColumnCreateRes, error) {

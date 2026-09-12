@@ -144,18 +144,18 @@ func (s *ColumnDef) SetDefault(val OptColumnDefault) {
 }
 
 // A column default, applied when an insert omits the column: either a builtin generator named by
-// `func` (`uuid` on text columns, `now_ms` on int64 columns) or a literal `value` of the column's
-// type. Exactly one of the two is set.
+// `func` (`uuid` on text columns, `now_ms` or `increment` on int64 columns) or a literal `value` of
+// the column's type. Exactly one of the two is set.
 // Ref: #/components/schemas/ColumnDefault
 type ColumnDefault struct {
-	// A builtin generator, `uuid` or `now_ms`.
-	Func OptString `json:"func"`
+	// A builtin generator: `uuid`, `now_ms`, or `increment`.
+	Func OptColumnDefaultFunc `json:"func"`
 	// A literal of the column's type.
 	Value Value `json:"value"`
 }
 
 // GetFunc returns the value of Func.
-func (s *ColumnDefault) GetFunc() OptString {
+func (s *ColumnDefault) GetFunc() OptColumnDefaultFunc {
 	return s.Func
 }
 
@@ -165,13 +165,62 @@ func (s *ColumnDefault) GetValue() Value {
 }
 
 // SetFunc sets the value of Func.
-func (s *ColumnDefault) SetFunc(val OptString) {
+func (s *ColumnDefault) SetFunc(val OptColumnDefaultFunc) {
 	s.Func = val
 }
 
 // SetValue sets the value of Value.
 func (s *ColumnDefault) SetValue(val Value) {
 	s.Value = val
+}
+
+// A builtin generator: `uuid`, `now_ms`, or `increment`.
+type ColumnDefaultFunc string
+
+const (
+	ColumnDefaultFuncUUID      ColumnDefaultFunc = "uuid"
+	ColumnDefaultFuncNowMs     ColumnDefaultFunc = "now_ms"
+	ColumnDefaultFuncIncrement ColumnDefaultFunc = "increment"
+)
+
+// AllValues returns all ColumnDefaultFunc values.
+func (ColumnDefaultFunc) AllValues() []ColumnDefaultFunc {
+	return []ColumnDefaultFunc{
+		ColumnDefaultFuncUUID,
+		ColumnDefaultFuncNowMs,
+		ColumnDefaultFuncIncrement,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ColumnDefaultFunc) MarshalText() ([]byte, error) {
+	switch s {
+	case ColumnDefaultFuncUUID:
+		return []byte(s), nil
+	case ColumnDefaultFuncNowMs:
+		return []byte(s), nil
+	case ColumnDefaultFuncIncrement:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ColumnDefaultFunc) UnmarshalText(data []byte) error {
+	switch ColumnDefaultFunc(data) {
+	case ColumnDefaultFuncUUID:
+		*s = ColumnDefaultFuncUUID
+		return nil
+	case ColumnDefaultFuncNowMs:
+		*s = ColumnDefaultFuncNowMs
+		return nil
+	case ColumnDefaultFuncIncrement:
+		*s = ColumnDefaultFuncIncrement
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 type ColumnDeleteConflict Problem
@@ -2213,6 +2262,52 @@ func (o OptColumnDefault) Get() (v ColumnDefault, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptColumnDefault) Or(d ColumnDefault) ColumnDefault {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptColumnDefaultFunc returns new OptColumnDefaultFunc with value set to v.
+func NewOptColumnDefaultFunc(v ColumnDefaultFunc) OptColumnDefaultFunc {
+	return OptColumnDefaultFunc{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptColumnDefaultFunc is optional ColumnDefaultFunc.
+type OptColumnDefaultFunc struct {
+	Value ColumnDefaultFunc
+	Set   bool
+}
+
+// IsSet returns true if OptColumnDefaultFunc was set.
+func (o OptColumnDefaultFunc) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptColumnDefaultFunc) Reset() {
+	var v ColumnDefaultFunc
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptColumnDefaultFunc) SetTo(v ColumnDefaultFunc) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptColumnDefaultFunc) Get() (v ColumnDefaultFunc, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptColumnDefaultFunc) Or(d ColumnDefaultFunc) ColumnDefaultFunc {
 	if v, ok := o.Get(); ok {
 		return v
 	}

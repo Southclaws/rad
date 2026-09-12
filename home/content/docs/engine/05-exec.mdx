@@ -91,6 +91,13 @@ Create, update, and delete operations run through serializable transactions.
 They validate types and nullability, apply current insert defaults, check
 primary and foreign keys, and enforce unique indexes.
 
+For `increment()` defaults, one create statement reads each affected counter
+once, raises it past every explicit non-negative value in the batch, reserves a
+checked contiguous range for omitted values, and writes the final high-water
+mark once. Explicit values on updates also raise the mark. Allocation commits
+or rolls back with the row mutation, never searches stored rows or deleted
+holes, and reports `numeric_overflow` rather than wrapping after `int64` max.
+
 Each bound target names one immutable table write-protocol generation. The
 protocol contains:
 

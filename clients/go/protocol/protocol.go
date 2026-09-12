@@ -281,7 +281,7 @@ type ColumnDef struct {
 	Default  *ColumnDefault `json:"default,omitempty"`
 }
 
-// ColumnDefault is either a builtin generator (func: uuid | now_ms) or a
+// ColumnDefault is either a builtin generator (func: uuid | now_ms | increment) or a
 // literal of the column's type (value); exactly one is set.
 type ColumnDefault struct {
 	Func  string `json:"func,omitempty"`

@@ -110,7 +110,7 @@ properties:
                     Generator function. Present when the default is generated
                     per row instead of a literal.
                   type: string
-                  enum: [uuid, now_ms]
+                  enum: [uuid, now_ms, increment]
                 text:
                   description: Literal used when the column type is text.
                   type: string
@@ -138,7 +138,7 @@ properties:
                     present in the shape because the default-value form is
                     shared.
                   type: string
-                  enum: [uuid, now_ms]
+                  enum: [uuid, now_ms, increment]
                 text:
                   description: Literal used when the column type is text.
                   type: string

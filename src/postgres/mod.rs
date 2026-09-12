@@ -1499,6 +1499,7 @@ fn default_datum(
         return text(match function {
             crate::engine::catalog::model::DefaultFunction::Uuid => "gen_random_uuid()",
             crate::engine::catalog::model::DefaultFunction::NowMs => "CURRENT_TIMESTAMP",
+            crate::engine::catalog::model::DefaultFunction::Increment => "increment()",
         });
     }
     match scalar_type {

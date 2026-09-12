@@ -207,7 +207,7 @@ properties:
                   func:
                     description: Generator function for per-row defaults.
                     type: string
-                    enum: [uuid, now_ms]
+                    enum: [uuid, now_ms, increment]
                   text:
                     description: Literal used when the column type is text.
                     type: string
@@ -230,7 +230,7 @@ properties:
                       Generator function. Never valid for missing values;
                       present because the default-value form is shared.
                     type: string
-                    enum: [uuid, now_ms]
+                    enum: [uuid, now_ms, increment]
                   text:
                     description: Literal used when the column type is text.
                     type: string
@@ -281,7 +281,7 @@ properties:
                   func:
                     description: Generator function for per-row defaults.
                     type: string
-                    enum: [uuid, now_ms]
+                    enum: [uuid, now_ms, increment]
                   text:
                     description: Literal used when the column type is text.
                     type: string
@@ -304,7 +304,7 @@ properties:
                       Generator function. Never valid for missing values;
                       present because the default-value form is shared.
                     type: string
-                    enum: [uuid, now_ms]
+                    enum: [uuid, now_ms, increment]
                   text:
                     description: Literal used when the column type is text.
                     type: string
@@ -348,7 +348,7 @@ properties:
               func:
                 description: Generator function for per-row defaults.
                 type: string
-                enum: [uuid, now_ms]
+                enum: [uuid, now_ms, increment]
               text:
                 description: Literal used when the column type is text.
                 type: string

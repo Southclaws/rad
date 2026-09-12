@@ -279,9 +279,17 @@ fn parse_default(
 ) -> std::result::Result<DefaultValue, String> {
     let mut result = DefaultValue::default();
     match value {
-        Value::String(value) if value == "uuid()" => result.function = Some(DefaultFunction::Uuid),
-        Value::String(value) if value == "now_ms()" => {
+        Value::String(value) if value == "uuid()" && scalar_type == ScalarType::Text => {
+            result.function = Some(DefaultFunction::Uuid)
+        }
+        Value::String(value) if value == "now_ms()" && scalar_type == ScalarType::Int64 => {
             result.function = Some(DefaultFunction::NowMs)
+        }
+        Value::String(value) if value == "increment()" && scalar_type == ScalarType::Int64 => {
+            result.function = Some(DefaultFunction::Increment)
+        }
+        Value::String(value) if matches!(value.as_str(), "uuid()" | "now_ms()" | "increment()") => {
+            return Err(format!("{value} default on {scalar_type:?} column").to_lowercase());
         }
         Value::String(value) if scalar_type == ScalarType::Text => result.text = value.clone(),
         Value::String(_) => {
@@ -430,6 +438,7 @@ fn render_default(column: &ColumnDef) -> Option<Value> {
             match function {
                 DefaultFunction::Uuid => "uuid()",
                 DefaultFunction::NowMs => "now_ms()",
+                DefaultFunction::Increment => "increment()",
             }
             .into(),
         ));
@@ -511,6 +520,32 @@ tables:
         let rendered = render(&expected).unwrap();
         let actual = parse("rendered.rad", &rendered).unwrap().canonical();
         assert!(expected.canonical_eq(&actual).unwrap());
+    }
+
+    #[test]
+    fn increment_defaults_round_trip_and_require_int64() {
+        let source = br#"
+tables:
+  - id: 1
+    name: items
+    columns:
+      - { id: 1, name: id, type: int64, pk: true, default: increment() }
+"#;
+        let expected = parse("rad.schema.yaml", source).unwrap().canonical();
+        let rendered = render(&expected).unwrap();
+        assert!(
+            String::from_utf8(rendered.clone())
+                .unwrap()
+                .contains("default: increment()")
+        );
+        let actual = parse("rendered.rad", &rendered).unwrap().canonical();
+        assert!(expected.canonical_eq(&actual).unwrap());
+
+        let invalid = br#"tables: [{id: 1, name: items, columns: [{id: 1, name: id, type: string, default: increment()}]}]"#;
+        assert_eq!(
+            parse("invalid.rad", invalid).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
     }
 
     #[test]

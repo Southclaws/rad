@@ -397,11 +397,10 @@ paths:
       summary: Create a column on a table.
       description: |
         Append a column. Because existing rows have no value for it, the
-        column must be nullable or carry a literal default; generator
-        defaults (`uuid()`, `now_ms()`) are rejected on new columns of
-        existing tables since they would produce a different value on every
-        read of an old row. On a schema-managed database this operation is
-        always rejected.
+        column must be nullable or carry a literal default. A nullable column
+        may use a generator default; historical rows remain NULL while new
+        creates run the generator. On a schema-managed database this operation
+        is always rejected.
       tags: [catalog]
       parameters:
         - { $ref: "#/components/parameters/TableName" }
@@ -1152,13 +1151,14 @@ components:
       description: |
         A column default, applied when an insert omits the column: either a
         builtin generator named by `func` (`uuid` on text columns, `now_ms`
-        on int64 columns) or a literal `value` of the column's type. Exactly
+        or `increment` on int64 columns) or a literal `value` of the column's type. Exactly
         one of the two is set.
       type: object
       properties:
         func:
-          description: A builtin generator, `uuid` or `now_ms`.
+          description: "A builtin generator: `uuid`, `now_ms`, or `increment`."
           type: string
+          enum: [uuid, now_ms, increment]
         value:
           description: A literal of the column's type.
           allOf:

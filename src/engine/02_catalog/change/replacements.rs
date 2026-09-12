@@ -4,8 +4,9 @@ use super::*;
 use crate::engine::catalog::identity::{ColumnId, OwnerEpoch, ReclamationId, TransitionId};
 use crate::engine::catalog::model::{
     ColumnConversion, ColumnReplacement, ColumnReplacementDef, ColumnReplacementRequest,
-    ColumnReplacementWrite, ConstraintKind, ConstraintState, DataPosition, ReclamationKind,
-    SchemaTransition, Timestamp, TransitionKind, TransitionState, TransitionWorkState,
+    ColumnReplacementWrite, ConstraintKind, ConstraintState, DataPosition, DefaultValue,
+    ReclamationKind, SchemaTransition, Timestamp, TransitionKind, TransitionState,
+    TransitionWorkState,
 };
 
 impl Mutation<'_> {
@@ -45,6 +46,20 @@ impl Mutation<'_> {
             definition.scalar_type,
             definition.default.as_ref(),
         )?;
+        if source
+            .insert_default
+            .as_ref()
+            .is_some_and(DefaultValue::is_increment)
+            != definition
+                .default
+                .as_ref()
+                .is_some_and(DefaultValue::is_increment)
+        {
+            return Err(input(format!(
+                "catalog: increment generator on column {:?} is immutable",
+                source.name
+            )));
+        }
         if definition.conversion != ColumnConversion::StrictBuiltin {
             return Err(input("catalog: unsupported column conversion"));
         }
@@ -423,7 +438,11 @@ fn validate_default(
     if let Some(function) = default.and_then(|value| value.function)
         && !matches!(
             (function, scalar_type),
-            (DefaultFunction::Uuid, ScalarType::Text) | (DefaultFunction::NowMs, ScalarType::Int64)
+            (DefaultFunction::Uuid, ScalarType::Text)
+                | (
+                    DefaultFunction::NowMs | DefaultFunction::Increment,
+                    ScalarType::Int64
+                )
         )
     {
         return Err(input(format!(
@@ -470,7 +489,9 @@ fn replace_physical_id(values: &mut [ColumnId], old: &ColumnId, new: &ColumnId) 
 mod tests {
     use std::sync::Arc;
 
-    use crate::engine::catalog::model::{ColumnDraft, ScalarType, TableDraft};
+    use crate::engine::catalog::model::{
+        ColumnDraft, DefaultFunction, DefaultValue, ScalarType, TableDraft,
+    };
     use crate::engine::kv::slatedb;
     use crate::engine::kv::{IsolationLevel, TransactionView, TransactionalKv};
 
@@ -552,6 +573,110 @@ mod tests {
             ScalarType::Int64
         );
         assert_ne!(after.column("value").unwrap().id, source_id);
+        database.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn replacement_preserves_increment_identity_and_state() {
+        let database = Arc::new(
+            slatedb::Store::memory("catalog-replacement-increment")
+                .await
+                .unwrap(),
+        );
+        let service = Service::new(database.clone());
+        let before = service
+            .create_table(TableDraft {
+                id: Some(SchemaId::new(1).unwrap()),
+                name: "events".into(),
+                columns: vec![
+                    ColumnDraft {
+                        id: Some(SchemaId::new(1).unwrap()),
+                        name: "key".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                    ColumnDraft {
+                        id: Some(SchemaId::new(2).unwrap()),
+                        name: "serial".into(),
+                        scalar_type: ScalarType::Int64,
+                        nullable: true,
+                        format: String::new(),
+                        default: Some(DefaultValue {
+                            function: Some(DefaultFunction::Increment),
+                            ..DefaultValue::default()
+                        }),
+                    },
+                ],
+                primary_key: vec!["key".into()],
+                indexes: Vec::new(),
+                foreign_keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let source = before.column("serial").unwrap();
+        let source_physical_id = source.id.clone();
+        store::save_column_increment(&*database, &before.id, source.schema_id, 7)
+            .await
+            .unwrap();
+
+        let mut transaction = database
+            .begin(IsolationLevel::SerializableSnapshot)
+            .await
+            .unwrap();
+        {
+            let mut view = TransactionView(transaction.as_mut());
+            let mut mutation = Mutation::new(&mut view);
+            let mut transition = mutation
+                .start_column_replacement(
+                    SchemaId::new(1).unwrap(),
+                    SchemaId::new(2).unwrap(),
+                    ColumnReplacementDef {
+                        scalar_type: ScalarType::Int64,
+                        nullable: true,
+                        format: "counter".into(),
+                        default: Some(DefaultValue {
+                            function: Some(DefaultFunction::Increment),
+                            ..DefaultValue::default()
+                        }),
+                        conversion: ColumnConversion::StrictBuiltin,
+                        prerequisites: Vec::new(),
+                    },
+                )
+                .await
+                .unwrap();
+            transition.owner_epoch = 1.into();
+            store::save_transition(mutation.view, &transition)
+                .await
+                .unwrap();
+            let validating = mutation
+                .begin_column_replacement_validation(&transition.id, transition.owner_epoch)
+                .await
+                .unwrap();
+            mutation
+                .publish_column_replacement(&transition.id, validating.owner_epoch)
+                .await
+                .unwrap();
+        }
+        transaction.commit().await.unwrap();
+
+        let after = service.get_table("events").await.unwrap().unwrap();
+        let serial = after.column("serial").unwrap();
+        assert_ne!(serial.id, source_physical_id);
+        assert_eq!(serial.schema_id, SchemaId::new(2).unwrap());
+        assert!(
+            serial
+                .insert_default
+                .as_ref()
+                .is_some_and(DefaultValue::is_increment)
+        );
+        assert_eq!(
+            store::read_column_increment(&*database, &after.id, serial.schema_id)
+                .await
+                .unwrap(),
+            7
+        );
         database.close().await.unwrap();
     }
 }

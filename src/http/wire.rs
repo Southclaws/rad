@@ -111,14 +111,10 @@ fn column_default(
         )),
         (None, None) => Err(format!("column {column:?}: default must set func or value")),
         (Some(function), None) => {
-            let function = match function.as_str() {
-                "uuid" => DefaultFunction::Uuid,
-                "now_ms" => DefaultFunction::NowMs,
-                _ => {
-                    return Err(format!(
-                        "column {column:?}: unknown default function {function:?}"
-                    ));
-                }
+            let function = match function {
+                wire::ColumnDefaultFunc::Uuid => DefaultFunction::Uuid,
+                wire::ColumnDefaultFunc::NowMs => DefaultFunction::NowMs,
+                wire::ColumnDefaultFunc::Increment => DefaultFunction::Increment,
             };
             Ok(Some(DefaultValue {
                 function: Some(function),
@@ -282,13 +278,11 @@ fn default_wire(
     let value = value?;
     if let Some(function) = value.function {
         return Some(wire::ColumnDefault {
-            func: Some(
-                match function {
-                    DefaultFunction::Uuid => "uuid",
-                    DefaultFunction::NowMs => "now_ms",
-                }
-                .into(),
-            ),
+            func: Some(match function {
+                DefaultFunction::Uuid => wire::ColumnDefaultFunc::Uuid,
+                DefaultFunction::NowMs => wire::ColumnDefaultFunc::NowMs,
+                DefaultFunction::Increment => wire::ColumnDefaultFunc::Increment,
+            }),
             value: None,
         });
     }
@@ -616,7 +610,7 @@ fn default_spec_json(value: &DefaultSpec) -> Value {
     match value {
         DefaultSpec::Generator(function) => json!({
             "kind": "generator",
-            "func": match function { DefaultFunction::Uuid => "uuid", DefaultFunction::NowMs => "now_ms" }
+            "func": match function { DefaultFunction::Uuid => "uuid", DefaultFunction::NowMs => "now_ms", DefaultFunction::Increment => "increment" }
         }),
         DefaultSpec::Text(value) => json!({"kind": "literal", "value": value}),
         DefaultSpec::Number(value) => {
@@ -634,7 +628,7 @@ fn default_value_json(
     if let Some(function) = value.function {
         return json!({
             "kind": "generator",
-            "func": match function { DefaultFunction::Uuid => "uuid", DefaultFunction::NowMs => "now_ms" }
+            "func": match function { DefaultFunction::Uuid => "uuid", DefaultFunction::NowMs => "now_ms", DefaultFunction::Increment => "increment" }
         });
     }
     let value = default_wire(scalar_type, Some(value))

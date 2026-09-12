@@ -543,6 +543,21 @@ keyspace rad {
     }
   }
 
+  # Transactional high-water mark for one increment-generated logical column.
+  # The logical column identity survives physical column replacement. An absent
+  # key means zero, so the first generated value is one.
+  space catalog_column_increment {
+    tag x"23"
+    key {
+      table physical_id "t"
+      column be32
+    }
+    value "last committed non-negative int64 decimal text"
+    vectors {
+      key { table 42, column 7 } = x"72 37 23 2a 00 00 00 07"
+    }
+  }
+
   # MVCC-visible logical content generations for one table. A non-empty row
   # mutation advances each stripe selected by its primary keys in the same
   # transaction as its data writes. A complete table identity contains all

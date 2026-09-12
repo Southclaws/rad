@@ -16,7 +16,7 @@ func DefaultToOAS(d *protocol.ColumnDefault) oas.OptColumnDefault {
 	// is invalid JSON, so an absent value must be an explicit null.
 	o := oas.ColumnDefault{Value: oas.Value(anyToRaw(d.Value))}
 	if d.Func != "" {
-		o.Func = oas.NewOptString(d.Func)
+		o.Func = oas.NewOptColumnDefaultFunc(oas.ColumnDefaultFunc(d.Func))
 	}
 	return oas.NewOptColumnDefault(o)
 }
@@ -27,7 +27,7 @@ func DefaultFromOAS(o oas.OptColumnDefault) *protocol.ColumnDefault {
 		return nil
 	}
 	return &protocol.ColumnDefault{
-		Func:  o.Value.Func.Or(""),
+		Func:  string(o.Value.Func.Or(oas.ColumnDefaultFunc(""))),
 		Value: rawToAny(jx.Raw(o.Value.Value)),
 	}
 }

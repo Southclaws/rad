@@ -2050,20 +2050,50 @@ impl ColumnDefBuilder {
 }
 /**A column default, applied when an insert omits the column: either a
 builtin generator named by `func` (`uuid` on text columns, `now_ms`
-on int64 columns) or a literal `value` of the column's type. Exactly
+or `increment` on int64 columns) or a literal `value` of the column's type. Exactly
 one of the two is set.
 */
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ColumnDefault {
-    ///A builtin generator, `uuid` or `now_ms`.
+    ///A builtin generator: `uuid`, `now_ms`, or `increment`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub func: Option<String>,
+    pub func: Option<ColumnDefaultFunc>,
     ///A literal of the column's type.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<Value>,
 }
 ///An arbitrary JSON value carried by the HTTP protocol.
 pub type Value = serde_json::Value;
+///A builtin generator: `uuid`, `now_ms`, or `increment`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum ColumnDefaultFunc {
+    #[default]
+    #[serde(rename = "uuid")]
+    Uuid,
+    #[serde(rename = "now_ms")]
+    NowMs,
+    #[serde(rename = "increment")]
+    Increment,
+}
+impl ColumnDefaultFunc {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Uuid => "uuid",
+            Self::NowMs => "now_ms",
+            Self::Increment => "increment",
+        }
+    }
+}
+impl ::std::fmt::Display for ColumnDefaultFunc {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for ColumnDefaultFunc {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
 ///The column properties to update.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ColumnUpdateProps {

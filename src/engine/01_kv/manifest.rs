@@ -7,4 +7,4 @@ pub const STORAGE_FORMAT_NAME: &str = "storage";
 pub const STORAGE_FORMAT_VERSION: u32 = 1;
 /// SHA-256 of the normative specification text.
 pub const STORAGE_SPEC_SHA256: &str =
-    "db5a331fffd339e769e7573a50ad5d096ca4f4dbbc11db43612c45fec9aa0053";
+    "b1fcfd9febe5cffe689a36e667fc72c8f2a383a163559e29eac4bc7f2e50fcab";

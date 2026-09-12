@@ -754,9 +754,9 @@ $defs:
     properties:
       kind: { type: string, const: generator }
       func:
-        description: A builtin generator; `uuid` requires text and `now_ms` requires int64.
+        description: A builtin generator; `uuid` requires text, while `now_ms` and `increment` require int64.
         type: string
-        enum: [uuid, now_ms]
+        enum: [uuid, now_ms, increment]
 
   LiteralDefault:
     title: LiteralDefault
