@@ -279,7 +279,7 @@ impl<'a> SubrelationCacheContext<'a> {
         }
     }
 
-    pub(super) async fn reach(&self, event: super::EngineEvent) {
+    pub(super) async fn reach(&self, event: EngineEvent) {
         if let Some(events) = self.events {
             events.reach(event).await;
         }
