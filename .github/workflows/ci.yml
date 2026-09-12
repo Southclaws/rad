@@ -349,6 +349,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: target
       DATABASE_URL: postgresql://default:default@127.0.0.1:5432/postgres?sslmode=disable
+      GOWORK: "off"
     steps:
       - name: Check out Rad
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
