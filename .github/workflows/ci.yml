@@ -368,11 +368,22 @@ jobs:
         run: rustup toolchain install 1.96.0 --profile minimal
 
       - name: Install Storyden Go toolchain
+        id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: storyden/go.mod
-          cache: true
-          cache-dependency-path: storyden/go.sum
+          cache: false
+
+      - name: Restore Storyden Go cache
+        id: storyden-go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: storyden-go-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('storyden/go.sum') }}
+          restore-keys: |
+            storyden-go-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-
 
       - name: Restore Rust dependency cache
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
@@ -412,6 +423,15 @@ jobs:
         run: |
           set -o pipefail
           go test -p 4 ./... 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/storyden/tests.log"
+
+      - name: Save Storyden Go cache
+        if: always() && steps.setup-go.outcome == 'success' && steps.storyden-go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: storyden-go-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('storyden/go.sum') }}
 
       - name: Stop Rad
         if: always()
