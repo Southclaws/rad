@@ -11,6 +11,8 @@ use opentelemetry::propagation::Extractor;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
+pub(crate) const APPLICATION_NAME_HEADER: &str = "x-rad-application-name";
+
 pub(super) async fn log_request(request: Request, next: Next) -> Response {
     let started = Instant::now();
     let method = request.method().clone();
@@ -20,6 +22,14 @@ pub(super) async fn log_request(request: Request, next: Next) -> Response {
         .get::<ConnectInfo<SocketAddr>>()
         .map(|peer| peer.0.ip().to_string())
         .unwrap_or_default();
+    let application_name = request
+        .headers()
+        .get(APPLICATION_NAME_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_owned();
     if is_probe_path(&path) {
         let response = next.run(request).await;
         if !response.status().is_success() {
@@ -64,6 +74,7 @@ pub(super) async fn log_request(request: Request, next: Next) -> Response {
         request_id: request_id.clone(),
         transaction_id: String::new(),
         client_ip: client_ip.clone(),
+        application_name: application_name.clone(),
         transaction_state: "none",
         trace_id: trace_id.clone(),
         span_id: span_id.clone(),
@@ -90,6 +101,7 @@ pub(super) async fn log_request(request: Request, next: Next) -> Response {
         trace_id,
         span_id,
         client_ip,
+        application_name,
         method = %method,
         path,
         status,
@@ -190,7 +202,7 @@ fn is_probe_path(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_probe_path;
+    use super::{APPLICATION_NAME_HEADER, is_probe_path};
 
     #[test]
     fn probe_paths_are_exact() {
@@ -199,5 +211,10 @@ mod tests {
         }
         assert!(!is_probe_path("/execute"));
         assert!(!is_probe_path("/readyz/details"));
+    }
+
+    #[test]
+    fn application_name_header_is_vendor_scoped() {
+        assert_eq!(APPLICATION_NAME_HEADER, "x-rad-application-name");
     }
 }
