@@ -202,7 +202,17 @@ impl Expr {
 
     pub fn branch(arms: Vec<BranchArm>, otherwise: Expr) -> Self {
         let mut value_type = otherwise.value_type();
-        value_type.nullable |= arms.iter().any(|arm| arm.then.value_type().nullable);
+        value_type.nullable |= arms.iter().any(|arm| {
+            arm.then.value_type().nullable
+                && !matches!(
+                    &arm.when,
+                    Expr::Unary {
+                        op: UnaryOp::IsNotNull,
+                        expression,
+                        ..
+                    } if expression.as_ref() == &arm.then
+                )
+        });
         Self::Branch {
             arms,
             otherwise: Box::new(otherwise),
@@ -239,7 +249,10 @@ impl Expr {
         let [field] = relation.output().fields.as_slice() else {
             return Err(BoundError::ScalarArity(relation.output().fields.len()));
         };
-        let value_type = field.value_type.clone().with_nullable(true);
+        let value_type = field
+            .value_type
+            .clone()
+            .with_nullable(field.value_type.nullable || relation.cardinality().min == 0);
         Ok(Self::Scalar {
             relation: Box::new(relation),
             value_type,
@@ -998,7 +1011,7 @@ mod tests {
         );
         assert_eq!(
             Expr::scalar(global).unwrap().value_type(),
-            Type::scalar(Kind::Int64, true)
+            Type::scalar(Kind::Int64, false)
         );
         assert_eq!(
             Expr::scalar(scan.clone()).unwrap_err(),
@@ -1022,6 +1035,20 @@ mod tests {
                 .without(&SlotSet::new([SlotId(64)]))
                 .contains(SlotId(64))
         );
+    }
+
+    #[test]
+    fn non_null_guard_refines_the_matching_branch_result() {
+        let value = Expr::slot(1, "nullable", Type::scalar(Kind::Int64, true));
+        let coalesce = Expr::branch(
+            vec![BranchArm {
+                when: Expr::unary(UnaryOp::IsNotNull, value.clone()),
+                then: value,
+            }],
+            Expr::literal(Value::Int64(0)),
+        );
+
+        assert_eq!(coalesce.value_type(), Type::scalar(Kind::Int64, false));
     }
 
     #[test]
