@@ -2,6 +2,7 @@
 mod synth_catalog;
 #[path = "data.rs"]
 mod synth_data;
+mod cache;
 mod fixture;
 mod invalid;
 mod metamorphic;
@@ -26,6 +27,7 @@ use rad::engine::kv::slatedb::Store;
 use rad::engine::lir::{Datum, Query, Row};
 use rad::service::result_json;
 
+pub use cache::{CacheCase, check_cache, check_cache_file};
 pub use fixture::emit_fixture;
 pub use model::{ModelCase, check_model};
 pub use nested_identity::nested_identity_case;
@@ -33,8 +35,8 @@ pub use program::{ProgramCase, check_invalid_program, check_program};
 pub use recursive::{generate as recursive_from_decisions, recursive_case};
 pub use semantic_model::{SemanticModelCase, check_semantic_model};
 pub use shrink::{
-    minimize, minimize_invalid, minimize_invalid_program, minimize_metamorphic, minimize_model,
-    minimize_program, minimize_semantic_model,
+    minimize, minimize_cache, minimize_invalid, minimize_invalid_program, minimize_metamorphic,
+    minimize_model, minimize_program, minimize_semantic_model,
 };
 
 pub type TestResult<T> = Result<T, String>;

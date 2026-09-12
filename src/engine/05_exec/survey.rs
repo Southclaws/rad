@@ -1192,16 +1192,13 @@ fn predicate_conditioned_degree_accumulators(
     table: &Table,
     degree_columns: &HashSet<&str>,
 ) -> Vec<PredicateConditionedDegreeAccumulator> {
-    let mut join_groups = table
+    table
         .columns
         .iter()
         .enumerate()
         .filter(|(_, column)| degree_columns.contains(column.name.as_str()))
         .map(|(index, _)| vec![index])
-        .collect::<Vec<_>>();
-    join_groups.extend(column_group_indexes(table));
-    join_groups
-        .into_iter()
+        .chain(column_group_indexes(table))
         .flat_map(|join_column_indexes| {
             (0..table.columns.len()).map(move |predicate_column_index| {
                 PredicateConditionedDegreeAccumulator::new(

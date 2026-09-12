@@ -3,6 +3,7 @@
 mod text_pattern;
 
 use crate::engine::catalog::model::Table;
+use smallvec::{SmallVec, smallvec};
 
 use super::{
     AggregateFunction, BinaryOp, Cardinality, Field, JoinKind, Kind, RecursiveAccumulation,
@@ -841,21 +842,21 @@ impl Relation {
         }
     }
 
-    pub fn inputs(&self) -> Vec<&Relation> {
+    pub fn inputs(&self) -> SmallVec<[&Relation; 4]> {
         match &self.node {
             RelationNode::Scan { .. }
             | RelationNode::Rows { .. }
             | RelationNode::Ref { .. }
-            | RelationNode::RecursiveRef { .. } => Vec::new(),
+            | RelationNode::RecursiveRef { .. } => SmallVec::new(),
             RelationNode::Filter { input, .. }
             | RelationNode::Project { input, .. }
             | RelationNode::Aggregate { input, .. }
             | RelationNode::Order { input, .. }
             | RelationNode::Slice { input, .. }
-            | RelationNode::Distinct(input) => vec![input],
+            | RelationNode::Distinct(input) => smallvec![&**input],
             RelationNode::Join { left, right, .. }
             | RelationNode::Intersect { left, right, .. }
-            | RelationNode::Except { left, right, .. } => vec![left, right],
+            | RelationNode::Except { left, right, .. } => smallvec![&**left, &**right],
             RelationNode::Concatenate { inputs, .. } => inputs.iter().collect(),
         }
     }

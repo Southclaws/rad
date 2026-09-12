@@ -277,6 +277,7 @@ struct Instruments {
     relation_cache_restore_duration: Histogram<f64>,
     relation_cache_artifact_rows: Histogram<u64>,
     relation_cache_artifact_keys: Histogram<u64>,
+    relation_cache_materialization_candidates: Counter<u64>,
     relation_cache_dependency_lookups: Counter<u64>,
     relation_cache_dependency_evictions: Counter<u64>,
     relation_cache_catalog_lookups: Counter<u64>,
@@ -557,6 +558,10 @@ impl Instruments {
             relation_cache_artifact_keys: meter
                 .u64_histogram("rad.relation.cache.artifact.keys")
                 .with_description("Keys retained by a relation cache materialization")
+                .build(),
+            relation_cache_materialization_candidates: meter
+                .u64_counter("rad.relation.cache.materialization.candidates")
+                .with_description("Physical materialization candidate selection results")
                 .build(),
             relation_cache_dependency_lookups: meter
                 .u64_counter("rad.relation.cache.dependency.lookups")
@@ -1220,6 +1225,24 @@ pub fn relation_cache_materialization_fill(
     instruments
         .relation_cache_artifact_keys
         .record(keys as u64, &attributes);
+}
+
+pub fn relation_cache_materialization_selection(selected: u32, overlap: u32, budget: u32) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    for (outcome, count) in [
+        ("selected", selected),
+        ("overlap_rejected", overlap),
+        ("budget_rejected", budget),
+    ] {
+        if count > 0 {
+            instruments.relation_cache_materialization_candidates.add(
+                u64::from(count),
+                &[KeyValue::new("rad.cache.candidate.outcome", outcome)],
+            );
+        }
+    }
 }
 
 pub fn relation_cache_dependency_lookup(result: &'static str) {

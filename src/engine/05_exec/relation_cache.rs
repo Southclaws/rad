@@ -21,8 +21,8 @@ mod snapshot_catalog;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use foyer::{Cache, CacheProperties, Event, EventListener, LfuConfig};
@@ -43,7 +43,10 @@ use crate::engine::lir::{Datum, ObjectField, RootCardinality, RowType, Value};
 
 use super::observe::KvWork;
 use super::observe::StatementSource;
-use super::{Error, ErrorKind, ErrorReason, Result};
+use super::{
+    EngineEvent, Error, ErrorKind, ErrorReason, RelationCacheAdmissionResult,
+    RelationCacheEvictionCause, RelationCacheMaterialization, Result,
+};
 use policy::{CohortToken, RelationCachePolicy};
 use prepared_read::PreparedReadCache;
 pub(super) use prepared_read::PreparedReadResult;
@@ -58,6 +61,20 @@ const ACCOUNTING_RETAINED: u8 = 1;
 const ACCOUNTING_REMOVED: u8 = 2;
 const QUERY_VALIDATOR_DOMAIN: &[u8] = b"rad-query-validator";
 const QUERY_RESULT_REPRESENTATION: &[u8] = b"application/json;rad-datum-v1";
+
+pub(super) type SemanticCacheEventBatch = Vec<EngineEvent>;
+
+pub(super) async fn reach_semantic_events(
+    hook: Option<&Arc<dyn super::EngineEventHook>>,
+    events: SemanticCacheEventBatch,
+) {
+    let Some(hook) = hook else {
+        return;
+    };
+    for event in events {
+        hook.reach(event).await;
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct QueryValidator([u8; 32]);
@@ -232,7 +249,7 @@ enum DependencyGeneration {
 pub(super) struct RelationCacheKey {
     domain: MaterializationDomain,
     exact: Fingerprint,
-    representation: Vec<u8>,
+    representation: smallvec::SmallVec<[u8; 64]>,
     dependencies: Vec<DependencyGeneration>,
     // Snapshot dependency reuse can return this key for every request at one
     // storage position. Query result keys store the derived validator so a
@@ -244,6 +261,7 @@ pub(super) struct SubrelationCacheContext<'a> {
     pub cache: &'a RelationCache,
     pub root_key: RelationCacheKey,
     pub counters: Option<&'a super::observe::KvCounters>,
+    events: Option<&'a Arc<dyn super::EngineEventHook>>,
 }
 
 impl<'a> SubrelationCacheContext<'a> {
@@ -251,12 +269,24 @@ impl<'a> SubrelationCacheContext<'a> {
         cache: &'a RelationCache,
         root_key: RelationCacheKey,
         counters: Option<&'a super::observe::KvCounters>,
+        events: Option<&'a Arc<dyn super::EngineEventHook>>,
     ) -> Self {
         Self {
             cache,
             root_key,
             counters,
+            events,
         }
+    }
+
+    pub(super) async fn reach(&self, event: super::EngineEvent) {
+        if let Some(events) = self.events {
+            events.reach(event).await;
+        }
+    }
+
+    pub(super) async fn reach_all(&self, events: SemanticCacheEventBatch) {
+        reach_semantic_events(self.events, events).await;
     }
 }
 
@@ -280,6 +310,17 @@ impl MaterializationDomain {
 
     const fn is_query_result(self) -> bool {
         matches!(self, Self::QueryResult)
+    }
+
+    const fn event_materialization(self) -> RelationCacheMaterialization {
+        match self {
+            Self::QueryResult => RelationCacheMaterialization::QueryResult,
+            Self::SubrelationRowsV1 => RelationCacheMaterialization::Rows,
+            Self::HashJoinBuild => RelationCacheMaterialization::HashJoinBuild,
+            Self::GroupedHashJoinDimension => {
+                RelationCacheMaterialization::GroupedHashJoinDimension
+            }
+        }
     }
 
     fn lookup(self, result: &'static str) {
@@ -396,7 +437,7 @@ impl RelationCacheKey {
         Self {
             domain,
             exact,
-            representation: Vec::new(),
+            representation: smallvec::SmallVec::new(),
             dependencies,
             query_validator,
         }
@@ -508,7 +549,7 @@ impl RelationCacheKey {
         domain: MaterializationDomain,
         exact: Fingerprint,
         dependencies: &CatalogDependencies,
-        representation: Vec<u8>,
+        representation: impl Into<smallvec::SmallVec<[u8; 64]>>,
     ) -> Result<Self> {
         if domain.is_query_result() || domain == MaterializationDomain::SubrelationRowsV1 {
             return Err(Error::message(
@@ -518,13 +559,18 @@ impl RelationCacheKey {
         }
         let mut key = self.for_subrelation(exact, dependencies)?;
         key.domain = domain;
-        key.representation = representation;
+        key.representation = representation.into();
         Ok(key)
     }
 
     fn retained_bytes(&self) -> usize {
+        let representation_bytes = if self.representation.spilled() {
+            self.representation.capacity()
+        } else {
+            0
+        };
         size_of::<Self>()
-            .saturating_add(self.representation.capacity())
+            .saturating_add(representation_bytes)
             .saturating_add(
                 self.dependencies
                     .capacity()
@@ -998,11 +1044,25 @@ impl CachedGroupedDimensionBuildHandle {
 pub(super) struct CachedHashBuildResult {
     pub value: CachedHashBuildHandle,
     pub source: StatementSource,
+    events: SemanticCacheEventBatch,
+}
+
+impl CachedHashBuildResult {
+    pub(super) fn take_events(&mut self) -> SemanticCacheEventBatch {
+        std::mem::take(&mut self.events)
+    }
 }
 
 pub(super) struct CachedGroupedDimensionBuildResult {
     pub value: CachedGroupedDimensionBuildHandle,
     pub source: StatementSource,
+    events: SemanticCacheEventBatch,
+}
+
+impl CachedGroupedDimensionBuildResult {
+    pub(super) fn take_events(&mut self) -> SemanticCacheEventBatch {
+        std::mem::take(&mut self.events)
+    }
 }
 
 fn cached_row_object(output: &RowType, row: &[Datum]) -> Datum {
@@ -1301,6 +1361,120 @@ struct RelationCacheMetrics {
 
 struct CacheEvents {
     metrics: Arc<RelationCacheMetrics>,
+    semantic: Arc<SemanticCacheEvents>,
+}
+
+#[derive(Default)]
+struct SemanticCacheEvents {
+    enabled: AtomicBool,
+    admission: Mutex<()>,
+    active: Mutex<Option<SemanticCacheEventBatch>>,
+}
+
+impl SemanticCacheEvents {
+    fn enable(&self) {
+        self.enabled.store(true, Ordering::Release);
+    }
+
+    fn capture(&self) -> Option<SemanticCacheEventCapture<'_>> {
+        if !self.enabled.load(Ordering::Acquire) {
+            return None;
+        }
+        let admission = self
+            .admission
+            .lock()
+            .expect("semantic cache admission lock poisoned");
+        *self
+            .active
+            .lock()
+            .expect("semantic cache event lock poisoned") = Some(SemanticCacheEventBatch::new());
+        Some(SemanticCacheEventCapture {
+            events: self,
+            _admission: admission,
+            finished: false,
+        })
+    }
+
+    fn admission(
+        &self,
+        materialization: RelationCacheMaterialization,
+        relation: Fingerprint,
+        result: RelationCacheAdmissionResult,
+    ) -> SemanticCacheEventBatch {
+        if !self.enabled.load(Ordering::Acquire) {
+            return SemanticCacheEventBatch::new();
+        }
+        vec![EngineEvent::RelationCacheAdmissionCompleted {
+            materialization,
+            relation,
+            result,
+        }]
+    }
+
+    fn record_eviction(
+        &self,
+        materialization: RelationCacheMaterialization,
+        relation: Fingerprint,
+        cause: RelationCacheEvictionCause,
+    ) {
+        if !self.enabled.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(active) = self
+            .active
+            .lock()
+            .expect("semantic cache event lock poisoned")
+            .as_mut()
+        {
+            active.push(EngineEvent::RelationCacheEntryEvicted {
+                materialization,
+                relation,
+                cause,
+            });
+        }
+    }
+}
+
+struct SemanticCacheEventCapture<'a> {
+    events: &'a SemanticCacheEvents,
+    _admission: MutexGuard<'a, ()>,
+    finished: bool,
+}
+
+impl SemanticCacheEventCapture<'_> {
+    fn finish(
+        mut self,
+        materialization: RelationCacheMaterialization,
+        relation: Fingerprint,
+        result: RelationCacheAdmissionResult,
+    ) -> SemanticCacheEventBatch {
+        let mut events = self
+            .events
+            .active
+            .lock()
+            .expect("semantic cache event lock poisoned")
+            .take()
+            .expect("semantic cache event capture is active");
+        events.push(EngineEvent::RelationCacheAdmissionCompleted {
+            materialization,
+            relation,
+            result,
+        });
+        self.finished = true;
+        events
+    }
+}
+
+impl Drop for SemanticCacheEventCapture<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.events
+                .active
+                .lock()
+                .expect("semantic cache event lock poisoned")
+                .take();
+        }
+    }
 }
 
 impl EventListener for CacheEvents {
@@ -1312,16 +1486,16 @@ impl EventListener for CacheEvents {
         // Foyer can call on_leave before insert returns. The state exchange
         // prevents a late admission path from adding bytes for an entry that
         // is already absent. It also makes each removal subtract at most once.
-        if value
+        let was_retained = value
             .accounting_state
             .swap(ACCOUNTING_REMOVED, Ordering::AcqRel)
-            == ACCOUNTING_RETAINED
-        {
+            == ACCOUNTING_RETAINED;
+        if was_retained {
             self.metrics
                 .retained_bytes
                 .fetch_sub(bytes as i64, Ordering::Relaxed);
         }
-        let cause = match event {
+        let (cause, semantic_cause) = match event {
             Event::Evict => {
                 if key.domain.is_query_result() {
                     self.metrics.evictions.fetch_add(1, Ordering::Relaxed);
@@ -1330,13 +1504,20 @@ impl EventListener for CacheEvents {
                         .subrelation_evictions
                         .fetch_add(1, Ordering::Relaxed);
                 }
-                "capacity"
+                ("capacity", RelationCacheEvictionCause::Capacity)
             }
-            Event::Replace => "replace",
-            Event::Remove => "remove",
-            Event::Clear => "clear",
+            Event::Replace => ("replace", RelationCacheEvictionCause::Replaced),
+            Event::Remove => ("remove", RelationCacheEvictionCause::Removed),
+            Event::Clear => ("clear", RelationCacheEvictionCause::Cleared),
         };
         key.domain.eviction(cause);
+        if was_retained {
+            self.semantic.record_eviction(
+                key.domain.event_materialization(),
+                key.exact,
+                semantic_cause,
+            );
+        }
     }
 }
 
@@ -1348,6 +1529,7 @@ pub(super) struct RelationCache {
     prepared_reads: PreparedReadCache,
     policy: RelationCachePolicy,
     metrics: Arc<RelationCacheMetrics>,
+    semantic_events: Arc<SemanticCacheEvents>,
     limits: RelationCacheLimits,
     entry_weight: usize,
     result_byte_limit: usize,
@@ -1368,6 +1550,7 @@ impl RelationCache {
         let entry_weight = byte_limit.div_ceil(entry_limit);
         let shards = CACHE_SHARDS.min(entry_limit).min(byte_limit);
         let metrics = Arc::new(RelationCacheMetrics::default());
+        let semantic_events = Arc::new(SemanticCacheEvents::default());
         let entries = Cache::builder(byte_limit)
             .with_shards(shards)
             .with_eviction_config(LfuConfig::default())
@@ -1380,6 +1563,7 @@ impl RelationCache {
             )
             .with_event_listener(Arc::new(CacheEvents {
                 metrics: metrics.clone(),
+                semantic: semantic_events.clone(),
             }))
             .build::<CacheProperties>();
         let limits = RelationCacheLimits {
@@ -1401,10 +1585,15 @@ impl RelationCache {
             prepared_reads: PreparedReadCache::new(entry_limit, config.result_byte_limit),
             policy: RelationCachePolicy::new(entry_limit),
             metrics,
+            semantic_events,
             limits,
             entry_weight,
             result_byte_limit: config.result_byte_limit,
         }
+    }
+
+    pub(super) fn enable_semantic_events(&self) {
+        self.semantic_events.enable();
     }
 
     /// Resolve table metadata through the caller's pinned snapshot.
@@ -1556,6 +1745,7 @@ impl RelationCache {
             return Ok(RelationCacheResult {
                 rows: RelationRows::Cached(relation),
                 source: StatementSource::RelationCache,
+                events: SemanticCacheEventBatch::new(),
             });
         }
         if key.domain.is_query_result() {
@@ -1601,6 +1791,7 @@ impl RelationCache {
                         return Ok(RelationCacheResult {
                             rows: RelationRows::Cached(relation),
                             source: StatementSource::RelationCache,
+                            events: SemanticCacheEventBatch::new(),
                         });
                     }
                     FlightResult::Failure(error) => return Err(error.restore()),
@@ -1615,6 +1806,7 @@ impl RelationCache {
                 return Ok(RelationCacheResult {
                     rows: RelationRows::Cached(relation),
                     source: StatementSource::RelationCache,
+                    events: SemanticCacheEventBatch::new(),
                 });
             }
             let result = fill.take().expect("relation cache fill runs once")().await;
@@ -1642,6 +1834,11 @@ impl RelationCache {
                             self.result_byte_limit,
                         );
                         self.reject_too_large(key.domain);
+                        let events = self.semantic_events.admission(
+                            key.domain.event_materialization(),
+                            key.exact,
+                            RelationCacheAdmissionResult::TooLarge,
+                        );
                         // Waiter registration and flight removal use the same
                         // lock. After detach returns zero, no waiter can still
                         // require a portable copy of this result.
@@ -1653,6 +1850,7 @@ impl RelationCache {
                         return Ok(RelationCacheResult {
                             rows: RelationRows::Frames(frames),
                             source: StatementSource::Executed,
+                            events,
                         });
                     }
                     let relation = Arc::new(CachedMaterialization::relation(output, &frames, work));
@@ -1664,7 +1862,7 @@ impl RelationCache {
                             .saturating_add(relation.retained_bytes()),
                         self.result_byte_limit,
                     );
-                    self.admit(key.clone(), relation.clone());
+                    let events = self.admit(key.clone(), relation.clone());
                     // Admission policy can reject this value. Current waiters
                     // still share the successful result. A new request fills
                     // the key again if no entry remains.
@@ -1672,6 +1870,7 @@ impl RelationCache {
                     return Ok(RelationCacheResult {
                         rows: RelationRows::Frames(frames),
                         source: StatementSource::Executed,
+                        events,
                     });
                 }
                 Err(error) => {
@@ -1714,6 +1913,7 @@ impl RelationCache {
         Ok(CachedHashBuildResult {
             value: CachedHashBuildHandle(result.0),
             source: result.1,
+            events: result.2,
         })
     }
 
@@ -1749,6 +1949,7 @@ impl RelationCache {
         Ok(CachedGroupedDimensionBuildResult {
             value: CachedGroupedDimensionBuildHandle(result.0),
             source: result.1,
+            events: result.2,
         })
     }
 
@@ -1756,14 +1957,22 @@ impl RelationCache {
         &self,
         key: RelationCacheKey,
         fill: F,
-    ) -> Result<(Arc<CachedMaterialization>, StatementSource)>
+    ) -> Result<(
+        Arc<CachedMaterialization>,
+        StatementSource,
+        SemanticCacheEventBatch,
+    )>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<CachedMaterialization>>,
     {
         let cohort = self.policy.observe_request(&key);
         if let Some(value) = self.get(&key, cohort) {
-            return Ok((value, StatementSource::RelationCache));
+            return Ok((
+                value,
+                StatementSource::RelationCache,
+                SemanticCacheEventBatch::new(),
+            ));
         }
         self.metrics
             .subrelation_misses
@@ -1794,7 +2003,11 @@ impl RelationCache {
                     FlightResult::Success(value) => {
                         self.policy.observe_coalesced_reuse(cohort);
                         key.domain.avoided(value.work);
-                        return Ok((value, StatementSource::RelationCache));
+                        return Ok((
+                            value,
+                            StatementSource::RelationCache,
+                            SemanticCacheEventBatch::new(),
+                        ));
                     }
                     FlightResult::Failure(error) => return Err(error.restore()),
                     FlightResult::Cancelled => continue,
@@ -1803,7 +2016,11 @@ impl RelationCache {
             let mut owner = FlightOwner::new(self, key.clone(), flight);
             if let Some(value) = self.get_after_miss(&key, cohort) {
                 owner.finish(FlightResult::Success(value.clone()));
-                return Ok((value, StatementSource::RelationCache));
+                return Ok((
+                    value,
+                    StatementSource::RelationCache,
+                    SemanticCacheEventBatch::new(),
+                ));
             }
             match fill
                 .take()
@@ -1830,13 +2047,18 @@ impl RelationCache {
                         key.retained_bytes().saturating_add(value.retained_bytes()),
                         self.result_byte_limit,
                     );
-                    if value.result_bytes > self.result_byte_limit {
+                    let events = if value.result_bytes > self.result_byte_limit {
                         self.reject_too_large(key.domain);
+                        self.semantic_events.admission(
+                            key.domain.event_materialization(),
+                            key.exact,
+                            RelationCacheAdmissionResult::TooLarge,
+                        )
                     } else {
-                        self.admit(key.clone(), value.clone());
-                    }
+                        self.admit(key.clone(), value.clone())
+                    };
                     owner.finish(FlightResult::Success(value.clone()));
-                    return Ok((value, StatementSource::Executed));
+                    return Ok((value, StatementSource::Executed, events));
                 }
                 Err(error) => {
                     owner.finish(FlightResult::Failure(CachedError::capture(&error)));
@@ -1876,11 +2098,21 @@ impl RelationCache {
         Some(relation)
     }
 
-    fn admit(&self, key: RelationCacheKey, relation: Arc<CachedMaterialization>) {
+    fn admit(
+        &self,
+        key: RelationCacheKey,
+        relation: Arc<CachedMaterialization>,
+    ) -> SemanticCacheEventBatch {
         let domain = key.domain;
+        let materialization = domain.event_materialization();
+        let exact = key.exact;
         if relation.result_bytes > self.result_byte_limit {
             self.reject_too_large(domain);
-            return;
+            return self.semantic_events.admission(
+                materialization,
+                exact,
+                RelationCacheAdmissionResult::TooLarge,
+            );
         }
         let retained = key
             .retained_bytes()
@@ -1896,8 +2128,16 @@ impl RelationCache {
         // share of the total byte limit.
         if weight > shard_capacity {
             self.reject_by_policy(domain);
-            return;
+            return self.semantic_events.admission(
+                materialization,
+                exact,
+                RelationCacheAdmissionResult::PolicyRejected,
+            );
         }
+        // Foyer reports resident victims before insert returns. It reports a
+        // rejected candidate when the returned entry drops. The capture lock
+        // assigns both callback types to one admission.
+        let capture = self.semantic_events.capture();
         let entry = self.entries.insert(key, relation);
         let admitted = !entry.is_outdated()
             && entry
@@ -1925,7 +2165,20 @@ impl RelationCache {
                 .fetch_add(retained as i64, Ordering::Relaxed);
             domain.admission("admitted");
         }
+        drop(entry);
         self.record_residency();
+        let result = if admitted {
+            RelationCacheAdmissionResult::Admitted
+        } else {
+            RelationCacheAdmissionResult::PolicyRejected
+        };
+        capture.map_or_else(
+            || {
+                self.semantic_events
+                    .admission(materialization, exact, result)
+            },
+            |capture| capture.finish(materialization, exact, result),
+        )
     }
 
     fn reject_too_large(&self, domain: MaterializationDomain) {
@@ -2625,6 +2878,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_fills_preserve_entry_and_byte_limits() {
+        let limits = RelationCacheLimits {
+            byte_limit: 4 * 1024,
+            entry_limit: 4,
+            result_byte_limit: 1024,
+        };
+        let cache = Arc::new(RelationCache::new(limits));
+        let barrier = Arc::new(tokio::sync::Barrier::new(33));
+        let mut fills = Vec::new();
+        for seed in 0..32 {
+            let cache = cache.clone();
+            let barrier = barrier.clone();
+            fills.push(tokio::spawn(async move {
+                cache
+                    .get_or_fill(key(seed, 1), &output(0), || async move {
+                        barrier.wait().await;
+                        Ok((text_frames(0, "x".repeat(200)), CachedWork::default()))
+                    })
+                    .await
+            }));
+        }
+        barrier.wait().await;
+        for fill in fills {
+            fill.await.unwrap().unwrap();
+        }
+
+        let stats = cache.stats();
+        assert!(stats.entries <= limits.entry_limit as u64, "{stats:?}");
+        assert!(
+            stats.retained_bytes <= limits.byte_limit as u64,
+            "{stats:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn concurrent_misses_share_one_fill() {
         let cache = Arc::new(RelationCache::new(config()));
         let started = Arc::new(Notify::new());
@@ -2759,6 +3047,78 @@ mod tests {
         assert_eq!(stats.subrelation_misses, 2);
         assert_eq!(stats.subrelation_rejected_too_large, 2);
         assert_eq!(stats.entries, 0);
+    }
+
+    #[tokio::test]
+    async fn failed_hash_builds_are_not_admitted() {
+        let cache = RelationCache::new(config());
+        let cache_key = key(1, 1)
+            .for_physical_subrelation(
+                MaterializationDomain::HashJoinBuild,
+                fingerprint(2),
+                &dependencies(3),
+                vec![1],
+            )
+            .unwrap();
+        for _ in 0..2 {
+            let result = cache
+                .get_or_fill_hash_build(cache_key.clone(), || async {
+                    Err(Error::message(ErrorKind::Runtime, "expected failure"))
+                })
+                .await;
+            let Err(error) = result else {
+                panic!("failed hash build must return an error");
+            };
+            assert_eq!(error.kind(), ErrorKind::Runtime);
+        }
+
+        let stats = cache.stats();
+        assert_eq!(stats.subrelation_misses, 2);
+        assert_eq!(stats.subrelation_admissions, 0);
+        assert_eq!(stats.entries, 0);
+    }
+
+    #[tokio::test]
+    async fn concurrent_hash_build_fills_preserve_limits() {
+        let limits = RelationCacheLimits {
+            byte_limit: 4 * 1024,
+            entry_limit: 4,
+            result_byte_limit: 1024,
+        };
+        let cache = Arc::new(RelationCache::new(limits));
+        let barrier = Arc::new(tokio::sync::Barrier::new(33));
+        let mut fills = Vec::new();
+        for seed in 0..32 {
+            let cache = cache.clone();
+            let barrier = barrier.clone();
+            fills.push(tokio::spawn(async move {
+                let cache_key = key(seed, 1)
+                    .for_physical_subrelation(
+                        MaterializationDomain::HashJoinBuild,
+                        fingerprint(seed.wrapping_add(64)),
+                        &dependencies(3),
+                        vec![seed],
+                    )
+                    .unwrap();
+                cache
+                    .get_or_fill_hash_build(cache_key, || async move {
+                        barrier.wait().await;
+                        Ok((empty_hash_build(), CachedWork::default()))
+                    })
+                    .await
+            }));
+        }
+        barrier.wait().await;
+        for fill in fills {
+            fill.await.unwrap().unwrap();
+        }
+
+        let stats = cache.stats();
+        assert!(stats.entries <= limits.entry_limit as u64, "{stats:?}");
+        assert!(
+            stats.retained_bytes <= limits.byte_limit as u64,
+            "{stats:?}"
+        );
     }
 
     #[tokio::test]
@@ -2972,6 +3332,7 @@ impl Drop for SnapshotFlightOwner<'_> {
 pub(super) struct RelationCacheResult {
     rows: RelationRows,
     pub source: StatementSource,
+    events: SemanticCacheEventBatch,
 }
 
 // Keep a cache hit in slot-independent field order until the caller knows how
@@ -2989,7 +3350,12 @@ impl RelationCacheResult {
         Self {
             rows: RelationRows::Frames(frames),
             source: StatementSource::Executed,
+            events: SemanticCacheEventBatch::new(),
         }
+    }
+
+    pub(super) fn take_events(&mut self) -> SemanticCacheEventBatch {
+        std::mem::take(&mut self.events)
     }
 
     pub(super) fn len(&self) -> usize {

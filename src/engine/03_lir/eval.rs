@@ -662,14 +662,14 @@ pub type Result<T> = std::result::Result<T, EvalError>;
 
 /// Shared full-row identity for distinct, recursion, intersect, and except.
 pub struct CanonicalRowSet {
-    slots: Vec<SlotId>,
+    slots: smallvec::SmallVec<[SlotId; 4]>,
     seen: HashSet<CanonicalRowKey>,
 }
 
 impl CanonicalRowSet {
-    pub fn new(fields: Vec<Field>) -> Self {
+    pub fn new(fields: &[Field]) -> Self {
         Self {
-            slots: fields.into_iter().map(|field| field.slot).collect(),
+            slots: fields.iter().map(|field| field.slot).collect(),
             seen: HashSet::new(),
         }
     }
@@ -1343,7 +1343,7 @@ mod tests {
                 value_type: Type::scalar(Kind::Int64, true),
             },
         ];
-        let mut set = CanonicalRowSet::new(fields);
+        let mut set = CanonicalRowSet::new(&fields);
         let mut row = Env::new();
         row.set_scalar(SlotId(0), Value::Text("x".into()));
         row.set_scalar(SlotId(1), Value::Int64(1));
@@ -1405,7 +1405,7 @@ mod tests {
             canonical_row_key(&nested_field, &two)
         );
 
-        let mut set = CanonicalRowSet::new(nested_field);
+        let mut set = CanonicalRowSet::new(&nested_field);
         assert!(set.insert(&one));
         assert!(set.insert(&two));
         assert!(!set.insert(&one));

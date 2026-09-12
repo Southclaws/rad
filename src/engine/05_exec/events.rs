@@ -7,6 +7,41 @@ use crate::engine::catalog::identity::{OwnerEpoch, ReclamationId, TableId, Trans
 use crate::engine::catalog::model::{
     ReclamationKind, ReclamationState, TransitionKind, TransitionState,
 };
+use crate::engine::lir::fingerprint::Fingerprint;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationCacheMaterialization {
+    QueryResult,
+    Rows,
+    HashJoinBuild,
+    GroupedHashJoinDimension,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationCacheAdmissionResult {
+    Admitted,
+    TooLarge,
+    PolicyRejected,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationCacheEvictionCause {
+    Capacity,
+    Replaced,
+    Removed,
+    Cleared,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationCacheLookupResult {
+    Filled,
+    Reused,
+    Failed,
+}
 
 /// The durable operation whose transaction is being observed.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -68,6 +103,38 @@ pub enum EngineEvent {
         unchanged: bool,
     },
     ConditionalQueryExecutionStarted,
+    RelationCacheCandidatesSelected {
+        selected: u32,
+        overlap_rejected: u32,
+        budget_rejected: u32,
+    },
+    SubrelationCacheLookupStarted {
+        materialization: RelationCacheMaterialization,
+        relation: Fingerprint,
+    },
+    SubrelationCacheFillStarted {
+        materialization: RelationCacheMaterialization,
+        relation: Fingerprint,
+    },
+    SubrelationCacheFillReady {
+        materialization: RelationCacheMaterialization,
+        relation: Fingerprint,
+    },
+    SubrelationCacheLookupCompleted {
+        materialization: RelationCacheMaterialization,
+        relation: Fingerprint,
+        result: RelationCacheLookupResult,
+    },
+    RelationCacheEntryEvicted {
+        materialization: RelationCacheMaterialization,
+        relation: Fingerprint,
+        cause: RelationCacheEvictionCause,
+    },
+    RelationCacheAdmissionCompleted {
+        materialization: RelationCacheMaterialization,
+        relation: Fingerprint,
+        result: RelationCacheAdmissionResult,
+    },
     PhysicalBatchStaged {
         operation: EngineOperation,
         items: usize,

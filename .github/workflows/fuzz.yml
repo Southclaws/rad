@@ -10,8 +10,10 @@ on:
       - "src/engine/01_kv/**"
       - "src/engine/02_catalog/schema.rs"
       - "src/engine/03_lir/**"
-      - "src/engine/05_exec/codec.rs"
+      - "src/engine/04_planner/**"
+      - "src/engine/05_exec/**"
       - "src/protocol/**"
+      - "tests/generative/**"
       - ".github/workflows/fuzz.yml"
   push:
     branches:
@@ -24,8 +26,10 @@ on:
       - "src/engine/01_kv/**"
       - "src/engine/02_catalog/schema.rs"
       - "src/engine/03_lir/**"
-      - "src/engine/05_exec/codec.rs"
+      - "src/engine/04_planner/**"
+      - "src/engine/05_exec/**"
       - "src/protocol/**"
+      - "tests/generative/**"
       - ".github/workflows/fuzz.yml"
   schedule:
     - cron: "43 1 * * *"
@@ -75,6 +79,10 @@ jobs:
             seed_offset: 3
           - target: row_codec
             seed_offset: 4
+          - target: reader_snapshot
+            seed_offset: 5
+          - target: relation_cache
+            seed_offset: 6
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:

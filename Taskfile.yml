@@ -85,6 +85,9 @@ tasks:
     cmds:
       - cargo test --locked --test differential_corpus shared_e2e_relation_cache_hits_match_uncached_execution_exactly {{.CLI_ARGS}}
       - cargo test --locked --test generative_differential generated_queries_match_all_execution_paths {{.CLI_ARGS}}
+      - cargo test --locked --test generative_differential generated_subrelation_cache_matches_uncached_and_reference_execution {{.CLI_ARGS}}
+      - cargo test --locked --test generative_differential generated_subrelation_cache_matches_in_file_storage {{.CLI_ARGS}}
+      - cargo test --locked --test relation_cache_determinism {{.CLI_ARGS}}
 
   test:generative:
     desc: Run generated LIR/PIR execution-path differentials, state models, and metamorphic checks
@@ -110,6 +113,7 @@ tasks:
       - cargo +nightly-2026-07-20 fuzz run ordered_tuple -- -runs=256 {{.CLI_ARGS}}
       - cargo +nightly-2026-07-20 fuzz run row_codec -- -runs=256 {{.CLI_ARGS}}
       - cargo +nightly-2026-07-20 fuzz run reader_snapshot -- -runs=256 {{.CLI_ARGS}}
+      - cargo +nightly-2026-07-20 fuzz run relation_cache -- -runs=256 {{.CLI_ARGS}}
 
   test:http:
     desc: Run the outside-in OpenAPI/Axum adapter tests
@@ -117,10 +121,14 @@ tasks:
       - cargo test --locked http::tests {{.CLI_ARGS}}
 
   test:dst:
-    desc: Run deterministic schema, storage, and crash-boundary simulations
+    desc: Run deterministic schema, storage, cache, and crash-boundary simulations
     cmds:
       - cargo test --locked --test schema_scheduler_simulation {{.CLI_ARGS}}
       - cargo test --locked --test reader_snapshot_simulation {{.CLI_ARGS}}
+      - cargo test --locked --test relation_cache_determinism {{.CLI_ARGS}}
+      - cargo test --locked --test storage_simulation {{.CLI_ARGS}}
+      - cargo test --locked --test storage_fault_campaign {{.CLI_ARGS}}
+      - cargo test --locked --test statistics_simulation {{.CLI_ARGS}}
 
   test:dst:determinism:
     desc: Prove byte-identical same-seed DST replay on Linux or macOS

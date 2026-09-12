@@ -28,6 +28,10 @@ That being said, Rad takes a lot of inspiration from world class databases for i
 
 On top of that there are metamorphic tests that mutate IR trees in strange ways and test-shrinking, which search for errors and generate new data-defined regression tests.
 
+[Test architecture and operation](TESTING.md) maps the oracle,
+interpreter, generative, deterministic-simulation, fault, fuzz, backend, and
+CI surfaces to their root executables and support code.
+
 ## The workflow
 
 Databases usually give you a place to store data, a way to query it (almost always SQL) and call it a day.

@@ -14,11 +14,11 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use generative::{
-    Case, ModelCase, ProgramCase, SemanticModelCase, check, check_invalid, check_invalid_program,
-    check_metamorphic, check_model, check_program, check_semantic_model, emit_fixture, minimize,
-    minimize_invalid, minimize_invalid_program, minimize_metamorphic, minimize_model,
-    minimize_program, minimize_semantic_model, nested_identity_case, recursive_case,
-    recursive_from_decisions,
+    CacheCase, Case, ModelCase, ProgramCase, SemanticModelCase, check, check_cache,
+    check_cache_file, check_invalid, check_invalid_program, check_metamorphic, check_model,
+    check_program, check_semantic_model, emit_fixture, minimize, minimize_cache, minimize_invalid,
+    minimize_invalid_program, minimize_metamorphic, minimize_model, minimize_program,
+    minimize_semantic_model, nested_identity_case, recursive_case, recursive_from_decisions,
 };
 
 #[tokio::test]
@@ -73,6 +73,9 @@ async fn generated_queries_match_all_execution_paths() {
             check(&nested_identity_case(0).regenerate(decisions))
                 .await
                 .expect("replayed nested identity case");
+            return;
+        }
+        if env::var("RAD_GEN_REPLAY_KIND").as_deref() == Ok("cache") {
             return;
         }
         let case = if env::var("RAD_GEN_REPLAY_KIND").as_deref() == Ok("recursive") {
@@ -383,6 +386,70 @@ async fn generated_recursive_queries_match_all_execution_paths() {
     println!("checked {cases} generated recursive cases from seed {base_seed}");
 }
 
+#[tokio::test]
+async fn generated_subrelation_cache_matches_uncached_and_reference_execution() {
+    if let Ok(replay) = env::var("RAD_GEN_REPLAY") {
+        if env::var("RAD_GEN_REPLAY_KIND").as_deref() != Ok("cache") {
+            return;
+        }
+        let decisions = replay
+            .split(',')
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .expect("RAD_GEN_REPLAY contains u64 values")
+            })
+            .collect();
+        check_cache(&CacheCase::generate(decisions))
+            .await
+            .expect("replayed generated subrelation-cache case");
+        return;
+    }
+
+    let cases = env_usize("RAD_GEN_CACHE_CASES", 24);
+    let base_seed = env_u64("RAD_GEN_CACHE_SEED", 0x6361_6368_652d_7375);
+    for offset in 0..cases as u64 {
+        let seed = base_seed.wrapping_add(offset);
+        let case = CacheCase::from_seed(seed);
+        if let Err(original) = check_cache(&case).await {
+            let minimized = minimize_cache(&case, env_usize("RAD_GEN_SHRINK_BUDGET", 2_000))
+                .await
+                .expect("shrink generated subrelation-cache failure");
+            let minimized_error = check_cache(&minimized)
+                .await
+                .expect_err("minimized subrelation-cache case must retain the failure");
+            let replay = minimized
+                .decisions
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            panic!(
+                "subrelation-cache differential failed at seed {seed}\noriginal: {original}\nminimized: {minimized_error}\nreplay:\nRAD_GEN_REPLAY_KIND=cache RAD_GEN_REPLAY='{replay}' cargo test --test generative_differential generated_subrelation_cache_matches_uncached_and_reference_execution -- --exact --nocapture"
+            );
+        }
+    }
+    println!("checked {cases} generated subrelation-cache cases from seed {base_seed}");
+}
+
+#[tokio::test]
+async fn generated_subrelation_cache_matches_in_file_storage() {
+    if env::var_os("RAD_GEN_REPLAY").is_some() {
+        return;
+    }
+    let cases = env_usize("RAD_GEN_CACHE_FILE_CASES", 6);
+    let base_seed = env_u64("RAD_GEN_CACHE_FILE_SEED", 0x6669_6c65_2d63_6163);
+    for offset in 0..cases as u64 {
+        let seed = base_seed.wrapping_add(offset);
+        let case = CacheCase::for_kind(offset as usize % 6, seed);
+        if let Err(error) = check_cache_file(&case).await {
+            panic!("file subrelation-cache differential failed at seed {seed}: {error}");
+        }
+    }
+    println!("checked {cases} file subrelation-cache cases from seed {base_seed}");
+}
+
 #[derive(Clone, Copy)]
 struct SoakFamily {
     test: &'static str,
@@ -461,6 +528,20 @@ fn generative_semantic_soak() {
             count: env_positive_usize("RAD_GEN_SOAK_RECURSIVE_CASES", 32),
             seed_env: "RAD_GEN_RECURSIVE_SEED",
             seed_offset: 400_000,
+        },
+        SoakFamily {
+            test: "generated_subrelation_cache_matches_uncached_and_reference_execution",
+            count_env: "RAD_GEN_CACHE_CASES",
+            count: env_positive_usize("RAD_GEN_SOAK_CACHE_CASES", 24),
+            seed_env: "RAD_GEN_CACHE_SEED",
+            seed_offset: 450_000,
+        },
+        SoakFamily {
+            test: "generated_subrelation_cache_matches_in_file_storage",
+            count_env: "RAD_GEN_CACHE_FILE_CASES",
+            count: env_positive_usize("RAD_GEN_SOAK_CACHE_FILE_CASES", 6),
+            seed_env: "RAD_GEN_CACHE_FILE_SEED",
+            seed_offset: 475_000,
         },
         SoakFamily {
             test: "generated_nested_rows_obey_set_identity",

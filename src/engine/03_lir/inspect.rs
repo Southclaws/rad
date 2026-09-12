@@ -1,5 +1,6 @@
 use super::bound::{Expr, Relation, RelationNode};
 use super::{Expr as UnboundExpr, Relation as UnboundRelation};
+use smallvec::{SmallVec, smallvec};
 
 /// Walks an expression tree. Crossing relations are expression leaves.
 pub fn walk_expression(expression: &Expr, visitor: &mut impl FnMut(&Expr)) {
@@ -76,68 +77,68 @@ fn walk_unbound_expression_relations(
     }
 }
 
-fn unbound_relation_inputs(relation: &UnboundRelation) -> Vec<&UnboundRelation> {
+fn unbound_relation_inputs(relation: &UnboundRelation) -> SmallVec<[&UnboundRelation; 4]> {
     match relation {
         UnboundRelation::Scan { .. }
         | UnboundRelation::Rows { .. }
         | UnboundRelation::Ref { .. }
-        | UnboundRelation::RecursiveRef { .. } => Vec::new(),
+        | UnboundRelation::RecursiveRef { .. } => SmallVec::new(),
         UnboundRelation::Filter { input, .. }
         | UnboundRelation::Project { input, .. }
         | UnboundRelation::Aggregate { input, .. }
         | UnboundRelation::Order { input, .. }
         | UnboundRelation::Slice { input, .. }
-        | UnboundRelation::Distinct(input) => vec![input],
+        | UnboundRelation::Distinct(input) => smallvec![&**input],
         UnboundRelation::Join { left, right, .. }
         | UnboundRelation::Intersect { left, right, .. }
-        | UnboundRelation::Except { left, right, .. } => vec![left, right],
+        | UnboundRelation::Except { left, right, .. } => smallvec![&**left, &**right],
         UnboundRelation::Concatenate { inputs, .. } => inputs.iter().collect(),
-        UnboundRelation::Recursive { anchor, step, .. } => vec![anchor, step],
+        UnboundRelation::Recursive { anchor, step, .. } => smallvec![&**anchor, &**step],
     }
 }
 
-fn unbound_relation_expressions(relation: &UnboundRelation) -> Vec<&UnboundExpr> {
+fn unbound_relation_expressions(relation: &UnboundRelation) -> SmallVec<[&UnboundExpr; 4]> {
     match relation {
         UnboundRelation::Filter { predicate, .. } | UnboundRelation::Join { on: predicate, .. } => {
-            vec![predicate]
+            smallvec![predicate]
         }
         UnboundRelation::Project { fields, .. } => {
             fields.iter().map(|field| &field.expression).collect()
         }
         UnboundRelation::Aggregate { groups, terms, .. } => {
-            let mut expressions = Vec::with_capacity(groups.len() + terms.len());
+            let mut expressions = SmallVec::with_capacity(groups.len() + terms.len());
             expressions.extend(groups.iter().map(|group| &group.expression));
             expressions.extend(terms.iter().filter_map(|term| term.argument.as_ref()));
             expressions
         }
         UnboundRelation::Order { terms, .. } => terms.iter().map(|term| &term.expression).collect(),
-        _ => Vec::new(),
+        _ => SmallVec::new(),
     }
 }
 
-fn unbound_expression_children(expression: &UnboundExpr) -> Vec<&UnboundExpr> {
+fn unbound_expression_children(expression: &UnboundExpr) -> SmallVec<[&UnboundExpr; 4]> {
     match expression {
         UnboundExpr::Literal(_)
         | UnboundExpr::Column { .. }
         | UnboundExpr::Exists(_)
         | UnboundExpr::First(_)
         | UnboundExpr::Scalar(_)
-        | UnboundExpr::Array(_) => Vec::new(),
+        | UnboundExpr::Array(_) => SmallVec::new(),
         UnboundExpr::Unary { expression, .. }
         | UnboundExpr::Cast { expression, .. }
         | UnboundExpr::TextMatch {
             value: expression, ..
-        } => vec![expression],
-        UnboundExpr::Binary { left, right, .. } => vec![left, right],
+        } => smallvec![&**expression],
+        UnboundExpr::Binary { left, right, .. } => smallvec![&**left, &**right],
         UnboundExpr::Branch {
             arms, otherwise, ..
         } => {
-            let mut children = Vec::with_capacity(arms.len() * 2 + 1);
+            let mut children = SmallVec::with_capacity(arms.len() * 2 + 1);
             for arm in arms {
                 children.push(&arm.when);
                 children.push(&arm.then);
             }
-            children.push(otherwise);
+            children.push(&**otherwise);
             children
         }
     }
@@ -176,44 +177,44 @@ fn walk_expression_tree(
     }
 }
 
-fn expression_children(expression: &Expr) -> Vec<&Expr> {
+fn expression_children(expression: &Expr) -> SmallVec<[&Expr; 4]> {
     match expression {
         Expr::Literal(_)
         | Expr::SlotRef { .. }
         | Expr::Exists(_)
         | Expr::First { .. }
         | Expr::Scalar { .. }
-        | Expr::Array { .. } => Vec::new(),
+        | Expr::Array { .. } => SmallVec::new(),
         Expr::Unary { expression, .. }
         | Expr::Cast { expression, .. }
         | Expr::TextMatch {
             value: expression, ..
-        } => vec![expression],
-        Expr::Binary { left, right, .. } => vec![left, right],
+        } => smallvec![&**expression],
+        Expr::Binary { left, right, .. } => smallvec![&**left, &**right],
         Expr::Branch {
             arms, otherwise, ..
         } => {
-            let mut children = Vec::with_capacity(arms.len() * 2 + 1);
+            let mut children = SmallVec::with_capacity(arms.len() * 2 + 1);
             for arm in arms {
                 children.push(&arm.when);
                 children.push(&arm.then);
             }
-            children.push(otherwise);
+            children.push(&**otherwise);
             children
         }
     }
 }
 
-fn relation_expressions(relation: &Relation) -> Vec<&Expr> {
+fn relation_expressions(relation: &Relation) -> SmallVec<[&Expr; 4]> {
     match &relation.node {
         RelationNode::Filter { predicate, .. } | RelationNode::Join { on: predicate, .. } => {
-            vec![predicate]
+            smallvec![predicate]
         }
         RelationNode::Project { fields, .. } => {
             fields.iter().map(|field| &field.expression).collect()
         }
         RelationNode::Aggregate { groups, terms, .. } => {
-            let mut expressions = Vec::with_capacity(groups.len() + terms.len());
+            let mut expressions = SmallVec::with_capacity(groups.len() + terms.len());
             for group in groups {
                 expressions.push(&group.expression);
             }
@@ -225,7 +226,7 @@ fn relation_expressions(relation: &Relation) -> Vec<&Expr> {
             expressions
         }
         RelationNode::Order { terms, .. } => terms.iter().map(|term| &term.expression).collect(),
-        _ => Vec::new(),
+        _ => SmallVec::new(),
     }
 }
 

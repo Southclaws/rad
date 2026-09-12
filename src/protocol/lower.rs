@@ -1,6 +1,6 @@
 //! Mechanical lowering from Schemancer wire types into engine IR.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use crate::engine::exec::ErrorReason;
 use crate::engine::lir;
@@ -302,9 +302,10 @@ pub fn lower_lir(query: wire::Query) -> LowerResult<lir::Query> {
         root,
     } = query;
     let mut graph = Graph {
-        nodes,
-        building: HashSet::new(),
-        reached: HashSet::new(),
+        nodes: nodes
+            .into_iter()
+            .map(|(name, node)| (name, NodeState::Ready(node)))
+            .collect(),
     };
     let root_relation = graph.relation(&root.node)?;
     let mut lowered_bindings = HashMap::new();
@@ -322,13 +323,13 @@ pub fn lower_lir(query: wire::Query) -> LowerResult<lir::Query> {
         };
         lowered_bindings.insert(name, relation);
     }
-    if graph.reached.len() != graph.nodes.len() {
-        let mut orphaned = graph
-            .nodes
-            .keys()
-            .filter(|name| !graph.reached.contains(*name))
-            .cloned()
-            .collect::<Vec<_>>();
+    let mut orphaned = graph
+        .nodes
+        .iter()
+        .filter(|(_, state)| matches!(state, NodeState::Ready(_)))
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    if !orphaned.is_empty() {
         orphaned.sort();
         return Err(LowerError::with_reason(
             ErrorReason::UnreachableNode,
@@ -343,9 +344,13 @@ pub fn lower_lir(query: wire::Query) -> LowerResult<lir::Query> {
 }
 
 struct Graph {
-    nodes: BTreeMap<String, wire::Node>,
-    building: HashSet<String>,
-    reached: HashSet<String>,
+    nodes: BTreeMap<String, NodeState>,
+}
+
+enum NodeState {
+    Ready(wire::Node),
+    Building,
+    Done,
 }
 
 impl Graph {
@@ -353,26 +358,39 @@ impl Graph {
         if name.is_empty() {
             return Err(LowerError::new("missing node reference"));
         }
-        if self.building.contains(name) {
-            return Err(LowerError::with_reason(
-                ErrorReason::NodeCycle,
-                format!("node {name:?} is part of a cycle"),
-            ));
-        }
-        if !self.reached.insert(name.to_owned()) {
-            return Err(LowerError::with_reason(
-                ErrorReason::SharedNode,
-                format!(
-                    "node {name:?} has more than one consumer and would create a duplicate scope"
-                ),
-            ));
-        }
-        let node = self.nodes.get(name).cloned().ok_or_else(|| {
-            LowerError::with_reason(ErrorReason::UnknownNode, format!("unknown node {name:?}"))
-        })?;
-        self.building.insert(name.to_owned());
+        let node = match self.nodes.get_mut(name) {
+            Some(state @ NodeState::Ready(_)) => {
+                let NodeState::Ready(node) = std::mem::replace(state, NodeState::Building) else {
+                    unreachable!("a ready node contains its wire value")
+                };
+                node
+            }
+            Some(NodeState::Building) => {
+                return Err(LowerError::with_reason(
+                    ErrorReason::NodeCycle,
+                    format!("node {name:?} is part of a cycle"),
+                ));
+            }
+            Some(NodeState::Done) => {
+                return Err(LowerError::with_reason(
+                    ErrorReason::SharedNode,
+                    format!(
+                        "node {name:?} has more than one consumer and would create a duplicate scope"
+                    ),
+                ));
+            }
+            None => {
+                return Err(LowerError::with_reason(
+                    ErrorReason::UnknownNode,
+                    format!("unknown node {name:?}"),
+                ));
+            }
+        };
         let result = self.lower_node(node);
-        self.building.remove(name);
+        *self
+            .nodes
+            .get_mut(name)
+            .expect("a lowered node remains in the graph") = NodeState::Done;
         result
     }
 
