@@ -74,6 +74,7 @@ fn foreign_key_def(value: wire::ForeignKeyInfo) -> ForeignKeyDef {
         columns: value.columns,
         ref_table: value.ref_table,
         ref_columns: value.ref_columns,
+        on_delete: crate::engine::catalog::model::ForeignKeyAction::Restrict,
     }
 }
 
@@ -540,6 +541,22 @@ fn statement_json(value: &Statement) -> Result<Value, EncodeError> {
             index,
         } => json!({
             "kind": "delete_index", "name": name, "table_id": table_id.get(), "index": index
+        }),
+        Statement::CreateForeignKey {
+            name,
+            table_id,
+            foreign_key,
+        } => json!({
+            "kind": "create_foreign_key", "name": name, "table_id": table_id.get(),
+            "foreign_key": foreign_key
+        }),
+        Statement::DeleteForeignKey {
+            name,
+            table_id,
+            foreign_key,
+        } => json!({
+            "kind": "delete_foreign_key", "name": name, "table_id": table_id.get(),
+            "foreign_key": foreign_key
         }),
         Statement::StartIndexBuild {
             name,

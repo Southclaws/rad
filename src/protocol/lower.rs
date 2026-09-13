@@ -115,6 +115,16 @@ fn lower_statement(statement: pir_wire::Statement) -> LowerResult<crate::engine:
             table_id: schema_id(statement.table_id)?,
             index: statement.index,
         },
+        pir_wire::Statement::CreateForeignKeyStatement(statement) => Statement::CreateForeignKey {
+            name: statement.name,
+            table_id: schema_id(statement.table_id)?,
+            foreign_key: lower_foreign_key(statement.foreign_key),
+        },
+        pir_wire::Statement::DeleteForeignKeyStatement(statement) => Statement::DeleteForeignKey {
+            name: statement.name,
+            table_id: schema_id(statement.table_id)?,
+            foreign_key: statement.foreign_key,
+        },
         pir_wire::Statement::StartIndexBuildStatement(statement) => Statement::StartIndexBuild {
             name: statement.name,
             table_id: schema_id(statement.table_id)?,
@@ -168,14 +178,34 @@ fn lower_table(
         foreign_keys: pir_optional(table.foreign_keys)
             .unwrap_or_default()
             .into_iter()
-            .map(|foreign_key| crate::engine::catalog::model::ForeignKeyDef {
-                name: foreign_key.name,
-                columns: foreign_key.columns,
-                ref_table: foreign_key.ref_table,
-                ref_columns: foreign_key.ref_columns,
-            })
+            .map(lower_foreign_key)
             .collect(),
     })
+}
+
+fn lower_foreign_key(
+    foreign_key: pir_wire::ForeignKeyDefinition,
+) -> crate::engine::catalog::model::ForeignKeyDef {
+    crate::engine::catalog::model::ForeignKeyDef {
+        name: foreign_key.name,
+        columns: foreign_key.columns,
+        ref_table: foreign_key.ref_table,
+        ref_columns: foreign_key.ref_columns,
+        on_delete: match pir_optional(foreign_key.on_delete) {
+            Some(pir_wire::ForeignKeyDefinitionOnDelete::Restrict) | None => {
+                crate::engine::catalog::model::ForeignKeyAction::Restrict
+            }
+            Some(pir_wire::ForeignKeyDefinitionOnDelete::NoAction) => {
+                crate::engine::catalog::model::ForeignKeyAction::NoAction
+            }
+            Some(pir_wire::ForeignKeyDefinitionOnDelete::Cascade) => {
+                crate::engine::catalog::model::ForeignKeyAction::Cascade
+            }
+            Some(pir_wire::ForeignKeyDefinitionOnDelete::SetNull) => {
+                crate::engine::catalog::model::ForeignKeyAction::SetNull
+            }
+        },
+    }
 }
 
 fn lower_column(

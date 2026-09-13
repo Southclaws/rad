@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::catalog::identity::SchemaId;
 use crate::engine::catalog::model::{
-    ColumnDef, DefaultFunction, DefaultValue, ForeignKeyDef, IndexDef, ScalarType, Schema, TableDef,
+    ColumnDef, DefaultFunction, DefaultValue, ForeignKeyAction, ForeignKeyDef, IndexDef,
+    ScalarType, Schema, TableDef,
 };
 use crate::http::generated::types as wire;
 use crate::process::Result;
@@ -219,6 +220,7 @@ fn canonical_schema(document: wire::SchemaDocument) -> Result<Schema> {
                     columns: foreign_key.columns,
                     ref_table: foreign_key.ref_table,
                     ref_columns: foreign_key.ref_columns,
+                    on_delete: ForeignKeyAction::Restrict,
                 })
                 .collect(),
         });

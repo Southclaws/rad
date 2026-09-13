@@ -18,6 +18,7 @@ use crate::runtime::{RuntimeEffects, SystemRuntime};
 
 use super::parallel::ExecutionScheduler;
 use super::relation_cache::{CachedWork, DependencyValidation, PreparedReadResult, RelationCache};
+use super::transaction::{EngineTransaction, TransactionIsolation, WriteIntentRegistry};
 use super::{
     CatalogPolicy, ConditionalQueryResult, EngineEvent, EngineEventHook, EngineOperation, Executor,
     Limits, NoopEngineEventHook, Program, ProgramOptions, ProgramResult, ReferenceExecutor, Result,
@@ -43,6 +44,7 @@ pub struct Engine {
     planner_mode: PlannerMode,
     execution_admission: Option<(Arc<Semaphore>, usize)>,
     execution_scheduler: Arc<ExecutionScheduler>,
+    write_intents: Arc<WriteIntentRegistry>,
     relation_cache: RelationCache,
     catalog_observers: RwLock<Vec<CatalogObserver>>,
 }
@@ -112,6 +114,7 @@ impl Engine {
             planner_mode: PlannerMode::Cost,
             execution_admission: None,
             execution_scheduler: ExecutionScheduler::adaptive(1),
+            write_intents: Arc::new(WriteIntentRegistry::default()),
             relation_cache: RelationCache::default(),
             catalog_observers: RwLock::new(Vec::new()),
         }
@@ -158,6 +161,7 @@ impl Engine {
             planner_mode: PlannerMode::Cost,
             execution_admission: None,
             execution_scheduler: ExecutionScheduler::adaptive(1),
+            write_intents: Arc::new(WriteIntentRegistry::default()),
             relation_cache: RelationCache::default(),
             catalog_observers: RwLock::new(Vec::new()),
         }
@@ -666,11 +670,47 @@ impl Engine {
             .await
     }
 
-    pub(crate) async fn begin_frontend_transaction(&self) -> Result<Box<dyn Transaction>> {
-        self.store
-            .begin(IsolationLevel::SerializableSnapshot)
-            .await
-            .map_err(Into::into)
+    pub(crate) async fn begin_frontend_transaction(
+        &self,
+        isolation: TransactionIsolation,
+    ) -> Result<EngineTransaction> {
+        EngineTransaction::begin(self, isolation).await
+    }
+
+    pub(crate) async fn execute_frontend_statement(
+        &self,
+        transaction: &mut EngineTransaction,
+        program: &Program,
+        catalog_policy: CatalogPolicy,
+    ) -> Result<ProgramResult> {
+        if transaction.isolation() == TransactionIsolation::Serializable {
+            let result = self
+                .execute_program_in_transaction(transaction, program, catalog_policy, false)
+                .await?;
+            transaction.finish_statement();
+            return Ok(result);
+        }
+
+        if transaction.has_executed_statement() {
+            transaction.refresh(self).await?;
+        }
+        let checkpoint = transaction.statement_checkpoint();
+        loop {
+            let result = self
+                .execute_program_in_transaction(transaction, program, catalog_policy, false)
+                .await?;
+            if transaction
+                .acquire_statement_intents(&self.write_intents, checkpoint)
+                .await?
+            {
+                // Re-evaluate after taking ownership even when acquisition did not wait: a
+                // previous owner may have committed after this statement's snapshot began.
+                transaction.restart_statement(self, checkpoint).await?;
+                continue;
+            }
+            transaction.finish_statement();
+            return Ok(result);
+        }
     }
 
     pub(crate) async fn execute_program_in_transaction(
@@ -722,7 +762,7 @@ impl Engine {
 
     pub(crate) async fn commit_frontend_transaction(
         &self,
-        transaction: Box<dyn Transaction>,
+        transaction: EngineTransaction,
         catalog_statements: Vec<String>,
     ) -> Result<()> {
         let operation =
@@ -730,8 +770,17 @@ impl Engine {
                 statements: catalog_statements,
             });
         let catalog_changed = operation.is_some();
-        self.finish_transaction(transaction, Ok(()), operation)
-            .await?;
+        if let Some(operation) = operation.clone() {
+            self.events
+                .reach(EngineEvent::CommitStarted { operation })
+                .await;
+        }
+        transaction.commit_inner().await?;
+        if let Some(operation) = operation {
+            self.events
+                .reach(EngineEvent::CommitSucceeded { operation })
+                .await;
+        }
         if catalog_changed {
             self.notify_catalog_change();
         }
@@ -1236,7 +1285,8 @@ mod tests {
     use crate::engine::catalog::identity::SchemaId;
     use crate::engine::catalog::model::{
         ColumnConversion, ColumnDef, ColumnReplacementDef, ConstraintDef, ConstraintKind,
-        DefaultFunction, DefaultValue, ForeignKeyDef, IndexDef, ScalarType, TableDef,
+        DefaultFunction, DefaultValue, ForeignKeyAction, ForeignKeyDef, IndexDef, ScalarType,
+        TableDef,
     };
     use crate::engine::exec::codec;
     use crate::engine::exec::row_store;
@@ -1823,6 +1873,7 @@ mod tests {
                     columns: vec!["parent_id".into()],
                     ref_table: "byte_parents".into(),
                     ref_columns: vec!["id".into()],
+                    on_delete: ForeignKeyAction::Restrict,
                 }],
             })
             .await
@@ -3931,6 +3982,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(generation().await, 2);
+        let unchanged = engine
+            .update_many(
+                "items",
+                text_input_type(&["id"]),
+                vec![Row::from([("id".into(), Value::Text("one".into()))])],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            unchanged,
+            vec![Row::from([
+                ("id".into(), Value::Text("one".into())),
+                ("value".into(), Value::Text("second".into())),
+            ])]
+        );
+        assert_eq!(generation().await, 3);
         engine
             .delete_many(
                 "items",
@@ -3939,7 +4006,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(generation().await, 3);
+        assert_eq!(generation().await, 4);
 
         let error = engine
             .create_many(
@@ -3958,7 +4025,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::ConstraintViolation);
-        assert_eq!(generation().await, 3);
+        assert_eq!(generation().await, 4);
         assert!(
             row_store::get_columns(
                 &*store,
@@ -4136,6 +4203,7 @@ mod tests {
                     columns: vec!["parent_id".into()],
                     ref_table: "parents".into(),
                     ref_columns: vec!["id".into()],
+                    on_delete: ForeignKeyAction::Restrict,
                 }],
             })
             .await
@@ -4194,6 +4262,140 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn delete_applies_cascade_and_set_null_referential_actions_atomically() {
+        let store = Arc::new(Store::memory("exec-engine-delete-actions").await.unwrap());
+        let catalog = catalog::Catalog::new(store.clone());
+        catalog
+            .create_table(TableDef {
+                id: SchemaId::new(1).unwrap(),
+                name: "parents".into(),
+                columns: vec![ColumnDef {
+                    id: SchemaId::new(1).unwrap(),
+                    name: "id".into(),
+                    scalar_type: ScalarType::Text,
+                    nullable: false,
+                    format: String::new(),
+                    default: None,
+                }],
+                primary_key: vec!["id".into()],
+                indexes: Vec::new(),
+                foreign_keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let cascade = catalog
+            .create_table(TableDef {
+                id: SchemaId::new(2).unwrap(),
+                name: "cascade_children".into(),
+                columns: vec![
+                    ColumnDef {
+                        id: SchemaId::new(1).unwrap(),
+                        name: "id".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                    ColumnDef {
+                        id: SchemaId::new(2).unwrap(),
+                        name: "parent_id".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                ],
+                primary_key: vec!["id".into()],
+                indexes: Vec::new(),
+                foreign_keys: vec![ForeignKeyDef {
+                    name: "cascade_parent".into(),
+                    columns: vec!["parent_id".into()],
+                    ref_table: "parents".into(),
+                    ref_columns: vec!["id".into()],
+                    on_delete: ForeignKeyAction::Cascade,
+                }],
+            })
+            .await
+            .unwrap();
+        let nullable = catalog
+            .create_table(TableDef {
+                id: SchemaId::new(3).unwrap(),
+                name: "nullable_children".into(),
+                columns: vec![
+                    ColumnDef {
+                        id: SchemaId::new(1).unwrap(),
+                        name: "id".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                    ColumnDef {
+                        id: SchemaId::new(2).unwrap(),
+                        name: "parent_id".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: true,
+                        format: String::new(),
+                        default: None,
+                    },
+                ],
+                primary_key: vec!["id".into()],
+                indexes: Vec::new(),
+                foreign_keys: vec![ForeignKeyDef {
+                    name: "nullable_parent".into(),
+                    columns: vec!["parent_id".into()],
+                    ref_table: "parents".into(),
+                    ref_columns: vec!["id".into()],
+                    on_delete: ForeignKeyAction::SetNull,
+                }],
+            })
+            .await
+            .unwrap();
+        let engine = Engine::new(store.clone());
+        engine
+            .create(
+                "parents",
+                Row::from([("id".into(), Value::Text("p1".into()))]),
+            )
+            .await
+            .unwrap();
+        for table in ["cascade_children", "nullable_children"] {
+            engine
+                .create(
+                    table,
+                    Row::from([
+                        ("id".into(), Value::Text("c1".into())),
+                        ("parent_id".into(), Value::Text("p1".into())),
+                    ]),
+                )
+                .await
+                .unwrap();
+        }
+
+        engine
+            .delete_many(
+                "parents",
+                text_input_type(&["id"]),
+                vec![Row::from([("id".into(), Value::Text("p1".into()))])],
+            )
+            .await
+            .unwrap();
+
+        let child_key = Row::from([("id".into(), Value::Text("c1".into()))]);
+        assert!(
+            row_store::get_columns(&*store, &cascade, &child_key, &cascade.columns)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let preserved = row_store::get_columns(&*store, &nullable, &child_key, &nullable.columns)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(preserved["parent_id"], Value::Null(ScalarType::Text));
     }
 
     #[tokio::test]

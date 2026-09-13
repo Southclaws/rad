@@ -370,18 +370,6 @@ fn invalid_program_variants(case: &ProgramCase) -> Vec<InvalidProgramVariant> {
             expected: (ErrorKind::InvalidInput, ErrorReason::TypeMismatch),
         },
         InvalidProgramVariant {
-            name: "update assigns no columns",
-            program: program(
-                vec![update(
-                    "updated",
-                    rows_query(&id, std::slice::from_ref(&valid)),
-                    &case.table.name,
-                )],
-                Some("updated"),
-            ),
-            expected: (ErrorKind::InvalidInput, ErrorReason::TypeMismatch),
-        },
-        InvalidProgramVariant {
             name: "delete includes a non-key column",
             program: program(
                 vec![delete(

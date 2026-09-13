@@ -3,20 +3,22 @@
 use std::collections::HashMap;
 
 use sqlparser::ast::{
-    AlterTableOperation, AssignmentTarget, BinaryOperator, ColumnOption, ConflictTarget,
-    CreateIndex, CreateTable, DataType, Delete, Distinct as SqlDistinct, DuplicateTreatment,
-    Expr as SqlExpr, FromTable, FunctionArg, FunctionArgExpr, FunctionArguments, GeneratedAs,
-    Ident, Insert, JoinConstraint, JoinOperator, LimitClause, ObjectName, OnConflictAction,
-    OnInsert, OrderByExpr, OrderByKind, Query as SqlQuery, Select, SelectItem,
-    SelectItemQualifiedWildcardKind, SetExpr, SetOperator, SetQuantifier as SqlSetQuantifier,
-    Statement as SqlStatement, TableConstraint, TableFactor, TableWithJoins, UnaryOperator, Update,
-    UpdateTableFromKind, Value as SqlValue,
+    AlterTable, AlterTableOperation, AssignmentTarget, BinaryOperator, ColumnOption,
+    ConflictTarget, CreateIndex, CreateTable, DataType, Delete, Distinct as SqlDistinct,
+    DuplicateTreatment, Expr as SqlExpr, ForeignKeyConstraint, FromTable, FunctionArg,
+    FunctionArgExpr, FunctionArguments, GeneratedAs, Ident, Insert, JoinConstraint, JoinOperator,
+    LimitClause, ObjectName, OnConflictAction, OnInsert, OrderByExpr, OrderByKind,
+    Query as SqlQuery, ReferentialAction, Select, SelectItem, SelectItemQualifiedWildcardKind,
+    SetExpr, SetOperator, SetQuantifier as SqlSetQuantifier, Statement as SqlStatement,
+    TableConstraint, TableFactor, TableWithJoins, UnaryOperator, Update, UpdateTableFromKind,
+    Value as SqlValue,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
 use crate::engine::catalog::model::{
-    ColumnDraft, DefaultFunction, DefaultValue, IndexDef, ScalarType, Table, TableDraft,
+    ColumnDraft, DefaultFunction, DefaultValue, ForeignKeyAction, ForeignKeyDef, IndexDef,
+    ScalarType, Table, TableDraft,
 };
 use crate::engine::exec::{Program, Statement};
 use crate::engine::lir::{
@@ -288,19 +290,11 @@ fn compile_statement(
             Vec::new(),
             CommandKind::CreateIndex,
         ),
-        SqlStatement::AlterTable(alter)
-            if alter.operations.iter().all(|operation| {
-                matches!(
-                    operation,
-                    AlterTableOperation::AddConstraint {
-                        constraint: TableConstraint::ForeignKey(_),
-                        ..
-                    } | AlterTableOperation::DropConstraint { .. }
-                )
-            }) =>
-        {
-            (None, Vec::new(), CommandKind::AlterTable)
-        }
+        SqlStatement::AlterTable(alter) => (
+            context.alter_table(alter)?,
+            Vec::new(),
+            CommandKind::AlterTable,
+        ),
         other => {
             return Err(Error::Unsupported(format!(
                 "{} is not supported by the PostgreSQL frontend yet: {other}",
@@ -970,7 +964,7 @@ impl<'a> Context<'a> {
             let SqlExpr::Function(function_ast) = &expression else {
                 unreachable!("aggregate expression collector only returns functions")
             };
-            let (function, argument, scalar_type, nullable, distinct) =
+            let (function, argument, scalar_type, nullable, distinct, format) =
                 aggregate(function_ast, &mut expressions)?;
             let field = format!("aggregate_{}", term_specs.len() + 1);
             term_specs.push((
@@ -986,7 +980,7 @@ impl<'a> Context<'a> {
                 field,
                 scalar_type,
                 nullable,
-                format: String::new(),
+                format,
             };
             aggregate_columns.push(column.clone());
             substitutions.push((expression, column));
@@ -1153,7 +1147,7 @@ impl<'a> Context<'a> {
             };
         let mut aggregate_expressions = ExpressionCompiler::new(self, ExpressionEnv::default())
             .with_output(aggregate_scope, aggregate_columns.clone())
-            .with_substitutions(substitutions);
+            .with_substitutions(substitutions.clone());
         if let Some(having) = &select.having {
             relation = Relation::Filter {
                 input: Box::new(relation),
@@ -1170,10 +1164,10 @@ impl<'a> Context<'a> {
             let compiled = aggregate_expressions.compile(expression, None)?;
             let name = select_item_name(item);
             let field = unique_name(&name, &mut output_names);
-            let format = group_exprs
+            let format = substitutions
                 .iter()
-                .position(|group| group == expression)
-                .map(|index| aggregate_columns[index].format.clone())
+                .find(|(candidate, _)| candidate == expression)
+                .map(|(_, column)| column.format.clone())
                 .unwrap_or_default();
             columns.push(ResultColumn {
                 name,
@@ -2329,6 +2323,129 @@ impl<'a> Context<'a> {
             result: None,
         }))
     }
+
+    fn alter_table(&self, alter: &AlterTable) -> Result<Option<Program>> {
+        let table = self.table(&alter.name)?;
+        let mut statements = Vec::with_capacity(alter.operations.len());
+        for (index, operation) in alter.operations.iter().enumerate() {
+            match operation {
+                AlterTableOperation::AddConstraint {
+                    constraint: TableConstraint::ForeignKey(foreign_key),
+                    not_valid: false,
+                } => statements.push(Statement::CreateForeignKey {
+                    name: format!("sql_create_foreign_key_{}", index + 1),
+                    table_id: table.schema_id,
+                    foreign_key: self.foreign_key(&table.name, foreign_key)?,
+                }),
+                AlterTableOperation::AddConstraint {
+                    not_valid: true, ..
+                } => {
+                    return Err(Error::Unsupported(
+                        "ALTER TABLE ADD CONSTRAINT NOT VALID is not supported".into(),
+                    ));
+                }
+                AlterTableOperation::DropConstraint {
+                    if_exists,
+                    name,
+                    drop_behavior: None,
+                } => {
+                    let name = identifier(name);
+                    if table
+                        .foreign_keys
+                        .iter()
+                        .any(|foreign_key| foreign_key.name == name)
+                    {
+                        statements.push(Statement::DeleteForeignKey {
+                            name: format!("sql_delete_foreign_key_{}", index + 1),
+                            table_id: table.schema_id,
+                            foreign_key: name,
+                        });
+                    } else if !if_exists {
+                        return Err(Error::Invalid(format!(
+                            "constraint {name:?} does not exist on table {:?}",
+                            table.name
+                        )));
+                    }
+                }
+                other => {
+                    return Err(Error::Unsupported(format!(
+                        "ALTER TABLE operation is not supported: {other}"
+                    )));
+                }
+            }
+        }
+        Ok((!statements.is_empty()).then_some(Program {
+            statements,
+            result: None,
+        }))
+    }
+
+    fn foreign_key(
+        &self,
+        table_name: &str,
+        foreign_key: &ForeignKeyConstraint,
+    ) -> Result<ForeignKeyDef> {
+        if foreign_key.match_kind.is_some() || foreign_key.characteristics.is_some() {
+            return Err(Error::Unsupported(
+                "foreign-key MATCH and deferrability options are not supported".into(),
+            ));
+        }
+        if !matches!(
+            foreign_key.on_update,
+            None | Some(ReferentialAction::NoAction | ReferentialAction::Restrict)
+        ) {
+            return Err(Error::Unsupported(
+                "foreign-key ON UPDATE actions are not supported".into(),
+            ));
+        }
+        let columns = foreign_key
+            .columns
+            .iter()
+            .map(identifier)
+            .collect::<Vec<_>>();
+        if columns.is_empty() {
+            return Err(Error::Invalid(
+                "foreign key needs at least one referencing column".into(),
+            ));
+        }
+        let ref_table = object_name(&foreign_key.foreign_table)?;
+        let referenced = self
+            .tables
+            .iter()
+            .find(|table| table.name == ref_table)
+            .ok_or_else(|| Error::Invalid(format!("unknown table {ref_table:?}")))?;
+        let ref_columns = if foreign_key.referred_columns.is_empty() {
+            referenced.primary_key.clone()
+        } else {
+            foreign_key
+                .referred_columns
+                .iter()
+                .map(identifier)
+                .collect()
+        };
+        let on_delete = match foreign_key.on_delete {
+            None | Some(ReferentialAction::NoAction) => ForeignKeyAction::NoAction,
+            Some(ReferentialAction::Restrict) => ForeignKeyAction::Restrict,
+            Some(ReferentialAction::Cascade) => ForeignKeyAction::Cascade,
+            Some(ReferentialAction::SetNull) => ForeignKeyAction::SetNull,
+            Some(ReferentialAction::SetDefault) => {
+                return Err(Error::Unsupported(
+                    "foreign-key ON DELETE SET DEFAULT is not supported".into(),
+                ));
+            }
+        };
+        Ok(ForeignKeyDef {
+            name: foreign_key
+                .name
+                .as_ref()
+                .map(identifier)
+                .unwrap_or_else(|| format!("{}_{}_fkey", table_name, columns.join("_"))),
+            columns,
+            ref_table,
+            ref_columns,
+            on_delete,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -2822,6 +2939,11 @@ impl<'context, 'catalog> ExpressionCompiler<'context, 'catalog> {
     ) -> Result<CompiledExpr> {
         let (value, insensitive) = case_folded_like_value(value, insensitive)?;
         let value = self.compile(value, Some(ScalarType::Text))?;
+        let pattern = if insensitive {
+            case_folded_like_value(pattern, false)?.0
+        } else {
+            pattern
+        };
         let pattern = self.pattern_value(pattern)?;
         let escape = escape
             .map(|value| {
@@ -3268,7 +3390,14 @@ fn direct_column_format(expression: &SqlExpr, env: &ExpressionEnv) -> String {
 fn aggregate(
     function: &sqlparser::ast::Function,
     expressions: &mut ExpressionCompiler<'_, '_>,
-) -> Result<(AggregateFunction, Option<Expr>, ScalarType, bool, bool)> {
+) -> Result<(
+    AggregateFunction,
+    Option<Expr>,
+    ScalarType,
+    bool,
+    bool,
+    String,
+)> {
     if function.over.is_some() || function.filter.is_some() {
         return Err(Error::Unsupported(
             "window and filtered aggregates are not supported".into(),
@@ -3308,6 +3437,7 @@ fn aggregate(
             ScalarType::Int64,
             false,
             false,
+            String::new(),
         ));
     }
     let [FunctionArg::Unnamed(FunctionArgExpr::Expr(argument))] = arguments.args.as_slice() else {
@@ -3315,6 +3445,7 @@ fn aggregate(
             "aggregate {name} needs one argument"
         )));
     };
+    let format = direct_column_format(argument, &expressions.env);
     let argument = expressions.compile(argument, None)?;
     let function = match name.as_str() {
         "count" => AggregateFunction::Count,
@@ -3341,6 +3472,11 @@ fn aggregate(
         scalar_type,
         function != AggregateFunction::Count,
         distinct,
+        if matches!(function, AggregateFunction::Min | AggregateFunction::Max) {
+            format
+        } else {
+            String::new()
+        },
     ))
 }
 
@@ -3490,13 +3626,14 @@ fn compile_order_terms(
 ) -> Result<Vec<OrderTerm>> {
     let mut output = Vec::with_capacity(terms.len() * 2);
     for term in terms {
+        let null_expression = compile(term)?;
         let expression = compile(term)?;
         let descending = term.options.asc == Some(false);
         let nulls_first = term.options.nulls_first.unwrap_or(descending);
         output.push(OrderTerm {
             expression: Expr::Unary {
                 op: UnaryOp::IsNull,
-                expression: Box::new(expression.clone()),
+                expression: Box::new(null_expression),
             },
             descending: nulls_first,
         });
@@ -4484,6 +4621,8 @@ fn identifier(identifier: &Ident) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use crate::engine::catalog::identity::{
         ColumnId, DefinitionGeneration, ExistenceGeneration, SchemaId, TableId, ValueGeneration,
         WriteProtocolGeneration,
@@ -4690,10 +4829,67 @@ mod tests {
     }
 
     #[test]
+    fn alter_table_lowers_foreign_key_delete_actions() {
+        let child = users();
+        let mut parent = users();
+        parent.id = TableId::new("roles");
+        parent.schema_id = SchemaId::new(2).unwrap();
+        parent.name = "roles".into();
+        for (clause, expected) in [
+            ("", ForeignKeyAction::NoAction),
+            (" ON DELETE NO ACTION", ForeignKeyAction::NoAction),
+            (" ON DELETE RESTRICT", ForeignKeyAction::Restrict),
+            (" ON DELETE CASCADE", ForeignKeyAction::Cascade),
+            (" ON DELETE SET NULL", ForeignKeyAction::SetNull),
+        ] {
+            let compiled = compile_sql(
+                &format!(
+                    "ALTER TABLE users ADD CONSTRAINT users_role_fkey FOREIGN KEY (id) REFERENCES roles (id){clause}"
+                ),
+                &[child.clone(), parent.clone()],
+            )
+            .unwrap();
+            let program = compiled.program.unwrap();
+            let Statement::CreateForeignKey { foreign_key, .. } = &program.statements[0] else {
+                panic!("expected create foreign key statement")
+            };
+            assert_eq!(foreign_key.name, "users_role_fkey");
+            assert_eq!(foreign_key.columns, ["id"]);
+            assert_eq!(foreign_key.ref_table, "roles");
+            assert_eq!(foreign_key.ref_columns, ["id"]);
+            assert_eq!(foreign_key.on_delete, expected);
+        }
+    }
+
+    #[test]
+    fn min_and_max_preserve_timestamp_result_metadata() {
+        let mut table = users();
+        table.columns.push(Column {
+            id: ColumnId::new("users-last-seen-at"),
+            schema_id: SchemaId::new(3).unwrap(),
+            name: "last_seen_at".into(),
+            value_generation: ValueGeneration::default(),
+            scalar_type: ScalarType::Int64,
+            nullable: true,
+            format: "timestamptz".into(),
+            insert_default: None,
+            missing_value: None,
+        });
+        for aggregate in ["min", "max"] {
+            let compiled = compile_sql(
+                &format!("SELECT {aggregate}(last_seen_at) AS observed_at FROM users"),
+                std::slice::from_ref(&table),
+            )
+            .unwrap();
+            assert_eq!(compiled.result_columns[0].format, "timestamptz");
+        }
+    }
+
+    #[test]
     fn storyden_search_lowers_case_insensitive_like_and_bound_limit() {
         let table = users();
         let prepared = prepare(
-            "SELECT id FROM users WHERE lower(name) LIKE $1 ESCAPE '\\' ORDER BY id LIMIT $2",
+            "SELECT id FROM users WHERE lower(name) LIKE lower($1) ESCAPE '\\' ORDER BY id LIMIT $2",
             std::slice::from_ref(&table),
             &[],
         )
@@ -4742,6 +4938,93 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn sibling_correlated_aggregate_subqueries_have_unique_scopes() {
+        fn table(schema_id: u32, name: &str, columns: &[(&str, ScalarType, bool)]) -> Table {
+            let mut table = users();
+            table.id = TableId::new(name);
+            table.schema_id = SchemaId::new(schema_id).unwrap();
+            table.name = name.into();
+            table.columns = columns
+                .iter()
+                .enumerate()
+                .map(|(index, (name, scalar_type, nullable))| Column {
+                    id: ColumnId::new(format!("{}-{name}", table.name)),
+                    schema_id: SchemaId::new(u32::try_from(index + 1).unwrap()).unwrap(),
+                    name: (*name).into(),
+                    value_generation: ValueGeneration::default(),
+                    scalar_type: *scalar_type,
+                    nullable: *nullable,
+                    format: String::new(),
+                    insert_default: None,
+                    missing_value: None,
+                })
+                .collect();
+            table.primary_key = vec!["id".into()];
+            table
+        }
+
+        let tables = [
+            table(
+                1,
+                "tags",
+                &[
+                    ("id", ScalarType::Text, false),
+                    ("name", ScalarType::Text, false),
+                ],
+            ),
+            table(
+                2,
+                "tag_posts",
+                &[
+                    ("tag_id", ScalarType::Text, false),
+                    ("post_id", ScalarType::Text, false),
+                ],
+            ),
+            table(
+                3,
+                "posts",
+                &[
+                    ("id", ScalarType::Text, false),
+                    ("visibility", ScalarType::Text, false),
+                    ("deleted_at", ScalarType::Int64, true),
+                ],
+            ),
+            table(
+                4,
+                "tag_nodes",
+                &[
+                    ("tag_id", ScalarType::Text, false),
+                    ("node_id", ScalarType::Text, false),
+                ],
+            ),
+            table(
+                5,
+                "nodes",
+                &[
+                    ("id", ScalarType::Text, false),
+                    ("visibility", ScalarType::Text, false),
+                    ("deleted_at", ScalarType::Int64, true),
+                ],
+            ),
+        ];
+        let compiled = compile_sql(
+            "SELECT t.id AS tag_id, (SELECT count(*) FROM tag_posts tp JOIN posts p ON p.id = tp.post_id WHERE tp.tag_id = t.id AND p.visibility = 'published' AND p.deleted_at IS NULL) + (SELECT count(*) FROM tag_nodes tn JOIN nodes n ON n.id = tn.node_id WHERE tn.tag_id = t.id AND n.visibility = 'published' AND n.deleted_at IS NULL) AS items FROM tags t ORDER BY items DESC, t.name ASC LIMIT 50 OFFSET 0",
+            &tables,
+        )
+        .unwrap();
+        let Statement::Query { relation, .. } = &compiled.program.unwrap().statements[0] else {
+            panic!("expected query statement")
+        };
+        let mut scopes = Vec::new();
+        collect_relation_scopes(&relation.root, &mut scopes);
+        let mut unique = HashSet::new();
+        let duplicate = scopes
+            .into_iter()
+            .find(|scope| !unique.insert(scope.clone()));
+        assert_eq!(duplicate, None);
     }
 
     #[test]

@@ -692,7 +692,7 @@ struct DependencyProfile {
     data: [u8; 16],
     access: [u8; 16],
     write_protocol: [u8; 16],
-    generations: SmallVec<[u64; 12]>,
+    generations: SmallVec<[u128; 12]>,
     complete_generation_vector: bool,
 }
 
@@ -744,13 +744,18 @@ impl DependencyProfile {
                             generation,
                         );
                     }
-                    for generation in data_generation.stripes() {
-                        record_generation(
-                            &mut generations,
-                            &mut complete_generation_vector,
-                            generation.get(),
-                        );
-                    }
+                    // Stripe generations only increase within one storage generation, so
+                    // their sum preserves snapshot order without retaining every stripe.
+                    let data_generation: u128 = data_generation
+                        .stripes()
+                        .iter()
+                        .map(|generation| u128::from(generation.get()))
+                        .sum();
+                    record_generation(
+                        &mut generations,
+                        &mut complete_generation_vector,
+                        data_generation,
+                    );
                 }
                 DependencyGeneration::Column {
                     table_id,
@@ -897,9 +902,13 @@ fn update_generation(hasher: &mut Sha256, generation: u64) {
     hasher.update(generation.to_be_bytes());
 }
 
-fn record_generation(generations: &mut SmallVec<[u64; 12]>, complete: &mut bool, generation: u64) {
+fn record_generation(
+    generations: &mut SmallVec<[u128; 12]>,
+    complete: &mut bool,
+    generation: impl Into<u128>,
+) {
     if generations.len() < GENERATION_VALUE_LIMIT {
-        generations.push(generation);
+        generations.push(generation.into());
     } else {
         *complete = false;
     }
@@ -1013,6 +1022,7 @@ pub(super) struct PolicyStats {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use crate::engine::catalog::model::{CatalogDependencies, TableExistenceDependency};
     use crate::engine::catalog::store::TableDataGeneration;
@@ -1195,7 +1205,7 @@ mod tests {
                 table_id: "t1".into(),
                 existence_generation: existence.into(),
                 storage_generation: storage.into(),
-                data_generation: data.into(),
+                data_generation: Arc::new(data.into()),
             })
         };
         let base = table(1, 1, 1);
@@ -1250,13 +1260,13 @@ mod tests {
                         table_id: "t1".into(),
                         existence_generation: 1.into(),
                         storage_generation: 1.into(),
-                        data_generation: first.into(),
+                        data_generation: Arc::new(first.into()),
                     },
                     DependencyGeneration::Table {
                         table_id: "t2".into(),
                         existence_generation: 1.into(),
                         storage_generation: 1.into(),
-                        data_generation: second.into(),
+                        data_generation: Arc::new(second.into()),
                     },
                 ],
             )

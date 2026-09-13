@@ -528,7 +528,7 @@ fn compare_foreign_keys(
         if generated {
             name = naming::foreign_key(&desired.def.name, &columns[0]);
         }
-        current_set.insert((name, columns, referenced.schema_id));
+        current_set.insert((name, columns, referenced.schema_id, foreign_key.on_delete));
     }
     let mut desired_set = HashSet::new();
     for foreign_key in &desired.def.foreign_keys {
@@ -544,6 +544,7 @@ fn compare_foreign_keys(
             foreign_key.name.clone(),
             foreign_key.columns.clone(),
             *referenced,
+            foreign_key.on_delete,
         ));
     }
     if current_set != desired_set {
@@ -734,6 +735,7 @@ mod tests {
                                     .get()
                             )),
                             ref_columns: foreign_key.ref_columns,
+                            on_delete: foreign_key.on_delete,
                         })
                         .collect(),
                     constraints: Vec::new(),

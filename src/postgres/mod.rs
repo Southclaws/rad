@@ -1,9 +1,7 @@
 //! PostgreSQL wire-protocol compatibility frontend.
 
 use std::fmt::Debug;
-use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
@@ -27,12 +25,12 @@ use sqlparser::ast::{
     ContextModifier, Expr as SqlExpr, Reset, Set as SqlSet, Statement as SqlStatement,
     TransactionAccessMode, TransactionIsolationLevel, TransactionMode, Value as SqlValue,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tracing::Instrument as _;
 
 use crate::engine::catalog::Catalog;
 use crate::engine::catalog::model::{DefaultValue, Mode, ScalarType, Table};
-use crate::engine::exec::{CatalogPolicy, Engine, ErrorReason};
+use crate::engine::exec::{CatalogPolicy, Engine, ErrorReason, TransactionIsolation};
 use crate::engine::frontend::Tx;
 use crate::engine::lir::{Datum, RawScalar, Value};
 use crate::sql::{self, CommandKind, Parameter, Prepared, ResultColumn};
@@ -49,7 +47,7 @@ impl Server {
                 engine,
                 parser: Arc::new(ParserBackend { catalog }),
                 mode,
-                transaction_admission: Arc::new(Mutex::new(())),
+                transaction_admission: Arc::new(RwLock::new(())),
             }),
         }
     }
@@ -179,7 +177,7 @@ struct Backend {
     engine: Arc<Engine>,
     parser: Arc<ParserBackend>,
     mode: Mode,
-    transaction_admission: Arc<Mutex<()>>,
+    transaction_admission: Arc<RwLock<()>>,
 }
 
 #[async_trait]
@@ -345,6 +343,11 @@ impl Backend {
                     let Some(program) = compiled.program else {
                         return Ok(Response::Execution(Tag::new(compiled.kind.tag())));
                     };
+                    let effectful = program
+                        .statements
+                        .iter()
+                        .any(|statement| statement.effectful());
+                    let catalog_change = program_changes_catalog(&program);
                     let catalog_policy = match self.mode {
                         Mode::Direct => CatalogPolicy::RevisionPerStatement,
                         Mode::Schema => CatalogPolicy::Forbidden,
@@ -353,8 +356,37 @@ impl Backend {
                     let session = session(client);
                     let mut state = session.lock().await;
                     let application_name = state.application_name.clone();
+                    let default_isolation = state.default_isolation;
                     let request_id = uuid::Uuid::new_v4().to_string();
                     let client_ip = client.socket_addr().ip().to_string();
+                    if state.transaction.is_some()
+                        && catalog_change
+                        && !state
+                            .transaction_admission
+                            .as_ref()
+                            .is_some_and(TransactionAdmission::is_write)
+                    {
+                        let transaction = state.transaction.take().expect("transaction checked");
+                        let isolation = transaction.isolation();
+                        let dirty = state.transaction_dirty;
+                        state.transaction_admission.take();
+                        let admission = self.transaction_admission.clone().write_owned().await;
+                        state.transaction = if dirty {
+                            Some(transaction)
+                        } else {
+                            transaction.rollback();
+                            Some(
+                                Tx::begin(self.engine.clone(), isolation)
+                                    .await
+                                    .map_err(engine_error)?,
+                            )
+                        };
+                        state.transaction_admission =
+                            Some(TransactionAdmission::Write { _guard: admission });
+                    }
+                    if state.transaction.is_some() && effectful {
+                        state.transaction_dirty = true;
+                    }
                     let result = if let Some(transaction) = &mut state.transaction {
                         let transaction_span = transaction.span();
                         let (trace_id, span_id) = crate::telemetry::span_ids(&transaction_span);
@@ -378,14 +410,14 @@ impl Backend {
                         .map_err(|error| engine_error_with_sql(error, &sql))
                     } else {
                         drop(state);
-                        let effectful = program
-                            .statements
-                            .iter()
-                            .any(|statement| statement.effectful());
-                        let _transaction_admission = if effectful {
-                            Some(self.transaction_admission.lock().await)
+                        let _transaction_admission = if catalog_change {
+                            Some(TransactionAdmission::Write {
+                                _guard: self.transaction_admission.clone().write_owned().await,
+                            })
                         } else {
-                            None
+                            Some(TransactionAdmission::Read {
+                                _guard: self.transaction_admission.clone().read_owned().await,
+                            })
                         };
                         let current_span = tracing::Span::current();
                         let (trace_id, span_id) = crate::telemetry::span_ids(&current_span);
@@ -401,19 +433,18 @@ impl Backend {
                             diagnostics: None,
                             parent_span: None,
                         };
-                        let options = crate::engine::exec::ProgramOptions {
-                            catalog: catalog_policy,
-                            ..crate::engine::exec::ProgramOptions::default()
-                        };
-                        Box::pin(crate::logging::with_request_context(context, async {
-                            retry_implicit_transaction(|| {
-                                crate::engine::frontend::execute_program_with_options(
-                                    &self.engine,
-                                    program.clone(),
-                                    options.clone(),
-                                )
-                            })
+                        let mut transaction = Tx::begin(self.engine.clone(), default_isolation)
                             .await
+                            .map_err(engine_error)?;
+                        let context = crate::logging::RequestContext {
+                            transaction_id: transaction.id().to_owned(),
+                            ..context
+                        };
+                        Box::pin(crate::logging::with_request_context(context, async move {
+                            let result =
+                                transaction.execute_program(program, catalog_policy).await?;
+                            transaction.commit().await?;
+                            Ok(result)
                         }))
                         .await
                         .map_err(|error| engine_error_with_sql(error, &sql))
@@ -479,22 +510,29 @@ impl Backend {
     {
         let session = session(client);
         match control {
-            TransactionControl::Begin => {
-                {
+            TransactionControl::Begin {
+                isolation,
+                read_only,
+            } => {
+                validate_access_mode(&self.engine, read_only)?;
+                let isolation = {
                     let state = session.lock().await;
                     if state.transaction.is_some() {
                         return Ok(Response::TransactionStart(Tag::new("BEGIN")));
                     }
-                }
-                // Rad transactions use serializable snapshots. Admit explicit
-                // transactions before opening the snapshot so ordinary PostgreSQL
-                // clients wait instead of surfacing avoidable serialization errors.
-                let admission = self.transaction_admission.clone().lock_owned().await;
+                    isolation.unwrap_or(state.default_isolation)
+                };
+                let admission = self.transaction_admission.clone().read_owned().await;
                 let mut state = session.lock().await;
                 if state.transaction.is_none() {
-                    state.transaction =
-                        Some(Tx::begin(self.engine.clone()).await.map_err(engine_error)?);
-                    state.transaction_admission = Some(admission);
+                    state.transaction = Some(
+                        Tx::begin(self.engine.clone(), isolation)
+                            .await
+                            .map_err(engine_error)?,
+                    );
+                    state.transaction_admission =
+                        Some(TransactionAdmission::Read { _guard: admission });
+                    state.transaction_dirty = false;
                     state.failed = false;
                     tracing::debug!(
                         target: "rad",
@@ -513,6 +551,7 @@ impl Backend {
                     let failed =
                         state.failed || client.transaction_status() == TransactionStatus::Error;
                     state.failed = false;
+                    state.transaction_dirty = false;
                     (
                         state.transaction.take(),
                         failed,
@@ -551,6 +590,7 @@ impl Backend {
                 let (transaction, transaction_admission) = {
                     let mut state = session.lock().await;
                     state.failed = false;
+                    state.transaction_dirty = false;
                     (state.transaction.take(), state.transaction_admission.take())
                 };
                 let _transaction_admission = transaction_admission;
@@ -594,35 +634,39 @@ impl Backend {
                 log_session_setting(client, "search_path", "public", "ignored");
                 Ok(Response::Execution(Tag::new("SET")))
             }
-            SessionCommand::SetTransactionCharacteristics { read_only } => {
-                match (*read_only, self.engine.is_read_only()) {
-                    (Some(true), false) => {
-                        return Err(user_error(
-                            "0A000",
-                            "per-session read-only transactions are not supported",
-                        ));
-                    }
-                    (Some(false), true) => {
-                        return Err(user_error("25006", "database is read-only"));
-                    }
-                    _ => {}
-                }
+            SessionCommand::SetTransactionCharacteristics {
+                isolation,
+                read_only,
+            } => {
+                validate_access_mode(&self.engine, *read_only)?;
+                let connection = session(client);
+                let mut state = connection.lock().await;
+                let isolation = isolation.unwrap_or(state.default_isolation);
+                state.default_isolation = isolation;
                 let value = match read_only {
-                    Some(true) => "serializable, read only",
-                    Some(false) => "serializable, read write",
-                    None => "serializable",
+                    Some(true) => format!("{}, read only", transaction_isolation_name(isolation)),
+                    Some(false) => {
+                        format!("{}, read write", transaction_isolation_name(isolation))
+                    }
+                    None => transaction_isolation_name(isolation).to_owned(),
                 };
+                drop(state);
                 log_session_setting(
                     client,
                     "default_transaction_characteristics",
-                    value,
+                    &value,
                     "accepted",
                 );
                 Ok(Response::Execution(Tag::new("SET")))
             }
             SessionCommand::Reset(setting) => {
                 if setting.is_none_or(|setting| setting == SessionSetting::ApplicationName) {
-                    session(client).lock().await.application_name.clear();
+                    let connection = session(client);
+                    let mut state = connection.lock().await;
+                    state.application_name.clear();
+                    if setting.is_none() {
+                        state.default_isolation = TransactionIsolation::ReadCommitted;
+                    }
                 }
                 log_session_setting(
                     client,
@@ -639,7 +683,17 @@ impl Backend {
                     }
                     SessionSetting::ExtraFloatDigits => "3".into(),
                     SessionSetting::SearchPath => "public".into(),
-                    SessionSetting::TransactionIsolation => "serializable".into(),
+                    SessionSetting::TransactionIsolation => {
+                        let connection = session(client);
+                        let state = connection.lock().await;
+                        transaction_isolation_name(
+                            state
+                                .transaction
+                                .as_ref()
+                                .map_or(state.default_isolation, Tx::isolation),
+                        )
+                        .into()
+                    }
                     SessionSetting::ServerVersionNum => "170000".into(),
                 };
                 query_response_with_tag(
@@ -651,28 +705,6 @@ impl Backend {
             }
         }
     }
-}
-
-const IMPLICIT_TRANSACTION_ATTEMPTS: usize = 32;
-
-async fn retry_implicit_transaction<T, F, Fut>(mut operation: F) -> crate::engine::exec::Result<T>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = crate::engine::exec::Result<T>>,
-{
-    for attempt in 0..IMPLICIT_TRANSACTION_ATTEMPTS {
-        match operation().await {
-            Err(error)
-                if error.reason() == ErrorReason::SerializableConflict
-                    && attempt + 1 < IMPLICIT_TRANSACTION_ATTEMPTS =>
-            {
-                let delay_ms = 1_u64 << attempt.min(4);
-                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-            }
-            result => return result,
-        }
-    }
-    unreachable!("the final implicit transaction attempt always returns")
 }
 
 fn log_transaction_completed(
@@ -835,7 +867,10 @@ struct FieldOrigin {
 
 #[derive(Clone, Copy)]
 enum TransactionControl {
-    Begin,
+    Begin {
+        isolation: Option<TransactionIsolation>,
+        read_only: Option<bool>,
+    },
     Commit,
     Rollback,
 }
@@ -845,7 +880,10 @@ enum SessionCommand {
     SetApplicationName(String),
     SetExtraFloatDigits,
     SetSearchPath,
-    SetTransactionCharacteristics { read_only: Option<bool> },
+    SetTransactionCharacteristics {
+        isolation: Option<TransactionIsolation>,
+        read_only: Option<bool>,
+    },
     Reset(Option<SessionSetting>),
     Show(SessionSetting),
 }
@@ -880,12 +918,41 @@ impl SessionSetting {
     }
 }
 
-#[derive(Default)]
 struct Session {
     transaction: Option<Tx>,
-    transaction_admission: Option<tokio::sync::OwnedMutexGuard<()>>,
+    transaction_admission: Option<TransactionAdmission>,
+    transaction_dirty: bool,
     failed: bool,
     application_name: String,
+    default_isolation: TransactionIsolation,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            transaction: None,
+            transaction_admission: None,
+            transaction_dirty: false,
+            failed: false,
+            application_name: String::new(),
+            default_isolation: TransactionIsolation::ReadCommitted,
+        }
+    }
+}
+
+enum TransactionAdmission {
+    Read {
+        _guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    },
+    Write {
+        _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
+    },
+}
+
+impl TransactionAdmission {
+    fn is_write(&self) -> bool {
+        matches!(self, Self::Write { .. })
+    }
 }
 
 fn session<C: ClientInfo>(client: &C) -> Arc<Mutex<Session>> {
@@ -912,20 +979,17 @@ fn transaction_control(sql: &str) -> PgWireResult<Option<TransactionControl>> {
                 || !statements.is_empty()
                 || exception.is_some()
                 || has_end_keyword
-                || modes.iter().any(|mode| {
-                    !matches!(
-                        mode,
-                        TransactionMode::IsolationLevel(TransactionIsolationLevel::Serializable)
-                            | TransactionMode::AccessMode(TransactionAccessMode::ReadWrite)
-                    )
-                })
             {
                 return Err(user_error(
                     "0A000",
-                    "Rad supports serializable, read-write transactions without modifiers",
+                    "transaction modifiers are not supported by the PostgreSQL frontend yet",
                 ));
             }
-            Some(TransactionControl::Begin)
+            let (isolation, read_only) = transaction_modes(&modes)?;
+            Some(TransactionControl::Begin {
+                isolation,
+                read_only,
+            })
         }
         SqlStatement::Commit {
             chain,
@@ -989,25 +1053,11 @@ fn session_command(sql: &str) -> PgWireResult<Option<SessionCommand>> {
             snapshot: None,
             session: true,
         }) => {
-            let mut read_only = None;
-            for mode in modes {
-                match mode {
-                    TransactionMode::IsolationLevel(TransactionIsolationLevel::Serializable) => {}
-                    TransactionMode::AccessMode(TransactionAccessMode::ReadOnly) => {
-                        read_only = Some(true);
-                    }
-                    TransactionMode::AccessMode(TransactionAccessMode::ReadWrite) => {
-                        read_only = Some(false);
-                    }
-                    _ => {
-                        return Err(user_error(
-                            "0A000",
-                            "Rad supports serializable transaction characteristics matching the server role",
-                        ));
-                    }
-                }
+            let (isolation, read_only) = transaction_modes(&modes)?;
+            SessionCommand::SetTransactionCharacteristics {
+                isolation,
+                read_only,
             }
-            SessionCommand::SetTransactionCharacteristics { read_only }
         }
         SqlStatement::Set(_) => {
             return Err(user_error(
@@ -1039,6 +1089,54 @@ fn session_command(sql: &str) -> PgWireResult<Option<SessionCommand>> {
         _ => return Ok(None),
     };
     Ok(Some(command))
+}
+
+fn transaction_modes(
+    modes: &[TransactionMode],
+) -> PgWireResult<(Option<TransactionIsolation>, Option<bool>)> {
+    let mut isolation = None;
+    let mut read_only = None;
+    for mode in modes {
+        match mode {
+            TransactionMode::IsolationLevel(TransactionIsolationLevel::ReadCommitted) => {
+                isolation = Some(TransactionIsolation::ReadCommitted);
+            }
+            TransactionMode::IsolationLevel(TransactionIsolationLevel::Serializable) => {
+                isolation = Some(TransactionIsolation::Serializable);
+            }
+            TransactionMode::AccessMode(TransactionAccessMode::ReadOnly) => {
+                read_only = Some(true);
+            }
+            TransactionMode::AccessMode(TransactionAccessMode::ReadWrite) => {
+                read_only = Some(false);
+            }
+            _ => {
+                return Err(user_error(
+                    "0A000",
+                    "Rad supports read committed and serializable transaction isolation",
+                ));
+            }
+        }
+    }
+    Ok((isolation, read_only))
+}
+
+fn validate_access_mode(engine: &Engine, read_only: Option<bool>) -> PgWireResult<()> {
+    match (read_only, engine.is_read_only()) {
+        (Some(true), false) => Err(user_error(
+            "0A000",
+            "per-session read-only transactions are not supported",
+        )),
+        (Some(false), true) => Err(user_error("25006", "database is read-only")),
+        _ => Ok(()),
+    }
+}
+
+fn transaction_isolation_name(isolation: TransactionIsolation) -> &'static str {
+    match isolation {
+        TransactionIsolation::ReadCommitted => "read committed",
+        TransactionIsolation::Serializable => "serializable",
+    }
 }
 
 fn sql_string(expression: &SqlExpr) -> Option<String> {
@@ -1671,7 +1769,20 @@ impl CatalogPlan {
                                     text(reference),
                                     text("public"),
                                     text("a"),
-                                    text("a"),
+                                    text(match foreign.on_delete {
+                                        crate::engine::catalog::model::ForeignKeyAction::Restrict => {
+                                            "r"
+                                        }
+                                        crate::engine::catalog::model::ForeignKeyAction::NoAction => {
+                                            "a"
+                                        }
+                                        crate::engine::catalog::model::ForeignKeyAction::Cascade => {
+                                            "c"
+                                        }
+                                        crate::engine::catalog::model::ForeignKeyAction::SetNull => {
+                                            "n"
+                                        }
+                                    }),
                                 ]
                             },
                         )
@@ -2069,20 +2180,58 @@ fn engine_error_with_sql(error: crate::engine::exec::Error, sql: &str) -> PgWire
 }
 
 fn engine_error_message(error: crate::engine::exec::Error, sql: Option<&str>) -> PgWireError {
-    let code = match error.reason() {
+    let reason = error.reason();
+    let raw = error.to_string();
+    let constraint =
+        (reason == ErrorReason::ConstraintViolation).then(|| postgres_constraint_error(&raw));
+    let code = match reason {
         ErrorReason::ReadOnly => "25006",
-        ErrorReason::ConstraintViolation => "23505",
+        ErrorReason::ConstraintViolation => constraint.expect("constraint classified").0,
         ErrorReason::SerializableConflict => "40001",
         ErrorReason::UnknownTable | ErrorReason::UnknownColumn => "42P01",
         ErrorReason::TypeMismatch => "42804",
         ErrorReason::DivisionByZero => "22012",
         _ => "XX000",
     };
-    let message = match sql {
-        Some(sql) => format!("{error}; SQL: {sql}"),
-        None => error.to_string(),
+    let message = if let Some((_, postgres)) = constraint {
+        match sql {
+            Some(sql) => format!("{postgres}: {raw}; SQL: {sql}"),
+            None => format!("{postgres}: {raw}"),
+        }
+    } else {
+        match sql {
+            Some(sql) => format!("{raw}; SQL: {sql}"),
+            None => raw,
+        }
     };
     user_error(code, message)
+}
+
+fn postgres_constraint_error(message: &str) -> (&'static str, &'static str) {
+    let message = message.to_ascii_lowercase();
+    if message.contains("foreign key") {
+        return ("23503", "insert or update violates foreign key constraint");
+    }
+    if message.contains("unique index")
+        || message.contains("duplicate primary key")
+        || message.contains("same primary key")
+    {
+        return ("23505", "duplicate key value violates unique constraint");
+    }
+    if message.contains("not nullable")
+        || message.contains("non-nullable")
+        || message.contains("rejects null")
+    {
+        return ("23502", "null value violates not-null constraint");
+    }
+    ("23000", "integrity constraint violation")
+}
+
+fn program_changes_catalog(program: &crate::engine::exec::Program) -> bool {
+    program
+        .statements
+        .iter()
+        .any(|statement| !statement.relational())
 }
 
 fn api_error(error: impl std::error::Error + Send + Sync + 'static) -> PgWireError {
@@ -2577,7 +2726,7 @@ mod tests {
         DefinitionGeneration, ExistenceGeneration, SchemaId, StorageGeneration, ValueGeneration,
         WriteProtocolGeneration,
     };
-    use crate::engine::catalog::model::Column;
+    use crate::engine::catalog::model::{Column, ForeignKey, ForeignKeyAction};
     use crate::engine::kv::TransactionalKv;
     use crate::engine::kv::slatedb::Store;
 
@@ -2621,6 +2770,37 @@ mod tests {
         assert!(matches!(tables.kind, CatalogKind::Tables));
         assert_eq!(tables.parameter_count, 1);
         assert_eq!(tables.columns[2].name, "table_name");
+    }
+
+    #[test]
+    fn atlas_catalog_preserves_foreign_key_delete_actions() {
+        let parent = table_with_columns("parents", &["id"]);
+        let mut child = table_with_columns("children", &["id", "parent_id"]);
+        child.foreign_keys = [
+            ("restrict_parent", ForeignKeyAction::Restrict),
+            ("no_action_parent", ForeignKeyAction::NoAction),
+            ("cascade_parent", ForeignKeyAction::Cascade),
+            ("null_parent", ForeignKeyAction::SetNull),
+        ]
+        .into_iter()
+        .map(|(name, on_delete)| ForeignKey {
+            id: name.into(),
+            name: name.into(),
+            columns: vec!["parent_id".into()],
+            ref_table_id: parent.id.clone(),
+            ref_columns: vec!["id".into()],
+            on_delete,
+        })
+        .collect();
+        let result = CatalogPlan::recognize("SELECT * FROM pg_constraint WHERE contype = 'f'")
+            .unwrap()
+            .execute(&[parent, child], &[])
+            .unwrap();
+
+        assert_eq!(result.rows[0][8], text("r"));
+        assert_eq!(result.rows[1][8], text("a"));
+        assert_eq!(result.rows[2][8], text("c"));
+        assert_eq!(result.rows[3][8], text("n"));
     }
 
     #[test]
@@ -2823,7 +3003,25 @@ mod tests {
             )
             .unwrap(),
             Some(SessionCommand::SetTransactionCharacteristics {
+                isolation: Some(TransactionIsolation::Serializable),
                 read_only: Some(false)
+            })
+        ));
+        assert!(matches!(
+            session_command(
+                "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED"
+            )
+            .unwrap(),
+            Some(SessionCommand::SetTransactionCharacteristics {
+                isolation: Some(TransactionIsolation::ReadCommitted),
+                read_only: None
+            })
+        ));
+        assert!(matches!(
+            transaction_control("BEGIN ISOLATION LEVEL SERIALIZABLE").unwrap(),
+            Some(TransactionControl::Begin {
+                isolation: Some(TransactionIsolation::Serializable),
+                read_only: None
             })
         ));
     }
@@ -2835,7 +3033,7 @@ mod tests {
             "SET ROLE admin",
             "SET search_path TO private",
             "SET LOCAL application_name = 'transaction-local'",
-            "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED",
+            "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ",
         ] {
             let PgWireError::UserError(error) = session_command(sql).unwrap_err() else {
                 panic!("expected user error for {sql}");
@@ -2884,46 +3082,62 @@ mod tests {
         assert_eq!(present.rows, vec![vec![Datum::Scalar(Value::Bool(false))]]);
     }
 
-    #[tokio::test]
-    async fn implicit_transactions_retry_serializable_conflicts() {
-        let mut attempts = 0;
-        let result = retry_implicit_transaction(|| {
-            attempts += 1;
-            let attempt = attempts;
-            async move {
-                if attempt < 3 {
-                    Err(crate::engine::exec::Error::message(
-                        crate::engine::exec::ErrorKind::Conflict,
-                        "retry",
-                    ))
-                } else {
-                    Ok(7)
-                }
-            }
-        })
-        .await;
+    #[test]
+    fn constraint_errors_use_postgres_recognizable_messages() {
+        let unique = engine_error(crate::engine::exec::Error::message(
+            crate::engine::exec::ErrorKind::ConstraintViolation,
+            "exec: duplicate primary key in table \"items\"",
+        ));
+        let PgWireError::UserError(unique) = unique else {
+            panic!("expected user error")
+        };
+        assert_eq!(unique.code, "23505");
+        assert!(unique.message.contains("violates unique constraint"));
 
-        assert_eq!(result.unwrap(), 7);
-        assert_eq!(attempts, 3);
+        let foreign_key = engine_error(crate::engine::exec::Error::message(
+            crate::engine::exec::ErrorKind::ConstraintViolation,
+            "exec: foreign key \"items_parent\" violation",
+        ));
+        let PgWireError::UserError(foreign_key) = foreign_key else {
+            panic!("expected user error")
+        };
+        assert_eq!(foreign_key.code, "23503");
+        assert!(
+            foreign_key
+                .message
+                .contains("violates foreign key constraint")
+        );
+
+        let not_null = engine_error(crate::engine::exec::Error::message(
+            crate::engine::exec::ErrorKind::ConstraintViolation,
+            "exec: column \"name\" is not nullable",
+        ));
+        let PgWireError::UserError(not_null) = not_null else {
+            panic!("expected user error")
+        };
+        assert_eq!(not_null.code, "23502");
+        assert!(not_null.message.contains("violates not-null constraint"));
+
+        let generic = engine_error(crate::engine::exec::Error::message(
+            crate::engine::exec::ErrorKind::ConstraintViolation,
+            "exec: constraint rejected the value",
+        ));
+        let PgWireError::UserError(generic) = generic else {
+            panic!("expected user error")
+        };
+        assert_eq!(generic.code, "23000");
     }
 
-    #[tokio::test]
-    async fn implicit_transactions_do_not_retry_other_errors() {
-        let mut attempts = 0;
-        let error = retry_implicit_transaction(|| {
-            attempts += 1;
-            async {
-                Err::<(), _>(crate::engine::exec::Error::message(
-                    crate::engine::exec::ErrorKind::ConstraintViolation,
-                    "constraint",
-                ))
-            }
-        })
-        .await
-        .unwrap_err();
+    #[test]
+    fn catalog_change_detection_distinguishes_queries_and_ddl() {
+        let query = sql::compile_sql("SELECT 1", &[]).unwrap().program.unwrap();
+        assert!(!program_changes_catalog(&query));
 
-        assert_eq!(error.reason(), ErrorReason::ConstraintViolation);
-        assert_eq!(attempts, 1);
+        let create = sql::compile_sql("CREATE TABLE items (id BIGINT PRIMARY KEY)", &[])
+            .unwrap()
+            .program
+            .unwrap();
+        assert!(program_changes_catalog(&create));
     }
 
     #[tokio::test]

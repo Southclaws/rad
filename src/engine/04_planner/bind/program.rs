@@ -310,16 +310,6 @@ fn validate_mutation_input(kind: MutationKind, input: &lir::RowType, table: &Tab
                     ));
                 }
             }
-            if input
-                .fields
-                .iter()
-                .all(|field| table.primary_key.contains(&field.name))
-            {
-                return Err(super::invalid(
-                    Reason::TypeMismatch,
-                    format!("planner: update of {:?} assigns no columns", table.name),
-                ));
-            }
         }
         MutationKind::Delete => {
             if input.fields.len() != table.primary_key.len()

@@ -18,6 +18,7 @@ mod relation_cache;
 mod row_store;
 mod shredded_join;
 mod set;
+mod transaction;
 pub mod schema_jobs;
 mod mutate;
 mod parallel;
@@ -40,6 +41,8 @@ pub use program::{
 pub use query::{Executor, Limits};
 pub use reference::ReferenceExecutor;
 pub use relation_cache::{QueryValidator, RelationCacheLimits};
+pub(crate) use transaction::EngineTransaction;
+pub use transaction::TransactionIsolation;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConditionalQueryResult {

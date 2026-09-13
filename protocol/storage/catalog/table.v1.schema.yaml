@@ -265,6 +265,10 @@ properties:
               items:
                 description: One referenced column name.
                 type: string
+            on_delete:
+              description: Action applied to referencing rows when the parent row is deleted. Absent means restrict.
+              type: string
+              enum: [restrict, no_action, cascade, set_null]
       constraints:
         description: Declared constraints and their validation states.
         type: array

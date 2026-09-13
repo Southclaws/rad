@@ -64,12 +64,14 @@ impl Schema {
                     left.columns.join("\0"),
                     &left.ref_table,
                     left.ref_columns.join("\0"),
+                    left.on_delete,
                 )
                     .cmp(&(
                         &right.name,
                         right.columns.join("\0"),
                         &right.ref_table,
                         right.ref_columns.join("\0"),
+                        right.on_delete,
                     ))
             });
         }
@@ -164,6 +166,7 @@ impl Schema {
                     columns: foreign_key.columns.clone(),
                     ref_table: (*ref_table).to_owned(),
                     ref_columns: foreign_key.ref_columns.clone(),
+                    on_delete: foreign_key.on_delete,
                 });
             }
 
@@ -321,6 +324,7 @@ mod tests {
             columns: vec!["id".into()],
             ref_table_id: "missing".into(),
             ref_columns: vec!["id".into()],
+            on_delete: crate::engine::catalog::model::ForeignKeyAction::Restrict,
         });
         assert_eq!(
             Schema::from_physical(&[physical]).unwrap_err().kind(),
@@ -338,6 +342,7 @@ mod tests {
             columns: vec!["id".into()],
             ref_table_id: users.id.clone(),
             ref_columns: vec!["id".into()],
+            on_delete: crate::engine::catalog::model::ForeignKeyAction::Restrict,
         });
 
         let schema = Schema::from_physical(&[orders, users]).unwrap();

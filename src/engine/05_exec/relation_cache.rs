@@ -227,7 +227,7 @@ enum DependencyGeneration {
         table_id: TableId,
         existence_generation: ExistenceGeneration,
         storage_generation: StorageGeneration,
-        data_generation: TableDataGeneration,
+        data_generation: Arc<TableDataGeneration>,
     },
     Column {
         table_id: TableId,
@@ -391,9 +391,11 @@ impl RelationCacheKey {
                 table_id: dependency.table_id.clone(),
                 existence_generation: dependency.generation,
                 storage_generation: dependency.storage_generation,
-                data_generation: *data_generations
-                    .get(&dependency.table_id)
-                    .expect("table data generation is present"),
+                data_generation: Arc::new(
+                    *data_generations
+                        .get(&dependency.table_id)
+                        .expect("table data generation is present"),
+                ),
             }
         }));
         generations.extend(dependencies.column_values.iter().map(|dependency| {
@@ -600,9 +602,11 @@ fn missing_subrelation_dependency() -> Error {
 impl DependencyGeneration {
     fn dynamic_bytes(&self) -> usize {
         match self {
-            Self::Table { table_id, .. } | Self::WriteProtocol { table_id, .. } => {
-                table_id.as_str().len()
-            }
+            Self::Table { table_id, .. } => table_id
+                .as_str()
+                .len()
+                .saturating_add(size_of::<TableDataGeneration>()),
+            Self::WriteProtocol { table_id, .. } => table_id.as_str().len(),
             Self::Column {
                 table_id,
                 column_id,
@@ -2281,7 +2285,7 @@ mod tests {
                     table_id: "t1".into(),
                     existence_generation: 2.into(),
                     storage_generation: 3.into(),
-                    data_generation: 4.into(),
+                    data_generation: Arc::new(4.into()),
                 },
                 DependencyGeneration::Column {
                     table_id: "t1".into(),
@@ -2316,19 +2320,19 @@ mod tests {
                 table_id: "t1".into(),
                 existence_generation: 8.into(),
                 storage_generation: 3.into(),
-                data_generation: 4.into(),
+                data_generation: Arc::new(4.into()),
             },
             DependencyGeneration::Table {
                 table_id: "t1".into(),
                 existence_generation: 2.into(),
                 storage_generation: 8.into(),
-                data_generation: 4.into(),
+                data_generation: Arc::new(4.into()),
             },
             DependencyGeneration::Table {
                 table_id: "t1".into(),
                 existence_generation: 2.into(),
                 storage_generation: 3.into(),
-                data_generation: 8.into(),
+                data_generation: Arc::new(8.into()),
             },
         ];
         for replacement in replacements {

@@ -185,6 +185,32 @@
       ],
       "type": "object"
     },
+    "CreateForeignKeyStatement": {
+      "additionalProperties": false,
+      "description": "Create and validate `foreign_key` on the table identified by `table_id`.\nRegistration and validation are one atomic statement.\n",
+      "properties": {
+        "foreign_key": {
+          "$ref": "#/$defs/ForeignKeyDefinition"
+        },
+        "kind": {
+          "const": "create_foreign_key",
+          "type": "string"
+        },
+        "name": {
+          "$ref": "#/$defs/StatementName"
+        },
+        "table_id": {
+          "$ref": "#/$defs/SchemaID"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "table_id",
+        "foreign_key"
+      ],
+      "type": "object"
+    },
     "CreateIndexStatement": {
       "additionalProperties": false,
       "description": "Create `index` on the table identified by `table_id` and backfill it from\nevery transaction-visible row. Registration and backfill are one atomic\nstatement: the planner never observes an index without its entries. A\nunique index whose existing keys are not unique rejects the complete\nprogram. Rows written by preceding statements participate in the\nbackfill; rows written later are maintained through the new index.\n",
@@ -285,6 +311,32 @@
       ],
       "type": "object"
     },
+    "DeleteForeignKeyStatement": {
+      "additionalProperties": false,
+      "description": "Delete the named foreign key from the table identified by `table_id`.",
+      "properties": {
+        "foreign_key": {
+          "$ref": "#/$defs/CatalogName"
+        },
+        "kind": {
+          "const": "delete_foreign_key",
+          "type": "string"
+        },
+        "name": {
+          "$ref": "#/$defs/StatementName"
+        },
+        "table_id": {
+          "$ref": "#/$defs/SchemaID"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "table_id",
+        "foreign_key"
+      ],
+      "type": "object"
+    },
     "DeleteIndexStatement": {
       "additionalProperties": false,
       "description": "Logically delete `index` from the table identified by `table_id`. The\nplanner cannot select it for later statements. Rad advances the index\naccess fence and durably schedules its stored entries for automatic\nbounded reclamation; no user maintenance command is required. Index names\nare unique only within a table and, unlike tables and columns, do not\ncurrently carry stable schema IDs.\n",
@@ -372,6 +424,15 @@
         },
         "name": {
           "$ref": "#/$defs/CatalogName"
+        },
+        "on_delete": {
+          "enum": [
+            "restrict",
+            "no_action",
+            "cascade",
+            "set_null"
+          ],
+          "type": "string"
         },
         "ref_columns": {
           "items": {
@@ -739,6 +800,12 @@
           "$ref": "#/$defs/DeleteIndexStatement"
         },
         {
+          "$ref": "#/$defs/CreateForeignKeyStatement"
+        },
+        {
+          "$ref": "#/$defs/DeleteForeignKeyStatement"
+        },
+        {
           "$ref": "#/$defs/StartIndexBuildStatement"
         },
         {
@@ -844,6 +911,6 @@
   "$id": "https://www.radengine.dev/schema/pir.json",
   "$ref": "#/$defs/Program",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "PIR is Rad's program intermediate representation: the effectful layer above\nLIR. A client sends one program to `POST /execute`; the engine runs it as a\nsingle atomic unit. This schema is its normative specification. The type\ndefinitions and the prose in these descriptions are one artifact and move\ntogether.\n\nPIR is an internal contract with no external compatibility promise yet; it\nmay change while the design is hardened.\n\n# Model\n\nA program is an ordered array of named statements executed sequentially\nwithin one implicit transaction. Relational statements evaluate their\ncomplete input relation against the transaction's initial snapshot plus the\ncomplete data and catalog effects of all preceding statements, but never\nobserve their own effects while deriving that input.\n\nA mutation statement (`create`, `update`, `delete`) derives one logical\nmutation set from that complete relation, validates constraints against the\npost-statement state the whole set produces, then applies the set atomically.\nInput row encounter order has no semantic effect: there is no per-row\ninterleaving of read, write, and check, so a create batch whose rows\nreference each other and an update that swaps two unique values both succeed\nwhen the end state is valid, and no partial statement effect is ever\nobservable, not even to the rest of the program.\n\nEach successful relational statement produces one logical result relation.\nIts name enters the program binding namespace, and later relational\nstatements consume it through an ordinary LIR `ref`, statement names and\nstatement-local binding names share one namespace. A statement-result binding\nis produced exactly once and is never replayed: consuming it never\nre-executes its producing statement (unlike an ordinary LIR binding, whose\nsingle reference the planner may replay). References may only point\nbackwards. The engine need not construct or retain a relational result when\nit is neither referenced by a later statement nor selected as the program\nresult, an unreferenced 100,000-row delete may keep only its affected count.\n\nCatalog statements change the schema visible to every later statement in the\nsame program. They have names for diagnostics and per-statement summaries,\nbut produce no relation, do not enter the LIR binding namespace, and cannot be\nselected by `result`. Their effects are nevertheless ordinary transaction\nwrites: a later failure rolls them back with the program, and no other client\nobserves an intermediate catalog or data state.\n\nIf any statement or the commit fails, the whole program fails and no effects\nbecome externally visible. A program with a selected relational result\nreturns exactly that datum; a catalog-only program returns JSON null.\n\nThere are two statement families. `query` reads data. `create`, `update`, and\n`delete` mutate data, and consume a *relation* rather than a literal row\npayload, a literal row is simply a one-row relation (LIR's `rows` node).\n`create_table`, `rename_table`, `delete_table`, `create_column`,\n`rename_column`, `change_column_default`, `delete_column`, `create_index`,\n`delete_index`, `start_index_build`, `start_column_replacement`,\nand `start_constraint_validation` mutate the catalog. Inspecting, listing,\ncancelling, and monitoring the durable work created by `start_*` statements\nare administrative operations exposed by the OpenAPI surface, not PIR\nstatements.\n\n# Catalog changes\n\nPIR is the sole engine-level path for catalog-definition mutation and for\nstarting durable schema work. A transport may keep ergonomic catalog\nendpoints such as `POST /tables`, but those endpoints are adapters: they\nresolve their name-based resource arguments, construct a one-statement PIR\nprogram, and execute it. They do not call a second catalog mutation path and\nacquire no independent transaction or revision semantics.\n\nAdministrative lifecycle operations are deliberately separate. OpenAPI\ninspection/listing reads durable transition records, and cancellation is one\natomic administrative catalog transaction. These operations do not compose\nwith application data statements or gain PIR binding/result semantics.\n\nExisting tables and columns are addressed by their stable numeric schema IDs,\nnot their mutable names. This makes a program deterministic across renames and\nprevents a stale name from selecting a different object. Indexes currently\nhave no schema ID and are addressed by name within their table. New table and\ncolumn definitions may omit IDs only when Direct mode is authorised to\nallocate them; a schema-managed migration must carry the IDs authored in\n`rad.schema.yaml`.\n\nBinding and preflight advance through a logical catalog in statement order.\nA data statement binds against all preceding catalog changes; a catalog\nstatement validates against the catalog left by its predecessors. Renames\ntherefore take effect immediately, tables and columns may be used only after\ncreation and not after deletion, and a foreign key may target a table created\nearlier in the same program. Execution repeats that order against the real\ntransaction. Data-dependent checks, such as building a unique index over\nexisting rows, use the transaction-visible data left by preceding statements.\n\nCatalog authority is not granted by syntax. The caller supplies an execution\npolicy that either forbids catalog statements, records each successful\ncatalog statement as one revision, or groups the program's complete catalog\nwork into one revision. Which entrypoints and catalog modes select each policy\nis product policy deliberately outside PIR. A failed program records no\nrevisions.\n\n# The wire and its layers\n\nA program is `{ statements: [...], result? }`. Statements are an ordered\narray, never a map: statement order is the execution order, and a JSON\nobject would not preserve it. Each relational statement carries an LIR\ndocument in its `relation` field, opaque to this schema. Validation runs in\nthree phases:\n\n1. this schema validates the program envelope and statement grammar;\n2. the independent LIR schema validates each `relation` on its own;\n3. the engine simulates catalog statements and binds relational statements\n   in program order, against the catalog visible at each statement and each\n   earlier relational statement's result schema.\n\nThe first two phases are per-document and independent; the third is not,\nbecause a statement's relation may reference an earlier statement's result\nand its names resolve against an evolving catalog. Phase three is where\nbackward references, result schemas, namespace collisions, catalog identity,\nthe create/update/delete column shapes, type assignability, and the result\nselector are checked, so a malformed program is rejected before any effect\nis applied. Checks that depend on stored data remain execution-time checks and\nstill roll back the complete program on failure.\n",
+  "description": "PIR is Rad's program intermediate representation: the effectful layer above\nLIR. A client sends one program to `POST /execute`; the engine runs it as a\nsingle atomic unit. This schema is its normative specification. The type\ndefinitions and the prose in these descriptions are one artifact and move\ntogether.\n\nPIR is an internal contract with no external compatibility promise yet; it\nmay change while the design is hardened.\n\n# Model\n\nA program is an ordered array of named statements executed sequentially\nwithin one implicit transaction. Relational statements evaluate their\ncomplete input relation against the transaction's initial snapshot plus the\ncomplete data and catalog effects of all preceding statements, but never\nobserve their own effects while deriving that input.\n\nA mutation statement (`create`, `update`, `delete`) derives one logical\nmutation set from that complete relation, validates constraints against the\npost-statement state the whole set produces, then applies the set atomically.\nInput row encounter order has no semantic effect: there is no per-row\ninterleaving of read, write, and check, so a create batch whose rows\nreference each other and an update that swaps two unique values both succeed\nwhen the end state is valid, and no partial statement effect is ever\nobservable, not even to the rest of the program.\n\nEach successful relational statement produces one logical result relation.\nIts name enters the program binding namespace, and later relational\nstatements consume it through an ordinary LIR `ref`, statement names and\nstatement-local binding names share one namespace. A statement-result binding\nis produced exactly once and is never replayed: consuming it never\nre-executes its producing statement (unlike an ordinary LIR binding, whose\nsingle reference the planner may replay). References may only point\nbackwards. The engine need not construct or retain a relational result when\nit is neither referenced by a later statement nor selected as the program\nresult, an unreferenced 100,000-row delete may keep only its affected count.\n\nCatalog statements change the schema visible to every later statement in the\nsame program. They have names for diagnostics and per-statement summaries,\nbut produce no relation, do not enter the LIR binding namespace, and cannot be\nselected by `result`. Their effects are nevertheless ordinary transaction\nwrites: a later failure rolls them back with the program, and no other client\nobserves an intermediate catalog or data state.\n\nIf any statement or the commit fails, the whole program fails and no effects\nbecome externally visible. A program with a selected relational result\nreturns exactly that datum; a catalog-only program returns JSON null.\n\nThere are two statement families. `query` reads data. `create`, `update`, and\n`delete` mutate data, and consume a *relation* rather than a literal row\npayload, a literal row is simply a one-row relation (LIR's `rows` node).\n`create_table`, `rename_table`, `delete_table`, `create_column`,\n`rename_column`, `change_column_default`, `delete_column`, `create_index`,\n`delete_index`, `create_foreign_key`, `delete_foreign_key`,\n`start_index_build`, `start_column_replacement`, and\n`start_constraint_validation` mutate the catalog. Inspecting, listing,\ncancelling, and monitoring the durable work created by `start_*` statements\nare administrative operations exposed by the OpenAPI surface, not PIR\nstatements.\n\n# Catalog changes\n\nPIR is the sole engine-level path for catalog-definition mutation and for\nstarting durable schema work. A transport may keep ergonomic catalog\nendpoints such as `POST /tables`, but those endpoints are adapters: they\nresolve their name-based resource arguments, construct a one-statement PIR\nprogram, and execute it. They do not call a second catalog mutation path and\nacquire no independent transaction or revision semantics.\n\nAdministrative lifecycle operations are deliberately separate. OpenAPI\ninspection/listing reads durable transition records, and cancellation is one\natomic administrative catalog transaction. These operations do not compose\nwith application data statements or gain PIR binding/result semantics.\n\nExisting tables and columns are addressed by their stable numeric schema IDs,\nnot their mutable names. This makes a program deterministic across renames and\nprevents a stale name from selecting a different object. Indexes currently\nhave no schema ID and are addressed by name within their table. New table and\ncolumn definitions may omit IDs only when Direct mode is authorised to\nallocate them; a schema-managed migration must carry the IDs authored in\n`rad.schema.yaml`.\n\nBinding and preflight advance through a logical catalog in statement order.\nA data statement binds against all preceding catalog changes; a catalog\nstatement validates against the catalog left by its predecessors. Renames\ntherefore take effect immediately, tables and columns may be used only after\ncreation and not after deletion, and a foreign key may target a table created\nearlier in the same program. Execution repeats that order against the real\ntransaction. Data-dependent checks, such as building a unique index over\nexisting rows, use the transaction-visible data left by preceding statements.\n\nCatalog authority is not granted by syntax. The caller supplies an execution\npolicy that either forbids catalog statements, records each successful\ncatalog statement as one revision, or groups the program's complete catalog\nwork into one revision. Which entrypoints and catalog modes select each policy\nis product policy deliberately outside PIR. A failed program records no\nrevisions.\n\n# The wire and its layers\n\nA program is `{ statements: [...], result? }`. Statements are an ordered\narray, never a map: statement order is the execution order, and a JSON\nobject would not preserve it. Each relational statement carries an LIR\ndocument in its `relation` field, opaque to this schema. Validation runs in\nthree phases:\n\n1. this schema validates the program envelope and statement grammar;\n2. the independent LIR schema validates each `relation` on its own;\n3. the engine simulates catalog statements and binds relational statements\n   in program order, against the catalog visible at each statement and each\n   earlier relational statement's result schema.\n\nThe first two phases are per-document and independent; the third is not,\nbecause a statement's relation may reference an earlier statement's result\nand its names resolve against an evolving catalog. Phase three is where\nbackward references, result schemas, namespace collisions, catalog identity,\nthe create/update/delete column shapes, type assignability, and the result\nselector are checked, so a malformed program is rejected before any effect\nis applied. Checks that depend on stored data remain execution-time checks and\nstill roll back the complete program on failure.\n",
   "title": "Rad PIR"
 }

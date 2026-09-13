@@ -165,6 +165,26 @@ fn statement_value(statement: &Statement, family: bool) -> Value {
             "table_id": table_id,
             "index": index,
         }),
+        Statement::CreateForeignKey {
+            name,
+            table_id,
+            foreign_key,
+        } => json!({
+            "name": name,
+            "kind": "create_foreign_key",
+            "table_id": table_id,
+            "foreign_key": foreign_key,
+        }),
+        Statement::DeleteForeignKey {
+            name,
+            table_id,
+            foreign_key,
+        } => json!({
+            "name": name,
+            "kind": "delete_foreign_key",
+            "table_id": table_id,
+            "foreign_key": foreign_key,
+        }),
         Statement::StartIndexBuild {
             name,
             table_id,

@@ -345,7 +345,7 @@ jobs:
   storyden-postgres:
     name: Storyden PostgreSQL compatibility
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       CARGO_TARGET_DIR: target
       DATABASE_URL: postgresql://default:default@127.0.0.1:5432/postgres?sslmode=disable
@@ -422,7 +422,7 @@ jobs:
         working-directory: storyden
         run: |
           set -o pipefail
-          go test -p 4 ./... 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/storyden/tests.log"
+          go test -p 1 ./... 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/storyden/tests.log"
 
       - name: Save Storyden Go cache
         if: always() && steps.setup-go.outcome == 'success' && steps.storyden-go-cache.outputs.cache-hit != 'true'

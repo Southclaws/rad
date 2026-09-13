@@ -7,8 +7,8 @@ use serde_yaml::Value;
 
 use super::identity::SchemaId;
 use super::model::{
-    ColumnDef, DefaultFunction, DefaultValue, ForeignKeyDef, IndexDef, ScalarType,
-    Schema as CanonicalSchema, TableDef,
+    ColumnDef, DefaultFunction, DefaultValue, ForeignKeyAction, ForeignKeyDef, IndexDef,
+    ScalarType, Schema as CanonicalSchema, TableDef,
 };
 use super::{Error, ErrorKind, Result, naming};
 
@@ -96,6 +96,8 @@ struct FileForeignKey {
     columns: Vec<String>,
     ref_table: String,
     ref_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "ForeignKeyAction::is_restrict")]
+    on_delete: ForeignKeyAction,
 }
 
 pub fn parse(filename: &str, source: &[u8]) -> Result<Schema> {
@@ -226,6 +228,7 @@ fn build_table(filename: &str, file: FileTable) -> Result<Table> {
                 columns: vec![column.name.clone()],
                 ref_table: ref_table.into(),
                 ref_columns: vec![ref_column.into()],
+                on_delete: ForeignKeyAction::Restrict,
             });
         }
         definition.columns.push(ColumnDef {
@@ -280,6 +283,7 @@ fn build_table(filename: &str, file: FileTable) -> Result<Table> {
             columns: foreign_key.columns,
             ref_table: foreign_key.ref_table,
             ref_columns: foreign_key.ref_columns,
+            on_delete: foreign_key.on_delete,
         });
     }
     Ok(Table { def: definition })
@@ -465,6 +469,7 @@ pub fn render(schema: &CanonicalSchema) -> Result<Vec<u8>> {
                     columns: foreign_key.columns.clone(),
                     ref_table: foreign_key.ref_table.clone(),
                     ref_columns: foreign_key.ref_columns.clone(),
+                    on_delete: foreign_key.on_delete,
                 })
                 .collect(),
         });

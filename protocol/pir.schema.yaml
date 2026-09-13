@@ -70,8 +70,9 @@ description: |
   payload, a literal row is simply a one-row relation (LIR's `rows` node).
   `create_table`, `rename_table`, `delete_table`, `create_column`,
   `rename_column`, `change_column_default`, `delete_column`, `create_index`,
-  `delete_index`, `start_index_build`, `start_column_replacement`,
-  and `start_constraint_validation` mutate the catalog. Inspecting, listing,
+  `delete_index`, `create_foreign_key`, `delete_foreign_key`,
+  `start_index_build`, `start_column_replacement`, and
+  `start_constraint_validation` mutate the catalog. Inspecting, listing,
   cancelling, and monitoring the durable work created by `start_*` statements
   are administrative operations exposed by the OpenAPI surface, not PIR
   statements.
@@ -206,6 +207,8 @@ $defs:
       - { $ref: "#/$defs/DeleteColumnStatement" }
       - { $ref: "#/$defs/CreateIndexStatement" }
       - { $ref: "#/$defs/DeleteIndexStatement" }
+      - { $ref: "#/$defs/CreateForeignKeyStatement" }
+      - { $ref: "#/$defs/DeleteForeignKeyStatement" }
       - { $ref: "#/$defs/StartIndexBuildStatement" }
       - { $ref: "#/$defs/StartColumnReplacementStatement" }
       - { $ref: "#/$defs/StartConstraintValidationStatement" }
@@ -440,6 +443,30 @@ $defs:
       name: { $ref: "#/$defs/StatementName" }
       table_id: { $ref: "#/$defs/SchemaID" }
       index: { $ref: "#/$defs/CatalogName" }
+
+  CreateForeignKeyStatement:
+    description: |
+      Create and validate `foreign_key` on the table identified by `table_id`.
+      Registration and validation are one atomic statement.
+    type: object
+    additionalProperties: false
+    required: [kind, name, table_id, foreign_key]
+    properties:
+      kind: { type: string, const: create_foreign_key }
+      name: { $ref: "#/$defs/StatementName" }
+      table_id: { $ref: "#/$defs/SchemaID" }
+      foreign_key: { $ref: "#/$defs/ForeignKeyDefinition" }
+
+  DeleteForeignKeyStatement:
+    description: Delete the named foreign key from the table identified by `table_id`.
+    type: object
+    additionalProperties: false
+    required: [kind, name, table_id, foreign_key]
+    properties:
+      kind: { type: string, const: delete_foreign_key }
+      name: { $ref: "#/$defs/StatementName" }
+      table_id: { $ref: "#/$defs/SchemaID" }
+      foreign_key: { $ref: "#/$defs/CatalogName" }
 
   StartIndexBuildStatement:
     description: |
@@ -807,6 +834,9 @@ $defs:
         type: array
         minItems: 1
         items: { $ref: "#/$defs/CatalogName" }
+      on_delete:
+        type: string
+        enum: [restrict, no_action, cascade, set_null]
 
   StatementName:
     title: StatementName

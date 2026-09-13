@@ -175,3 +175,7 @@ properties:
                         items:
                           description: One referenced column name.
                           type: string
+                      on_delete:
+                        description: Action applied to referencing rows when the parent row is deleted. Absent means restrict.
+                        type: string
+                        enum: [restrict, cascade, set_null]

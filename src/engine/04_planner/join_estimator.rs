@@ -1287,6 +1287,7 @@ mod tests {
             columns: vec!["key".into()],
             ref_table_id: right.id.clone(),
             ref_columns: vec!["id".into()],
+            on_delete: crate::engine::catalog::model::ForeignKeyAction::Restrict,
         });
         let stats = stats(
             synopsis(
@@ -1334,6 +1335,7 @@ mod tests {
             columns: vec!["region".into(), "status".into()],
             ref_table_id: right.id.clone(),
             ref_columns: vec!["region".into(), "status".into()],
+            on_delete: crate::engine::catalog::model::ForeignKeyAction::Restrict,
         });
         let mut left_group = group_synopsis(&left, &["region", "status"], &[]);
         left_group.distinct = 80;

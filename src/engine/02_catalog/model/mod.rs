@@ -246,6 +246,30 @@ pub struct ForeignKey {
     pub ref_table_id: TableId,
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub ref_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "ForeignKeyAction::is_restrict")]
+    pub on_delete: ForeignKeyAction,
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ForeignKeyAction {
+    #[default]
+    Restrict,
+    NoAction,
+    Cascade,
+    SetNull,
+}
+
+impl ForeignKeyAction {
+    pub(crate) fn is_restrict(value: &Self) -> bool {
+        *value == Self::Restrict
+    }
+
+    pub(crate) fn is_restrictive(self) -> bool {
+        matches!(self, Self::Restrict | Self::NoAction)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -311,6 +335,8 @@ pub struct ForeignKeyDef {
     pub ref_table: String,
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub ref_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "ForeignKeyAction::is_restrict")]
+    pub on_delete: ForeignKeyAction,
 }
 
 /// A table definition entering Direct-mode allocation. Durable canonical

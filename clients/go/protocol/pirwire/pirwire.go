@@ -64,8 +64,9 @@ type CatalogName = string
 // payload, a literal row is simply a one-row relation (LIR's `rows` node).
 // `create_table`, `rename_table`, `delete_table`, `create_column`,
 // `rename_column`, `change_column_default`, `delete_column`, `create_index`,
-// `delete_index`, `start_index_build`, `start_column_replacement`,
-// and `start_constraint_validation` mutate the catalog. Inspecting, listing,
+// `delete_index`, `create_foreign_key`, `delete_foreign_key`,
+// `start_index_build`, `start_column_replacement`, and
+// `start_constraint_validation` mutate the catalog. Inspecting, listing,
 // cancelling, and monitoring the durable work created by `start_*` statements
 // are administrative operations exposed by the OpenAPI surface, not PIR
 // statements.
@@ -278,6 +279,7 @@ type ConstraintValidationDefinition struct {
 type ForeignKeyDefinition struct {
 	Columns    []CatalogName `json:"columns"`
 	Name       CatalogName   `json:"name"`
+	OnDelete   *string       `json:"on_delete,omitempty"`
 	RefColumns []CatalogName `json:"ref_columns"`
 	RefTable   CatalogName   `json:"ref_table"`
 }
@@ -381,8 +383,9 @@ type TableName = string
 // payload, a literal row is simply a one-row relation (LIR's `rows` node).
 // `create_table`, `rename_table`, `delete_table`, `create_column`,
 // `rename_column`, `change_column_default`, `delete_column`, `create_index`,
-// `delete_index`, `start_index_build`, `start_column_replacement`,
-// and `start_constraint_validation` mutate the catalog. Inspecting, listing,
+// `delete_index`, `create_foreign_key`, `delete_foreign_key`,
+// `start_index_build`, `start_column_replacement`, and
+// `start_constraint_validation` mutate the catalog. Inspecting, listing,
 // cancelling, and monitoring the durable work created by `start_*` statements
 // are administrative operations exposed by the OpenAPI surface, not PIR
 // statements.
@@ -508,6 +511,10 @@ func (w *Statement) UnmarshalJSON(data []byte) error {
 		v = &CreateIndexStatement{}
 	case "delete_index":
 		v = &DeleteIndexStatement{}
+	case "create_foreign_key":
+		v = &CreateForeignKeyStatement{}
+	case "delete_foreign_key":
+		v = &DeleteForeignKeyStatement{}
 	case "start_index_build":
 		v = &StartIndexBuildStatement{}
 	case "start_column_replacement":
@@ -756,6 +763,31 @@ type DeleteIndexStatement struct {
 func (DeleteIndexStatement) isStatement() {}
 
 func (DeleteIndexStatement) StatementType() string { return "delete_index" }
+
+// Create and validate `foreign_key` on the table identified by `table_id`.
+// Registration and validation are one atomic statement.
+type CreateForeignKeyStatement struct {
+	ForeignKey ForeignKeyDefinition `json:"foreign_key"`
+	Kind       string               `json:"kind"`
+	Name       StatementName        `json:"name"`
+	TableID    SchemaID             `json:"table_id"`
+}
+
+func (CreateForeignKeyStatement) isStatement() {}
+
+func (CreateForeignKeyStatement) StatementType() string { return "create_foreign_key" }
+
+// Delete the named foreign key from the table identified by `table_id`.
+type DeleteForeignKeyStatement struct {
+	ForeignKey CatalogName   `json:"foreign_key"`
+	Kind       string        `json:"kind"`
+	Name       StatementName `json:"name"`
+	TableID    SchemaID      `json:"table_id"`
+}
+
+func (DeleteForeignKeyStatement) isStatement() {}
+
+func (DeleteForeignKeyStatement) StatementType() string { return "delete_foreign_key" }
 
 // Start a durable, planner-invisible index build on the table identified by
 // `table_id`. The index may be unique or non-unique. Without an active

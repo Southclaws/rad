@@ -11,7 +11,7 @@ use crate::engine::kv::{KvView, keys};
 
 use super::{map_kv, parse_u64, physical_table_number, prefix_range};
 
-pub const TABLE_DATA_GENERATION_STRIPES: usize = 16;
+pub const TABLE_DATA_GENERATION_STRIPES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TableDataGeneration {
