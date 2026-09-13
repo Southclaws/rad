@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use super::admission::{TransitionCandidate, affected_column_schema_ids, index_column_schema_ids};
 use super::*;
 use crate::engine::catalog::identity::ColumnId;
-use crate::engine::catalog::model::{ColumnDraft, DefaultValue, ReclamationKind, TransitionKind};
+use crate::engine::catalog::model::{
+    ColumnDraft, DefaultValue, ForeignKey, ForeignKeyDef, ReclamationKind, TransitionKind,
+};
 use crate::engine::catalog::naming;
 
 impl Mutation<'_> {
@@ -468,8 +470,8 @@ impl Mutation<'_> {
     pub async fn create_foreign_key(
         &mut self,
         table_name: &str,
-        definition: super::super::model::ForeignKeyDef,
-    ) -> Result<super::super::model::ForeignKey> {
+        definition: ForeignKeyDef,
+    ) -> Result<ForeignKey> {
         let mut table = required_table(self.view, table_name).await?;
         if table
             .foreign_keys
@@ -606,8 +608,8 @@ impl Service {
     pub async fn create_foreign_key(
         &self,
         table: &str,
-        definition: super::super::model::ForeignKeyDef,
-    ) -> Result<super::super::model::ForeignKey> {
+        definition: ForeignKeyDef,
+    ) -> Result<ForeignKey> {
         run_mutation!(self, |mutation| mutation
             .create_foreign_key(table, definition))
     }

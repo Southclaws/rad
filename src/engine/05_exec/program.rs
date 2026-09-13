@@ -8,8 +8,8 @@ use crate::engine::catalog;
 use crate::engine::catalog::Mutation as CatalogMutation;
 use crate::engine::catalog::identity::{SchemaId, TransitionId};
 use crate::engine::catalog::model::{
-    ColumnDraft, ColumnReplacementDef, ConstraintDef, DefaultFunction, DefaultValue, IndexDef,
-    Revision, ScalarType, SchemaTransition, TableDraft, TransitionControl,
+    ColumnDraft, ColumnReplacementDef, ConstraintDef, DefaultFunction, DefaultValue, ForeignKeyDef,
+    IndexDef, Revision, ScalarType, SchemaTransition, TableDraft, TransitionControl,
 };
 use crate::engine::kv::KvView;
 use crate::engine::lir::eval::Env;
@@ -185,7 +185,7 @@ pub enum Statement {
     CreateForeignKey {
         name: String,
         table_id: SchemaId,
-        foreign_key: crate::engine::catalog::model::ForeignKeyDef,
+        foreign_key: ForeignKeyDef,
     },
     DeleteForeignKey {
         name: String,
