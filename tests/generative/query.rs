@@ -869,6 +869,9 @@ impl Generator<'_, '_, '_> {
                 RawScalar::Number([-1.5, -0.0, 0.0, 1.5, 2.5][self.choices.index(5)].to_string())
             }
             ScalarType::Bool => RawScalar::Bool(self.choices.coin()),
+            ScalarType::Bytes => RawScalar::Bytes(
+                [vec![], vec![0], vec![0, 0xff], vec![1, 2, 3]][self.choices.index(4)].clone(),
+            ),
         }
     }
 
@@ -945,6 +948,7 @@ fn scalar_kind(value: ScalarType) -> Kind {
         ScalarType::Int64 => Kind::Int64,
         ScalarType::Float64 => Kind::Float64,
         ScalarType::Bool => Kind::Bool,
+        ScalarType::Bytes => Kind::Bytes,
     }
 }
 

@@ -3016,13 +3016,14 @@ fn scalar_value_width(value: &lir::Value) -> u64 {
         lir::Value::Text(value) => value.len() as u64,
         lir::Value::Int64(_) | lir::Value::Float64(_) => 8,
         lir::Value::Bool(_) => 1,
+        lir::Value::Bytes(value) => value.as_slice().len() as u64,
         lir::Value::Null(_) => 0,
     }
 }
 
 fn encoded_scalar_width(kind: lir::Kind, value_width: u64) -> Option<u64> {
     match kind {
-        lir::Kind::Text => Some(value_width.saturating_add(9)),
+        lir::Kind::Text | lir::Kind::Bytes => Some(value_width.saturating_add(9)),
         lir::Kind::Int64 | lir::Kind::Float64 => Some(9),
         lir::Kind::Bool => Some(2),
         _ => None,

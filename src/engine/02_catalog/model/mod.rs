@@ -86,13 +86,18 @@ pub enum ScalarType {
     Int64,
     Float64,
     Bool,
+    Bytes,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DefaultFunction {
-    Uuid,
+    UuidV4,
+    UuidV7,
+    Ulid,
+    Xid,
     NowMs,
+    Increment,
 }
 
 /// The durable/catalog representation of an authored column default.
@@ -110,6 +115,14 @@ pub struct DefaultValue {
     pub float64: f64,
     #[serde(default, rename = "bool", skip_serializing_if = "is_false")]
     pub bool_value: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bytes: Vec<u8>,
+}
+
+impl DefaultValue {
+    pub fn is_increment(&self) -> bool {
+        self.function == Some(DefaultFunction::Increment)
+    }
 }
 
 fn is_i64_zero(value: &i64) -> bool {

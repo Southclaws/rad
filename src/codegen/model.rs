@@ -27,6 +27,7 @@ pub struct Table {
 pub struct Column {
     pub name: String,
     pub kind: ScalarKind,
+    pub format: String,
     pub nullable: bool,
     pub has_default: bool,
     pub primary_key: bool,
@@ -38,6 +39,7 @@ pub enum ScalarKind {
     Int64,
     Float64,
     Bool,
+    Bytes,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -73,6 +75,7 @@ impl Model {
                 .map(|column| Column {
                     name: column.name.clone(),
                     kind: column.scalar_type.into(),
+                    format: column.format.clone(),
                     nullable: column.nullable,
                     has_default: column.default.is_some(),
                     primary_key: primary_key.contains(column.name.as_str()),
@@ -155,6 +158,7 @@ impl From<ScalarType> for ScalarKind {
             ScalarType::Int64 => Self::Int64,
             ScalarType::Float64 => Self::Float64,
             ScalarType::Bool => Self::Bool,
+            ScalarType::Bytes => Self::Bytes,
         }
     }
 }

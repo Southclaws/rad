@@ -42,6 +42,7 @@ field tables below document the `record` member of each contract.
 | `20` | `catalog_transition_violation` | `transition:physical_id(tr) row_identity:bytes` | cause text |
 | `21` | `catalog_retention_pin` | `pin:text` | [`catalog/retention_pin.v1`](#catalogretention_pinv1) |
 | `22` | `catalog_reclamation` | `reclamation:text` | [`catalog/reclamation.v1`](#catalogreclamationv1) |
+| `23` | `catalog_column_increment` | `table:physical_id(t) column:be32` | last committed non-negative int64 decimal text |
 | `24` | `catalog_table_data_generation_stripe` | `table:physical_id(t) stripe:uvarint` | data generation decimal text |
 | `30` | `catalog_meta_mode` | `(the tag is the whole key)` | catalog mode text: direct or schema |
 | `31` | `catalog_meta_next_id` | `(the tag is the whole key)` | next physical identity decimal text |
@@ -139,15 +140,16 @@ One immutable logical schema revision. Every published catalog change appends a 
 | `schema.tables[].columns` | `array of object` |  | Logical column definitions in declaration order. |
 | `schema.tables[].columns[].default` | `object` |  | Default declared for the column. |
 | `schema.tables[].columns[].default.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `schema.tables[].columns[].default.bytes` | `array of integer` |  | Literal bytes as unsigned octets. |
 | `schema.tables[].columns[].default.float64` | `number` |  | Literal used when the column type is float64. |
-| `schema.tables[].columns[].default.func` | `uuid \| now_ms` |  | Generator function for per-row defaults. |
+| `schema.tables[].columns[].default.func` | `uuid_v4 \| uuid_v7 \| ulid \| xid \| now_ms \| increment` |  | Generator function for per-row defaults. |
 | `schema.tables[].columns[].default.int64` | `integer` |  | Literal used when the column type is int64. |
 | `schema.tables[].columns[].default.text` | `string` |  | Literal used when the column type is text. |
 | `schema.tables[].columns[].format` | `string` |  | Authored format annotation; not interpreted by storage. |
 | `schema.tables[].columns[].id` | `integer` | Yes | Logical schema identity of the column. Never reused. |
 | `schema.tables[].columns[].name` | `string` | Yes | Column name at this revision. |
 | `schema.tables[].columns[].nullable` | `boolean` |  | Whether the column accepts null. Absent means false. |
-| `schema.tables[].columns[].type` | `text \| int64 \| float64 \| bool` | Yes | Scalar type of the column. |
+| `schema.tables[].columns[].type` | `text \| int64 \| float64 \| bool \| bytes` | Yes | Scalar type of the column. |
 | `schema.tables[].foreign_keys` | `array of object` |  | Logical foreign-key definitions, sorted canonically. |
 | `schema.tables[].foreign_keys[].columns` | `array of string` |  | Referencing column names on this table. |
 | `schema.tables[].foreign_keys[].name` | `string` | Yes | Foreign-key name at this revision. |
@@ -173,20 +175,22 @@ One physical table: its permanent identities, its columns and their physical rep
 | `columns[].id` | `string` | Yes | Permanent physical column identity, `c` plus a decimal. Never reused, and the scalar type bound to it never changes in place: row bodies address cells by this identity. |
 | `columns[].insert_default` | `object` |  | Default applied when an insert omits the column. |
 | `columns[].insert_default.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `columns[].insert_default.bytes` | `array of integer` |  | Literal bytes as unsigned octets. |
 | `columns[].insert_default.float64` | `number` |  | Literal used when the column type is float64. |
-| `columns[].insert_default.func` | `uuid \| now_ms` |  | Generator function. Present when the default is generated per row instead of a literal. |
+| `columns[].insert_default.func` | `uuid_v4 \| uuid_v7 \| ulid \| xid \| now_ms \| increment` |  | Generator function. Present when the default is generated per row instead of a literal. |
 | `columns[].insert_default.int64` | `integer` |  | Literal used when the column type is int64. |
 | `columns[].insert_default.text` | `string` |  | Literal used when the column type is text. |
 | `columns[].missing_value` | `object` |  | Literal supplied for cells absent from stored rows, so column addition never rewrites rows. Absent columns decode as null when no missing value is declared. Generator functions are not permitted here. |
 | `columns[].missing_value.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `columns[].missing_value.bytes` | `array of integer` |  | Literal bytes as unsigned octets. |
 | `columns[].missing_value.float64` | `number` |  | Literal used when the column type is float64. |
-| `columns[].missing_value.func` | `uuid \| now_ms` |  | Generator function. Never valid for missing values; present in the shape because the default-value form is shared. |
+| `columns[].missing_value.func` | `uuid_v4 \| uuid_v7 \| ulid \| xid \| now_ms \| increment` |  | Generator function. Never valid for missing values; present in the shape because the default-value form is shared. |
 | `columns[].missing_value.int64` | `integer` |  | Literal used when the column type is int64. |
 | `columns[].missing_value.text` | `string` |  | Literal used when the column type is text. |
 | `columns[].name` | `string` | Yes | Current column name. Mutable, never identity. |
 | `columns[].nullable` | `boolean` | Yes | Whether stored cells may be null. |
 | `columns[].schema_id` | `integer` | Yes | Logical schema identity of the column. Never reused. |
-| `columns[].type` | `text \| int64 \| float64 \| bool` | Yes | Scalar type of every stored cell in this column. |
+| `columns[].type` | `text \| int64 \| float64 \| bool \| bytes` | Yes | Scalar type of every stored cell in this column. |
 | `columns[].value_generation` | `integer` |  | Generation checked by the column-value fence. Advancing it invalidates pinned work that assumed the column's stored values kept their meaning. Absent means zero. |
 | `constraints` | `array of object` |  | Declared constraints and their validation states. |
 | `constraints[].column_ids` | `array of string` |  | Physical column identities the constraint covers. |
@@ -238,53 +242,58 @@ One online schema transition and its durable progress state. A transition builds
 | `column_replacement.source.id` | `string` | Yes | Permanent physical column identity, `c` plus a decimal. |
 | `column_replacement.source.insert_default` | `object` |  | Default applied when an insert omits the column. |
 | `column_replacement.source.insert_default.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacement.source.insert_default.bytes` | `array of integer` |  | Literal bytes as unsigned octets. |
 | `column_replacement.source.insert_default.float64` | `number` |  | Literal used when the column type is float64. |
-| `column_replacement.source.insert_default.func` | `uuid \| now_ms` |  | Generator function for per-row defaults. |
+| `column_replacement.source.insert_default.func` | `uuid_v4 \| uuid_v7 \| ulid \| xid \| now_ms \| increment` |  | Generator function for per-row defaults. |
 | `column_replacement.source.insert_default.int64` | `integer` |  | Literal used when the column type is int64. |
 | `column_replacement.source.insert_default.text` | `string` |  | Literal used when the column type is text. |
 | `column_replacement.source.missing_value` | `object` |  | Literal supplied for cells absent from stored rows. |
 | `column_replacement.source.missing_value.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacement.source.missing_value.bytes` | `array of integer` |  | Literal bytes as unsigned octets. |
 | `column_replacement.source.missing_value.float64` | `number` |  | Literal used when the column type is float64. |
-| `column_replacement.source.missing_value.func` | `uuid \| now_ms` |  | Generator function. Never valid for missing values; present because the default-value form is shared. |
+| `column_replacement.source.missing_value.func` | `uuid_v4 \| uuid_v7 \| ulid \| xid \| now_ms \| increment` |  | Generator function. Never valid for missing values; present because the default-value form is shared. |
 | `column_replacement.source.missing_value.int64` | `integer` |  | Literal used when the column type is int64. |
 | `column_replacement.source.missing_value.text` | `string` |  | Literal used when the column type is text. |
 | `column_replacement.source.name` | `string` | Yes | Current column name. |
 | `column_replacement.source.nullable` | `boolean` | Yes | Whether stored cells may be null. |
 | `column_replacement.source.schema_id` | `integer` | Yes | Logical schema identity of the column. |
-| `column_replacement.source.type` | `text \| int64 \| float64 \| bool` | Yes | Scalar type of every stored cell. |
+| `column_replacement.source.type` | `text \| int64 \| float64 \| bool \| bytes` | Yes | Scalar type of every stored cell. |
 | `column_replacement.source.value_generation` | `integer` |  | Generation checked by the column-value fence. Absent means zero. |
 | `column_replacement.target` | `object` | Yes | The replacement column receiving converted cells. |
 | `column_replacement.target.format` | `string` |  | Authored format annotation; not interpreted by storage. |
 | `column_replacement.target.id` | `string` | Yes | Permanent physical column identity, `c` plus a decimal. |
 | `column_replacement.target.insert_default` | `object` |  | Default applied when an insert omits the column. |
 | `column_replacement.target.insert_default.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacement.target.insert_default.bytes` | `array of integer` |  | Literal bytes as unsigned octets. |
 | `column_replacement.target.insert_default.float64` | `number` |  | Literal used when the column type is float64. |
-| `column_replacement.target.insert_default.func` | `uuid \| now_ms` |  | Generator function for per-row defaults. |
+| `column_replacement.target.insert_default.func` | `uuid_v4 \| uuid_v7 \| ulid \| xid \| now_ms \| increment` |  | Generator function for per-row defaults. |
 | `column_replacement.target.insert_default.int64` | `integer` |  | Literal used when the column type is int64. |
 | `column_replacement.target.insert_default.text` | `string` |  | Literal used when the column type is text. |
 | `column_replacement.target.missing_value` | `object` |  | Literal supplied for cells absent from stored rows. |
 | `column_replacement.target.missing_value.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacement.target.missing_value.bytes` | `array of integer` |  | Literal bytes as unsigned octets. |
 | `column_replacement.target.missing_value.float64` | `number` |  | Literal used when the column type is float64. |
-| `column_replacement.target.missing_value.func` | `uuid \| now_ms` |  | Generator function. Never valid for missing values; present because the default-value form is shared. |
+| `column_replacement.target.missing_value.func` | `uuid_v4 \| uuid_v7 \| ulid \| xid \| now_ms \| increment` |  | Generator function. Never valid for missing values; present because the default-value form is shared. |
 | `column_replacement.target.missing_value.int64` | `integer` |  | Literal used when the column type is int64. |
 | `column_replacement.target.missing_value.text` | `string` |  | Literal used when the column type is text. |
 | `column_replacement.target.name` | `string` | Yes | Current column name. |
 | `column_replacement.target.nullable` | `boolean` | Yes | Whether stored cells may be null. |
 | `column_replacement.target.schema_id` | `integer` | Yes | Logical schema identity of the column. |
-| `column_replacement.target.type` | `text \| int64 \| float64 \| bool` | Yes | Scalar type of every stored cell. |
+| `column_replacement.target.type` | `text \| int64 \| float64 \| bool \| bytes` | Yes | Scalar type of every stored cell. |
 | `column_replacement.target.value_generation` | `integer` |  | Generation checked by the column-value fence. Absent means zero. |
 | `column_replacement_request` | `object` |  | The authored request a column-replacement transition executes. |
 | `column_replacement_request.column_schema_id` | `integer` | Yes | Logical identity of the column to replace. |
 | `column_replacement_request.conversion` | `strict_builtin` | Yes | Deterministic conversion applied to source cells. |
 | `column_replacement_request.default` | `object` |  | Default declared for the replacement column. |
 | `column_replacement_request.default.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacement_request.default.bytes` | `array of integer` |  | Literal bytes as unsigned octets. |
 | `column_replacement_request.default.float64` | `number` |  | Literal used when the column type is float64. |
-| `column_replacement_request.default.func` | `uuid \| now_ms` |  | Generator function for per-row defaults. |
+| `column_replacement_request.default.func` | `uuid_v4 \| uuid_v7 \| ulid \| xid \| now_ms \| increment` |  | Generator function for per-row defaults. |
 | `column_replacement_request.default.int64` | `integer` |  | Literal used when the column type is int64. |
 | `column_replacement_request.default.text` | `string` |  | Literal used when the column type is text. |
 | `column_replacement_request.format` | `string` |  | Authored format annotation for the replacement column. |
 | `column_replacement_request.nullable` | `boolean` | Yes | Whether the replacement column accepts null. |
-| `column_replacement_request.type` | `text \| int64 \| float64 \| bool` | Yes | Scalar type of the replacement column. |
+| `column_replacement_request.type` | `text \| int64 \| float64 \| bool \| bytes` | Yes | Scalar type of the replacement column. |
 | `compacted_at` | `string` | Yes | RFC 3339 timestamp of terminal compaction. The zero timestamp means not compacted. |
 | `constraint` | `object` |  | The constraint a constraint-validation transition proves. |
 | `constraint.column_ids` | `array of string` |  | Physical column identities the constraint covers. |
@@ -356,40 +365,44 @@ The write obligations for one table at one generation: the indexes every write m
 | `column_replacements[].replacement.source.id` | `string` | Yes | Permanent physical column identity, `c` plus a decimal. |
 | `column_replacements[].replacement.source.insert_default` | `object` |  | Default applied when an insert omits the column. |
 | `column_replacements[].replacement.source.insert_default.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacements[].replacement.source.insert_default.bytes` | `array of integer` |  | Literal bytes as unsigned octets. |
 | `column_replacements[].replacement.source.insert_default.float64` | `number` |  | Literal used when the column type is float64. |
-| `column_replacements[].replacement.source.insert_default.func` | `uuid \| now_ms` |  | Generator function for per-row defaults. |
+| `column_replacements[].replacement.source.insert_default.func` | `uuid_v4 \| uuid_v7 \| ulid \| xid \| now_ms \| increment` |  | Generator function for per-row defaults. |
 | `column_replacements[].replacement.source.insert_default.int64` | `integer` |  | Literal used when the column type is int64. |
 | `column_replacements[].replacement.source.insert_default.text` | `string` |  | Literal used when the column type is text. |
 | `column_replacements[].replacement.source.missing_value` | `object` |  | Literal supplied for cells absent from stored rows. |
 | `column_replacements[].replacement.source.missing_value.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacements[].replacement.source.missing_value.bytes` | `array of integer` |  | Literal bytes as unsigned octets. |
 | `column_replacements[].replacement.source.missing_value.float64` | `number` |  | Literal used when the column type is float64. |
-| `column_replacements[].replacement.source.missing_value.func` | `uuid \| now_ms` |  | Generator function. Never valid for missing values; present because the default-value form is shared. |
+| `column_replacements[].replacement.source.missing_value.func` | `uuid_v4 \| uuid_v7 \| ulid \| xid \| now_ms \| increment` |  | Generator function. Never valid for missing values; present because the default-value form is shared. |
 | `column_replacements[].replacement.source.missing_value.int64` | `integer` |  | Literal used when the column type is int64. |
 | `column_replacements[].replacement.source.missing_value.text` | `string` |  | Literal used when the column type is text. |
 | `column_replacements[].replacement.source.name` | `string` | Yes | Current column name. |
 | `column_replacements[].replacement.source.nullable` | `boolean` | Yes | Whether stored cells may be null. |
 | `column_replacements[].replacement.source.schema_id` | `integer` | Yes | Logical schema identity of the column. |
-| `column_replacements[].replacement.source.type` | `text \| int64 \| float64 \| bool` | Yes | Scalar type of every stored cell. |
+| `column_replacements[].replacement.source.type` | `text \| int64 \| float64 \| bool \| bytes` | Yes | Scalar type of every stored cell. |
 | `column_replacements[].replacement.source.value_generation` | `integer` |  | Generation checked by the column-value fence. Absent means zero. |
 | `column_replacements[].replacement.target` | `object` | Yes | The replacement column receiving converted cells. |
 | `column_replacements[].replacement.target.format` | `string` |  | Authored format annotation; not interpreted by storage. |
 | `column_replacements[].replacement.target.id` | `string` | Yes | Permanent physical column identity, `c` plus a decimal. |
 | `column_replacements[].replacement.target.insert_default` | `object` |  | Default applied when an insert omits the column. |
 | `column_replacements[].replacement.target.insert_default.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacements[].replacement.target.insert_default.bytes` | `array of integer` |  | Literal bytes as unsigned octets. |
 | `column_replacements[].replacement.target.insert_default.float64` | `number` |  | Literal used when the column type is float64. |
-| `column_replacements[].replacement.target.insert_default.func` | `uuid \| now_ms` |  | Generator function for per-row defaults. |
+| `column_replacements[].replacement.target.insert_default.func` | `uuid_v4 \| uuid_v7 \| ulid \| xid \| now_ms \| increment` |  | Generator function for per-row defaults. |
 | `column_replacements[].replacement.target.insert_default.int64` | `integer` |  | Literal used when the column type is int64. |
 | `column_replacements[].replacement.target.insert_default.text` | `string` |  | Literal used when the column type is text. |
 | `column_replacements[].replacement.target.missing_value` | `object` |  | Literal supplied for cells absent from stored rows. |
 | `column_replacements[].replacement.target.missing_value.bool` | `boolean` |  | Literal used when the column type is bool. |
+| `column_replacements[].replacement.target.missing_value.bytes` | `array of integer` |  | Literal bytes as unsigned octets. |
 | `column_replacements[].replacement.target.missing_value.float64` | `number` |  | Literal used when the column type is float64. |
-| `column_replacements[].replacement.target.missing_value.func` | `uuid \| now_ms` |  | Generator function. Never valid for missing values; present because the default-value form is shared. |
+| `column_replacements[].replacement.target.missing_value.func` | `uuid_v4 \| uuid_v7 \| ulid \| xid \| now_ms \| increment` |  | Generator function. Never valid for missing values; present because the default-value form is shared. |
 | `column_replacements[].replacement.target.missing_value.int64` | `integer` |  | Literal used when the column type is int64. |
 | `column_replacements[].replacement.target.missing_value.text` | `string` |  | Literal used when the column type is text. |
 | `column_replacements[].replacement.target.name` | `string` | Yes | Current column name. |
 | `column_replacements[].replacement.target.nullable` | `boolean` | Yes | Whether stored cells may be null. |
 | `column_replacements[].replacement.target.schema_id` | `integer` | Yes | Logical schema identity of the column. |
-| `column_replacements[].replacement.target.type` | `text \| int64 \| float64 \| bool` | Yes | Scalar type of every stored cell. |
+| `column_replacements[].replacement.target.type` | `text \| int64 \| float64 \| bool \| bytes` | Yes | Scalar type of every stored cell. |
 | `column_replacements[].replacement.target.value_generation` | `integer` |  | Generation checked by the column-value fence. Absent means zero. |
 | `column_replacements[].transition_id` | `string` | Yes | The column-replacement transition backfilling the target. |
 | `constraint_checks` | `array of object` |  | Constraints enforced on new writes while existing data validates. |

@@ -182,7 +182,10 @@ func (w *ColumnDefault) UnmarshalJSON(data []byte) error {
 }
 
 type GeneratorDefault struct {
-	// A builtin generator; `uuid` requires text and `now_ms` requires int64.
+	// A builtin generator. `uuid_v4`, `uuid_v7`, `ulid`, and `xid`
+	// require a bytes column with the matching identifier format;
+	// `now_ms` and `increment` require int64.
+	//
 	Func string `json:"func"`
 	Kind string `json:"kind"`
 }
@@ -209,6 +212,7 @@ const (
 	ColumnTypeInt64   ColumnType = "int64"
 	ColumnTypeFloat64 ColumnType = "float64"
 	ColumnTypeBool    ColumnType = "bool"
+	ColumnTypeBytes   ColumnType = "bytes"
 )
 
 var ColumnTypeValues = []ColumnType{
@@ -216,6 +220,7 @@ var ColumnTypeValues = []ColumnType{
 	ColumnTypeInt64,
 	ColumnTypeFloat64,
 	ColumnTypeBool,
+	ColumnTypeBytes,
 }
 
 // A human-authored stable logical identity. Table IDs are unique for the

@@ -13,6 +13,7 @@ package lirwire
 // Regeneration rewrites only lirwire.go (the generated file), never this one.
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -228,6 +229,11 @@ func Float64(f float64) Value {
 
 func Bool(b bool) Value { return Value{&BoolValue{Type: "bool", Value: &b}} }
 
+func Bytes(b []byte) Value {
+	s := base64.StdEncoding.EncodeToString(b)
+	return Value{&BytesValue{Type: "bytes", Value: &s}}
+}
+
 // Null builds a typed NULL of the given scalar type.
 func Null(kind ScalarType) Value {
 	switch kind {
@@ -239,6 +245,8 @@ func Null(kind ScalarType) Value {
 		return Value{&Float64Value{Type: "float64"}}
 	case ScalarTypeBool:
 		return Value{&BoolValue{Type: "bool"}}
+	case ScalarTypeBytes:
+		return Value{&BytesValue{Type: "bytes"}}
 	}
 	return Value{}
 }
@@ -258,6 +266,12 @@ func LitOf(v any) Expr {
 		return Lit(Float64(x))
 	case bool:
 		return Lit(Bool(x))
+	case []byte:
+		return Lit(Bytes(x))
+	case [16]byte:
+		return Lit(Bytes(x[:]))
+	case [12]byte:
+		return Lit(Bytes(x[:]))
 	case json.Number:
 		// A JSON-decoded number of unknown kind. Keep its lexeme verbatim
 		// (a large int can outrun float64), choosing the variant by form.
@@ -332,6 +346,19 @@ func MakeCell(kind ScalarType, v any) (Cell, error) {
 			return nil, fmt.Errorf("lirwire: bool cell needs a boolean, got %T", v)
 		}
 		s = strconv.FormatBool(b)
+	case ScalarTypeBytes:
+		var b []byte
+		switch value := v.(type) {
+		case []byte:
+			b = value
+		case [16]byte:
+			b = value[:]
+		case [12]byte:
+			b = value[:]
+		default:
+			return nil, fmt.Errorf("lirwire: bytes cell needs []byte, [16]byte, or [12]byte, got %T", v)
+		}
+		s = base64.StdEncoding.EncodeToString(b)
 	default:
 		return nil, fmt.Errorf("lirwire: unknown scalar type %q", kind)
 	}

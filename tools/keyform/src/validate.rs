@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 use crate::model::*;
 
-const SCALARS: [&str; 4] = ["text", "int64", "float64", "bool"];
+const SCALARS: [&str; 5] = ["text", "int64", "float64", "bool", "bytes"];
 const CODEC_LAWS: [&str; 5] = [
     "round_trip",
     "canonical_bytes",

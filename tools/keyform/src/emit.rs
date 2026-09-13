@@ -569,6 +569,7 @@ fn scalar_type_name(scalar: &str) -> &'static str {
         "int64" => "Int64",
         "float64" => "Float64",
         "bool" => "Bool",
+        "bytes" => "Bytes",
         other => panic!("validator admits only known scalars, got {other:?}"),
     }
 }
@@ -592,6 +593,10 @@ fn value_expr(value: &SpecValue, null_type: &str) -> String {
         }
         SpecValue::Float(raw) => format!("Value::Float64({raw}_f64)"),
         SpecValue::Text(v) => format!("Value::Text({}.into())", rust_string(v)),
+        SpecValue::Bytes(v) => format!(
+            "Value::Bytes(rad::engine::lir::BytesValue::raw({}))",
+            byte_vec_expr(v)
+        ),
         SpecValue::Row(_) => panic!("row values render through row_expr"),
     }
 }
@@ -746,13 +751,19 @@ const SCALAR_GENERATOR_HELPER: &str = r#"fn generated_text(state: &mut u64) -> S
 }
 
 fn generated_scalar(state: &mut u64) -> Value {
-    match splitmix64(state) % 6 {
+    match splitmix64(state) % 7 {
         0 => Value::Null(ScalarType::Text),
         1 => Value::Bool(splitmix64(state) % 2 == 1),
         2 => Value::Int64(splitmix64(state) as i64),
         3 => {
             let value = f64::from_bits(splitmix64(state));
             Value::Float64(if value.is_finite() { value } else { 0.5 })
+        }
+        4 => {
+            let length = (splitmix64(state) % 24) as usize;
+            Value::Bytes(rad::engine::lir::BytesValue::raw(
+                (0..length).map(|_| splitmix64(state) as u8).collect::<Vec<_>>(),
+            ))
         }
         _ => Value::Text(generated_text(state)),
     }
@@ -808,6 +819,7 @@ fn kv_encode_helper(spec: &Spec) -> String {
                 _ => format!("Value::Float64(value) => {call}(*value).to_vec(),"),
             },
             "text" => format!("Value::Text(value) => {call}(value),"),
+            "bytes" => format!("Value::Bytes(value) => {call}(value.as_slice()),"),
             other => panic!("unknown tagged case {other:?}"),
         };
         let _ = writeln!(out, "        {arm}");
@@ -1388,6 +1400,12 @@ fn record_tests(spec: &Spec, record: &Record, tests: &mut Tests) {
             "                    Value::Float64(if value.is_finite() { value } else { 0.5 })\n",
         );
         law.push_str("                }\n");
+        law.push_str("                (_, ScalarType::Bytes) => {\n");
+        law.push_str("                    let length = (splitmix64(&mut state) % 24) as usize;\n");
+        law.push_str("                    Value::Bytes(rad::engine::lir::BytesValue::raw(\n");
+        law.push_str("                        (0..length).map(|_| splitmix64(&mut state) as u8).collect::<Vec<_>>()\n");
+        law.push_str("                    ))\n");
+        law.push_str("                }\n");
         law.push_str("            };\n");
         law.push_str("            row.insert(column.name.clone(), value);\n");
         law.push_str("        }\n");
@@ -1453,6 +1471,7 @@ fn record_tests(spec: &Spec, record: &Record, tests: &mut Tests) {
         law.push_str("                ScalarType::Int64 => Value::Int64(i64::MIN),\n");
         law.push_str("                ScalarType::Bool => Value::Bool(true),\n");
         law.push_str("                ScalarType::Float64 => Value::Float64(-0.0),\n");
+        law.push_str("                ScalarType::Bytes => Value::Bytes(rad::engine::lir::BytesValue::raw([0, 0xff, 1])),\n");
         law.push_str("            };\n");
         let _ = writeln!(law, "            let _ = {read}(input, column);");
         law.push_str(

@@ -75,7 +75,7 @@ func runTracker(url string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("   ada logged in, session %s…\n", session.Token[:8])
+	fmt.Printf("   ada logged in, session %x…\n", session.Token[:4])
 	if _, err := login(ctx, db, "ada", "wrong"); err != nil {
 		fmt.Printf("   bad password rejected: %v\n", err)
 	}
@@ -161,7 +161,7 @@ func runTracker(url string) error {
 
 	// Foreign keys hold even inside the typed API.
 	if _, err := db.Tasks.Create(ctx, tracker.TaskCreate{
-		BoardID: "no-such-board", Title: "orphan", CreatorID: ada.ID,
+		BoardID: [16]byte{0xff}, Title: "orphan", CreatorID: ada.ID,
 	}); err != nil {
 		fmt.Printf("   dangling board_id rejected: %v\n\n", err)
 	}
@@ -346,7 +346,7 @@ func signup(ctx context.Context, db *tracker.Client, username, password string, 
 	if err != nil {
 		return tracker.User{}, err
 	}
-	fmt.Printf("   signed up %s (id %s…)\n", u.Username, u.ID[:8])
+	fmt.Printf("   signed up %s (id %x…)\n", u.Username, u.ID[:4])
 	return u, nil
 }
 
@@ -364,7 +364,7 @@ func login(ctx context.Context, db *tracker.Client, username, password string) (
 	})
 }
 
-func whoami(ctx context.Context, db *tracker.Client, token string) (tracker.User, error) {
+func whoami(ctx context.Context, db *tracker.Client, token [16]byte) (tracker.User, error) {
 	s, ok, err := db.Sessions.Get(ctx, token)
 	if err != nil {
 		return tracker.User{}, err

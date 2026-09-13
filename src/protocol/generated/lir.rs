@@ -181,8 +181,8 @@ pub struct BranchArm {
     pub when: Expr,
 }
 
-/// The logical type of a scalar value: `text`, `int64`, `float64`, or
-/// `bool`.
+/// The logical type of a scalar value: `text`, `int64`, `float64`, `bool`,
+/// or `bytes`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum ScalarType {
     #[serde(rename = "text")]
@@ -193,6 +193,8 @@ pub enum ScalarType {
     Float64,
     #[serde(rename = "bool")]
     Bool,
+    #[serde(rename = "bytes")]
+    Bytes,
 }
 
 /// The equality relation used for literal spans in a `text_match`: exact
@@ -465,6 +467,7 @@ pub enum Value {
     Int64Value(Box<Int64Value>),
     Float64Value(Box<Float64Value>),
     BoolValue(Box<BoolValue>),
+    BytesValue(Box<BytesValue>),
 }
 
 impl Serialize for Value {
@@ -487,6 +490,11 @@ impl Serialize for Value {
             .serialize(serializer),
             Self::BoolValue(value) => BoolValueWireRef {
                 kind: BoolValueTag::Value,
+                value: &value.value,
+            }
+            .serialize(serializer),
+            Self::BytesValue(value) => BytesValueWireRef {
+                kind: BytesValueTag::Value,
                 value: &value.value,
             }
             .serialize(serializer),
@@ -527,6 +535,11 @@ impl<'de> Deserialize<'de> for Value {
                 let wire: BoolValueWire =
                     serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
                 Ok(Self::BoolValue(Box::new(BoolValue { value: wire.value })))
+            }
+            "bytes" => {
+                let wire: BytesValueWire =
+                    serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
+                Ok(Self::BytesValue(Box::new(BytesValue { value: wire.value })))
             }
             value => Err(serde::de::Error::custom(format!(
                 "Value: unknown type {value:?}"
@@ -659,6 +672,38 @@ struct BoolValueWireRef<'a> {
     kind: BoolValueTag,
     #[serde(rename = "value", skip_serializing_if = "OptionalField::is_missing")]
     value: &'a OptionalField<bool>,
+}
+
+/// An arbitrary byte sequence encoded as canonical padded RFC 4648 base64,
+/// or a bytes NULL when `value` is absent. A context-free LIR literal has no
+/// catalog format metadata, so identifier text is not accepted here.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BytesValue {
+    /// Canonical padded base64; absent for a NULL.
+    pub value: OptionalField<String>,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+enum BytesValueTag {
+    #[serde(rename = "bytes")]
+    Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BytesValueWire {
+    #[serde(rename = "type")]
+    _kind: BytesValueTag,
+    #[serde(rename = "value", default)]
+    value: OptionalField<String>,
+}
+
+#[derive(Serialize)]
+struct BytesValueWireRef<'a> {
+    #[serde(rename = "type")]
+    kind: BytesValueTag,
+    #[serde(rename = "value", skip_serializing_if = "OptionalField::is_missing")]
+    value: &'a OptionalField<String>,
 }
 
 /// LIR is Rad's low-level intermediate representation: the relation tree a
@@ -1668,8 +1713,9 @@ struct RecursiveBindingWireRef<'a> {
 /// One schema-directed scalar payload, used inside a `rows` relation where
 /// each column already declares its type. A string is decoded against the
 /// corresponding `RowsColumn.type` — numbers as lossless strings, `bool` as
-/// "true"/"false", so precision survives and the type is never repeated per
-/// cell; JSON null is a typed NULL, valid only when that column is nullable.
+/// "true"/"false", and `bytes` as canonical padded base64, so precision
+/// survives and the type is never repeated per cell; JSON null is a typed
+/// NULL, valid only when that column is nullable.
 /// Unlike `Value`, a cell carries no type of its own — the column supplies
 /// it once for the whole column.
 pub type Cell = Nullable<String>;

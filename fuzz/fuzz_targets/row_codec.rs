@@ -1,6 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
+use rad::identifiers::Format;
 use rad::engine::catalog::identity::{
     DefinitionGeneration, ExistenceGeneration, SchemaId, StorageGeneration, ValueGeneration,
     WriteProtocolGeneration,
@@ -9,7 +10,7 @@ use rad::engine::catalog::model::{Column, ScalarType, Table};
 use rad::engine::exec::codec::{
     marshal_row, read_column_value, remove_column, set_column_value, unmarshal_row,
 };
-use rad::engine::lir::Value;
+use rad::engine::lir::{BytesValue, Value};
 
 fuzz_target!(|input: &[u8]| {
     if input.len() > 64 * 1024 {
@@ -38,6 +39,8 @@ fuzz_target!(|input: &[u8]| {
         Value::Int64(i64::MIN),
         Value::Bool(true),
         Value::Float64(-0.0),
+        Value::Bytes(BytesValue::raw(vec![0x00, 0xff, 0x7f, 0x80])),
+        Value::Bytes(BytesValue::formatted(vec![0; 16], Format::Uuid)),
     ]) {
         let _ = read_column_value(input, column);
         for value in [value, Value::Null(column.scalar_type)] {
@@ -93,11 +96,20 @@ fn table() -> Table {
             column("c2", 2, "count", ScalarType::Int64),
             column("c3", 3, "ready", ScalarType::Bool),
             column("c4", 4, "score", ScalarType::Float64),
+            column("c5", 5, "payload", ScalarType::Bytes),
+            formatted_column("c6", 6, "uuid", "uuid"),
         ],
         primary_key: vec!["id".into()],
         indexes: Vec::new(),
         foreign_keys: Vec::new(),
         constraints: Vec::new(),
+    }
+}
+
+fn formatted_column(id: &str, schema_id_value: u32, name: &str, format: &str) -> Column {
+    Column {
+        format: format.into(),
+        ..column(id, schema_id_value, name, ScalarType::Bytes)
     }
 }
 

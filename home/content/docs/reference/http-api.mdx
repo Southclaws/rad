@@ -411,11 +411,10 @@ always rejected.
 #### `POST` `/tables/{table}/columns`
 
 Append a column. Because existing rows have no value for it, the
-column must be nullable or carry a literal default; generator
-defaults (`uuid()`, `now_ms()`) are rejected on new columns of
-existing tables since they would produce a different value on every
-read of an old row. On a schema-managed database this operation is
-always rejected.
+column must be nullable or carry a literal default. A nullable column
+may use a generator default; historical rows remain NULL while new
+creates run the generator. On a schema-managed database this operation
+is always rejected.
 
 **Parameters**
 
@@ -703,22 +702,23 @@ A column definition for a direct catalog create operation.
 | --- | --- | --- | --- |
 | `id` | `integer` |  | An optional stable logical identity; direct mode allocates one when omitted. Format: int64. |
 | `name` | `string` | Yes |  |
-| `type` | `string` | Yes | The column's storage type, one of `text`, `int64`, `float64`, or `bool`. |
+| `type` | `string` | Yes | The column's storage type, one of `text`, `int64`, `float64`, `bool`, or `bytes`. |
 | `nullable` | `boolean` |  |  |
-| `format` | `string` |  | An optional semantic hint such as `uuid` or `unix_ms`. |
+| `format` | `string` |  | An optional semantic hint such as `uuid`, `ulid`, `xid`, or `unix_ms`. |
 | `default` | `ColumnDefault` |  |  |
 
 #### `ColumnDefault`
 
 A column default, applied when an insert omits the column: either a
-builtin generator named by `func` (`uuid` on text columns, `now_ms`
-on int64 columns) or a literal `value` of the column's type. Exactly
-one of the two is set.
+builtin generator named by `func` (`uuid_v4` or `uuid_v7` on
+`bytes format: uuid`, `ulid` on `bytes format: ulid`, `xid` on
+`bytes format: xid`, and `now_ms` or `increment` on int64 columns)
+or a literal `value` of the column's type. Exactly one is set.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `func` | `string` |  | A builtin generator, `uuid` or `now_ms`. |
-| `value` | `value` |  | A literal of the column's type. |
+| `func` | `uuid_v4 \| uuid_v7 \| ulid \| xid \| now_ms \| increment` |  | A builtin generator. |
+| `value` | `value` |  | A literal of the column's type. Formatted byte columns use their canonical identifier text; unformatted bytes use padded base64. |
 
 #### `ColumnInfo`
 
@@ -728,9 +728,9 @@ One column of a table, as reported by introspection.
 | --- | --- | --- | --- |
 | `id` | `integer` | Yes | The stable logical column identity within its table. Format: int64. |
 | `name` | `string` | Yes |  |
-| `type` | `string` | Yes | The column's storage type, one of `text`, `int64`, `float64`, or `bool`. |
+| `type` | `string` | Yes | The column's storage type, one of `text`, `int64`, `float64`, `bool`, or `bytes`. |
 | `nullable` | `boolean` |  |  |
-| `format` | `string` |  | An optional semantic hint such as `uuid` or `unix_ms`. |
+| `format` | `string` |  | An optional semantic hint such as `uuid`, `ulid`, `xid`, or `unix_ms`. |
 | `default` | `ColumnDefault` |  |  |
 
 #### `ColumnUpdateProps`
@@ -1346,7 +1346,7 @@ to one relation without an operator measurement boundary.
 
 A new table's definition, mirroring a `rad.schema.yaml` entry as JSON. The
 direct API may omit logical IDs for the catalog to allocate. Column
-types are `text`, `int64`, `float64`, or `bool`; the primary key is
+types are `text`, `int64`, `float64`, `bool`, or `bytes`; the primary key is
 required and its columns must not be nullable.
 
 | Field | Type | Required | Description |

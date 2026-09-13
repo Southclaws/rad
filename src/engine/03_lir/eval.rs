@@ -696,6 +696,7 @@ enum CanonicalDatum {
     Int64(i64),
     Float64(u64),
     Bool(bool),
+    Bytes(Vec<u8>),
     Object(Vec<(String, CanonicalDatum)>),
     Array(Vec<CanonicalDatum>),
 }
@@ -718,6 +719,7 @@ impl CanonicalDatum {
                 Self::Float64(bits)
             }
             Some(Datum::Scalar(Value::Bool(value))) => Self::Bool(*value),
+            Some(Datum::Scalar(Value::Bytes(value))) => Self::Bytes(value.as_slice().to_vec()),
             Some(Datum::Object(fields)) => Self::Object(
                 fields
                     .iter()

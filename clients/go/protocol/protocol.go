@@ -271,7 +271,7 @@ type TableDef struct {
 	ForeignKeys []ForeignKeyDef `json:"foreign_keys,omitempty"`
 }
 
-// ColumnDef defines one column. Type is one of text, int64, float64, bool.
+// ColumnDef defines one column. Type is one of text, int64, float64, bool, or bytes.
 type ColumnDef struct {
 	ID       uint32         `json:"id,omitempty"`
 	Name     string         `json:"name"`
@@ -281,8 +281,8 @@ type ColumnDef struct {
 	Default  *ColumnDefault `json:"default,omitempty"`
 }
 
-// ColumnDefault is either a builtin generator (func: uuid | now_ms) or a
-// literal of the column's type (value); exactly one is set.
+// ColumnDefault is either a builtin generator (uuid_v4, uuid_v7, ulid, xid,
+// now_ms, or increment) or a literal of the column's type; exactly one is set.
 type ColumnDefault struct {
 	Func  string `json:"func,omitempty"`
 	Value any    `json:"value,omitempty"`

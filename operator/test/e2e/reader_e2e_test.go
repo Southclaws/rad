@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -142,24 +141,6 @@ func (h *harness) assertServiceRole(t *testing.T, url, role string) {
 		confirmed++
 		return confirmed >= samples, fmt.Sprintf("%d/%d confirmed", confirmed, samples)
 	})
-}
-
-// Sum of every family's retained executions, which is how relayed evidence
-// shows up at the writer.
-func totalRetainedExecutions(statistics string) int {
-	var payload struct {
-		Models []struct {
-			RetainedExecutions int `json:"retainedExecutions"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal([]byte(statistics), &payload); err != nil {
-		return -1
-	}
-	total := 0
-	for _, model := range payload.Models {
-		total += model.RetainedExecutions
-	}
-	return total
 }
 
 func (h *harness) waitReadyReaders(t *testing.T, name string, want int32) {

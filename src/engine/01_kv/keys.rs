@@ -798,6 +798,45 @@ pub fn decode_catalog_reclamation_key(key: &[u8]) -> Option<CatalogReclamationKe
     Some(CatalogReclamationKeyParts { reclamation })
 }
 
+pub const CATALOG_COLUMN_INCREMENT_TAG: u8 = 0x23;
+
+/// The `catalog_column_increment` space prefix: root magic plus tag.
+pub fn catalog_column_increment_prefix() -> Vec<u8> {
+    vec![0x72, 0x37, CATALOG_COLUMN_INCREMENT_TAG]
+}
+
+/// Scan prefix covering every `catalog_column_increment` key through `table`.
+pub fn catalog_column_increment_prefix_table(table: u64) -> Vec<u8> {
+    let mut key = catalog_column_increment_prefix();
+    append_uvarint(&mut key, table);
+    key
+}
+
+pub fn catalog_column_increment_key(table: u64, column: u32) -> Vec<u8> {
+    let mut key = catalog_column_increment_prefix();
+    append_uvarint(&mut key, table);
+    key.extend_from_slice(&column.to_be_bytes());
+    key
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct CatalogColumnIncrementKeyParts {
+    pub table: u64,
+    pub column: u32,
+}
+
+pub fn decode_catalog_column_increment_key(key: &[u8]) -> Option<CatalogColumnIncrementKeyParts> {
+    let rest = key.strip_prefix(&[0x72, 0x37, CATALOG_COLUMN_INCREMENT_TAG][..])?;
+    let mut position = 0;
+    let table = read_uvarint(rest, &mut position)?;
+    let column = u32::from_be_bytes(rest.get(position..position + 4)?.try_into().ok()?);
+    position += 4;
+    if position != rest.len() {
+        return None;
+    }
+    Some(CatalogColumnIncrementKeyParts { table, column })
+}
+
 pub const CATALOG_TABLE_DATA_GENERATION_STRIPE_TAG: u8 = 0x24;
 
 /// The `catalog_table_data_generation_stripe` space prefix: root magic plus tag.

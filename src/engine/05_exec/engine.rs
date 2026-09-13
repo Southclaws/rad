@@ -1268,6 +1268,15 @@ mod tests {
                 .pop_front()
                 .expect("test supplied enough UUIDs")
         }
+
+        fn new_identifier(&self, generator: crate::identifiers::Generator) -> Vec<u8> {
+            let uuid = self.new_uuid();
+            crate::identifiers::generate_deterministic(
+                generator,
+                u64::try_from(self.now.timestamp_millis()).expect("test timestamp is positive"),
+                uuid.into_bytes(),
+            )
+        }
     }
 
     struct FixedPlannerStats(Arc<crate::engine::planner::models::PlannerStats>);
@@ -1572,11 +1581,10 @@ mod tests {
     #[tokio::test]
     async fn runtime_controls_catalog_time_and_generated_row_defaults() {
         let now = Utc.with_ymd_and_hms(2035, 6, 7, 8, 9, 10).unwrap();
-        let first = Uuid::parse_str("018f0000-0000-7000-8000-000000000001").unwrap();
-        let second = Uuid::parse_str("018f0000-0000-7000-8000-000000000002").unwrap();
+        let entropy = (1..=8).map(Uuid::from_u128).collect::<VecDeque<_>>();
         let runtime = Arc::new(DeterministicRuntime {
             now,
-            uuids: Mutex::new(VecDeque::from([first, second])),
+            uuids: Mutex::new(entropy),
         });
         let store = Arc::new(Store::memory("exec-deterministic-runtime").await.unwrap());
         let catalog = catalog::Catalog::with_runtime(store.clone(), runtime.clone());
@@ -1588,16 +1596,49 @@ mod tests {
                     ColumnDef {
                         id: SchemaId::new(1).unwrap(),
                         name: "id".into(),
-                        scalar_type: ScalarType::Text,
+                        scalar_type: ScalarType::Bytes,
                         nullable: false,
                         format: "uuid".into(),
                         default: Some(DefaultValue {
-                            function: Some(DefaultFunction::Uuid),
+                            function: Some(DefaultFunction::UuidV4),
                             ..DefaultValue::default()
                         }),
                     },
                     ColumnDef {
                         id: SchemaId::new(2).unwrap(),
+                        name: "ordered_id".into(),
+                        scalar_type: ScalarType::Bytes,
+                        nullable: false,
+                        format: "uuid".into(),
+                        default: Some(DefaultValue {
+                            function: Some(DefaultFunction::UuidV7),
+                            ..DefaultValue::default()
+                        }),
+                    },
+                    ColumnDef {
+                        id: SchemaId::new(3).unwrap(),
+                        name: "ulid".into(),
+                        scalar_type: ScalarType::Bytes,
+                        nullable: false,
+                        format: "ulid".into(),
+                        default: Some(DefaultValue {
+                            function: Some(DefaultFunction::Ulid),
+                            ..DefaultValue::default()
+                        }),
+                    },
+                    ColumnDef {
+                        id: SchemaId::new(4).unwrap(),
+                        name: "xid".into(),
+                        scalar_type: ScalarType::Bytes,
+                        nullable: false,
+                        format: "xid".into(),
+                        default: Some(DefaultValue {
+                            function: Some(DefaultFunction::Xid),
+                            ..DefaultValue::default()
+                        }),
+                    },
+                    ColumnDef {
+                        id: SchemaId::new(5).unwrap(),
                         name: "created_at".into(),
                         scalar_type: ScalarType::Int64,
                         nullable: false,
@@ -1623,11 +1664,626 @@ mod tests {
             .create_many("events", vec![Row::new(), Row::new()])
             .await
             .unwrap();
-        assert_eq!(rows[0]["id"], Value::Text(first.to_string()));
-        assert_eq!(rows[1]["id"], Value::Text(second.to_string()));
-        for row in rows {
+        assert_eq!(
+            rows[0]["id"],
+            Value::Bytes(lir::BytesValue::formatted(
+                [
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x01,
+                ],
+                crate::identifiers::Format::Uuid,
+            ))
+        );
+        assert_eq!(
+            rows[1]["id"],
+            Value::Bytes(lir::BytesValue::formatted(
+                [
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x05,
+                ],
+                crate::identifiers::Format::Uuid,
+            ))
+        );
+        for row in &rows {
+            for (name, format) in [
+                ("id", crate::identifiers::Format::Uuid),
+                ("ordered_id", crate::identifiers::Format::Uuid),
+                ("ulid", crate::identifiers::Format::Ulid),
+                ("xid", crate::identifiers::Format::Xid),
+            ] {
+                let Value::Bytes(value) = &row[name] else {
+                    panic!("generated {name} is not bytes")
+                };
+                assert_eq!(value.format(), Some(format));
+                assert_eq!(value.as_slice().len(), format.byte_len());
+                let text = crate::identifiers::render(format, value.as_slice()).unwrap();
+                assert_eq!(
+                    crate::identifiers::parse(format, &text).unwrap(),
+                    value.as_slice()
+                );
+            }
+            let Value::Bytes(ordered) = &row["ordered_id"] else {
+                unreachable!()
+            };
+            let Value::Bytes(id) = &row["id"] else {
+                unreachable!()
+            };
+            assert_eq!(
+                Uuid::from_slice(id.as_slice()).unwrap().get_version_num(),
+                4
+            );
+            assert_eq!(
+                Uuid::from_slice(ordered.as_slice())
+                    .unwrap()
+                    .get_version_num(),
+                7
+            );
             assert_eq!(row["created_at"], Value::Int64(now.timestamp_millis()));
         }
+        let Value::Bytes(first_ordered) = &rows[0]["ordered_id"] else {
+            unreachable!()
+        };
+        let Value::Bytes(second_ordered) = &rows[1]["ordered_id"] else {
+            unreachable!()
+        };
+        assert!(first_ordered.as_slice() < second_ordered.as_slice());
+
+        let zero_uuid = Value::Bytes(lir::BytesValue::raw([0_u8; 16]));
+        let zero_xid = Value::Bytes(lir::BytesValue::raw([0_u8; 12]));
+        let explicit = Row::from([
+            ("id".into(), zero_uuid.clone()),
+            ("ordered_id".into(), zero_uuid.clone()),
+            ("ulid".into(), zero_uuid.clone()),
+            ("xid".into(), zero_xid.clone()),
+        ]);
+        let created = Engine::with_runtime(
+            store.clone(),
+            Arc::new(DeterministicRuntime {
+                now,
+                uuids: Mutex::new(VecDeque::new()),
+            }),
+        )
+        .create("events", explicit.clone())
+        .await
+        .unwrap();
+        assert_eq!(created["id"], zero_uuid);
+
+        let mut malformed = explicit;
+        malformed.insert("id".into(), Value::Bytes(lir::BytesValue::raw([0_u8; 15])));
+        let error = Engine::new(store.clone())
+            .create("events", malformed)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        store.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn arbitrary_bytes_round_trip_through_primary_secondary_and_foreign_keys() {
+        let store = Arc::new(Store::memory("exec-bytes-keys").await.unwrap());
+        let catalog = catalog::Catalog::new(store.clone());
+        let parents = catalog
+            .create_table(TableDef {
+                id: SchemaId::new(1).unwrap(),
+                name: "byte_parents".into(),
+                columns: vec![
+                    ColumnDef {
+                        id: SchemaId::new(1).unwrap(),
+                        name: "id".into(),
+                        scalar_type: ScalarType::Bytes,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                    ColumnDef {
+                        id: SchemaId::new(2).unwrap(),
+                        name: "lookup".into(),
+                        scalar_type: ScalarType::Bytes,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                ],
+                primary_key: vec!["id".into()],
+                indexes: vec![IndexDef {
+                    name: "byte_parents_lookup".into(),
+                    columns: vec!["lookup".into()],
+                    unique: false,
+                }],
+                foreign_keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+        catalog
+            .create_table(TableDef {
+                id: SchemaId::new(2).unwrap(),
+                name: "byte_children".into(),
+                columns: vec![
+                    ColumnDef {
+                        id: SchemaId::new(1).unwrap(),
+                        name: "id".into(),
+                        scalar_type: ScalarType::Bytes,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                    ColumnDef {
+                        id: SchemaId::new(2).unwrap(),
+                        name: "parent_id".into(),
+                        scalar_type: ScalarType::Bytes,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                ],
+                primary_key: vec!["id".into()],
+                indexes: Vec::new(),
+                foreign_keys: vec![ForeignKeyDef {
+                    name: "byte_children_parent".into(),
+                    columns: vec!["parent_id".into()],
+                    ref_table: "byte_parents".into(),
+                    ref_columns: vec!["id".into()],
+                }],
+            })
+            .await
+            .unwrap();
+
+        let engine = Engine::new(store.clone());
+        let parent_id = Value::Bytes(lir::BytesValue::raw([0x00, 0xff]));
+        let lookup = Value::Bytes(lir::BytesValue::raw([0xff, 0x00, 0x01]));
+        let parent = engine
+            .create(
+                "byte_parents",
+                Row::from([
+                    ("id".into(), parent_id.clone()),
+                    ("lookup".into(), lookup.clone()),
+                ]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(parent["id"], parent_id);
+        engine
+            .create(
+                "byte_children",
+                Row::from([
+                    ("id".into(), Value::Bytes(lir::BytesValue::raw([]))),
+                    ("parent_id".into(), parent_id.clone()),
+                ]),
+            )
+            .await
+            .unwrap();
+        let error = engine
+            .create(
+                "byte_children",
+                Row::from([
+                    ("id".into(), Value::Bytes(lir::BytesValue::raw([1]))),
+                    (
+                        "parent_id".into(),
+                        Value::Bytes(lir::BytesValue::raw([0xde, 0xad])),
+                    ),
+                ]),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ConstraintViolation);
+
+        let primary_key = codec::encode_tuple(std::slice::from_ref(&parent_id)).unwrap();
+        let stored = Kv::get(&*store, &codec::data_key(&parents, &primary_key).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            codec::unmarshal_row(&parents, &stored).unwrap()["lookup"],
+            lookup
+        );
+        let index_tuple = codec::encode_tuple(std::slice::from_ref(&lookup)).unwrap();
+        assert_eq!(
+            Kv::get(
+                &*store,
+                &codec::index_key(&parents, &parents.indexes[0].id, &index_tuple, &primary_key,)
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+            Some(Bytes::from(primary_key))
+        );
+        store.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn increment_defaults_reserve_batches_and_follow_explicit_floors() {
+        let store = Arc::new(Store::memory("exec-increment-batches").await.unwrap());
+        catalog::Catalog::new(store.clone())
+            .create_table(TableDef {
+                id: SchemaId::new(1).unwrap(),
+                name: "items".into(),
+                columns: vec![
+                    ColumnDef {
+                        id: SchemaId::new(1).unwrap(),
+                        name: "key".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                    ColumnDef {
+                        id: SchemaId::new(2).unwrap(),
+                        name: "serial".into(),
+                        scalar_type: ScalarType::Int64,
+                        nullable: false,
+                        format: String::new(),
+                        default: Some(DefaultValue {
+                            function: Some(DefaultFunction::Increment),
+                            ..DefaultValue::default()
+                        }),
+                    },
+                    ColumnDef {
+                        id: SchemaId::new(3).unwrap(),
+                        name: "secondary".into(),
+                        scalar_type: ScalarType::Int64,
+                        nullable: true,
+                        format: String::new(),
+                        default: Some(DefaultValue {
+                            function: Some(DefaultFunction::Increment),
+                            ..DefaultValue::default()
+                        }),
+                    },
+                ],
+                primary_key: vec!["key".into()],
+                indexes: Vec::new(),
+                foreign_keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let engine = Engine::new(store.clone());
+
+        let created = engine
+            .create_many(
+                "items",
+                vec![
+                    Row::from([("key".into(), Value::Text("a".into()))]),
+                    Row::from([
+                        ("key".into(), Value::Text("b".into())),
+                        ("serial".into(), Value::Int64(10)),
+                        ("secondary".into(), Value::Null(ScalarType::Int64)),
+                    ]),
+                    Row::from([
+                        ("key".into(), Value::Text("c".into())),
+                        ("serial".into(), Value::Int64(-5)),
+                        ("secondary".into(), Value::Int64(20)),
+                    ]),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(created[0]["serial"], Value::Int64(11));
+        assert_eq!(created[0]["secondary"], Value::Int64(21));
+        assert_eq!(created[1]["serial"], Value::Int64(10));
+        assert_eq!(created[1]["secondary"], Value::Null(ScalarType::Int64));
+        assert_eq!(created[2]["serial"], Value::Int64(-5));
+        assert_eq!(created[2]["secondary"], Value::Int64(20));
+
+        let next = engine
+            .create(
+                "items",
+                Row::from([("key".into(), Value::Text("d".into()))]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(next["serial"], Value::Int64(12));
+        assert_eq!(next["secondary"], Value::Int64(22));
+
+        let updated = engine
+            .update_many(
+                "items",
+                text_int64_input_type("key", "secondary"),
+                vec![Row::from([
+                    ("key".into(), Value::Text("d".into())),
+                    ("secondary".into(), Value::Int64(100)),
+                ])],
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated[0]["secondary"], Value::Int64(100));
+
+        let after_update = engine
+            .create(
+                "items",
+                Row::from([("key".into(), Value::Text("e".into()))]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(after_update["serial"], Value::Int64(13));
+        assert_eq!(after_update["secondary"], Value::Int64(101));
+        store.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn increment_allocation_is_transactional_conflicting_and_checked() {
+        let store = Arc::new(Store::memory("exec-increment-transactions").await.unwrap());
+        catalog::Catalog::new(store.clone())
+            .create_table(TableDef {
+                id: SchemaId::new(1).unwrap(),
+                name: "items".into(),
+                columns: vec![
+                    ColumnDef {
+                        id: SchemaId::new(1).unwrap(),
+                        name: "key".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                    ColumnDef {
+                        id: SchemaId::new(2).unwrap(),
+                        name: "serial".into(),
+                        scalar_type: ScalarType::Int64,
+                        nullable: false,
+                        format: String::new(),
+                        default: Some(DefaultValue {
+                            function: Some(DefaultFunction::Increment),
+                            ..DefaultValue::default()
+                        }),
+                    },
+                ],
+                primary_key: vec!["key".into()],
+                indexes: Vec::new(),
+                foreign_keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let engine = Engine::new(store.clone());
+
+        let failed = engine.create("items", Row::new()).await.unwrap_err();
+        assert_eq!(failed.kind(), ErrorKind::ConstraintViolation);
+        let first = engine
+            .create(
+                "items",
+                Row::from([("key".into(), Value::Text("a".into()))]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first["serial"], Value::Int64(1));
+        let constraint_failure = engine
+            .create(
+                "items",
+                Row::from([("key".into(), Value::Text("a".into()))]),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(constraint_failure.kind(), ErrorKind::ConstraintViolation);
+
+        let mut rolled_back = store
+            .begin(IsolationLevel::SerializableSnapshot)
+            .await
+            .unwrap();
+        let allocated = engine
+            .create_many_in(
+                rolled_back.as_mut(),
+                "items",
+                &[Row::from([("key".into(), Value::Text("b".into()))])],
+            )
+            .await
+            .unwrap();
+        assert_eq!(allocated[0]["serial"], Value::Int64(2));
+        rolled_back.rollback();
+        let reused = engine
+            .create(
+                "items",
+                Row::from([("key".into(), Value::Text("b".into()))]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reused["serial"], Value::Int64(2));
+
+        let mut winner = store
+            .begin(IsolationLevel::SerializableSnapshot)
+            .await
+            .unwrap();
+        let mut loser = store
+            .begin(IsolationLevel::SerializableSnapshot)
+            .await
+            .unwrap();
+        let winner_rows = engine
+            .create_many_in(
+                winner.as_mut(),
+                "items",
+                &[Row::from([("key".into(), Value::Text("c".into()))])],
+            )
+            .await
+            .unwrap();
+        let loser_rows = engine
+            .create_many_in(
+                loser.as_mut(),
+                "items",
+                &[Row::from([("key".into(), Value::Text("d".into()))])],
+            )
+            .await
+            .unwrap();
+        assert_eq!(winner_rows[0]["serial"], Value::Int64(3));
+        assert_eq!(loser_rows[0]["serial"], Value::Int64(3));
+        winner.commit().await.unwrap();
+        assert_eq!(
+            loser.commit().await.unwrap_err().kind(),
+            crate::engine::kv::ErrorKind::Conflict
+        );
+        let retry = engine
+            .create(
+                "items",
+                Row::from([("key".into(), Value::Text("d".into()))]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(retry["serial"], Value::Int64(4));
+
+        engine
+            .delete_many(
+                "items",
+                text_input_type(&["key"]),
+                vec![Row::from([("key".into(), Value::Text("d".into()))])],
+            )
+            .await
+            .unwrap();
+        let after_delete = engine
+            .create(
+                "items",
+                Row::from([("key".into(), Value::Text("e".into()))]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(after_delete["serial"], Value::Int64(5));
+
+        engine
+            .create(
+                "items",
+                Row::from([
+                    ("key".into(), Value::Text("max".into())),
+                    ("serial".into(), Value::Int64(i64::MAX)),
+                ]),
+            )
+            .await
+            .unwrap();
+        engine
+            .update_many(
+                "items",
+                text_int64_input_type("key", "serial"),
+                vec![Row::from([
+                    ("key".into(), Value::Text("max".into())),
+                    ("serial".into(), Value::Int64(-1)),
+                ])],
+            )
+            .await
+            .unwrap();
+        let exhausted = engine
+            .create(
+                "items",
+                Row::from([("key".into(), Value::Text("overflow".into()))]),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(exhausted.reason(), ErrorReason::NumericOverflow);
+        store.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn increment_column_lifecycle_preserves_identity_and_cleans_state() {
+        let store = Arc::new(Store::memory("exec-increment-lifecycle").await.unwrap());
+        let catalog = catalog::Catalog::new(store.clone());
+        catalog
+            .create_table(TableDef {
+                id: SchemaId::new(1).unwrap(),
+                name: "items".into(),
+                columns: vec![ColumnDef {
+                    id: SchemaId::new(1).unwrap(),
+                    name: "key".into(),
+                    scalar_type: ScalarType::Text,
+                    nullable: false,
+                    format: String::new(),
+                    default: None,
+                }],
+                primary_key: vec!["key".into()],
+                indexes: Vec::new(),
+                foreign_keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let engine = Engine::new(store.clone());
+        engine
+            .create(
+                "items",
+                Row::from([("key".into(), Value::Text("old".into()))]),
+            )
+            .await
+            .unwrap();
+
+        let with_increment = catalog
+            .create_column(
+                "items",
+                ColumnDef {
+                    id: SchemaId::new(2).unwrap(),
+                    name: "serial".into(),
+                    scalar_type: ScalarType::Int64,
+                    nullable: true,
+                    format: String::new(),
+                    default: Some(DefaultValue {
+                        function: Some(DefaultFunction::Increment),
+                        ..DefaultValue::default()
+                    }),
+                },
+            )
+            .await
+            .unwrap();
+        let column_id = with_increment.column("serial").unwrap().schema_id;
+        let allocator_key =
+            catalog::store::column_increment_key(&with_increment.id, column_id).unwrap();
+        let historical = engine.scan_table_rows(&with_increment).await.unwrap();
+        assert_eq!(historical[0]["serial"], Value::Null(ScalarType::Int64));
+        let generated = engine
+            .create(
+                "items",
+                Row::from([("key".into(), Value::Text("new".into()))]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(generated["serial"], Value::Int64(1));
+
+        let renamed = catalog
+            .rename_column("items", "serial", "number")
+            .await
+            .unwrap();
+        assert_eq!(renamed.column("number").unwrap().schema_id, column_id);
+        let after_rename = engine
+            .create(
+                "items",
+                Row::from([("key".into(), Value::Text("renamed".into()))]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(after_rename["number"], Value::Int64(2));
+        assert!(
+            catalog
+                .change_column_insert_default("items", "number", None)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("immutable")
+        );
+
+        catalog.delete_column("items", "number").await.unwrap();
+        assert!(Kv::get(&*store, &allocator_key).await.unwrap().is_none());
+        let recreated = catalog
+            .create_column(
+                "items",
+                ColumnDef {
+                    id: SchemaId::new(3).unwrap(),
+                    name: "number".into(),
+                    scalar_type: ScalarType::Int64,
+                    nullable: true,
+                    format: String::new(),
+                    default: Some(DefaultValue {
+                        function: Some(DefaultFunction::Increment),
+                        ..DefaultValue::default()
+                    }),
+                },
+            )
+            .await
+            .unwrap();
+        assert_ne!(recreated.column("number").unwrap().schema_id, column_id);
+        let fresh = engine
+            .create(
+                "items",
+                Row::from([("key".into(), Value::Text("fresh".into()))]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fresh["number"], Value::Int64(1));
+        let recreated_key = catalog::store::column_increment_key(
+            &recreated.id,
+            recreated.column("number").unwrap().schema_id,
+        )
+        .unwrap();
+        catalog.delete_table("items").await.unwrap();
+        assert!(Kv::get(&*store, &recreated_key).await.unwrap().is_none());
         store.close().await.unwrap();
     }
 
@@ -3187,6 +3843,23 @@ mod tests {
                     value_type: Type::scalar(Kind::Text, false),
                 })
                 .collect(),
+        }
+    }
+
+    fn text_int64_input_type(text: &str, int64: &str) -> RowType {
+        RowType {
+            fields: vec![
+                Field {
+                    name: text.into(),
+                    slot: crate::engine::lir::SlotId(0),
+                    value_type: Type::scalar(Kind::Text, false),
+                },
+                Field {
+                    name: int64.into(),
+                    slot: crate::engine::lir::SlotId(1),
+                    value_type: Type::scalar(Kind::Int64, false),
+                },
+            ],
         }
     }
 

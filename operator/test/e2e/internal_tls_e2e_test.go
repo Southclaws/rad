@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -140,13 +141,13 @@ func TestInternalTLSIsProvisionedAndCarriesReaderEvidence(t *testing.T) {
 	// Evidence must cross the encrypted channel. Only the readers serve these
 	// queries, so the writer can hold them by no other route.
 	h.seedMarker(t, name, "tls-marker")
-	baseline := h.writerExecutions(t, name)
+	baseline := h.writerRelayProgress(t, name)
 	for range 20 {
 		if _, err := h.curlPost(t, h.readerServiceURL(name), "/execute", queryBody("markers")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	h.waitForRelayedExecutions(t, name, baseline+20)
+	h.waitForRelayedEvidence(t, name, baseline)
 
 	// TLS proves who the writer is; it does not decide who may submit.
 	code, err := h.curl(t, "-k", "-o", "/dev/null", "-w", "%{http_code}", "-X", "POST",
@@ -214,13 +215,13 @@ func TestARenewedCertificateIsServedWithoutRestartingTheWriter(t *testing.T) {
 
 	// And the channel still carries evidence afterwards.
 	h.seedMarker(t, name, "renewed-marker")
-	baseline := h.writerExecutions(t, name)
+	baseline := h.writerRelayProgress(t, name)
 	for range 20 {
 		if _, err := h.curlPost(t, h.readerServiceURL(name), "/execute", queryBody("markers")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	h.waitForRelayedExecutions(t, name, baseline+20)
+	h.waitForRelayedEvidence(t, name, baseline)
 }
 
 // Deleting the database removes the PKI it owns. A certificate authority left
@@ -280,23 +281,71 @@ func certManagerReady(object *unstructured.Unstructured) bool {
 	return false
 }
 
-func (h *harness) writerExecutions(t *testing.T, database string) int {
+type relayProgress struct {
+	received           int
+	mergedObservations int
+}
+
+func (h *harness) writerRelayProgress(t *testing.T, database string) relayProgress {
 	t.Helper()
 	body, err := h.curl(t, h.serviceURL(database)+"/statistics")
 	if err != nil {
 		t.Fatalf("read statistics: %v", err)
 	}
-	return totalRetainedExecutions(body)
+	progress, err := relayProgressFromStatistics(body)
+	if err != nil {
+		t.Fatalf("decode statistics: %v", err)
+	}
+	return progress
 }
 
-func (h *harness) waitForRelayedExecutions(t *testing.T, database string, want int) {
+func relayProgressFromStatistics(statistics string) (relayProgress, error) {
+	var payload struct {
+		Relay struct {
+			Received           int `json:"received"`
+			MergedObservations int `json:"mergedObservations"`
+		} `json:"relay"`
+	}
+	if err := json.Unmarshal([]byte(statistics), &payload); err != nil {
+		return relayProgress{}, err
+	}
+	return relayProgress{
+		received:           payload.Relay.Received,
+		mergedObservations: payload.Relay.MergedObservations,
+	}, nil
+}
+
+func TestRelayProgressFromStatistics(t *testing.T) {
+	progress, err := relayProgressFromStatistics(
+		`{"relay":{"received":3,"mergedObservations":19},"models":[]}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if progress.received != 3 || progress.mergedObservations != 19 {
+		t.Fatalf("relay progress = %#v", progress)
+	}
+}
+
+func (h *harness) waitForRelayedEvidence(t *testing.T, database string, baseline relayProgress) {
 	t.Helper()
-	waitFor(t, 3*time.Minute, fmt.Sprintf("%d relayed executions", want), func() (bool, string) {
+	waitFor(t, 3*time.Minute, "relayed evidence", func() (bool, string) {
 		body, err := h.curl(t, h.serviceURL(database)+"/statistics")
 		if err != nil {
 			return false, err.Error()
 		}
-		got := totalRetainedExecutions(body)
-		return got >= want, fmt.Sprintf("%d/%d", got, want)
+		current, err := relayProgressFromStatistics(body)
+		if err != nil {
+			return false, err.Error()
+		}
+		crossed := current.received > baseline.received &&
+			current.mergedObservations > baseline.mergedObservations
+		return crossed, fmt.Sprintf(
+			"received %d/%d, merged %d/%d",
+			current.received,
+			baseline.received+1,
+			current.mergedObservations,
+			baseline.mergedObservations+1,
+		)
 	})
 }

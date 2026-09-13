@@ -4236,6 +4236,9 @@ fn raw_sql_value(
                     "false" | "f" | "0" => Ok(RawScalar::Bool(false)),
                     _ => Err(Error::Invalid(format!("invalid boolean literal {text:?}"))),
                 },
+                ScalarType::Bytes => crate::identifiers::decode_base64(&text)
+                    .map(RawScalar::Bytes)
+                    .map_err(|error| Error::Invalid(format!("invalid bytes literal: {error}"))),
             }
         }
     }
@@ -4266,10 +4269,10 @@ fn scalar_type(data_type: &DataType) -> Result<(ScalarType, String)> {
     let result = match base {
         "text" => (ScalarType::Text, "text"),
         "varchar" | "character" | "char" | "name" => (ScalarType::Text, ""),
-        "uuid" => (ScalarType::Text, "uuid"),
+        "uuid" => (ScalarType::Bytes, "uuid"),
         "json" => (ScalarType::Text, "json"),
         "jsonb" => (ScalarType::Text, "jsonb"),
-        "bytea" => (ScalarType::Text, "bytea"),
+        "bytea" => (ScalarType::Bytes, "bytea"),
         "smallint" | "integer" | "int" | "int2" | "int4" | "int8" | "bigint" => {
             (ScalarType::Int64, "")
         }
@@ -4303,7 +4306,7 @@ fn default_value(expression: &SqlExpr, scalar_type: ScalarType) -> Result<Option
         }
         if matches!(name.as_str(), "gen_random_uuid" | "uuid_generate_v4") {
             return Ok(Some(DefaultValue {
-                function: Some(DefaultFunction::Uuid),
+                function: Some(DefaultFunction::UuidV4),
                 ..DefaultValue::default()
             }));
         }
@@ -4373,6 +4376,7 @@ fn default_value(expression: &SqlExpr, scalar_type: ScalarType) -> Result<Option
                 }
             };
         }
+        (ScalarType::Bytes, RawScalar::Bytes(value)) => default.bytes = value,
         (_, RawScalar::Null) => return Ok(None),
         _ => {
             return Err(Error::Invalid(format!(
@@ -4594,7 +4598,7 @@ mod tests {
         let Statement::CreateTable { table, .. } = &program.statements[0] else {
             panic!("expected create table statement")
         };
-        assert_eq!(table.columns[0].scalar_type, ScalarType::Text);
+        assert_eq!(table.columns[0].scalar_type, ScalarType::Bytes);
         assert_eq!(table.columns[0].format, "uuid");
         assert_eq!(table.columns[1].format, "jsonb");
         assert_eq!(table.columns[2].scalar_type, ScalarType::Int64);

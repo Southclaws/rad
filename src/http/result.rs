@@ -179,6 +179,15 @@ impl Serialize for ScalarJson<'_> {
             Value::Float64(value) if value.is_finite() => serializer.serialize_f64(*value),
             Value::Float64(_) => Err(S::Error::custom("result contains a non-finite float")),
             Value::Bool(value) => serializer.serialize_bool(*value),
+            Value::Bytes(value) => match value.format() {
+                Some(format) => serializer.serialize_str(
+                    &crate::identifiers::render(format, value.as_slice())
+                        .map_err(S::Error::custom)?,
+                ),
+                None => {
+                    serializer.serialize_str(&crate::identifiers::encode_base64(value.as_slice()))
+                }
+            },
             Value::Null(_) => serializer.serialize_none(),
         }
     }
@@ -190,6 +199,8 @@ mod tests {
 
     use super::*;
     use crate::engine::exec::StatementResult;
+    use crate::engine::lir::BytesValue;
+    use crate::identifiers::Format;
 
     #[test]
     fn encodes_the_program_wire_shape_without_an_intermediate_json_tree() {
@@ -231,6 +242,32 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&encode_datum(&value).unwrap()).unwrap(),
             json!({"items": [{"value": i64::MAX}]})
+        );
+    }
+
+    #[test]
+    fn encodes_raw_bytes_as_base64_and_identifiers_as_porcelain() {
+        let value = Datum::Array(vec![
+            Datum::Scalar(Value::Bytes(BytesValue::raw([0x00, 0xff]))),
+            Datum::Scalar(Value::Bytes(BytesValue::formatted(
+                [0_u8; 16],
+                Format::Uuid,
+            ))),
+            Datum::Scalar(Value::Bytes(BytesValue::formatted(
+                [0_u8; 16],
+                Format::Ulid,
+            ))),
+            Datum::Scalar(Value::Bytes(BytesValue::formatted([0_u8; 12], Format::Xid))),
+        ]);
+
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&encode_datum(&value).unwrap()).unwrap(),
+            json!([
+                "AP8=",
+                "00000000-0000-0000-0000-000000000000",
+                "00000000000000000000000000",
+                "00000000000000000000"
+            ])
         );
     }
 

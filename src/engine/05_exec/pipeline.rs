@@ -3565,6 +3565,11 @@ fn write_scalar_hash(hasher: &mut impl Hasher, value: Option<&Value>) {
             hasher.write_u8(4);
             hasher.write_u8(u8::from(*value));
         }
+        Value::Bytes(value) => {
+            hasher.write_u8(5);
+            hasher.write_usize(value.as_slice().len());
+            hasher.write(value.as_slice());
+        }
         Value::Null(_) => hasher.write_u8(0),
     }
 }
@@ -3601,6 +3606,11 @@ fn write_decoded_scalar_hash(
         super::codec::DecodedValueRef::Bool(value) => {
             hasher.write_u8(4);
             hasher.write_u8(u8::from(value));
+        }
+        super::codec::DecodedValueRef::Bytes(value, _) => {
+            hasher.write_u8(5);
+            hasher.write_usize(value.len());
+            hasher.write(value);
         }
         super::codec::DecodedValueRef::Null(_) => hasher.write_u8(0),
     }
@@ -3681,6 +3691,9 @@ fn join_decoded_value_equal(
             Ok(*left == right || (left.is_nan() && right.is_nan()))
         }
         (Value::Bool(left), super::codec::DecodedValueRef::Bool(right)) => Ok(*left == right),
+        (Value::Bytes(left), super::codec::DecodedValueRef::Bytes(right, _)) => {
+            Ok(left.as_slice() == right)
+        }
         (Value::Null(_), super::codec::DecodedValueRef::Null(_)) => Ok(false),
         (left, right) => Err(Error::message(
             ErrorKind::Internal,
@@ -3699,6 +3712,7 @@ fn decoded_scalar_type(value: super::codec::DecodedValueRef<'_>) -> ScalarType {
         super::codec::DecodedValueRef::Int64(_) => ScalarType::Int64,
         super::codec::DecodedValueRef::Float64(_) => ScalarType::Float64,
         super::codec::DecodedValueRef::Bool(_) => ScalarType::Bool,
+        super::codec::DecodedValueRef::Bytes(_, _) => ScalarType::Bytes,
         super::codec::DecodedValueRef::Null(value_type) => value_type,
     }
 }
@@ -3732,6 +3746,11 @@ pub(super) fn join_key(frame: &Env, keys: &[EquiJoinKey], left: bool) -> Result<
                 output.extend_from_slice(&bits.to_be_bytes());
             }
             Value::Bool(value) => output.extend_from_slice(&[4, u8::from(*value)]),
+            Value::Bytes(value) => {
+                output.push(5);
+                output.extend_from_slice(&(value.as_slice().len() as u64).to_be_bytes());
+                output.extend_from_slice(value.as_slice());
+            }
             Value::Null(_) => unreachable!("null join keys return before encoding"),
         }
     }
@@ -3751,6 +3770,7 @@ fn datum_retained_bytes(datum: &Datum) -> u64 {
         Datum::Scalar(Value::Text(value)) => value.len() as u64,
         Datum::Scalar(Value::Int64(_) | Value::Float64(_)) => 8,
         Datum::Scalar(Value::Bool(_)) => 1,
+        Datum::Scalar(Value::Bytes(value)) => value.as_slice().len() as u64,
         Datum::Array(values) => values
             .iter()
             .map(datum_retained_bytes)

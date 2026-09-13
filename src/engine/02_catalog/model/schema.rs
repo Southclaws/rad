@@ -306,7 +306,7 @@ mod tests {
     fn physical_schema_rejects_generator_historical_missing_value() {
         let mut physical = table("t1", 1, "items", ScalarType::Text);
         physical.columns[0].missing_value = Some(DefaultValue {
-            function: Some(DefaultFunction::Uuid),
+            function: Some(DefaultFunction::UuidV4),
             ..DefaultValue::default()
         });
         assert!(Schema::from_physical(&[physical]).is_err());

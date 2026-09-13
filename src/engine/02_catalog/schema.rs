@@ -171,6 +171,7 @@ fn build_table(filename: &str, file: FileTable) -> Result<Table> {
             "int64" => ScalarType::Int64,
             "float64" => ScalarType::Float64,
             "bool" => ScalarType::Bool,
+            "bytes" => ScalarType::Bytes,
             other => {
                 return Err(input(filename, format!("unknown column type {other:?}")));
             }
@@ -178,10 +179,21 @@ fn build_table(filename: &str, file: FileTable) -> Result<Table> {
         if !column.format.is_empty() {
             validate_identifier(filename, "format", &column.format)?;
         }
+        if crate::identifiers::Format::recognize(&column.format).is_some()
+            && scalar_type != ScalarType::Bytes
+        {
+            return Err(input(
+                filename,
+                format!(
+                    "table {:?}, column {:?}: format {:?} requires bytes",
+                    file.name, column.name, column.format
+                ),
+            ));
+        }
         let default = column
             .default
             .as_ref()
-            .map(|value| parse_default(value, scalar_type))
+            .map(|value| parse_default(value, scalar_type, &column.format))
             .transpose()
             .map_err(|message| {
                 input(
@@ -276,14 +288,52 @@ fn build_table(filename: &str, file: FileTable) -> Result<Table> {
 fn parse_default(
     value: &Value,
     scalar_type: ScalarType,
+    format: &str,
 ) -> std::result::Result<DefaultValue, String> {
     let mut result = DefaultValue::default();
     match value {
-        Value::String(value) if value == "uuid()" => result.function = Some(DefaultFunction::Uuid),
-        Value::String(value) if value == "now_ms()" => {
+        Value::String(value)
+            if value == "uuid_v4()" && scalar_type == ScalarType::Bytes && format == "uuid" =>
+        {
+            result.function = Some(DefaultFunction::UuidV4)
+        }
+        Value::String(value)
+            if value == "uuid_v7()" && scalar_type == ScalarType::Bytes && format == "uuid" =>
+        {
+            result.function = Some(DefaultFunction::UuidV7)
+        }
+        Value::String(value)
+            if value == "ulid()" && scalar_type == ScalarType::Bytes && format == "ulid" =>
+        {
+            result.function = Some(DefaultFunction::Ulid)
+        }
+        Value::String(value)
+            if value == "xid()" && scalar_type == ScalarType::Bytes && format == "xid" =>
+        {
+            result.function = Some(DefaultFunction::Xid)
+        }
+        Value::String(value) if value == "now_ms()" && scalar_type == ScalarType::Int64 => {
             result.function = Some(DefaultFunction::NowMs)
         }
+        Value::String(value) if value == "increment()" && scalar_type == ScalarType::Int64 => {
+            result.function = Some(DefaultFunction::Increment)
+        }
+        Value::String(value)
+            if matches!(
+                value.as_str(),
+                "uuid_v4()" | "uuid_v7()" | "ulid()" | "xid()" | "now_ms()" | "increment()"
+            ) =>
+        {
+            return Err(format!("{value} default on {scalar_type:?} column").to_lowercase());
+        }
         Value::String(value) if scalar_type == ScalarType::Text => result.text = value.clone(),
+        Value::String(value) if scalar_type == ScalarType::Bytes => {
+            result.bytes = if let Some(format) = crate::identifiers::Format::recognize(format) {
+                crate::identifiers::parse(format, value).map_err(|error| error.to_string())?
+            } else {
+                crate::identifiers::decode_base64(value).map_err(|error| error.to_string())?
+            };
+        }
         Value::String(_) => {
             return Err(format!("string default on {scalar_type:?} column").to_lowercase());
         }
@@ -385,6 +435,7 @@ pub fn render(schema: &CanonicalSchema) -> Result<Vec<u8>> {
                     ScalarType::Int64 => "int64",
                     ScalarType::Float64 => "float64",
                     ScalarType::Bool => "bool",
+                    ScalarType::Bytes => "bytes",
                 }
                 .into(),
                 nullable: column.nullable,
@@ -428,8 +479,12 @@ fn render_default(column: &ColumnDef) -> Option<Value> {
     if let Some(function) = default.function {
         return Some(Value::String(
             match function {
-                DefaultFunction::Uuid => "uuid()",
+                DefaultFunction::UuidV4 => "uuid_v4()",
+                DefaultFunction::UuidV7 => "uuid_v7()",
+                DefaultFunction::Ulid => "ulid()",
+                DefaultFunction::Xid => "xid()",
                 DefaultFunction::NowMs => "now_ms()",
+                DefaultFunction::Increment => "increment()",
             }
             .into(),
         ));
@@ -439,6 +494,15 @@ fn render_default(column: &ColumnDef) -> Option<Value> {
         ScalarType::Int64 => Value::Number(default.int64.into()),
         ScalarType::Float64 => serde_yaml::to_value(default.float64).expect("f64 serializes"),
         ScalarType::Bool => Value::Bool(default.bool_value),
+        ScalarType::Bytes => Value::String(
+            crate::identifiers::Format::recognize(&column.format).map_or_else(
+                || crate::identifiers::encode_base64(&default.bytes),
+                |format| {
+                    crate::identifiers::render(format, &default.bytes)
+                        .expect("validated identifier literal default")
+                },
+            ),
+        ),
     })
 }
 
@@ -453,7 +517,7 @@ tables:
   - id: 1
     name: posts
     columns:
-      - { id: 1, name: tenant, type: string, pk: true, default: uuid() }
+      - { id: 1, name: tenant, type: bytes, format: uuid, pk: true, default: uuid_v4() }
       - { id: 2, name: id, type: int64, pk: true }
       - { id: 3, name: slug, type: string, unique: true }
       - { id: 4, name: author, type: string, ref: users.id }
@@ -502,7 +566,7 @@ tables:
   - id: 1
     name: users
     columns:
-      - { id: 1, name: id, type: string, pk: true, default: uuid() }
+      - { id: 1, name: id, type: bytes, format: uuid, pk: true, default: uuid_v4() }
       - { id: 2, name: email, type: string, nullable: true }
     indexes:
       - { name: users_email_lookup, columns: [email] }
@@ -511,6 +575,95 @@ tables:
         let rendered = render(&expected).unwrap();
         let actual = parse("rendered.rad", &rendered).unwrap().canonical();
         assert!(expected.canonical_eq(&actual).unwrap());
+    }
+
+    #[test]
+    fn increment_defaults_round_trip_and_require_int64() {
+        let source = br#"
+tables:
+  - id: 1
+    name: items
+    columns:
+      - { id: 1, name: id, type: int64, pk: true, default: increment() }
+"#;
+        let expected = parse("rad.schema.yaml", source).unwrap().canonical();
+        let rendered = render(&expected).unwrap();
+        assert!(
+            String::from_utf8(rendered.clone())
+                .unwrap()
+                .contains("default: increment()")
+        );
+        let actual = parse("rendered.rad", &rendered).unwrap().canonical();
+        assert!(expected.canonical_eq(&actual).unwrap());
+
+        let invalid = br#"tables: [{id: 1, name: items, columns: [{id: 1, name: id, type: string, default: increment()}]}]"#;
+        assert_eq!(
+            parse("invalid.rad", invalid).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn bytes_formats_and_generators_round_trip() {
+        let source = br#"
+tables:
+  - id: 1
+    name: identifiers
+    columns:
+      - { id: 1, name: key, type: string, pk: true }
+      - { id: 2, name: uuid4, type: bytes, format: uuid, default: uuid_v4() }
+      - { id: 3, name: uuid7, type: bytes, format: uuid, default: uuid_v7() }
+      - { id: 4, name: ulid, type: bytes, format: ulid, default: ulid() }
+      - { id: 5, name: xid, type: bytes, format: xid, default: xid() }
+      - { id: 6, name: raw, type: bytes, default: AP8= }
+      - { id: 7, name: zero_uuid, type: bytes, format: uuid, default: 00000000-0000-0000-0000-000000000000 }
+      - { id: 8, name: custom, type: bytes, format: application_blob, default: /w== }
+"#;
+        let expected = parse("rad.schema.yaml", source).unwrap().canonical();
+        assert_eq!(
+            expected.tables[0].columns[5]
+                .default
+                .as_ref()
+                .unwrap()
+                .bytes,
+            [0, 0xff]
+        );
+        assert_eq!(
+            expected.tables[0].columns[6]
+                .default
+                .as_ref()
+                .unwrap()
+                .bytes,
+            [0; 16]
+        );
+        let rendered = render(&expected).unwrap();
+        let text = String::from_utf8(rendered.clone()).unwrap();
+        for spelling in ["uuid_v4()", "uuid_v7()", "ulid()", "xid()", "AP8="] {
+            assert!(text.contains(spelling), "missing {spelling:?} from {text}");
+        }
+        assert!(
+            expected
+                .canonical_eq(&parse("rendered.rad", &rendered).unwrap().canonical())
+                .unwrap()
+        );
+
+        for invalid in [
+            "{id: 1, name: id, type: text, format: uuid}",
+            "{id: 1, name: id, type: bytes, default: uuid_v4()}",
+            "{id: 1, name: id, type: bytes, format: ulid, default: uuid_v4()}",
+            "{id: 1, name: id, type: bytes, format: xid, default: uuid_v7()}",
+            "{id: 1, name: id, type: int64, default: uuid_v7()}",
+            "{id: 1, name: id, type: bytes, format: uuid, default: not-a-uuid}",
+        ] {
+            let source = format!(
+                "tables: [{{id: 1, name: invalid, columns: [{invalid}], primary_key: [id]}}]"
+            );
+            assert_eq!(
+                parse("invalid.rad", source.as_bytes()).unwrap_err().kind(),
+                ErrorKind::InvalidInput,
+                "accepted {invalid}"
+            );
+        }
     }
 
     #[test]

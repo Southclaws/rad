@@ -199,7 +199,7 @@ properties:
                     type:
                       description: Scalar type of every stored cell.
                       type: string
-                      enum: [text, int64, float64, bool]
+                      enum: [text, int64, float64, bool, bytes]
                     nullable:
                       description: Whether stored cells may be null.
                       type: boolean
@@ -214,7 +214,7 @@ properties:
                         func:
                           description: Generator function for per-row defaults.
                           type: string
-                          enum: [uuid, now_ms]
+                          enum: [uuid_v4, uuid_v7, ulid, xid, now_ms, increment]
                         text:
                           description: Literal used when the column type is text.
                           type: string
@@ -227,6 +227,14 @@ properties:
                         bool:
                           description: Literal used when the column type is bool.
                           type: boolean
+                        bytes:
+                          description: Literal bytes as unsigned octets.
+                          type: array
+                          items:
+                            description: One unsigned octet.
+                            type: integer
+                            minimum: 0
+                            maximum: 255
                     missing_value:
                       description: Literal supplied for cells absent from stored rows.
                       type: object
@@ -238,7 +246,7 @@ properties:
                             values; present because the default-value form
                             is shared.
                           type: string
-                          enum: [uuid, now_ms]
+                          enum: [uuid_v4, uuid_v7, ulid, xid, now_ms, increment]
                         text:
                           description: Literal used when the column type is text.
                           type: string
@@ -251,6 +259,14 @@ properties:
                         bool:
                           description: Literal used when the column type is bool.
                           type: boolean
+                        bytes:
+                          description: Literal bytes as unsigned octets.
+                          type: array
+                          items:
+                            description: One unsigned octet.
+                            type: integer
+                            minimum: 0
+                            maximum: 255
                 target:
                   description: The replacement column receiving converted cells.
                   type: object
@@ -274,7 +290,7 @@ properties:
                     type:
                       description: Scalar type of every stored cell.
                       type: string
-                      enum: [text, int64, float64, bool]
+                      enum: [text, int64, float64, bool, bytes]
                     nullable:
                       description: Whether stored cells may be null.
                       type: boolean
@@ -289,7 +305,7 @@ properties:
                         func:
                           description: Generator function for per-row defaults.
                           type: string
-                          enum: [uuid, now_ms]
+                          enum: [uuid_v4, uuid_v7, ulid, xid, now_ms, increment]
                         text:
                           description: Literal used when the column type is text.
                           type: string
@@ -302,6 +318,14 @@ properties:
                         bool:
                           description: Literal used when the column type is bool.
                           type: boolean
+                        bytes:
+                          description: Literal bytes as unsigned octets.
+                          type: array
+                          items:
+                            description: One unsigned octet.
+                            type: integer
+                            minimum: 0
+                            maximum: 255
                     missing_value:
                       description: Literal supplied for cells absent from stored rows.
                       type: object
@@ -313,7 +337,7 @@ properties:
                             values; present because the default-value form
                             is shared.
                           type: string
-                          enum: [uuid, now_ms]
+                          enum: [uuid_v4, uuid_v7, ulid, xid, now_ms, increment]
                         text:
                           description: Literal used when the column type is text.
                           type: string
@@ -326,6 +350,14 @@ properties:
                         bool:
                           description: Literal used when the column type is bool.
                           type: boolean
+                        bytes:
+                          description: Literal bytes as unsigned octets.
+                          type: array
+                          items:
+                            description: One unsigned octet.
+                            type: integer
+                            minimum: 0
+                            maximum: 255
                 conversion:
                   description: Deterministic conversion applied to source cells.
                   type: string

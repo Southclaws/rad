@@ -306,6 +306,11 @@ fn value_digest(value: &Value) -> ([u8; 32], u64) {
             hasher.update([3, u8::from(*value)]);
             1
         }
+        Value::Bytes(value) => {
+            hasher.update([4]);
+            hasher.update(value.as_slice());
+            value.as_slice().len() as u64
+        }
         Value::Null(_) => unreachable!("nulls counted before hashing"),
     };
     (hasher.finalize().into(), width)
@@ -586,7 +591,6 @@ fn degree_value_key(value: &Value) -> Option<Vec<u8>> {
             key.extend_from_slice(&(value.len() as u64).to_be_bytes());
             key.extend_from_slice(value.as_bytes());
         }
-        Value::Text(_) | Value::Null(_) => return None,
         Value::Int64(value) => {
             key.push(1);
             key.extend_from_slice(&value.to_be_bytes());
@@ -597,6 +601,12 @@ fn degree_value_key(value: &Value) -> Option<Vec<u8>> {
             key.extend_from_slice(&bits.to_be_bytes());
         }
         Value::Bool(value) => key.extend_from_slice(&[3, u8::from(*value)]),
+        Value::Bytes(value) if value.as_slice().len() <= DEGREE_SEQUENCE_MAX_TEXT_BYTES => {
+            key.push(4);
+            key.extend_from_slice(&(value.as_slice().len() as u64).to_be_bytes());
+            key.extend_from_slice(value.as_slice());
+        }
+        Value::Text(_) | Value::Bytes(_) | Value::Null(_) => return None,
     }
     Some(key)
 }
@@ -1216,6 +1226,7 @@ fn value_width(value: &Value) -> u64 {
         Value::Text(value) => value.len() as u64,
         Value::Int64(_) | Value::Float64(_) => 8,
         Value::Bool(_) => 1,
+        Value::Bytes(value) => value.as_slice().len() as u64,
         Value::Null(_) => 0,
     }
 }

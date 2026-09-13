@@ -6,19 +6,19 @@ tables:
   - id: 1
     name: teams
     columns:
-      - { id: 1, name: id,         type: string, pk: true, format: uuid }
+      - { id: 1, name: id,         type: string, pk: true }
       - { id: 2, name: name,       type: string, unique: true }
 
   - id: 2
     name: users
     columns:
-      - { id: 1, name: id,       type: string, pk: true, format: uuid }
+      - { id: 1, name: id,       type: string, pk: true }
       - { id: 2, name: username, type: string, unique: true }
 
   - id: 3
     name: boards
     columns:
-      - { id: 1, name: id,       type: string, pk: true, format: uuid }
+      - { id: 1, name: id,       type: string, pk: true }
       - { id: 2, name: team_id,  type: string, ref: teams.id }
       - { id: 3, name: name,     type: string }
       - { id: 4, name: archived, type: bool, default: false }
@@ -28,7 +28,7 @@ tables:
   - id: 4
     name: tasks
     columns:
-      - { id: 1, name: id,         type: string, pk: true, format: uuid }
+      - { id: 1, name: id,         type: string, pk: true }
       - { id: 2, name: board_id,   type: string, ref: boards.id }
       - { id: 3, name: title,      type: string }
       - { id: 4, name: status,     type: string, default: todo }

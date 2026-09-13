@@ -1038,6 +1038,7 @@ pub enum SynopsisValue {
     Int64(i64),
     Float64(f64),
     Bool(bool),
+    Bytes(Vec<u8>),
 }
 
 impl SynopsisValue {
@@ -1047,6 +1048,7 @@ impl SynopsisValue {
             crate::engine::lir::Value::Int64(value) => Some(Self::Int64(*value)),
             crate::engine::lir::Value::Float64(value) => Some(Self::Float64(*value)),
             crate::engine::lir::Value::Bool(value) => Some(Self::Bool(*value)),
+            crate::engine::lir::Value::Bytes(value) => Some(Self::Bytes(value.as_slice().to_vec())),
             crate::engine::lir::Value::Null(_) => None,
         }
     }
@@ -1057,6 +1059,9 @@ impl SynopsisValue {
             (Self::Int64(left), crate::engine::lir::Value::Int64(right)) => left == right,
             (Self::Float64(left), crate::engine::lir::Value::Float64(right)) => left == right,
             (Self::Bool(left), crate::engine::lir::Value::Bool(right)) => left == right,
+            (Self::Bytes(left), crate::engine::lir::Value::Bytes(right)) => {
+                left.as_slice() == right.as_slice()
+            }
             _ => false,
         }
     }
@@ -1075,6 +1080,9 @@ impl SynopsisValue {
             Self::Int64(value) => crate::engine::lir::Value::Int64(*value),
             Self::Float64(value) => crate::engine::lir::Value::Float64(*value),
             Self::Bool(value) => crate::engine::lir::Value::Bool(*value),
+            Self::Bytes(value) => {
+                crate::engine::lir::Value::Bytes(crate::engine::lir::BytesValue::raw(value.clone()))
+            }
         }
     }
 }
@@ -1086,6 +1094,11 @@ impl std::fmt::Display for SynopsisValue {
             Self::Int64(value) => write!(formatter, "{value}"),
             Self::Float64(value) => write!(formatter, "{value}"),
             Self::Bool(value) => write!(formatter, "{value}"),
+            Self::Bytes(value) => write!(
+                formatter,
+                "b64{:?}",
+                crate::identifiers::encode_base64(value)
+            ),
         }
     }
 }

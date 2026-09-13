@@ -295,12 +295,23 @@ impl ColumnView {
             ScalarKind::Int64 => "int64",
             ScalarKind::Float64 => "float64",
             ScalarKind::Bool => "bool",
+            ScalarKind::Bytes => match column.format.as_str() {
+                "uuid" | "ulid" => "[16]byte",
+                "xid" => "[12]byte",
+                _ => "[]byte",
+            },
         };
         let helper = match column.kind {
             ScalarKind::Text => "String",
             ScalarKind::Int64 => "Int64",
             ScalarKind::Float64 => "Float64",
             ScalarKind::Bool => "Bool",
+            ScalarKind::Bytes => match column.format.as_str() {
+                "uuid" => "UUID",
+                "ulid" => "ULID",
+                "xid" => "XID",
+                _ => "Bytes",
+            },
         };
         let field = go_exported(&column.name);
         Self {
@@ -579,7 +590,11 @@ tables:
       - { id: 1, name: id, type: string, pk: true }
       - { id: 2, name: name, type: string, unique: true }
       - { id: 3, name: parent_id, type: string, nullable: true }
-      - { id: 4, name: rank, type: int64, default: 0 }
+      - { id: 4, name: rank, type: int64, default: increment() }
+      - { id: 5, name: payload, type: bytes }
+      - { id: 6, name: public_id, type: bytes, format: uuid, default: uuid_v7() }
+      - { id: 7, name: event_id, type: bytes, format: ulid, nullable: true }
+      - { id: 8, name: trace_id, type: bytes, format: xid }
     foreign_keys:
       - name: categories_parent_id_fk
         columns: [parent_id]
@@ -609,17 +624,44 @@ tables:
             "const SchemaHash = \"sha256:accepted\"",
             "const RawSchema = \"tables: []\\n\"",
             "type Category struct",
+            "type CategoryCreate struct",
             "IncludeParent",
             "IncludeCategories",
             "lirwire.",
             "github.com/Southclaws/rad/clients/go/rad",
             "github.com/Southclaws/rad/clients/go/protocol",
+            "Payload []byte",
+            "PublicID [16]byte",
+            "EventID *[16]byte",
+            "TraceID [12]byte",
+            "recUUID(rec, \"public_id\")",
+            "recULIDPtr(rec, \"event_id\")",
+            "recXID(rec, \"trace_id\")",
         ] {
             assert!(
                 source.contains(expected),
                 "missing {expected:?} in generated source:\n{source}"
             );
         }
+        let create = source
+            .split_once("type CategoryCreate struct {")
+            .unwrap()
+            .1
+            .split_once('}')
+            .unwrap()
+            .0;
+        assert!(
+            create
+                .lines()
+                .any(|line| line.split_whitespace().eq(["Rank", "*int64"])),
+            "default-generated Rank must be optional on create:\n{create}"
+        );
+        assert!(
+            create
+                .lines()
+                .any(|line| line.split_whitespace().eq(["PublicID", "*[16]byte"])),
+            "UUID generator must be optional on create:\n{create}"
+        );
         for forbidden in [
             "protocol.Eq",
             "protocol.Col(",

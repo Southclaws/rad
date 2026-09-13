@@ -6,7 +6,7 @@
 #
 # It deliberately exercises the database's limits:
 #   - uuid / unix_ms / email formats
-#   - generator and literal defaults (uuid(), now_ms(), strings, ints, bools)
+#   - generator and literal defaults (uuid_v7(), now_ms(), strings, ints, bools)
 #   - nullable columns and nullable foreign keys
 #   - two foreign keys from one table to the same target (assignee/creator)
 #   - a self-referential foreign key (subtasks)
@@ -21,9 +21,9 @@ tables:
       - {
           id: 1,
           name: id,
-          type: string,
+          type: bytes,
           pk: true,
-          default: uuid(),
+          default: uuid_v7(),
           format: uuid,
         }
       - { id: 2, name: username, type: string, unique: true }
@@ -44,12 +44,12 @@ tables:
       - {
           id: 1,
           name: token,
-          type: string,
+          type: bytes,
           pk: true,
-          default: uuid(),
+          default: uuid_v7(),
           format: uuid,
         }
-      - { id: 2, name: user_id, type: string, ref: users.id, index: true }
+      - { id: 2, name: user_id, type: bytes, format: uuid, ref: users.id, index: true }
       - {
           id: 3,
           name: created_at,
@@ -65,9 +65,9 @@ tables:
       - {
           id: 1,
           name: id,
-          type: string,
+          type: bytes,
           pk: true,
-          default: uuid(),
+          default: uuid_v7(),
           format: uuid,
         }
       - { id: 2, name: name, type: string, unique: true }
@@ -82,8 +82,8 @@ tables:
   - id: 4
     name: team_members
     columns:
-      - { id: 1, name: team_id, type: string, ref: teams.id }
-      - { id: 2, name: user_id, type: string, ref: users.id, index: true }
+      - { id: 1, name: team_id, type: bytes, format: uuid, ref: teams.id }
+      - { id: 2, name: user_id, type: bytes, format: uuid, ref: users.id, index: true }
       - { id: 3, name: role, type: string, default: member }
       - {
           id: 4,
@@ -100,12 +100,12 @@ tables:
       - {
           id: 1,
           name: id,
-          type: string,
+          type: bytes,
           pk: true,
-          default: uuid(),
+          default: uuid_v7(),
           format: uuid,
         }
-      - { id: 2, name: team_id, type: string, ref: teams.id }
+      - { id: 2, name: team_id, type: bytes, format: uuid, ref: teams.id }
       - { id: 3, name: name, type: string }
       - { id: 4, name: archived, type: bool, default: false }
       - {
@@ -124,12 +124,12 @@ tables:
       - {
           id: 1,
           name: id,
-          type: string,
+          type: bytes,
           pk: true,
-          default: uuid(),
+          default: uuid_v7(),
           format: uuid,
         }
-      - { id: 2, name: board_id, type: string, ref: boards.id }
+      - { id: 2, name: board_id, type: bytes, format: uuid, ref: boards.id }
       - { id: 3, name: title, type: string }
       - { id: 4, name: description, type: string, nullable: true }
       - { id: 5, name: status, type: string, default: todo }
@@ -138,16 +138,18 @@ tables:
       - {
           id: 8,
           name: assignee_id,
-          type: string,
+          type: bytes,
+          format: uuid,
           nullable: true,
           ref: users.id,
           index: true,
         }
-      - { id: 9, name: creator_id, type: string, ref: users.id }
+      - { id: 9, name: creator_id, type: bytes, format: uuid, ref: users.id }
       - {
           id: 10,
           name: parent_id,
-          type: string,
+          type: bytes,
+          format: uuid,
           nullable: true,
           ref: tasks.id,
           index: true,
@@ -170,13 +172,13 @@ tables:
       - {
           id: 1,
           name: id,
-          type: string,
+          type: bytes,
           pk: true,
-          default: uuid(),
+          default: uuid_v7(),
           format: uuid,
         }
-      - { id: 2, name: task_id, type: string, ref: tasks.id, index: true }
-      - { id: 3, name: author_id, type: string, ref: users.id }
+      - { id: 2, name: task_id, type: bytes, format: uuid, ref: tasks.id, index: true }
+      - { id: 3, name: author_id, type: bytes, format: uuid, ref: users.id }
       - { id: 4, name: body, type: string }
       - {
           id: 5,
@@ -192,12 +194,12 @@ tables:
       - {
           id: 1,
           name: id,
-          type: string,
+          type: bytes,
           pk: true,
-          default: uuid(),
+          default: uuid_v7(),
           format: uuid,
         }
-      - { id: 2, name: team_id, type: string, ref: teams.id }
+      - { id: 2, name: team_id, type: bytes, format: uuid, ref: teams.id }
       - { id: 3, name: name, type: string }
       - { id: 4, name: hex_color, type: string, default: "#8899aa" }
     indexes:
@@ -206,6 +208,6 @@ tables:
   - id: 9
     name: task_labels
     columns:
-      - { id: 1, name: task_id, type: string, ref: tasks.id }
-      - { id: 2, name: label_id, type: string, ref: labels.id, index: true }
+      - { id: 1, name: task_id, type: bytes, format: uuid, ref: tasks.id }
+      - { id: 2, name: label_id, type: bytes, format: uuid, ref: labels.id, index: true }
     primary_key: [task_id, label_id]

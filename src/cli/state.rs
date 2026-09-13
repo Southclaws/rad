@@ -182,15 +182,17 @@ fn canonical_schema(document: wire::SchemaDocument) -> Result<Schema> {
                 "int64" => ScalarType::Int64,
                 "float64" => ScalarType::Float64,
                 "bool" => ScalarType::Bool,
+                "bytes" => ScalarType::Bytes,
                 value => return Err(format!("unsupported column type {value:?}").into()),
             };
+            let format = column.format.unwrap_or_default();
             columns.push(ColumnDef {
                 id: schema_id(column.id, "column")?,
                 name: column.name.clone(),
                 scalar_type,
                 nullable: column.nullable.unwrap_or(false),
-                format: column.format.unwrap_or_default(),
-                default: decode_default(&column.name, scalar_type, column.default)?,
+                default: decode_default(&column.name, scalar_type, &format, column.default)?,
+                format,
             });
         }
         tables.push(TableDef {
@@ -234,6 +236,7 @@ fn schema_id(value: Option<i64>, role: &str) -> Result<SchemaId> {
 fn decode_default(
     column: &str,
     scalar_type: ScalarType,
+    format: &str,
     default: Option<wire::ColumnDefault>,
 ) -> Result<Option<DefaultValue>> {
     let Some(default) = default else {
@@ -244,8 +247,12 @@ fn decode_default(
             return Err(format!("column {column:?} default sets both func and value").into());
         }
         let function = match function.as_str() {
-            "uuid" => DefaultFunction::Uuid,
+            "uuid_v4" => DefaultFunction::UuidV4,
+            "uuid_v7" => DefaultFunction::UuidV7,
+            "ulid" => DefaultFunction::Ulid,
+            "xid" => DefaultFunction::Xid,
             "now_ms" => DefaultFunction::NowMs,
+            "increment" => DefaultFunction::Increment,
             value => return Err(format!("unknown default function {value:?}").into()),
         };
         return Ok(Some(DefaultValue {
@@ -278,6 +285,15 @@ fn decode_default(
             output.bool_value = value
                 .as_bool()
                 .ok_or_else(|| format!("column {column:?} default expects bool"))?;
+        }
+        ScalarType::Bytes => {
+            let text = value
+                .as_str()
+                .ok_or_else(|| format!("column {column:?} default expects bytes text"))?;
+            output.bytes = match crate::identifiers::Format::recognize(format) {
+                Some(format) => crate::identifiers::parse(format, text)?,
+                None => crate::identifiers::decode_base64(text)?,
+            };
         }
     }
     Ok(Some(output))

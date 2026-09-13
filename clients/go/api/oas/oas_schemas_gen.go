@@ -75,10 +75,10 @@ type ColumnDef struct {
 	// An optional stable logical identity; direct mode allocates one when omitted.
 	ID   OptInt64 `json:"id"`
 	Name string   `json:"name"`
-	// The column's storage type, one of `text`, `int64`, `float64`, or `bool`.
+	// The column's storage type, one of `text`, `int64`, `float64`, `bool`, or `bytes`.
 	Type     string  `json:"type"`
 	Nullable OptBool `json:"nullable"`
-	// An optional semantic hint such as `uuid` or `unix_ms`.
+	// An optional semantic hint such as `uuid`, `ulid`, `xid`, or `unix_ms`.
 	Format  OptString        `json:"format"`
 	Default OptColumnDefault `json:"default"`
 }
@@ -144,18 +144,20 @@ func (s *ColumnDef) SetDefault(val OptColumnDefault) {
 }
 
 // A column default, applied when an insert omits the column: either a builtin generator named by
-// `func` (`uuid` on text columns, `now_ms` on int64 columns) or a literal `value` of the column's
-// type. Exactly one of the two is set.
+// `func` (`uuid_v4` or `uuid_v7` on `bytes format: uuid`, `ulid` on `bytes format: ulid`, `xid` on
+// `bytes format: xid`, and `now_ms` or `increment` on int64 columns) or a literal `value` of the
+// column's type. Exactly one is set.
 // Ref: #/components/schemas/ColumnDefault
 type ColumnDefault struct {
-	// A builtin generator, `uuid` or `now_ms`.
-	Func OptString `json:"func"`
-	// A literal of the column's type.
+	// A builtin generator.
+	Func OptColumnDefaultFunc `json:"func"`
+	// A literal of the column's type. Formatted byte columns use their canonical identifier text;
+	// unformatted bytes use padded base64.
 	Value Value `json:"value"`
 }
 
 // GetFunc returns the value of Func.
-func (s *ColumnDefault) GetFunc() OptString {
+func (s *ColumnDefault) GetFunc() OptColumnDefaultFunc {
 	return s.Func
 }
 
@@ -165,13 +167,83 @@ func (s *ColumnDefault) GetValue() Value {
 }
 
 // SetFunc sets the value of Func.
-func (s *ColumnDefault) SetFunc(val OptString) {
+func (s *ColumnDefault) SetFunc(val OptColumnDefaultFunc) {
 	s.Func = val
 }
 
 // SetValue sets the value of Value.
 func (s *ColumnDefault) SetValue(val Value) {
 	s.Value = val
+}
+
+// A builtin generator.
+type ColumnDefaultFunc string
+
+const (
+	ColumnDefaultFuncUUIDV4    ColumnDefaultFunc = "uuid_v4"
+	ColumnDefaultFuncUUIDV7    ColumnDefaultFunc = "uuid_v7"
+	ColumnDefaultFuncUlid      ColumnDefaultFunc = "ulid"
+	ColumnDefaultFuncXid       ColumnDefaultFunc = "xid"
+	ColumnDefaultFuncNowMs     ColumnDefaultFunc = "now_ms"
+	ColumnDefaultFuncIncrement ColumnDefaultFunc = "increment"
+)
+
+// AllValues returns all ColumnDefaultFunc values.
+func (ColumnDefaultFunc) AllValues() []ColumnDefaultFunc {
+	return []ColumnDefaultFunc{
+		ColumnDefaultFuncUUIDV4,
+		ColumnDefaultFuncUUIDV7,
+		ColumnDefaultFuncUlid,
+		ColumnDefaultFuncXid,
+		ColumnDefaultFuncNowMs,
+		ColumnDefaultFuncIncrement,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ColumnDefaultFunc) MarshalText() ([]byte, error) {
+	switch s {
+	case ColumnDefaultFuncUUIDV4:
+		return []byte(s), nil
+	case ColumnDefaultFuncUUIDV7:
+		return []byte(s), nil
+	case ColumnDefaultFuncUlid:
+		return []byte(s), nil
+	case ColumnDefaultFuncXid:
+		return []byte(s), nil
+	case ColumnDefaultFuncNowMs:
+		return []byte(s), nil
+	case ColumnDefaultFuncIncrement:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ColumnDefaultFunc) UnmarshalText(data []byte) error {
+	switch ColumnDefaultFunc(data) {
+	case ColumnDefaultFuncUUIDV4:
+		*s = ColumnDefaultFuncUUIDV4
+		return nil
+	case ColumnDefaultFuncUUIDV7:
+		*s = ColumnDefaultFuncUUIDV7
+		return nil
+	case ColumnDefaultFuncUlid:
+		*s = ColumnDefaultFuncUlid
+		return nil
+	case ColumnDefaultFuncXid:
+		*s = ColumnDefaultFuncXid
+		return nil
+	case ColumnDefaultFuncNowMs:
+		*s = ColumnDefaultFuncNowMs
+		return nil
+	case ColumnDefaultFuncIncrement:
+		*s = ColumnDefaultFuncIncrement
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 type ColumnDeleteConflict Problem
@@ -192,10 +264,10 @@ type ColumnInfo struct {
 	// The stable logical column identity within its table.
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
-	// The column's storage type, one of `text`, `int64`, `float64`, or `bool`.
+	// The column's storage type, one of `text`, `int64`, `float64`, `bool`, or `bytes`.
 	Type     string  `json:"type"`
 	Nullable OptBool `json:"nullable"`
-	// An optional semantic hint such as `uuid` or `unix_ms`.
+	// An optional semantic hint such as `uuid`, `ulid`, `xid`, or `unix_ms`.
 	Format  OptString        `json:"format"`
 	Default OptColumnDefault `json:"default"`
 }
@@ -2213,6 +2285,52 @@ func (o OptColumnDefault) Get() (v ColumnDefault, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptColumnDefault) Or(d ColumnDefault) ColumnDefault {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptColumnDefaultFunc returns new OptColumnDefaultFunc with value set to v.
+func NewOptColumnDefaultFunc(v ColumnDefaultFunc) OptColumnDefaultFunc {
+	return OptColumnDefaultFunc{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptColumnDefaultFunc is optional ColumnDefaultFunc.
+type OptColumnDefaultFunc struct {
+	Value ColumnDefaultFunc
+	Set   bool
+}
+
+// IsSet returns true if OptColumnDefaultFunc was set.
+func (o OptColumnDefaultFunc) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptColumnDefaultFunc) Reset() {
+	var v ColumnDefaultFunc
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptColumnDefaultFunc) SetTo(v ColumnDefaultFunc) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptColumnDefaultFunc) Get() (v ColumnDefaultFunc, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptColumnDefaultFunc) Or(d ColumnDefaultFunc) ColumnDefaultFunc {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -6622,8 +6740,8 @@ type TableCreateUnprocessableEntity Problem
 func (*TableCreateUnprocessableEntity) tableCreateRes() {}
 
 // A new table's definition, mirroring a `rad.schema.yaml` entry as JSON. The direct API may omit
-// logical IDs for the catalog to allocate. Column types are `text`, `int64`, `float64`, or `bool`; the
-// primary key is required and its columns must not be nullable.
+// logical IDs for the catalog to allocate. Column types are `text`, `int64`, `float64`, `bool`, or
+// `bytes`; the primary key is required and its columns must not be nullable.
 // Ref: #/components/schemas/TableDef
 type TableDef struct {
 	// An optional stable logical identity; direct mode allocates one when omitted.

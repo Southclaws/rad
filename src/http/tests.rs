@@ -1429,6 +1429,39 @@ async fn catalog_authority_follows_the_catalog_mode() {
 }
 
 #[tokio::test]
+async fn increment_default_round_trips_through_catalog_http() {
+    let app = test_router("http-increment-default", Mode::Direct).await;
+    let created = app
+        .clone()
+        .oneshot(post_json(
+            "/tables",
+            json!({
+                "name": "items",
+                "columns": [{
+                    "name": "id",
+                    "type": "int64",
+                    "default": {"func": "increment"}
+                }],
+                "primary_key": ["id"]
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(created).await["columns"][0]["default"]["func"],
+        "increment"
+    );
+
+    let listed = app.oneshot(request(Method::GET, "/tables")).await.unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(listed).await["tables"][0]["columns"][0]["default"]["func"],
+        "increment"
+    );
+}
+
+#[tokio::test]
 async fn metadata_and_schema_migration_cover_the_generated_surface() {
     let app = test_router("http-schema-surface", Mode::Schema).await;
 

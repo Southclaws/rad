@@ -4,8 +4,12 @@ package {{ package }}
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
+	"strings"
 
 	rad "github.com/Southclaws/rad/clients/go/rad"
 	"github.com/Southclaws/rad/clients/go/protocol"

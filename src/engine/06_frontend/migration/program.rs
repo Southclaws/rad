@@ -85,9 +85,9 @@ pub(super) fn lower(current: &Schema, steps: &[Step]) -> Result<Program> {
                     name,
                     table_id: logical.id,
                     column_id: column.id,
-                    default: default
-                        .as_ref()
-                        .map(|value| DefaultSpec::from_catalog(value, column.scalar_type)),
+                    default: default.as_ref().map(|value| {
+                        DefaultSpec::from_catalog(value, column.scalar_type, &column.format)
+                    }),
                 }
             }
             Step::CreateIndex { table, definition } => {

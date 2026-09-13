@@ -182,14 +182,15 @@ fn lower_column(
     column: pir_wire::ColumnDefinition,
 ) -> LowerResult<crate::engine::catalog::model::ColumnDraft> {
     let scalar_type = pir_scalar_type(column.r#type);
+    let format = pir_optional(column.format).unwrap_or_default();
     Ok(crate::engine::catalog::model::ColumnDraft {
         id: pir_optional(column.id).map(schema_id).transpose()?,
         name: column.name,
         scalar_type,
         nullable: pir_optional(column.nullable).unwrap_or(false),
-        format: pir_optional(column.format).unwrap_or_default(),
+        format: format.clone(),
         default: pir_optional(column.default)
-            .map(|default| lower_default(default, scalar_type))
+            .map(|default| lower_default(default, scalar_type, &format))
             .transpose()?,
     })
 }
@@ -206,12 +207,13 @@ fn lower_replacement(
     replacement: pir_wire::ColumnReplacementDefinition,
 ) -> LowerResult<crate::engine::catalog::model::ColumnReplacementDef> {
     let scalar_type = pir_scalar_type(replacement.r#type);
+    let format = pir_optional(replacement.format).unwrap_or_default();
     Ok(crate::engine::catalog::model::ColumnReplacementDef {
         scalar_type,
         nullable: replacement.nullable,
-        format: pir_optional(replacement.format).unwrap_or_default(),
+        format: format.clone(),
         default: pir_optional(replacement.default)
-            .map(|default| lower_default(default, scalar_type))
+            .map(|default| lower_default(default, scalar_type, &format))
             .transpose()?,
         conversion: crate::engine::catalog::model::ColumnConversion::StrictBuiltin,
         prerequisites: transitions(pir_optional(replacement.prerequisites).unwrap_or_default()),
@@ -238,8 +240,9 @@ fn lower_constraint(
 fn lower_default(
     default: pir_wire::ColumnDefault,
     scalar_type: crate::engine::catalog::model::ScalarType,
+    format: &str,
 ) -> LowerResult<crate::engine::catalog::model::DefaultValue> {
-    crate::engine::exec::resolve_default(lower_default_spec(default)?, scalar_type)
+    crate::engine::exec::resolve_default(lower_default_spec(default)?, scalar_type, format)
         .map_err(|error| LowerError::new(error.to_string()))
 }
 
@@ -251,8 +254,12 @@ fn lower_default_spec(
     Ok(match default {
         pir_wire::ColumnDefault::GeneratorDefault(default) => {
             DefaultSpec::Generator(match default.func {
-                pir_wire::GeneratorDefaultFunc::UUID => DefaultFunction::Uuid,
+                pir_wire::GeneratorDefaultFunc::UUIDV4 => DefaultFunction::UuidV4,
+                pir_wire::GeneratorDefaultFunc::UUIDV7 => DefaultFunction::UuidV7,
+                pir_wire::GeneratorDefaultFunc::Ulid => DefaultFunction::Ulid,
+                pir_wire::GeneratorDefaultFunc::Xid => DefaultFunction::Xid,
                 pir_wire::GeneratorDefaultFunc::NowMs => DefaultFunction::NowMs,
+                pir_wire::GeneratorDefaultFunc::Increment => DefaultFunction::Increment,
             })
         }
         pir_wire::ColumnDefault::LiteralDefault(default) => {
@@ -285,6 +292,7 @@ fn pir_scalar_type(value: pir_wire::ColumnType) -> crate::engine::catalog::model
         pir_wire::ColumnType::Int64 => crate::engine::catalog::model::ScalarType::Int64,
         pir_wire::ColumnType::Float64 => crate::engine::catalog::model::ScalarType::Float64,
         pir_wire::ColumnType::Bool => crate::engine::catalog::model::ScalarType::Bool,
+        pir_wire::ColumnType::Bytes => crate::engine::catalog::model::ScalarType::Bytes,
     }
 }
 
@@ -557,7 +565,7 @@ impl Graph {
 
     fn expression(&mut self, expression: wire::Expr) -> LowerResult<lir::Expr> {
         Ok(match expression {
-            wire::Expr::LiteralExpr(expression) => lower_literal(expression.value),
+            wire::Expr::LiteralExpr(expression) => lower_literal(expression.value)?,
             wire::Expr::ColumnExpr(expression) => lir::Expr::Column {
                 scope: expression.scope,
                 name: expression.column,
@@ -632,7 +640,7 @@ impl Graph {
     }
 }
 
-fn lower_literal(value: wire::Value) -> lir::Expr {
+fn lower_literal(value: wire::Value) -> LowerResult<lir::Expr> {
     let (raw, kind) = match value {
         wire::Value::TextValue(value) => (
             optional(value.value)
@@ -658,11 +666,24 @@ fn lower_literal(value: wire::Value) -> lir::Expr {
                 .unwrap_or(lir::RawScalar::Null);
             (raw, lir::Kind::Bool)
         }
+        wire::Value::BytesValue(value) => (
+            optional(value.value)
+                .map(|value| {
+                    crate::identifiers::decode_base64(&value)
+                        .map(lir::RawScalar::Bytes)
+                        .map_err(|error| {
+                            LowerError::new(format!("invalid bytes payload {value:?}: {error}"))
+                        })
+                })
+                .transpose()?
+                .unwrap_or(lir::RawScalar::Null),
+            lir::Kind::Bytes,
+        ),
     };
-    lir::Expr::Literal(lir::Literal {
+    Ok(lir::Expr::Literal(lir::Literal {
         raw,
         kind: Some(kind),
-    })
+    }))
 }
 
 fn lower_cell(cell: wire::Cell, kind: lir::Kind) -> LowerResult<lir::RawScalar> {
@@ -673,6 +694,11 @@ fn lower_cell(cell: wire::Cell, kind: lir::Kind) -> LowerResult<lir::RawScalar> 
         lir::Kind::Text => lir::RawScalar::Text(value),
         lir::Kind::Int64 | lir::Kind::Float64 => lir::RawScalar::Number(value),
         lir::Kind::Bool => lir::RawScalar::Bool(parse_bool(&value)?),
+        lir::Kind::Bytes => {
+            lir::RawScalar::Bytes(crate::identifiers::decode_base64(&value).map_err(|error| {
+                LowerError::new(format!("invalid bytes payload {value:?}: {error}"))
+            })?)
+        }
         _ => return Err(LowerError::new("rows column has a non-scalar type")),
     })
 }
@@ -703,6 +729,7 @@ fn scalar_kind(value: wire::ScalarType) -> lir::Kind {
         wire::ScalarType::Int64 => lir::Kind::Int64,
         wire::ScalarType::Float64 => lir::Kind::Float64,
         wire::ScalarType::Bool => lir::Kind::Bool,
+        wire::ScalarType::Bytes => lir::Kind::Bytes,
     }
 }
 

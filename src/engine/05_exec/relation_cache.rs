@@ -911,6 +911,7 @@ fn small_value_vec_retained_bytes(values: &smallvec::SmallVec<[Value; 4]>) -> us
 fn value_dynamic_bytes(value: &Value) -> usize {
     match value {
         Value::Text(value) => value.capacity(),
+        Value::Bytes(value) => value.as_slice().len(),
         Value::Int64(_) | Value::Float64(_) | Value::Bool(_) | Value::Null(_) => 0,
     }
 }

@@ -109,6 +109,7 @@ pub enum SpecValue {
     /// Raw source spelling so `-0.0` and exponent forms emit verbatim.
     Float(String),
     Text(String),
+    Bytes(Vec<u8>),
     Row(Vec<(String, SpecValue)>),
 }
 

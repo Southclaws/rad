@@ -9,6 +9,7 @@ pub enum RawScalar {
     Text(String),
     Number(String),
     Bool(bool),
+    Bytes(Vec<u8>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
