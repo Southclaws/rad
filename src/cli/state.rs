@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::catalog::identity::SchemaId;
 use crate::engine::catalog::model::{
-    ColumnDef, DefaultFunction, DefaultValue, ForeignKeyAction, ForeignKeyDef, IndexDef,
-    ScalarType, Schema, TableDef,
+    ColumnDef, DefaultFunction, DefaultValue, ForeignKeyDef, IndexDef, ScalarType, Schema, TableDef,
 };
 use crate::http::generated::types as wire;
 use crate::process::Result;
@@ -220,7 +219,7 @@ fn canonical_schema(document: wire::SchemaDocument) -> Result<Schema> {
                     columns: foreign_key.columns,
                     ref_table: foreign_key.ref_table,
                     ref_columns: foreign_key.ref_columns,
-                    on_delete: ForeignKeyAction::Restrict,
+                    on_delete: foreign_key.on_delete.into(),
                 })
                 .collect(),
         });
@@ -439,5 +438,47 @@ mod tests {
         assert_eq!(store.load().unwrap().lock.schema_version, 4);
         std::fs::write(store.snapshot_path(4), b"tables: []\n").unwrap();
         assert!(store.load().is_err());
+    }
+
+    #[test]
+    fn accepted_state_preserves_foreign_key_delete_actions() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = StateStore::new(directory.path());
+        let schema = crate::engine::catalog::schema::parse(
+            "fixture",
+            br#"
+tables:
+- id: 1
+  name: parents
+  columns:
+  - { id: 1, name: id, type: int64, pk: true }
+- id: 2
+  name: children
+  columns:
+  - { id: 1, name: id, type: int64, pk: true }
+  - { id: 2, name: parent_id, type: int64 }
+  foreign_keys:
+  - name: children_parent_fk
+    columns: [parent_id]
+    ref_table: parents
+    ref_columns: [id]
+    on_delete: cascade
+"#,
+        )
+        .unwrap()
+        .canonical();
+        let state = wire::SchemaState {
+            schema_version: 5,
+            schema_hash: schema.hash().unwrap(),
+            schema: serde_json::from_slice(&schema.canonical_json().unwrap()).unwrap(),
+        };
+
+        let accepted = store.write_accepted(state).unwrap();
+        assert!(
+            String::from_utf8(accepted.source)
+                .unwrap()
+                .contains("on_delete: cascade")
+        );
+        assert_eq!(store.load().unwrap().lock.schema_version, 5);
     }
 }

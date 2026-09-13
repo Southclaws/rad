@@ -646,6 +646,21 @@ func (s ExecutionFailedProblemType) Validate() error {
 	}
 }
 
+func (s ForeignKeyAction) Validate() error {
+	switch s {
+	case "restrict":
+		return nil
+	case "no_action":
+		return nil
+	case "cascade":
+		return nil
+	case "set_null":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
 func (s *ForeignKeyInfo) Validate() error {
 	if s == nil {
 		return validate.ErrNilPointer
@@ -671,6 +686,17 @@ func (s *ForeignKeyInfo) Validate() error {
 	}(); err != nil {
 		failures = append(failures, validate.FieldError{
 			Name:  "ref_columns",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if err := s.OnDelete.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "on_delete",
 			Error: err,
 		})
 	}

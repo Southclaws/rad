@@ -794,6 +794,10 @@ The physical execution identity available at failure.
 
 
 
+#### `ForeignKeyAction`
+
+The action applied to referencing rows when the referenced row is deleted.
+
 #### `ForeignKeyInfo`
 
 One foreign key, in both definitions and introspection. The
@@ -805,6 +809,7 @@ referenced columns must be the referenced table's full primary key.
 | `columns` | `array of string` | Yes | The referencing column names on this table. |
 | `ref_table` | `string` | Yes | The referenced table's name. |
 | `ref_columns` | `array of string` | Yes | The referenced table's primary key columns, in order. |
+| `on_delete` | `ForeignKeyAction` | Yes |  |
 
 #### `Health`
 

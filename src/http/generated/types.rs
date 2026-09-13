@@ -1087,19 +1087,6 @@ impl IndexInfoBuilder {
         self.value
     }
 }
-/**One foreign key, in both definitions and introspection. The
-referenced columns must be the referenced table's full primary key.
-*/
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ForeignKeyInfo {
-    ///The referencing column names on this table.
-    pub columns: Vec<String>,
-    pub name: String,
-    ///The referenced table's primary key columns, in order.
-    pub ref_columns: Vec<String>,
-    ///The referenced table's name.
-    pub ref_table: String,
-}
 /**An advisory point-in-time comparison with the desired schema. `program`
 is the work a newly accepted apply would currently need; it may omit a
 transition start when matching durable work is already in progress.
@@ -1530,6 +1517,53 @@ the catalog and the imperative catalog operations are rejected).
 */
     pub mode: String,
     pub status: String,
+}
+/**One foreign key, in both definitions and introspection. The
+referenced columns must be the referenced table's full primary key.
+*/
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ForeignKeyInfo {
+    ///The referencing column names on this table.
+    pub columns: Vec<String>,
+    pub name: String,
+    pub on_delete: ForeignKeyAction,
+    ///The referenced table's primary key columns, in order.
+    pub ref_columns: Vec<String>,
+    ///The referenced table's name.
+    pub ref_table: String,
+}
+///The action applied to referencing rows when the referenced row is deleted.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum ForeignKeyAction {
+    #[default]
+    #[serde(rename = "restrict")]
+    Restrict,
+    #[serde(rename = "no_action")]
+    NoAction,
+    #[serde(rename = "cascade")]
+    Cascade,
+    #[serde(rename = "set_null")]
+    SetNull,
+}
+impl ForeignKeyAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Restrict => "restrict",
+            Self::NoAction => "no_action",
+            Self::Cascade => "cascade",
+            Self::SetNull => "set_null",
+        }
+    }
+}
+impl ::std::fmt::Display for ForeignKeyAction {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for ForeignKeyAction {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExecutionFailedProblem {
