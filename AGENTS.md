@@ -68,8 +68,7 @@ Use the smallest focused test while iterating, then the proportional product
 gate before handoff:
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
+task lint
 cargo test --locked --all-targets
 ```
 

@@ -2,6 +2,10 @@ use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::Duration;
 
+mod support;
+
+use support::http_process::reserve_port_pair;
+
 const SCHEMA: &str = r#"
 tables:
   - id: 1
@@ -26,9 +30,8 @@ async fn generated_cli_drives_the_schema_workflow_over_http() {
     let config = directory.path().join("rad.config.yaml");
     std::fs::write(&schema, SCHEMA).unwrap();
 
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    let (port, public, admin) = reserve_port_pair().unwrap();
+    drop((public, admin));
     std::fs::write(
         &config,
         format!(
