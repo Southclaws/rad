@@ -2523,11 +2523,7 @@ fn catalog_type(scalar_type: ScalarType, format: &str) -> (&'static str, &'stati
     }
 }
 
-fn default_datum(
-    default: Option<&crate::engine::catalog::model::DefaultValue>,
-    scalar_type: ScalarType,
-    format: &str,
-) -> Datum {
+fn default_datum(default: Option<&DefaultValue>, scalar_type: ScalarType, format: &str) -> Datum {
     let Some(default) = default else {
         return Datum::Null;
     };
