@@ -31,7 +31,7 @@ use tokio::sync::Mutex;
 use tracing::Instrument as _;
 
 use crate::engine::catalog::Catalog;
-use crate::engine::catalog::model::{Mode, ScalarType, Table};
+use crate::engine::catalog::model::{DefaultValue, Mode, ScalarType, Table};
 use crate::engine::exec::{CatalogPolicy, Engine, ErrorReason};
 use crate::engine::frontend::Tx;
 use crate::engine::lir::{Datum, RawScalar, Value};
@@ -1392,24 +1392,32 @@ impl CatalogPlan {
                             .enumerate()
                             .map(move |(position, column)| {
                                 let (_, _, oid) = catalog_type(column.scalar_type, &column.format);
+                                let identity = column
+                                    .insert_default
+                                    .as_ref()
+                                    .is_some_and(DefaultValue::is_increment);
                                 vec![
                                     text(&table.name),
                                     text(&column.name),
                                     int((position + 1) as i64),
                                     bool_value(!column.nullable),
                                     int(oid),
-                                    default_datum(
-                                        column.insert_default.as_ref(),
-                                        column.scalar_type,
-                                        &column.format,
-                                    ),
+                                    if identity {
+                                        Datum::Null
+                                    } else {
+                                        default_datum(
+                                            column.insert_default.as_ref(),
+                                            column.scalar_type,
+                                            &column.format,
+                                        )
+                                    },
                                     Datum::Null,
                                     int(-1),
                                     int(0),
                                     int(0),
                                     bool_value(true),
                                     text("p"),
-                                    text(""),
+                                    text(if identity { "d" } else { "" }),
                                     int(0),
                                     Datum::Null,
                                     text(""),
@@ -1476,6 +1484,10 @@ impl CatalogPlan {
                     let table = tables.get(table_index)?;
                     let column_index = usize::try_from(*attribute_number - 1).ok()?;
                     let column = table.columns.get(column_index)?;
+                    let identity = column
+                        .insert_default
+                        .as_ref()
+                        .is_some_and(DefaultValue::is_increment);
                     Some(vec![
                         int(*oid),
                         int(*attribute_number),
@@ -1483,7 +1495,7 @@ impl CatalogPlan {
                         text(&table.name),
                         text("public"),
                         bool_value(!column.nullable),
-                        bool_value(false),
+                        bool_value(identity),
                     ])
                 })
                 .collect(),
@@ -1536,17 +1548,25 @@ impl CatalogPlan {
                         .map(move |(position, column)| {
                             let (data_type, format_type, oid) =
                                 catalog_type(column.scalar_type, &column.format);
+                            let identity = column
+                                .insert_default
+                                .as_ref()
+                                .is_some_and(DefaultValue::is_increment);
                             vec![
                                 text(&table.name),
                                 text(&column.name),
                                 text(data_type),
                                 text(format_type),
                                 text(if column.nullable { "YES" } else { "NO" }),
-                                default_datum(
-                                    column.insert_default.as_ref(),
-                                    column.scalar_type,
-                                    &column.format,
-                                ),
+                                if identity {
+                                    Datum::Null
+                                } else {
+                                    default_datum(
+                                        column.insert_default.as_ref(),
+                                        column.scalar_type,
+                                        &column.format,
+                                    )
+                                },
                                 Datum::Null,
                                 Datum::Null,
                                 if column.format.contains("timestamp") {
@@ -1558,11 +1578,15 @@ impl CatalogPlan {
                                 Datum::Null,
                                 Datum::Null,
                                 Datum::Null,
-                                text("NO"),
+                                text(if identity { "YES" } else { "NO" }),
+                                if identity { int(1) } else { Datum::Null },
+                                if identity { int(1) } else { Datum::Null },
                                 Datum::Null,
-                                Datum::Null,
-                                Datum::Null,
-                                Datum::Null,
+                                if identity {
+                                    text("BY DEFAULT")
+                                } else {
+                                    Datum::Null
+                                },
                                 Datum::Null,
                                 Datum::Null,
                                 text("b"),
@@ -2625,6 +2649,10 @@ mod tests {
 
         let mut table = table_with_columns("people", &["id", "name"]);
         table.primary_key = vec!["id".into()];
+        table.columns[0].insert_default = Some(DefaultValue {
+            function: Some(crate::engine::catalog::model::DefaultFunction::Increment),
+            ..DefaultValue::default()
+        });
         let prepared = sql::prepare("SELECT id, name FROM people", &[table.clone()], &[]).unwrap();
         let origins = result_origins(&prepared, std::slice::from_ref(&table));
         assert_eq!(origins.len(), 2);
@@ -2642,6 +2670,8 @@ mod tests {
         assert_eq!(jdbc_metadata.rows[0][2], text("id"));
         assert_eq!(jdbc_metadata.rows[1][2], text("name"));
         assert_eq!(jdbc_metadata.rows[0][3], text("people"));
+        assert_eq!(jdbc_metadata.rows[0][6], bool_value(true));
+        assert_eq!(jdbc_metadata.rows[1][6], bool_value(false));
         assert!(
             CatalogPlan::recognize(
                 "SELECT vals.oid FROM people JOIN (SELECT 16384 AS oid, 1 AS attnum) vals ON true"
@@ -2689,7 +2719,24 @@ mod tests {
         .unwrap();
         assert_eq!(columns.columns[1].name, "attname");
         assert_eq!(columns.rows.len(), 2);
+        assert_eq!(columns.rows[0][5], Datum::Null);
+        assert_eq!(columns.rows[0][12], text("d"));
         assert_eq!(columns.rows[1][1], text("name"));
+        assert_eq!(columns.rows[1][12], text(""));
+
+        let atlas_columns = CatalogPlan::recognize(
+            "SELECT * FROM information_schema.columns WHERE table_schema = 'public'",
+        )
+        .unwrap()
+        .execute(std::slice::from_ref(&table), &[])
+        .unwrap();
+        assert_eq!(atlas_columns.rows[0][5], Datum::Null);
+        assert_eq!(atlas_columns.rows[0][13], text("YES"));
+        assert_eq!(atlas_columns.rows[0][14], int(1));
+        assert_eq!(atlas_columns.rows[0][15], int(1));
+        assert_eq!(atlas_columns.rows[0][16], Datum::Null);
+        assert_eq!(atlas_columns.rows[0][17], text("BY DEFAULT"));
+        assert_eq!(atlas_columns.rows[1][13], text("NO"));
 
         let types = CatalogPlan::recognize(
             "SELECT t.oid,t.*,c.relkind,format_type(nullif(t.typbasetype, 0), t.typtypmod) as base_type_name FROM pg_catalog.pg_type t WHERE t.typnamespace=$1",
