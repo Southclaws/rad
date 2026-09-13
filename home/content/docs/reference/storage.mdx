@@ -153,6 +153,7 @@ One immutable logical schema revision. Every published catalog change appends a 
 | `schema.tables[].foreign_keys` | `array of object` |  | Logical foreign-key definitions, sorted canonically. |
 | `schema.tables[].foreign_keys[].columns` | `array of string` |  | Referencing column names on this table. |
 | `schema.tables[].foreign_keys[].name` | `string` | Yes | Foreign-key name at this revision. |
+| `schema.tables[].foreign_keys[].on_delete` | `restrict \| cascade \| set_null` |  | Action applied to referencing rows when the parent row is deleted. Absent means restrict. |
 | `schema.tables[].foreign_keys[].ref_columns` | `array of string` |  | Referenced column names on the target table. |
 | `schema.tables[].foreign_keys[].ref_table` | `string` | Yes | Name of the referenced table at this revision. |
 | `schema.tables[].id` | `integer` | Yes | Logical schema identity of the table. Never reused. |
@@ -205,6 +206,7 @@ One physical table: its permanent identities, its columns and their physical rep
 | `foreign_keys[].columns` | `array of string` |  | Referencing column names on this table. |
 | `foreign_keys[].id` | `string` | Yes | Permanent foreign-key identity, `fk` plus a decimal. Never reused. |
 | `foreign_keys[].name` | `string` | Yes | Current foreign-key name. Mutable, never identity. |
+| `foreign_keys[].on_delete` | `restrict \| no_action \| cascade \| set_null` |  | Action applied to referencing rows when the parent row is deleted. Absent means restrict. |
 | `foreign_keys[].ref_columns` | `array of string` |  | Referenced column names on the target table. |
 | `foreign_keys[].ref_table_id` | `string` | Yes | Physical identity of the referenced table. |
 | `id` | `string` | Yes | Permanent physical table identity, `t` plus a decimal from the shared identity counter. Never reused. |

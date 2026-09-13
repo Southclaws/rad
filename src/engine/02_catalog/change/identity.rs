@@ -84,4 +84,13 @@ impl Mutation<'_> {
         let table = self.table_by_schema_id(table_id).await?;
         self.delete_index(&table.name, index).await
     }
+
+    pub async fn delete_foreign_key_by_schema_id(
+        &mut self,
+        table_id: SchemaId,
+        foreign_key: &str,
+    ) -> Result<()> {
+        let table = self.table_by_schema_id(table_id).await?;
+        self.delete_foreign_key(&table.name, foreign_key).await
+    }
 }

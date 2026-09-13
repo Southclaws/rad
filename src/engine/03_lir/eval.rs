@@ -571,6 +571,37 @@ fn evaluate_cast(
             }
             Ok(Value::Int64(value as i64))
         }
+        (Value::Text(value), ScalarType::Int64) => value.parse().map(Value::Int64).map_err(|_| {
+            EvalError::with_reason(
+                EvalErrorReason::Runtime,
+                format!("exec: invalid input syntax for int64: {value:?}"),
+            )
+        }),
+        (Value::Text(value), ScalarType::Float64) => {
+            let parsed = value.parse::<f64>().map_err(|_| {
+                EvalError::with_reason(
+                    EvalErrorReason::Runtime,
+                    format!("exec: invalid input syntax for float64: {value:?}"),
+                )
+            })?;
+            if !parsed.is_finite() {
+                return Err(EvalError::numeric_overflow(format!(
+                    "exec: cast {value:?} to float64 is out of range"
+                )));
+            }
+            Ok(Value::Float64(parsed))
+        }
+        (Value::Text(value), ScalarType::Bool) => match value.as_str() {
+            "true" => Ok(Value::Bool(true)),
+            "false" => Ok(Value::Bool(false)),
+            _ => Err(EvalError::with_reason(
+                EvalErrorReason::Runtime,
+                format!("exec: invalid input syntax for bool: {value:?}"),
+            )),
+        },
+        (Value::Int64(value), ScalarType::Text) => Ok(Value::Text(value.to_string())),
+        (Value::Float64(value), ScalarType::Text) => Ok(Value::Text(value.to_string())),
+        (Value::Bool(value), ScalarType::Text) => Ok(Value::Text(value.to_string())),
         (value, target) => Err(EvalError::internal(format!(
             "exec: cannot cast {:?} to {target:?}",
             value.scalar_type()
@@ -917,6 +948,46 @@ mod tests {
                 .unwrap_err()
                 .kind(),
                 EvalErrorKind::Runtime
+            );
+        }
+    }
+
+    #[test]
+    fn text_casts_parse_scalars_and_fail_at_runtime() {
+        for (text, kind, expected) in [
+            ("-42", Kind::Int64, Value::Int64(-42)),
+            ("3.125", Kind::Float64, Value::Float64(3.125)),
+            ("true", Kind::Bool, Value::Bool(true)),
+            ("false", Kind::Bool, Value::Bool(false)),
+        ] {
+            assert_eq!(
+                evaluate(
+                    &Expr::cast(literal(Value::Text(text.into())), kind),
+                    &Env::new(),
+                )
+                .unwrap(),
+                expected
+            );
+        }
+        for kind in [Kind::Int64, Kind::Float64, Kind::Bool] {
+            assert_eq!(
+                evaluate(
+                    &Expr::cast(literal(Value::Text("not-a-value".into())), kind),
+                    &Env::new(),
+                )
+                .unwrap_err()
+                .kind(),
+                EvalErrorKind::Runtime
+            );
+        }
+        for (value, expected) in [
+            (Value::Int64(-42), "-42"),
+            (Value::Float64(3.125), "3.125"),
+            (Value::Bool(true), "true"),
+        ] {
+            assert_eq!(
+                evaluate(&Expr::cast(literal(value), Kind::Text), &Env::new()).unwrap(),
+                Value::Text(expected.into())
             );
         }
     }

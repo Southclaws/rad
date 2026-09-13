@@ -1,5 +1,5 @@
-# e2e/errbind_cast_bad — negative: casting a non-numeric text to int64 has no
-# valid conversion. Code and detail captured by running.
+# e2e/errbind_cast_bad — negative: a text-to-int64 cast binds but rejects
+# malformed input when the expression is evaluated.
 tables:
   - id: 1
     name: widgets

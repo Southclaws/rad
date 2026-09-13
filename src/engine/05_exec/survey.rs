@@ -1719,6 +1719,7 @@ mod tests {
                 columns: vec!["board_id".into(), "status".into()],
                 ref_table_id: "board-status-table".into(),
                 ref_columns: vec!["board_id".into(), "status".into()],
+                on_delete: crate::engine::catalog::model::ForeignKeyAction::Restrict,
             });
 
         let groups = column_group_accumulators(&table);

@@ -49,8 +49,9 @@ There are two statement families. `query` reads data. `create`, `update`, and
 payload, a literal row is simply a one-row relation (LIR's `rows` node).
 `create_table`, `rename_table`, `delete_table`, `create_column`,
 `rename_column`, `change_column_default`, `delete_column`, `create_index`,
-`delete_index`, `start_index_build`, `start_column_replacement`,
-and `start_constraint_validation` mutate the catalog. Inspecting, listing,
+`delete_index`, `create_foreign_key`, `delete_foreign_key`,
+`start_index_build`, `start_column_replacement`, and
+`start_constraint_validation` mutate the catalog. Inspecting, listing,
 cancelling, and monitoring the durable work created by `start_*` statements
 are administrative operations exposed by the OpenAPI surface, not PIR
 statements.
@@ -205,7 +206,7 @@ Every statement has a unique `name`. Relational statements carry an LIR
 it as a mutation against a target `table`. Catalog statements instead
 carry the stable identities and definitions needed for one schema change.
 
-**Variants:** `QueryStatement`, `CreateStatement`, `UpdateStatement`, `DeleteStatement`, `CreateTableStatement`, `RenameTableStatement`, `DeleteTableStatement`, `CreateColumnStatement`, `RenameColumnStatement`, `ChangeColumnDefaultStatement`, `DeleteColumnStatement`, `CreateIndexStatement`, `DeleteIndexStatement`, `StartIndexBuildStatement`, `StartColumnReplacementStatement`, `StartConstraintValidationStatement`
+**Variants:** `QueryStatement`, `CreateStatement`, `UpdateStatement`, `DeleteStatement`, `CreateTableStatement`, `RenameTableStatement`, `DeleteTableStatement`, `CreateColumnStatement`, `RenameColumnStatement`, `ChangeColumnDefaultStatement`, `DeleteColumnStatement`, `CreateIndexStatement`, `DeleteIndexStatement`, `CreateForeignKeyStatement`, `DeleteForeignKeyStatement`, `StartIndexBuildStatement`, `StartColumnReplacementStatement`, `StartConstraintValidationStatement`
 
 #### `UpdateStatement`
 
@@ -272,6 +273,18 @@ nullable/default rule above.
 | `name` | `StatementName` | Yes |  |
 | `table_id` | `SchemaID` | Yes |  |
 
+#### `CreateForeignKeyStatement`
+
+Create and validate `foreign_key` on the table identified by `table_id`.
+Registration and validation are one atomic statement.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `foreign_key` | `ForeignKeyDefinition` | Yes |  |
+| `kind` | `create_foreign_key` | Yes |  |
+| `name` | `StatementName` | Yes |  |
+| `table_id` | `SchemaID` | Yes |  |
+
 #### `CreateIndexStatement`
 
 Create `index` on the table identified by `table_id` and backfill it from
@@ -319,6 +332,17 @@ cannot be deleted.
 | --- | --- | --- | --- |
 | `column_id` | `SchemaID` | Yes |  |
 | `kind` | `delete_column` | Yes |  |
+| `name` | `StatementName` | Yes |  |
+| `table_id` | `SchemaID` | Yes |  |
+
+#### `DeleteForeignKeyStatement`
+
+Delete the named foreign key from the table identified by `table_id`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `foreign_key` | `CatalogName` | Yes |  |
+| `kind` | `delete_foreign_key` | Yes |  |
 | `name` | `StatementName` | Yes |  |
 | `table_id` | `SchemaID` | Yes |  |
 
@@ -598,6 +622,7 @@ names a table visible at this statement (or the new table itself), and
 | --- | --- | --- | --- |
 | `columns` | `array of CatalogName` | Yes | Minimum items: 1. |
 | `name` | `CatalogName` | Yes |  |
+| `on_delete` | `restrict \| no_action \| cascade \| set_null` |  |  |
 | `ref_columns` | `array of CatalogName` | Yes | Minimum items: 1. |
 | `ref_table` | `CatalogName` | Yes |  |
 

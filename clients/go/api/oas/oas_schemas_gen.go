@@ -1189,6 +1189,63 @@ func (s *ExecutionFailedProblemType) UnmarshalText(data []byte) error {
 	}
 }
 
+// The action applied to referencing rows when the referenced row is deleted.
+// Ref: #/components/schemas/ForeignKeyAction
+type ForeignKeyAction string
+
+const (
+	ForeignKeyActionRestrict ForeignKeyAction = "restrict"
+	ForeignKeyActionNoAction ForeignKeyAction = "no_action"
+	ForeignKeyActionCascade  ForeignKeyAction = "cascade"
+	ForeignKeyActionSetNull  ForeignKeyAction = "set_null"
+)
+
+// AllValues returns all ForeignKeyAction values.
+func (ForeignKeyAction) AllValues() []ForeignKeyAction {
+	return []ForeignKeyAction{
+		ForeignKeyActionRestrict,
+		ForeignKeyActionNoAction,
+		ForeignKeyActionCascade,
+		ForeignKeyActionSetNull,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ForeignKeyAction) MarshalText() ([]byte, error) {
+	switch s {
+	case ForeignKeyActionRestrict:
+		return []byte(s), nil
+	case ForeignKeyActionNoAction:
+		return []byte(s), nil
+	case ForeignKeyActionCascade:
+		return []byte(s), nil
+	case ForeignKeyActionSetNull:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ForeignKeyAction) UnmarshalText(data []byte) error {
+	switch ForeignKeyAction(data) {
+	case ForeignKeyActionRestrict:
+		*s = ForeignKeyActionRestrict
+		return nil
+	case ForeignKeyActionNoAction:
+		*s = ForeignKeyActionNoAction
+		return nil
+	case ForeignKeyActionCascade:
+		*s = ForeignKeyActionCascade
+		return nil
+	case ForeignKeyActionSetNull:
+		*s = ForeignKeyActionSetNull
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // One foreign key, in both definitions and introspection. The referenced columns must be the
 // referenced table's full primary key.
 // Ref: #/components/schemas/ForeignKeyInfo
@@ -1199,7 +1256,8 @@ type ForeignKeyInfo struct {
 	// The referenced table's name.
 	RefTable string `json:"ref_table"`
 	// The referenced table's primary key columns, in order.
-	RefColumns []string `json:"ref_columns"`
+	RefColumns []string         `json:"ref_columns"`
+	OnDelete   ForeignKeyAction `json:"on_delete"`
 }
 
 // GetName returns the value of Name.
@@ -1222,6 +1280,11 @@ func (s *ForeignKeyInfo) GetRefColumns() []string {
 	return s.RefColumns
 }
 
+// GetOnDelete returns the value of OnDelete.
+func (s *ForeignKeyInfo) GetOnDelete() ForeignKeyAction {
+	return s.OnDelete
+}
+
 // SetName sets the value of Name.
 func (s *ForeignKeyInfo) SetName(val string) {
 	s.Name = val
@@ -1240,6 +1303,11 @@ func (s *ForeignKeyInfo) SetRefTable(val string) {
 // SetRefColumns sets the value of RefColumns.
 func (s *ForeignKeyInfo) SetRefColumns(val []string) {
 	s.RefColumns = val
+}
+
+// SetOnDelete sets the value of OnDelete.
+func (s *ForeignKeyInfo) SetOnDelete(val ForeignKeyAction) {
+	s.OnDelete = val
 }
 
 type GetLivezOK ProbeStatus

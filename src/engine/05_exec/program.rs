@@ -8,8 +8,8 @@ use crate::engine::catalog;
 use crate::engine::catalog::Mutation as CatalogMutation;
 use crate::engine::catalog::identity::{SchemaId, TransitionId};
 use crate::engine::catalog::model::{
-    ColumnDraft, ColumnReplacementDef, ConstraintDef, DefaultFunction, DefaultValue, IndexDef,
-    Revision, ScalarType, SchemaTransition, TableDraft, TransitionControl,
+    ColumnDraft, ColumnReplacementDef, ConstraintDef, DefaultFunction, DefaultValue, ForeignKeyDef,
+    IndexDef, Revision, ScalarType, SchemaTransition, TableDraft, TransitionControl,
 };
 use crate::engine::kv::KvView;
 use crate::engine::lir::eval::Env;
@@ -182,6 +182,16 @@ pub enum Statement {
         table_id: SchemaId,
         index: String,
     },
+    CreateForeignKey {
+        name: String,
+        table_id: SchemaId,
+        foreign_key: ForeignKeyDef,
+    },
+    DeleteForeignKey {
+        name: String,
+        table_id: SchemaId,
+        foreign_key: String,
+    },
     StartIndexBuild {
         name: String,
         table_id: SchemaId,
@@ -220,6 +230,8 @@ impl Statement {
             | Self::DeleteColumn { name, .. }
             | Self::CreateIndex { name, .. }
             | Self::DeleteIndex { name, .. }
+            | Self::CreateForeignKey { name, .. }
+            | Self::DeleteForeignKey { name, .. }
             | Self::StartIndexBuild { name, .. }
             | Self::StartColumnReplacement { name, .. }
             | Self::StartConstraintValidation { name, .. } => name,
@@ -241,6 +253,8 @@ impl Statement {
             Self::DeleteColumn { .. } => "delete_column",
             Self::CreateIndex { .. } => "create_index",
             Self::DeleteIndex { .. } => "delete_index",
+            Self::CreateForeignKey { .. } => "create_foreign_key",
+            Self::DeleteForeignKey { .. } => "delete_foreign_key",
             Self::StartIndexBuild { .. } => "start_index_build",
             Self::StartColumnReplacement { .. } => "start_column_replacement",
             Self::StartConstraintValidation { .. } => "start_constraint_validation",
@@ -1404,6 +1418,29 @@ async fn apply_catalog(
             table_id, index, ..
         } => {
             mutation.delete_index_by_schema_id(*table_id, index).await?;
+            None
+        }
+        Statement::CreateForeignKey {
+            table_id,
+            foreign_key,
+            ..
+        } => {
+            let table = mutation.table_by_schema_id(*table_id).await?;
+            let created = mutation
+                .create_foreign_key(&table.name, foreign_key.clone())
+                .await?;
+            super::mutate::constraints::check_foreign_key_rows(mutation.view(), &table, &created)
+                .await?;
+            None
+        }
+        Statement::DeleteForeignKey {
+            table_id,
+            foreign_key,
+            ..
+        } => {
+            mutation
+                .delete_foreign_key_by_schema_id(*table_id, foreign_key)
+                .await?;
             None
         }
         Statement::StartIndexBuild {

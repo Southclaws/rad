@@ -160,7 +160,7 @@ pub(super) async fn delete(
         write::delete(view, table, &target.before, &target.primary_key).await?;
     }
     for target in &targets {
-        constraints::check_no_references(view, table, &target.before).await?;
+        constraints::apply_delete_actions(view, table, &target.before).await?;
     }
     if !targets.is_empty() {
         store::advance_table_data_generation(
@@ -242,19 +242,12 @@ fn update_columns(table: &Table, input: &RowType) -> Result<Vec<String>> {
             ));
         }
     }
-    let assigned = input
+    Ok(input
         .fields
         .iter()
         .filter(|field| !table.primary_key.contains(&field.name))
         .map(|field| field.name.clone())
-        .collect::<Vec<_>>();
-    if assigned.is_empty() {
-        return Err(Error::message(
-            ErrorKind::InvalidInput,
-            format!("exec: update of {:?} assigns no columns", table.name),
-        ));
-    }
-    Ok(assigned)
+        .collect())
 }
 
 fn validate_delete_columns(table: &Table, input: &RowType) -> Result<()> {

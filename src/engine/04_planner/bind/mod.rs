@@ -709,9 +709,12 @@ mod tests {
                     lir::BinaryOp::Eq,
                     lir::Expr::Cast {
                         expression: Box::new(column("status")),
-                        to: Kind::Bool,
+                        to: Kind::Bytes,
                     },
-                    boolean(true),
+                    lir::Expr::Literal(lir::Literal {
+                        raw: lir::RawScalar::Bytes(Vec::new()),
+                        kind: Some(Kind::Bytes),
+                    }),
                 )),
                 Reason::TypeMismatch,
             ),

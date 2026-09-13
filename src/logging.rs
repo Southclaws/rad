@@ -21,6 +21,7 @@ pub struct RequestContext {
     pub request_id: String,
     pub transaction_id: String,
     pub client_ip: String,
+    pub application_name: String,
     pub transaction_state: &'static str,
     pub trace_id: String,
     pub span_id: String,

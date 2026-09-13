@@ -248,6 +248,7 @@ schema catalog/revision.v1 record.schema.tables[].foreign_keys[] object optional
 schema catalog/revision.v1 record.schema.tables[].foreign_keys[].columns array optional
 schema catalog/revision.v1 record.schema.tables[].foreign_keys[].columns[] string optional
 schema catalog/revision.v1 record.schema.tables[].foreign_keys[].name string required
+schema catalog/revision.v1 record.schema.tables[].foreign_keys[].on_delete string optional enum:restrict|cascade|set_null
 schema catalog/revision.v1 record.schema.tables[].foreign_keys[].ref_columns array optional
 schema catalog/revision.v1 record.schema.tables[].foreign_keys[].ref_columns[] string optional
 schema catalog/revision.v1 record.schema.tables[].foreign_keys[].ref_table string required
@@ -306,6 +307,7 @@ schema catalog/table.v1 record.foreign_keys[].columns array optional
 schema catalog/table.v1 record.foreign_keys[].columns[] string optional
 schema catalog/table.v1 record.foreign_keys[].id string required
 schema catalog/table.v1 record.foreign_keys[].name string required
+schema catalog/table.v1 record.foreign_keys[].on_delete string optional enum:restrict|no_action|cascade|set_null
 schema catalog/table.v1 record.foreign_keys[].ref_columns array optional
 schema catalog/table.v1 record.foreign_keys[].ref_columns[] string optional
 schema catalog/table.v1 record.foreign_keys[].ref_table_id string required

@@ -1230,12 +1230,17 @@ components:
         unique:
           type: boolean
 
+    ForeignKeyAction:
+      description: The action applied to referencing rows when the referenced row is deleted.
+      type: string
+      enum: [restrict, no_action, cascade, set_null]
+
     ForeignKeyInfo:
       description: |
         One foreign key, in both definitions and introspection. The
         referenced columns must be the referenced table's full primary key.
       type: object
-      required: [name, columns, ref_table, ref_columns]
+      required: [name, columns, ref_table, ref_columns, on_delete]
       properties:
         name:
           type: string
@@ -1252,6 +1257,8 @@ components:
           type: array
           items:
             type: string
+        on_delete:
+          $ref: "#/components/schemas/ForeignKeyAction"
 
     TableInfo:
       description: One table's definition, as reported by introspection.

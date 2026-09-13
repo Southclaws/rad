@@ -223,61 +223,8 @@ impl<'a> Mutation<'a> {
         }
 
         for foreign_key in definition.foreign_keys {
-            let referenced = if foreign_key.ref_table == table.name {
-                table.clone()
-            } else {
-                store::get_table(self.view, &foreign_key.ref_table)
-                    .await?
-                    .ok_or_else(|| {
-                        input(format!(
-                            "catalog: foreign key {:?} references unknown table {:?}",
-                            foreign_key.name, foreign_key.ref_table
-                        ))
-                    })?
-            };
-            if foreign_key.ref_columns != referenced.primary_key {
-                return Err(input(format!(
-                    "catalog: foreign key {:?} must reference {:?}'s primary key",
-                    foreign_key.name, foreign_key.ref_table
-                )));
-            }
-            if foreign_key.columns.len() != foreign_key.ref_columns.len() {
-                return Err(input(format!(
-                    "catalog: foreign key {:?} column count mismatch",
-                    foreign_key.name
-                )));
-            }
-            for (column_name, referenced_name) in
-                foreign_key.columns.iter().zip(&foreign_key.ref_columns)
-            {
-                let column = table.column(column_name).ok_or_else(|| {
-                    input(format!(
-                        "catalog: foreign key {:?} references unknown column {column_name:?}",
-                        foreign_key.name
-                    ))
-                })?;
-                let referenced_column = referenced.column(referenced_name).ok_or_else(|| {
-                    Error::message(
-                        ErrorKind::CatalogDrift,
-                        format!(
-                            "catalog: referenced primary-key column {referenced_name:?} is missing"
-                        ),
-                    )
-                })?;
-                if column.scalar_type != referenced_column.scalar_type {
-                    return Err(input(format!(
-                        "catalog: foreign key {:?} type mismatch on {column_name:?}",
-                        foreign_key.name
-                    )));
-                }
-            }
-            table.foreign_keys.push(ForeignKey {
-                id: store::next_physical_id(self.view, "fk").await?,
-                name: foreign_key.name,
-                columns: foreign_key.columns,
-                ref_table_id: referenced.id,
-                ref_columns: foreign_key.ref_columns,
-            });
+            let foreign_key = build_foreign_key(self.view, &table, foreign_key).await?;
+            table.foreign_keys.push(foreign_key);
         }
 
         store::save_table(self.view, &mut table).await?;
@@ -355,6 +302,74 @@ impl<'a> Mutation<'a> {
         }
         Ok((used, maximum))
     }
+}
+
+async fn build_foreign_key(
+    view: &mut dyn KvView,
+    table: &Table,
+    definition: super::model::ForeignKeyDef,
+) -> Result<ForeignKey> {
+    if definition.name.is_empty() {
+        return Err(input("catalog: foreign key name is required"));
+    }
+    let referenced = if definition.ref_table == table.name {
+        table.clone()
+    } else {
+        store::get_table(view, &definition.ref_table)
+            .await?
+            .ok_or_else(|| {
+                input(format!(
+                    "catalog: foreign key {:?} references unknown table {:?}",
+                    definition.name, definition.ref_table
+                ))
+            })?
+    };
+    if definition.ref_columns != referenced.primary_key {
+        return Err(input(format!(
+            "catalog: foreign key {:?} must reference {:?}'s primary key",
+            definition.name, definition.ref_table
+        )));
+    }
+    if definition.columns.len() != definition.ref_columns.len() {
+        return Err(input(format!(
+            "catalog: foreign key {:?} column count mismatch",
+            definition.name
+        )));
+    }
+    for (column_name, referenced_name) in definition.columns.iter().zip(&definition.ref_columns) {
+        let column = table.column(column_name).ok_or_else(|| {
+            input(format!(
+                "catalog: foreign key {:?} references unknown column {column_name:?}",
+                definition.name
+            ))
+        })?;
+        let referenced_column = referenced.column(referenced_name).ok_or_else(|| {
+            Error::message(
+                ErrorKind::CatalogDrift,
+                format!("catalog: referenced primary-key column {referenced_name:?} is missing"),
+            )
+        })?;
+        if column.scalar_type != referenced_column.scalar_type {
+            return Err(input(format!(
+                "catalog: foreign key {:?} type mismatch on {column_name:?}",
+                definition.name
+            )));
+        }
+        if definition.on_delete == super::model::ForeignKeyAction::SetNull && !column.nullable {
+            return Err(input(format!(
+                "catalog: foreign key {:?} cannot set non-nullable column {column_name:?} to null",
+                definition.name
+            )));
+        }
+    }
+    Ok(ForeignKey {
+        id: store::next_physical_id(view, "fk").await?,
+        name: definition.name,
+        columns: definition.columns,
+        ref_table_id: referenced.id,
+        ref_columns: definition.ref_columns,
+        on_delete: definition.on_delete,
+    })
 }
 
 struct AssignedTable {
@@ -732,6 +747,7 @@ mod tests {
             columns: vec!["id".into()],
             ref_table: "ghost".into(),
             ref_columns: vec!["id".into()],
+            on_delete: crate::engine::catalog::model::ForeignKeyAction::Restrict,
         });
         cases.push((value, "unknown table"));
 
@@ -741,6 +757,7 @@ mod tests {
             columns: vec!["id".into()],
             ref_table: "users".into(),
             ref_columns: vec!["missing".into()],
+            on_delete: crate::engine::catalog::model::ForeignKeyAction::Restrict,
         });
         cases.push((value, "primary key"));
 
@@ -758,6 +775,7 @@ mod tests {
             columns: vec!["user_id".into()],
             ref_table: "users".into(),
             ref_columns: vec!["id".into()],
+            on_delete: crate::engine::catalog::model::ForeignKeyAction::Restrict,
         });
         cases.push((value, "type mismatch"));
 
@@ -828,6 +846,7 @@ mod tests {
             columns: vec!["parent_id".into()],
             ref_table: "users".into(),
             ref_columns: vec!["id".into()],
+            on_delete: crate::engine::catalog::model::ForeignKeyAction::Restrict,
         });
         let table = service.create_table(draft).await.unwrap();
         assert_eq!(table.foreign_keys[0].ref_table_id, table.id);

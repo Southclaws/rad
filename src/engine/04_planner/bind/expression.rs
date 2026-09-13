@@ -66,7 +66,10 @@ impl Binder<'_> {
                 if from != to
                     && !matches!(
                         (from, to),
-                        (Kind::Int64, Kind::Float64) | (Kind::Float64, Kind::Int64)
+                        (Kind::Int64, Kind::Float64)
+                            | (Kind::Float64, Kind::Int64)
+                            | (Kind::Text, Kind::Int64 | Kind::Float64 | Kind::Bool)
+                            | (Kind::Int64 | Kind::Float64 | Kind::Bool, Kind::Text)
                     )
                 {
                     return Err(invalid(

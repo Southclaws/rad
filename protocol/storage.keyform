@@ -580,7 +580,7 @@ keyspace rad {
   # MVCC-visible logical content generations for one table. A non-empty row
   # mutation advances each stripe selected by its primary keys in the same
   # transaction as its data writes. A complete table identity contains all
-  # 16 stripes. An absent stripe has generation zero.
+  # 256 stripes. An absent stripe has generation zero.
   space catalog_table_data_generation_stripe {
     tag x"24"
     key {

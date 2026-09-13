@@ -1,6 +1,7 @@
 use rad::engine::catalog::identity::SchemaId;
 use rad::engine::catalog::model::{
-    ColumnDef, DefaultFunction, DefaultValue, ForeignKeyDef, IndexDef, ScalarType, Schema, TableDef,
+    ColumnDef, DefaultFunction, DefaultValue, ForeignKeyAction, ForeignKeyDef, IndexDef,
+    ScalarType, Schema, TableDef,
 };
 
 use super::Choices;
@@ -67,6 +68,7 @@ pub fn generate(choices: &mut Choices<'_>) -> Schema {
                 columns: vec!["fk".into()],
                 ref_table: format!("t{parent}"),
                 ref_columns: vec!["id".into()],
+                on_delete: ForeignKeyAction::Restrict,
             });
         }
 

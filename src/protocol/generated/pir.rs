@@ -77,6 +77,18 @@ pub enum ColumnReplacementDefinitionConversion {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub enum ForeignKeyDefinitionOnDelete {
+    #[serde(rename = "restrict")]
+    Restrict,
+    #[serde(rename = "no_action")]
+    NoAction,
+    #[serde(rename = "cascade")]
+    Cascade,
+    #[serde(rename = "set_null")]
+    SetNull,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum GeneratorDefaultFunc {
     #[serde(rename = "uuid_v4")]
     UUIDV4,
@@ -150,8 +162,9 @@ pub type CatalogName = String;
 /// payload, a literal row is simply a one-row relation (LIR's `rows` node).
 /// `create_table`, `rename_table`, `delete_table`, `create_column`,
 /// `rename_column`, `change_column_default`, `delete_column`, `create_index`,
-/// `delete_index`, `start_index_build`, `start_column_replacement`,
-/// and `start_constraint_validation` mutate the catalog. Inspecting, listing,
+/// `delete_index`, `create_foreign_key`, `delete_foreign_key`,
+/// `start_index_build`, `start_column_replacement`, and
+/// `start_constraint_validation` mutate the catalog. Inspecting, listing,
 /// cancelling, and monitoring the durable work created by `start_*` statements
 /// are administrative operations exposed by the OpenAPI surface, not PIR
 /// statements.
@@ -464,6 +477,12 @@ pub struct ForeignKeyDefinition {
     pub columns: Vec<CatalogName>,
     #[serde(rename = "name")]
     pub name: CatalogName,
+    #[serde(
+        rename = "on_delete",
+        default,
+        skip_serializing_if = "OptionalField::is_missing"
+    )]
+    pub on_delete: OptionalField<ForeignKeyDefinitionOnDelete>,
     #[serde(rename = "ref_columns")]
     pub ref_columns: Vec<CatalogName>,
     #[serde(rename = "ref_table")]
@@ -598,8 +617,9 @@ pub type TableName = String;
 /// payload, a literal row is simply a one-row relation (LIR's `rows` node).
 /// `create_table`, `rename_table`, `delete_table`, `create_column`,
 /// `rename_column`, `change_column_default`, `delete_column`, `create_index`,
-/// `delete_index`, `start_index_build`, `start_column_replacement`,
-/// and `start_constraint_validation` mutate the catalog. Inspecting, listing,
+/// `delete_index`, `create_foreign_key`, `delete_foreign_key`,
+/// `start_index_build`, `start_column_replacement`, and
+/// `start_constraint_validation` mutate the catalog. Inspecting, listing,
 /// cancelling, and monitoring the durable work created by `start_*` statements
 /// are administrative operations exposed by the OpenAPI surface, not PIR
 /// statements.
@@ -679,6 +699,8 @@ pub enum Statement {
     DeleteColumnStatement(Box<DeleteColumnStatement>),
     CreateIndexStatement(Box<CreateIndexStatement>),
     DeleteIndexStatement(Box<DeleteIndexStatement>),
+    CreateForeignKeyStatement(Box<CreateForeignKeyStatement>),
+    DeleteForeignKeyStatement(Box<DeleteForeignKeyStatement>),
     StartIndexBuildStatement(Box<StartIndexBuildStatement>),
     StartColumnReplacementStatement(Box<StartColumnReplacementStatement>),
     StartConstraintValidationStatement(Box<StartConstraintValidationStatement>),
@@ -773,6 +795,20 @@ impl Serialize for Statement {
             Self::DeleteIndexStatement(value) => DeleteIndexStatementWireRef {
                 kind: DeleteIndexStatementTag::Value,
                 index: &value.index,
+                name: &value.name,
+                table_id: &value.table_id,
+            }
+            .serialize(serializer),
+            Self::CreateForeignKeyStatement(value) => CreateForeignKeyStatementWireRef {
+                kind: CreateForeignKeyStatementTag::Value,
+                foreign_key: &value.foreign_key,
+                name: &value.name,
+                table_id: &value.table_id,
+            }
+            .serialize(serializer),
+            Self::DeleteForeignKeyStatement(value) => DeleteForeignKeyStatementWireRef {
+                kind: DeleteForeignKeyStatementTag::Value,
+                foreign_key: &value.foreign_key,
                 name: &value.name,
                 table_id: &value.table_id,
             }
@@ -946,6 +982,28 @@ impl<'de> Deserialize<'de> for Statement {
                     name: wire.name,
                     table_id: wire.table_id,
                 })))
+            }
+            "create_foreign_key" => {
+                let wire: CreateForeignKeyStatementWire =
+                    serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
+                Ok(Self::CreateForeignKeyStatement(Box::new(
+                    CreateForeignKeyStatement {
+                        foreign_key: wire.foreign_key,
+                        name: wire.name,
+                        table_id: wire.table_id,
+                    },
+                )))
+            }
+            "delete_foreign_key" => {
+                let wire: DeleteForeignKeyStatementWire =
+                    serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
+                Ok(Self::DeleteForeignKeyStatement(Box::new(
+                    DeleteForeignKeyStatement {
+                        foreign_key: wire.foreign_key,
+                        name: wire.name,
+                        table_id: wire.table_id,
+                    },
+                )))
             }
             "start_index_build" => {
                 let wire: StartIndexBuildStatementWire =
@@ -1564,6 +1622,85 @@ struct DeleteIndexStatementWireRef<'a> {
     kind: DeleteIndexStatementTag,
     #[serde(rename = "index")]
     index: &'a CatalogName,
+    #[serde(rename = "name")]
+    name: &'a StatementName,
+    #[serde(rename = "table_id")]
+    table_id: &'a SchemaID,
+}
+
+/// Create and validate `foreign_key` on the table identified by `table_id`.
+/// Registration and validation are one atomic statement.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreateForeignKeyStatement {
+    pub foreign_key: ForeignKeyDefinition,
+    pub name: StatementName,
+    pub table_id: SchemaID,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+enum CreateForeignKeyStatementTag {
+    #[serde(rename = "create_foreign_key")]
+    Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateForeignKeyStatementWire {
+    #[serde(rename = "kind")]
+    _kind: CreateForeignKeyStatementTag,
+    #[serde(rename = "foreign_key")]
+    foreign_key: ForeignKeyDefinition,
+    #[serde(rename = "name")]
+    name: StatementName,
+    #[serde(rename = "table_id")]
+    table_id: SchemaID,
+}
+
+#[derive(Serialize)]
+struct CreateForeignKeyStatementWireRef<'a> {
+    #[serde(rename = "kind")]
+    kind: CreateForeignKeyStatementTag,
+    #[serde(rename = "foreign_key")]
+    foreign_key: &'a ForeignKeyDefinition,
+    #[serde(rename = "name")]
+    name: &'a StatementName,
+    #[serde(rename = "table_id")]
+    table_id: &'a SchemaID,
+}
+
+/// Delete the named foreign key from the table identified by `table_id`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeleteForeignKeyStatement {
+    pub foreign_key: CatalogName,
+    pub name: StatementName,
+    pub table_id: SchemaID,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+enum DeleteForeignKeyStatementTag {
+    #[serde(rename = "delete_foreign_key")]
+    Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteForeignKeyStatementWire {
+    #[serde(rename = "kind")]
+    _kind: DeleteForeignKeyStatementTag,
+    #[serde(rename = "foreign_key")]
+    foreign_key: CatalogName,
+    #[serde(rename = "name")]
+    name: StatementName,
+    #[serde(rename = "table_id")]
+    table_id: SchemaID,
+}
+
+#[derive(Serialize)]
+struct DeleteForeignKeyStatementWireRef<'a> {
+    #[serde(rename = "kind")]
+    kind: DeleteForeignKeyStatementTag,
+    #[serde(rename = "foreign_key")]
+    foreign_key: &'a CatalogName,
     #[serde(rename = "name")]
     name: &'a StatementName,
     #[serde(rename = "table_id")]

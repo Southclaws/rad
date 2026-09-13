@@ -1,11 +1,11 @@
 use bytes::Bytes;
 use tracing::Instrument as _;
 
-use crate::engine::catalog::model::{ForeignKey, Index, Table};
+use crate::engine::catalog::model::{ForeignKey, ForeignKeyAction, Index, Table};
 use crate::engine::catalog::store;
 use crate::engine::kv::key_encoding::prefix_end;
 use crate::engine::kv::{KeyRange, KvView};
-use crate::engine::lir::{Row, Value};
+use crate::engine::lir::{Field, Kind, Row, RowType, SlotId, Type, Value};
 
 use super::super::row_store;
 use super::super::{Error, ErrorKind, Result, codec};
@@ -35,11 +35,7 @@ pub(super) async fn check_foreign_keys_for(
     Ok(())
 }
 
-async fn check_foreign_key(
-    view: &mut dyn KvView,
-    row: &Row,
-    foreign_key: &ForeignKey,
-) -> Result<()> {
+async fn check_foreign_key(view: &dyn KvView, row: &Row, foreign_key: &ForeignKey) -> Result<()> {
     let values = foreign_key
         .columns
         .iter()
@@ -77,6 +73,18 @@ async fn check_foreign_key(
                 foreign_key.name
             ),
         ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn check_foreign_key_rows(
+    view: &dyn KvView,
+    table: &Table,
+    foreign_key: &ForeignKey,
+) -> Result<()> {
+    let rows = row_store::scan_table_columns(view, table, &table.columns).await?;
+    for row in &rows {
+        check_foreign_key(view, row, foreign_key).await?;
     }
     Ok(())
 }
@@ -145,7 +153,8 @@ pub(crate) async fn check_unique_index(
     Ok(())
 }
 
-pub(super) async fn check_no_references(
+#[async_recursion::async_recursion]
+pub(super) async fn apply_delete_actions(
     view: &mut dyn KvView,
     table: &Table,
     row: &Row,
@@ -171,18 +180,125 @@ pub(super) async fn check_no_references(
                 })?;
                 wanted.insert(child_column.clone(), value);
             }
-            if any_row_matching(view, &child, &foreign_key.columns, &wanted).await? {
-                return Err(Error::message(
-                    ErrorKind::ConstraintViolation,
-                    format!(
-                        "exec: cannot delete from {:?}: row is referenced by {:?} via {:?}",
-                        table.name, child.name, foreign_key.name
-                    ),
-                ));
+            if foreign_key.on_delete.is_restrictive() {
+                if any_row_matching(view, &child, &foreign_key.columns, &wanted).await? {
+                    return Err(Error::message(
+                        ErrorKind::ConstraintViolation,
+                        format!(
+                            "exec: cannot delete from {:?}: row is referenced by {:?} via {:?}",
+                            table.name, child.name, foreign_key.name
+                        ),
+                    ));
+                }
+                continue;
+            }
+            let matching = rows_matching(view, &child, &foreign_key.columns, &wanted).await?;
+            match foreign_key.on_delete {
+                ForeignKeyAction::Cascade => {
+                    let input = matching
+                        .iter()
+                        .map(|row| select_columns(row, &child.primary_key))
+                        .collect::<Result<Vec<_>>>()?;
+                    super::delete(
+                        view,
+                        &child,
+                        &mutation_input_type(&child, &child.primary_key)?,
+                        &input,
+                    )
+                    .await?;
+                }
+                ForeignKeyAction::SetNull => {
+                    let mut columns = child.primary_key.clone();
+                    columns.extend(foreign_key.columns.iter().cloned());
+                    let input = matching
+                        .iter()
+                        .map(|row| {
+                            let mut update = select_columns(row, &child.primary_key)?;
+                            for column in &foreign_key.columns {
+                                let scalar_type = child.column(column).ok_or_else(|| {
+                                    Error::message(
+                                        ErrorKind::CorruptData,
+                                        format!(
+                                            "exec: foreign key {:?} references missing child column {column:?}",
+                                            foreign_key.name
+                                        ),
+                                    )
+                                })?;
+                                update.insert(column.clone(), Value::Null(scalar_type.scalar_type));
+                            }
+                            Ok(update)
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    super::update(
+                        view,
+                        &child,
+                        &mutation_input_type(&child, &columns)?,
+                        &input,
+                    )
+                    .await?;
+                }
+                ForeignKeyAction::Restrict | ForeignKeyAction::NoAction => {
+                    unreachable!("restrictive actions handled before row scan")
+                }
             }
         }
     }
     Ok(())
+}
+
+async fn rows_matching(
+    view: &mut dyn KvView,
+    table: &Table,
+    columns: &[String],
+    wanted: &Row,
+) -> Result<Vec<Row>> {
+    let rows = row_store::scan_table_columns(view, table, &table.columns).await?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| {
+            columns
+                .iter()
+                .all(|column| row.get(column) == wanted.get(column))
+        })
+        .collect())
+}
+
+fn mutation_input_type(table: &Table, columns: &[String]) -> Result<RowType> {
+    let fields = columns
+        .iter()
+        .enumerate()
+        .map(|(slot, name)| {
+            let column = table.column(name).ok_or_else(|| {
+                Error::message(
+                    ErrorKind::CorruptData,
+                    format!("exec: mutation input references missing column {name:?}"),
+                )
+            })?;
+            Ok(Field {
+                name: name.clone(),
+                slot: SlotId(slot),
+                value_type: Type::scalar(Kind::of(column.scalar_type), column.nullable),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(RowType { fields })
+}
+
+fn select_columns(row: &Row, columns: &[String]) -> Result<Row> {
+    columns
+        .iter()
+        .map(|column| {
+            row.get(column)
+                .cloned()
+                .map(|value| (column.clone(), value))
+                .ok_or_else(|| {
+                    Error::message(
+                        ErrorKind::CorruptData,
+                        format!("exec: stored row lacks column {column:?}"),
+                    )
+                })
+        })
+        .collect()
 }
 
 async fn any_row_matching(

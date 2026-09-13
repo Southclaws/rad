@@ -13,10 +13,11 @@ use rad::engine::catalog::identity::{
     SchemaId, StorageGeneration, TransitionGeneration, ValueGeneration, WriteProtocolGeneration,
 };
 use rad::engine::catalog::model::{
-    Column, Constraint, ConstraintKind, ConstraintState, DataPosition, ForeignKey, Index,
-    IndexDelta, IndexDeltaOperation, IndexState, Reclamation, ReclamationKind, RetentionOwnerKind,
-    RetentionPin, RetentionResource, RetentionResourceKind, ScalarType, SchemaTransition, Table,
-    Timestamp, TransitionKind, TransitionState, TransitionWorkState, WriteProtocol,
+    Column, Constraint, ConstraintKind, ConstraintState, DataPosition, ForeignKey,
+    ForeignKeyAction, Index, IndexDelta, IndexDeltaOperation, IndexState, Reclamation,
+    ReclamationKind, RetentionOwnerKind, RetentionPin, RetentionResource, RetentionResourceKind,
+    ScalarType, SchemaTransition, Table, Timestamp, TransitionKind, TransitionState,
+    TransitionWorkState, WriteProtocol,
 };
 use rad::engine::catalog::store;
 use rad::engine::kv::slatedb::Store;
@@ -72,6 +73,7 @@ fn table() -> Table {
             columns: vec!["id".into()],
             ref_table_id: "t2".into(),
             ref_columns: vec!["id".into()],
+            on_delete: ForeignKeyAction::Restrict,
         }],
         constraints: vec![Constraint {
             id: "ct1".into(),

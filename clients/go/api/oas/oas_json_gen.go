@@ -2435,6 +2435,50 @@ func (s *ExecutionFailedProblemType) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes ForeignKeyAction as json.
+func (s ForeignKeyAction) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes ForeignKeyAction from json.
+func (s *ForeignKeyAction) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ForeignKeyAction to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch ForeignKeyAction(v) {
+	case ForeignKeyActionRestrict:
+		*s = ForeignKeyActionRestrict
+	case ForeignKeyActionNoAction:
+		*s = ForeignKeyActionNoAction
+	case ForeignKeyActionCascade:
+		*s = ForeignKeyActionCascade
+	case ForeignKeyActionSetNull:
+		*s = ForeignKeyActionSetNull
+	default:
+		*s = ForeignKeyAction(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s ForeignKeyAction) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ForeignKeyAction) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode implements json.Marshaler.
 func (s *ForeignKeyInfo) Encode(e *jx.Encoder) {
 	e.ObjStart()
@@ -2468,13 +2512,18 @@ func (s *ForeignKeyInfo) encodeFields(e *jx.Encoder) {
 		}
 		e.ArrEnd()
 	}
+	{
+		e.FieldStart("on_delete")
+		s.OnDelete.Encode(e)
+	}
 }
 
-var jsonFieldsNameOfForeignKeyInfo = [4]string{
+var jsonFieldsNameOfForeignKeyInfo = [5]string{
 	0: "name",
 	1: "columns",
 	2: "ref_table",
 	3: "ref_columns",
+	4: "on_delete",
 }
 
 // Decode decodes ForeignKeyInfo from json.
@@ -2550,6 +2599,16 @@ func (s *ForeignKeyInfo) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"ref_columns\"")
 			}
+		case "on_delete":
+			requiredBitSet[0] |= 1 << 4
+			if err := func() error {
+				if err := s.OnDelete.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"on_delete\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -2560,7 +2619,7 @@ func (s *ForeignKeyInfo) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00001111,
+		0b00011111,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

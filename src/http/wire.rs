@@ -6,8 +6,9 @@ use super::generated::types as wire;
 use crate::engine::catalog::identity::SchemaId;
 use crate::engine::catalog::migrate::Step;
 use crate::engine::catalog::model::{
-    ColumnDef, ColumnDraft, DefaultFunction, DefaultValue, ForeignKeyDef, IndexDef, Schema, Table,
-    TableDef, TableDraft, TransitionControl, TransitionKind, TransitionState, TransitionWorkState,
+    ColumnDef, ColumnDraft, DefaultFunction, DefaultValue, ForeignKeyAction, ForeignKeyDef,
+    IndexDef, Schema, Table, TableDef, TableDraft, TransitionControl, TransitionKind,
+    TransitionState, TransitionWorkState,
 };
 use crate::engine::exec::{DefaultSpec, Program, Statement};
 use crate::engine::frontend::migration::{MigrationState, SchemaFinding};
@@ -74,6 +75,29 @@ fn foreign_key_def(value: wire::ForeignKeyInfo) -> ForeignKeyDef {
         columns: value.columns,
         ref_table: value.ref_table,
         ref_columns: value.ref_columns,
+        on_delete: value.on_delete.into(),
+    }
+}
+
+impl From<wire::ForeignKeyAction> for ForeignKeyAction {
+    fn from(value: wire::ForeignKeyAction) -> Self {
+        match value {
+            wire::ForeignKeyAction::Restrict => Self::Restrict,
+            wire::ForeignKeyAction::NoAction => Self::NoAction,
+            wire::ForeignKeyAction::Cascade => Self::Cascade,
+            wire::ForeignKeyAction::SetNull => Self::SetNull,
+        }
+    }
+}
+
+impl From<ForeignKeyAction> for wire::ForeignKeyAction {
+    fn from(value: ForeignKeyAction) -> Self {
+        match value {
+            ForeignKeyAction::Restrict => Self::Restrict,
+            ForeignKeyAction::NoAction => Self::NoAction,
+            ForeignKeyAction::Cascade => Self::Cascade,
+            ForeignKeyAction::SetNull => Self::SetNull,
+        }
     }
 }
 
@@ -220,6 +244,7 @@ fn table_info(
                 .map(|foreign_key| wire::ForeignKeyInfo {
                     columns: foreign_key.columns.clone(),
                     name: foreign_key.name.clone(),
+                    on_delete: foreign_key.on_delete.into(),
                     ref_columns: foreign_key.ref_columns.clone(),
                     ref_table: names
                         .get(&foreign_key.ref_table_id)
@@ -261,6 +286,7 @@ fn table_definition(table: &TableDef) -> wire::TableDef {
                 .map(|foreign_key| wire::ForeignKeyInfo {
                     columns: foreign_key.columns.clone(),
                     name: foreign_key.name.clone(),
+                    on_delete: foreign_key.on_delete.into(),
                     ref_columns: foreign_key.ref_columns.clone(),
                     ref_table: foreign_key.ref_table.clone(),
                 })
@@ -541,6 +567,22 @@ fn statement_json(value: &Statement) -> Result<Value, EncodeError> {
         } => json!({
             "kind": "delete_index", "name": name, "table_id": table_id.get(), "index": index
         }),
+        Statement::CreateForeignKey {
+            name,
+            table_id,
+            foreign_key,
+        } => json!({
+            "kind": "create_foreign_key", "name": name, "table_id": table_id.get(),
+            "foreign_key": foreign_key
+        }),
+        Statement::DeleteForeignKey {
+            name,
+            table_id,
+            foreign_key,
+        } => json!({
+            "kind": "delete_foreign_key", "name": name, "table_id": table_id.get(),
+            "foreign_key": foreign_key
+        }),
         Statement::StartIndexBuild {
             name,
             table_id,
@@ -757,5 +799,53 @@ mod tests {
             column_definition(&generated).default.unwrap().func,
             Some(wire::ColumnDefaultFunc::UuidV7)
         );
+    }
+
+    #[test]
+    fn foreign_key_delete_actions_round_trip_through_http_models() {
+        for (action, wire_action, name) in [
+            (
+                ForeignKeyAction::Restrict,
+                wire::ForeignKeyAction::Restrict,
+                "restrict",
+            ),
+            (
+                ForeignKeyAction::NoAction,
+                wire::ForeignKeyAction::NoAction,
+                "no_action",
+            ),
+            (
+                ForeignKeyAction::Cascade,
+                wire::ForeignKeyAction::Cascade,
+                "cascade",
+            ),
+            (
+                ForeignKeyAction::SetNull,
+                wire::ForeignKeyAction::SetNull,
+                "set_null",
+            ),
+        ] {
+            let decoded = foreign_key_def(wire::ForeignKeyInfo {
+                columns: vec!["parent_id".into()],
+                name: "child_parent_fk".into(),
+                on_delete: wire_action,
+                ref_columns: vec!["id".into()],
+                ref_table: "parents".into(),
+            });
+            assert_eq!(decoded.on_delete, action);
+
+            let encoded = table_definition(&TableDef {
+                id: SchemaId::new(1).unwrap(),
+                name: "children".into(),
+                columns: Vec::new(),
+                primary_key: Vec::new(),
+                indexes: Vec::new(),
+                foreign_keys: vec![decoded],
+            });
+            assert_eq!(
+                serde_json::to_value(&encoded.foreign_keys.unwrap()[0].on_delete).unwrap(),
+                json!(name)
+            );
+        }
     }
 }

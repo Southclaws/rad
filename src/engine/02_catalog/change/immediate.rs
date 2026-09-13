@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use super::admission::{TransitionCandidate, affected_column_schema_ids, index_column_schema_ids};
 use super::*;
 use crate::engine::catalog::identity::ColumnId;
-use crate::engine::catalog::model::{ColumnDraft, DefaultValue, ReclamationKind, TransitionKind};
+use crate::engine::catalog::model::{
+    ColumnDraft, DefaultValue, ForeignKey, ForeignKeyDef, ReclamationKind, TransitionKind,
+};
 use crate::engine::catalog::naming;
 
 impl Mutation<'_> {
@@ -465,6 +467,58 @@ impl Mutation<'_> {
         Ok(())
     }
 
+    pub async fn create_foreign_key(
+        &mut self,
+        table_name: &str,
+        definition: ForeignKeyDef,
+    ) -> Result<ForeignKey> {
+        let mut table = required_table(self.view, table_name).await?;
+        if table
+            .foreign_keys
+            .iter()
+            .any(|foreign_key| foreign_key.name == definition.name)
+        {
+            return Err(input(format!(
+                "catalog: foreign key {:?} already exists on table {table_name:?}",
+                definition.name
+            )));
+        }
+        let foreign_key = build_foreign_key(self.view, &table, definition).await?;
+        table.foreign_keys.push(foreign_key.clone());
+        let mut protocol = store::read_write_protocol(self.view, &table).await?;
+        protocol.generation = protocol.generation.next();
+        table.write_protocol_generation = protocol.generation;
+        store::save_table(self.view, &mut table).await?;
+        self.save_write_protocol(protocol).await?;
+        self.mark_schema_changed();
+        Ok(foreign_key)
+    }
+
+    pub async fn delete_foreign_key(
+        &mut self,
+        table_name: &str,
+        foreign_key_name: &str,
+    ) -> Result<()> {
+        let mut table = required_table(self.view, table_name).await?;
+        let position = table
+            .foreign_keys
+            .iter()
+            .position(|foreign_key| foreign_key.name == foreign_key_name)
+            .ok_or_else(|| {
+                input(format!(
+                    "catalog: foreign key {foreign_key_name:?} does not exist on table {table_name:?}"
+                ))
+            })?;
+        table.foreign_keys.remove(position);
+        let mut protocol = store::read_write_protocol(self.view, &table).await?;
+        protocol.generation = protocol.generation.next();
+        table.write_protocol_generation = protocol.generation;
+        store::save_table(self.view, &mut table).await?;
+        self.save_write_protocol(protocol).await?;
+        self.mark_schema_changed();
+        Ok(())
+    }
+
     async fn retire_table(&mut self, table: &Table) -> Result<()> {
         let mut reclamation = self
             .pending_reclamation(
@@ -549,6 +603,20 @@ impl Service {
 
     pub async fn delete_index(&self, table: &str, index: &str) -> Result<()> {
         run_mutation!(self, |mutation| mutation.delete_index(table, index))
+    }
+
+    pub async fn create_foreign_key(
+        &self,
+        table: &str,
+        definition: ForeignKeyDef,
+    ) -> Result<ForeignKey> {
+        run_mutation!(self, |mutation| mutation
+            .create_foreign_key(table, definition))
+    }
+
+    pub async fn delete_foreign_key(&self, table: &str, foreign_key: &str) -> Result<()> {
+        run_mutation!(self, |mutation| mutation
+            .delete_foreign_key(table, foreign_key))
     }
 }
 
@@ -815,6 +883,7 @@ mod tests {
                     columns: vec!["user_id".into()],
                     ref_table: "users".into(),
                     ref_columns: vec!["id".into()],
+                    on_delete: crate::engine::catalog::model::ForeignKeyAction::Restrict,
                 }],
             })
             .await
@@ -919,6 +988,7 @@ mod tests {
                     columns: vec!["user_id".into()],
                     ref_table: "users".into(),
                     ref_columns: vec!["id".into()],
+                    on_delete: crate::engine::catalog::model::ForeignKeyAction::Restrict,
                 }],
             })
             .await
@@ -963,6 +1033,7 @@ mod tests {
                 columns: vec!["parent_id".into()],
                 ref_table: "nodes".into(),
                 ref_columns: vec!["id".into()],
+                on_delete: crate::engine::catalog::model::ForeignKeyAction::Restrict,
             }],
         };
         service.create_table(self_referencing).await.unwrap();

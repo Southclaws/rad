@@ -11,8 +11,9 @@ use crate::engine::catalog;
 use crate::engine::catalog::model::Table;
 use crate::engine::exec::{
     CatalogPolicy, Engine, Error, ErrorKind, Program, ProgramOptions, ProgramResult,
+    TransactionIsolation,
 };
-use crate::engine::kv::{Transaction, TransactionView};
+use crate::engine::kv::TransactionView;
 use crate::protocol::generated::{lir, pir};
 
 /// One frontend session transaction backed by one storage transaction.
@@ -23,16 +24,19 @@ use crate::protocol::generated::{lir, pir};
 pub struct Tx {
     id: String,
     engine: Arc<Engine>,
-    transaction: Option<Box<dyn Transaction>>,
+    isolation: TransactionIsolation,
+    transaction: Option<crate::engine::exec::EngineTransaction>,
     catalog_statements: Vec<String>,
-    dirty: bool,
     span: tracing::Span,
     started: Instant,
 }
 
 impl Tx {
-    pub async fn begin(engine: Arc<Engine>) -> crate::engine::exec::Result<Self> {
-        let transaction = engine.begin_frontend_transaction().await?;
+    pub async fn begin(
+        engine: Arc<Engine>,
+        isolation: TransactionIsolation,
+    ) -> crate::engine::exec::Result<Self> {
+        let transaction = engine.begin_frontend_transaction(isolation).await?;
         let id = uuid::Uuid::new_v4().to_string();
         let span = tracing::info_span!(
             target: "rad::telemetry",
@@ -47,9 +51,9 @@ impl Tx {
         Ok(Self {
             id,
             engine,
+            isolation,
             transaction: Some(transaction),
             catalog_statements: Vec::new(),
-            dirty: false,
             span,
             started: Instant::now(),
         })
@@ -57,6 +61,10 @@ impl Tx {
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    pub fn isolation(&self) -> TransactionIsolation {
+        self.isolation
     }
 
     pub fn span(&self) -> tracing::Span {
@@ -68,14 +76,6 @@ impl Tx {
         program: Program,
         catalog_policy: CatalogPolicy,
     ) -> crate::engine::exec::Result<ProgramResult> {
-        let effectful = program
-            .statements
-            .iter()
-            .any(|statement| statement.effectful());
-        if effectful {
-            self.dirty = true;
-        }
-        let relation_cache_eligible = !self.dirty;
         let catalog_statements = program
             .statements
             .iter()
@@ -84,7 +84,7 @@ impl Tx {
             .collect::<Vec<_>>();
         let transaction = self
             .transaction
-            .as_deref_mut()
+            .as_mut()
             .expect("frontend transaction remains open while executing");
         let options = ProgramOptions {
             catalog: catalog_policy,
@@ -93,12 +93,7 @@ impl Tx {
         let program_log = ProgramLog::new(&program, &options);
         let result = self
             .engine
-            .execute_program_in_transaction(
-                transaction,
-                &program,
-                catalog_policy,
-                relation_cache_eligible,
-            )
+            .execute_frontend_statement(transaction, &program, catalog_policy)
             .instrument(program_log.span.clone())
             .await;
         program_log.finish(&result);
@@ -110,7 +105,7 @@ impl Tx {
     pub async fn list_tables(&mut self) -> crate::engine::exec::Result<Vec<Table>> {
         let transaction = self
             .transaction
-            .as_deref_mut()
+            .as_mut()
             .expect("frontend transaction remains open while reading catalog");
         let mut view = TransactionView(&*transaction);
         catalog::store::list_tables(&mut view)
@@ -150,7 +145,7 @@ impl Tx {
 
     pub fn rollback(mut self) {
         if let Some(transaction) = self.transaction.take() {
-            transaction.rollback();
+            transaction.rollback_inner();
         }
         self.span.record("rad.transaction.outcome", "rollback");
         self.span.record("rad.status", "success");
@@ -161,7 +156,7 @@ impl Tx {
 impl Drop for Tx {
     fn drop(&mut self) {
         if let Some(transaction) = self.transaction.take() {
-            transaction.rollback();
+            transaction.rollback_inner();
             self.span.record("rad.transaction.outcome", "abandoned");
             self.span.record("rad.status", "error");
             self.span.record("error.type", "abandoned");
@@ -364,6 +359,7 @@ impl ProgramLog {
                     span_id,
                     transaction_id = context.transaction_id,
                     client_ip = context.client_ip,
+                    application_name = context.application_name,
                     diagnostic = %String::from_utf8_lossy(&document),
                     diagnostic_bytes = document.len(),
                     diagnostic_omitted = false,
@@ -382,6 +378,7 @@ impl ProgramLog {
                     span_id,
                     transaction_id = context.transaction_id,
                     client_ip = context.client_ip,
+                    application_name = context.application_name,
                     diagnostic_bytes = document.len(),
                     diagnostic_omitted = true,
                     message = "program diagnostic is omitted"
@@ -479,6 +476,7 @@ impl ProgramLog {
                 span_id = self.span_id,
                 transaction_id = self.context.transaction_id,
                 client_ip = self.context.client_ip,
+                application_name = self.context.application_name,
                 duration_ms,
                 status = "success",
                 result_rows = rows,
@@ -500,6 +498,7 @@ impl ProgramLog {
                 span_id = self.span_id,
                 transaction_id = self.context.transaction_id,
                 client_ip = self.context.client_ip,
+                application_name = self.context.application_name,
                 duration_ms,
                 status = "error",
                 error_kind = error.kind().as_str(),
@@ -648,7 +647,8 @@ mod tests {
     use crate::engine::catalog::model::{ColumnDef, ScalarType, TableDef};
     use crate::engine::kv::slatedb::Store;
     use crate::engine::lir::{
-        Datum, Kind, ObjectField, RawScalar, Relation, RootCardinality, RowsColumn, Value,
+        BinaryOp, Datum, Expr, Kind, Literal, ObjectField, ProjectField, RawScalar, Relation,
+        RootCardinality, RowsColumn, Value,
     };
     use tracing_subscriber::prelude::*;
 
@@ -726,7 +726,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_transaction_bypasses_cached_relations_after_a_write() {
+    async fn explicit_transaction_bypasses_cached_relations() {
         let store = Arc::new(
             Store::memory("frontend-relation-cache-dirty")
                 .await
@@ -826,7 +826,9 @@ mod tests {
             }],
             result: None,
         };
-        let mut transaction = Tx::begin(engine).await.unwrap();
+        let mut transaction = Tx::begin(engine, TransactionIsolation::Serializable)
+            .await
+            .unwrap();
 
         transaction
             .execute_program(read.clone(), CatalogPolicy::Forbidden)
@@ -854,7 +856,7 @@ mod tests {
         );
         assert_eq!(
             statements[1].source,
-            crate::engine::exec::observe::StatementSource::RelationCache
+            crate::engine::exec::observe::StatementSource::Executed
         );
         assert_eq!(
             statements[3].source,
@@ -862,6 +864,257 @@ mod tests {
         );
         drop(statements);
         transaction.rollback();
+    }
+
+    #[tokio::test]
+    async fn read_committed_restarts_contended_statements_and_preserves_prior_writes() {
+        let store = Arc::new(Store::memory("frontend-write-admission").await.unwrap());
+        let catalog = catalog::Catalog::new(store.clone());
+        catalog
+            .create_table(TableDef {
+                id: SchemaId::new(1).unwrap(),
+                name: "counters".into(),
+                columns: vec![
+                    ColumnDef {
+                        id: SchemaId::new(1).unwrap(),
+                        name: "id".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                    ColumnDef {
+                        id: SchemaId::new(2).unwrap(),
+                        name: "value".into(),
+                        scalar_type: ScalarType::Int64,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                ],
+                primary_key: vec!["id".into()],
+                indexes: Vec::new(),
+                foreign_keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+        catalog
+            .create_table(TableDef {
+                id: SchemaId::new(2).unwrap(),
+                name: "markers".into(),
+                columns: vec![ColumnDef {
+                    id: SchemaId::new(3).unwrap(),
+                    name: "id".into(),
+                    scalar_type: ScalarType::Text,
+                    nullable: false,
+                    format: String::new(),
+                    default: None,
+                }],
+                primary_key: vec!["id".into()],
+                indexes: Vec::new(),
+                foreign_keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let engine = Arc::new(Engine::new(store));
+        engine
+            .create(
+                "counters",
+                crate::engine::lir::Row::from([
+                    ("id".into(), Value::Text("shared".into())),
+                    ("value".into(), Value::Int64(0)),
+                ]),
+            )
+            .await
+            .unwrap();
+
+        let increment = Program {
+            statements: vec![crate::engine::exec::Statement::Update {
+                name: "increment".into(),
+                relation: crate::engine::lir::Query {
+                    root: Relation::Project {
+                        input: Box::new(Relation::Filter {
+                            input: Box::new(Relation::Scan {
+                                table: "counters".into(),
+                                scope: "counter".into(),
+                            }),
+                            predicate: Expr::Binary {
+                                op: BinaryOp::Eq,
+                                left: Box::new(Expr::Column {
+                                    scope: "counter".into(),
+                                    name: "id".into(),
+                                }),
+                                right: Box::new(Expr::Literal(Literal {
+                                    raw: RawScalar::Text("shared".into()),
+                                    kind: Some(Kind::Text),
+                                })),
+                            },
+                        }),
+                        scope: None,
+                        spread: Vec::new(),
+                        fields: vec![
+                            ProjectField {
+                                name: "id".into(),
+                                expression: Expr::Column {
+                                    scope: "counter".into(),
+                                    name: "id".into(),
+                                },
+                            },
+                            ProjectField {
+                                name: "value".into(),
+                                expression: Expr::Binary {
+                                    op: BinaryOp::Add,
+                                    left: Box::new(Expr::Column {
+                                        scope: "counter".into(),
+                                        name: "value".into(),
+                                    }),
+                                    right: Box::new(Expr::Literal(Literal {
+                                        raw: RawScalar::Number("1".into()),
+                                        kind: Some(Kind::Int64),
+                                    })),
+                                },
+                            },
+                        ],
+                    },
+                    cardinality: RootCardinality::Many,
+                    bindings: HashMap::new(),
+                },
+                table: "counters".into(),
+            }],
+            result: None,
+        };
+        let marker = Program {
+            statements: vec![crate::engine::exec::Statement::Create {
+                name: "mark".into(),
+                relation: crate::engine::lir::Query {
+                    root: Relation::Rows {
+                        scope: "marker".into(),
+                        columns: vec![RowsColumn {
+                            name: "id".into(),
+                            kind: Kind::Text,
+                            nullable: false,
+                        }],
+                        values: vec![vec![RawScalar::Text("kept".into())]],
+                    },
+                    cardinality: RootCardinality::Many,
+                    bindings: HashMap::new(),
+                },
+                table: "markers".into(),
+            }],
+            result: None,
+        };
+
+        let mut first = Tx::begin(engine.clone(), TransactionIsolation::ReadCommitted)
+            .await
+            .unwrap();
+        let mut second = Tx::begin(engine.clone(), TransactionIsolation::ReadCommitted)
+            .await
+            .unwrap();
+        second
+            .execute_program(marker, CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        first
+            .execute_program(increment.clone(), CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        let waiting_increment = increment.clone();
+        let waiting = tokio::spawn(async move {
+            second
+                .execute_program(waiting_increment, CatalogPolicy::Forbidden)
+                .await?;
+            crate::engine::exec::Result::Ok(second)
+        });
+        tokio::task::yield_now().await;
+
+        first.commit().await.unwrap();
+        let second = tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+            .await
+            .expect("the waiting writer resumes after the first commit")
+            .expect("writer task does not panic")
+            .unwrap();
+        second.commit().await.unwrap();
+
+        let mut stale = Tx::begin(engine.clone(), TransactionIsolation::ReadCommitted)
+            .await
+            .unwrap();
+        let mut winner = Tx::begin(engine.clone(), TransactionIsolation::ReadCommitted)
+            .await
+            .unwrap();
+        winner
+            .execute_program(increment.clone(), CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        winner.commit().await.unwrap();
+        stale
+            .execute_program(increment.clone(), CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        stale.commit().await.unwrap();
+
+        let values = engine
+            .execute(crate::engine::lir::Query {
+                root: Relation::Project {
+                    input: Box::new(Relation::Scan {
+                        table: "counters".into(),
+                        scope: "counter".into(),
+                    }),
+                    scope: None,
+                    spread: Vec::new(),
+                    fields: vec![ProjectField {
+                        name: "value".into(),
+                        expression: Expr::Column {
+                            scope: "counter".into(),
+                            name: "value".into(),
+                        },
+                    }],
+                },
+                cardinality: RootCardinality::ExactlyOne,
+                bindings: HashMap::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            values,
+            Datum::Object(vec![ObjectField {
+                name: "value".into(),
+                datum: Datum::scalar(Value::Int64(4)),
+            }])
+        );
+
+        let markers = engine
+            .execute(crate::engine::lir::Query {
+                root: Relation::Scan {
+                    table: "markers".into(),
+                    scope: "marker".into(),
+                },
+                cardinality: RootCardinality::ExactlyOne,
+                bindings: HashMap::new(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(markers, Datum::Object(_)));
+
+        let mut serializable_first = Tx::begin(engine.clone(), TransactionIsolation::Serializable)
+            .await
+            .unwrap();
+        let mut serializable_second = Tx::begin(engine, TransactionIsolation::Serializable)
+            .await
+            .unwrap();
+        serializable_first
+            .execute_program(increment.clone(), CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        serializable_second
+            .execute_program(increment, CatalogPolicy::Forbidden)
+            .await
+            .unwrap();
+        serializable_first.commit().await.unwrap();
+        let error = serializable_second.commit().await.unwrap_err();
+        assert_eq!(
+            error.reason(),
+            crate::engine::exec::ErrorReason::SerializableConflict
+        );
     }
 
     #[test]
