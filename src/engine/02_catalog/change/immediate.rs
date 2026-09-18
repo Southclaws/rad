@@ -101,6 +101,33 @@ impl Mutation<'_> {
         table: &Table,
         requested: Option<SchemaId>,
     ) -> Result<SchemaId> {
+        let (id, maximum) = match requested {
+            Some(id) => {
+                let (used, maximum) = self.used_column_schema_ids(table).await?;
+                if used.contains(&id) {
+                    return Err(input(format!(
+                        "catalog: column schema ID {id} on table {:?} has already been used",
+                        table.name
+                    )));
+                }
+                (id, maximum.max(id.get()))
+            }
+            None => {
+                let maximum =
+                    match store::schema_column_id_high_water(self.view, table.schema_id).await? {
+                        Some(high_water) => high_water.get(),
+                        None => self.used_column_schema_ids(table).await?.1,
+                    };
+                let id = next_schema_id(maximum)?;
+                (id, id.get())
+            }
+        };
+        let high_water = SchemaId::new(maximum).expect("allocated schema IDs are valid");
+        store::advance_schema_column_id_high_water(self.view, table.schema_id, high_water).await?;
+        Ok(id)
+    }
+
+    async fn used_column_schema_ids(&mut self, table: &Table) -> Result<(HashSet<SchemaId>, u32)> {
         let mut used = HashSet::new();
         let mut maximum = 0;
         for revision in store::revisions(self.view).await? {
@@ -120,14 +147,7 @@ impl Mutation<'_> {
             used.insert(column.schema_id);
             maximum = maximum.max(column.schema_id.get());
         }
-        match requested {
-            Some(id) if used.contains(&id) => Err(input(format!(
-                "catalog: column schema ID {id} on table {:?} has already been used",
-                table.name
-            ))),
-            Some(id) => Ok(id),
-            None => next_schema_id(maximum),
-        }
+        Ok((used, maximum))
     }
 
     pub async fn change_column_insert_default(
@@ -668,7 +688,7 @@ mod tests {
         DefaultFunction, ForeignKeyDef, IndexDef, ScalarType, TableDraft,
     };
     use crate::engine::kv::slatedb;
-    use crate::engine::kv::{IsolationLevel, TransactionView, TransactionalKv};
+    use crate::engine::kv::{IsolationLevel, Kv, TransactionView, TransactionalKv, keys};
 
     use super::*;
 
@@ -756,6 +776,13 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
+
+        Kv::delete(
+            database.as_ref(),
+            &keys::catalog_schema_column_id_high_water_key(created.schema_id.get()),
+        )
+        .await
+        .unwrap();
 
         let table = service
             .create_column(

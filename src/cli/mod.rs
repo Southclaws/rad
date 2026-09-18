@@ -146,6 +146,19 @@ mod tests {
     }
 
     #[test]
+    fn generated_serve_accepts_memory_commit_durability() {
+        let cli =
+            Cli::try_parse_from(["rad", "serve", "--slate-commit-durability", "memory"]).unwrap();
+        let RootCommand::Serve(serve) = cli.command else {
+            panic!("expected serve command");
+        };
+        assert_eq!(
+            serve.slate_commit_durability,
+            ServeSlateCommitDurability::Memory
+        );
+    }
+
+    #[test]
     fn generated_init_supports_the_fast_non_interactive_path() {
         let cli = Cli::try_parse_from([
             "rad",

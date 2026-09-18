@@ -165,6 +165,16 @@ pub fn describe_key(key: &[u8]) -> Option<String> {
                 parts.table, parts.stripe
             ))
         }
+        keys::CATALOG_SCHEMA_TABLE_ID_HIGH_WATER_TAG => {
+            (rest.len() == 1).then(|| "catalog_schema_table_id_high_water".to_owned())
+        }
+        keys::CATALOG_SCHEMA_COLUMN_ID_HIGH_WATER_TAG => {
+            let parts = keys::decode_catalog_schema_column_id_high_water_key(key)?;
+            Some(format!(
+                "catalog_schema_column_id_high_water/table={}",
+                parts.table
+            ))
+        }
         keys::CATALOG_META_MODE_TAG => (rest.len() == 1).then(|| "catalog_meta_mode".to_owned()),
         keys::CATALOG_META_NEXT_ID_TAG => {
             (rest.len() == 1).then(|| "catalog_meta_next_id".to_owned())

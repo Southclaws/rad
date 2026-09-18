@@ -45,7 +45,10 @@ impl Server {
         Self {
             backend: Arc::new(Backend {
                 engine,
-                parser: Arc::new(ParserBackend { catalog }),
+                parser: Arc::new(ParserBackend {
+                    catalog,
+                    cached_tables: Arc::new(RwLock::new(None)),
+                }),
                 mode,
                 transaction_admission: Arc::new(RwLock::new(())),
             }),
@@ -729,6 +732,13 @@ fn log_transaction_completed(
 #[derive(Clone)]
 struct ParserBackend {
     catalog: Arc<Catalog>,
+    cached_tables: Arc<RwLock<Option<CachedTables>>>,
+}
+
+#[derive(Clone)]
+struct CachedTables {
+    generation: u64,
+    tables: Arc<[Table]>,
 }
 
 #[async_trait]
@@ -797,19 +807,40 @@ impl ParserBackend {
         })
     }
 
-    async fn tables<C>(&self, client: &C) -> PgWireResult<Vec<Table>>
+    async fn tables<C>(&self, client: &C) -> PgWireResult<Arc<[Table]>>
     where
         C: ClientInfo + Unpin + Send + Sync,
     {
         let session = session(client);
         let mut state = session.lock().await;
         match &mut state.transaction {
-            Some(transaction) => transaction.list_tables().await.map_err(engine_error),
+            Some(transaction) => transaction
+                .list_tables()
+                .await
+                .map(Arc::from)
+                .map_err(engine_error),
             None => {
                 drop(state);
-                self.catalog.list_tables().await.map_err(api_error)
+                self.catalog_tables().await.map_err(api_error)
             }
         }
+    }
+
+    async fn catalog_tables(&self) -> crate::engine::catalog::Result<Arc<[Table]>> {
+        let generation = self.catalog.catalog_generation().await?;
+        if let Some(cached) = self.cached_tables.read().await.as_ref()
+            && cached.generation == generation
+        {
+            return Ok(cached.tables.clone());
+        }
+
+        let (generation, tables) = self.catalog.table_snapshot().await?;
+        let tables = Arc::<[Table]>::from(tables);
+        *self.cached_tables.write().await = Some(CachedTables {
+            generation,
+            tables: tables.clone(),
+        });
+        Ok(tables)
     }
 }
 
@@ -3138,6 +3169,44 @@ mod tests {
             .program
             .unwrap();
         assert!(program_changes_catalog(&create));
+    }
+
+    #[tokio::test]
+    async fn parser_table_cache_tracks_catalog_generation() {
+        let store = Arc::new(Store::memory("postgres-parser-table-cache").await.unwrap());
+        let catalog = Arc::new(Catalog::new(store.clone()));
+        let parser = ParserBackend {
+            catalog: catalog.clone(),
+            cached_tables: Arc::new(RwLock::new(None)),
+        };
+
+        let first = parser.catalog_tables().await.unwrap();
+        let second = parser.catalog_tables().await.unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+
+        catalog
+            .create_table(crate::engine::catalog::model::TableDraft {
+                id: None,
+                name: "items".into(),
+                columns: vec![crate::engine::catalog::model::ColumnDraft {
+                    id: None,
+                    name: "id".into(),
+                    scalar_type: ScalarType::Int64,
+                    nullable: false,
+                    format: String::new(),
+                    default: None,
+                }],
+                primary_key: vec!["id".into()],
+                indexes: Vec::new(),
+                foreign_keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        let changed = parser.catalog_tables().await.unwrap();
+        assert!(!Arc::ptr_eq(&second, &changed));
+        assert_eq!(changed.len(), 1);
+        store.close().await.unwrap();
     }
 
     #[tokio::test]

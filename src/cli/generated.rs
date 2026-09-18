@@ -120,6 +120,14 @@ pub enum ServeRole {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServeSlateCommitDurability {
+    #[value(name = r"durable")]
+    Durable,
+    #[value(name = r"memory")]
+    Memory,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ServeSlateObjectCachePreload {
     #[value(name = r"none")]
     None,
@@ -714,6 +722,15 @@ pub struct ServeArgs {
         default_value = r"4"
     )]
     pub slate_scan_max_fetch_tasks: i64,
+    #[arg(
+        id = r"slate-commit-durability",
+        long = r"slate-commit-durability",
+        help = r"Commit acknowledgement point. A process failure before a WAL flush can lose memory commits.",
+        env = r"RAD_SLATE_COMMIT_DURABILITY",
+        default_value = r"durable",
+        value_enum
+    )]
+    pub slate_commit_durability: ServeSlateCommitDurability,
     #[arg(
         id = r"slate-flush-interval-ms",
         long = r"slate-flush-interval-ms",

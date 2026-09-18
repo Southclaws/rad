@@ -168,6 +168,20 @@
     {
       "invariants": [],
       "key": "",
+      "name": "catalog_schema_table_id_high_water",
+      "tag": "25",
+      "value": "largest allocated table schema identity decimal text"
+    },
+    {
+      "invariants": [],
+      "key": "table:be32",
+      "name": "catalog_schema_column_id_high_water",
+      "tag": "26",
+      "value": "largest allocated column schema identity decimal text"
+    },
+    {
+      "invariants": [],
+      "key": "",
       "name": "catalog_meta_mode",
       "tag": "30",
       "value": "catalog mode text: direct or schema"

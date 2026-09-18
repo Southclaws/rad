@@ -156,6 +156,18 @@ pub const KEYSPACES: &[Keyspace] = &[
         value: "data generation decimal text",
     },
     Keyspace {
+        name: "catalog_schema_table_id_high_water",
+        tag: 0x25,
+        key: "",
+        value: "largest allocated table schema identity decimal text",
+    },
+    Keyspace {
+        name: "catalog_schema_column_id_high_water",
+        tag: 0x26,
+        key: "table:be32",
+        value: "largest allocated column schema identity decimal text",
+    },
+    Keyspace {
         name: "catalog_meta_mode",
         tag: 0x30,
         key: "",

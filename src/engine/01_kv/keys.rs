@@ -877,6 +877,48 @@ pub fn decode_catalog_table_data_generation_stripe_key(
     Some(CatalogTableDataGenerationStripeKeyParts { table, stripe })
 }
 
+pub const CATALOG_SCHEMA_TABLE_ID_HIGH_WATER_TAG: u8 = 0x25;
+
+/// The `catalog_schema_table_id_high_water` space prefix: root magic plus tag.
+pub fn catalog_schema_table_id_high_water_prefix() -> Vec<u8> {
+    vec![0x72, 0x37, CATALOG_SCHEMA_TABLE_ID_HIGH_WATER_TAG]
+}
+
+pub fn catalog_schema_table_id_high_water_key() -> Vec<u8> {
+    catalog_schema_table_id_high_water_prefix()
+}
+
+pub const CATALOG_SCHEMA_COLUMN_ID_HIGH_WATER_TAG: u8 = 0x26;
+
+/// The `catalog_schema_column_id_high_water` space prefix: root magic plus tag.
+pub fn catalog_schema_column_id_high_water_prefix() -> Vec<u8> {
+    vec![0x72, 0x37, CATALOG_SCHEMA_COLUMN_ID_HIGH_WATER_TAG]
+}
+
+pub fn catalog_schema_column_id_high_water_key(table: u32) -> Vec<u8> {
+    let mut key = catalog_schema_column_id_high_water_prefix();
+    key.extend_from_slice(&table.to_be_bytes());
+    key
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct CatalogSchemaColumnIdHighWaterKeyParts {
+    pub table: u32,
+}
+
+pub fn decode_catalog_schema_column_id_high_water_key(
+    key: &[u8],
+) -> Option<CatalogSchemaColumnIdHighWaterKeyParts> {
+    let rest = key.strip_prefix(&[0x72, 0x37, CATALOG_SCHEMA_COLUMN_ID_HIGH_WATER_TAG][..])?;
+    let mut position = 0;
+    let table = u32::from_be_bytes(rest.get(position..position + 4)?.try_into().ok()?);
+    position += 4;
+    if position != rest.len() {
+        return None;
+    }
+    Some(CatalogSchemaColumnIdHighWaterKeyParts { table })
+}
+
 pub const CATALOG_META_MODE_TAG: u8 = 0x30;
 
 /// The `catalog_meta_mode` space prefix: root magic plus tag.

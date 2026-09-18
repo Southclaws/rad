@@ -141,7 +141,7 @@ async fn assert_read_only(name: &str, response: reqwest::Response) -> TestResult
     Ok(())
 }
 
-async fn wait_for_row(reader: &RadProcess, id: &str) -> TestResult {
+pub async fn wait_for_row(reader: &RadProcess, id: &str) -> TestResult {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let observation = match reader.execute(&query_program()).await {

@@ -57,6 +57,14 @@ impl Catalog {
         self.changes.list_tables().await
     }
 
+    pub(crate) async fn catalog_generation(&self) -> Result<u64> {
+        self.changes.catalog_generation().await
+    }
+
+    pub(crate) async fn table_snapshot(&self) -> Result<(u64, Vec<Table>)> {
+        self.changes.table_snapshot().await
+    }
+
     pub async fn create_table(&self, definition: impl Into<TableDraft>) -> Result<Table> {
         self.notify(self.changes.create_table(definition.into()).await)
     }

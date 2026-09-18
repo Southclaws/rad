@@ -201,9 +201,12 @@ async fn generated_queries_match_independent_result_model() {
         let seed = base_seed.wrapping_add(offset);
         let case = ModelCase::from_seed(seed);
         if let Err(original) = check_model(&case).await {
-            let minimized = minimize_model(&case, env_usize("RAD_GEN_SHRINK_BUDGET", 2_000))
-                .await
-                .expect("shrink independent model failure");
+            let minimized = Box::pin(minimize_model(
+                &case,
+                env_usize("RAD_GEN_SHRINK_BUDGET", 2_000),
+            ))
+            .await
+            .expect("shrink independent model failure");
             let minimized_error = check_model(&minimized)
                 .await
                 .expect_err("minimized model case must retain the failure");
@@ -232,10 +235,12 @@ async fn generated_semantics_match_small_independent_models() {
         let seed = base_seed.wrapping_add(offset);
         let case = SemanticModelCase::from_seed(seed);
         if let Err(original) = check_semantic_model(&case).await {
-            let minimized =
-                minimize_semantic_model(&case, env_usize("RAD_GEN_SHRINK_BUDGET", 2_000))
-                    .await
-                    .expect("shrink independent semantic model failure");
+            let minimized = Box::pin(minimize_semantic_model(
+                &case,
+                env_usize("RAD_GEN_SHRINK_BUDGET", 2_000),
+            ))
+            .await
+            .expect("shrink independent semantic model failure");
             let minimized_error = check_semantic_model(&minimized)
                 .await
                 .expect_err("minimized semantic model case must retain the failure");

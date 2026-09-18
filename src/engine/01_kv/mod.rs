@@ -258,7 +258,7 @@ pub trait Kv: Send + Sync {
 /// A transaction with a stable snapshot plus read-your-own-writes behavior.
 ///
 /// `commit` must be driven to completion once it has been polled. Cancelling a
-/// commit can leave the caller unable to tell whether the write became durable.
+/// commit can leave the caller unable to tell whether the write was accepted.
 #[async_trait]
 pub trait Transaction: Send + Sync {
     fn begin_position(&self) -> &DataPosition;

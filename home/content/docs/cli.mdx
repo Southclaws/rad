@@ -93,6 +93,7 @@ Documentation: https://www.radengine.dev/docs/cli#rad-serve
 | `--slate-scan-cache-blocks` | Add blocks from throughput scans to the decoded cache. | `false` | `RAD_SLATE_SCAN_CACHE_BLOCKS` |
 | `--slate-scan-read-ahead-kib <value>` | Read-ahead target for each throughput scan. | `256` | `RAD_SLATE_SCAN_READ_AHEAD_KIB` |
 | `--slate-scan-max-fetch-tasks <value>` | Maximum concurrent Slate fetch tasks for each throughput scan. | `4` | `RAD_SLATE_SCAN_MAX_FETCH_TASKS` |
+| `--slate-commit-durability <durable\|memory>` | Commit acknowledgement point. A process failure before a WAL flush can lose memory commits. Choices: durable, memory. | `durable` | `RAD_SLATE_COMMIT_DURABILITY` |
 | `--slate-flush-interval-ms <value>` | Interval between automatic WAL flush attempts. | `100` | `RAD_SLATE_FLUSH_INTERVAL_MS` |
 | `--slate-l0-sst-size-mib <value>` | Target memtable size before Slate writes an L0 SST. | `64` | `RAD_SLATE_L0_SST_SIZE_MIB` |
 | `--slate-max-wal-flushes-before-l0-flush <value>` | Maximum WAL flush count before Slate writes the memtable to L0. | `4096` | `RAD_SLATE_MAX_WAL_FLUSHES_BEFORE_L0_FLUSH` |

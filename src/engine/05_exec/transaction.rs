@@ -86,6 +86,10 @@ impl EngineTransaction {
         self.executed_statement
     }
 
+    pub(super) fn has_writes(&self) -> bool {
+        self.statement_checkpoint() != 0
+    }
+
     pub(super) fn finish_statement(&mut self) {
         self.executed_statement = true;
     }

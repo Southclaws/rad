@@ -44,9 +44,7 @@ impl Binder<'_> {
                         ),
                     ));
                 }
-                let mut filter = bound::Relation::filter(input, predicate);
-                Self::refine_unique(&mut filter);
-                Ok(filter)
+                Ok(Self::bind_filter(input, predicate))
             }
             lir::Relation::Project {
                 input,
@@ -389,6 +387,56 @@ impl Binder<'_> {
             ));
         }
         Ok(bound::Relation::join(left, right, kind, on))
+    }
+
+    fn bind_filter(input: bound::Relation, predicate: bound::Expr) -> bound::Relation {
+        let effects = crate::engine::planner::memo::expression_effects(&predicate);
+        let slots = predicate.free_slots();
+        if effects.pure
+            && effects.deterministic
+            && effects.total
+            && !effects.lazy_ordered_boundary
+            && !effects.relational_crossing
+            && !slots.is_empty()
+            && let RelationNode::Join {
+                left,
+                right,
+                kind: lir::JoinKind::Inner,
+                on,
+            } = &input.node
+            && {
+                let effects = crate::engine::planner::memo::expression_effects(on);
+                effects.pure
+                    && effects.deterministic
+                    && effects.total
+                    && !effects.lazy_ordered_boundary
+                    && !effects.relational_crossing
+            }
+        {
+            if slots.without(left.produced()).is_empty() {
+                let mut left = bound::Relation::filter((**left).clone(), predicate);
+                Self::refine_unique(&mut left);
+                return bound::Relation::join(
+                    left,
+                    (**right).clone(),
+                    lir::JoinKind::Inner,
+                    on.clone(),
+                );
+            }
+            if slots.without(right.produced()).is_empty() {
+                let mut right = bound::Relation::filter((**right).clone(), predicate);
+                Self::refine_unique(&mut right);
+                return bound::Relation::join(
+                    (**left).clone(),
+                    right,
+                    lir::JoinKind::Inner,
+                    on.clone(),
+                );
+            }
+        }
+        let mut filter = bound::Relation::filter(input, predicate);
+        Self::refine_unique(&mut filter);
+        filter
     }
 
     async fn bind_aggregate(

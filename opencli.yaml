@@ -216,6 +216,11 @@ commands:
         type: integer
         envVar: RAD_SLATE_SCAN_MAX_FETCH_TASKS
         default: 4
+      - name: slate-commit-durability
+        description: Commit acknowledgement point. A process failure before a WAL flush can lose memory commits.
+        envVar: RAD_SLATE_COMMIT_DURABILITY
+        choices: [durable, memory]
+        default: durable
       - name: slate-flush-interval-ms
         description: Interval between automatic WAL flush attempts.
         type: integer

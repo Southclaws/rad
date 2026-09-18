@@ -73,6 +73,7 @@ async fn a_readers_queries_reach_the_writers_statistics() -> TestResult {
     let (writer, reader, internal) =
         RadProcess::start_file_relay_pair(directory.path(), "relay", &token_file).await?;
     multi_replica::seed(&writer).await?;
+    multi_replica::wait_for_row(&reader, "user-1").await?;
     let baseline = total_executions(&writer.statistics().await?);
 
     // Only the reader serves these, so evidence for them can reach the writer

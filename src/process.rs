@@ -83,10 +83,8 @@ pub struct Config {
     pub catalog_mode: Option<Mode>,
     pub frontend: Option<Frontend>,
     pub postgres_address: String,
-    /// Bound on the orderly storage close; `None` waits indefinitely. Commits are
-    /// durable before they are acknowledged, so abandoning a close that cannot
-    /// finish — a destroyed bucket retries longer than any termination grace —
-    /// forfeits only background housekeeping, never acknowledged data.
+    /// Bound on the orderly storage close; `None` waits indefinitely. An expired
+    /// close can lose commits that use memory durability.
     pub close_timeout: Option<Duration>,
     pub reader_poll_interval: Duration,
     pub relation_cache: RelationCacheLimits,
@@ -287,6 +285,7 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
         event = "process.started",
         component = "process",
         role = %config.role,
+        commit_durability = %config.slate.commit_durability,
         message = "Rad process started"
     );
     let health = Health::starting(crate::health::STORAGE_FRESHNESS);
@@ -495,7 +494,7 @@ async fn close_store(store: &dyn TransactionalKv, timeout: Option<Duration>) -> 
     match tokio::time::timeout(limit, store.close()).await {
         Ok(result) => Ok(result?),
         Err(_) => Err(format!(
-            "orderly storage close did not finish within {limit:?}; abandoning storage housekeeping"
+            "orderly storage close did not finish within {limit:?}; abandoning storage close"
         )
         .into()),
     }
@@ -1146,6 +1145,7 @@ fn internal_test_planner_mode() -> Result<crate::engine::planner::PlannerMode> {
 
 fn slate_options_from_env() -> Result<SlateOptions> {
     Ok(SlateOptions {
+        commit_durability: parse_env("RAD_SLATE_COMMIT_DURABILITY", "durable")?,
         decoded_cache_size_mib: parse_env("RAD_SLATE_DECODED_CACHE_SIZE_MIB", "128")?,
         scan_cache_blocks: parse_bool_env("RAD_SLATE_SCAN_CACHE_BLOCKS", false)?,
         scan_read_ahead_kib: parse_env("RAD_SLATE_SCAN_READ_AHEAD_KIB", "256")?,

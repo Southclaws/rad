@@ -234,48 +234,10 @@ impl<'a> Mutation<'a> {
     }
 
     async fn assign_table_definition_ids(&mut self, draft: TableDraft) -> Result<AssignedTable> {
-        let (used, maximum) = self.used_table_schema_ids().await?;
-        let id = match draft.id {
-            Some(id) if used.contains(&id) => {
-                return Err(input(format!(
-                    "catalog: table schema ID {id} has already been used"
-                )));
-            }
-            Some(id) => id,
-            None => next_schema_id(maximum)?,
-        };
-
-        let mut seen = HashMap::new();
-        let mut maximum = 0;
-        for column in &draft.columns {
-            if let Some(column_id) = column.id {
-                if let Some(previous) = seen.insert(column_id, column.name.clone()) {
-                    return Err(input(format!(
-                        "catalog: columns {previous:?} and {:?} on table {:?} share schema ID {column_id}",
-                        column.name, draft.name
-                    )));
-                }
-                maximum = maximum.max(column_id.get());
-            }
-        }
-        let mut columns = Vec::with_capacity(draft.columns.len());
-        for column in draft.columns {
-            let column_id = match column.id {
-                Some(id) => id,
-                None => {
-                    let id = next_schema_id(maximum)?;
-                    maximum = id.get();
-                    id
-                }
-            };
-            columns.push(AssignedColumn {
-                id: column_id,
-                name: column.name,
-                scalar_type: column.scalar_type,
-                nullable: column.nullable,
-                format: column.format,
-                default: column.default,
-            });
+        let id = self.assign_table_schema_id(draft.id).await?;
+        let (columns, maximum_column_id) = assign_initial_column_ids(&draft.name, draft.columns)?;
+        if let Ok(high_water) = SchemaId::new(maximum_column_id) {
+            store::advance_schema_column_id_high_water(self.view, id, high_water).await?;
         }
         Ok(AssignedTable {
             id,
@@ -285,6 +247,32 @@ impl<'a> Mutation<'a> {
             indexes: draft.indexes,
             foreign_keys: draft.foreign_keys,
         })
+    }
+
+    async fn assign_table_schema_id(&mut self, requested: Option<SchemaId>) -> Result<SchemaId> {
+        match requested {
+            Some(id) => {
+                let (used, maximum) = self.used_table_schema_ids().await?;
+                if used.contains(&id) {
+                    return Err(input(format!(
+                        "catalog: table schema ID {id} has already been used"
+                    )));
+                }
+                let high_water =
+                    SchemaId::new(maximum.max(id.get())).expect("allocated schema IDs are valid");
+                store::advance_schema_table_id_high_water(self.view, high_water).await?;
+                Ok(id)
+            }
+            None => {
+                let maximum = match store::schema_table_id_high_water(self.view).await? {
+                    Some(high_water) => high_water.get(),
+                    None => self.used_table_schema_ids().await?.1,
+                };
+                let id = next_schema_id(maximum)?;
+                store::advance_schema_table_id_high_water(self.view, id).await?;
+                Ok(id)
+            }
+        }
     }
 
     async fn used_table_schema_ids(&mut self) -> Result<(HashSet<SchemaId>, u32)> {
@@ -302,6 +290,48 @@ impl<'a> Mutation<'a> {
         }
         Ok((used, maximum))
     }
+}
+
+fn assign_initial_column_ids(
+    table_name: &str,
+    drafts: Vec<super::model::ColumnDraft>,
+) -> Result<(Vec<AssignedColumn>, u32)> {
+    let mut seen = HashMap::new();
+    let mut maximum = 0;
+    for column in &drafts {
+        if let Some(column_id) = column.id {
+            if let Some(previous) = seen.insert(column_id, column.name.clone()) {
+                return Err(input(format!(
+                    "catalog: columns {previous:?} and {:?} on table {table_name:?} share schema ID {column_id}",
+                    column.name
+                )));
+            }
+            maximum = maximum.max(column_id.get());
+        }
+    }
+
+    let columns = drafts
+        .into_iter()
+        .map(|column| {
+            let id = match column.id {
+                Some(id) => id,
+                None => {
+                    let id = next_schema_id(maximum)?;
+                    maximum = id.get();
+                    id
+                }
+            };
+            Ok(AssignedColumn {
+                id,
+                name: column.name,
+                scalar_type: column.scalar_type,
+                nullable: column.nullable,
+                format: column.format,
+                default: column.default,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((columns, maximum))
 }
 
 async fn build_foreign_key(
@@ -567,6 +597,18 @@ impl Service {
         read_snapshot!(self, |mut view| store::list_tables(&mut view))
     }
 
+    pub(crate) async fn catalog_generation(&self) -> Result<u64> {
+        read_snapshot!(self, |view| store::catalog_generation(&view))
+    }
+
+    pub(crate) async fn table_snapshot(&self) -> Result<(u64, Vec<Table>)> {
+        read_snapshot!(self, |mut view| async {
+            let generation = store::catalog_generation(&view).await?;
+            let tables = store::list_tables(&mut view).await?;
+            Ok((generation, tables))
+        })
+    }
+
     pub async fn schema(&self) -> Result<super::model::Schema> {
         read_snapshot!(self, |mut view| store::read_schema(&mut view))
     }
@@ -626,8 +668,8 @@ impl Service {
 #[cfg(test)]
 mod tests {
     use crate::engine::catalog::model::{ColumnDraft, DefaultValue, ForeignKeyDef, IndexDef};
-    use crate::engine::kv::TransactionalKv;
     use crate::engine::kv::slatedb;
+    use crate::engine::kv::{Kv, TransactionalKv, keys};
 
     use super::*;
 
@@ -887,6 +929,12 @@ mod tests {
         let service = Service::new(database.clone());
         let first = service.create_table(users()).await.unwrap();
         service.delete_table("users").await.unwrap();
+        Kv::delete(
+            database.as_ref(),
+            &keys::catalog_schema_table_id_high_water_key(),
+        )
+        .await
+        .unwrap();
         let mut replacement = users();
         replacement.name = "people".into();
         let second = service.create_table(replacement).await.unwrap();

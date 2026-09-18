@@ -92,9 +92,15 @@ The SlateDB adapter maps snapshot and serializable isolation to SlateDB's
 corresponding transaction modes. Transaction conflicts are normalised into
 Rad's conflict category.
 
-The adapter uses default durable write options. It checks cancellation before a
-storage call, but a scan or commit already in progress cannot currently be
-interrupted.
+The adapter waits for each transaction WAL write to reach object storage before
+it returns success. Set `--slate-commit-durability memory` or
+`RAD_SLATE_COMMIT_DURABILITY=memory` to return after SlateDB accepts the write
+in process memory. A process failure can lose these acknowledged writes. An
+orderly process stop flushes them to object storage. A storage error can occur
+after Rad returns success for an unflushed memory commit.
+
+The adapter checks cancellation before a storage call, but a scan or commit
+already in progress cannot currently be interrupted.
 
 Rad opens one SlateDB writer process per database. The adapter supports file
 and memory object-store URLs; tests exercise SlateDB itself on `memory:///`

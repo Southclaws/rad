@@ -726,7 +726,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_transaction_bypasses_cached_relations() {
+    async fn explicit_transaction_reuses_cached_relations_and_invalidates_after_writes() {
         let store = Arc::new(
             Store::memory("frontend-relation-cache-dirty")
                 .await
@@ -856,7 +856,7 @@ mod tests {
         );
         assert_eq!(
             statements[1].source,
-            crate::engine::exec::observe::StatementSource::Executed
+            crate::engine::exec::observe::StatementSource::RelationCache
         );
         assert_eq!(
             statements[3].source,

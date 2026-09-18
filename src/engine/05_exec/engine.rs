@@ -683,9 +683,15 @@ impl Engine {
         program: &Program,
         catalog_policy: CatalogPolicy,
     ) -> Result<ProgramResult> {
+        let relation_cache_eligible = !transaction.has_writes();
         if transaction.isolation() == TransactionIsolation::Serializable {
             let result = self
-                .execute_program_in_transaction(transaction, program, catalog_policy, false)
+                .execute_program_in_transaction(
+                    transaction,
+                    program,
+                    catalog_policy,
+                    relation_cache_eligible,
+                )
                 .await?;
             transaction.finish_statement();
             return Ok(result);
@@ -697,7 +703,12 @@ impl Engine {
         let checkpoint = transaction.statement_checkpoint();
         loop {
             let result = self
-                .execute_program_in_transaction(transaction, program, catalog_policy, false)
+                .execute_program_in_transaction(
+                    transaction,
+                    program,
+                    catalog_policy,
+                    relation_cache_eligible,
+                )
                 .await?;
             if transaction
                 .acquire_statement_intents(&self.write_intents, checkpoint)

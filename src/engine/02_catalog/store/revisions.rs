@@ -9,14 +9,7 @@ use super::durable_json::{decode, encode};
 use super::{list_tables, map_kv, parse_u64, prefix_range, publish_definitions};
 
 pub(crate) async fn bump_catalog_generation<V: KvView + ?Sized>(view: &mut V) -> Result<u64> {
-    let current = match view
-        .get(&keys::catalog_meta_catalog_generation_key())
-        .await
-        .map_err(map_kv)?
-    {
-        Some(raw) => parse_u64("catalog_generation", None, &raw)?,
-        None => 0,
-    };
+    let current = catalog_generation(view).await?;
     let next = current.checked_add(1).ok_or_else(|| {
         Error::message(
             ErrorKind::CatalogCorrupt,
@@ -30,6 +23,17 @@ pub(crate) async fn bump_catalog_generation<V: KvView + ?Sized>(view: &mut V) ->
     .await
     .map_err(map_kv)?;
     Ok(next)
+}
+
+pub(crate) async fn catalog_generation<V: KvView + ?Sized>(view: &V) -> Result<u64> {
+    match view
+        .get(&keys::catalog_meta_catalog_generation_key())
+        .await
+        .map_err(map_kv)?
+    {
+        Some(raw) => parse_u64("catalog_generation", None, &raw),
+        None => Ok(0),
+    }
 }
 
 pub async fn current_revision<V: KvView + ?Sized>(view: &mut V) -> Result<Revision> {

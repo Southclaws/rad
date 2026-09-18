@@ -593,6 +593,32 @@ keyspace rad {
     }
   }
 
+  # The automatic table schema identity allocator advances this high-water
+  # value in the same transaction that creates the table. An absent key
+  # requires one history scan to support databases created without this key.
+  space catalog_schema_table_id_high_water {
+    tag x"25"
+    key { }
+    value "largest allocated table schema identity decimal text"
+    vectors {
+      key { } = x"72 37 25"
+    }
+  }
+
+  # Column schema identities are local to one logical table identity. The
+  # automatic column allocator advances this high-water value in the same
+  # transaction that creates the column.
+  space catalog_schema_column_id_high_water {
+    tag x"26"
+    key {
+      table be32
+    }
+    value "largest allocated column schema identity decimal text"
+    vectors {
+      key { table 7 } = x"72 37 26 00 00 00 07"
+    }
+  }
+
   space catalog_meta_mode {
     tag x"30"
     key { }

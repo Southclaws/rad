@@ -4,7 +4,9 @@ use std::time::Duration;
 use ::slatedb as slate_db;
 use async_trait::async_trait;
 use bytes::Bytes;
-use slate_db::config::{ObjectStoreCacheOptions, PreloadLevel, Settings, SstBlockSize};
+use slate_db::config::{
+    ObjectStoreCacheOptions, PreloadLevel, Settings, SstBlockSize, WriteOptions,
+};
 use slate_db::db_cache::foyer::{FoyerCache, FoyerCacheOptions};
 use slate_db::db_cache::{DbCache, SplitCache};
 use slate_db::filter_policy::{BloomFilterPolicy, FilterPolicy};
@@ -30,8 +32,51 @@ pub enum ObjectCachePreload {
     All,
 }
 
+/// Sets when a transaction commit returns success.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CommitDurability {
+    /// Wait for the WAL write to reach object storage.
+    #[default]
+    Durable,
+    /// Return after SlateDB accepts the write in process memory.
+    Memory,
+}
+
+impl CommitDurability {
+    fn write_options(self) -> WriteOptions {
+        WriteOptions {
+            await_durable: self == Self::Durable,
+            ..WriteOptions::default()
+        }
+    }
+}
+
+impl std::str::FromStr for CommitDurability {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "durable" => Ok(Self::Durable),
+            "memory" => Ok(Self::Memory),
+            _ => Err(format!(
+                "unknown commit durability {value:?} (durable or memory)"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for CommitDurability {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Durable => "durable",
+            Self::Memory => "memory",
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Options {
+    pub commit_durability: CommitDurability,
     pub decoded_cache_size_mib: u64,
     pub scan_cache_blocks: bool,
     pub scan_read_ahead_kib: u64,
@@ -57,6 +102,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            commit_durability: CommitDurability::Durable,
             decoded_cache_size_mib: 128,
             scan_cache_blocks: false,
             scan_read_ahead_kib: 256,
@@ -188,6 +234,7 @@ fn kib_to_usize(value: u64) -> Result<usize> {
 pub struct Store {
     db: Arc<slate_db::Db>,
     cache: Arc<dyn DbCache>,
+    commit_durability: CommitDurability,
     lifecycle: Arc<Lifecycle>,
     telemetry: Arc<SlateTelemetry>,
     scan_tuning: ScanTuning,
@@ -396,6 +443,7 @@ impl Store {
     ) -> Result<Self> {
         let telemetry = SlateTelemetry::new();
         let cache = decoded_cache(options.decoded_cache_size_mib);
+        let commit_durability = options.commit_durability;
         let scan_tuning = options.scan_tuning()?;
         let db = slate_db::Db::builder(path, object_store)
             .with_settings(options.settings()?)
@@ -409,6 +457,7 @@ impl Store {
         Ok(Self {
             db: Arc::new(db),
             cache,
+            commit_durability,
             lifecycle: Arc::new(Lifecycle::default()),
             telemetry,
             scan_tuning,
@@ -526,6 +575,7 @@ impl TransactionalKv for Store {
         Ok(Box::new(SlateTransaction {
             transaction,
             begin_position,
+            commit_durability: self.commit_durability,
             scan_tuning: self.scan_tuning,
             _lease: lease,
         }))
@@ -665,6 +715,7 @@ impl slate_db::ByteRangeBounds for KeyRange {
 struct SlateTransaction {
     transaction: slate_db::DbTransaction,
     begin_position: DataPosition,
+    commit_durability: CommitDurability,
     scan_tuning: ScanTuning,
     _lease: Lease,
 }
@@ -810,14 +861,15 @@ impl Transaction for ReaderTransaction {
 }
 
 impl SlateTransaction {
-    fn into_parts(self) -> (slate_db::DbTransaction, Lease) {
+    fn into_parts(self) -> (slate_db::DbTransaction, CommitDurability, Lease) {
         let Self {
             transaction,
             begin_position: _,
+            commit_durability,
             scan_tuning: _,
             _lease: lease,
         } = self;
-        (transaction, lease)
+        (transaction, commit_durability, lease)
     }
 }
 
@@ -892,9 +944,10 @@ impl Transaction for SlateTransaction {
     }
 
     async fn commit(self: Box<Self>) -> Result<()> {
-        let (transaction, lease) = (*self).into_parts();
+        let (transaction, commit_durability, lease) = (*self).into_parts();
+        let write_options = commit_durability.write_options();
         let result = transaction
-            .commit()
+            .commit_with_options(&write_options)
             .await
             .map(|_| ())
             .map_err(map_commit_error);
@@ -903,7 +956,7 @@ impl Transaction for SlateTransaction {
     }
 
     fn rollback(self: Box<Self>) {
-        let (transaction, lease) = (*self).into_parts();
+        let (transaction, _, lease) = (*self).into_parts();
         transaction.rollback();
         drop(lease);
     }
@@ -1117,7 +1170,7 @@ impl Drop for Lease {
 #[cfg(test)]
 mod tests {
     use std::fmt;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use futures::stream::BoxStream;
     use slate_db::object_store::path::Path;
@@ -1137,26 +1190,50 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct FaultingReadStore {
+    struct ControlledObjectStore {
         inner: InMemory,
         failures_remaining: AtomicUsize,
         read_attempts: AtomicUsize,
+        writes_blocked: AtomicBool,
+        write_release: tokio::sync::Notify,
     }
 
-    impl fmt::Display for FaultingReadStore {
+    impl ControlledObjectStore {
+        fn block_writes(&self) {
+            self.writes_blocked.store(true, Ordering::Release);
+        }
+
+        fn allow_writes(&self) {
+            self.writes_blocked.store(false, Ordering::Release);
+            self.write_release.notify_waiters();
+        }
+
+        async fn wait_for_write_permission(&self) {
+            loop {
+                let released = self.write_release.notified();
+                if !self.writes_blocked.load(Ordering::Acquire) {
+                    return;
+                }
+                released.await;
+            }
+        }
+    }
+
+    impl fmt::Display for ControlledObjectStore {
         fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("faulting-read-store")
+            formatter.write_str("controlled-object-store")
         }
     }
 
     #[async_trait]
-    impl ObjectStore for FaultingReadStore {
+    impl ObjectStore for ControlledObjectStore {
         async fn put_opts(
             &self,
             location: &Path,
             payload: PutPayload,
             options: PutOptions,
         ) -> ObjectStoreResult<PutResult> {
+            self.wait_for_write_permission().await;
             self.inner.put_opts(location, payload, options).await
         }
 
@@ -1215,6 +1292,39 @@ mod tests {
         ) -> ObjectStoreResult<()> {
             self.inner.copy_opts(from, to, options).await
         }
+    }
+
+    #[tokio::test]
+    async fn memory_commit_returns_while_wal_storage_is_blocked() -> Result<()> {
+        let objects = Arc::new(ControlledObjectStore::default());
+        let store = Store::open_with_options(
+            "memory-commit",
+            Arc::clone(&objects) as Arc<dyn ObjectStore>,
+            Options {
+                commit_durability: CommitDurability::Memory,
+                ..Options::default()
+            },
+        )
+        .await?;
+        objects.block_writes();
+
+        let transaction = store.begin(IsolationLevel::Snapshot).await?;
+        transaction.put(Bytes::from_static(b"key"), Bytes::from_static(b"value"))?;
+        let commit = tokio::time::timeout(Duration::from_secs(1), transaction.commit()).await;
+
+        objects.allow_writes();
+        store.db.flush().await.map_err(map_operation_error)?;
+        let value = store.get(b"key").await?;
+        store.close().await?;
+
+        commit.map_err(|_| {
+            Error::message(
+                ErrorKind::Unavailable,
+                "memory commit waited for WAL object storage",
+            )
+        })??;
+        assert_eq!(value, Some(Bytes::from_static(b"value")));
+        Ok(())
     }
 
     async fn collect(mut iterator: Box<dyn KvIterator + '_>) -> Result<Vec<Entry>> {
@@ -2004,7 +2114,7 @@ mod tests {
 
     #[tokio::test]
     async fn reader_get_propagates_unrelated_data_errors() -> Result<()> {
-        let objects = Arc::new(FaultingReadStore::default());
+        let objects = Arc::new(ControlledObjectStore::default());
         let writer = Store::open(
             "reader-unavailable",
             Arc::clone(&objects) as Arc<dyn ObjectStore>,

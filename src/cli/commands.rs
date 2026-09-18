@@ -12,9 +12,9 @@ use super::generated::{
     SchemaTransitionsCancelArgs, SchemaTransitionsGetArgs, SchemaTransitionsListArgs,
     SchemaTransitionsListKind, SchemaTransitionsListState, SchemaTransitionsOptions,
     SchemaTransitionsWaitArgs, ServeArgs, ServeCatalogMode, ServeDiagnostics, ServeFrontend,
-    ServeLogFormat, ServeLogLevel, ServeMetrics, ServeRole, ServeSlateObjectCachePreload,
-    ServeStorage, SkillsGetArgs, SkillsListArgs, SkillsOptions, SkillsPathArgs, SpecArgs,
-    ValidateArgs,
+    ServeLogFormat, ServeLogLevel, ServeMetrics, ServeRole, ServeSlateCommitDurability,
+    ServeSlateObjectCachePreload, ServeStorage, SkillsGetArgs, SkillsListArgs, SkillsOptions,
+    SkillsPathArgs, SpecArgs, ValidateArgs,
 };
 use super::output::{self, CliError};
 use super::project::{Project, read_schema_file};
@@ -154,6 +154,14 @@ impl Handler for App {
             )?,
         };
         let slate = crate::engine::kv::slatedb::Options {
+            commit_durability: match args.slate_commit_durability {
+                ServeSlateCommitDurability::Durable => {
+                    crate::engine::kv::slatedb::CommitDurability::Durable
+                }
+                ServeSlateCommitDurability::Memory => {
+                    crate::engine::kv::slatedb::CommitDurability::Memory
+                }
+            },
             decoded_cache_size_mib: positive_u64(
                 args.slate_decoded_cache_size_mib,
                 "--slate-decoded-cache-size-mib",

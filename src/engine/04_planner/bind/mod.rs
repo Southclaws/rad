@@ -442,6 +442,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn binding_pushes_a_total_single_input_filter_into_an_inner_join() {
+        let left = scan();
+        let right = lir::Relation::Scan {
+            table: "tasks".into(),
+            scope: "u".into(),
+        };
+        let joined = lir::Relation::Join {
+            left: Box::new(left),
+            right: Box::new(right),
+            kind: lir::JoinKind::Inner,
+            on: lir::Expr::Binary {
+                op: lir::BinaryOp::Eq,
+                left: Box::new(column("status")),
+                right: Box::new(lir::Expr::Column {
+                    scope: "u".into(),
+                    name: "status".into(),
+                }),
+            },
+        };
+        let filtered = lir::Relation::Filter {
+            input: Box::new(joined),
+            predicate: lir::Expr::Binary {
+                op: lir::BinaryOp::Eq,
+                left: Box::new(lir::Expr::Column {
+                    scope: "u".into(),
+                    name: "id".into(),
+                }),
+                right: Box::new(lir::Expr::Literal(lir::Literal {
+                    raw: RawScalar::Text("one".into()),
+                    kind: None,
+                })),
+            },
+        };
+        let projected = lir::Relation::Project {
+            input: Box::new(filtered),
+            scope: Some("result".into()),
+            spread: Vec::new(),
+            fields: vec![lir::ProjectField {
+                name: "id".into(),
+                expression: column("id"),
+            }],
+        };
+
+        let ordered = lir::Relation::Order {
+            input: Box::new(projected),
+            terms: vec![lir::OrderTerm {
+                expression: lir::Expr::Column {
+                    scope: "result".into(),
+                    name: "id".into(),
+                },
+                descending: false,
+            }],
+        };
+        let bound = bind(
+            &FixtureCatalog(table()),
+            query(ordered, lir::RootCardinality::Many),
+        )
+        .await
+        .unwrap();
+        let RelationNode::Order { input, .. } = &bound.root.node else {
+            panic!("expected order")
+        };
+        let RelationNode::Project { input, .. } = &input.node else {
+            panic!("expected project")
+        };
+        let RelationNode::Join { right, .. } = &input.node else {
+            panic!("expected join")
+        };
+        assert!(matches!(right.node, RelationNode::Filter { .. }));
+        assert!(right.cardinality().at_most_one());
+
+        let plan = crate::engine::planner::plan_query(
+            &bound,
+            crate::engine::planner::PlanOptions::default(),
+        );
+        let mut primary_key_get = false;
+        plan.root.walk(&mut |node| {
+            primary_key_get |= matches!(
+                node.kind,
+                crate::engine::planner::physical::NodeKind::PrimaryKeyGet { .. }
+            );
+        });
+        assert!(primary_key_get);
+    }
+
+    #[tokio::test]
     async fn raw_numbers_are_typed_by_the_catalog_column() {
         let catalog = FixtureCatalog(table());
         let predicate = lir::Expr::Binary {
