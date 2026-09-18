@@ -17,7 +17,8 @@ use crate::engine::planner::models::PlannerStats;
 use crate::engine::planner::{PlanOptions, PlannerMode};
 
 use super::{
-    CachedError, CatalogDependencyGeneration, DependencyValidation, RelationCache, RelationCacheKey,
+    AdmittedRelationCacheKey, CachedError, CatalogDependencyGeneration, DependencyValidation,
+    RelationCache, TransactionDependencyCache,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -60,8 +61,8 @@ impl From<PlanOptions> for PlanningKey {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct RequestKey {
     request: Fingerprint,
-    // Statistics can change the selected plan without changing query meaning.
-    // Exact identity makes publication a deterministic refresh boundary.
+    // Planner inputs can change the selected plan without changing query
+    // meaning. Diagnostic statistics do not invalidate prepared plans.
     statistics: Option<String>,
     planning: PlanningKey,
 }
@@ -70,7 +71,7 @@ impl RequestKey {
     fn new(request: Fingerprint, statistics: Option<&PlannerStats>, options: PlanOptions) -> Self {
         Self {
             request,
-            statistics: statistics.map(|statistics| statistics.snapshot_identity.clone()),
+            statistics: statistics.map(|statistics| statistics.planning_identity.clone()),
             planning: options.into(),
         }
     }
@@ -83,6 +84,7 @@ struct FlightKey {
     // dependencies through its view. Requests at different positions must not
     // share that validation result.
     position: DataPosition,
+    validation: DependencyValidation,
 }
 
 pub(in crate::engine::exec) struct PreparedRead {
@@ -93,7 +95,30 @@ pub(in crate::engine::exec) struct PreparedRead {
 #[derive(Clone)]
 pub(in crate::engine::exec) struct PreparedReadResult {
     pub(in crate::engine::exec) prepared: Arc<PreparedRead>,
-    pub(in crate::engine::exec) relation_key: RelationCacheKey,
+    pub(in crate::engine::exec) relation_key: AdmittedRelationCacheKey,
+}
+
+pub(in crate::engine::exec) struct PreparedReadRequest<'a> {
+    query: &'a lir::Query,
+    statistics: Option<&'a PlannerStats>,
+    options: PlanOptions,
+    validation: DependencyValidation,
+}
+
+impl<'a> PreparedReadRequest<'a> {
+    pub(in crate::engine::exec) fn new(
+        query: &'a lir::Query,
+        statistics: Option<&'a PlannerStats>,
+        options: PlanOptions,
+        validation: DependencyValidation,
+    ) -> Self {
+        Self {
+            query,
+            statistics,
+            options,
+            validation,
+        }
+    }
 }
 
 struct Entry {
@@ -200,23 +225,42 @@ impl PreparedReadCache {
         &self,
         relation_cache: &RelationCache,
         view: &dyn KvView,
-        query: &lir::Query,
-        statistics: Option<&PlannerStats>,
-        options: PlanOptions,
+        request: PreparedReadRequest<'_>,
+        transaction_dependencies: Option<&TransactionDependencyCache>,
         prepare: F,
     ) -> Result<PreparedReadResult>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<BoundStatement>>,
     {
+        let PreparedReadRequest {
+            query,
+            statistics,
+            options,
+            validation,
+        } = request;
         let Some(position) = view.begin_position().cloned() else {
             crate::telemetry::relation_cache_prepared_lookup("unpositioned");
-            return Self::prepare_uncached(relation_cache, view, prepare).await;
+            return Self::prepare_uncached(
+                relation_cache,
+                view,
+                validation,
+                transaction_dependencies,
+                prepare,
+            )
+            .await;
         };
         let (request, request_bytes) = lir::fingerprint::request_with_size(query);
         let request = RequestKey::new(request, statistics, options);
         if let Some(result) = self
-            .find_valid(relation_cache, view, &request, true)
+            .find_valid(
+                relation_cache,
+                view,
+                &request,
+                validation,
+                transaction_dependencies,
+                true,
+            )
             .await?
         {
             return Ok(result);
@@ -226,6 +270,7 @@ impl PreparedReadCache {
         let flight_key = FlightKey {
             request: request.clone(),
             position,
+            validation,
         };
         let mut prepare = Some(prepare);
         loop {
@@ -245,19 +290,35 @@ impl PreparedReadCache {
             if !owner {
                 self.metrics.coalesced.fetch_add(1, Ordering::Relaxed);
                 crate::telemetry::relation_cache_prepared_lookup("coalesced");
-                match Flight::wait(receiver.expect("a prepared read waiter has a receiver")).await {
-                    FlightResult::Success(result) => {
-                        crate::telemetry::relation_cache_prepared_avoided();
-                        return Ok(result);
-                    }
-                    FlightResult::Failure(error) => return Err(error.restore()),
-                    FlightResult::Cancelled => continue,
+                if let Some(result) = self
+                    .wait_for_flight(
+                        relation_cache,
+                        view,
+                        &request,
+                        validation,
+                        transaction_dependencies,
+                        receiver.expect("a prepared read waiter has a receiver"),
+                    )
+                    .await?
+                {
+                    return Ok(result);
                 }
+                continue;
             }
             let mut owner = FlightOwner::new(self, flight_key.clone(), flight);
             // A different request can insert a valid catalog variant before
             // this request takes flight ownership. Validate again before bind.
-            match self.find_valid(relation_cache, view, &request, false).await {
+            match self
+                .find_valid(
+                    relation_cache,
+                    view,
+                    &request,
+                    validation,
+                    transaction_dependencies,
+                    false,
+                )
+                .await
+            {
                 Ok(Some(result)) => {
                     owner.finish(FlightResult::Success(result.clone()));
                     return Ok(result);
@@ -281,7 +342,8 @@ impl PreparedReadCache {
                             fingerprints.exact,
                             view,
                             &plan.dependencies,
-                            DependencyValidation::Snapshot,
+                            validation,
+                            transaction_dependencies,
                         )
                         .await
                     {
@@ -311,9 +373,45 @@ impl PreparedReadCache {
         }
     }
 
+    async fn wait_for_flight(
+        &self,
+        relation_cache: &RelationCache,
+        view: &dyn KvView,
+        request: &RequestKey,
+        validation: DependencyValidation,
+        transaction_dependencies: Option<&TransactionDependencyCache>,
+        receiver: watch::Receiver<Option<FlightResult>>,
+    ) -> Result<Option<PreparedReadResult>> {
+        let result = match Flight::wait(receiver).await {
+            FlightResult::Success(result) => result,
+            FlightResult::Failure(error) => return Err(error.restore()),
+            FlightResult::Cancelled => return Ok(None),
+        };
+        if validation == DependencyValidation::Transaction {
+            let result = self
+                .find_valid(
+                    relation_cache,
+                    view,
+                    request,
+                    validation,
+                    transaction_dependencies,
+                    false,
+                )
+                .await?;
+            if result.is_some() {
+                crate::telemetry::relation_cache_prepared_avoided();
+            }
+            return Ok(result);
+        }
+        crate::telemetry::relation_cache_prepared_avoided();
+        Ok(Some(result))
+    }
+
     async fn prepare_uncached<F, Fut>(
         relation_cache: &RelationCache,
         view: &dyn KvView,
+        validation: DependencyValidation,
+        transaction_dependencies: Option<&TransactionDependencyCache>,
         prepare: F,
     ) -> Result<PreparedReadResult>
     where
@@ -331,7 +429,8 @@ impl PreparedReadCache {
                 fingerprints.exact,
                 view,
                 &plan.dependencies,
-                DependencyValidation::Snapshot,
+                validation,
+                transaction_dependencies,
             )
             .await?;
         Ok(PreparedReadResult {
@@ -348,6 +447,8 @@ impl PreparedReadCache {
         relation_cache: &RelationCache,
         view: &dyn KvView,
         request: &RequestKey,
+        validation: DependencyValidation,
+        transaction_dependencies: Option<&TransactionDependencyCache>,
         record_hit: bool,
     ) -> Result<Option<PreparedReadResult>> {
         let candidates = self
@@ -362,21 +463,34 @@ impl PreparedReadCache {
             // Definition validation must occur before the plan is used. A new
             // column can change scan output without changing any dependency
             // already present in the stored physical plan.
-            let mut definitions_match = true;
-            for dependency in &entry.table_definitions {
-                if !relation_cache
-                    .catalog_table_matches_snapshot(
-                        view,
-                        &dependency.name,
-                        &dependency.id,
-                        dependency.generation,
-                    )
-                    .await?
-                {
-                    definitions_match = false;
-                    break;
+            let definitions_match = match entry.table_definitions.as_slice() {
+                [] => true,
+                [dependency] => {
+                    relation_cache
+                        .catalog_table_matches(
+                            view,
+                            &dependency.name,
+                            &dependency.id,
+                            dependency.generation,
+                            validation,
+                        )
+                        .await?
                 }
-            }
+                dependencies => {
+                    futures::future::try_join_all(dependencies.iter().map(|dependency| {
+                        relation_cache.catalog_table_matches(
+                            view,
+                            &dependency.name,
+                            &dependency.id,
+                            dependency.generation,
+                            validation,
+                        )
+                    }))
+                    .await?
+                    .into_iter()
+                    .all(std::convert::identity)
+                }
+            };
             if !definitions_match {
                 if record_hit {
                     self.metrics.superseded.fetch_add(1, Ordering::Relaxed);
@@ -395,7 +509,8 @@ impl PreparedReadCache {
                     entry.prepared.fingerprints.exact,
                     view,
                     &plan.dependencies,
-                    DependencyValidation::Snapshot,
+                    validation,
+                    transaction_dependencies,
                 )
                 .await
             {
@@ -580,13 +695,23 @@ mod tests {
                 let query = &query;
                 async move {
                     cache
-                        .get_or_prepare_read(view, query, None, PlanOptions::default(), || async {
-                            calls.fetch_add(1, Ordering::Relaxed);
-                            for _ in 0..16 {
-                                tokio::task::yield_now().await;
-                            }
-                            Ok((*prepared).clone())
-                        })
+                        .get_or_prepare_read(
+                            view,
+                            PreparedReadRequest::new(
+                                query,
+                                None,
+                                PlanOptions::default(),
+                                DependencyValidation::Snapshot,
+                            ),
+                            None,
+                            || async {
+                                calls.fetch_add(1, Ordering::Relaxed);
+                                for _ in 0..16 {
+                                    tokio::task::yield_now().await;
+                                }
+                                Ok((*prepared).clone())
+                            },
+                        )
                         .await
                         .unwrap()
                 }
@@ -619,10 +744,20 @@ mod tests {
 
         for (query, prepared) in [(&first_query, first), (&second_query, second)] {
             cache
-                .get_or_prepare_read(&view, query, None, PlanOptions::default(), || async {
-                    calls.fetch_add(1, Ordering::Relaxed);
-                    Ok(prepared)
-                })
+                .get_or_prepare_read(
+                    &view,
+                    PreparedReadRequest::new(
+                        query,
+                        None,
+                        PlanOptions::default(),
+                        DependencyValidation::Snapshot,
+                    ),
+                    None,
+                    || async {
+                        calls.fetch_add(1, Ordering::Relaxed);
+                        Ok(prepared)
+                    },
+                )
                 .await
                 .unwrap();
         }
@@ -647,10 +782,20 @@ mod tests {
 
         for _ in 0..2 {
             let error = cache
-                .get_or_prepare_read(&view, &query, None, PlanOptions::default(), || async {
-                    calls.fetch_add(1, Ordering::Relaxed);
-                    Err(Error::message(ErrorKind::Runtime, "expected failure"))
-                })
+                .get_or_prepare_read(
+                    &view,
+                    PreparedReadRequest::new(
+                        &query,
+                        None,
+                        PlanOptions::default(),
+                        DependencyValidation::Snapshot,
+                    ),
+                    None,
+                    || async {
+                        calls.fetch_add(1, Ordering::Relaxed);
+                        Err(Error::message(ErrorKind::Runtime, "expected failure"))
+                    },
+                )
                 .await
                 .err()
                 .expect("preparation fails");
@@ -687,10 +832,20 @@ mod tests {
             (&first_query, first),
         ] {
             cache
-                .get_or_prepare_read(&view, query, None, PlanOptions::default(), || async {
-                    calls.fetch_add(1, Ordering::Relaxed);
-                    Ok(prepared)
-                })
+                .get_or_prepare_read(
+                    &view,
+                    PreparedReadRequest::new(
+                        query,
+                        None,
+                        PlanOptions::default(),
+                        DependencyValidation::Snapshot,
+                    ),
+                    None,
+                    || async {
+                        calls.fetch_add(1, Ordering::Relaxed);
+                        Ok(prepared)
+                    },
+                )
                 .await
                 .unwrap();
         }
@@ -711,6 +866,7 @@ mod tests {
         let query = query();
         let prepared = prepared_statement(&view, query.clone()).await;
         let cache = RelationCache::new(RelationCacheLimits {
+            byte_limit: 8,
             result_byte_limit: 8,
             ..RelationCacheLimits::default()
         });
@@ -718,10 +874,20 @@ mod tests {
 
         for _ in 0..2 {
             cache
-                .get_or_prepare_read(&view, &query, None, PlanOptions::default(), || async {
-                    calls.fetch_add(1, Ordering::Relaxed);
-                    Ok(prepared.clone())
-                })
+                .get_or_prepare_read(
+                    &view,
+                    PreparedReadRequest::new(
+                        &query,
+                        None,
+                        PlanOptions::default(),
+                        DependencyValidation::Snapshot,
+                    ),
+                    None,
+                    || async {
+                        calls.fetch_add(1, Ordering::Relaxed);
+                        Ok(prepared.clone())
+                    },
+                )
                 .await
                 .unwrap();
         }
@@ -755,9 +921,13 @@ mod tests {
                 cache
                     .get_or_prepare_read(
                         &view,
-                        &query,
+                        PreparedReadRequest::new(
+                            &query,
+                            None,
+                            PlanOptions::default(),
+                            DependencyValidation::Snapshot,
+                        ),
                         None,
-                        PlanOptions::default(),
                         || async move {
                             started.notify_one();
                             pending::<Result<BoundStatement>>().await
@@ -773,9 +943,17 @@ mod tests {
         let transaction = store.begin(IsolationLevel::Snapshot).await.unwrap();
         let view = TransactionView(&*transaction);
         cache
-            .get_or_prepare_read(&view, &query, None, PlanOptions::default(), || async {
-                Ok(prepared)
-            })
+            .get_or_prepare_read(
+                &view,
+                PreparedReadRequest::new(
+                    &query,
+                    None,
+                    PlanOptions::default(),
+                    DependencyValidation::Snapshot,
+                ),
+                None,
+                || async { Ok(prepared) },
+            )
             .await
             .unwrap();
 
@@ -809,21 +987,74 @@ fn table_definitions(query: &lir::bound::Query) -> Vec<TableDefinitionDependency
 }
 
 fn retained_bytes(request: &RequestKey, request_bytes: usize, prepared: &PreparedRead) -> usize {
-    // The debug form includes all owned strings and collection elements in
-    // the bound query and plan. The multiplier covers decoded containers and
-    // spare capacity. This value is a deterministic admission weight. It is
-    // not an allocator measurement.
-    let decoded = format!("{:?}", prepared.statement).len();
+    const REQUEST_EXPANSION: usize = 4;
+    const PLAN_RELATION_EXPANSION: usize = 2;
+    const MEMO_GROUP_BYTES: usize = 512;
+    const MEMO_ALTERNATIVE_BYTES: usize = 1_024;
+
+    let statement = &prepared.statement;
+    let mut logical_bytes = 0usize;
+    let mut count_relation = |relation: &lir::bound::Relation| {
+        logical_bytes = logical_bytes
+            .saturating_add(size_of::<lir::bound::Relation>())
+            .saturating_add(row_type_retained_bytes(relation.output()));
+        if let lir::bound::RelationNode::Scan { table, .. } = &relation.node {
+            let encoded_table_bytes = serde_json::to_vec(table)
+                .map(|encoded| encoded.len())
+                .unwrap_or(usize::MAX);
+            logical_bytes = logical_bytes
+                .saturating_add(size_of::<crate::engine::catalog::model::Table>())
+                .saturating_add(encoded_table_bytes.saturating_mul(4));
+        }
+    };
+    lir::inspect::walk_relation(&statement.bound.root, &mut count_relation, &mut |_| {});
+    for binding in &statement.bound.bindings {
+        lir::inspect::walk_relation(&binding.root, &mut count_relation, &mut |_| {});
+        if let Some(step) = &binding.step {
+            lir::inspect::walk_relation(step, &mut count_relation, &mut |_| {});
+        }
+    }
+    let plan = statement
+        .plan
+        .as_ref()
+        .expect("a cached prepared read has a physical plan");
+    let memo_bytes = (plan.memo.usage.groups as usize)
+        .saturating_mul(MEMO_GROUP_BYTES)
+        .saturating_add(
+            (plan.memo.usage.alternatives as usize).saturating_mul(MEMO_ALTERNATIVE_BYTES),
+        );
     size_of::<Entry>()
         .saturating_add(size_of::<PreparedRead>())
-        .saturating_add(request_bytes)
+        .saturating_add(size_of::<BoundStatement>())
+        .saturating_add(size_of::<crate::engine::planner::physical::Plan>())
+        .saturating_add(request_bytes.saturating_mul(REQUEST_EXPANSION))
         .saturating_add(
             request
                 .statistics
                 .as_ref()
                 .map_or(0, |identity| identity.capacity()),
         )
-        .saturating_add(decoded.saturating_mul(2))
+        .saturating_add(statement.name.capacity())
+        .saturating_add(row_type_retained_bytes(&statement.result_output))
+        .saturating_add(logical_bytes.saturating_mul(PLAN_RELATION_EXPANSION))
+        .saturating_add(memo_bytes)
+}
+
+fn row_type_retained_bytes(row_type: &lir::RowType) -> usize {
+    size_of::<lir::RowType>()
+        .saturating_add(
+            row_type
+                .fields
+                .capacity()
+                .saturating_mul(size_of::<lir::Field>()),
+        )
+        .saturating_add(
+            row_type
+                .fields
+                .iter()
+                .map(|field| field.name.capacity())
+                .fold(0usize, usize::saturating_add),
+        )
 }
 
 struct FlightOwner<'a> {

@@ -146,6 +146,14 @@ pub enum ServeSlateCommitDurability {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServeSlateWalEnabled {
+    #[value(name = r"true")]
+    True,
+    #[value(name = r"false")]
+    False,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ServeSlateObjectCachePreload {
     #[value(name = r"none")]
     None,
@@ -753,7 +761,7 @@ pub struct ServeArgs {
         long = r"metrics",
         help = r"Enable or disable OTEL metrics and the GET /metrics route.",
         env = r"RAD_METRICS",
-        default_value = r"true",
+        default_value = r"false",
         value_enum
     )]
     pub metrics: ServeMetrics,
@@ -822,6 +830,15 @@ pub struct ServeArgs {
         value_enum
     )]
     pub slate_commit_durability: ServeSlateCommitDurability,
+    #[arg(
+        id = r"slate-wal-enabled",
+        long = r"slate-wal-enabled",
+        help = r"Enable the Slate WAL. Disable it only when process failure can lose unflushed data.",
+        env = r"RAD_SLATE_WAL_ENABLED",
+        default_value = r"true",
+        value_enum
+    )]
+    pub slate_wal_enabled: ServeSlateWalEnabled,
     #[arg(
         id = r"slate-flush-interval-ms",
         long = r"slate-flush-interval-ms",

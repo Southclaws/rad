@@ -13,8 +13,8 @@ use super::generated::{
     SchemaTransitionsListKind, SchemaTransitionsListState, SchemaTransitionsOptions,
     SchemaTransitionsWaitArgs, ServeArgs, ServeAuth, ServeAuthProfile, ServeCatalogMode,
     ServeDiagnostics, ServeFrontend, ServeLogFormat, ServeLogLevel, ServeMetrics, ServeRole,
-    ServeSlateCommitDurability, ServeSlateObjectCachePreload, ServeStorage, SkillsGetArgs,
-    SkillsListArgs, SkillsOptions, SkillsPathArgs, SpecArgs, ValidateArgs,
+    ServeSlateCommitDurability, ServeSlateObjectCachePreload, ServeSlateWalEnabled, ServeStorage,
+    SkillsGetArgs, SkillsListArgs, SkillsOptions, SkillsPathArgs, SpecArgs, ValidateArgs,
 };
 use super::output::{self, CliError};
 use super::project::{Project, read_schema_file};
@@ -162,6 +162,10 @@ impl Handler for App {
                     crate::engine::kv::slatedb::CommitDurability::Memory
                 }
             },
+            wal: crate::engine::kv::slatedb::WalMode::from(matches!(
+                args.slate_wal_enabled,
+                ServeSlateWalEnabled::True
+            )),
             decoded_cache_size_mib: positive_u64(
                 args.slate_decoded_cache_size_mib,
                 "--slate-decoded-cache-size-mib",

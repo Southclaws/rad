@@ -35,6 +35,7 @@ use super::frames::{
     column_values_to_frame, frame_scalar, frame_to_object, frames_to_array, merge as merge_frames,
     new_frame, remap_canonical, remap_positional, row_to_frame, scan_slots, shape_frames, sort,
 };
+use super::relation_cache::CatalogDependencyAdmission;
 use super::row_store;
 use super::set;
 use super::{Error, ErrorKind, Result};
@@ -321,7 +322,25 @@ impl<'a> Executor<'a> {
     }
 
     pub async fn run_frames(&mut self, plan: &Plan) -> Result<Vec<Env>> {
-        admit_catalog_dependencies(self.view, &plan.dependencies).await?;
+        self.run_frames_inner(plan, None).await
+    }
+
+    pub(super) async fn run_frames_after_admission(
+        &mut self,
+        plan: &Plan,
+        admission: CatalogDependencyAdmission,
+    ) -> Result<Vec<Env>> {
+        self.run_frames_inner(plan, Some(admission)).await
+    }
+
+    async fn run_frames_inner(
+        &mut self,
+        plan: &Plan,
+        admission: Option<CatalogDependencyAdmission>,
+    ) -> Result<Vec<Env>> {
+        if admission.is_none() {
+            admit_catalog_dependencies(self.view, &plan.dependencies).await?;
+        }
         if let Some(subrelation_cache) = &self.subrelation_cache {
             crate::telemetry::relation_cache_materialization_selection(
                 plan.materialization_selection.selected,
@@ -792,8 +811,31 @@ impl<'a> Executor<'a> {
                 }
                 Ok(output)
             }
-            NodeKind::HashJoin { .. } => {
-                unreachable!("hash joins run in the pull pipeline")
+            NodeKind::HashJoin {
+                left,
+                right,
+                kind,
+                on,
+                keys,
+                right_output,
+                memory_limit_bytes,
+                ..
+            } => {
+                let left = self.execute_node(left, outer).await?;
+                let right = self.execute_node(right, outer).await?;
+                let (output, measurement) = execute_materialized_hash_join(
+                    left,
+                    right,
+                    *kind,
+                    on,
+                    keys,
+                    right_output,
+                    *memory_limit_bytes,
+                )?;
+                if self.measure {
+                    self.join_measurements.push(measurement);
+                }
+                Ok(output)
             }
             NodeKind::IndexedLookupJoin {
                 left,
@@ -812,12 +854,12 @@ impl<'a> Executor<'a> {
                 };
                 for left in left {
                     measurement.probe_rows = measurement.probe_rows.saturating_add(1);
-                    let Some(_) = super::pipeline::join_key(&left, keys, true)? else {
+                    if !super::pipeline::join_keys_present(&left, keys, true)? {
                         if *kind == crate::engine::lir::JoinKind::Left {
                             output.push(pad_join_left(left, right_output));
                         }
                         continue;
-                    };
+                    }
                     measurement.lookup_requests = measurement.lookup_requests.saturating_add(1);
                     let right = self.execute_node(right, &left).await?;
                     measurement.peak_retained_bytes = measurement.peak_retained_bytes.max(
@@ -999,23 +1041,25 @@ impl<'a> Executor<'a> {
                 output,
                 canonical,
             } => {
-                let frames = if let Some(frames) = self.bindings.get(binding) {
-                    frames.clone()
-                } else {
-                    let plan = self.plans.get(binding).cloned().ok_or_else(|| {
-                        Error::message(
-                            ErrorKind::Internal,
-                            format!("exec: binding {binding:?} was not committed"),
-                        )
-                    })?;
-                    let BindingPlanKind::Derived { plan, .. } = &plan.kind else {
-                        return Err(Error::message(
-                            ErrorKind::Internal,
-                            format!("exec: recursive binding {binding:?} was not committed"),
-                        ));
-                    };
-                    self.execute_node(plan, &Env::new()).await?
+                if let Some(frames) = self.bindings.get(binding) {
+                    return Ok(frames
+                        .iter()
+                        .map(|frame| remap_canonical(output, canonical, frame, outer))
+                        .collect());
+                }
+                let plan = self.plans.get(binding).cloned().ok_or_else(|| {
+                    Error::message(
+                        ErrorKind::Internal,
+                        format!("exec: binding {binding:?} was not committed"),
+                    )
+                })?;
+                let BindingPlanKind::Derived { plan, .. } = &plan.kind else {
+                    return Err(Error::message(
+                        ErrorKind::Internal,
+                        format!("exec: recursive binding {binding:?} was not committed"),
+                    ));
                 };
+                let frames = self.execute_node(plan, &Env::new()).await?;
                 Ok(frames
                     .iter()
                     .map(|frame| remap_canonical(output, canonical, frame, outer))
@@ -2091,6 +2135,75 @@ fn evaluate_materialized_join_predicate(
         left_frame,
         right_frame,
     )?)
+}
+
+fn execute_materialized_hash_join(
+    left_rows: Vec<Env>,
+    right_rows: Vec<Env>,
+    kind: crate::engine::lir::JoinKind,
+    predicate: &bound::Expr,
+    keys: &[EquiJoinKey],
+    right_output: &RowType,
+    memory_limit_bytes: u64,
+) -> Result<(Vec<Env>, super::observe::JoinOperatorMeasurement)> {
+    let mut measurement = super::observe::JoinOperatorMeasurement {
+        operator: "HashJoin",
+        build_rows: right_rows.len() as u64,
+        ..Default::default()
+    };
+    let mut retained_bytes = 0u64;
+    let mut build = HashMap::<Vec<u8>, Vec<Env>, ahash::RandomState>::with_capacity_and_hasher(
+        right_rows.len(),
+        ahash::RandomState::new(),
+    );
+    for right in right_rows {
+        let Some(key) = super::pipeline::join_key(&right, keys, false)? else {
+            continue;
+        };
+        retained_bytes = retained_bytes
+            .saturating_add(super::pipeline::frame_retained_bytes(&right))
+            .saturating_add(key.len() as u64);
+        if retained_bytes > memory_limit_bytes {
+            return Err(Error::message(
+                ErrorKind::Runtime,
+                format!("exec: hash join retained byte limit {memory_limit_bytes} exceeded"),
+            ));
+        }
+        build.entry(key).or_default().push(right);
+    }
+    measurement.peak_retained_bytes = retained_bytes;
+
+    let mut output = Vec::with_capacity(left_rows.len());
+    let mut probe_key = Vec::new();
+    let has_residual = !super::pipeline::join_predicate_is_keys(predicate, keys);
+    for left in left_rows {
+        measurement.probe_rows = measurement.probe_rows.saturating_add(1);
+        let mut matched = false;
+        if super::pipeline::join_key_into(&left, keys, true, &mut probe_key)?
+            && let Some(right_rows) = build.get(probe_key.as_slice())
+        {
+            measurement.lookup_requests = measurement.lookup_requests.saturating_add(1);
+            for right in right_rows {
+                measurement.key_comparisons = measurement.key_comparisons.saturating_add(1);
+                let predicate_matches = if has_residual {
+                    measurement.residual_predicate_evaluations =
+                        measurement.residual_predicate_evaluations.saturating_add(1);
+                    crate::engine::lir::eval::evaluate_join_predicate(predicate, &left, right)?
+                        == TriBool::True
+                } else {
+                    true
+                };
+                if predicate_matches {
+                    matched = true;
+                    output.push(merge_frames(&left, right));
+                }
+            }
+        }
+        if kind == crate::engine::lir::JoinKind::Left && !matched {
+            output.push(pad_join_left(left, right_output));
+        }
+    }
+    Ok((output, measurement))
 }
 
 fn pad_join_left(mut left: Env, right_output: &RowType) -> Env {
@@ -3416,7 +3529,13 @@ mod tests {
             crate::engine::lir::JoinKind::Inner,
             on,
         );
-        let mut plan = plan_query(&query(joined.clone(), 4), PlanOptions::default());
+        let mut plan = plan_query(
+            &query(joined.clone(), 4),
+            PlanOptions {
+                full_scan_only: true,
+                ..PlanOptions::default()
+            },
+        );
         let structural = plan.clone();
         let NodeKind::NestedLoopJoin {
             left,
@@ -3654,6 +3773,31 @@ mod tests {
             let mut hash = Executor::new(&store, Limits::default());
             hash.enable_measurements();
             let hash_result = hash.execute(&hash_plan).await.unwrap();
+            let mut materialized_hash_plan = hash_plan.clone();
+            let NodeKind::HashJoin { right, .. } = &mut materialized_hash_plan.root.kind else {
+                unreachable!()
+            };
+            let input = right.clone();
+            **right = NodeKind::Attach {
+                input,
+                specifications: Vec::new(),
+            }
+            .bare();
+            let mut materialized_hash = Executor::new(&store, Limits::default());
+            materialized_hash.enable_measurements();
+            let materialized_hash_result = materialized_hash
+                .execute(&materialized_hash_plan)
+                .await
+                .unwrap();
+            assert_eq!(materialized_hash_result, hash_result);
+            assert_eq!(
+                materialized_hash
+                    .join_measurements()
+                    .last()
+                    .unwrap()
+                    .operator,
+                "HashJoin"
+            );
             for width in [2, 4] {
                 let scheduler =
                     crate::engine::exec::parallel::ExecutionScheduler::fixed(4, [width]);
@@ -4011,7 +4155,13 @@ mod tests {
             on.clone(),
         );
         let bound = query(relation, 23);
-        let nested_plan = plan_query(&bound, PlanOptions::default());
+        let nested_plan = plan_query(
+            &bound,
+            PlanOptions {
+                full_scan_only: true,
+                ..PlanOptions::default()
+            },
+        );
         let NodeKind::NestedLoopJoin {
             left: planned_left,
             right: planned_right,

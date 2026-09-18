@@ -213,7 +213,7 @@ commands:
         description: Enable or disable OTEL metrics and the GET /metrics route.
         envVar: RAD_METRICS
         choices: ["true", "false"]
-        default: "true"
+        default: "false"
       - name: relation-cache-size-mib
         description: Total memory capacity for materialized relation results.
         type: integer
@@ -254,6 +254,11 @@ commands:
         envVar: RAD_SLATE_COMMIT_DURABILITY
         choices: [durable, memory]
         default: durable
+      - name: slate-wal-enabled
+        description: Enable the Slate WAL. Disable it only when process failure can lose unflushed data.
+        envVar: RAD_SLATE_WAL_ENABLED
+        choices: ["true", "false"]
+        default: "true"
       - name: slate-flush-interval-ms
         description: Interval between automatic WAL flush attempts.
         type: integer

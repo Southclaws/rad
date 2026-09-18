@@ -11,6 +11,7 @@ use crate::engine::kv::{
     Transaction,
 };
 
+use super::relation_cache::TransactionDependencyCache;
 use super::{Engine, Error, ErrorKind, Result};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,18 +57,26 @@ pub(crate) struct EngineTransaction {
     isolation: TransactionIsolation,
     inner: Option<Box<dyn Transaction>>,
     journal: Mutex<Vec<WriteOperation>>,
+    reuse_dependency_validation: bool,
+    dependency_cache: TransactionDependencyCache,
     executed_statement: bool,
     intent_keys: HashSet<Bytes>,
     intent_guards: Vec<OwnedMutexGuard<()>>,
 }
 
 impl EngineTransaction {
-    pub(super) async fn begin(engine: &Engine, isolation: TransactionIsolation) -> Result<Self> {
+    pub(super) async fn begin(
+        engine: &Engine,
+        isolation: TransactionIsolation,
+        reuse_dependency_validation: bool,
+    ) -> Result<Self> {
         let inner = engine.store.begin(isolation.storage_isolation()).await?;
         Ok(Self {
             isolation,
             inner: Some(inner),
             journal: Mutex::new(Vec::new()),
+            reuse_dependency_validation,
+            dependency_cache: TransactionDependencyCache::default(),
             executed_statement: false,
             intent_keys: HashSet::new(),
             intent_guards: Vec::new(),
@@ -90,6 +99,11 @@ impl EngineTransaction {
         self.statement_checkpoint() != 0
     }
 
+    pub(super) fn dependency_cache(&self) -> Option<&TransactionDependencyCache> {
+        self.reuse_dependency_validation
+            .then_some(&self.dependency_cache)
+    }
+
     pub(super) fn finish_statement(&mut self) {
         self.executed_statement = true;
     }
@@ -101,6 +115,7 @@ impl EngineTransaction {
             .await?;
         let operations = self.journal.lock().expect("write journal poisoned").clone();
         replay(&*replacement, &operations)?;
+        self.dependency_cache.clear();
         self.inner
             .replace(replacement)
             .expect("engine transaction remains open")
@@ -215,6 +230,7 @@ impl Transaction for EngineTransaction {
             .as_deref()
             .expect("engine transaction remains open")
             .put(key.clone(), value.clone())?;
+        self.dependency_cache.clear();
         self.journal
             .lock()
             .expect("write journal poisoned")
@@ -227,6 +243,7 @@ impl Transaction for EngineTransaction {
             .as_deref()
             .expect("engine transaction remains open")
             .delete(key)?;
+        self.dependency_cache.clear();
         self.journal
             .lock()
             .expect("write journal poisoned")
@@ -241,6 +258,7 @@ impl Transaction for EngineTransaction {
             .as_deref()
             .expect("engine transaction remains open")
             .untrack_write(key)?;
+        self.dependency_cache.clear();
         self.journal
             .lock()
             .expect("write journal poisoned")

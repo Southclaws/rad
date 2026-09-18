@@ -564,7 +564,7 @@ spec:
               telemetry:
                 default:
                   diagnostics: summary
-                  metrics: true
+                  metrics: false
                 description: Telemetry applies the same export and diagnostic policy
                   to all pods.
                 properties:
@@ -584,7 +584,7 @@ spec:
                     pattern: ^$|^https?://
                     type: string
                   metrics:
-                    default: true
+                    default: false
                     description: Metrics enables OTEL metric export and the metrics
                       HTTP route.
                     type: boolean

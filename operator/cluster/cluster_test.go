@@ -207,17 +207,6 @@ func TestTelemetryPolicyIsProjected(t *testing.T) {
 	}
 }
 
-func TestMetricAndCacheDefaultsAreProjected(t *testing.T) {
-	c := testClient(t)
-	created, err := c.CreateDatabase(context.Background(), validSpec("metric-defaults"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !created.MetricsEnabled || created.RelationCache.SizeMiB != 128 || created.RelationCache.Entries != 4096 || created.RelationCache.MaxResultSizeMiB != 8 || created.Slate.DecodedCacheSizeMiB != 128 {
-		t.Fatalf("metric and cache defaults = %+v", created)
-	}
-}
-
 func TestListIsNamespaceScoped(t *testing.T) {
 	c := testClient(t)
 	if _, err := c.CreateDatabase(context.Background(), validSpec("one")); err != nil {

@@ -1046,7 +1046,7 @@ func databaseDiagnosticLevel(database *radv1alpha1.Database) string {
 
 func databaseMetricsEnabled(database *radv1alpha1.Database) bool {
 	if database.Spec.Telemetry.Metrics == nil {
-		return true
+		return false
 	}
 	return *database.Spec.Telemetry.Metrics
 }

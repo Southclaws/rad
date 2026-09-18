@@ -49,7 +49,7 @@ use super::{
 };
 use policy::{CohortToken, RelationCachePolicy};
 use prepared_read::PreparedReadCache;
-pub(super) use prepared_read::PreparedReadResult;
+pub(in crate::engine::exec) use prepared_read::{PreparedReadRequest, PreparedReadResult};
 use snapshot_catalog::SnapshotCatalogCache;
 
 const DEFAULT_BYTE_LIMIT: usize = 128 * 1024 * 1024;
@@ -116,7 +116,7 @@ impl Default for RelationCacheLimits {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum DependencyValidation {
     /// The caller cannot write through this transaction. A stable storage
     /// position can identify a completed dependency validation.
@@ -124,6 +124,27 @@ pub(super) enum DependencyValidation {
     /// The caller can add writes after this read. Each dependency fence must
     /// enter the transaction read set even when the relation result is cached.
     Transaction,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CatalogDependencyAdmission {
+    _private: (),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AdmittedRelationCacheKey {
+    key: RelationCacheKey,
+    admission: CatalogDependencyAdmission,
+}
+
+impl AdmittedRelationCacheKey {
+    pub(super) fn key(&self) -> &RelationCacheKey {
+        &self.key
+    }
+
+    pub(super) fn into_parts(self) -> (RelationCacheKey, CatalogDependencyAdmission) {
+        (self.key, self.admission)
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -218,6 +239,35 @@ impl SnapshotDependencyKey {
             exact,
             dependencies: CatalogDependencyGeneration::collect(dependencies),
         }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct TransactionDependencyCache {
+    entries: Mutex<HashMap<SnapshotDependencyKey, RelationCacheKey>>,
+}
+
+impl TransactionDependencyCache {
+    pub(super) fn clear(&self) {
+        self.entries
+            .lock()
+            .expect("transaction dependency cache lock poisoned")
+            .clear();
+    }
+
+    fn get(&self, key: &SnapshotDependencyKey) -> Option<RelationCacheKey> {
+        self.entries
+            .lock()
+            .expect("transaction dependency cache lock poisoned")
+            .get(key)
+            .cloned()
+    }
+
+    fn insert(&self, key: SnapshotDependencyKey, value: RelationCacheKey) {
+        self.entries
+            .lock()
+            .expect("transaction dependency cache lock poisoned")
+            .insert(key, value);
     }
 }
 
@@ -1550,6 +1600,10 @@ impl RelationCache {
     pub(super) fn new(config: RelationCacheLimits) -> Self {
         let byte_limit = config.byte_limit.clamp(1, i64::MAX as usize);
         let entry_limit = config.entry_limit.max(1);
+        let prepared_byte_limit = byte_limit
+            .div_ceil(4)
+            .max(config.result_byte_limit)
+            .min(byte_limit);
         // A minimum weight converts the byte capacity into an entry limit.
         // Larger entries still use their estimated retained byte size.
         let entry_weight = byte_limit.div_ceil(entry_limit);
@@ -1587,7 +1641,7 @@ impl RelationCache {
             flights: Mutex::new(HashMap::new()),
             snapshot_dependencies: SnapshotDependencyCache::new(entry_limit),
             snapshot_catalog: SnapshotCatalogCache::new(entry_limit, config.result_byte_limit),
-            prepared_reads: PreparedReadCache::new(entry_limit, config.result_byte_limit),
+            prepared_reads: PreparedReadCache::new(entry_limit, prepared_byte_limit),
             policy: RelationCachePolicy::new(entry_limit),
             metrics,
             semantic_events,
@@ -1614,16 +1668,21 @@ impl RelationCache {
         self.snapshot_catalog.get_table(view, name).await
     }
 
-    async fn catalog_table_matches_snapshot(
+    async fn catalog_table_matches(
         &self,
         view: &dyn KvView,
         name: &str,
         id: &TableId,
         definition_generation: crate::engine::catalog::identity::DefinitionGeneration,
+        validation: DependencyValidation,
     ) -> crate::engine::catalog::Result<bool> {
-        self.snapshot_catalog
-            .table_matches(view, name, id, definition_generation)
-            .await
+        let table = match validation {
+            DependencyValidation::Snapshot => self.snapshot_catalog.get_table(view, name).await?,
+            DependencyValidation::Transaction => store::get_table(view, name).await?,
+        };
+        Ok(table.is_some_and(|table| {
+            table.id == *id && table.definition_generation == definition_generation
+        }))
     }
 
     /// Reuse binding and physical planning for one exact read request.
@@ -1632,13 +1691,13 @@ impl RelationCache {
     /// validates that set through the caller's pinned view before it returns
     /// the plan. Data changes can reuse a plan and receive a new relation
     /// result key. Catalog changes can reuse a plan only when all dependencies
-    /// still match. Explicit transactions do not call this method.
+    /// still match. Transaction validation reads each dependency through the
+    /// caller's view so the storage conflict set remains complete.
     pub(super) async fn get_or_prepare_read<F, Fut>(
         &self,
         view: &dyn KvView,
-        query: &crate::engine::lir::Query,
-        statistics: Option<&crate::engine::planner::models::PlannerStats>,
-        options: crate::engine::planner::PlanOptions,
+        request: PreparedReadRequest<'_>,
+        transaction_dependencies: Option<&TransactionDependencyCache>,
         prepare: F,
     ) -> Result<PreparedReadResult>
     where
@@ -1646,7 +1705,7 @@ impl RelationCache {
         Fut: Future<Output = Result<crate::engine::planner::bind::BoundStatement>>,
     {
         self.prepared_reads
-            .get_or_prepare(self, view, query, statistics, options, prepare)
+            .get_or_prepare(self, view, request, transaction_dependencies, prepare)
             .await
     }
 
@@ -1663,21 +1722,39 @@ impl RelationCache {
         view: &dyn KvView,
         dependencies: &CatalogDependencies,
         validation: DependencyValidation,
-    ) -> Result<RelationCacheKey> {
+        transaction_dependencies: Option<&TransactionDependencyCache>,
+    ) -> Result<AdmittedRelationCacheKey> {
         if validation == DependencyValidation::Transaction {
+            let transaction_key = transaction_dependencies.and_then(|_| {
+                view.begin_position()
+                    .cloned()
+                    .map(|position| SnapshotDependencyKey::new(position, exact, dependencies))
+            });
+            if let Some((cache, key)) = transaction_dependencies.zip(transaction_key.as_ref())
+                && let Some(relation_key) = cache.get(key)
+            {
+                crate::telemetry::relation_cache_dependency_lookup("transaction_hit");
+                return Ok(Self::admitted_key(relation_key));
+            }
             crate::telemetry::relation_cache_dependency_lookup("tracked");
-            return RelationCacheKey::for_view(exact, view, dependencies).await;
+            let relation_key = RelationCacheKey::for_view(exact, view, dependencies).await?;
+            if let Some((cache, key)) = transaction_dependencies.zip(transaction_key) {
+                cache.insert(key, relation_key.clone());
+            }
+            return Ok(Self::admitted_key(relation_key));
         }
         let Some(position) = view.begin_position().cloned() else {
             crate::telemetry::relation_cache_dependency_lookup("unpositioned");
-            return RelationCacheKey::for_view(exact, view, dependencies).await;
+            return RelationCacheKey::for_view(exact, view, dependencies)
+                .await
+                .map(Self::admitted_key);
         };
         let snapshot_key = SnapshotDependencyKey::new(position, exact, dependencies);
         loop {
             if let Some(key) = self.snapshot_dependencies.get(&snapshot_key) {
                 self.metrics.dependency_hits.fetch_add(1, Ordering::Relaxed);
                 crate::telemetry::relation_cache_dependency_lookup("hit");
-                return Ok((*key).clone());
+                return Ok(Self::admitted_key((*key).clone()));
             }
             self.metrics
                 .dependency_misses
@@ -1703,7 +1780,9 @@ impl RelationCache {
                     .fetch_add(1, Ordering::Relaxed);
                 crate::telemetry::relation_cache_dependency_lookup("coalesced");
                 match SnapshotFlight::wait(receiver.expect("a waiter has a receiver")).await {
-                    SnapshotFlightResult::Success(key) => return Ok((*key).clone()),
+                    SnapshotFlightResult::Success(key) => {
+                        return Ok(Self::admitted_key((*key).clone()));
+                    }
                     SnapshotFlightResult::Failure(error) => return Err(error.restore()),
                     SnapshotFlightResult::Cancelled => continue,
                 }
@@ -1725,13 +1804,20 @@ impl RelationCache {
                         crate::telemetry::relation_cache_dependency_eviction(evictions as u64);
                     }
                     owner.finish(SnapshotFlightResult::Success(key.clone()));
-                    return Ok((*key).clone());
+                    return Ok(Self::admitted_key((*key).clone()));
                 }
                 Err(error) => {
                     owner.finish(SnapshotFlightResult::Failure(CachedError::capture(&error)));
                     return Err(error);
                 }
             }
+        }
+    }
+
+    fn admitted_key(key: RelationCacheKey) -> AdmittedRelationCacheKey {
+        AdmittedRelationCacheKey {
+            key,
+            admission: CatalogDependencyAdmission { _private: () },
         }
     }
 
@@ -2465,6 +2551,7 @@ mod tests {
                 &pinned_observed,
                 &dependencies,
                 DependencyValidation::Snapshot,
+                None,
             )
             .await
             .unwrap();
@@ -2474,6 +2561,7 @@ mod tests {
                 &pinned_observed,
                 &dependencies,
                 DependencyValidation::Snapshot,
+                None,
             )
             .await
             .unwrap();
@@ -2507,6 +2595,7 @@ mod tests {
                 &current_observed,
                 &dependencies,
                 DependencyValidation::Snapshot,
+                None,
             )
             .await
             .unwrap();
@@ -2517,6 +2606,7 @@ mod tests {
                 &pinned_observed,
                 &dependencies,
                 DependencyValidation::Snapshot,
+                None,
             )
             .await
             .unwrap();
@@ -2552,6 +2642,7 @@ mod tests {
                     &view,
                     &dependencies,
                     DependencyValidation::Transaction,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -2562,6 +2653,52 @@ mod tests {
         assert_eq!(stats.dependency_misses, 0);
         assert_eq!(counters.snapshot().gets, 2);
         assert_eq!(counters.snapshot().scans, 2);
+        transaction.rollback();
+        store.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn transaction_dependency_cache_reuses_and_clears_validation() {
+        let store = Store::memory("relation-cache-transaction-dependency-cache")
+            .await
+            .unwrap();
+        let cache = RelationCache::new(config());
+        let transaction = store.begin(IsolationLevel::Snapshot).await.unwrap();
+        let transaction_view = TransactionView(&*transaction);
+        let counters = KvCounters::new(false);
+        let view = ObservedView::new(&transaction_view, &counters);
+        let dependencies = absent_table_dependencies();
+        let transaction_dependencies = TransactionDependencyCache::default();
+
+        for _ in 0..2 {
+            cache
+                .key_for_view(
+                    fingerprint(1),
+                    &view,
+                    &dependencies,
+                    DependencyValidation::Transaction,
+                    Some(&transaction_dependencies),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(counters.snapshot().gets, 1);
+        assert_eq!(counters.snapshot().scans, 1);
+
+        transaction_dependencies.clear();
+        cache
+            .key_for_view(
+                fingerprint(1),
+                &view,
+                &dependencies,
+                DependencyValidation::Transaction,
+                Some(&transaction_dependencies),
+            )
+            .await
+            .unwrap();
+        assert_eq!(counters.snapshot().gets, 2);
+        assert_eq!(counters.snapshot().scans, 2);
+
         transaction.rollback();
         store.close().await.unwrap();
     }
@@ -2585,12 +2722,14 @@ mod tests {
                 &slow,
                 &dependencies,
                 DependencyValidation::Snapshot,
+                None,
             ),
             cache.key_for_view(
                 fingerprint(1),
                 &slow,
                 &dependencies,
                 DependencyValidation::Snapshot,
+                None,
             )
         );
         assert_eq!(first.unwrap(), second.unwrap());
@@ -2618,6 +2757,7 @@ mod tests {
                         &view,
                         &dependencies(0),
                         DependencyValidation::Snapshot,
+                        None,
                     )
                     .await
                     .is_err()

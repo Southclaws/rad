@@ -846,9 +846,8 @@ fn validated_header(
         (JwtProfile::Compatible, Some(value)) => ["JWT", "at+jwt", "application/at+jwt"]
             .iter()
             .any(|allowed| value.eq_ignore_ascii_case(allowed)),
-        (JwtProfile::Compatible, None) => true,
+        (JwtProfile::Compatible | JwtProfile::CloudflareAccess, None) => true,
         (JwtProfile::CloudflareAccess, Some(value)) => value.eq_ignore_ascii_case("JWT"),
-        (JwtProfile::CloudflareAccess, None) => true,
     };
     if !valid_type {
         return Err(InvalidToken);

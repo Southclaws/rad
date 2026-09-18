@@ -153,7 +153,7 @@ impl Config {
                     .ok()
                     .filter(|value| !value.is_empty()),
                 role: env::var("RAD_ROLE").ok().filter(|value| !value.is_empty()),
-                metrics: parse_bool_env_with_default("RAD_METRICS", true)?,
+                metrics: parse_bool_env_with_default("RAD_METRICS", false)?,
             },
             diagnostics: env::var("RAD_DIAGNOSTICS")
                 .unwrap_or_else(|_| "summary".to_owned())

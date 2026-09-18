@@ -355,8 +355,8 @@ func (c *Client) resource(spec DatabaseSpec) (*radv1alpha1.Database, error) {
 	}
 	metrics := spec.MetricsEnabled
 	if metrics == nil {
-		enabled := true
-		metrics = &enabled
+		disabled := false
+		metrics = &disabled
 	}
 	return &radv1alpha1.Database{
 		ObjectMeta: metav1.ObjectMeta{Namespace: c.namespace, Name: spec.Name},
@@ -527,7 +527,7 @@ func databaseView(resource *radv1alpha1.Database) Database {
 		LogPrograms:    resource.Spec.Logging.Programs,
 		OTelEndpoint:   resource.Spec.Telemetry.Endpoint,
 		Diagnostics:    DiagnosticLevel(resource.Spec.Telemetry.Diagnostics),
-		MetricsEnabled: resource.Spec.Telemetry.Metrics == nil || *resource.Spec.Telemetry.Metrics,
+		MetricsEnabled: resource.Spec.Telemetry.Metrics != nil && *resource.Spec.Telemetry.Metrics,
 		RelationCache: RelationCacheOptions{
 			SizeMiB:          resource.Spec.RelationCache.SizeMiB,
 			Entries:          resource.Spec.RelationCache.Entries,

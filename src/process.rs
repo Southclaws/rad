@@ -16,7 +16,7 @@ use crate::engine::catalog::Catalog;
 use crate::engine::catalog::model::Mode;
 use crate::engine::exec::{Engine, RelationCacheLimits};
 use crate::engine::kv::slatedb::{
-    ObjectCachePreload, Options as SlateOptions, ReaderStore, Store as SlateStore,
+    ObjectCachePreload, Options as SlateOptions, ReaderStore, Store as SlateStore, WalMode,
 };
 use crate::engine::kv::{Closure, ErrorKind as KvErrorKind, Kv, TransactionalKv};
 use crate::health::{Health, StartupHold};
@@ -1186,6 +1186,7 @@ fn internal_test_planner_mode() -> Result<crate::engine::planner::PlannerMode> {
 fn slate_options_from_env() -> Result<SlateOptions> {
     Ok(SlateOptions {
         commit_durability: parse_env("RAD_SLATE_COMMIT_DURABILITY", "durable")?,
+        wal: WalMode::from(parse_bool_env("RAD_SLATE_WAL_ENABLED", true)?),
         decoded_cache_size_mib: parse_env("RAD_SLATE_DECODED_CACHE_SIZE_MIB", "128")?,
         scan_cache_blocks: parse_bool_env("RAD_SLATE_SCAN_CACHE_BLOCKS", false)?,
         scan_read_ahead_kib: parse_env("RAD_SLATE_SCAN_READ_AHEAD_KIB", "256")?,
