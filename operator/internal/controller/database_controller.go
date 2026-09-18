@@ -951,6 +951,7 @@ func databaseEnvironment(
 			"RAD_AUTH_QUERY_SCOPES":   clientAuthentication.QueryScopes,
 			"RAD_AUTH_MUTATE_SCOPES":  clientAuthentication.MutateScopes,
 			"RAD_AUTH_CATALOG_SCOPES": clientAuthentication.CatalogScopes,
+			"RAD_AUTH_ADMIN_SCOPES":   clientAuthentication.AdminScopes,
 		} {
 			if value := scopeEnvironmentValue(scopes); value != "" {
 				values[name] = value

@@ -11,7 +11,7 @@
 pub mod generated;
 
 mod administration;
-mod auth;
+pub(crate) mod auth;
 mod catalog;
 mod cors;
 mod context;

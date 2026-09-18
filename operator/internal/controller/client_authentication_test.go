@@ -25,6 +25,7 @@ func testClientAuthentication(issuer string) *radv1alpha1.JWTAuthentication {
 		QueryScopes:   []radv1alpha1.OAuthScope{"rad:read", "rad:admin"},
 		MutateScopes:  []radv1alpha1.OAuthScope{"rad:write"},
 		CatalogScopes: []radv1alpha1.OAuthScope{"rad:catalog"},
+		AdminScopes:   []radv1alpha1.OAuthScope{"rad:admin"},
 	}
 }
 
@@ -53,6 +54,7 @@ func TestDatabaseAuthenticationConfiguresWriterAndReaders(t *testing.T) {
 			"RAD_AUTH_QUERY_SCOPES":   "rad:admin rad:read",
 			"RAD_AUTH_MUTATE_SCOPES":  "rad:write",
 			"RAD_AUTH_CATALOG_SCOPES": "rad:catalog",
+			"RAD_AUTH_ADMIN_SCOPES":   "rad:admin",
 		}
 		for name, value := range want {
 			if values[name] != value {
@@ -209,6 +211,7 @@ func assertClientAuthenticationEnvironment(
 		"RAD_AUTH_QUERY_SCOPES":   authentication.QueryScopes,
 		"RAD_AUTH_MUTATE_SCOPES":  authentication.MutateScopes,
 		"RAD_AUTH_CATALOG_SCOPES": authentication.CatalogScopes,
+		"RAD_AUTH_ADMIN_SCOPES":   authentication.AdminScopes,
 	} {
 		if value := scopeEnvironmentValue(scopes); value != "" {
 			want[name] = value

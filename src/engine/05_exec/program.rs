@@ -46,6 +46,7 @@ pub enum Capability {
     Query,
     Mutate,
     Catalog,
+    Admin,
 }
 
 impl Capability {
@@ -54,6 +55,7 @@ impl Capability {
             Self::Query => "query",
             Self::Mutate => "mutate",
             Self::Catalog => "catalog",
+            Self::Admin => "admin",
         }
     }
 
@@ -62,6 +64,7 @@ impl Capability {
             Self::Query => 1,
             Self::Mutate => 2,
             Self::Catalog => 4,
+            Self::Admin => 8,
         }
     }
 }
@@ -71,7 +74,7 @@ pub struct ExecutionPolicy(u8);
 
 impl ExecutionPolicy {
     pub const fn allow_all() -> Self {
-        Self(7)
+        Self(15)
     }
 
     pub const fn deny_all() -> Self {

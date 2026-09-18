@@ -11,10 +11,35 @@ use crate::http::generated::types as wire;
 
 pub(super) async fn require(
     State(authenticator): State<Arc<Authenticator>>,
-    mut request: Request,
+    request: Request,
     next: Next,
 ) -> Response {
-    if request.method() == Method::OPTIONS || is_public_probe(request.uri().path()) {
+    require_for(authenticator, request, next, AuthorizationTarget::Public).await
+}
+
+pub(crate) async fn require_admin(
+    State(authenticator): State<Arc<Authenticator>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    require_for(authenticator, request, next, AuthorizationTarget::Admin).await
+}
+
+#[derive(Clone, Copy)]
+enum AuthorizationTarget {
+    Public,
+    Admin,
+}
+
+async fn require_for(
+    authenticator: Arc<Authenticator>,
+    mut request: Request,
+    next: Next,
+    target: AuthorizationTarget,
+) -> Response {
+    if matches!(target, AuthorizationTarget::Public)
+        && (request.method() == Method::OPTIONS || is_public_probe(request.uri().path()))
+    {
         return next.run(request).await;
     }
     let token = match bearer_token(request.headers()) {
@@ -40,7 +65,13 @@ pub(super) async fn require(
     context.principal_issuer.clone_from(&principal.issuer);
     context.principal_subject.clone_from(&principal.subject);
     let response = crate::logging::with_request_context(context, async move {
-        if let Some(capability) = required_capability(request.method(), request.uri().path()) {
+        let capability = match target {
+            AuthorizationTarget::Public => {
+                required_capability(request.method(), request.uri().path())
+            }
+            AuthorizationTarget::Admin => Some(Capability::Admin),
+        };
+        if let Some(capability) = capability {
             if !policy.allows(capability) {
                 crate::telemetry::auth_authorization(capability.as_str(), "denied");
                 return forbidden(capability);

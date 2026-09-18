@@ -283,10 +283,11 @@ impl Handler for App {
             .ok()
             .filter(|value| *value > 0)
             .ok_or("--reader-poll-interval-ms must be greater than zero")?;
-        let auth_scopes = crate::auth::ScopeConfig::from_values(
+        let auth_scopes = crate::auth::ScopeConfig::from_values_with_admin(
             args.auth_query_scopes,
             args.auth_mutate_scopes,
             args.auth_catalog_scopes,
+            args.auth_admin_scopes,
         )?;
         let auth = crate::auth::AuthConfig::from_values(
             match args.auth {
@@ -299,6 +300,7 @@ impl Handler for App {
             args.auth_profile.map(|profile| match profile {
                 ServeAuthProfile::Rfc9068 => crate::auth::JwtProfile::Rfc9068,
                 ServeAuthProfile::Compatible => crate::auth::JwtProfile::Compatible,
+                ServeAuthProfile::CloudflareAccess => crate::auth::JwtProfile::CloudflareAccess,
             }),
             auth_scopes,
         )?;

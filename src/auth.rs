@@ -22,6 +22,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const REFRESH_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 const CLOCK_ALLOWANCE_SECONDS: u64 = 60;
+const CLOUDFLARE_ACCESS_AUTHORIZATION_VALUE: &str = "authenticated";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum AuthConfig {
@@ -44,6 +45,7 @@ pub enum JwtProfile {
     #[default]
     Rfc9068,
     Compatible,
+    CloudflareAccess,
 }
 
 impl FromStr for JwtProfile {
@@ -53,8 +55,9 @@ impl FromStr for JwtProfile {
         match value {
             "rfc9068" => Ok(Self::Rfc9068),
             "compatible" => Ok(Self::Compatible),
+            "cloudflare-access" => Ok(Self::CloudflareAccess),
             value => Err(Error::Configuration(format!(
-                "unknown auth profile {value:?} (rfc9068 or compatible)"
+                "unknown auth profile {value:?} (rfc9068, compatible, or cloudflare-access)"
             ))),
         }
     }
@@ -65,6 +68,7 @@ pub struct ScopeConfig {
     query: HashSet<String>,
     mutate: HashSet<String>,
     catalog: HashSet<String>,
+    admin: HashSet<String>,
 }
 
 impl ScopeConfig {
@@ -73,29 +77,61 @@ impl ScopeConfig {
         mutate: Option<String>,
         catalog: Option<String>,
     ) -> Result<Self, Error> {
+        Self::from_values_with_admin(query, mutate, catalog, None)
+    }
+
+    pub fn from_values_with_admin(
+        query: Option<String>,
+        mutate: Option<String>,
+        catalog: Option<String>,
+        admin: Option<String>,
+    ) -> Result<Self, Error> {
         Ok(Self {
             query: configured_scopes(query, "auth query scopes")?,
             mutate: configured_scopes(mutate, "auth mutate scopes")?,
             catalog: configured_scopes(catalog, "auth catalog scopes")?,
+            admin: configured_scopes(admin, "auth admin scopes")?,
         })
     }
 
     pub fn is_enabled(&self) -> bool {
-        !self.query.is_empty() || !self.mutate.is_empty() || !self.catalog.is_empty()
+        !self.query.is_empty()
+            || !self.mutate.is_empty()
+            || !self.catalog.is_empty()
+            || !self.admin.is_empty()
     }
 
     fn execution_policy(&self, scopes: &HashSet<String>) -> crate::engine::exec::ExecutionPolicy {
+        self.execution_policy_where(|accepted| !scopes.is_disjoint(accepted))
+    }
+
+    fn execution_policy_for_value(&self, value: &str) -> crate::engine::exec::ExecutionPolicy {
+        self.execution_policy_where(|accepted| accepted.contains(value))
+    }
+
+    fn execution_policy_where(
+        &self,
+        mut grants: impl FnMut(&HashSet<String>) -> bool,
+    ) -> crate::engine::exec::ExecutionPolicy {
         let mut policy = crate::engine::exec::ExecutionPolicy::deny_all();
         for (capability, accepted) in [
             (crate::engine::exec::Capability::Query, &self.query),
             (crate::engine::exec::Capability::Mutate, &self.mutate),
             (crate::engine::exec::Capability::Catalog, &self.catalog),
+            (crate::engine::exec::Capability::Admin, &self.admin),
         ] {
-            if !scopes.is_disjoint(accepted) {
+            if grants(accepted) {
                 policy.allow(capability);
             }
         }
         policy
+    }
+
+    fn contains_only(&self, value: &str) -> bool {
+        [&self.query, &self.mutate, &self.catalog, &self.admin]
+            .into_iter()
+            .flatten()
+            .all(|configured| configured == value)
     }
 }
 
@@ -167,6 +203,16 @@ impl JwtConfig {
                 "JWT authentication requires at least one auth scope setting".into(),
             ));
         }
+        if self.profile == JwtProfile::CloudflareAccess
+            && !self
+                .scopes
+                .contains_only(CLOUDFLARE_ACCESS_AUTHORIZATION_VALUE)
+        {
+            return Err(Error::Configuration(
+                "auth scope settings must contain only \"authenticated\" for profile cloudflare-access"
+                    .into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -224,6 +270,49 @@ impl Authenticator {
     }
 
     pub async fn authenticate(&self, token: &str) -> Result<AuthenticatedToken, InvalidToken> {
+        let decoded = self.decode_token(token).await?;
+        let claims = decoded.claims();
+        if claims.iss != self.issuer.as_ref() || !claims.audience.contains(self.audience.as_ref()) {
+            return Err(InvalidToken);
+        }
+        let issuer = claims.iss.clone();
+        let validated_times = (claims.expires_at, claims.not_before);
+        let (subject, policy) = match decoded {
+            ProfileClaims::OAuth(claims) => {
+                if claims.sub.is_empty() {
+                    return Err(InvalidToken);
+                }
+                let scopes = claims
+                    .scope
+                    .as_deref()
+                    .map(parse_scope_list)
+                    .transpose()
+                    .map_err(|_| InvalidToken)?
+                    .unwrap_or_default();
+                (claims.sub, self.scopes.execution_policy(&scopes))
+            }
+            ProfileClaims::CloudflareAccess(claims) => {
+                let subject = if claims.claims.sub.is_empty() {
+                    claims.common_name.filter(|value| !value.is_empty())
+                } else {
+                    Some(claims.claims.sub)
+                }
+                .ok_or(InvalidToken)?;
+                (
+                    subject,
+                    self.scopes
+                        .execution_policy_for_value(CLOUDFLARE_ACCESS_AUTHORIZATION_VALUE),
+                )
+            }
+        };
+        let _validated_times = validated_times;
+        Ok(AuthenticatedToken {
+            principal: Principal { issuer, subject },
+            policy,
+        })
+    }
+
+    async fn decode_token(&self, token: &str) -> Result<ProfileClaims, InvalidToken> {
         let header = validated_header(token, self.profile)?;
         self.refresh_if_due().await;
         let kid = header.kid.as_deref().ok_or(InvalidToken)?;
@@ -237,34 +326,14 @@ impl Authenticator {
         let required_claims = match self.profile {
             JwtProfile::Rfc9068 => &["exp", "iss", "aud", "sub", "client_id", "iat", "jti"][..],
             JwtProfile::Compatible => &["exp", "iss", "aud", "sub"][..],
+            JwtProfile::CloudflareAccess => &["exp", "iss", "aud", "sub", "iat", "type"][..],
         };
         validation.set_required_spec_claims(required_claims);
         validation.set_issuer(&[self.issuer.as_ref()]);
         validation.set_audience(&[self.audience.as_ref()]);
         validation.validate_nbf = true;
         validation.leeway = CLOCK_ALLOWANCE_SECONDS;
-        let claims = decode_claims(token, &key, &validation, self.profile)?;
-        if claims.iss != self.issuer.as_ref()
-            || !claims.audience.contains(self.audience.as_ref())
-            || claims.sub.is_empty()
-        {
-            return Err(InvalidToken);
-        }
-        let scopes = claims
-            .scope
-            .as_deref()
-            .map(parse_scope_list)
-            .transpose()
-            .map_err(|_| InvalidToken)?
-            .unwrap_or_default();
-        let _validated_times = (claims.expires_at, claims.not_before);
-        Ok(AuthenticatedToken {
-            principal: Principal {
-                issuer: claims.iss,
-                subject: claims.sub,
-            },
-            policy: self.scopes.execution_policy(&scopes),
-        })
+        decode_claims(token, &key, &validation, self.profile)
     }
 
     fn key(&self, kid: &str, algorithm: Algorithm) -> Option<DecodingKey> {
@@ -435,6 +504,31 @@ struct Rfc9068Claims {
     issued_at: u64,
     #[serde(rename = "jti")]
     token_id: String,
+}
+
+#[derive(Deserialize)]
+struct CloudflareAccessClaims {
+    #[serde(flatten)]
+    claims: Claims,
+    #[serde(rename = "iat")]
+    issued_at: u64,
+    #[serde(rename = "type")]
+    token_type: String,
+    common_name: Option<String>,
+}
+
+enum ProfileClaims {
+    OAuth(Claims),
+    CloudflareAccess(CloudflareAccessClaims),
+}
+
+impl ProfileClaims {
+    fn claims(&self) -> &Claims {
+        match self {
+            Self::OAuth(claims) => claims,
+            Self::CloudflareAccess(claims) => &claims.claims,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -690,10 +784,10 @@ fn decode_claims(
     key: &DecodingKey,
     validation: &Validation,
     profile: JwtProfile,
-) -> Result<Claims, InvalidToken> {
+) -> Result<ProfileClaims, InvalidToken> {
     match profile {
         JwtProfile::Compatible => decode::<Claims>(token, key, validation)
-            .map(|token| token.claims)
+            .map(|token| ProfileClaims::OAuth(token.claims))
             .map_err(|_| InvalidToken),
         JwtProfile::Rfc9068 => {
             let token =
@@ -705,7 +799,18 @@ fn decode_claims(
             {
                 return Err(InvalidToken);
             }
-            Ok(token.claims.claims)
+            Ok(ProfileClaims::OAuth(token.claims.claims))
+        }
+        JwtProfile::CloudflareAccess => {
+            let token = decode::<CloudflareAccessClaims>(token, key, validation)
+                .map_err(|_| InvalidToken)?;
+            if token.claims.token_type != "app"
+                || token.claims.issued_at
+                    > get_current_timestamp().saturating_add(CLOCK_ALLOWANCE_SECONDS)
+            {
+                return Err(InvalidToken);
+            }
+            Ok(ProfileClaims::CloudflareAccess(token.claims))
         }
     }
 }
@@ -730,6 +835,9 @@ fn validated_header(
     {
         return Err(InvalidToken);
     }
+    if profile == JwtProfile::CloudflareAccess && header.alg != Algorithm::RS256 {
+        return Err(InvalidToken);
+    }
     let valid_type = match (profile, header.typ.as_deref()) {
         (JwtProfile::Rfc9068, Some(value)) => ["at+jwt", "application/at+jwt"]
             .iter()
@@ -739,6 +847,8 @@ fn validated_header(
             .iter()
             .any(|allowed| value.eq_ignore_ascii_case(allowed)),
         (JwtProfile::Compatible, None) => true,
+        (JwtProfile::CloudflareAccess, Some(value)) => value.eq_ignore_ascii_case("JWT"),
+        (JwtProfile::CloudflareAccess, None) => true,
     };
     if !valid_type {
         return Err(InvalidToken);
@@ -913,16 +1023,42 @@ mod tests {
         .unwrap()
     }
 
-    fn compatible_authenticator(algorithm: Algorithm) -> Authenticator {
+    fn configured_authenticator(
+        algorithm: Algorithm,
+        profile: JwtProfile,
+        scopes: ScopeConfig,
+    ) -> Authenticator {
         let mut authenticator = authenticator(algorithm);
-        authenticator.profile = JwtProfile::Compatible;
+        authenticator.profile = profile;
+        authenticator.scopes = scopes;
         authenticator
     }
 
-    fn scoped_authenticator(scopes: ScopeConfig) -> Authenticator {
-        let mut authenticator = authenticator(Algorithm::RS256);
-        authenticator.scopes = scopes;
-        authenticator
+    fn jwt_config(profile: Option<JwtProfile>, scopes: ScopeConfig) -> Box<super::JwtConfig> {
+        let config = AuthConfig::from_values(
+            "jwt",
+            Some("https://auth.example.com".into()),
+            Some("rad".into()),
+            None,
+            profile,
+            scopes,
+        )
+        .unwrap();
+        let AuthConfig::Jwt(config) = config else {
+            panic!("expected JWT authentication");
+        };
+        config
+    }
+
+    fn allowed_capabilities(
+        policy: &crate::engine::exec::ExecutionPolicy,
+    ) -> (bool, bool, bool, bool) {
+        (
+            policy.allows(crate::engine::exec::Capability::Query),
+            policy.allows(crate::engine::exec::Capability::Mutate),
+            policy.allows(crate::engine::exec::Capability::Catalog),
+            policy.allows(crate::engine::exec::Capability::Admin),
+        )
     }
 
     fn refreshing_authenticator(document: JwkSet, jwks_url: Url, stale: bool) -> Authenticator {
@@ -993,31 +1129,22 @@ mod tests {
         let mut claims = claims(json!(AUDIENCE));
         claims["scope"] = json!("rad:read rad:admin");
         let token = signed_token(Algorithm::RS256, &claims, |_| {});
-        let scopes = ScopeConfig::from_values(
+        let scopes = ScopeConfig::from_values_with_admin(
             Some("rad:read".into()),
             Some("rad:write".into()),
             Some("rad:catalog rad:admin".into()),
+            Some("rad:admin".into()),
         )
         .unwrap();
 
-        let authenticated = scoped_authenticator(scopes)
+        let authenticated = configured_authenticator(Algorithm::RS256, JwtProfile::Rfc9068, scopes)
             .authenticate(&token)
             .await
             .unwrap();
 
         assert_eq!(
-            (
-                authenticated
-                    .policy
-                    .allows(crate::engine::exec::Capability::Query),
-                authenticated
-                    .policy
-                    .allows(crate::engine::exec::Capability::Mutate),
-                authenticated
-                    .policy
-                    .allows(crate::engine::exec::Capability::Catalog),
-            ),
-            (true, false, true)
+            allowed_capabilities(&authenticated.policy),
+            (true, false, true, true)
         );
     }
 
@@ -1026,7 +1153,7 @@ mod tests {
         let token = signed_token(Algorithm::RS256, &claims(json!(AUDIENCE)), |_| {});
         let scopes = ScopeConfig::from_values(Some("rad:read".into()), None, None).unwrap();
 
-        let authenticated = scoped_authenticator(scopes)
+        let authenticated = configured_authenticator(Algorithm::RS256, JwtProfile::Rfc9068, scopes)
             .authenticate(&token)
             .await
             .unwrap();
@@ -1089,12 +1216,118 @@ mod tests {
                 header.typ = token_type.map(str::to_owned);
             });
             assert!(
-                compatible_authenticator(Algorithm::RS256)
-                    .authenticate(&token)
-                    .await
-                    .is_ok()
+                configured_authenticator(
+                    Algorithm::RS256,
+                    JwtProfile::Compatible,
+                    ScopeConfig::default(),
+                )
+                .authenticate(&token)
+                .await
+                .is_ok()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn cloudflare_access_profile_accepts_an_application_assertion() {
+        let mut token_claims = claims(json!([AUDIENCE]));
+        token_claims.as_object_mut().unwrap().remove("client_id");
+        token_claims.as_object_mut().unwrap().remove("jti");
+        token_claims["nbf"] = json!(get_current_timestamp());
+        token_claims["type"] = json!("app");
+        let token = signed_token(Algorithm::RS256, &token_claims, |header| {
+            header.typ = None;
+        });
+        let scopes = ScopeConfig::from_values_with_admin(
+            Some("authenticated".into()),
+            Some("authenticated".into()),
+            None,
+            Some("authenticated".into()),
+        )
+        .unwrap();
+
+        let authenticated =
+            configured_authenticator(Algorithm::RS256, JwtProfile::CloudflareAccess, scopes)
+                .authenticate(&token)
+                .await
+                .unwrap();
+
+        assert_eq!(authenticated.principal.subject, "principal-1");
+        assert_eq!(
+            allowed_capabilities(&authenticated.policy),
+            (true, true, false, true)
+        );
+    }
+
+    #[tokio::test]
+    async fn cloudflare_access_profile_accepts_a_service_assertion() {
+        let mut token_claims = claims(json!([AUDIENCE]));
+        token_claims.as_object_mut().unwrap().remove("client_id");
+        token_claims.as_object_mut().unwrap().remove("jti");
+        token_claims["sub"] = json!("");
+        token_claims["type"] = json!("app");
+        token_claims["common_name"] = json!("service-id.access");
+        let token = signed_token(Algorithm::RS256, &token_claims, |header| {
+            header.typ = Some("JWT".into());
+        });
+
+        let authenticated = configured_authenticator(
+            Algorithm::RS256,
+            JwtProfile::CloudflareAccess,
+            ScopeConfig::from_values(Some("authenticated".into()), None, None).unwrap(),
+        )
+        .authenticate(&token)
+        .await
+        .unwrap();
+
+        assert_eq!(authenticated.principal.subject, "service-id.access");
+    }
+
+    #[tokio::test]
+    async fn cloudflare_access_profile_rejects_invalid_profile_values() {
+        for (claim, value) in [
+            ("type", json!("org")),
+            ("iat", json!(get_current_timestamp() + 300)),
+        ] {
+            let mut token_claims = claims(json!([AUDIENCE]));
+            token_claims["type"] = json!("app");
+            token_claims[claim] = value;
+            let token = signed_token(Algorithm::RS256, &token_claims, |header| {
+                header.typ = Some("JWT".into());
+            });
+
+            assert!(
+                configured_authenticator(
+                    Algorithm::RS256,
+                    JwtProfile::CloudflareAccess,
+                    ScopeConfig::from_values(Some("authenticated".into()), None, None).unwrap(),
+                )
+                .authenticate(&token)
+                .await
+                .is_err(),
+                "accepted an invalid {claim} claim"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cloudflare_access_profile_requires_rs256() {
+        let mut token_claims = claims(json!([AUDIENCE]));
+        token_claims["type"] = json!("app");
+        let token = signed_token(Algorithm::ES256, &token_claims, |header| {
+            header.typ = Some("JWT".into());
+        });
+
+        assert!(
+            configured_authenticator(
+                Algorithm::ES256,
+                JwtProfile::CloudflareAccess,
+                ScopeConfig::from_values(Some("authenticated".into()), None, None).unwrap(),
+            )
+            .authenticate(&token)
+            .await
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1177,7 +1410,7 @@ mod tests {
     #[tokio::test]
     async fn rfc9068_profile_rejects_a_future_issue_time() {
         let mut token_claims = claims(json!(AUDIENCE));
-        token_claims["iat"] = json!(get_current_timestamp() + 61);
+        token_claims["iat"] = json!(get_current_timestamp() + 300);
         let token = signed_token(Algorithm::RS256, &token_claims, |_| {});
 
         assert!(
@@ -1199,10 +1432,14 @@ mod tests {
         });
 
         assert!(
-            compatible_authenticator(Algorithm::RS256)
-                .authenticate(&token)
-                .await
-                .is_ok()
+            configured_authenticator(
+                Algorithm::RS256,
+                JwtProfile::Compatible,
+                ScopeConfig::default(),
+            )
+            .authenticate(&token)
+            .await
+            .is_ok()
         );
     }
 
@@ -1713,39 +1950,49 @@ mod tests {
     #[test]
     fn jwt_configuration_uses_the_rfc9068_profile_by_default() {
         let scopes = ScopeConfig::from_values(Some("rad:read".into()), None, None).unwrap();
-        let config = AuthConfig::from_values(
-            "jwt",
-            Some("https://auth.example.com".into()),
-            Some("rad".into()),
-            None,
-            None,
-            scopes,
-        )
-        .unwrap();
+        let config = jwt_config(None, scopes);
 
-        let AuthConfig::Jwt(config) = config else {
-            panic!("expected JWT authentication");
-        };
         assert_eq!(config.profile, JwtProfile::Rfc9068);
     }
 
     #[test]
     fn jwt_configuration_accepts_the_compatible_profile() {
         let scopes = ScopeConfig::from_values(Some("rad:read".into()), None, None).unwrap();
-        let config = AuthConfig::from_values(
-            "jwt",
-            Some("https://auth.example.com".into()),
-            Some("rad".into()),
-            None,
-            Some(JwtProfile::Compatible),
-            scopes,
+        let config = jwt_config(Some(JwtProfile::Compatible), scopes);
+
+        assert_eq!(config.profile, JwtProfile::Compatible);
+    }
+
+    #[test]
+    fn jwt_configuration_accepts_the_cloudflare_access_profile() {
+        let scopes = ScopeConfig::from_values_with_admin(
+            Some("authenticated".into()),
+            Some("authenticated".into()),
+            Some("authenticated".into()),
+            Some("authenticated".into()),
         )
         .unwrap();
+        let config = jwt_config(Some(JwtProfile::CloudflareAccess), scopes);
 
-        let AuthConfig::Jwt(config) = config else {
-            panic!("expected JWT authentication");
-        };
-        assert_eq!(config.profile, JwtProfile::Compatible);
+        assert_eq!(config.profile, JwtProfile::CloudflareAccess);
+    }
+
+    #[test]
+    fn cloudflare_access_profile_rejects_oauth_scope_names() {
+        let error = AuthConfig::from_values(
+            "jwt",
+            Some("https://team.cloudflareaccess.com".into()),
+            Some("application-audience".into()),
+            Some("https://team.cloudflareaccess.com/cdn-cgi/access/certs".into()),
+            Some(JwtProfile::CloudflareAccess),
+            ScopeConfig::from_values(Some("rad:read".into()), None, None).unwrap(),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "invalid authentication configuration: auth scope settings must contain only \"authenticated\" for profile cloudflare-access"
+        );
     }
 
     #[test]
@@ -1754,7 +2001,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "invalid authentication configuration: unknown auth profile \"simple\" (rfc9068 or compatible)"
+            "invalid authentication configuration: unknown auth profile \"simple\" (rfc9068, compatible, or cloudflare-access)"
         );
     }
 
@@ -1801,6 +2048,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(scopes.query.len(), 2);
+    }
+
+    #[test]
+    fn administration_scope_configuration_enables_jwt_authentication() {
+        let scopes =
+            ScopeConfig::from_values_with_admin(None, None, None, Some("rad:admin".into()))
+                .unwrap();
+
+        assert!(scopes.is_enabled());
+        assert_eq!(scopes.admin.len(), 1);
     }
 
     #[test]

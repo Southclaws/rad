@@ -47,11 +47,15 @@ spec:
               value: rad:write rad:admin
             - name: RAD_AUTH_CATALOG_SCOPES
               value: rad:catalog rad:admin
+            - name: RAD_AUTH_ADMIN_SCOPES
+              value: rad:admin
 ```
 
 The matching manager flags use lower-case names, such as `--auth-issuer` and
 `--auth-profile`. The profile defaults to `rfc9068`. Set it to `compatible` for
-authorization servers that do not issue RFC 9068 access tokens. At least one
-scope setting is required in JWT mode. Missing capability settings deny those
-capabilities. A `Database` with `spec.authentication` replaces this default. A
-`Database` without that field inherits this default and cannot disable it.
+authorization servers that do not issue RFC 9068 access tokens. Set it to
+`cloudflare-access` for Cloudflare Access application tokens. Each scope
+setting for this profile can contain only `authenticated`. At least one scope
+setting is required in JWT mode. Missing capability settings deny those
+capabilities. A `Database` with `spec.authentication` replaces this default.
+A `Database` without that field inherits this default and cannot disable it.

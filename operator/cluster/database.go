@@ -43,6 +43,7 @@ type JWTAuthentication struct {
 	QueryScopes   []string
 	MutateScopes  []string
 	CatalogScopes []string
+	AdminScopes   []string
 }
 
 const (
@@ -63,8 +64,9 @@ const (
 	DiagnosticLevelDetailed DiagnosticLevel = "detailed"
 	DiagnosticLevelFull     DiagnosticLevel = "full"
 
-	JWTProfileRFC9068    JWTProfile = "rfc9068"
-	JWTProfileCompatible JWTProfile = "compatible"
+	JWTProfileRFC9068          JWTProfile = "rfc9068"
+	JWTProfileCompatible       JWTProfile = "compatible"
+	JWTProfileCloudflareAccess JWTProfile = "cloudflare-access"
 )
 
 // DatabaseSpec is the product-level description of one tenant database. The
@@ -406,6 +408,7 @@ func authenticationResource(authentication *JWTAuthentication) (*radv1alpha1.JWT
 		QueryScopes:   scopeResource(authentication.QueryScopes),
 		MutateScopes:  scopeResource(authentication.MutateScopes),
 		CatalogScopes: scopeResource(authentication.CatalogScopes),
+		AdminScopes:   scopeResource(authentication.AdminScopes),
 	}
 	if err := resource.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid JWT authentication: %w", err)
@@ -567,6 +570,7 @@ func authenticationView(authentication *radv1alpha1.JWTAuthentication) *JWTAuthe
 		QueryScopes:   scopeView(authentication.QueryScopes),
 		MutateScopes:  scopeView(authentication.MutateScopes),
 		CatalogScopes: scopeView(authentication.CatalogScopes),
+		AdminScopes:   scopeView(authentication.AdminScopes),
 	}
 }
 

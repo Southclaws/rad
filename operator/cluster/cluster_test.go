@@ -117,6 +117,7 @@ func TestJWTAuthenticationIsProjected(t *testing.T) {
 		QueryScopes:   []string{"rad:read", "rad:admin"},
 		MutateScopes:  []string{"rad:write"},
 		CatalogScopes: []string{"rad:catalog"},
+		AdminScopes:   []string{"rad:admin"},
 	}
 	created, err := c.CreateDatabase(context.Background(), spec)
 	if err != nil {

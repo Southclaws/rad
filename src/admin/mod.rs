@@ -20,10 +20,25 @@ pub fn router_with_statistics(
     store: Arc<dyn TransactionalKv>,
     runner: Option<Arc<StatisticsRunner>>,
 ) -> Router {
-    Router::new()
+    router_with_statistics_and_auth(store, runner, None)
+}
+
+pub fn router_with_statistics_and_auth(
+    store: Arc<dyn TransactionalKv>,
+    runner: Option<Arc<StatisticsRunner>>,
+    authenticator: Option<Arc<crate::auth::Authenticator>>,
+) -> Router {
+    let router = Router::new()
         .merge(kv::router(store))
         .merge(statistics::router(runner))
-        .merge(assets::router())
+        .merge(assets::router());
+    match authenticator {
+        Some(authenticator) => router.layer(axum::middleware::from_fn_with_state(
+            authenticator,
+            crate::http::auth::require_admin,
+        )),
+        None => router,
+    }
 }
 
 #[cfg(test)]
