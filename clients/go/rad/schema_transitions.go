@@ -41,14 +41,23 @@ func (c *Client) SchemaTransitions(
 	if err != nil {
 		return nil, transportError(err)
 	}
-	out := make([]TransitionControl, len(response.Transitions))
-	for i := range response.Transitions {
-		out[i], err = transitionControlFromOAS(response.Transitions[i])
-		if err != nil {
-			return nil, err
+	switch response := response.(type) {
+	case *oas.TransitionList:
+		out := make([]TransitionControl, len(response.Transitions))
+		for i := range response.Transitions {
+			out[i], err = transitionControlFromOAS(response.Transitions[i])
+			if err != nil {
+				return nil, err
+			}
 		}
+		return out, nil
+	case *oas.ForbiddenHeaders:
+		return nil, forbiddenError(response)
+	case *oas.UnauthorizedHeaders:
+		return nil, unauthenticatedError(response)
+	default:
+		return nil, fmt.Errorf("rad: unexpected schema transition list response %T", response)
 	}
-	return out, nil
 }
 
 // SchemaTransition returns the current administrative view of one durable
@@ -66,6 +75,10 @@ func (c *Client) SchemaTransition(ctx context.Context, transitionID string) (Tra
 		return transitionControlFromOAS(*value)
 	case *oas.Problem:
 		return TransitionControl{}, apiError(*value)
+	case *oas.ForbiddenHeaders:
+		return TransitionControl{}, forbiddenError(value)
+	case *oas.UnauthorizedHeaders:
+		return TransitionControl{}, unauthenticatedError(value)
 	default:
 		return TransitionControl{}, fmt.Errorf("rad: unexpected schema transition response %T", response)
 	}
@@ -88,10 +101,12 @@ func (c *Client) CancelSchemaTransition(ctx context.Context, transitionID string
 		return TransitionControl{}, apiError(oas.Problem(*value))
 	case *oas.SchemaTransitionCancelConflict:
 		return TransitionControl{}, apiError(oas.Problem(*value))
-	case *oas.SchemaTransitionCancelForbidden:
-		return TransitionControl{}, apiError(oas.Problem(*value))
+	case *oas.ForbiddenHeaders:
+		return TransitionControl{}, forbiddenError(value)
 	case *oas.SchemaTransitionCancelUnprocessableEntity:
 		return TransitionControl{}, apiError(oas.Problem(*value))
+	case *oas.UnauthorizedHeaders:
+		return TransitionControl{}, unauthenticatedError(value)
 	default:
 		return TransitionControl{}, fmt.Errorf("rad: unexpected schema transition cancellation response %T", response)
 	}

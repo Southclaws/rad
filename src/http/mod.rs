@@ -11,6 +11,7 @@
 pub mod generated;
 
 mod administration;
+mod auth;
 mod catalog;
 mod cors;
 mod context;
@@ -27,7 +28,9 @@ mod wire;
 
 pub use listener::serve;
 pub use probes::router as probe_router;
-pub use server::{Api, router, router_with_health, router_with_location};
+pub use server::{
+    Api, router, router_with_health, router_with_health_and_auth, router_with_location,
+};
 
 #[cfg(test)]
 mod tests;

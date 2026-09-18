@@ -1181,6 +1181,10 @@ fine-grained semantic identity within that class.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "code")]
 pub enum Problem {
+    #[serde(rename = "unauthenticated")]
+    UnauthenticatedProblem(UnauthenticatedProblem),
+    #[serde(rename = "forbidden")]
+    ForbiddenProblem(ForbiddenProblem),
     #[serde(rename = "invalid")]
     InvalidProblem(InvalidProblem),
     #[serde(rename = "execution_failed")]
@@ -1191,6 +1195,111 @@ pub enum Problem {
     ConflictProblem(ConflictProblem),
     #[serde(rename = "internal")]
     InternalProblem(InternalProblem),
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UnauthenticatedProblem {
+    ///A human readable explanation specific to this occurrence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub reason: UnauthenticatedProblemReason,
+    pub status: i64,
+    pub title: UnauthenticatedProblemTitle,
+    pub r#type: UnauthenticatedProblemType,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum UnauthenticatedProblemType {
+    #[default]
+    #[serde(rename = "urn:rad:problem:unauthenticated")]
+    UrnRadProblemUnauthenticated,
+}
+impl UnauthenticatedProblemType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::UrnRadProblemUnauthenticated => "urn:rad:problem:unauthenticated",
+        }
+    }
+}
+impl ::std::fmt::Display for UnauthenticatedProblemType {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for UnauthenticatedProblemType {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum UnauthenticatedProblemTitle {
+    #[default]
+    #[serde(rename = "Authentication Required")]
+    AuthenticationRequired,
+}
+impl UnauthenticatedProblemTitle {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::AuthenticationRequired => "Authentication Required",
+        }
+    }
+}
+impl ::std::fmt::Display for UnauthenticatedProblemTitle {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for UnauthenticatedProblemTitle {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum UnauthenticatedProblemReason {
+    #[default]
+    #[serde(rename = "missing_token")]
+    MissingToken,
+    #[serde(rename = "invalid_token")]
+    InvalidToken,
+}
+impl UnauthenticatedProblemReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::MissingToken => "missing_token",
+            Self::InvalidToken => "invalid_token",
+        }
+    }
+}
+impl ::std::fmt::Display for UnauthenticatedProblemReason {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for UnauthenticatedProblemReason {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum UnauthenticatedProblemCode {
+    #[default]
+    #[serde(rename = "unauthenticated")]
+    Unauthenticated,
+}
+impl UnauthenticatedProblemCode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Unauthenticated => "unauthenticated",
+        }
+    }
+}
+impl ::std::fmt::Display for UnauthenticatedProblemCode {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for UnauthenticatedProblemCode {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NotFoundProblem {
@@ -1561,6 +1670,108 @@ impl ::std::fmt::Display for ForeignKeyAction {
     }
 }
 impl AsRef<str> for ForeignKeyAction {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ForbiddenProblem {
+    ///A human readable explanation specific to this occurrence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub reason: ForbiddenProblemReason,
+    pub status: i64,
+    pub title: ForbiddenProblemTitle,
+    pub r#type: ForbiddenProblemType,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum ForbiddenProblemType {
+    #[default]
+    #[serde(rename = "urn:rad:problem:forbidden")]
+    UrnRadProblemForbidden,
+}
+impl ForbiddenProblemType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::UrnRadProblemForbidden => "urn:rad:problem:forbidden",
+        }
+    }
+}
+impl ::std::fmt::Display for ForbiddenProblemType {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for ForbiddenProblemType {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum ForbiddenProblemTitle {
+    #[default]
+    #[serde(rename = "Access Forbidden")]
+    AccessForbidden,
+}
+impl ForbiddenProblemTitle {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::AccessForbidden => "Access Forbidden",
+        }
+    }
+}
+impl ::std::fmt::Display for ForbiddenProblemTitle {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for ForbiddenProblemTitle {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum ForbiddenProblemReason {
+    #[default]
+    #[serde(rename = "insufficient_scope")]
+    InsufficientScope,
+}
+impl ForbiddenProblemReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::InsufficientScope => "insufficient_scope",
+        }
+    }
+}
+impl ::std::fmt::Display for ForbiddenProblemReason {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for ForbiddenProblemReason {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum ForbiddenProblemCode {
+    #[default]
+    #[serde(rename = "forbidden")]
+    Forbidden,
+}
+impl ForbiddenProblemCode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Forbidden => "forbidden",
+        }
+    }
+}
+impl ::std::fmt::Display for ForbiddenProblemCode {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for ForbiddenProblemCode {
     fn as_ref(&self) -> &str {
         self.as_str()
     }

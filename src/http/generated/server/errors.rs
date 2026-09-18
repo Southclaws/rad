@@ -44,6 +44,8 @@ impl IntoResponse for RequestValidationRejection {
 /// Response for `GET /info` (operationId `GetInfo`).
 pub enum GetInfoResponse {
     Ok(DatabaseInfo),
+    Unauthorized(UnauthenticatedProblem),
+    Forbidden(Problem),
     Default(StatusCode, Problem),
 }
 impl IntoResponse for GetInfoResponse {
@@ -53,6 +55,31 @@ impl IntoResponse for GetInfoResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Forbidden(body) => {
+                let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -82,6 +109,8 @@ impl IntoResponse for GetInfoResponse {
 /// Response for `GET /healthz` (operationId `GetHealthz`).
 pub enum GetHealthzResponse {
     Ok(Health),
+    Unauthorized(UnauthenticatedProblem),
+    Forbidden(Problem),
     Default(StatusCode, Problem),
 }
 impl IntoResponse for GetHealthzResponse {
@@ -91,6 +120,31 @@ impl IntoResponse for GetHealthzResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Forbidden(body) => {
+                let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -276,6 +330,8 @@ impl IntoResponse for GetLivezResponse {
 /// Response for `GET /schema` (operationId `GetSchema`).
 pub enum GetSchemaResponse {
     Ok(SchemaState),
+    Unauthorized(UnauthenticatedProblem),
+    Forbidden(Problem),
     Default(StatusCode, Problem),
 }
 impl IntoResponse for GetSchemaResponse {
@@ -285,6 +341,31 @@ impl IntoResponse for GetSchemaResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Forbidden(body) => {
+                let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -314,6 +395,8 @@ impl IntoResponse for GetSchemaResponse {
 /// Response for `GET /statistics` (operationId `GetStatistics`).
 pub enum GetStatisticsResponse {
     Ok(Statistics),
+    Unauthorized(UnauthenticatedProblem),
+    Forbidden(Problem),
     NotFound(Problem),
     Default(StatusCode, Problem),
 }
@@ -324,6 +407,31 @@ impl IntoResponse for GetStatisticsResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Forbidden(body) => {
+                let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -365,6 +473,8 @@ impl IntoResponse for GetStatisticsResponse {
 /// Response for `POST /schema/diff` (operationId `SchemaDiff`).
 pub enum SchemaDiffResponse {
     Ok(SchemaDiffResult),
+    Unauthorized(UnauthenticatedProblem),
+    Forbidden(Problem),
     UnprocessableEntity(Problem),
     Default(StatusCode, Problem),
 }
@@ -375,6 +485,31 @@ impl IntoResponse for SchemaDiffResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Forbidden(body) => {
+                let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -417,6 +552,7 @@ impl IntoResponse for SchemaDiffResponse {
 /// Response for `POST /schema/migrate` (operationId `SchemaMigrate`).
 pub enum SchemaMigrateResponse {
     Ok(SchemaMigrateResult),
+    Unauthorized(UnauthenticatedProblem),
     Forbidden(Problem),
     Conflict(Problem),
     UnprocessableEntity(Problem),
@@ -429,6 +565,19 @@ impl IntoResponse for SchemaMigrateResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -495,6 +644,8 @@ impl IntoResponse for SchemaMigrateResponse {
 /// Response for `POST /schema/compatibility` (operationId `SchemaCompatibility`).
 pub enum SchemaCompatibilityResponse {
     NoContent,
+    Unauthorized(UnauthenticatedProblem),
+    Forbidden(Problem),
     UnprocessableEntity(Problem),
     Default(StatusCode, Problem),
 }
@@ -502,6 +653,31 @@ impl IntoResponse for SchemaCompatibilityResponse {
     fn into_response(self) -> ::axum::response::Response {
         match self {
             Self::NoContent => StatusCode::NO_CONTENT.into_response(),
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Forbidden(body) => {
+                let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
             Self::UnprocessableEntity(body) => {
                 let mut response = (StatusCode::UNPROCESSABLE_ENTITY, Json(body))
                     .into_response();
@@ -536,6 +712,8 @@ impl IntoResponse for SchemaCompatibilityResponse {
 /// Response for `GET /schema/transitions` (operationId `SchemaTransitionList`).
 pub enum SchemaTransitionListResponse {
     Ok(TransitionList),
+    Unauthorized(UnauthenticatedProblem),
+    Forbidden(Problem),
     Default(StatusCode, Problem),
 }
 impl IntoResponse for SchemaTransitionListResponse {
@@ -545,6 +723,31 @@ impl IntoResponse for SchemaTransitionListResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Forbidden(body) => {
+                let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -574,6 +777,8 @@ impl IntoResponse for SchemaTransitionListResponse {
 /// Response for `GET /schema/transitions/{transition}` (operationId `SchemaTransitionGet`).
 pub enum SchemaTransitionGetResponse {
     Ok(TransitionControl),
+    Unauthorized(UnauthenticatedProblem),
+    Forbidden(Problem),
     NotFound(Problem),
     Default(StatusCode, Problem),
 }
@@ -584,6 +789,31 @@ impl IntoResponse for SchemaTransitionGetResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Forbidden(body) => {
+                let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -625,6 +855,7 @@ impl IntoResponse for SchemaTransitionGetResponse {
 /// Response for `POST /schema/transitions/{transition}/cancel` (operationId `SchemaTransitionCancel`).
 pub enum SchemaTransitionCancelResponse {
     Ok(TransitionControl),
+    Unauthorized(UnauthenticatedProblem),
     Forbidden(Problem),
     NotFound(Problem),
     Conflict(Problem),
@@ -638,6 +869,19 @@ impl IntoResponse for SchemaTransitionCancelResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -716,6 +960,8 @@ impl IntoResponse for SchemaTransitionCancelResponse {
 /// Response for `GET /tables` (operationId `TableList`).
 pub enum TableListResponse {
     Ok(TableList),
+    Unauthorized(UnauthenticatedProblem),
+    Forbidden(Problem),
     Default(StatusCode, Problem),
 }
 impl IntoResponse for TableListResponse {
@@ -725,6 +971,31 @@ impl IntoResponse for TableListResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Forbidden(body) => {
+                let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -754,6 +1025,7 @@ impl IntoResponse for TableListResponse {
 /// Response for `POST /tables` (operationId `TableCreate`).
 pub enum TableCreateResponse {
     Ok(TableInfo),
+    Unauthorized(UnauthenticatedProblem),
     Forbidden(Problem),
     Conflict(Problem),
     UnprocessableEntity(Problem),
@@ -766,6 +1038,19 @@ impl IntoResponse for TableCreateResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -832,6 +1117,7 @@ impl IntoResponse for TableCreateResponse {
 /// Response for `PATCH /tables/{table}` (operationId `TableUpdate`).
 pub enum TableUpdateResponse {
     Ok(TableInfo),
+    Unauthorized(UnauthenticatedProblem),
     Forbidden(Problem),
     Conflict(Problem),
     UnprocessableEntity(Problem),
@@ -844,6 +1130,19 @@ impl IntoResponse for TableUpdateResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -910,6 +1209,7 @@ impl IntoResponse for TableUpdateResponse {
 /// Response for `DELETE /tables/{table}` (operationId `TableDelete`).
 pub enum TableDeleteResponse {
     NoContent,
+    Unauthorized(UnauthenticatedProblem),
     Forbidden(Problem),
     Conflict(Problem),
     UnprocessableEntity(Problem),
@@ -919,6 +1219,19 @@ impl IntoResponse for TableDeleteResponse {
     fn into_response(self) -> ::axum::response::Response {
         match self {
             Self::NoContent => StatusCode::NO_CONTENT.into_response(),
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
             Self::Forbidden(body) => {
                 let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
@@ -977,6 +1290,7 @@ impl IntoResponse for TableDeleteResponse {
 /// Response for `POST /tables/{table}/columns` (operationId `ColumnCreate`).
 pub enum ColumnCreateResponse {
     Ok(TableInfo),
+    Unauthorized(UnauthenticatedProblem),
     Forbidden(Problem),
     Conflict(Problem),
     UnprocessableEntity(Problem),
@@ -989,6 +1303,19 @@ impl IntoResponse for ColumnCreateResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -1055,6 +1382,7 @@ impl IntoResponse for ColumnCreateResponse {
 /// Response for `PATCH /tables/{table}/columns/{column}` (operationId `ColumnUpdate`).
 pub enum ColumnUpdateResponse {
     Ok(TableInfo),
+    Unauthorized(UnauthenticatedProblem),
     Forbidden(Problem),
     Conflict(Problem),
     UnprocessableEntity(Problem),
@@ -1067,6 +1395,19 @@ impl IntoResponse for ColumnUpdateResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -1133,6 +1474,7 @@ impl IntoResponse for ColumnUpdateResponse {
 /// Response for `DELETE /tables/{table}/columns/{column}` (operationId `ColumnDelete`).
 pub enum ColumnDeleteResponse {
     Ok(TableInfo),
+    Unauthorized(UnauthenticatedProblem),
     Forbidden(Problem),
     Conflict(Problem),
     UnprocessableEntity(Problem),
@@ -1145,6 +1487,19 @@ impl IntoResponse for ColumnDeleteResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -1211,6 +1566,7 @@ impl IntoResponse for ColumnDeleteResponse {
 /// Response for `POST /tables/{table}/indexes` (operationId `IndexCreate`).
 pub enum IndexCreateResponse {
     Ok(TableInfo),
+    Unauthorized(UnauthenticatedProblem),
     Forbidden(Problem),
     Conflict(Problem),
     UnprocessableEntity(Problem),
@@ -1223,6 +1579,19 @@ impl IntoResponse for IndexCreateResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -1289,6 +1658,7 @@ impl IntoResponse for IndexCreateResponse {
 /// Response for `DELETE /tables/{table}/indexes/{index}` (operationId `IndexDelete`).
 pub enum IndexDeleteResponse {
     Ok(TableInfo),
+    Unauthorized(UnauthenticatedProblem),
     Forbidden(Problem),
     Conflict(Problem),
     UnprocessableEntity(Problem),
@@ -1301,6 +1671,19 @@ impl IntoResponse for IndexDeleteResponse {
                 let mut response = (StatusCode::OK, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
                 ) else {
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 };
@@ -1369,6 +1752,8 @@ pub enum QueryResponse {
     Ok(bytes::Bytes),
     NotModified,
     BadRequest(Problem),
+    Unauthorized(UnauthenticatedProblem),
+    Forbidden(Problem),
     Status406(Problem),
     Status413(Problem),
     Status415(Problem),
@@ -1394,6 +1779,31 @@ impl IntoResponse for QueryResponse {
             Self::NotModified => StatusCode::NOT_MODIFIED.into_response(),
             Self::BadRequest(body) => {
                 let mut response = (StatusCode::BAD_REQUEST, Json(body)).into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Unauthorized(body) => {
+                let mut response = (StatusCode::UNAUTHORIZED, Json(body))
+                    .into_response();
+                let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
+                    "application/problem+json".as_bytes(),
+                ) else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                };
+                response
+                    .headers_mut()
+                    .insert(::axum::http::header::CONTENT_TYPE, content_type);
+                response
+            }
+            Self::Forbidden(body) => {
+                let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
                 let Ok(content_type) = ::axum::http::HeaderValue::from_bytes(
                     "application/problem+json".as_bytes(),
                 ) else {

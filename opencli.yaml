@@ -114,6 +114,36 @@ commands:
         description: Public HTTP listen address; the admin UI uses the next port.
         envVar: RAD_ADDR
         default: 0.0.0.0:7237
+      - name: admin-addr
+        description: Administration HTTP listen address; JWT mode requires loopback.
+        envVar: RAD_ADMIN_ADDR
+      - name: auth
+        description: Public HTTP authentication mode; JWT requires at least one scope setting.
+        envVar: RAD_AUTH
+        choices: [none, jwt]
+        default: none
+      - name: auth-issuer
+        description: Trusted JWT issuer; required with --auth jwt.
+        envVar: RAD_AUTH_ISSUER
+      - name: auth-audience
+        description: Audience that identifies this Rad deployment; required with --auth jwt.
+        envVar: RAD_AUTH_AUDIENCE
+      - name: auth-jwks-url
+        description: Trusted JWKS URL; omission uses OIDC discovery from the issuer.
+        envVar: RAD_AUTH_JWKS_URL
+      - name: auth-profile
+        description: JWT validation profile; omission selects rfc9068 in JWT mode.
+        envVar: RAD_AUTH_PROFILE
+        choices: [rfc9068, compatible]
+      - name: auth-query-scopes
+        description: Space-separated OAuth scopes; any listed scope grants query access and omission denies it.
+        envVar: RAD_AUTH_QUERY_SCOPES
+      - name: auth-mutate-scopes
+        description: Space-separated OAuth scopes; any listed scope grants data mutation access and omission denies it.
+        envVar: RAD_AUTH_MUTATE_SCOPES
+      - name: auth-catalog-scopes
+        description: Space-separated OAuth scopes; any listed scope grants catalog mutation access and omission denies it.
+        envVar: RAD_AUTH_CATALOG_SCOPES
       - name: role
         description: Slate access role; omission selects write.
         envVar: RAD_ROLE
@@ -365,6 +395,7 @@ commands:
     flags:
       - $ref: "#/components/flags/config-file"
       - $ref: "#/components/flags/schema-file"
+      - $ref: "#/components/flags/access-token-file"
 
   - name: schema
     description: Validate, inspect, plan, apply, recover, and monitor schemas.
@@ -383,6 +414,7 @@ commands:
     flags:
       - $ref: "#/components/flags/config-file"
       - $ref: "#/components/flags/schema-file"
+      - $ref: "#/components/flags/access-token-file"
     commands:
       - name: status
         operationId: schemaStatus
@@ -679,6 +711,11 @@ commands:
 
 components:
   flags:
+    access-token-file:
+      name: access-token-file
+      description: File holding the bearer access token; Rad reads it before each request.
+      type: path
+      envVar: RAD_ACCESS_TOKEN_FILE
     config-file:
       name: config
       description: Project configuration file; relative schema and output paths resolve from it.

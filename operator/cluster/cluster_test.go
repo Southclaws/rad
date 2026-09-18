@@ -106,6 +106,55 @@ func TestServiceAccountIdentityIsProjected(t *testing.T) {
 	}
 }
 
+func TestJWTAuthenticationIsProjected(t *testing.T) {
+	c := testClient(t)
+	spec := validSpec("authenticated")
+	spec.Authentication = &JWTAuthentication{
+		Issuer:        "https://auth.example.com/",
+		Audience:      "rad-production",
+		JWKSURL:       "https://auth.example.com/keys",
+		Profile:       JWTProfileCompatible,
+		QueryScopes:   []string{"rad:read", "rad:admin"},
+		MutateScopes:  []string{"rad:write"},
+		CatalogScopes: []string{"rad:catalog"},
+	}
+	created, err := c.CreateDatabase(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Authentication == nil || created.Authentication.Issuer != spec.Authentication.Issuer || created.Authentication.Profile != JWTProfileCompatible || len(created.Authentication.QueryScopes) != 2 {
+		t.Fatalf("authentication view = %#v", created.Authentication)
+	}
+	resource := &radv1alpha1.Database{}
+	if err := c.kube.Get(context.Background(), types.NamespacedName{Namespace: "tenants", Name: "authenticated"}, resource); err != nil {
+		t.Fatal(err)
+	}
+	if resource.Spec.Authentication == nil || resource.Spec.Authentication.Audience != "rad-production" || resource.Spec.Authentication.Profile != radv1alpha1.JWTProfileCompatible || len(resource.Spec.Authentication.CatalogScopes) != 1 {
+		t.Fatalf("authentication resource = %#v", resource.Spec.Authentication)
+	}
+}
+
+func TestJWTAuthenticationValidationRejectsUnsafeSpecs(t *testing.T) {
+	c := testClient(t)
+	for name, change := range map[string]func(*DatabaseSpec){
+		"no scope settings": func(spec *DatabaseSpec) {
+			spec.Authentication = &JWTAuthentication{Issuer: "https://auth.example.com/", Audience: "rad"}
+		},
+		"HTTP route": func(spec *DatabaseSpec) {
+			spec.Scheme = "http"
+			spec.Authentication = &JWTAuthentication{Issuer: "https://auth.example.com/", Audience: "rad", QueryScopes: []string{"rad:read"}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec := validSpec("invalid-" + strings.ReplaceAll(name, " ", "-"))
+			change(&spec)
+			if _, err := c.CreateDatabase(context.Background(), spec); err == nil {
+				t.Fatal("invalid JWT authentication was accepted")
+			}
+		})
+	}
+}
+
 func TestLoggingPolicyIsProjected(t *testing.T) {
 	c := testClient(t)
 	spec := validSpec("logging")

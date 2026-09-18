@@ -96,6 +96,7 @@ func (r *DatabaseReconciler) setDependencyCondition(
 // asserting a state the controller no longer knows.
 var conditionOrder = []string{
 	radv1alpha1.ConditionClaimsAccepted,
+	radv1alpha1.ConditionAuthenticationReady,
 	radv1alpha1.ConditionCredentialsReady,
 	radv1alpha1.ConditionWorkloadReady,
 	radv1alpha1.ConditionRouteReady,

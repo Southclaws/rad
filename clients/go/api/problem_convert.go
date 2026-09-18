@@ -20,6 +20,10 @@ func ProblemToOAS(p protocol.Problem) oas.Problem {
 		internalStage = oas.NewOptProblemStage(oas.ProblemStage(p.Stage))
 	}
 	switch p.Code {
+	case protocol.CodeUnauthenticated:
+		return unauthenticatedProblemToOAS(p, detail)
+	case protocol.CodeForbidden:
+		return forbiddenProblemToOAS(p, detail)
 	case protocol.CodeExecutionFailed:
 		return oas.NewExecutionFailedProblemProblem(oas.ExecutionFailedProblem{
 			Type:   oas.ExecutionFailedProblemTypeUrnRadProblemExecutionFailed,
@@ -73,9 +77,43 @@ func ProblemToOAS(p protocol.Problem) oas.Problem {
 	}
 }
 
+func unauthenticatedProblemToOAS(p protocol.Problem, detail oas.OptString) oas.Problem {
+	return oas.NewUnauthenticatedProblemProblem(oas.UnauthenticatedProblem{
+		Type:   oas.UnauthenticatedProblemTypeUrnRadProblemUnauthenticated,
+		Title:  oas.UnauthenticatedProblemTitleAuthenticationRequired,
+		Status: oas.UnauthenticatedProblemStatus401,
+		Detail: detail,
+		Reason: oas.UnauthenticatedProblemReason(p.Reason),
+		Code:   oas.UnauthenticatedProblemCodeUnauthenticated,
+	})
+}
+
+func forbiddenProblemToOAS(p protocol.Problem, detail oas.OptString) oas.Problem {
+	return oas.NewForbiddenProblemProblem(oas.ForbiddenProblem{
+		Type:   oas.ForbiddenProblemTypeUrnRadProblemForbidden,
+		Title:  oas.ForbiddenProblemTitleAccessForbidden,
+		Status: oas.ForbiddenProblemStatus403,
+		Detail: detail,
+		Reason: oas.ForbiddenProblemReason(p.Reason),
+		Code:   oas.ForbiddenProblemCodeForbidden,
+	})
+}
+
 // ProblemFromOAS converts a generated Problem back into the wire type.
 func ProblemFromOAS(o oas.Problem) protocol.Problem {
 	switch o.Type {
+	case oas.UnauthenticatedProblemProblem:
+		p := o.UnauthenticatedProblem
+		return problemFromFields(
+			string(p.Type), string(p.Title), int(p.Status), p.Detail.Or(""),
+			string(p.Code), string(p.Reason), "",
+		)
+	case oas.ForbiddenProblemProblem:
+		p := o.ForbiddenProblem
+		return problemFromFields(
+			string(p.Type), string(p.Title), int(p.Status), p.Detail.Or(""),
+			string(p.Code), string(p.Reason), "",
+		)
 	case oas.ExecutionFailedProblemProblem:
 		p := o.ExecutionFailedProblem
 		return problemFromFields(

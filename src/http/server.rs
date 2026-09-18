@@ -9,7 +9,9 @@ use serde::Deserialize;
 use super::probes::Probes;
 use super::{generated, problem, query, result, validation};
 use crate::engine::catalog::model::Mode;
-use crate::engine::exec::{CatalogPolicy, Engine, Error, ErrorKind, ErrorReason, ProgramOptions};
+use crate::engine::exec::{
+    CatalogPolicy, Engine, Error, ErrorKind, ErrorReason, ExecutionPolicy, ProgramOptions,
+};
 use crate::engine::frontend;
 use crate::health::Health;
 use crate::protocol::generated::pir;
@@ -47,11 +49,14 @@ impl Api {
         show_plan: Option<bool>,
         dry_run: Option<bool>,
         program: pir::Program,
+        execution_policy: Option<ExecutionPolicy>,
     ) -> Response {
         let show_plan = show_plan.unwrap_or(false);
+        let record_authorization = execution_policy.is_some();
         let diagnostic_measurements = crate::logging::request_context().diagnostics.is_some();
         let options = ProgramOptions {
             catalog: self.catalog_policy(),
+            execution: execution_policy.unwrap_or_default(),
             dry_run: dry_run.unwrap_or(false),
             collect_plan: show_plan || diagnostic_measurements,
             ..ProgramOptions::default()
@@ -61,9 +66,15 @@ impl Api {
         {
             Ok(value) => value,
             Err(error) => {
+                if record_authorization && error.reason() == ErrorReason::InsufficientScope {
+                    crate::telemetry::auth_authorization("program", "denied");
+                }
                 return execute_problem(problem::ResponseProblem::from_failure((&error).into()));
             }
         };
+        if record_authorization {
+            crate::telemetry::auth_authorization("program", "allowed");
+        }
         if !show_plan {
             value.plans.clear();
         }
@@ -114,8 +125,18 @@ pub fn router_with_health(
     location: impl Into<Arc<str>>,
     health: Arc<Health>,
 ) -> axum::Router {
+    router_with_health_and_auth(engine, mode, location, health, None)
+}
+
+pub fn router_with_health_and_auth(
+    engine: Arc<Engine>,
+    mode: Mode,
+    location: impl Into<Arc<str>>,
+    health: Arc<Health>,
+    authenticator: Option<Arc<crate::auth::Authenticator>>,
+) -> axum::Router {
     let api = Api::with_location(engine, mode, location);
-    generated::server::administration_api_router(api.clone())
+    let router = generated::server::administration_api_router(api.clone())
         .merge(generated::server::catalog_api_router(api.clone()))
         .merge(execute_router(api.clone()))
         .merge(query::router(api.clone()))
@@ -129,7 +150,15 @@ pub fn router_with_health(
         .layer(axum::middleware::map_response(
             validation::normalize_generated_rejection,
         ))
-        .layer(axum::middleware::from_fn(query::response_headers))
+        .layer(axum::middleware::from_fn(query::response_headers));
+    let router = match authenticator {
+        Some(authenticator) => router.layer(axum::middleware::from_fn_with_state(
+            authenticator,
+            super::auth::require,
+        )),
+        None => router,
+    };
+    router
         .layer(axum::middleware::from_fn(super::cors::allow_admin_origin))
         .layer(axum::middleware::from_fn(super::context::log_request))
 }
@@ -156,6 +185,7 @@ async fn execute_handler(
     RawQuery(raw_query): RawQuery,
     request: Request,
 ) -> Response {
+    let execution_policy = request.extensions().get::<ExecutionPolicy>().copied();
     let query = match decode_execute_query(raw_query.as_deref()) {
         Ok(query) => query,
         Err(error) => return error.into_response(),
@@ -168,7 +198,7 @@ async fn execute_handler(
             return invalid_request(format!("invalid PIR program: {error}"));
         }
     };
-    api.execute_program(query.show_plan, query.dry_run, program)
+    api.execute_program(query.show_plan, query.dry_run, program, execution_policy)
         .await
 }
 
@@ -282,11 +312,23 @@ fn invalid_request(detail: impl Into<String>) -> Response {
 }
 
 fn execute_problem(problem: problem::ResponseProblem) -> Response {
+    let insufficient_scope = matches!(
+        &problem.body,
+        generated::types::Problem::ForbiddenProblem(_)
+    );
     let mut response = (problem.status, axum::Json(problem.body)).into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("application/problem+json"),
     );
+    if insufficient_scope {
+        response.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            axum::http::HeaderValue::from_static(
+                "Bearer realm=\"rad\", error=\"insufficient_scope\"",
+            ),
+        );
+    }
     response
 }
 

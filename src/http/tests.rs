@@ -5,6 +5,9 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt;
+use jsonwebtoken::jwk::{Jwk, JwkSet};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode, get_current_timestamp};
+use rcgen::{KeyPair, PKCS_ECDSA_P256_SHA256};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -19,6 +22,79 @@ use crate::health::Health;
 async fn test_router(name: &str, mode: Mode) -> axum::Router {
     let store = Arc::new(Store::memory(name).await.unwrap());
     router(Arc::new(Engine::new(store)), mode)
+}
+
+async fn authenticated_router(name: &str) -> (axum::Router, String) {
+    scoped_authenticated_router(
+        name,
+        scope_config(Some("rad:test"), Some("rad:test"), Some("rad:test")),
+        Some("rad:test"),
+    )
+    .await
+}
+
+async fn scoped_authenticated_router(
+    name: &str,
+    scopes: crate::auth::ScopeConfig,
+    token_scope: Option<&str>,
+) -> (axum::Router, String) {
+    let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+    let encoding = EncodingKey::from_ec_der(&key.serialize_der());
+    let mut jwk = Jwk::from_encoding_key(&encoding, Algorithm::ES256).unwrap();
+    jwk.common.key_id = Some("http-test-key".into());
+    let authenticator = crate::auth::Authenticator::from_jwks_with_scopes_for_test(
+        "https://auth.example.com",
+        "rad-test",
+        JwkSet { keys: vec![jwk] },
+        scopes,
+    )
+    .unwrap();
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = Some("http-test-key".into());
+    header.typ = Some("at+jwt".into());
+    let mut claims = json!({
+        "iss": "https://auth.example.com",
+        "aud": "rad-test",
+        "exp": get_current_timestamp() + 3600,
+        "sub": "http-principal",
+        "client_id": "rad-test-client",
+        "iat": get_current_timestamp(),
+        "jti": "http-test-token"
+    });
+    if let Some(scope) = token_scope {
+        claims["scope"] = json!(scope);
+    }
+    let token = encode(&header, &claims, &encoding).unwrap();
+    let store = Arc::new(Store::memory(name).await.unwrap());
+    let router = super::router_with_health_and_auth(
+        Arc::new(Engine::new(store)),
+        Mode::Direct,
+        "memory:///authenticated",
+        Health::serving(),
+        Some(Arc::new(authenticator)),
+    );
+    (router, token)
+}
+
+fn with_bearer(mut request: Request<Body>, token: &str) -> Request<Body> {
+    request.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {token}").parse().unwrap(),
+    );
+    request
+}
+
+fn scope_config(
+    query: Option<&str>,
+    mutate: Option<&str>,
+    catalog: Option<&str>,
+) -> crate::auth::ScopeConfig {
+    crate::auth::ScopeConfig::from_values(
+        query.map(str::to_owned),
+        mutate.map(str::to_owned),
+        catalog.map(str::to_owned),
+    )
+    .unwrap()
 }
 
 async fn fault_router(name: &str, operation: Operation, kind: KvErrorKind) -> axum::Router {
@@ -212,6 +288,12 @@ async fn execute_options_and_cors_advertise_query() {
             .to_str()
             .unwrap()
             .contains("if-none-match")
+    );
+    assert!(
+        preflight.headers()[header::ACCESS_CONTROL_ALLOW_HEADERS]
+            .to_str()
+            .unwrap()
+            .contains("authorization")
     );
     assert!(
         preflight.headers()[header::ACCESS_CONTROL_EXPOSE_HEADERS]
@@ -769,6 +851,241 @@ async fn metrics_route_is_not_found_without_an_installed_metric_provider() {
 }
 
 #[tokio::test]
+async fn jwt_router_rejects_a_missing_token() {
+    let (router, _) = authenticated_router("http-auth-missing").await;
+    let response = router
+        .oneshot(request(Method::GET, "/healthz"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers()[header::WWW_AUTHENTICATE],
+        "Bearer realm=\"rad\""
+    );
+    assert_eq!(json_body(response).await["reason"], "missing_token");
+}
+
+#[tokio::test]
+async fn jwt_router_rejects_an_invalid_token() {
+    let (router, _) = authenticated_router("http-auth-invalid").await;
+    let response = router
+        .oneshot(with_bearer(request(Method::GET, "/healthz"), "not-a-token"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers()[header::WWW_AUTHENTICATE],
+        "Bearer realm=\"rad\", error=\"invalid_token\""
+    );
+    assert_eq!(json_body(response).await["reason"], "invalid_token");
+}
+
+#[tokio::test]
+async fn jwt_router_authenticates_before_body_decoding() {
+    let (router, _) = authenticated_router("http-auth-before-body").await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/execute")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn jwt_router_accepts_a_valid_token() {
+    let (router, token) = authenticated_router("http-auth-valid").await;
+    let response = router
+        .oneshot(with_bearer(
+            post_json("/execute", one_row_program()),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn scope_authorization_allows_query_and_rejects_catalog_access() {
+    let (router, token) = scoped_authenticated_router(
+        "http-auth-query-scope",
+        scope_config(Some("rad:read"), Some("rad:write"), Some("rad:catalog")),
+        Some("rad:read"),
+    )
+    .await;
+    let query = router
+        .clone()
+        .oneshot(with_bearer(
+            post_json("/execute", one_row_program()),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(query.status(), StatusCode::OK);
+
+    let catalog = router
+        .oneshot(with_bearer(
+            post_json("/execute", create_table_program()),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(catalog.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        catalog.headers()[header::WWW_AUTHENTICATE],
+        "Bearer realm=\"rad\", error=\"insufficient_scope\""
+    );
+    let problem = json_body(catalog).await;
+    assert_eq!(
+        (problem["code"].as_str(), problem["reason"].as_str()),
+        (Some("forbidden"), Some("insufficient_scope"))
+    );
+}
+
+#[tokio::test]
+async fn scope_authorization_rejects_catalog_access_before_body_decoding() {
+    let (router, token) = scoped_authenticated_router(
+        "http-auth-catalog-before-body",
+        scope_config(Some("rad:read"), None, Some("rad:catalog")),
+        Some("rad:read"),
+    )
+    .await;
+
+    let response = router
+        .oneshot(with_bearer(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/tables")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{"))
+                .unwrap(),
+            &token,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn scope_authorization_treats_unconfigured_capabilities_as_denied() {
+    let (router, token) = scoped_authenticated_router(
+        "http-auth-unconfigured-scope",
+        scope_config(None, None, Some("rad:catalog")),
+        Some("rad:catalog"),
+    )
+    .await;
+
+    let response = router
+        .oneshot(with_bearer(request(Method::GET, "/healthz"), &token))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn scope_authorization_allows_data_mutation_without_query_access() {
+    let (router, token) = scoped_authenticated_router(
+        "http-auth-mutate-scope",
+        scope_config(None, Some("rad:write"), Some("rad:write")),
+        Some("rad:write"),
+    )
+    .await;
+    let create = router
+        .clone()
+        .oneshot(with_bearer(
+            post_json("/execute", create_table_program()),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+
+    let mutate = router
+        .clone()
+        .oneshot(with_bearer(
+            post_json("/execute", insert_id_program("samples", 1)),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(mutate.status(), StatusCode::OK);
+
+    let query = router
+        .oneshot(with_bearer(
+            post_json("/execute", one_row_program()),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(query.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn scope_authorization_rejects_an_unscoped_program_before_body_decoding() {
+    let (router, token) = scoped_authenticated_router(
+        "http-auth-unscoped-before-body",
+        scope_config(Some("rad:read"), Some("rad:write"), Some("rad:catalog")),
+        None,
+    )
+    .await;
+
+    let response = router
+        .oneshot(with_bearer(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/execute")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{"))
+                .unwrap(),
+            &token,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn jwt_router_keeps_process_probes_public() {
+    let (router, _) = authenticated_router("http-auth-probes").await;
+    for path in ["/startupz", "/readyz", "/livez"] {
+        let response = router
+            .clone()
+            .oneshot(request(Method::GET, path))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+}
+
+#[tokio::test]
+async fn jwt_router_keeps_options_public() {
+    let (router, _) = authenticated_router("http-auth-options").await;
+    let response = router
+        .oneshot(request(Method::OPTIONS, "/execute"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn jwt_router_protects_metrics() {
+    let (router, _) = authenticated_router("http-auth-metrics").await;
+    let response = router
+        .oneshot(request(Method::GET, "/metrics"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn a_starting_process_serves_probes_and_nothing_else() {
     let router = super::probe_router(Health::starting(Duration::from_secs(15)));
 
@@ -888,7 +1205,7 @@ async fn public_api_allows_the_admin_origin_and_json_preflights() {
     );
     assert_eq!(
         preflight.headers()[header::ACCESS_CONTROL_ALLOW_HEADERS],
-        "content-type, if-none-match"
+        "authorization, content-type, if-none-match"
     );
 
     let response = router

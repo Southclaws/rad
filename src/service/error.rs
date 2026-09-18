@@ -86,6 +86,10 @@ reasons!(InvalidReason {
     SchemaHistoryDiverged => "schema_history_diverged",
 });
 
+reasons!(ForbiddenReason {
+    InsufficientScope => "insufficient_scope",
+});
+
 reasons!(ExecutionFailureReason {
     ExecutionFailed => "execution_failed",
     DivisionByZero => "division_by_zero",
@@ -187,6 +191,12 @@ pub struct InvalidFailure {
     pub diagnostics: Vec<InvalidDiagnostic>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ForbiddenFailure {
+    pub reason: ForbiddenReason,
+    pub detail: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct InvalidDiagnostic {
     pub reason: InvalidReason,
@@ -244,6 +254,7 @@ impl InternalFailure {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Failure {
+    Forbidden(ForbiddenFailure),
     Invalid(InvalidFailure),
     ExecutionFailed(ExecutionFailure),
     Conflict(ConflictFailure),
@@ -256,6 +267,10 @@ impl Failure {
         let stage = stage(error);
         let detail = error.to_string();
         match error.reason() {
+            ErrorReason::InsufficientScope => Self::Forbidden(ForbiddenFailure {
+                reason: ForbiddenReason::InsufficientScope,
+                detail,
+            }),
             ErrorReason::ReadOnly => invalid(Stage::Preflight, InvalidReason::ReadOnly, detail),
             ErrorReason::Invalid => invalid(stage, InvalidReason::Invalid, detail),
             ErrorReason::SchemaViolation => {
@@ -407,7 +422,7 @@ fn conflict(stage: Stage, reason: ConflictReason, detail: String) -> Failure {
 fn stage(error: &Error) -> Stage {
     use crate::engine::exec::ErrorKind;
     match error.kind() {
-        ErrorKind::ReadOnly => Stage::Preflight,
+        ErrorKind::ReadOnly | ErrorKind::Forbidden => Stage::Preflight,
         ErrorKind::InvalidInput | ErrorKind::DataLossAcceptance => {
             if matches!(
                 error.reason(),

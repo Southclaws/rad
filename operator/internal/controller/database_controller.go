@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,6 +71,7 @@ type DatabaseReconciler struct {
 	IngressClass            string
 	GatewayNamespace        string
 	GatewayPodSelector      *metav1.LabelSelector
+	DefaultAuthentication   *radv1alpha1.JWTAuthentication
 	RequeueInterval         time.Duration
 	DependencyPollInterval  time.Duration
 	CredentialPollInterval  time.Duration
@@ -134,6 +136,20 @@ func (r *DatabaseReconciler) Reconcile(ctx context.Context, request ctrl.Request
 	}
 	setCondition(database, radv1alpha1.ConditionClaimsAccepted, metav1.ConditionTrue, "Accepted", "bucket and hostname claims are exclusive")
 
+	clientAuthentication, problem := r.resolveClientAuthentication(database)
+	if problem != nil {
+		if err := r.quiesceRejectedDatabase(ctx, database); err != nil {
+			return ctrl.Result{}, err
+		}
+		setQuiescingConditions(database, problem.reason, problem.message)
+		return r.waitWithStatus(ctx, database, radv1alpha1.ConditionAuthenticationReady, problem.reason, problem.message)
+	}
+	if clientAuthentication == nil {
+		setCondition(database, radv1alpha1.ConditionAuthenticationReady, metav1.ConditionTrue, "Disabled", "public HTTP authentication is disabled")
+	} else {
+		setCondition(database, radv1alpha1.ConditionAuthenticationReady, metav1.ConditionTrue, "Available", "JWT authentication is enabled")
+	}
+
 	authentication, problem, err := r.resolveAuthentication(ctx, database)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -176,7 +192,7 @@ func (r *DatabaseReconciler) Reconcile(ctx context.Context, request ctrl.Request
 	}
 	publishInternalTLSCondition(database, transport)
 
-	if err := r.reconcileResources(ctx, database, authentication, transport); err != nil {
+	if err := r.reconcileResources(ctx, database, authentication, clientAuthentication, transport); err != nil {
 		setCondition(database, radv1alpha1.ConditionReady, metav1.ConditionFalse, "ReconcileFailed", err.Error())
 		_ = r.patchStatus(ctx, database)
 		return ctrl.Result{}, err
@@ -227,6 +243,29 @@ type resolvedAuthentication struct {
 	secretName         string
 	versionAnnotation  string
 	message            string
+}
+
+func (r *DatabaseReconciler) resolveClientAuthentication(database *radv1alpha1.Database) (*radv1alpha1.JWTAuthentication, *dependencyProblem) {
+	authentication := database.Spec.Authentication
+	if authentication == nil {
+		authentication = r.DefaultAuthentication
+	}
+	if authentication == nil {
+		return nil, nil
+	}
+	if err := authentication.Validate(); err != nil {
+		return nil, &dependencyProblem{
+			reason:  "AuthenticationInvalid",
+			message: "invalid JWT authentication: " + err.Error(),
+		}
+	}
+	if routeScheme(database) != "https" {
+		return nil, &dependencyProblem{
+			reason:  "AuthenticationRequiresHTTPS",
+			message: "JWT authentication requires route scheme https",
+		}
+	}
+	return authentication, nil
 }
 
 func (r *DatabaseReconciler) resolveAuthentication(
@@ -291,6 +330,7 @@ func (r *DatabaseReconciler) reconcileResources(
 	ctx context.Context,
 	database *radv1alpha1.Database,
 	authentication resolvedAuthentication,
+	clientAuthentication *radv1alpha1.JWTAuthentication,
 	transport internalTransport,
 ) error {
 	if authentication.secretName != "" {
@@ -307,7 +347,7 @@ func (r *DatabaseReconciler) reconcileResources(
 	if err := r.reconcileHeadlessService(ctx, database); err != nil {
 		return err
 	}
-	if err := r.reconcileFrontendService(ctx, database); err != nil {
+	if err := r.reconcileFrontendService(ctx, database, clientAuthentication); err != nil {
 		return err
 	}
 	if err := r.reconcilePodDisruptionBudget(ctx, database); err != nil {
@@ -319,10 +359,10 @@ func (r *DatabaseReconciler) reconcileResources(
 	if err := r.reconcileRelay(ctx, database); err != nil {
 		return err
 	}
-	if err := r.reconcileStatefulSet(ctx, database, authentication, transport); err != nil {
+	if err := r.reconcileStatefulSet(ctx, database, authentication, clientAuthentication, transport); err != nil {
 		return err
 	}
-	if err := r.reconcileReaders(ctx, database, authentication, transport); err != nil {
+	if err := r.reconcileReaders(ctx, database, authentication, clientAuthentication, transport); err != nil {
 		return err
 	}
 	return r.reconcileIngress(ctx, database)
@@ -378,7 +418,11 @@ func (r *DatabaseReconciler) reconcileHeadlessService(ctx context.Context, datab
 	return err
 }
 
-func (r *DatabaseReconciler) reconcileFrontendService(ctx context.Context, database *radv1alpha1.Database) error {
+func (r *DatabaseReconciler) reconcileFrontendService(
+	ctx context.Context,
+	database *radv1alpha1.Database,
+	clientAuthentication *radv1alpha1.JWTAuthentication,
+) error {
 	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: resourceName(database.Name), Namespace: database.Namespace}}
 	_, err := r.createOrUpdate(ctx, service, func() error {
 		if err := r.prepareOwned(database, service); err != nil {
@@ -389,7 +433,11 @@ func (r *DatabaseReconciler) reconcileFrontendService(ctx context.Context, datab
 		service.Spec.Selector = roleSelectorLabelsFor(database, writeRole)
 		service.Spec.Ports = []corev1.ServicePort{
 			{Name: "http", Port: 80, TargetPort: intstrFromInt(publicPort), Protocol: corev1.ProtocolTCP, AppProtocol: ptr.To("http")},
-			{Name: "admin", Port: adminPort, TargetPort: intstrFromInt(adminPort), Protocol: corev1.ProtocolTCP, AppProtocol: ptr.To("http")},
+		}
+		if clientAuthentication == nil {
+			service.Spec.Ports = append(service.Spec.Ports, corev1.ServicePort{
+				Name: "admin", Port: adminPort, TargetPort: intstrFromInt(adminPort), Protocol: corev1.ProtocolTCP, AppProtocol: ptr.To("http"),
+			})
 		}
 		return nil
 	})
@@ -400,6 +448,7 @@ func (r *DatabaseReconciler) reconcileStatefulSet(
 	ctx context.Context,
 	database *radv1alpha1.Database,
 	authentication resolvedAuthentication,
+	clientAuthentication *radv1alpha1.JWTAuthentication,
 	transport internalTransport,
 ) error {
 	statefulSet := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: resourceName(database.Name), Namespace: database.Namespace}}
@@ -419,9 +468,9 @@ func (r *DatabaseReconciler) reconcileStatefulSet(
 		statefulSet.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels:      roleLabelsFor(database, writeRole),
-				Annotations: workloadAnnotations(database, authentication),
+				Annotations: workloadAnnotations(database, authentication, clientAuthentication),
 			},
-			Spec: r.radPodSpec(database, authentication, transport, writeRole),
+			Spec: r.radPodSpec(database, authentication, clientAuthentication, transport, writeRole),
 		}
 		return nil
 	})
@@ -433,10 +482,16 @@ func (r *DatabaseReconciler) reconcileStatefulSet(
 
 // Only the writer serves the internal API, so only the writer declares its
 // port. A reader reaches it; nothing reaches a reader on it.
-func radContainerPorts(database *radv1alpha1.Database, role string) []corev1.ContainerPort {
+func radContainerPorts(
+	database *radv1alpha1.Database,
+	clientAuthentication *radv1alpha1.JWTAuthentication,
+	role string,
+) []corev1.ContainerPort {
 	ports := []corev1.ContainerPort{
 		{Name: "http", ContainerPort: publicPort, Protocol: corev1.ProtocolTCP},
-		{Name: "admin", ContainerPort: adminPort, Protocol: corev1.ProtocolTCP},
+	}
+	if clientAuthentication == nil {
+		ports = append(ports, corev1.ContainerPort{Name: "admin", ContainerPort: adminPort, Protocol: corev1.ProtocolTCP})
 	}
 	if relayEnabled(database) && role == writeRole {
 		ports = append(ports, corev1.ContainerPort{
@@ -469,9 +524,13 @@ func rolloutAnnotations(authentication resolvedAuthentication) map[string]string
 	return map[string]string{workloadIdentityVersionKey: authentication.versionAnnotation}
 }
 
-func workloadAnnotations(database *radv1alpha1.Database, authentication resolvedAuthentication) map[string]string {
+func workloadAnnotations(
+	database *radv1alpha1.Database,
+	authentication resolvedAuthentication,
+	clientAuthentication *radv1alpha1.JWTAuthentication,
+) map[string]string {
 	annotations := rolloutAnnotations(authentication)
-	if databaseMetricsEnabled(database) {
+	if databaseMetricsEnabled(database) && clientAuthentication == nil {
 		annotations["prometheus.io/scrape"] = "true"
 		annotations["prometheus.io/path"] = "/metrics"
 		annotations["prometheus.io/port"] = strconv.Itoa(publicPort)
@@ -482,6 +541,7 @@ func workloadAnnotations(database *radv1alpha1.Database, authentication resolved
 func (r *DatabaseReconciler) radPodSpec(
 	database *radv1alpha1.Database,
 	authentication resolvedAuthentication,
+	clientAuthentication *radv1alpha1.JWTAuthentication,
 	transport internalTransport,
 	role string,
 ) corev1.PodSpec {
@@ -495,8 +555,8 @@ func (r *DatabaseReconciler) radPodSpec(
 		// kubelet's termination-log file; falling back to the log surfaces
 		// that reason in the container's terminated state.
 		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
-		Ports:                    radContainerPorts(database, role),
-		Env:                      databaseEnvironment(database, transport, role),
+		Ports:                    radContainerPorts(database, clientAuthentication, role),
+		Env:                      databaseEnvironment(database, clientAuthentication, transport, role),
 		Resources:                resourcesFor(database),
 		SecurityContext: &corev1.SecurityContext{
 			AllowPrivilegeEscalation: ptr.To(false),
@@ -845,6 +905,7 @@ func setQuiescingConditions(database *radv1alpha1.Database, reason, message stri
 
 func databaseEnvironment(
 	database *radv1alpha1.Database,
+	clientAuthentication *radv1alpha1.JWTAuthentication,
 	transport internalTransport,
 	role string,
 ) []corev1.EnvVar {
@@ -876,6 +937,25 @@ func databaseEnvironment(
 		"RAD_S3_REGION":         database.Spec.Storage.Region,
 		"RAD_SHUTDOWN_DRAIN_MS": strconv.FormatInt(shutdownDrainMilliseconds(database), 10),
 		"RAD_STORAGE":           "s3",
+	}
+	if clientAuthentication != nil {
+		values["RAD_ADMIN_ADDR"] = fmt.Sprintf("127.0.0.1:%d", adminPort)
+		values["RAD_AUTH"] = "jwt"
+		values["RAD_AUTH_ISSUER"] = clientAuthentication.Issuer
+		values["RAD_AUTH_AUDIENCE"] = clientAuthentication.Audience
+		values["RAD_AUTH_PROFILE"] = string(clientAuthentication.EffectiveProfile())
+		if clientAuthentication.JWKSURL != "" {
+			values["RAD_AUTH_JWKS_URL"] = clientAuthentication.JWKSURL
+		}
+		for name, scopes := range map[string][]radv1alpha1.OAuthScope{
+			"RAD_AUTH_QUERY_SCOPES":   clientAuthentication.QueryScopes,
+			"RAD_AUTH_MUTATE_SCOPES":  clientAuthentication.MutateScopes,
+			"RAD_AUTH_CATALOG_SCOPES": clientAuthentication.CatalogScopes,
+		} {
+			if value := scopeEnvironmentValue(scopes); value != "" {
+				values[name] = value
+			}
+		}
 	}
 	for name, value := range slateEnvironment(database) {
 		values[name] = value
@@ -945,6 +1025,15 @@ func databaseEnvironment(
 		return environment[left].Name < environment[right].Name
 	})
 	return environment
+}
+
+func scopeEnvironmentValue(scopes []radv1alpha1.OAuthScope) string {
+	values := make([]string, len(scopes))
+	for index, scope := range scopes {
+		values[index] = string(scope)
+	}
+	sort.Strings(values)
+	return strings.Join(values, " ")
 }
 
 func databaseDiagnosticLevel(database *radv1alpha1.Database) string {

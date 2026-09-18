@@ -38,6 +38,14 @@ func main() {
 		ingressClass            string
 		gatewayNamespace        string
 		gatewayPodSelector      string
+		authMode                string
+		authIssuer              string
+		authAudience            string
+		authJWKSURL             string
+		authProfile             string
+		authQueryScopes         string
+		authMutateScopes        string
+		authCatalogScopes       string
 		dependencyPollInterval  time.Duration
 		credentialPollInterval  time.Duration
 		maxConcurrentReconciles int
@@ -50,6 +58,14 @@ func main() {
 	flag.StringVar(&ingressClass, "ingress-class", "", "IngressClass assigned to tenant host routes; empty uses the cluster default.")
 	flag.StringVar(&gatewayNamespace, "gateway-namespace", "", "Namespace allowed to reach tenant Rad pods; empty does not manage NetworkPolicies.")
 	flag.StringVar(&gatewayPodSelector, "gateway-pod-selector", "", "Label selector restricting gateway pods within gateway-namespace.")
+	flag.StringVar(&authMode, "auth", environmentOr("RAD_AUTH", "none"), "Default public HTTP authentication mode; jwt requires at least one scope setting.")
+	flag.StringVar(&authIssuer, "auth-issuer", os.Getenv("RAD_AUTH_ISSUER"), "Default trusted JWT issuer; required in jwt mode.")
+	flag.StringVar(&authAudience, "auth-audience", os.Getenv("RAD_AUTH_AUDIENCE"), "Default JWT audience; required in jwt mode.")
+	flag.StringVar(&authJWKSURL, "auth-jwks-url", os.Getenv("RAD_AUTH_JWKS_URL"), "Default trusted JWKS URL for databases; omission uses OIDC discovery.")
+	flag.StringVar(&authProfile, "auth-profile", os.Getenv("RAD_AUTH_PROFILE"), "Default JWT validation profile for databases; omission selects rfc9068.")
+	flag.StringVar(&authQueryScopes, "auth-query-scopes", os.Getenv("RAD_AUTH_QUERY_SCOPES"), "Default space-separated OAuth scopes that grant query access; omission denies it.")
+	flag.StringVar(&authMutateScopes, "auth-mutate-scopes", os.Getenv("RAD_AUTH_MUTATE_SCOPES"), "Default space-separated OAuth scopes that grant data mutation access; omission denies it.")
+	flag.StringVar(&authCatalogScopes, "auth-catalog-scopes", os.Getenv("RAD_AUTH_CATALOG_SCOPES"), "Default space-separated OAuth scopes that grant catalog mutation access; omission denies it.")
 	flag.DurationVar(&dependencyPollInterval, "dependency-poll-interval", 30*time.Second, "Polling interval for missing credentials and conflicting claims.")
 	flag.DurationVar(&credentialPollInterval, "credential-poll-interval", time.Minute, "Polling interval for credential and workload identity rotation.")
 	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 4, "Maximum Database reconciliations in flight.")
@@ -72,6 +88,20 @@ func main() {
 	}
 	if dependencyPollInterval <= 0 || credentialPollInterval <= 0 || maxConcurrentReconciles <= 0 {
 		setupLog.Error(nil, "poll intervals and max-concurrent-reconciles must be positive")
+		os.Exit(2)
+	}
+	defaultAuthentication, err := authenticationFromValues(
+		authMode,
+		authIssuer,
+		authAudience,
+		authJWKSURL,
+		authProfile,
+		authQueryScopes,
+		authMutateScopes,
+		authCatalogScopes,
+	)
+	if err != nil {
+		setupLog.Error(err, "configure default database authentication")
 		os.Exit(2)
 	}
 	var gatewaySelector *metav1.LabelSelector
@@ -151,6 +181,7 @@ func main() {
 		IngressClass:            ingressClass,
 		GatewayNamespace:        gatewayNamespace,
 		GatewayPodSelector:      gatewaySelector,
+		DefaultAuthentication:   defaultAuthentication,
 		DependencyPollInterval:  dependencyPollInterval,
 		CredentialPollInterval:  credentialPollInterval,
 		MaxConcurrentReconciles: maxConcurrentReconciles,
@@ -172,4 +203,11 @@ func main() {
 		setupLog.Error(err, "manager stopped")
 		os.Exit(1)
 	}
+}
+
+func environmentOr(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
 }

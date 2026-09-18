@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod auth;
 pub mod cli;
 pub mod codegen;
 pub mod diagnostics;

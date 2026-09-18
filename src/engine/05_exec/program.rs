@@ -41,6 +41,62 @@ pub enum CatalogPolicy {
     RevisionPerProgram,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Capability {
+    Query,
+    Mutate,
+    Catalog,
+}
+
+impl Capability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Query => "query",
+            Self::Mutate => "mutate",
+            Self::Catalog => "catalog",
+        }
+    }
+
+    const fn bit(self) -> u8 {
+        match self {
+            Self::Query => 1,
+            Self::Mutate => 2,
+            Self::Catalog => 4,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExecutionPolicy(u8);
+
+impl ExecutionPolicy {
+    pub const fn allow_all() -> Self {
+        Self(7)
+    }
+
+    pub const fn deny_all() -> Self {
+        Self(0)
+    }
+
+    pub const fn allows(self, capability: Capability) -> bool {
+        self.0 & capability.bit() != 0
+    }
+
+    pub fn allow(&mut self, capability: Capability) {
+        self.0 |= capability.bit();
+    }
+
+    pub const fn allows_any(self) -> bool {
+        self.0 != 0
+    }
+}
+
+impl Default for ExecutionPolicy {
+    fn default() -> Self {
+        Self::allow_all()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct CatalogExpectation {
     pub version: catalog::identity::CatalogVersion,
@@ -59,6 +115,7 @@ impl From<&Revision> for CatalogExpectation {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProgramOptions {
     pub catalog: CatalogPolicy,
+    pub execution: ExecutionPolicy,
     pub expected_catalog: Option<CatalogExpectation>,
     pub dry_run: bool,
     pub collect_plan: bool,
@@ -68,6 +125,7 @@ impl Default for ProgramOptions {
     fn default() -> Self {
         Self {
             catalog: CatalogPolicy::Forbidden,
+            execution: ExecutionPolicy::default(),
             expected_catalog: None,
             dry_run: false,
             collect_plan: false,
@@ -272,6 +330,27 @@ impl Statement {
         !matches!(self, Self::Query { .. })
     }
 
+    pub const fn capability(&self) -> Capability {
+        match self {
+            Self::Query { .. } => Capability::Query,
+            Self::Create { .. } | Self::Update { .. } | Self::Delete { .. } => Capability::Mutate,
+            Self::CreateTable { .. }
+            | Self::RenameTable { .. }
+            | Self::DeleteTable { .. }
+            | Self::CreateColumn { .. }
+            | Self::RenameColumn { .. }
+            | Self::ChangeColumnDefault { .. }
+            | Self::DeleteColumn { .. }
+            | Self::CreateIndex { .. }
+            | Self::DeleteIndex { .. }
+            | Self::CreateForeignKey { .. }
+            | Self::DeleteForeignKey { .. }
+            | Self::StartIndexBuild { .. }
+            | Self::StartColumnReplacement { .. }
+            | Self::StartConstraintValidation { .. } => Capability::Catalog,
+        }
+    }
+
     fn binder_statement(&self) -> Option<ProgramStatement> {
         match self {
             Self::Query { name, relation } => Some(ProgramStatement {
@@ -372,12 +451,17 @@ pub(super) struct PreflightResult {
     pub estimates: Vec<PreparedStatementEstimate>,
 }
 
-pub(super) fn validate(program: &Program, policy: CatalogPolicy) -> Result<Option<String>> {
+pub(super) fn validate(
+    program: &Program,
+    catalog_policy: CatalogPolicy,
+    execution_policy: ExecutionPolicy,
+) -> Result<Option<String>> {
     if program.statements.is_empty() {
         return Err(input("exec: a program needs at least one statement"));
     }
     let mut names = HashSet::with_capacity(program.statements.len());
     for statement in &program.statements {
+        validate_capability(statement, execution_policy)?;
         if statement.name().is_empty() {
             return Err(input("exec: statement name must not be empty"));
         }
@@ -387,7 +471,7 @@ pub(super) fn validate(program: &Program, policy: CatalogPolicy) -> Result<Optio
                 statement.name()
             )));
         }
-        if !statement.relational() && policy == CatalogPolicy::Forbidden {
+        if !statement.relational() && catalog_policy == CatalogPolicy::Forbidden {
             return Err(input(format!(
                 "exec: catalog statement {:?} is forbidden by this entrypoint",
                 statement.name()
@@ -420,6 +504,22 @@ pub(super) fn validate(program: &Program, policy: CatalogPolicy) -> Result<Optio
             program.statements.len()
         ))),
     }
+}
+
+fn validate_capability(statement: &Statement, policy: ExecutionPolicy) -> Result<()> {
+    let capability = statement.capability();
+    if policy.allows(capability) {
+        return Ok(());
+    }
+    Err(Error::with_reason(
+        ErrorKind::Forbidden,
+        super::ErrorReason::InsufficientScope,
+        format!(
+            "exec: statement {:?} requires the {} capability",
+            statement.name(),
+            capability.as_str()
+        ),
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2834,6 +2934,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execution_policy_rejects_the_complete_program_before_writes() {
+        let (store, engine, catalog) = setup("pir-authorization-preflight").await;
+        catalog.create_table(tasks_table()).await.unwrap();
+        let mut execution = ExecutionPolicy::deny_all();
+        execution.allow(Capability::Mutate);
+
+        let error = engine
+            .execute_program_with_options(
+                Program {
+                    statements: vec![
+                        Statement::Create {
+                            name: "created".into(),
+                            relation: rows(&[("a", "new")]),
+                            table: "tasks".into(),
+                        },
+                        Statement::Query {
+                            name: "read".into(),
+                            relation: scan("tasks"),
+                        },
+                    ],
+                    result: Some("read".into()),
+                },
+                ProgramOptions {
+                    execution,
+                    ..ProgramOptions::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Forbidden);
+
+        let table = catalog.get_table("tasks").await.unwrap().unwrap();
+        let transaction = store
+            .begin(crate::engine::kv::IsolationLevel::Snapshot)
+            .await
+            .unwrap();
+        let view = crate::engine::kv::TransactionView(&*transaction);
+        assert!(
+            row_store::scan_table_columns(&view, &table, &table.columns)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        transaction.rollback();
+    }
+
+    #[tokio::test]
     async fn catalog_change_is_visible_to_later_binding_and_write() {
         let (_store, engine, catalog) = setup("pir-catalog-visibility").await;
         catalog.create_table(tasks_table()).await.unwrap();
@@ -3207,11 +3354,53 @@ mod tests {
             result: None,
         };
         assert_eq!(
-            validate(&program, CatalogPolicy::Forbidden)
-                .unwrap_err()
-                .kind(),
+            validate(
+                &program,
+                CatalogPolicy::Forbidden,
+                ExecutionPolicy::allow_all(),
+            )
+            .unwrap_err()
+            .kind(),
             ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn execution_policy_rejects_a_missing_statement_capability() {
+        let program = Program {
+            statements: vec![Statement::Query {
+                name: "rows".into(),
+                relation: result_ref("x"),
+            }],
+            result: None,
+        };
+
+        let error = validate(
+            &program,
+            CatalogPolicy::Forbidden,
+            ExecutionPolicy::deny_all(),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.reason(),
+            crate::engine::exec::ErrorReason::InsufficientScope
+        );
+    }
+
+    #[test]
+    fn execution_policy_allows_an_explicit_statement_capability() {
+        let program = Program {
+            statements: vec![Statement::Query {
+                name: "rows".into(),
+                relation: result_ref("x"),
+            }],
+            result: None,
+        };
+        let mut policy = ExecutionPolicy::deny_all();
+        policy.allow(Capability::Query);
+
+        assert!(validate(&program, CatalogPolicy::Forbidden, policy).is_ok());
     }
 
     #[test]
@@ -3249,9 +3438,13 @@ mod tests {
             },
         ] {
             assert_eq!(
-                validate(&program, CatalogPolicy::RevisionPerProgram)
-                    .unwrap_err()
-                    .kind(),
+                validate(
+                    &program,
+                    CatalogPolicy::RevisionPerProgram,
+                    ExecutionPolicy::allow_all(),
+                )
+                .unwrap_err()
+                .kind(),
                 ErrorKind::InvalidInput
             );
         }
@@ -3263,6 +3456,7 @@ mod tests {
                     result: None,
                 },
                 CatalogPolicy::RevisionPerProgram,
+                ExecutionPolicy::allow_all(),
             )
             .unwrap(),
             Some("rows".into())
@@ -3274,6 +3468,7 @@ mod tests {
                     result: None,
                 },
                 CatalogPolicy::RevisionPerProgram,
+                ExecutionPolicy::allow_all(),
             )
             .unwrap(),
             None

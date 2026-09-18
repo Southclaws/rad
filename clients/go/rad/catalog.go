@@ -96,15 +96,24 @@ func (c *Client) Info(ctx context.Context) (protocol.DatabaseInfo, error) {
 	if err != nil {
 		return protocol.DatabaseInfo{}, transportError(err)
 	}
-	info := protocol.DatabaseInfo{
-		Mode:          string(res.Mode),
-		SchemaVersion: uint64(res.SchemaVersion),
-		SchemaHash:    res.SchemaHash,
+	switch response := res.(type) {
+	case *oas.DatabaseInfo:
+		info := protocol.DatabaseInfo{
+			Mode:          string(response.Mode),
+			SchemaVersion: uint64(response.SchemaVersion),
+			SchemaHash:    response.SchemaHash,
+		}
+		if value, ok := response.SchemaVersionAt.Get(); ok {
+			info.SchemaVersionAt = &value
+		}
+		return info, nil
+	case *oas.ForbiddenHeaders:
+		return protocol.DatabaseInfo{}, forbiddenError(response)
+	case *oas.UnauthorizedHeaders:
+		return protocol.DatabaseInfo{}, unauthenticatedError(response)
+	default:
+		return protocol.DatabaseInfo{}, fmt.Errorf("rad: unexpected database information response %T", res)
 	}
-	if value, ok := res.SchemaVersionAt.Get(); ok {
-		info.SchemaVersionAt = &value
-	}
-	return info, nil
 }
 
 // Schema returns the server's authoritative accepted schema and identity.
@@ -113,7 +122,16 @@ func (c *Client) Schema(ctx context.Context) (protocol.SchemaState, error) {
 	if err != nil {
 		return protocol.SchemaState{}, transportError(err)
 	}
-	return api.SchemaStateFromOAS(*res), nil
+	switch response := res.(type) {
+	case *oas.SchemaState:
+		return api.SchemaStateFromOAS(*response), nil
+	case *oas.ForbiddenHeaders:
+		return protocol.SchemaState{}, forbiddenError(response)
+	case *oas.UnauthorizedHeaders:
+		return protocol.SchemaState{}, unauthenticatedError(response)
+	default:
+		return protocol.SchemaState{}, fmt.Errorf("rad: unexpected schema response %T", res)
+	}
 }
 
 // SchemaDiff asks the server to compute and preflight an advisory catalog PIR
@@ -136,6 +154,10 @@ func (c *Client) SchemaDiff(ctx context.Context, schemaSource string) (protocol.
 		}, nil
 	case *oas.Problem:
 		return protocol.SchemaDiff{}, apiError(*value)
+	case *oas.ForbiddenHeaders:
+		return protocol.SchemaDiff{}, forbiddenError(value)
+	case *oas.UnauthorizedHeaders:
+		return protocol.SchemaDiff{}, unauthenticatedError(value)
 	default:
 		return protocol.SchemaDiff{}, fmt.Errorf("rad: unexpected schema diff response %T", res)
 	}
@@ -179,10 +201,12 @@ func (c *Client) SchemaMigrate(
 		return migration, nil
 	case *oas.SchemaMigrateConflict:
 		return protocol.SchemaMigration{}, apiError(oas.Problem(*value))
-	case *oas.SchemaMigrateForbidden:
-		return protocol.SchemaMigration{}, apiError(oas.Problem(*value))
+	case *oas.ForbiddenHeaders:
+		return protocol.SchemaMigration{}, forbiddenError(value)
 	case *oas.SchemaMigrateUnprocessableEntity:
 		return protocol.SchemaMigration{}, apiError(oas.Problem(*value))
+	case *oas.UnauthorizedHeaders:
+		return protocol.SchemaMigration{}, unauthenticatedError(value)
 	default:
 		return protocol.SchemaMigration{}, fmt.Errorf("rad: unexpected schema migrate response %T", res)
 	}
@@ -202,6 +226,10 @@ func (c *Client) CheckSchema(ctx context.Context, version uint64, hash string) e
 		return nil
 	case *oas.Problem:
 		return apiError(*value)
+	case *oas.ForbiddenHeaders:
+		return forbiddenError(value)
+	case *oas.UnauthorizedHeaders:
+		return unauthenticatedError(value)
 	default:
 		return fmt.Errorf("rad: unexpected schema compatibility response %T", res)
 	}
@@ -219,10 +247,12 @@ func (c *Client) TableCreate(ctx context.Context, def protocol.TableDef) (protoc
 		return api.TableFromOAS(*v), nil
 	case *oas.TableCreateConflict:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
-	case *oas.TableCreateForbidden:
-		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.ForbiddenHeaders:
+		return protocol.TableInfo{}, forbiddenError(v)
 	case *oas.TableCreateUnprocessableEntity:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.UnauthorizedHeaders:
+		return protocol.TableInfo{}, unauthenticatedError(v)
 	default:
 		return protocol.TableInfo{}, fmt.Errorf("rad: unexpected catalog response %T", res)
 	}
@@ -240,10 +270,12 @@ func (c *Client) TableDelete(ctx context.Context, table string) error {
 		return nil
 	case *oas.TableDeleteConflict:
 		return apiError(oas.Problem(*v))
-	case *oas.TableDeleteForbidden:
-		return apiError(oas.Problem(*v))
+	case *oas.ForbiddenHeaders:
+		return forbiddenError(v)
 	case *oas.TableDeleteUnprocessableEntity:
 		return apiError(oas.Problem(*v))
+	case *oas.UnauthorizedHeaders:
+		return unauthenticatedError(v)
 	default:
 		return fmt.Errorf("rad: unexpected catalog response %T", res)
 	}
@@ -263,10 +295,12 @@ func (c *Client) TableUpdate(ctx context.Context, table, name string) (protocol.
 		return api.TableFromOAS(*v), nil
 	case *oas.TableUpdateConflict:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
-	case *oas.TableUpdateForbidden:
-		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.ForbiddenHeaders:
+		return protocol.TableInfo{}, forbiddenError(v)
 	case *oas.TableUpdateUnprocessableEntity:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.UnauthorizedHeaders:
+		return protocol.TableInfo{}, unauthenticatedError(v)
 	default:
 		return protocol.TableInfo{}, fmt.Errorf("rad: unexpected catalog response %T", res)
 	}
@@ -286,10 +320,12 @@ func (c *Client) ColumnCreate(ctx context.Context, table string, col protocol.Co
 		return api.TableFromOAS(*v), nil
 	case *oas.ColumnCreateConflict:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
-	case *oas.ColumnCreateForbidden:
-		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.ForbiddenHeaders:
+		return protocol.TableInfo{}, forbiddenError(v)
 	case *oas.ColumnCreateUnprocessableEntity:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.UnauthorizedHeaders:
+		return protocol.TableInfo{}, unauthenticatedError(v)
 	default:
 		return protocol.TableInfo{}, fmt.Errorf("rad: unexpected catalog response %T", res)
 	}
@@ -307,10 +343,12 @@ func (c *Client) ColumnDelete(ctx context.Context, table, column string) (protoc
 		return api.TableFromOAS(*v), nil
 	case *oas.ColumnDeleteConflict:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
-	case *oas.ColumnDeleteForbidden:
-		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.ForbiddenHeaders:
+		return protocol.TableInfo{}, forbiddenError(v)
 	case *oas.ColumnDeleteUnprocessableEntity:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.UnauthorizedHeaders:
+		return protocol.TableInfo{}, unauthenticatedError(v)
 	default:
 		return protocol.TableInfo{}, fmt.Errorf("rad: unexpected catalog response %T", res)
 	}
@@ -330,10 +368,12 @@ func (c *Client) ColumnUpdate(ctx context.Context, table, column, name string) (
 		return api.TableFromOAS(*v), nil
 	case *oas.ColumnUpdateConflict:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
-	case *oas.ColumnUpdateForbidden:
-		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.ForbiddenHeaders:
+		return protocol.TableInfo{}, forbiddenError(v)
 	case *oas.ColumnUpdateUnprocessableEntity:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.UnauthorizedHeaders:
+		return protocol.TableInfo{}, unauthenticatedError(v)
 	default:
 		return protocol.TableInfo{}, fmt.Errorf("rad: unexpected catalog response %T", res)
 	}
@@ -354,10 +394,12 @@ func (c *Client) IndexCreate(ctx context.Context, table string, idx protocol.Ind
 		return api.TableFromOAS(*v), nil
 	case *oas.IndexCreateConflict:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
-	case *oas.IndexCreateForbidden:
-		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.ForbiddenHeaders:
+		return protocol.TableInfo{}, forbiddenError(v)
 	case *oas.IndexCreateUnprocessableEntity:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.UnauthorizedHeaders:
+		return protocol.TableInfo{}, unauthenticatedError(v)
 	default:
 		return protocol.TableInfo{}, fmt.Errorf("rad: unexpected catalog response %T", res)
 	}
@@ -374,10 +416,12 @@ func (c *Client) IndexDelete(ctx context.Context, table, index string) (protocol
 		return api.TableFromOAS(*v), nil
 	case *oas.IndexDeleteConflict:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
-	case *oas.IndexDeleteForbidden:
-		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.ForbiddenHeaders:
+		return protocol.TableInfo{}, forbiddenError(v)
 	case *oas.IndexDeleteUnprocessableEntity:
 		return protocol.TableInfo{}, apiError(oas.Problem(*v))
+	case *oas.UnauthorizedHeaders:
+		return protocol.TableInfo{}, unauthenticatedError(v)
 	default:
 		return protocol.TableInfo{}, fmt.Errorf("rad: unexpected catalog response %T", res)
 	}

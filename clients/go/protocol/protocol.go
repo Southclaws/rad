@@ -73,6 +73,8 @@ func ParseURL(raw string) (string, error) {
 
 // Error codes carried in the Problem "code" extension member.
 const (
+	CodeUnauthenticated = "unauthenticated"
+	CodeForbidden       = "forbidden"
 	CodeInvalid         = "invalid"          // malformed request, unknown table/column, constraint violation
 	CodeExecutionFailed = "execution_failed" // a valid query failed on the data it met (division by zero, cardinality assertion)
 	CodeNotFound        = "not_found"
@@ -118,6 +120,8 @@ type Problem struct {
 // defaults to the code; use WithReason to name a specific one.
 func NewProblem(code string, status int, detail string) Problem {
 	titles := map[string]string{
+		CodeUnauthenticated: "Authentication Required",
+		CodeForbidden:       "Access Forbidden",
 		CodeInvalid:         "Invalid Request",
 		CodeExecutionFailed: "Query Execution Failed",
 		CodeNotFound:        "Not Found",

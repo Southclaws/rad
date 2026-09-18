@@ -9,10 +9,9 @@ info:
 
 
     Rad is reached over a `rad://` (or `rads://` for HTTPS) connection URI
-    which resolves to an HTTP base URL. Rad speaks plain HTTP; front it with
-    your own proxy for encryption or authentication and use `rads://` so the
-    client dials it over HTTPS. Rad never terminates TLS itself. The default
-    port is 7237.
+    which resolves to an HTTP base URL. Rad speaks plain HTTP; use a TLS proxy
+    and `rads://` when bearer authentication is enabled. Rad never terminates
+    TLS itself. The default port is 7237.
 
 
     This document is the contract. Every operation describes what it does, what
@@ -23,9 +22,9 @@ info:
 
     Errors are returned as RFC 7807 Problem Details with the
     `application/problem+json` media type. The `code` member is the stable,
-    machine readable discriminator (`invalid`, `not_found`, `conflict`,
-    `internal`) and clients should switch on it rather than parsing the `type`
-    URI or the HTTP status.
+    machine readable discriminator (`unauthenticated`, `forbidden`, `invalid`,
+    `not_found`, `conflict`, `internal`) and clients should switch on it rather
+    than parsing the `type` URI or the HTTP status.
   title: rad
   version: "v0"
 
@@ -34,6 +33,9 @@ servers:
     description: >
       The server mounts every operation at the root. A `rad://host:7237`
       connection URI maps directly onto `http://host:7237/`.
+
+security:
+  - bearerAuth: []
 
 tags:
   - name: meta
@@ -77,6 +79,8 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/GetInfoOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /healthz:
     get:
@@ -92,9 +96,12 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/GetHealthzOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /startupz:
     get:
+      security: []
       operationId: GetStartupz
       summary: Report whether the database finished starting.
       description: |
@@ -118,6 +125,7 @@ paths:
 
   /readyz:
     get:
+      security: []
       operationId: GetReadyz
       summary: Report whether the database can accept traffic.
       description: |
@@ -137,6 +145,7 @@ paths:
 
   /livez:
     get:
+      security: []
       operationId: GetLivez
       summary: Report whether the process and its critical tasks run.
       description: |
@@ -180,6 +189,8 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/GetStatisticsOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /schema:
@@ -191,6 +202,8 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/GetSchemaOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /schema/diff:
     post:
@@ -207,6 +220,8 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/SchemaDiffOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
   /schema/migrate:
@@ -228,6 +243,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/SchemaMigrateOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
@@ -241,6 +257,8 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "204": { $ref: "#/components/responses/NoContent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
   /schema/transitions:
@@ -268,6 +286,8 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/SchemaTransitionListOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /schema/transitions/{transition}:
     get:
@@ -283,6 +303,8 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/SchemaTransitionOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /schema/transitions/{transition}/cancel:
@@ -303,6 +325,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/SchemaTransitionOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -324,6 +347,8 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/TableListOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
     post:
       operationId: TableCreate
       summary: Create a table.
@@ -347,6 +372,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/TableOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
@@ -369,6 +395,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/TableOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
@@ -387,6 +414,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "204": { $ref: "#/components/responses/NoContent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
@@ -408,6 +436,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/TableOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
@@ -431,6 +460,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/TableOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
@@ -449,6 +479,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/TableOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
@@ -471,6 +502,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/TableOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
@@ -491,6 +523,7 @@ paths:
       responses:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/TableOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
@@ -518,6 +551,8 @@ paths:
         "200": { $ref: "#/components/responses/QueryOK" }
         "304": { $ref: "#/components/responses/QueryNotModified" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "406": { $ref: "#/components/responses/NotAcceptable" }
         "413": { $ref: "#/components/responses/ContentTooLarge" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
@@ -525,6 +560,7 @@ paths:
         "500": { $ref: "#/components/responses/InternalServerError" }
 
     options:
+      security: []
       operationId: ExecuteOptions
       summary: Describe the operations available at the execute target.
       tags: [data]
@@ -583,11 +619,19 @@ paths:
         default: { $ref: "#/components/responses/InternalServerError" }
         "200": { $ref: "#/components/responses/ExecuteOK" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OAuth2 JWT access token for the configured Rad audience.
+
   parameters:
     TableName:
       name: table
@@ -676,6 +720,17 @@ components:
           schema: { $ref: "#/components/schemas/IndexInfo" }
 
   responses:
+    Unauthorized:
+      description: A bearer access token is missing or invalid.
+      headers:
+        WWW-Authenticate:
+          required: true
+          description: The OAuth2 bearer challenge.
+          schema: { type: string }
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/UnauthenticatedProblem" }
+
     InternalServerError:
       description: Something went wrong inside the server that was not the caller's fault.
       content:
@@ -702,7 +757,11 @@ components:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
     Forbidden:
-      description: The operation requires a write instance.
+      description: The process or access token does not permit the operation.
+      headers:
+        WWW-Authenticate:
+          description: The OAuth2 bearer challenge for an insufficient scope.
+          schema: { type: string }
       content:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
@@ -855,6 +914,8 @@ components:
         `code` is the stable top-level discriminator; `reason` is the
         fine-grained semantic identity within that class.
       oneOf:
+        - $ref: "#/components/schemas/UnauthenticatedProblem"
+        - $ref: "#/components/schemas/ForbiddenProblem"
         - $ref: "#/components/schemas/InvalidProblem"
         - $ref: "#/components/schemas/ExecutionFailedProblem"
         - $ref: "#/components/schemas/NotFoundProblem"
@@ -863,6 +924,8 @@ components:
       discriminator:
         propertyName: code
         mapping:
+          unauthenticated: "#/components/schemas/UnauthenticatedProblem"
+          forbidden: "#/components/schemas/ForbiddenProblem"
           invalid: "#/components/schemas/InvalidProblem"
           execution_failed: "#/components/schemas/ExecutionFailedProblem"
           not_found: "#/components/schemas/NotFoundProblem"
@@ -891,6 +954,50 @@ components:
             accumulate over time; generated clients must preserve unknown
             strings and fall back to `code` rather than rejecting a response.
           type: string
+
+    UnauthenticatedProblem:
+      allOf:
+        - $ref: "#/components/schemas/ProblemBase"
+        - type: object
+          required: [code]
+          properties:
+            type:
+              type: string
+              enum: ["urn:rad:problem:unauthenticated"]
+            title:
+              type: string
+              enum: ["Authentication Required"]
+            status:
+              type: integer
+              enum: [401]
+            code:
+              type: string
+              enum: [unauthenticated]
+            reason:
+              type: string
+              enum: [missing_token, invalid_token]
+
+    ForbiddenProblem:
+      allOf:
+        - $ref: "#/components/schemas/ProblemBase"
+        - type: object
+          required: [code]
+          properties:
+            type:
+              type: string
+              enum: ["urn:rad:problem:forbidden"]
+            title:
+              type: string
+              enum: ["Access Forbidden"]
+            status:
+              type: integer
+              enum: [403]
+            code:
+              type: string
+              enum: [forbidden]
+            reason:
+              type: string
+              enum: [insufficient_scope]
 
     ProblemStage:
       description: The engine stage that rejected or failed the operation.

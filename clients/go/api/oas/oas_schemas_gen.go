@@ -57,13 +57,34 @@ func (s *Access) UnmarshalText(data []byte) error {
 	}
 }
 
+type BearerAuth struct {
+	Token string
+	Roles []string
+}
+
+// GetToken returns the value of Token.
+func (s *BearerAuth) GetToken() string {
+	return s.Token
+}
+
+// GetRoles returns the value of Roles.
+func (s *BearerAuth) GetRoles() []string {
+	return s.Roles
+}
+
+// SetToken sets the value of Token.
+func (s *BearerAuth) SetToken(val string) {
+	s.Token = val
+}
+
+// SetRoles sets the value of Roles.
+func (s *BearerAuth) SetRoles(val []string) {
+	s.Roles = val
+}
+
 type ColumnCreateConflict Problem
 
 func (*ColumnCreateConflict) columnCreateRes() {}
-
-type ColumnCreateForbidden Problem
-
-func (*ColumnCreateForbidden) columnCreateRes() {}
 
 type ColumnCreateUnprocessableEntity Problem
 
@@ -250,10 +271,6 @@ type ColumnDeleteConflict Problem
 
 func (*ColumnDeleteConflict) columnDeleteRes() {}
 
-type ColumnDeleteForbidden Problem
-
-func (*ColumnDeleteForbidden) columnDeleteRes() {}
-
 type ColumnDeleteUnprocessableEntity Problem
 
 func (*ColumnDeleteUnprocessableEntity) columnDeleteRes() {}
@@ -335,10 +352,6 @@ func (s *ColumnInfo) SetDefault(val OptColumnDefault) {
 type ColumnUpdateConflict Problem
 
 func (*ColumnUpdateConflict) columnUpdateRes() {}
-
-type ColumnUpdateForbidden Problem
-
-func (*ColumnUpdateForbidden) columnUpdateRes() {}
 
 // The column properties to update.
 // Ref: #/components/schemas/ColumnUpdateProps
@@ -804,6 +817,8 @@ func (s *DatabaseInfo) SetLocation(val OptString) {
 	s.Location = val
 }
 
+func (*DatabaseInfo) getInfoRes() {}
+
 // The database's catalog management mode: `direct` (the catalog is mutable over this API) or `schema`
 // (rad.schema.yaml migrations own the catalog and the imperative catalog operations are rejected).
 type DatabaseInfoMode string
@@ -854,10 +869,6 @@ func (*ExecuteBadRequest) executeRes() {}
 type ExecuteConflict Problem
 
 func (*ExecuteConflict) executeRes() {}
-
-type ExecuteForbidden Problem
-
-func (*ExecuteForbidden) executeRes() {}
 
 // Ref: #/components/responses/ExecuteOptionsOK
 type ExecuteOptionsOK struct {
@@ -1189,6 +1200,283 @@ func (s *ExecutionFailedProblemType) UnmarshalText(data []byte) error {
 	}
 }
 
+// ForbiddenHeaders wraps Problem with response headers.
+type ForbiddenHeaders struct {
+	WWWAuthenticate OptString
+	Response        Problem
+}
+
+// GetWWWAuthenticate returns the value of WWWAuthenticate.
+func (s *ForbiddenHeaders) GetWWWAuthenticate() OptString {
+	return s.WWWAuthenticate
+}
+
+// GetResponse returns the value of Response.
+func (s *ForbiddenHeaders) GetResponse() Problem {
+	return s.Response
+}
+
+// SetWWWAuthenticate sets the value of WWWAuthenticate.
+func (s *ForbiddenHeaders) SetWWWAuthenticate(val OptString) {
+	s.WWWAuthenticate = val
+}
+
+// SetResponse sets the value of Response.
+func (s *ForbiddenHeaders) SetResponse(val Problem) {
+	s.Response = val
+}
+
+func (*ForbiddenHeaders) columnCreateRes()           {}
+func (*ForbiddenHeaders) columnDeleteRes()           {}
+func (*ForbiddenHeaders) columnUpdateRes()           {}
+func (*ForbiddenHeaders) executeRes()                {}
+func (*ForbiddenHeaders) getHealthzRes()             {}
+func (*ForbiddenHeaders) getInfoRes()                {}
+func (*ForbiddenHeaders) getSchemaRes()              {}
+func (*ForbiddenHeaders) getStatisticsRes()          {}
+func (*ForbiddenHeaders) indexCreateRes()            {}
+func (*ForbiddenHeaders) indexDeleteRes()            {}
+func (*ForbiddenHeaders) queryRes()                  {}
+func (*ForbiddenHeaders) schemaCompatibilityRes()    {}
+func (*ForbiddenHeaders) schemaDiffRes()             {}
+func (*ForbiddenHeaders) schemaMigrateRes()          {}
+func (*ForbiddenHeaders) schemaTransitionCancelRes() {}
+func (*ForbiddenHeaders) schemaTransitionGetRes()    {}
+func (*ForbiddenHeaders) schemaTransitionListRes()   {}
+func (*ForbiddenHeaders) tableCreateRes()            {}
+func (*ForbiddenHeaders) tableDeleteRes()            {}
+func (*ForbiddenHeaders) tableListRes()              {}
+func (*ForbiddenHeaders) tableUpdateRes()            {}
+
+// Merged schema.
+// Ref: #/components/schemas/ForbiddenProblem
+type ForbiddenProblem struct {
+	// Merged property.
+	Type ForbiddenProblemType `json:"type"`
+	// Merged property.
+	Title ForbiddenProblemTitle `json:"title"`
+	// Merged property.
+	Status ForbiddenProblemStatus `json:"status"`
+	// A human readable explanation specific to this occurrence.
+	Detail OptString `json:"detail"`
+	// Merged property.
+	Reason ForbiddenProblemReason `json:"reason"`
+	Code   ForbiddenProblemCode   `json:"code"`
+}
+
+// GetType returns the value of Type.
+func (s *ForbiddenProblem) GetType() ForbiddenProblemType {
+	return s.Type
+}
+
+// GetTitle returns the value of Title.
+func (s *ForbiddenProblem) GetTitle() ForbiddenProblemTitle {
+	return s.Title
+}
+
+// GetStatus returns the value of Status.
+func (s *ForbiddenProblem) GetStatus() ForbiddenProblemStatus {
+	return s.Status
+}
+
+// GetDetail returns the value of Detail.
+func (s *ForbiddenProblem) GetDetail() OptString {
+	return s.Detail
+}
+
+// GetReason returns the value of Reason.
+func (s *ForbiddenProblem) GetReason() ForbiddenProblemReason {
+	return s.Reason
+}
+
+// GetCode returns the value of Code.
+func (s *ForbiddenProblem) GetCode() ForbiddenProblemCode {
+	return s.Code
+}
+
+// SetType sets the value of Type.
+func (s *ForbiddenProblem) SetType(val ForbiddenProblemType) {
+	s.Type = val
+}
+
+// SetTitle sets the value of Title.
+func (s *ForbiddenProblem) SetTitle(val ForbiddenProblemTitle) {
+	s.Title = val
+}
+
+// SetStatus sets the value of Status.
+func (s *ForbiddenProblem) SetStatus(val ForbiddenProblemStatus) {
+	s.Status = val
+}
+
+// SetDetail sets the value of Detail.
+func (s *ForbiddenProblem) SetDetail(val OptString) {
+	s.Detail = val
+}
+
+// SetReason sets the value of Reason.
+func (s *ForbiddenProblem) SetReason(val ForbiddenProblemReason) {
+	s.Reason = val
+}
+
+// SetCode sets the value of Code.
+func (s *ForbiddenProblem) SetCode(val ForbiddenProblemCode) {
+	s.Code = val
+}
+
+type ForbiddenProblemCode string
+
+const (
+	ForbiddenProblemCodeForbidden ForbiddenProblemCode = "forbidden"
+)
+
+// AllValues returns all ForbiddenProblemCode values.
+func (ForbiddenProblemCode) AllValues() []ForbiddenProblemCode {
+	return []ForbiddenProblemCode{
+		ForbiddenProblemCodeForbidden,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ForbiddenProblemCode) MarshalText() ([]byte, error) {
+	switch s {
+	case ForbiddenProblemCodeForbidden:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ForbiddenProblemCode) UnmarshalText(data []byte) error {
+	switch ForbiddenProblemCode(data) {
+	case ForbiddenProblemCodeForbidden:
+		*s = ForbiddenProblemCodeForbidden
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Merged schema.
+type ForbiddenProblemReason string
+
+const (
+	ForbiddenProblemReasonInsufficientScope ForbiddenProblemReason = "insufficient_scope"
+)
+
+// AllValues returns all ForbiddenProblemReason values.
+func (ForbiddenProblemReason) AllValues() []ForbiddenProblemReason {
+	return []ForbiddenProblemReason{
+		ForbiddenProblemReasonInsufficientScope,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ForbiddenProblemReason) MarshalText() ([]byte, error) {
+	switch s {
+	case ForbiddenProblemReasonInsufficientScope:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ForbiddenProblemReason) UnmarshalText(data []byte) error {
+	switch ForbiddenProblemReason(data) {
+	case ForbiddenProblemReasonInsufficientScope:
+		*s = ForbiddenProblemReasonInsufficientScope
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Merged schema.
+type ForbiddenProblemStatus int
+
+const (
+	ForbiddenProblemStatus403 ForbiddenProblemStatus = 403
+)
+
+// AllValues returns all ForbiddenProblemStatus values.
+func (ForbiddenProblemStatus) AllValues() []ForbiddenProblemStatus {
+	return []ForbiddenProblemStatus{
+		ForbiddenProblemStatus403,
+	}
+}
+
+// Merged schema.
+type ForbiddenProblemTitle string
+
+const (
+	ForbiddenProblemTitleAccessForbidden ForbiddenProblemTitle = "Access Forbidden"
+)
+
+// AllValues returns all ForbiddenProblemTitle values.
+func (ForbiddenProblemTitle) AllValues() []ForbiddenProblemTitle {
+	return []ForbiddenProblemTitle{
+		ForbiddenProblemTitleAccessForbidden,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ForbiddenProblemTitle) MarshalText() ([]byte, error) {
+	switch s {
+	case ForbiddenProblemTitleAccessForbidden:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ForbiddenProblemTitle) UnmarshalText(data []byte) error {
+	switch ForbiddenProblemTitle(data) {
+	case ForbiddenProblemTitleAccessForbidden:
+		*s = ForbiddenProblemTitleAccessForbidden
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Merged schema.
+type ForbiddenProblemType string
+
+const (
+	ForbiddenProblemTypeUrnRadProblemForbidden ForbiddenProblemType = "urn:rad:problem:forbidden"
+)
+
+// AllValues returns all ForbiddenProblemType values.
+func (ForbiddenProblemType) AllValues() []ForbiddenProblemType {
+	return []ForbiddenProblemType{
+		ForbiddenProblemTypeUrnRadProblemForbidden,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ForbiddenProblemType) MarshalText() ([]byte, error) {
+	switch s {
+	case ForbiddenProblemTypeUrnRadProblemForbidden:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ForbiddenProblemType) UnmarshalText(data []byte) error {
+	switch ForbiddenProblemType(data) {
+	case ForbiddenProblemTypeUrnRadProblemForbidden:
+		*s = ForbiddenProblemTypeUrnRadProblemForbidden
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // The action applied to referencing rows when the referenced row is deleted.
 // Ref: #/components/schemas/ForeignKeyAction
 type ForeignKeyAction string
@@ -1374,13 +1662,11 @@ func (s *Health) SetMode(val string) {
 	s.Mode = val
 }
 
+func (*Health) getHealthzRes() {}
+
 type IndexCreateConflict Problem
 
 func (*IndexCreateConflict) indexCreateRes() {}
-
-type IndexCreateForbidden Problem
-
-func (*IndexCreateForbidden) indexCreateRes() {}
 
 type IndexCreateUnprocessableEntity Problem
 
@@ -1389,10 +1675,6 @@ func (*IndexCreateUnprocessableEntity) indexCreateRes() {}
 type IndexDeleteConflict Problem
 
 func (*IndexDeleteConflict) indexDeleteRes() {}
-
-type IndexDeleteForbidden Problem
-
-func (*IndexDeleteForbidden) indexDeleteRes() {}
 
 type IndexDeleteUnprocessableEntity Problem
 
@@ -3627,6 +3909,8 @@ func (s *ProbeStatus) SetReason(val string) {
 type Problem struct {
 	// Type selects the active sum variant, switch on this field.
 	Type                   ProblemType
+	UnauthenticatedProblem UnauthenticatedProblem
+	ForbiddenProblem       ForbiddenProblem
 	InvalidProblem         InvalidProblem
 	ExecutionFailedProblem ExecutionFailedProblem
 	NotFoundProblem        NotFoundProblem
@@ -3639,12 +3923,20 @@ type ProblemType string
 
 // Possible values for ProblemType.
 const (
+	UnauthenticatedProblemProblem ProblemType = "unauthenticated"
+	ForbiddenProblemProblem       ProblemType = "forbidden"
 	InvalidProblemProblem         ProblemType = "invalid"
 	ExecutionFailedProblemProblem ProblemType = "execution_failed"
 	NotFoundProblemProblem        ProblemType = "not_found"
 	ConflictProblemProblem        ProblemType = "conflict"
 	InternalProblemProblem        ProblemType = "internal"
 )
+
+// IsUnauthenticatedProblem reports whether Problem is UnauthenticatedProblem.
+func (s Problem) IsUnauthenticatedProblem() bool { return s.Type == UnauthenticatedProblemProblem }
+
+// IsForbiddenProblem reports whether Problem is ForbiddenProblem.
+func (s Problem) IsForbiddenProblem() bool { return s.Type == ForbiddenProblemProblem }
 
 // IsInvalidProblem reports whether Problem is InvalidProblem.
 func (s Problem) IsInvalidProblem() bool { return s.Type == InvalidProblemProblem }
@@ -3660,6 +3952,48 @@ func (s Problem) IsConflictProblem() bool { return s.Type == ConflictProblemProb
 
 // IsInternalProblem reports whether Problem is InternalProblem.
 func (s Problem) IsInternalProblem() bool { return s.Type == InternalProblemProblem }
+
+// SetUnauthenticatedProblem sets Problem to UnauthenticatedProblem.
+func (s *Problem) SetUnauthenticatedProblem(v UnauthenticatedProblem) {
+	s.Type = UnauthenticatedProblemProblem
+	s.UnauthenticatedProblem = v
+}
+
+// GetUnauthenticatedProblem returns UnauthenticatedProblem and true boolean if Problem is UnauthenticatedProblem.
+func (s Problem) GetUnauthenticatedProblem() (v UnauthenticatedProblem, ok bool) {
+	if !s.IsUnauthenticatedProblem() {
+		return v, false
+	}
+	return s.UnauthenticatedProblem, true
+}
+
+// NewUnauthenticatedProblemProblem returns new Problem from UnauthenticatedProblem.
+func NewUnauthenticatedProblemProblem(v UnauthenticatedProblem) Problem {
+	var s Problem
+	s.SetUnauthenticatedProblem(v)
+	return s
+}
+
+// SetForbiddenProblem sets Problem to ForbiddenProblem.
+func (s *Problem) SetForbiddenProblem(v ForbiddenProblem) {
+	s.Type = ForbiddenProblemProblem
+	s.ForbiddenProblem = v
+}
+
+// GetForbiddenProblem returns ForbiddenProblem and true boolean if Problem is ForbiddenProblem.
+func (s Problem) GetForbiddenProblem() (v ForbiddenProblem, ok bool) {
+	if !s.IsForbiddenProblem() {
+		return v, false
+	}
+	return s.ForbiddenProblem, true
+}
+
+// NewForbiddenProblemProblem returns new Problem from ForbiddenProblem.
+func NewForbiddenProblemProblem(v ForbiddenProblem) Problem {
+	var s Problem
+	s.SetForbiddenProblem(v)
+	return s
+}
 
 // SetInvalidProblem sets Problem to InvalidProblem.
 func (s *Problem) SetInvalidProblem(v InvalidProblem) {
@@ -4355,10 +4689,6 @@ type SchemaMigrateConflict Problem
 
 func (*SchemaMigrateConflict) schemaMigrateRes() {}
 
-type SchemaMigrateForbidden Problem
-
-func (*SchemaMigrateForbidden) schemaMigrateRes() {}
-
 // A desired schema, the preflighted server identity, and explicit data-loss consent.
 // Ref: #/components/schemas/SchemaMigrateRequest
 type SchemaMigrateRequest struct {
@@ -4595,13 +4925,11 @@ func (s *SchemaState) SetSchema(val SchemaDocument) {
 	s.Schema = val
 }
 
+func (*SchemaState) getSchemaRes() {}
+
 type SchemaTransitionCancelConflict Problem
 
 func (*SchemaTransitionCancelConflict) schemaTransitionCancelRes() {}
-
-type SchemaTransitionCancelForbidden Problem
-
-func (*SchemaTransitionCancelForbidden) schemaTransitionCancelRes() {}
 
 type SchemaTransitionCancelNotFound Problem
 
@@ -6799,10 +7127,6 @@ type TableCreateConflict Problem
 
 func (*TableCreateConflict) tableCreateRes() {}
 
-type TableCreateForbidden Problem
-
-func (*TableCreateForbidden) tableCreateRes() {}
-
 type TableCreateUnprocessableEntity Problem
 
 func (*TableCreateUnprocessableEntity) tableCreateRes() {}
@@ -6884,10 +7208,6 @@ func (s *TableDef) SetForeignKeys(val []ForeignKeyInfo) {
 type TableDeleteConflict Problem
 
 func (*TableDeleteConflict) tableDeleteRes() {}
-
-type TableDeleteForbidden Problem
-
-func (*TableDeleteForbidden) tableDeleteRes() {}
 
 type TableDeleteUnprocessableEntity Problem
 
@@ -6990,13 +7310,11 @@ func (s *TableList) SetTables(val []TableInfo) {
 	s.Tables = val
 }
 
+func (*TableList) tableListRes() {}
+
 type TableUpdateConflict Problem
 
 func (*TableUpdateConflict) tableUpdateRes() {}
-
-type TableUpdateForbidden Problem
-
-func (*TableUpdateForbidden) tableUpdateRes() {}
 
 // The table properties to update.
 // Ref: #/components/schemas/TableUpdateProps
@@ -7265,6 +7583,8 @@ func (s *TransitionList) SetTransitions(val []TransitionControl) {
 	s.Transitions = val
 }
 
+func (*TransitionList) schemaTransitionListRes() {}
+
 // The durable lifecycle state of online schema work.
 // Ref: #/components/schemas/TransitionState
 type TransitionState string
@@ -7393,5 +7713,289 @@ func (s *TransitionWorkState) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+// Merged schema.
+// Ref: #/components/schemas/UnauthenticatedProblem
+type UnauthenticatedProblem struct {
+	// Merged property.
+	Type UnauthenticatedProblemType `json:"type"`
+	// Merged property.
+	Title UnauthenticatedProblemTitle `json:"title"`
+	// Merged property.
+	Status UnauthenticatedProblemStatus `json:"status"`
+	// A human readable explanation specific to this occurrence.
+	Detail OptString `json:"detail"`
+	// Merged property.
+	Reason UnauthenticatedProblemReason `json:"reason"`
+	Code   UnauthenticatedProblemCode   `json:"code"`
+}
+
+// GetType returns the value of Type.
+func (s *UnauthenticatedProblem) GetType() UnauthenticatedProblemType {
+	return s.Type
+}
+
+// GetTitle returns the value of Title.
+func (s *UnauthenticatedProblem) GetTitle() UnauthenticatedProblemTitle {
+	return s.Title
+}
+
+// GetStatus returns the value of Status.
+func (s *UnauthenticatedProblem) GetStatus() UnauthenticatedProblemStatus {
+	return s.Status
+}
+
+// GetDetail returns the value of Detail.
+func (s *UnauthenticatedProblem) GetDetail() OptString {
+	return s.Detail
+}
+
+// GetReason returns the value of Reason.
+func (s *UnauthenticatedProblem) GetReason() UnauthenticatedProblemReason {
+	return s.Reason
+}
+
+// GetCode returns the value of Code.
+func (s *UnauthenticatedProblem) GetCode() UnauthenticatedProblemCode {
+	return s.Code
+}
+
+// SetType sets the value of Type.
+func (s *UnauthenticatedProblem) SetType(val UnauthenticatedProblemType) {
+	s.Type = val
+}
+
+// SetTitle sets the value of Title.
+func (s *UnauthenticatedProblem) SetTitle(val UnauthenticatedProblemTitle) {
+	s.Title = val
+}
+
+// SetStatus sets the value of Status.
+func (s *UnauthenticatedProblem) SetStatus(val UnauthenticatedProblemStatus) {
+	s.Status = val
+}
+
+// SetDetail sets the value of Detail.
+func (s *UnauthenticatedProblem) SetDetail(val OptString) {
+	s.Detail = val
+}
+
+// SetReason sets the value of Reason.
+func (s *UnauthenticatedProblem) SetReason(val UnauthenticatedProblemReason) {
+	s.Reason = val
+}
+
+// SetCode sets the value of Code.
+func (s *UnauthenticatedProblem) SetCode(val UnauthenticatedProblemCode) {
+	s.Code = val
+}
+
+type UnauthenticatedProblemCode string
+
+const (
+	UnauthenticatedProblemCodeUnauthenticated UnauthenticatedProblemCode = "unauthenticated"
+)
+
+// AllValues returns all UnauthenticatedProblemCode values.
+func (UnauthenticatedProblemCode) AllValues() []UnauthenticatedProblemCode {
+	return []UnauthenticatedProblemCode{
+		UnauthenticatedProblemCodeUnauthenticated,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s UnauthenticatedProblemCode) MarshalText() ([]byte, error) {
+	switch s {
+	case UnauthenticatedProblemCodeUnauthenticated:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *UnauthenticatedProblemCode) UnmarshalText(data []byte) error {
+	switch UnauthenticatedProblemCode(data) {
+	case UnauthenticatedProblemCodeUnauthenticated:
+		*s = UnauthenticatedProblemCodeUnauthenticated
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Merged schema.
+type UnauthenticatedProblemReason string
+
+const (
+	UnauthenticatedProblemReasonMissingToken UnauthenticatedProblemReason = "missing_token"
+	UnauthenticatedProblemReasonInvalidToken UnauthenticatedProblemReason = "invalid_token"
+)
+
+// AllValues returns all UnauthenticatedProblemReason values.
+func (UnauthenticatedProblemReason) AllValues() []UnauthenticatedProblemReason {
+	return []UnauthenticatedProblemReason{
+		UnauthenticatedProblemReasonMissingToken,
+		UnauthenticatedProblemReasonInvalidToken,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s UnauthenticatedProblemReason) MarshalText() ([]byte, error) {
+	switch s {
+	case UnauthenticatedProblemReasonMissingToken:
+		return []byte(s), nil
+	case UnauthenticatedProblemReasonInvalidToken:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *UnauthenticatedProblemReason) UnmarshalText(data []byte) error {
+	switch UnauthenticatedProblemReason(data) {
+	case UnauthenticatedProblemReasonMissingToken:
+		*s = UnauthenticatedProblemReasonMissingToken
+		return nil
+	case UnauthenticatedProblemReasonInvalidToken:
+		*s = UnauthenticatedProblemReasonInvalidToken
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Merged schema.
+type UnauthenticatedProblemStatus int
+
+const (
+	UnauthenticatedProblemStatus401 UnauthenticatedProblemStatus = 401
+)
+
+// AllValues returns all UnauthenticatedProblemStatus values.
+func (UnauthenticatedProblemStatus) AllValues() []UnauthenticatedProblemStatus {
+	return []UnauthenticatedProblemStatus{
+		UnauthenticatedProblemStatus401,
+	}
+}
+
+// Merged schema.
+type UnauthenticatedProblemTitle string
+
+const (
+	UnauthenticatedProblemTitleAuthenticationRequired UnauthenticatedProblemTitle = "Authentication Required"
+)
+
+// AllValues returns all UnauthenticatedProblemTitle values.
+func (UnauthenticatedProblemTitle) AllValues() []UnauthenticatedProblemTitle {
+	return []UnauthenticatedProblemTitle{
+		UnauthenticatedProblemTitleAuthenticationRequired,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s UnauthenticatedProblemTitle) MarshalText() ([]byte, error) {
+	switch s {
+	case UnauthenticatedProblemTitleAuthenticationRequired:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *UnauthenticatedProblemTitle) UnmarshalText(data []byte) error {
+	switch UnauthenticatedProblemTitle(data) {
+	case UnauthenticatedProblemTitleAuthenticationRequired:
+		*s = UnauthenticatedProblemTitleAuthenticationRequired
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Merged schema.
+type UnauthenticatedProblemType string
+
+const (
+	UnauthenticatedProblemTypeUrnRadProblemUnauthenticated UnauthenticatedProblemType = "urn:rad:problem:unauthenticated"
+)
+
+// AllValues returns all UnauthenticatedProblemType values.
+func (UnauthenticatedProblemType) AllValues() []UnauthenticatedProblemType {
+	return []UnauthenticatedProblemType{
+		UnauthenticatedProblemTypeUrnRadProblemUnauthenticated,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s UnauthenticatedProblemType) MarshalText() ([]byte, error) {
+	switch s {
+	case UnauthenticatedProblemTypeUrnRadProblemUnauthenticated:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *UnauthenticatedProblemType) UnmarshalText(data []byte) error {
+	switch UnauthenticatedProblemType(data) {
+	case UnauthenticatedProblemTypeUrnRadProblemUnauthenticated:
+		*s = UnauthenticatedProblemTypeUrnRadProblemUnauthenticated
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// UnauthorizedHeaders wraps UnauthenticatedProblem with response headers.
+type UnauthorizedHeaders struct {
+	WWWAuthenticate string
+	Response        UnauthenticatedProblem
+}
+
+// GetWWWAuthenticate returns the value of WWWAuthenticate.
+func (s *UnauthorizedHeaders) GetWWWAuthenticate() string {
+	return s.WWWAuthenticate
+}
+
+// GetResponse returns the value of Response.
+func (s *UnauthorizedHeaders) GetResponse() UnauthenticatedProblem {
+	return s.Response
+}
+
+// SetWWWAuthenticate sets the value of WWWAuthenticate.
+func (s *UnauthorizedHeaders) SetWWWAuthenticate(val string) {
+	s.WWWAuthenticate = val
+}
+
+// SetResponse sets the value of Response.
+func (s *UnauthorizedHeaders) SetResponse(val UnauthenticatedProblem) {
+	s.Response = val
+}
+
+func (*UnauthorizedHeaders) columnCreateRes()           {}
+func (*UnauthorizedHeaders) columnDeleteRes()           {}
+func (*UnauthorizedHeaders) columnUpdateRes()           {}
+func (*UnauthorizedHeaders) executeRes()                {}
+func (*UnauthorizedHeaders) getHealthzRes()             {}
+func (*UnauthorizedHeaders) getInfoRes()                {}
+func (*UnauthorizedHeaders) getSchemaRes()              {}
+func (*UnauthorizedHeaders) getStatisticsRes()          {}
+func (*UnauthorizedHeaders) indexCreateRes()            {}
+func (*UnauthorizedHeaders) indexDeleteRes()            {}
+func (*UnauthorizedHeaders) queryRes()                  {}
+func (*UnauthorizedHeaders) schemaCompatibilityRes()    {}
+func (*UnauthorizedHeaders) schemaDiffRes()             {}
+func (*UnauthorizedHeaders) schemaMigrateRes()          {}
+func (*UnauthorizedHeaders) schemaTransitionCancelRes() {}
+func (*UnauthorizedHeaders) schemaTransitionGetRes()    {}
+func (*UnauthorizedHeaders) schemaTransitionListRes()   {}
+func (*UnauthorizedHeaders) tableCreateRes()            {}
+func (*UnauthorizedHeaders) tableDeleteRes()            {}
+func (*UnauthorizedHeaders) tableListRes()              {}
+func (*UnauthorizedHeaders) tableUpdateRes()            {}
 
 type Value jx.Raw

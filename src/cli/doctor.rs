@@ -182,7 +182,10 @@ async fn diagnose(args: DoctorArgs) -> Report {
         }
     };
 
-    let client = match Client::connect(&project.config.database_url) {
+    let client = match Client::connect_with_token_file(
+        &project.config.database_url,
+        args.access_token_file.as_deref(),
+    ) {
         Ok(client) => client,
         Err(error) => {
             report.push("server", CheckStatus::Fail, error.to_string());

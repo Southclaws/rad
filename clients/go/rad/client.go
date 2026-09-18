@@ -32,6 +32,7 @@ import (
 type Client struct {
 	http           *http.Client
 	oas            *oas.Client
+	bearerToken    string
 	endpoint       string
 	queryIsolation [queryCacheKeyBytes]byte
 	queryCache     QueryCache
@@ -51,10 +52,15 @@ type schemaCompatibility struct {
 // Option configures a Client.
 type Option func(*Client)
 
-// WithHTTPClient substitutes the underlying *http.Client (custom transport,
-// proxies, tracing).
+// WithHTTPClient substitutes the underlying *http.Client. A custom transport
+// can refresh OAuth2 access tokens automatically.
 func WithHTTPClient(h *http.Client) Option {
 	return func(c *Client) { c.http = h }
+}
+
+// WithBearerToken adds one bearer access token to each request.
+func WithBearerToken(token string) Option {
+	return func(c *Client) { c.bearerToken = token }
 }
 
 // WithTimeout sets the per-request timeout (default 30s).
@@ -81,13 +87,21 @@ func Dial(rawurl string, opts ...Option) (*Client, error) {
 	for _, o := range opts {
 		o(c)
 	}
-	oc, err := oas.NewClient(base, oas.WithClient(c.http))
+	oc, err := oas.NewClient(base, bearerSecuritySource{token: c.bearerToken}, oas.WithClient(c.http))
 	if err != nil {
 		return nil, err
 	}
 	c.oas = oc
 	c.endpoint = base
 	return c, nil
+}
+
+type bearerSecuritySource struct {
+	token string
+}
+
+func (s bearerSecuritySource) BearerAuth(context.Context, oas.OperationName) (oas.BearerAuth, error) {
+	return oas.BearerAuth{Token: s.token}, nil
 }
 
 // APIError is a non-2xx response from the server, carrying its RFC 7807
@@ -105,6 +119,18 @@ func (e *APIError) Error() string {
 func IsConflict(err error) bool {
 	var ae *APIError
 	return errors.As(err, &ae) && ae.Problem.Code == protocol.CodeConflict
+}
+
+// IsUnauthenticated reports whether the server rejected the bearer token.
+func IsUnauthenticated(err error) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && ae.Problem.Code == protocol.CodeUnauthenticated
+}
+
+// IsForbidden reports whether the access token has insufficient scope.
+func IsForbidden(err error) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && ae.Problem.Code == protocol.CodeForbidden
 }
 
 // IsSchemaTransitionBackpressure reports a temporary affected-table write
@@ -134,6 +160,14 @@ func apiError(p oas.Problem) error {
 	return &APIError{Problem: api.ProblemFromOAS(p)}
 }
 
+func unauthenticatedError(response *oas.UnauthorizedHeaders) error {
+	return apiError(oas.NewUnauthenticatedProblemProblem(response.Response))
+}
+
+func forbiddenError(response *oas.ForbiddenHeaders) error {
+	return apiError(response.Response)
+}
+
 // transportError maps errors returned by the generated client. The contract's
 // default (500) response surfaces as *InternalServerErrorStatusCode and
 // carries a Problem; anything else is a transport or decode failure.
@@ -153,8 +187,20 @@ func (c *Client) Ping(ctx context.Context) error {
 	if err := c.ensureSchema(ctx); err != nil {
 		return err
 	}
-	_, err := c.oas.GetHealthz(ctx)
-	return transportError(err)
+	response, err := c.oas.GetHealthz(ctx)
+	if err != nil {
+		return transportError(err)
+	}
+	switch response := response.(type) {
+	case *oas.Health:
+		return nil
+	case *oas.ForbiddenHeaders:
+		return forbiddenError(response)
+	case *oas.UnauthorizedHeaders:
+		return unauthenticatedError(response)
+	default:
+		return fmt.Errorf("rad: unexpected health response %T", response)
+	}
 }
 
 // ExpectSchema configures a one-time server compatibility check before the
@@ -190,7 +236,16 @@ func (c *Client) Tables(ctx context.Context) ([]protocol.TableInfo, error) {
 	if err != nil {
 		return nil, transportError(err)
 	}
-	return api.TablesFromOAS(res.Tables), nil
+	switch response := res.(type) {
+	case *oas.TableList:
+		return api.TablesFromOAS(response.Tables), nil
+	case *oas.ForbiddenHeaders:
+		return nil, forbiddenError(response)
+	case *oas.UnauthorizedHeaders:
+		return nil, unauthenticatedError(response)
+	default:
+		return nil, fmt.Errorf("rad: unexpected table list response %T", res)
+	}
 }
 
 func decodeRawValue(raw oas.Value) any {

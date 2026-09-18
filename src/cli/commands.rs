@@ -11,10 +11,10 @@ use super::generated::{
     SchemaJsonSchemaArgs, SchemaMigrateArgs, SchemaOptions, SchemaPullArgs, SchemaStatusArgs,
     SchemaTransitionsCancelArgs, SchemaTransitionsGetArgs, SchemaTransitionsListArgs,
     SchemaTransitionsListKind, SchemaTransitionsListState, SchemaTransitionsOptions,
-    SchemaTransitionsWaitArgs, ServeArgs, ServeCatalogMode, ServeDiagnostics, ServeFrontend,
-    ServeLogFormat, ServeLogLevel, ServeMetrics, ServeRole, ServeSlateCommitDurability,
-    ServeSlateObjectCachePreload, ServeStorage, SkillsGetArgs, SkillsListArgs, SkillsOptions,
-    SkillsPathArgs, SpecArgs, ValidateArgs,
+    SchemaTransitionsWaitArgs, ServeArgs, ServeAuth, ServeAuthProfile, ServeCatalogMode,
+    ServeDiagnostics, ServeFrontend, ServeLogFormat, ServeLogLevel, ServeMetrics, ServeRole,
+    ServeSlateCommitDurability, ServeSlateObjectCachePreload, ServeStorage, SkillsGetArgs,
+    SkillsListArgs, SkillsOptions, SkillsPathArgs, SpecArgs, ValidateArgs,
 };
 use super::output::{self, CliError};
 use super::project::{Project, read_schema_file};
@@ -283,9 +283,32 @@ impl Handler for App {
             .ok()
             .filter(|value| *value > 0)
             .ok_or("--reader-poll-interval-ms must be greater than zero")?;
+        let auth_scopes = crate::auth::ScopeConfig::from_values(
+            args.auth_query_scopes,
+            args.auth_mutate_scopes,
+            args.auth_catalog_scopes,
+        )?;
+        let auth = crate::auth::AuthConfig::from_values(
+            match args.auth {
+                ServeAuth::None => "none",
+                ServeAuth::Jwt => "jwt",
+            },
+            args.auth_issuer,
+            args.auth_audience,
+            args.auth_jwks_url,
+            args.auth_profile.map(|profile| match profile {
+                ServeAuthProfile::Rfc9068 => crate::auth::JwtProfile::Rfc9068,
+                ServeAuthProfile::Compatible => crate::auth::JwtProfile::Compatible,
+            }),
+            auth_scopes,
+        )?;
         let config = Config {
             address: crate::process::normalize_address(&args.addr),
-            admin_address: crate::process::admin_address_from_env(),
+            admin_address: args
+                .admin_addr
+                .as_deref()
+                .map(crate::process::normalize_address),
+            auth,
             catalog_mode,
             capture_workload_corpus: args.capture_workload_corpus,
             close_timeout: crate::process::close_timeout_from_env()?,
@@ -803,7 +826,10 @@ fn nonnegative_u32(value: i64, name: &str) -> Result<u32> {
 
 fn open_project(options: &SchemaOptions) -> Result<(Project, Client)> {
     let project = Project::load(&options.config, &options.file)?;
-    let client = Client::connect(&project.config.database_url)?;
+    let client = Client::connect_with_token_file(
+        &project.config.database_url,
+        options.access_token_file.as_deref(),
+    )?;
     Ok((project, client))
 }
 

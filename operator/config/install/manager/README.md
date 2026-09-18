@@ -10,3 +10,9 @@ The image references are installation defaults. Override them through a
 Kustomize overlay and pin immutable release digests for production. Manager
 flags such as the IngressClass and gateway NetworkPolicy selectors belong in
 the same overlay.
+
+The manager also accepts operator-wide public JWT settings through `RAD_AUTH`,
+`RAD_AUTH_ISSUER`, `RAD_AUTH_AUDIENCE`, `RAD_AUTH_JWKS_URL`,
+`RAD_AUTH_PROFILE`, and the three `RAD_AUTH_*_SCOPES` environment variables. A
+database-specific `spec.authentication` replaces the complete operator
+setting. Omission inherits the operator setting.
