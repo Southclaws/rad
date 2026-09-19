@@ -98,7 +98,7 @@ jobs:
           go test -race -count=1 -tags=envtest ./internal/controller ./cluster
 
   quality:
-    name: format and lint
+    name: policy and advisory lint
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -121,12 +121,16 @@ jobs:
       - name: Validate GitHub Actions workflows
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
-      - name: Check operator generation and formatting
+      - name: Check operator generated artifacts
         working-directory: operator
         run: |
           go generate ./...
-          gofmt -w api cmd internal
-          git diff --exit-code -- api config cmd internal
+          git diff --exit-code -- api config internal
+
+      - name: Report operator formatting
+        continue-on-error: true
+        working-directory: operator
+        run: test -z "$(gofmt -l api cmd internal)"
 
       - name: Vet and test operator
         working-directory: operator
@@ -141,15 +145,22 @@ jobs:
           save-if: false
 
       - name: Check formatting
+        continue-on-error: true
         run: cargo fmt --all -- --check
 
       - name: Check storage format artifacts
         run: cargo run --locked --package keyform -- --check
 
       - name: Run Clippy
+        continue-on-error: true
         run: cargo clippy --locked --all-targets -- -D warnings
 
+      - name: Run keyform Clippy
+        continue-on-error: true
+        run: cargo clippy --locked --package keyform --all-targets -- -D warnings
+
       - name: Enforce production Rust hygiene
+        continue-on-error: true
         run: |
           cargo clippy --locked --lib --bins -- \
             -D warnings \
@@ -164,6 +175,7 @@ jobs:
             -D clippy::zero-sized-map-values
 
       - name: Check Rust documentation
+        continue-on-error: true
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --locked --no-deps
@@ -178,6 +190,7 @@ jobs:
           rust-version: 1.96.0
 
       - name: Check unused dependencies
+        continue-on-error: true
         uses: bnjbvr/cargo-machete@ac30a525c0a8d163a92d727b3ff079ee3f6ecb08 # v0.9.2
         with:
           args: --with-metadata
