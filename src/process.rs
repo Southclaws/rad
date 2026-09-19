@@ -16,7 +16,7 @@ use crate::engine::catalog::Catalog;
 use crate::engine::catalog::model::Mode;
 use crate::engine::exec::{Engine, RelationCacheLimits};
 use crate::engine::kv::slatedb::{
-    ObjectCachePreload, Options as SlateOptions, ReaderStore, Store as SlateStore,
+    ObjectCachePreload, Options as SlateOptions, ReaderStore, Store as SlateStore, WalMode,
 };
 use crate::engine::kv::{Closure, ErrorKind as KvErrorKind, Kv, TransactionalKv};
 use crate::health::{Health, StartupHold};
@@ -122,10 +122,11 @@ impl Config {
         let address = normalize_address(&env_or("RAD_ADDR", "0.0.0.0:7237"));
         let slate = slate_options_from_env()?;
         let admin_address = admin_address_from_env();
-        let auth_scopes = crate::auth::ScopeConfig::from_values(
+        let auth_scopes = crate::auth::ScopeConfig::from_values_with_admin(
             optional_env("RAD_AUTH_QUERY_SCOPES"),
             optional_env("RAD_AUTH_MUTATE_SCOPES"),
             optional_env("RAD_AUTH_CATALOG_SCOPES"),
+            optional_env("RAD_AUTH_ADMIN_SCOPES"),
         )?;
         let auth_profile = optional_env("RAD_AUTH_PROFILE")
             .map(|value| value.parse())
@@ -247,16 +248,6 @@ impl Config {
         if self.auth.is_jwt() && self.frontend == Some(Frontend::Postgres) {
             return Err("JWT authentication does not support the PostgreSQL frontend".into());
         }
-        if self.auth.is_jwt()
-            && let Some(address) = &self.admin_address
-        {
-            let address = address.parse::<std::net::SocketAddr>().map_err(|error| {
-                format!("JWT authentication requires an IP administration address: {error}")
-            })?;
-            if !address.ip().is_loopback() {
-                return Err("JWT authentication requires a loopback administration address".into());
-            }
-        }
         if self.internal_address.is_some() && self.relay_token_file.is_none() {
             return Err(
                 "RAD_INTERNAL_ADDR requires RAD_RELAY_TOKEN_FILE: the internal API is never served unauthenticated"
@@ -330,7 +321,6 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
     let (listener, startup_listener) = bind_public(&config.address).await?;
     let admin_address = match &config.admin_address {
         Some(address) => address.clone(),
-        None if config.auth.is_jwt() => loopback_admin_address(&config.address)?,
         None => admin_address(&config.address)?,
     };
     let admin_listener = tokio::net::TcpListener::bind(&admin_address).await?;
@@ -453,6 +443,7 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
     let http_engine = engine.clone();
     let http_health = health.clone();
     let http_stop = stop_receiver.clone();
+    let http_authenticator = authenticator.clone();
     servers.spawn(async move {
         crate::http::serve(
             listener,
@@ -461,7 +452,7 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
                 mode,
                 location,
                 http_health,
-                authenticator,
+                http_authenticator,
             ),
             wait_for_stop(http_stop),
         )
@@ -473,7 +464,11 @@ pub async fn serve(config: Config, shutdown: impl Future<Output = ()> + Send + '
     servers.spawn(async move {
         crate::http::serve(
             admin_listener,
-            crate::admin::router_with_statistics(admin_store, admin_statistics),
+            crate::admin::router_with_statistics_and_auth(
+                admin_store,
+                admin_statistics,
+                authenticator,
+            ),
             wait_for_stop(admin_stop),
         )
         .await
@@ -1191,6 +1186,7 @@ fn internal_test_planner_mode() -> Result<crate::engine::planner::PlannerMode> {
 fn slate_options_from_env() -> Result<SlateOptions> {
     Ok(SlateOptions {
         commit_durability: parse_env("RAD_SLATE_COMMIT_DURABILITY", "durable")?,
+        wal: WalMode::from(parse_bool_env("RAD_SLATE_WAL_ENABLED", true)?),
         decoded_cache_size_mib: parse_env("RAD_SLATE_DECODED_CACHE_SIZE_MIB", "128")?,
         scan_cache_blocks: parse_bool_env("RAD_SLATE_SCAN_CACHE_BLOCKS", false)?,
         scan_read_ahead_kib: parse_env("RAD_SLATE_SCAN_READ_AHEAD_KIB", "256")?,
@@ -1358,10 +1354,6 @@ fn admin_address(address: &str) -> Result<String> {
     derived_admin_address(address, None)
 }
 
-fn loopback_admin_address(address: &str) -> Result<String> {
-    derived_admin_address(address, Some("127.0.0.1"))
-}
-
 fn derived_admin_address(address: &str, replacement_host: Option<&str>) -> Result<String> {
     let (host, port) = address
         .rsplit_once(':')
@@ -1430,6 +1422,17 @@ pub(crate) async fn shutdown_signal() {
 mod tests {
     use super::*;
     use crate::engine::kv::slatedb::Options as SlateOptions;
+
+    fn jwt_auth_config() -> crate::auth::AuthConfig {
+        crate::auth::AuthConfig::Jwt(Box::new(crate::auth::JwtConfig {
+            issuer: "https://auth.example.com".into(),
+            audience: "rad".into(),
+            jwks_url: None,
+            profile: crate::auth::JwtProfile::Rfc9068,
+            scopes: crate::auth::ScopeConfig::from_values(Some("rad:read".into()), None, None)
+                .unwrap(),
+        }))
+    }
 
     #[test]
     fn execution_concurrency_uses_four_slots_per_cpu() {
@@ -1675,55 +1678,15 @@ mod tests {
     }
 
     #[test]
-    fn jwt_authentication_rejects_the_postgresql_frontend() {
+    fn jwt_authentication_requires_the_http_frontend_and_accepts_admin_addresses() {
         let mut config = relay_config(None, None, None);
-        config.auth = crate::auth::AuthConfig::Jwt(Box::new(crate::auth::JwtConfig {
-            issuer: "https://auth.example.com".into(),
-            audience: "rad".into(),
-            jwks_url: None,
-            profile: crate::auth::JwtProfile::Rfc9068,
-            scopes: crate::auth::ScopeConfig::from_values(Some("rad:read".into()), None, None)
-                .unwrap(),
-        }));
+        config.auth = jwt_auth_config();
         config.frontend = Some(Frontend::Postgres);
         assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn jwt_authentication_rejects_a_public_administration_address() {
-        let mut config = relay_config(None, None, None);
-        config.auth = crate::auth::AuthConfig::Jwt(Box::new(crate::auth::JwtConfig {
-            issuer: "https://auth.example.com".into(),
-            audience: "rad".into(),
-            jwks_url: None,
-            profile: crate::auth::JwtProfile::Rfc9068,
-            scopes: crate::auth::ScopeConfig::from_values(Some("rad:read".into()), None, None)
-                .unwrap(),
-        }));
-        config.admin_address = Some("0.0.0.0:7238".into());
-        assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn jwt_authentication_accepts_a_loopback_administration_address() {
-        let mut config = relay_config(None, None, None);
-        config.auth = crate::auth::AuthConfig::Jwt(Box::new(crate::auth::JwtConfig {
-            issuer: "https://auth.example.com".into(),
-            audience: "rad".into(),
-            jwks_url: None,
-            profile: crate::auth::JwtProfile::Rfc9068,
-            scopes: crate::auth::ScopeConfig::from_values(Some("rad:read".into()), None, None)
-                .unwrap(),
-        }));
-        config.admin_address = Some("127.0.0.1:7238".into());
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn jwt_authentication_derives_a_loopback_administration_address() {
-        assert_eq!(
-            loopback_admin_address("0.0.0.0:7237").unwrap(),
-            "127.0.0.1:7238"
-        );
+        config.frontend = None;
+        for address in ["0.0.0.0:7238", "127.0.0.1:7238"] {
+            config.admin_address = Some(address.into());
+            assert!(config.validate().is_ok());
+        }
     }
 }

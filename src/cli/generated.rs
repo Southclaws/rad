@@ -69,6 +69,8 @@ pub enum ServeAuthProfile {
     Rfc9068,
     #[value(name = r"compatible")]
     Compatible,
+    #[value(name = r"cloudflare-access")]
+    CloudflareAccess,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -141,6 +143,14 @@ pub enum ServeSlateCommitDurability {
     Durable,
     #[value(name = r"memory")]
     Memory,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServeSlateWalEnabled {
+    #[value(name = r"true")]
+    True,
+    #[value(name = r"false")]
+    False,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -561,7 +571,7 @@ pub struct ServeArgs {
     #[arg(
         id = r"admin-addr",
         long = r"admin-addr",
-        help = r"Administration HTTP listen address; JWT mode requires loopback.",
+        help = r"Administration HTTP listen address; JWT mode requires an administration scope.",
         env = r"RAD_ADMIN_ADDR"
     )]
     pub admin_addr: Option<String>,
@@ -598,7 +608,7 @@ pub struct ServeArgs {
     #[arg(
         id = r"auth-profile",
         long = r"auth-profile",
-        help = r"JWT validation profile; omission selects rfc9068 in JWT mode.",
+        help = r"JWT validation profile. Omission selects rfc9068 in JWT mode.",
         env = r"RAD_AUTH_PROFILE",
         value_enum
     )]
@@ -606,24 +616,31 @@ pub struct ServeArgs {
     #[arg(
         id = r"auth-query-scopes",
         long = r"auth-query-scopes",
-        help = r"Space-separated OAuth scopes; any listed scope grants query access and omission denies it.",
+        help = r"Space-separated authorization values. Any listed value grants query access. Omission denies access.",
         env = r"RAD_AUTH_QUERY_SCOPES"
     )]
     pub auth_query_scopes: Option<String>,
     #[arg(
         id = r"auth-mutate-scopes",
         long = r"auth-mutate-scopes",
-        help = r"Space-separated OAuth scopes; any listed scope grants data mutation access and omission denies it.",
+        help = r"Space-separated authorization values. Any listed value grants data mutation access. Omission denies access.",
         env = r"RAD_AUTH_MUTATE_SCOPES"
     )]
     pub auth_mutate_scopes: Option<String>,
     #[arg(
         id = r"auth-catalog-scopes",
         long = r"auth-catalog-scopes",
-        help = r"Space-separated OAuth scopes; any listed scope grants catalog mutation access and omission denies it.",
+        help = r"Space-separated authorization values. Any listed value grants catalog mutation access. Omission denies access.",
         env = r"RAD_AUTH_CATALOG_SCOPES"
     )]
     pub auth_catalog_scopes: Option<String>,
+    #[arg(
+        id = r"auth-admin-scopes",
+        long = r"auth-admin-scopes",
+        help = r"Space-separated authorization values. Any listed value grants administration access. Omission denies access.",
+        env = r"RAD_AUTH_ADMIN_SCOPES"
+    )]
+    pub auth_admin_scopes: Option<String>,
     #[arg(
         id = r"role",
         long = r"role",
@@ -744,7 +761,7 @@ pub struct ServeArgs {
         long = r"metrics",
         help = r"Enable or disable OTEL metrics and the GET /metrics route.",
         env = r"RAD_METRICS",
-        default_value = r"true",
+        default_value = r"false",
         value_enum
     )]
     pub metrics: ServeMetrics,
@@ -813,6 +830,15 @@ pub struct ServeArgs {
         value_enum
     )]
     pub slate_commit_durability: ServeSlateCommitDurability,
+    #[arg(
+        id = r"slate-wal-enabled",
+        long = r"slate-wal-enabled",
+        help = r"Enable the Slate WAL. Disable it only when process failure can lose unflushed data.",
+        env = r"RAD_SLATE_WAL_ENABLED",
+        default_value = r"true",
+        value_enum
+    )]
+    pub slate_wal_enabled: ServeSlateWalEnabled,
     #[arg(
         id = r"slate-flush-interval-ms",
         long = r"slate-flush-interval-ms",

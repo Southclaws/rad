@@ -2,6 +2,7 @@
 
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
@@ -183,6 +184,28 @@ struct Backend {
     transaction_admission: Arc<RwLock<()>>,
 }
 
+struct PostgresPhase {
+    name: &'static str,
+    started: Option<Instant>,
+}
+
+impl PostgresPhase {
+    fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            started: crate::telemetry::enabled().then(Instant::now),
+        }
+    }
+}
+
+impl Drop for PostgresPhase {
+    fn drop(&mut self) {
+        if let Some(started) = self.started {
+            crate::telemetry::postgres_phase_finished(self.name, started.elapsed());
+        }
+    }
+}
+
 #[async_trait]
 impl NoopStartupHandler for Backend {
     async fn post_startup<C>(
@@ -219,11 +242,17 @@ impl SimpleQueryHandler for Backend {
         C::Error: Debug,
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
-        let statements = sql::parse(sql).map_err(sql_error)?;
+        let statements = {
+            let _phase = PostgresPhase::new("sql_parse");
+            sql::parse(sql).map_err(sql_error)?
+        };
         let mut responses = Vec::with_capacity(statements.len());
         for statement in statements {
-            let statement = statement.to_string();
-            let prepared = self.parser.prepare(client, &statement, &[]).await?;
+            let sql = statement.to_string();
+            let prepared = self
+                .parser
+                .prepare_statement(client, sql, statement, &[])
+                .await?;
             match Box::pin(self.execute(client, &prepared, &[], &Format::UnifiedText)).await {
                 Ok(response) => responses.push(response),
                 Err(PgWireError::UserError(error)) => {
@@ -258,7 +287,10 @@ impl ExtendedQueryHandler for Backend {
         C::Error: Debug,
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
-        let parameters = decode_parameters(portal)?;
+        let parameters = {
+            let _phase = PostgresPhase::new("wire_parameter_decode");
+            decode_parameters(portal)?
+        };
         Box::pin(self.execute(
             client,
             &portal.statement.statement,
@@ -341,8 +373,15 @@ impl Backend {
                 PgPrepared::Sql { prepared, origins } => {
                     self.reject_failed_transaction(client).await?;
                     let tables = self.parser.tables(client).await?;
-                    let compiled =
-                        sql::compile(prepared, &tables, parameters).map_err(sql_error)?;
+                    let hints = {
+                        let _phase = PostgresPhase::new("parameter_compile");
+                        sql::compile_parameters(prepared, parameters).map_err(sql_error)?
+                    };
+                    let compiled = {
+                        let _phase = PostgresPhase::new("pir_construct");
+                        sql::compile_with_parameters(prepared, &tables, parameters, &hints)
+                            .map_err(sql_error)?
+                    };
                     let Some(program) = compiled.program else {
                         return Ok(Response::Execution(Tag::new(compiled.kind.tag())));
                     };
@@ -390,71 +429,75 @@ impl Backend {
                     if state.transaction.is_some() && effectful {
                         state.transaction_dirty = true;
                     }
-                    let result = if let Some(transaction) = &mut state.transaction {
-                        let transaction_span = transaction.span();
-                        let (trace_id, span_id) = crate::telemetry::span_ids(&transaction_span);
-                        let context = crate::logging::RequestContext {
-                            transport: "postgres",
-                            request_id,
-                            transaction_id: transaction.id().to_owned(),
-                            client_ip,
-                            application_name,
-                            principal_issuer: String::new(),
-                            principal_subject: String::new(),
-                            transaction_state: "explicit",
-                            trace_id,
-                            span_id,
-                            diagnostics: None,
-                            parent_span: Some(transaction_span),
-                        };
-                        Box::pin(crate::logging::with_request_context(
-                            context,
-                            transaction.execute_program(program, catalog_policy),
-                        ))
-                        .await
-                        .map_err(|error| engine_error_with_sql(error, &sql))
-                    } else {
-                        drop(state);
-                        let _transaction_admission = if catalog_change {
-                            Some(TransactionAdmission::Write {
-                                _guard: self.transaction_admission.clone().write_owned().await,
-                            })
-                        } else {
-                            Some(TransactionAdmission::Read {
-                                _guard: self.transaction_admission.clone().read_owned().await,
-                            })
-                        };
-                        let current_span = tracing::Span::current();
-                        let (trace_id, span_id) = crate::telemetry::span_ids(&current_span);
-                        let context = crate::logging::RequestContext {
-                            transport: "postgres",
-                            request_id,
-                            transaction_id: String::new(),
-                            client_ip,
-                            application_name,
-                            principal_issuer: String::new(),
-                            principal_subject: String::new(),
-                            transaction_state: "implicit",
-                            trace_id,
-                            span_id,
-                            diagnostics: None,
-                            parent_span: None,
-                        };
-                        let mut transaction = Tx::begin(self.engine.clone(), default_isolation)
+                    let result = {
+                        let _phase = PostgresPhase::new("engine_execute");
+                        if let Some(transaction) = &mut state.transaction {
+                            let transaction_span = transaction.span();
+                            let (trace_id, span_id) = crate::telemetry::span_ids(&transaction_span);
+                            let context = crate::logging::RequestContext {
+                                transport: "postgres",
+                                request_id,
+                                transaction_id: transaction.id().to_owned(),
+                                client_ip,
+                                application_name,
+                                principal_issuer: String::new(),
+                                principal_subject: String::new(),
+                                transaction_state: "explicit",
+                                trace_id,
+                                span_id,
+                                diagnostics: None,
+                                parent_span: Some(transaction_span),
+                            };
+                            Box::pin(crate::logging::with_request_context(
+                                context,
+                                transaction.execute_program(program, catalog_policy),
+                            ))
                             .await
-                            .map_err(engine_error)?;
-                        let context = crate::logging::RequestContext {
-                            transaction_id: transaction.id().to_owned(),
-                            ..context
-                        };
-                        Box::pin(crate::logging::with_request_context(context, async move {
-                            let result =
-                                transaction.execute_program(program, catalog_policy).await?;
-                            transaction.commit().await?;
-                            Ok(result)
-                        }))
-                        .await
-                        .map_err(|error| engine_error_with_sql(error, &sql))
+                            .map_err(|error| engine_error_with_sql(error, sql))
+                        } else {
+                            drop(state);
+                            let _transaction_admission = if catalog_change {
+                                Some(TransactionAdmission::Write {
+                                    _guard: self.transaction_admission.clone().write_owned().await,
+                                })
+                            } else {
+                                Some(TransactionAdmission::Read {
+                                    _guard: self.transaction_admission.clone().read_owned().await,
+                                })
+                            };
+                            let current_span = tracing::Span::current();
+                            let (trace_id, span_id) = crate::telemetry::span_ids(&current_span);
+                            let context = crate::logging::RequestContext {
+                                transport: "postgres",
+                                request_id,
+                                transaction_id: String::new(),
+                                client_ip,
+                                application_name,
+                                principal_issuer: String::new(),
+                                principal_subject: String::new(),
+                                transaction_state: "implicit",
+                                trace_id,
+                                span_id,
+                                diagnostics: None,
+                                parent_span: None,
+                            };
+                            let mut transaction =
+                                Tx::begin_implicit(self.engine.clone(), default_isolation)
+                                    .await
+                                    .map_err(engine_error)?;
+                            let context = crate::logging::RequestContext {
+                                transaction_id: transaction.id().to_owned(),
+                                ..context
+                            };
+                            Box::pin(crate::logging::with_request_context(context, async move {
+                                let result =
+                                    transaction.execute_program(program, catalog_policy).await?;
+                                transaction.commit().await?;
+                                Ok(result)
+                            }))
+                            .await
+                            .map_err(|error| engine_error_with_sql(error, sql))
+                        }
                     }?;
                     let affected = result
                         .statements
@@ -789,13 +832,38 @@ impl ParserBackend {
     where
         C: ClientInfo + Unpin + Send + Sync,
     {
-        if let Some(control) = transaction_control(sql)? {
+        let mut statements = {
+            let _phase = PostgresPhase::new("sql_parse");
+            sql::parse(sql).map_err(sql_error)?
+        };
+        if statements.len() != 1 {
+            return Err(sql_error(sql::Error::Invalid(format!(
+                "prepared execution needs exactly one statement, got {}",
+                statements.len()
+            ))));
+        }
+        let statement = statements.remove(0);
+        self.prepare_statement(client, sql.to_owned(), statement, types)
+            .await
+    }
+
+    async fn prepare_statement<C>(
+        &self,
+        client: &C,
+        sql: String,
+        statement: SqlStatement,
+        types: &[Option<Type>],
+    ) -> PgWireResult<PgPrepared>
+    where
+        C: ClientInfo + Unpin + Send + Sync,
+    {
+        if let Some(control) = transaction_control_statement(&statement)? {
             return Ok(PgPrepared::Control(control));
         }
-        if let Some(command) = session_command(sql)? {
+        if let Some(command) = session_command_statement(&statement)? {
             return Ok(PgPrepared::Session(command));
         }
-        if let Some(plan) = CatalogPlan::recognize(sql) {
+        if let Some(plan) = CatalogPlan::recognize(&sql) {
             return Ok(PgPrepared::Catalog(plan));
         }
         let tables = self.tables(client).await?;
@@ -803,8 +871,14 @@ impl ParserBackend {
             .iter()
             .map(|value| value.as_ref().and_then(scalar_from_pg))
             .collect::<Vec<_>>();
-        let prepared = sql::prepare(sql, &tables, &hints).map_err(sql_error)?;
-        let origins = result_origins(&prepared, &tables);
+        let prepared = {
+            let _phase = PostgresPhase::new("pir_prepare");
+            sql::prepare_statement(sql, statement, &tables, &hints).map_err(sql_error)?
+        };
+        let origins = {
+            let _phase = PostgresPhase::new("result_origin");
+            result_origins(&prepared, &tables)
+        };
         Ok(PgPrepared::Sql {
             prepared: Box::new(prepared),
             origins,
@@ -815,6 +889,7 @@ impl ParserBackend {
     where
         C: ClientInfo + Unpin + Send + Sync,
     {
+        let _phase = PostgresPhase::new("catalog_lookup");
         let session = session(client);
         let mut state = session.lock().await;
         match &mut state.transaction {
@@ -877,7 +952,7 @@ impl PgPrepared {
         }
     }
 
-    fn sql(&self) -> Option<String> {
+    fn sql(&self) -> Option<&str> {
         match self {
             Self::Sql { prepared, .. } => Some(prepared.sql()),
             Self::Catalog(_) | Self::Control(_) | Self::Session(_) => None,
@@ -996,12 +1071,19 @@ fn session<C: ClientInfo>(client: &C) -> Arc<Mutex<Session>> {
         .get_or_insert_with(|| Mutex::new(Session::default()))
 }
 
+#[cfg(test)]
 fn transaction_control(sql: &str) -> PgWireResult<Option<TransactionControl>> {
     let mut statements = sql::parse(sql).map_err(sql_error)?;
     if statements.len() != 1 {
         return Ok(None);
     }
-    let control = match statements.remove(0) {
+    transaction_control_statement(&statements.remove(0))
+}
+
+fn transaction_control_statement(
+    statement: &SqlStatement,
+) -> PgWireResult<Option<TransactionControl>> {
+    let control = match statement {
         SqlStatement::StartTransaction {
             modes,
             modifier,
@@ -1013,14 +1095,14 @@ fn transaction_control(sql: &str) -> PgWireResult<Option<TransactionControl>> {
             if modifier.is_some()
                 || !statements.is_empty()
                 || exception.is_some()
-                || has_end_keyword
+                || *has_end_keyword
             {
                 return Err(user_error(
                     "0A000",
                     "transaction modifiers are not supported by the PostgreSQL frontend yet",
                 ));
             }
-            let (isolation, read_only) = transaction_modes(&modes)?;
+            let (isolation, read_only) = transaction_modes(modes)?;
             Some(TransactionControl::Begin {
                 isolation,
                 read_only,
@@ -1045,12 +1127,17 @@ fn transaction_control(sql: &str) -> PgWireResult<Option<TransactionControl>> {
     Ok(control)
 }
 
+#[cfg(test)]
 fn session_command(sql: &str) -> PgWireResult<Option<SessionCommand>> {
     let mut statements = sql::parse(sql).map_err(sql_error)?;
     if statements.len() != 1 {
         return Ok(None);
     }
-    let command = match statements.remove(0) {
+    session_command_statement(&statements.remove(0))
+}
+
+fn session_command_statement(statement: &SqlStatement) -> PgWireResult<Option<SessionCommand>> {
+    let command = match statement {
         SqlStatement::Set(SqlSet::SingleAssignment {
             scope,
             hivevar: false,
@@ -1074,10 +1161,10 @@ fn session_command(sql: &str) -> PgWireResult<Option<SessionCommand>> {
                     };
                     SessionCommand::SetApplicationName(value)
                 }
-                "extra_float_digits" if sql_number(&values) == Some("3") => {
+                "extra_float_digits" if sql_number(values) == Some("3") => {
                     SessionCommand::SetExtraFloatDigits
                 }
-                "search_path" if sql_identifier(&values).is_some_and(is_public_search_path) => {
+                "search_path" if sql_identifier(values).is_some_and(is_public_search_path) => {
                     SessionCommand::SetSearchPath
                 }
                 _ => return Err(unsupported_setting(&name)),
@@ -1088,7 +1175,7 @@ fn session_command(sql: &str) -> PgWireResult<Option<SessionCommand>> {
             snapshot: None,
             session: true,
         }) => {
-            let (isolation, read_only) = transaction_modes(&modes)?;
+            let (isolation, read_only) = transaction_modes(modes)?;
             SessionCommand::SetTransactionCharacteristics {
                 isolation,
                 read_only,
@@ -1100,7 +1187,7 @@ fn session_command(sql: &str) -> PgWireResult<Option<SessionCommand>> {
                 "session command is not supported by the PostgreSQL frontend yet",
             ));
         }
-        SqlStatement::Reset(statement) => match statement.reset {
+        SqlStatement::Reset(statement) => match &statement.reset {
             Reset::ALL => SessionCommand::Reset(None),
             Reset::ConfigurationParameter(name) => {
                 let name = name.to_string().to_ascii_lowercase();
@@ -1853,31 +1940,13 @@ fn parameter_int64(parameters: &[Parameter], index: usize) -> Option<i64> {
 
 fn result_origins(prepared: &Prepared, tables: &[Table]) -> Vec<Option<FieldOrigin>> {
     let unknown = || vec![None; prepared.result_columns().len()];
-    let Ok(mut statements) = sql::parse(&prepared.sql()) else {
-        return unknown();
-    };
-    let Some(SqlStatement::Query(query)) = statements.pop() else {
-        return unknown();
-    };
-    let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() else {
-        return unknown();
-    };
-    let [source] = select.from.as_slice() else {
-        return unknown();
-    };
-    if !source.joins.is_empty() {
-        return unknown();
-    }
-    let sqlparser::ast::TableFactor::Table { name, .. } = &source.relation else {
-        return unknown();
-    };
-    let Some(table_name) = name.0.last().and_then(|part| part.as_ident()) else {
+    let Some(table_name) = prepared.simple_source_table() else {
         return unknown();
     };
     let Some((table_index, table)) = tables
         .iter()
         .enumerate()
-        .find(|(_, table)| table.name == table_name.value)
+        .find(|(_, table)| table.name == table_name)
     else {
         return unknown();
     };
@@ -1955,6 +2024,7 @@ fn query_response_with_tag_and_origins(
     format: &Format,
     origins: Option<&[Option<FieldOrigin>]>,
 ) -> PgWireResult<Response> {
+    let _phase = PostgresPhase::new("response_encode");
     let fields = Arc::new(fields(columns, Some(format), origins));
     let mut encoder = DataRowEncoder::new(fields.clone());
     let mut encoded = Vec::with_capacity(rows.len());
@@ -2054,7 +2124,7 @@ fn decode_parameters(portal: &Portal<PgPrepared>) -> PgWireResult<Vec<Parameter>
             .statement
             .statement
             .sql()
-            .unwrap_or_else(|| "<catalog or transaction statement>".into());
+            .unwrap_or("<catalog or transaction statement>");
         user_error(
             "22P02",
             format!(

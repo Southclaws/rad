@@ -5,6 +5,7 @@ import react from "@vitejs/plugin-react";
 // with include_bytes! while the TypeScript source remains independently
 // editable and testable.
 export default defineConfig({
+  base: "./",
   plugins: [react()],
   build: {
     outDir: "dist",

@@ -1109,6 +1109,7 @@ impl std::fmt::Display for SynopsisValue {
 #[derive(Clone)]
 pub struct PlannerStats {
     pub snapshot_identity: String,
+    pub planning_identity: String,
     pub scope: StatisticsScope,
     /// Actual row distributions for logical relations.
     pub feedback_models: HashMap<Fingerprint, FeedbackModel>,
@@ -1148,6 +1149,7 @@ impl PlannerStats {
     pub fn empty() -> Self {
         Self {
             snapshot_identity: "empty".into(),
+            planning_identity: "empty".into(),
             scope: StatisticsScope::Empty,
             feedback_models: HashMap::new(),
             statement_models: HashMap::new(),

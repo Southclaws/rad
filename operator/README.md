@@ -128,9 +128,9 @@ may be rotated between a Secret and a ServiceAccount without changing the
 physical storage identity; bucket, prefix, region, endpoint, and catalog mode
 remain immutable.
 
-## Client JWT authentication
+## JWT authentication
 
-Public client authentication is optional. Configure one database with an
+Client authentication is optional. Configure one database with an
 OAuth JWT issuer, audience, and explicit scope mappings:
 
 ```yaml
@@ -149,6 +149,8 @@ spec:
     catalogScopes:
       - rad:catalog
       - rad:admin
+    adminScopes:
+      - rad:admin
 ```
 
 Omit `jwksURL` to use OIDC discovery. At least one non-empty scope list is
@@ -157,8 +159,11 @@ at least one configured scope for each operation in the request. A valid token
 does not receive authority from an unconfigured capability.
 
 The profile defaults to `rfc9068`. Set `profile: compatible` only when the
-authorization server does not issue RFC 9068 access tokens. The route scheme
-must be `https`. TLS can terminate before the cluster Ingress,
+authorization server does not issue RFC 9068 access tokens. Set
+`profile: cloudflare-access` for Cloudflare Access application tokens. Each
+scope list for this profile can contain only `authenticated`. The Access
+application policy defines the services that receive the configured Rad
+capabilities. The route scheme must be `https`. TLS can terminate before the cluster Ingress,
 but the advertised URL must remain HTTPS. The operator sets the Rad
 administration listener to loopback and removes its Service and container port
 when JWT authentication is active. Rad protects `/metrics`, so the operator
@@ -182,6 +187,7 @@ same flags and environment variables as `rad serve`:
 --auth-query-scopes="... ..."      RAD_AUTH_QUERY_SCOPES="... ..."
 --auth-mutate-scopes="... ..."     RAD_AUTH_MUTATE_SCOPES="... ..."
 --auth-catalog-scopes="... ..."    RAD_AUTH_CATALOG_SCOPES="... ..."
+--auth-admin-scopes="... ..."      RAD_AUTH_ADMIN_SCOPES="... ..."
 ```
 
 Scope values in flags and environment variables are space-separated OAuth
@@ -446,6 +452,7 @@ Important manager flags are:
 --auth-query-scopes
 --auth-mutate-scopes
 --auth-catalog-scopes
+--auth-admin-scopes
 --dependency-poll-interval
 --credential-poll-interval
 --max-concurrent-reconciles

@@ -91,6 +91,7 @@ impl CommandKind {
 
 #[derive(Clone, Debug)]
 pub struct Prepared {
+    sql: String,
     statement: SqlStatement,
     parameter_types: Vec<ScalarType>,
     result_columns: Vec<ResultColumn>,
@@ -110,8 +111,30 @@ impl Prepared {
         self.kind
     }
 
-    pub fn sql(&self) -> String {
-        self.statement.to_string()
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+
+    pub(crate) fn simple_source_table(&self) -> Option<&str> {
+        let SqlStatement::Query(query) = &self.statement else {
+            return None;
+        };
+        let SetExpr::Select(select) = query.body.as_ref() else {
+            return None;
+        };
+        let [source] = select.from.as_slice() else {
+            return None;
+        };
+        if !source.joins.is_empty() {
+            return None;
+        }
+        let TableFactor::Table { name, .. } = &source.relation else {
+            return None;
+        };
+        name.0
+            .last()?
+            .as_ident()
+            .map(|identifier| identifier.value.as_str())
     }
 }
 
@@ -186,8 +209,18 @@ pub fn prepare(sql: &str, tables: &[Table], hints: &[Option<ScalarType>]) -> Res
         )));
     }
     let statement = statements.remove(0);
+    prepare_statement(sql.to_owned(), statement, tables, hints)
+}
+
+pub(crate) fn prepare_statement(
+    sql: String,
+    statement: SqlStatement,
+    tables: &[Table],
+    hints: &[Option<ScalarType>],
+) -> Result<Prepared> {
     let draft = compile_statement(&statement, tables, hints, None)?;
     Ok(Prepared {
+        sql,
         statement,
         parameter_types: draft.parameter_types,
         result_columns: draft.result_columns,
@@ -200,6 +233,14 @@ pub fn compile(
     tables: &[Table],
     parameters: &[Parameter],
 ) -> Result<Compiled> {
+    let hints = compile_parameters(prepared, parameters)?;
+    compile_with_parameters(prepared, tables, parameters, &hints)
+}
+
+pub(crate) fn compile_parameters(
+    prepared: &Prepared,
+    parameters: &[Parameter],
+) -> Result<Vec<Option<ScalarType>>> {
     if parameters.len() != prepared.parameter_types.len() {
         return Err(Error::Invalid(format!(
             "expected {} parameters, got {}",
@@ -219,13 +260,16 @@ pub fn compile(
             )));
         }
     }
-    let hints = prepared
-        .parameter_types
-        .iter()
-        .copied()
-        .map(Some)
-        .collect::<Vec<_>>();
-    let draft = compile_statement(&prepared.statement, tables, &hints, Some(parameters))?;
+    Ok(prepared.parameter_types.iter().copied().map(Some).collect())
+}
+
+pub(crate) fn compile_with_parameters(
+    prepared: &Prepared,
+    tables: &[Table],
+    parameters: &[Parameter],
+    hints: &[Option<ScalarType>],
+) -> Result<Compiled> {
+    let draft = compile_statement(&prepared.statement, tables, hints, Some(parameters))?;
     Ok(Compiled {
         program: draft.program,
         result_columns: draft.result_columns,

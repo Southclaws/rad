@@ -1,6 +1,8 @@
 // The admin surface has two deliberately separate clients. KV inspection is
 // private to the admin port; catalog and query operations use the public API.
 
+import { endpointBases } from "./endpoint-bases";
+
 export interface KVEntry {
   key: string;
   keyDisplay: string;
@@ -70,10 +72,7 @@ export interface Health {
   mode: "direct" | "schema";
 }
 
-const publicURL = new URL(window.location.href);
-const adminPort = Number(publicURL.port);
-publicURL.port = String(adminPort > 0 ? adminPort - 1 : 7237);
-const publicBase = publicURL.origin;
+const endpointBase = endpointBases(window.location.href);
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -92,7 +91,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 function publicRequest<T>(path: string, init?: RequestInit) {
-  return request<T>(`${publicBase}${path}`, init);
+  return request<T>(`${endpointBase.public}${path}`, init);
 }
 
 function json(method: string, body?: unknown): RequestInit {
@@ -165,10 +164,12 @@ export const adminAPI = {
   kvScan: (prefix: string, after?: string, limit = 100) => {
     const p = new URLSearchParams({ prefix, limit: String(limit) });
     if (after) p.set("after", after);
-    return request<KVScanResult>(`/api/kv/scan?${p}`);
+    return request<KVScanResult>(`${endpointBase.admin}/api/kv/scan?${p}`);
   },
   kvGet: (key64: string) =>
-    request<KVDetail>(`/api/kv/get?key=${encodeURIComponent(key64)}`),
+    request<KVDetail>(
+      `${endpointBase.admin}/api/kv/get?key=${encodeURIComponent(key64)}`,
+    ),
 };
 
 export const publicAPI = {

@@ -74,9 +74,27 @@ impl std::fmt::Display for CommitDurability {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WalMode {
+    Disabled,
+    #[default]
+    Enabled,
+}
+
+impl From<bool> for WalMode {
+    fn from(enabled: bool) -> Self {
+        if enabled {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Options {
     pub commit_durability: CommitDurability,
+    pub wal: WalMode,
     pub decoded_cache_size_mib: u64,
     pub scan_cache_blocks: bool,
     pub scan_read_ahead_kib: u64,
@@ -103,6 +121,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             commit_durability: CommitDurability::Durable,
+            wal: WalMode::Enabled,
             decoded_cache_size_mib: 128,
             scan_cache_blocks: false,
             scan_read_ahead_kib: 256,
@@ -138,6 +157,7 @@ impl Options {
     fn settings(&self) -> Result<Settings> {
         Ok(Settings {
             flush_interval: Some(self.flush_interval),
+            wal_enabled: self.wal == WalMode::Enabled,
             l0_sst_size_bytes: mib_to_usize(self.l0_sst_size_mib)?,
             max_wal_flushes_before_l0_flush: self.max_wal_flushes_before_l0_flush,
             l0_max_ssts: self.l0_max_ssts,

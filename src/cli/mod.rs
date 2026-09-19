@@ -110,6 +110,8 @@ mod tests {
             "rad:write rad:admin",
             "--auth-catalog-scopes",
             "rad:catalog rad:admin",
+            "--auth-admin-scopes",
+            "rad:admin",
         ])
         .unwrap();
         let RootCommand::Serve(serve) = cli.command else {
@@ -146,6 +148,7 @@ mod tests {
             serve.auth_catalog_scopes.as_deref(),
             Some("rad:catalog rad:admin")
         );
+        assert_eq!(serve.auth_admin_scopes.as_deref(), Some("rad:admin"));
         assert_eq!(serve.log_level, ServeLogLevel::Info);
         assert_eq!(serve.log_format, ServeLogFormat::Text);
         assert!(!serve.log_programs);

@@ -16,11 +16,12 @@ func authenticationFromValues(
 	queryScopes string,
 	mutateScopes string,
 	catalogScopes string,
+	adminScopes string,
 ) (*radv1alpha1.JWTAuthentication, error) {
 	mode = strings.TrimSpace(mode)
 	switch mode {
 	case "none":
-		if issuer != "" || audience != "" || jwksURL != "" || profile != "" || queryScopes != "" || mutateScopes != "" || catalogScopes != "" {
+		if issuer != "" || audience != "" || jwksURL != "" || profile != "" || queryScopes != "" || mutateScopes != "" || catalogScopes != "" || adminScopes != "" {
 			return nil, fmt.Errorf("JWT settings require auth mode jwt")
 		}
 		return nil, nil
@@ -37,6 +38,10 @@ func authenticationFromValues(
 		if err != nil {
 			return nil, err
 		}
+		admin, err := scopesFromValue(adminScopes, "auth-admin-scopes")
+		if err != nil {
+			return nil, err
+		}
 		authentication := &radv1alpha1.JWTAuthentication{
 			Issuer:        issuer,
 			Audience:      audience,
@@ -45,6 +50,7 @@ func authenticationFromValues(
 			QueryScopes:   query,
 			MutateScopes:  mutate,
 			CatalogScopes: catalog,
+			AdminScopes:   admin,
 		}
 		if err := authentication.Validate(); err != nil {
 			return nil, fmt.Errorf("invalid operator-wide authentication: %w", err)

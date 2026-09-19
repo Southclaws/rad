@@ -18,11 +18,13 @@ const (
 	JWTProfileRFC9068 JWTProfile = "rfc9068"
 	// JWTProfileCompatible accepts conventional JWT access tokens.
 	JWTProfileCompatible JWTProfile = "compatible"
+	// JWTProfileCloudflareAccess accepts Cloudflare Access application tokens.
+	JWTProfileCloudflareAccess JWTProfile = "cloudflare-access"
 )
 
-// JWTAuthentication configures OAuth JWT access-token validation and scope
-// authorization for one database.
-// +kubebuilder:validation:XValidation:rule="(has(self.queryScopes) && size(self.queryScopes) > 0) || (has(self.mutateScopes) && size(self.mutateScopes) > 0) || (has(self.catalogScopes) && size(self.catalogScopes) > 0)",message="at least one non-empty scope list is required"
+// JWTAuthentication configures JWT validation and capability authorization for
+// one database.
+// +kubebuilder:validation:XValidation:rule="(has(self.queryScopes) && size(self.queryScopes) > 0) || (has(self.mutateScopes) && size(self.mutateScopes) > 0) || (has(self.catalogScopes) && size(self.catalogScopes) > 0) || (has(self.adminScopes) && size(self.adminScopes) > 0)",message="at least one non-empty scope list is required"
 type JWTAuthentication struct {
 	// Issuer is the exact trusted JWT issuer.
 	// +kubebuilder:validation:MinLength=1
@@ -41,7 +43,7 @@ type JWTAuthentication struct {
 	// Profile selects the JWT access-token validation profile.
 	// +optional
 	// +kubebuilder:default=rfc9068
-	// +kubebuilder:validation:Enum=rfc9068;compatible
+	// +kubebuilder:validation:Enum=rfc9068;compatible;cloudflare-access
 	Profile JWTProfile `json:"profile,omitempty"`
 
 	// QueryScopes contains the scopes that grant query access.
@@ -61,6 +63,12 @@ type JWTAuthentication struct {
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=64
 	CatalogScopes []OAuthScope `json:"catalogScopes,omitempty"`
+
+	// AdminScopes contains the scopes that grant administration access.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	AdminScopes []OAuthScope `json:"adminScopes,omitempty"`
 }
 
 // Validate checks the constraints that the Rad process applies at startup.
@@ -79,30 +87,48 @@ func (authentication *JWTAuthentication) Validate() error {
 			return err
 		}
 	}
-	if profile := authentication.EffectiveProfile(); profile != JWTProfileRFC9068 && profile != JWTProfileCompatible {
-		return fmt.Errorf("profile must be rfc9068 or compatible")
+	if profile := authentication.EffectiveProfile(); profile != JWTProfileRFC9068 && profile != JWTProfileCompatible && profile != JWTProfileCloudflareAccess {
+		return fmt.Errorf("profile must be rfc9068, compatible, or cloudflare-access")
 	}
-	if len(authentication.QueryScopes) == 0 && len(authentication.MutateScopes) == 0 && len(authentication.CatalogScopes) == 0 {
-		return fmt.Errorf("at least one scope list is required")
-	}
+	return authentication.validateScopes()
+}
+
+func (authentication *JWTAuthentication) validateScopes() error {
+	hasScope := false
+	profile := authentication.EffectiveProfile()
 	for name, scopes := range map[string][]OAuthScope{
 		"query scopes":   authentication.QueryScopes,
 		"mutate scopes":  authentication.MutateScopes,
 		"catalog scopes": authentication.CatalogScopes,
+		"admin scopes":   authentication.AdminScopes,
 	} {
-		if len(scopes) > 64 {
-			return fmt.Errorf("%s must contain at most 64 values", name)
+		hasScope = hasScope || len(scopes) > 0
+		if err := validateScopeList(name, scopes, profile); err != nil {
+			return err
 		}
-		seen := make(map[OAuthScope]struct{}, len(scopes))
-		for _, scope := range scopes {
-			if !validOAuthScope(scope) {
-				return fmt.Errorf("%s contains an invalid OAuth scope", name)
-			}
-			if _, exists := seen[scope]; exists {
-				return fmt.Errorf("%s contains a duplicate OAuth scope", name)
-			}
-			seen[scope] = struct{}{}
+	}
+	if !hasScope {
+		return fmt.Errorf("at least one scope list is required")
+	}
+	return nil
+}
+
+func validateScopeList(name string, scopes []OAuthScope, profile JWTProfile) error {
+	if len(scopes) > 64 {
+		return fmt.Errorf("%s must contain at most 64 values", name)
+	}
+	seen := make(map[OAuthScope]struct{}, len(scopes))
+	for _, scope := range scopes {
+		if !validOAuthScope(scope) {
+			return fmt.Errorf("%s contains an invalid OAuth scope", name)
 		}
+		if _, exists := seen[scope]; exists {
+			return fmt.Errorf("%s contains a duplicate OAuth scope", name)
+		}
+		if profile == JWTProfileCloudflareAccess && scope != "authenticated" {
+			return fmt.Errorf("scope lists must contain only authenticated for profile cloudflare-access")
+		}
+		seen[scope] = struct{}{}
 	}
 	return nil
 }

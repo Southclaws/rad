@@ -104,23 +104,12 @@ impl Runtime {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Config {
     pub endpoint: Option<String>,
     pub instance_id: Option<String>,
     pub role: Option<String>,
     pub metrics: bool,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            endpoint: None,
-            instance_id: None,
-            role: None,
-            metrics: true,
-        }
-    }
 }
 
 fn resource(config: &Config) -> Resource {
@@ -319,6 +308,7 @@ struct Instruments {
     transaction_conflicts: Counter<u64>,
     postgres_active: UpDownCounter<i64>,
     postgres_connections: Counter<u64>,
+    postgres_phase_duration: Histogram<f64>,
     storage_available: Gauge<i64>,
     storage_outages: Counter<u64>,
     storage_outage_duration: Histogram<f64>,
@@ -746,6 +736,11 @@ impl Instruments {
             postgres_connections: meter
                 .u64_counter("rad.postgresql.connections")
                 .with_description("Completed PostgreSQL connections")
+                .build(),
+            postgres_phase_duration: meter
+                .f64_histogram("rad.postgresql.phase.duration")
+                .with_unit("s")
+                .with_description("PostgreSQL frontend phase duration")
                 .build(),
             storage_available: meter
                 .i64_gauge("rad.storage.available")
@@ -1676,6 +1671,15 @@ pub fn postgres_connection_finished(outcome: &str) {
         instruments
             .postgres_connections
             .add(1, &[KeyValue::new("rad.outcome", outcome.to_owned())]);
+    }
+}
+
+pub fn postgres_phase_finished(phase: &'static str, duration: Duration) {
+    if let Some(instruments) = INSTRUMENTS.get() {
+        instruments.postgres_phase_duration.record(
+            duration.as_secs_f64(),
+            &[KeyValue::new("rad.postgresql.phase", phase)],
+        );
     }
 }
 

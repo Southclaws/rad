@@ -7,7 +7,7 @@ use crate::engine::catalog::model::{CatalogDependencies, Column, Index, Table};
 use crate::engine::catalog::{Error, ErrorKind, Result};
 use crate::engine::kv::{KvView, keys};
 
-use super::{map_kv, parse_u64, write_protocol_key};
+use super::{map_kv, write_protocol_key};
 
 pub async fn admit_catalog_dependencies<V: KvView + ?Sized>(
     view: &V,
@@ -18,7 +18,7 @@ pub async fn admit_catalog_dependencies<V: KvView + ?Sized>(
             view,
             &table_existence_fence_key(&dependency.table_id)?,
             dependency.generation.get(),
-            &format!("existence fence for table {:?}", dependency.table_name),
+            || format!("existence fence for table {:?}", dependency.table_name),
         )
         .await?;
     }
@@ -27,10 +27,12 @@ pub async fn admit_catalog_dependencies<V: KvView + ?Sized>(
             view,
             &column_value_fence_key(&dependency.table_id, &dependency.column_id)?,
             dependency.generation.get(),
-            &format!(
-                "value fence for column {:?}.{:?}",
-                dependency.table_name, dependency.column_name
-            ),
+            || {
+                format!(
+                    "value fence for column {:?}.{:?}",
+                    dependency.table_name, dependency.column_name
+                )
+            },
         )
         .await?;
     }
@@ -39,10 +41,12 @@ pub async fn admit_catalog_dependencies<V: KvView + ?Sized>(
             view,
             &index_access_fence_key(&dependency.table_id, &dependency.index_id)?,
             dependency.generation.get(),
-            &format!(
-                "access fence for index {:?} on table {:?}",
-                dependency.index_name, dependency.table_name
-            ),
+            || {
+                format!(
+                    "access fence for index {:?} on table {:?}",
+                    dependency.index_name, dependency.table_name
+                )
+            },
         )
         .await?;
     }
@@ -51,30 +55,41 @@ pub async fn admit_catalog_dependencies<V: KvView + ?Sized>(
             view,
             &write_protocol_key(&dependency.table_id)?,
             dependency.generation.get(),
-            &format!("write protocol fence for table {:?}", dependency.table_name),
+            || format!("write protocol fence for table {:?}", dependency.table_name),
         )
         .await?;
     }
     Ok(())
 }
 
-async fn read_generation_fence<V: KvView + ?Sized>(
-    view: &V,
-    key: &[u8],
-    expected: u64,
-    label: &str,
-) -> Result<()> {
+async fn read_generation_fence<V, F>(view: &V, key: &[u8], expected: u64, label: F) -> Result<()>
+where
+    V: KvView + ?Sized,
+    F: Fn() -> String,
+{
     let actual = match view.get(key).await.map_err(map_kv)? {
-        Some(raw) => parse_u64(label, None, &raw)?,
+        Some(raw) => parse_generation(&raw, &label)?,
         None => 0,
     };
     if actual != expected {
         return Err(Error::message(
             ErrorKind::Conflict,
-            format!("catalog: {label} changed from generation {expected} to {actual}"),
+            format!(
+                "catalog: {} changed from generation {expected} to {actual}",
+                label()
+            ),
         ));
     }
     Ok(())
+}
+
+fn parse_generation(raw: &[u8], label: &impl Fn() -> String) -> Result<u64> {
+    let message = || format!("catalog: corrupt {} {raw:?}", label());
+    let value = std::str::from_utf8(raw)
+        .map_err(|error| Error::source(ErrorKind::CatalogCorrupt, message(), error))?;
+    value
+        .parse::<u64>()
+        .map_err(|error| Error::source(ErrorKind::CatalogCorrupt, message(), error))
 }
 
 pub fn table_existence_fence_key(table_id: &TableId) -> Result<Vec<u8>> {
@@ -91,7 +106,7 @@ pub async fn read_table_existence_fence<V: KvView + ?Sized>(
         view,
         &table_existence_fence_key(&table.id)?,
         table.existence_generation.get(),
-        &format!("existence fence for table {:?}", table.name),
+        || format!("existence fence for table {:?}", table.name),
     )
     .await
 }
@@ -128,7 +143,7 @@ pub async fn read_column_value_fence<V: KvView + ?Sized>(
         view,
         &column_value_fence_key(&table.id, &column.id)?,
         column.value_generation.get(),
-        &format!("value fence for column {:?}.{:?}", table.name, column.name),
+        || format!("value fence for column {:?}.{:?}", table.name, column.name),
     )
     .await
 }
@@ -171,10 +186,12 @@ pub async fn read_index_access_fence<V: KvView + ?Sized>(
         view,
         &index_access_fence_key(&table.id, &index.id)?,
         index.access_generation.get(),
-        &format!(
-            "access fence for index {:?} on table {:?}",
-            index.name, table.name
-        ),
+        || {
+            format!(
+                "access fence for index {:?} on table {:?}",
+                index.name, table.name
+            )
+        },
     )
     .await
 }

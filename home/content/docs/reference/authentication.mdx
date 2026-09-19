@@ -1,10 +1,11 @@
 ---
 title: Authentication
-description: Configure OAuth2 JWT access-token validation for the Rad HTTP API.
+description: Configure JWT access-token validation for the Rad HTTP API.
 ---
 
 Rad can validate JWT access tokens from one OAuth2 or OIDC authorization
-server. Authentication is disabled by default.
+server. Rad can also validate Cloudflare Access application tokens.
+Authentication is disabled by default.
 
 ## Start Rad with JWT authentication
 
@@ -70,15 +71,65 @@ profile accepts an absent `typ` header and the values `JWT`, `at+jwt`, and
 keeps the signature, key, issuer, audience, expiry, subject, and optional
 not-before checks. Rad does not change profiles in response to token content.
 
+## Use Cloudflare Access
+
+Use the `cloudflare-access` profile when a Cloudflare Access application
+protects the Rad endpoint:
+
+```sh
+rad serve \
+  --auth jwt \
+  --auth-profile cloudflare-access \
+  --auth-issuer https://team.cloudflareaccess.com \
+  --auth-audience application-audience-tag \
+  --auth-jwks-url https://team.cloudflareaccess.com/cdn-cgi/access/certs \
+  --auth-query-scopes authenticated \
+  --auth-mutate-scopes authenticated
+```
+
+The Worker or proxy must send the Cloudflare Access application token as the
+Rad bearer token. Cloudflare supplies this token in the
+`Cf-Access-Jwt-Assertion` request header. Do not send a Managed OAuth opaque
+token to Rad.
+
+This profile accepts only `RS256` signatures. It requires an application token
+with matching issuer and audience values. It accepts a `JWT` type header or no
+type header. It requires `exp`, `iat`, `type`, and `sub` claims. The `type`
+claim must be `app`. A user token uses `sub` as the principal. A service-token
+assertion has an empty `sub`; it must contain a non-empty `common_name`, which
+Rad uses as the principal.
+
+Cloudflare Access applies the application policy before it sends a request to
+the origin. The profile supplies one authorization value named
+`authenticated`. Each Rad capability that this application grants must contain
+only this value:
+
+```sh
+RAD_AUTH_QUERY_SCOPES=authenticated
+RAD_AUTH_MUTATE_SCOPES=authenticated
+RAD_AUTH_CATALOG_SCOPES=authenticated
+RAD_AUTH_ADMIN_SCOPES=authenticated
+```
+
+An omitted setting denies that capability. One Access application therefore
+represents one Rad role. Use separate Access applications or private endpoints
+for different roles. Keep the administration listener on a private network in
+production.
+
+Rad does not call the Cloudflare identity endpoint on the request path. It
+loads the Access signing keys at startup. It refreshes the cached keys after
+five minutes or when a token contains an unknown key ID.
+
 ## Restrict operations by scope
 
-Rad maps the standard JWT `scope` claim to three capabilities. JWT mode
-requires one or more scope settings:
+For the `rfc9068` and `compatible` profiles, Rad maps the standard JWT `scope`
+claim to four capabilities. JWT mode requires one or more scope settings:
 
 ```sh
 RAD_AUTH_QUERY_SCOPES="rad:read rad:admin"
 RAD_AUTH_MUTATE_SCOPES="rad:write rad:admin"
 RAD_AUTH_CATALOG_SCOPES="rad:catalog rad:admin"
+RAD_AUTH_ADMIN_SCOPES="rad:admin"
 ```
 
 The matching flags use the same values:
@@ -90,7 +141,8 @@ rad serve \
   --auth-audience rad-production \
   --auth-query-scopes "rad:read rad:admin" \
   --auth-mutate-scopes "rad:write rad:admin" \
-  --auth-catalog-scopes "rad:catalog rad:admin"
+  --auth-catalog-scopes "rad:catalog rad:admin" \
+  --auth-admin-scopes "rad:admin"
 ```
 
 Each setting is a space-separated OAuth scope list. Scope values are
@@ -102,13 +154,14 @@ The capabilities control these operations:
 - `query` controls query programs, read-only HTTP operations, and `/metrics`.
 - `mutate` controls create, update, and delete statements for table data.
 - `catalog` controls catalog statements and catalog HTTP operations.
+- `admin` controls the administration UI and its private API.
 
 A program must have every capability that its statements require. Rad checks
 the complete program before it applies an effect.
 
 Rad rejects JWT configuration when no scope setting is present. Each capability
 without a configured scope list is denied. Full authority requires explicit
-scope settings for all three capabilities. A token without a `scope` claim
+scope settings for all four capabilities. A token without a `scope` claim
 authenticates but has no capabilities. The `scope` claim must be a
 space-separated JSON string.
 
@@ -163,8 +216,9 @@ tokens automatically.
 The process role can further restrict data writes. The catalog mode can
 further restrict catalog changes.
 
-JWT mode does not support the PostgreSQL frontend. JWT mode also requires the
-separate administration listener to use a loopback IP address.
+JWT mode does not support the PostgreSQL frontend. JWT mode applies the same
+JWT validation to the public and administration listeners. The administration
+listener also requires a configured administration scope.
 
 Rad serves plain HTTP. Put Rad behind a TLS proxy and use `rads://` when bearer
 authentication is enabled.
