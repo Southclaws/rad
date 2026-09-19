@@ -14,6 +14,8 @@ func TestProblemConversionUsesTheCodeDiscriminatedUnion(t *testing.T) {
 		status int
 		kind   oas.ProblemType
 	}{
+		{protocol.CodeUnauthenticated, http.StatusUnauthorized, oas.UnauthenticatedProblemProblem},
+		{protocol.CodeForbidden, http.StatusForbidden, oas.ForbiddenProblemProblem},
 		{protocol.CodeInvalid, http.StatusUnprocessableEntity, oas.InvalidProblemProblem},
 		{protocol.CodeExecutionFailed, http.StatusUnprocessableEntity, oas.ExecutionFailedProblemProblem},
 		{protocol.CodeNotFound, http.StatusNotFound, oas.NotFoundProblemProblem},
@@ -23,6 +25,9 @@ func TestProblemConversionUsesTheCodeDiscriminatedUnion(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.code, func(t *testing.T) {
 			problem := protocol.NewProblem(test.code, test.status, "detail").WithReason(test.code + "_reason")
+			if test.code == protocol.CodeUnauthenticated || test.code == protocol.CodeForbidden {
+				problem.Stage = ""
+			}
 			generated := ProblemToOAS(problem)
 			if generated.Type != test.kind {
 				t.Fatalf("union kind = %q, want %q", generated.Type, test.kind)

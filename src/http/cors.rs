@@ -24,7 +24,7 @@ pub(super) async fn allow_admin_origin(request: Request, next: Next) -> Response
     );
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static("content-type, if-none-match"),
+        HeaderValue::from_static("authorization, content-type, if-none-match"),
     );
     headers.insert(
         header::ACCESS_CONTROL_EXPOSE_HEADERS,

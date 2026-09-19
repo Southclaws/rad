@@ -242,6 +242,9 @@ struct Instruments {
     http_active: UpDownCounter<i64>,
     http_requests: Counter<u64>,
     http_duration: Histogram<f64>,
+    auth_requests: Counter<u64>,
+    auth_authorizations: Counter<u64>,
+    auth_jwks_refreshes: Counter<u64>,
     program_active: UpDownCounter<i64>,
     program_admitted_active: UpDownCounter<i64>,
     program_queue_active: UpDownCounter<i64>,
@@ -405,6 +408,18 @@ impl Instruments {
                 .f64_histogram("http.server.request.duration")
                 .with_unit("s")
                 .with_description("Rad HTTP request duration")
+                .build(),
+            auth_requests: meter
+                .u64_counter("rad.auth.requests")
+                .with_description("Rad authentication outcomes")
+                .build(),
+            auth_authorizations: meter
+                .u64_counter("rad.auth.authorizations")
+                .with_description("Rad authorization outcomes")
+                .build(),
+            auth_jwks_refreshes: meter
+                .u64_counter("rad.auth.jwks.refreshes")
+                .with_description("Rad JWKS refresh outcomes")
                 .build(),
             program_active: meter
                 .i64_up_down_counter("rad.program.active")
@@ -911,6 +926,34 @@ pub fn http_finished(method: &str, status: u16, duration: Duration) {
     instruments
         .http_duration
         .record(duration.as_secs_f64(), &attributes);
+}
+
+pub(crate) fn auth_request(outcome: &'static str) {
+    if let Some(instruments) = INSTRUMENTS.get() {
+        instruments
+            .auth_requests
+            .add(1, &[KeyValue::new("rad.auth.outcome", outcome)]);
+    }
+}
+
+pub(crate) fn auth_authorization(capability: &'static str, outcome: &'static str) {
+    if let Some(instruments) = INSTRUMENTS.get() {
+        instruments.auth_authorizations.add(
+            1,
+            &[
+                KeyValue::new("rad.auth.capability", capability),
+                KeyValue::new("rad.auth.outcome", outcome),
+            ],
+        );
+    }
+}
+
+pub(crate) fn auth_jwks_refresh(outcome: &'static str) {
+    if let Some(instruments) = INSTRUMENTS.get() {
+        instruments
+            .auth_jwks_refreshes
+            .add(1, &[KeyValue::new("rad.auth.outcome", outcome)]);
+    }
 }
 
 pub fn program_started(transport: &str) {

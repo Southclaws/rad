@@ -136,13 +136,15 @@ func (c *Client) Execute(ctx context.Context, prog pirwire.Program, opts ...Exec
 		return out, nil
 	case *oas.ExecuteBadRequest:
 		return ProgramResult{}, apiError(oas.Problem(*v))
-	case *oas.ExecuteForbidden:
-		return ProgramResult{}, apiError(oas.Problem(*v))
+	case *oas.ForbiddenHeaders:
+		return ProgramResult{}, forbiddenError(v)
 	case *oas.ExecuteConflict:
 		return ProgramResult{}, apiError(oas.Problem(*v))
 	case *oas.ExecuteUnprocessableEntity:
 		c.schema.invalidate()
 		return ProgramResult{}, apiError(oas.Problem(*v))
+	case *oas.UnauthorizedHeaders:
+		return ProgramResult{}, unauthenticatedError(v)
 	}
 	return ProgramResult{}, fmt.Errorf("rad: unexpected execute response %T", res)
 }

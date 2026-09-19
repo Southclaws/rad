@@ -165,6 +165,7 @@ impl ObservedError {
 
     fn execution(error: &exec::Error) -> Self {
         let (code, reason) = match Failure::from_exec(error) {
+            Failure::Forbidden(failure) => ("forbidden", Some(failure.reason.as_str())),
             Failure::Invalid(failure) => ("invalid", Some(failure.reason.as_str())),
             Failure::ExecutionFailed(failure) => {
                 ("execution_failed", Some(failure.reason.as_str()))

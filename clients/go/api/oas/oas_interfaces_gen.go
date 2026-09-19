@@ -17,12 +17,24 @@ type ExecuteRes interface {
 	executeRes()
 }
 
+type GetHealthzRes interface {
+	getHealthzRes()
+}
+
+type GetInfoRes interface {
+	getInfoRes()
+}
+
 type GetLivezRes interface {
 	getLivezRes()
 }
 
 type GetReadyzRes interface {
 	getReadyzRes()
+}
+
+type GetSchemaRes interface {
+	getSchemaRes()
 }
 
 type GetStartupzRes interface {
@@ -65,12 +77,20 @@ type SchemaTransitionGetRes interface {
 	schemaTransitionGetRes()
 }
 
+type SchemaTransitionListRes interface {
+	schemaTransitionListRes()
+}
+
 type TableCreateRes interface {
 	tableCreateRes()
 }
 
 type TableDeleteRes interface {
 	tableDeleteRes()
+}
+
+type TableListRes interface {
+	tableListRes()
 }
 
 type TableUpdateRes interface {

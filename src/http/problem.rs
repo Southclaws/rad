@@ -3,8 +3,8 @@ use axum::http::StatusCode;
 use super::generated::types as wire;
 use crate::service::error::{
     ConflictContext, ConflictFailure, ConflictObject, ConflictOperation, ExecutionContext,
-    ExecutionFailure, Failure, InternalFailure, InvalidFailure, Location, NotFoundFailure,
-    ResourceContext, Stage,
+    ExecutionFailure, Failure, ForbiddenFailure, InternalFailure, InvalidFailure, Location,
+    NotFoundFailure, ResourceContext, Stage,
 };
 
 pub(super) struct ResponseProblem {
@@ -15,6 +15,7 @@ pub(super) struct ResponseProblem {
 impl ResponseProblem {
     pub(super) fn from_failure(failure: Failure) -> Self {
         match failure {
+            Failure::Forbidden(failure) => Self::forbidden(failure),
             Failure::Invalid(failure) => {
                 let status = if failure.reason == crate::service::error::InvalidReason::ReadOnly {
                     StatusCode::FORBIDDEN
@@ -27,6 +28,19 @@ impl ResponseProblem {
             Failure::Conflict(failure) => Self::conflict(failure),
             Failure::NotFound(failure) => Self::not_found(failure),
             Failure::Internal(failure) => Self::internal(failure),
+        }
+    }
+
+    pub(super) fn forbidden(failure: ForbiddenFailure) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            body: wire::Problem::ForbiddenProblem(wire::ForbiddenProblem {
+                detail: Some(failure.detail),
+                reason: wire::ForbiddenProblemReason::InsufficientScope,
+                status: 403,
+                title: wire::ForbiddenProblemTitle::AccessForbidden,
+                r#type: wire::ForbiddenProblemType::UrnRadProblemForbidden,
+            }),
         }
     }
 

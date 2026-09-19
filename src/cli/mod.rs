@@ -56,6 +56,8 @@ mod tests {
             "project/rad.config.yaml",
             "--file",
             "project/schema.yaml",
+            "--access-token-file",
+            "project/access-token",
             "diff",
             "--format",
             "json",
@@ -72,6 +74,10 @@ mod tests {
             schema.options.file,
             std::path::Path::new("project/schema.yaml")
         );
+        assert_eq!(
+            schema.options.access_token_file.as_deref(),
+            Some(std::path::Path::new("project/access-token"))
+        );
         assert!(matches!(schema.command, SchemaCommand::Diff(_)));
     }
 
@@ -86,6 +92,24 @@ mod tests {
             "postgres",
             "--postgres-addr",
             "127.0.0.1:15432",
+            "--admin-addr",
+            "127.0.0.1:7238",
+            "--auth",
+            "jwt",
+            "--auth-issuer",
+            "https://auth.example.com",
+            "--auth-audience",
+            "rad-production",
+            "--auth-jwks-url",
+            "https://auth.example.com/keys",
+            "--auth-profile",
+            "compatible",
+            "--auth-query-scopes",
+            "rad:read rad:admin",
+            "--auth-mutate-scopes",
+            "rad:write rad:admin",
+            "--auth-catalog-scopes",
+            "rad:catalog rad:admin",
         ])
         .unwrap();
         let RootCommand::Serve(serve) = cli.command else {
@@ -95,6 +119,33 @@ mod tests {
         assert_eq!(serve.role, None);
         assert_eq!(serve.frontend, Some(ServeFrontend::Postgres));
         assert_eq!(serve.postgres_addr, "127.0.0.1:15432");
+        assert_eq!(serve.admin_addr.as_deref(), Some("127.0.0.1:7238"));
+        assert_eq!(serve.auth, ServeAuth::Jwt);
+        assert_eq!(
+            serve.auth_issuer.as_deref(),
+            Some("https://auth.example.com")
+        );
+        assert_eq!(serve.auth_audience.as_deref(), Some("rad-production"));
+        assert_eq!(
+            serve.auth_jwks_url.as_deref(),
+            Some("https://auth.example.com/keys")
+        );
+        assert_eq!(
+            serve.auth_profile,
+            Some(super::generated::ServeAuthProfile::Compatible)
+        );
+        assert_eq!(
+            serve.auth_query_scopes.as_deref(),
+            Some("rad:read rad:admin")
+        );
+        assert_eq!(
+            serve.auth_mutate_scopes.as_deref(),
+            Some("rad:write rad:admin")
+        );
+        assert_eq!(
+            serve.auth_catalog_scopes.as_deref(),
+            Some("rad:catalog rad:admin")
+        );
         assert_eq!(serve.log_level, ServeLogLevel::Info);
         assert_eq!(serve.log_format, ServeLogFormat::Text);
         assert!(!serve.log_programs);
@@ -179,6 +230,24 @@ mod tests {
         assert!(init.yes);
         assert!(init.empty);
         assert!(init.no_generate);
+    }
+
+    #[test]
+    fn generated_doctor_accepts_an_access_token_file() {
+        let cli = Cli::try_parse_from([
+            "rad",
+            "doctor",
+            "--access-token-file",
+            "project/access-token",
+        ])
+        .unwrap();
+        let RootCommand::Doctor(doctor) = cli.command else {
+            panic!("expected doctor command");
+        };
+        assert_eq!(
+            doctor.access_token_file.as_deref(),
+            Some(std::path::Path::new("project/access-token"))
+        );
     }
 
     #[tokio::test]

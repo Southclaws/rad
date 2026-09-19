@@ -58,6 +58,74 @@ spec:
               DatabaseSpec is the desired state for one Rad process and one physical S3
               bucket.
             properties:
+              authentication:
+                description: |-
+                  Authentication enables OAuth JWT access-token validation. Omission uses
+                  the operator-wide setting, or disables authentication when none exists.
+                properties:
+                  audience:
+                    description: Audience identifies the Rad deployment in the JWT
+                      audience claim.
+                    minLength: 1
+                    type: string
+                  catalogScopes:
+                    description: CatalogScopes contains the scopes that grant catalog
+                      mutation access.
+                    items:
+                      description: OAuthScope is one value in an OAuth scope list.
+                      minLength: 1
+                      pattern: ^[\x21\x23-\x5B\x5D-\x7E]+$
+                      type: string
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-type: set
+                  issuer:
+                    description: Issuer is the exact trusted JWT issuer.
+                    minLength: 1
+                    pattern: ^https://
+                    type: string
+                  jwksURL:
+                    description: JWKSURL overrides OIDC discovery from the issuer.
+                    pattern: ^https://
+                    type: string
+                  mutateScopes:
+                    description: MutateScopes contains the scopes that grant data
+                      mutation access.
+                    items:
+                      description: OAuthScope is one value in an OAuth scope list.
+                      minLength: 1
+                      pattern: ^[\x21\x23-\x5B\x5D-\x7E]+$
+                      type: string
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-type: set
+                  profile:
+                    default: rfc9068
+                    description: Profile selects the JWT access-token validation profile.
+                    enum:
+                    - rfc9068
+                    - compatible
+                    type: string
+                  queryScopes:
+                    description: QueryScopes contains the scopes that grant query
+                      access.
+                    items:
+                      description: OAuthScope is one value in an OAuth scope list.
+                      minLength: 1
+                      pattern: ^[\x21\x23-\x5B\x5D-\x7E]+$
+                      type: string
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-type: set
+                required:
+                - audience
+                - issuer
+                type: object
+                x-kubernetes-validations:
+                - message: at least one non-empty scope list is required
+                  rule: (has(self.queryScopes) && size(self.queryScopes) > 0) || (has(self.mutateScopes)
+                    && size(self.mutateScopes) > 0) || (has(self.catalogScopes) &&
+                    size(self.catalogScopes) > 0)
               captureWorkloadCorpus:
                 default: false
                 description: |-
@@ -530,6 +598,9 @@ spec:
             - route
             - storage
             type: object
+            x-kubernetes-validations:
+            - message: authentication requires route scheme https
+              rule: '!has(self.authentication) || self.route.scheme == ''https'''
           status:
             description: |-
               DatabaseStatus is the controller-observed state. Kubernetes resources are

@@ -125,6 +125,36 @@ func TestAPIServerDefaultsAndPermitsAuthenticationRotation(t *testing.T) {
 	if err := kubernetesClient.Create(ctx, missingAuthentication); !apierrors.IsInvalid(err) {
 		t.Fatalf("missing authentication error = %v, want Invalid", err)
 	}
+
+	jwtAuthentication := envtestDatabase("jwt", namespace, "jwt-bucket", "jwt.rad.example", secret.Name)
+	jwtAuthentication.Spec.Authentication = &radv1alpha1.JWTAuthentication{
+		Issuer:      "https://auth.example.com/",
+		Audience:    "rad-production",
+		QueryScopes: []radv1alpha1.OAuthScope{"rad:read"},
+	}
+	if err := kubernetesClient.Create(ctx, jwtAuthentication); err != nil {
+		t.Fatalf("valid JWT authentication rejected: %v", err)
+	}
+
+	jwtWithoutScopes := envtestDatabase("jwt-no-scopes", namespace, "jwt-no-scopes-bucket", "jwt-no-scopes.rad.example", secret.Name)
+	jwtWithoutScopes.Spec.Authentication = &radv1alpha1.JWTAuthentication{
+		Issuer:   "https://auth.example.com/",
+		Audience: "rad-production",
+	}
+	if err := kubernetesClient.Create(ctx, jwtWithoutScopes); !apierrors.IsInvalid(err) {
+		t.Fatalf("JWT authentication without scopes error = %v, want Invalid", err)
+	}
+
+	jwtOnHTTP := envtestDatabase("jwt-http", namespace, "jwt-http-bucket", "jwt-http.rad.example", secret.Name)
+	jwtOnHTTP.Spec.Route.Scheme = "http"
+	jwtOnHTTP.Spec.Authentication = &radv1alpha1.JWTAuthentication{
+		Issuer:      "https://auth.example.com/",
+		Audience:    "rad-production",
+		QueryScopes: []radv1alpha1.OAuthScope{"rad:read"},
+	}
+	if err := kubernetesClient.Create(ctx, jwtOnHTTP); !apierrors.IsInvalid(err) {
+		t.Fatalf("JWT authentication on an HTTP route error = %v, want Invalid", err)
+	}
 }
 
 func TestAPIServerSerializesCompetingStorageClaims(t *testing.T) {

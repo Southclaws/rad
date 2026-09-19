@@ -61,6 +61,12 @@ db, err := client.CreateDatabase(ctx, cluster.DatabaseSpec{
     Bucket:            "customer-123-rad",
     CredentialsSecret: "customer-123-s3", // or ServiceAccount for IRSA/STS
     Hostname:          "customer-123.rad.example.com",
+    Authentication: &cluster.JWTAuthentication{
+        Issuer:       "https://auth.example.com/",
+        Audience:     "customer-123-rad",
+        QueryScopes:  []string{"rad:read", "rad:admin"},
+        MutateScopes: []string{"rad:write", "rad:admin"},
+    },
 })
 
 db, err = client.WaitReady(ctx, "customer-123")
@@ -121,6 +127,69 @@ mechanism. Rad's AWS SDK reads the projected web-identity token. Authentication
 may be rotated between a Secret and a ServiceAccount without changing the
 physical storage identity; bucket, prefix, region, endpoint, and catalog mode
 remain immutable.
+
+## Client JWT authentication
+
+Public client authentication is optional. Configure one database with an
+OAuth JWT issuer, audience, and explicit scope mappings:
+
+```yaml
+spec:
+  authentication:
+    issuer: https://auth.example.com/
+    audience: tenant-a-rad
+    jwksURL: https://auth.example.com/keys
+    profile: rfc9068
+    queryScopes:
+      - rad:read
+      - rad:admin
+    mutateScopes:
+      - rad:write
+      - rad:admin
+    catalogScopes:
+      - rad:catalog
+      - rad:admin
+```
+
+Omit `jwksURL` to use OIDC discovery. At least one non-empty scope list is
+required. An omitted capability list denies that capability. A token must have
+at least one configured scope for each operation in the request. A valid token
+does not receive authority from an unconfigured capability.
+
+The profile defaults to `rfc9068`. Set `profile: compatible` only when the
+authorization server does not issue RFC 9068 access tokens. The route scheme
+must be `https`. TLS can terminate before the cluster Ingress,
+but the advertised URL must remain HTTPS. The operator sets the Rad
+administration listener to loopback and removes its Service and container port
+when JWT authentication is active. Rad protects `/metrics`, so the operator
+also omits automatic Prometheus scrape annotations. Configure a token-capable
+scrape target separately when tenant metrics are required.
+
+The operator resolves one JWT policy for each `Database`. A database policy
+replaces the operator-wide policy. A database without a policy inherits the
+operator-wide policy. The writer and all readers of one database receive the
+same resolved policy. Policies from separate databases are never combined.
+
+The operator can apply one default JWT policy to every database. It accepts the
+same flags and environment variables as `rad serve`:
+
+```text
+--auth=jwt                         RAD_AUTH=jwt
+--auth-issuer=...                  RAD_AUTH_ISSUER=...
+--auth-audience=...                RAD_AUTH_AUDIENCE=...
+--auth-jwks-url=...                RAD_AUTH_JWKS_URL=...
+--auth-profile=compatible          RAD_AUTH_PROFILE=compatible
+--auth-query-scopes="... ..."      RAD_AUTH_QUERY_SCOPES="... ..."
+--auth-mutate-scopes="... ..."     RAD_AUTH_MUTATE_SCOPES="... ..."
+--auth-catalog-scopes="... ..."    RAD_AUTH_CATALOG_SCOPES="... ..."
+```
+
+Scope values in flags and environment variables are space-separated OAuth
+scope lists. `spec.authentication` replaces the complete operator-wide policy
+for that database. An omitted `spec.authentication` inherits the operator-wide
+policy. A database resource cannot disable operator-wide authentication. Run a
+separate operator installation when a namespace requires a different default
+or permits unauthenticated databases.
 
 ## Claims, routing, and TLS
 
@@ -300,8 +369,7 @@ When readers exist, the policy also admits port 7239 from this database's own
 reader pods and from nothing else; the gateway rule never covers it.
 
 Without `--gateway-namespace`, the operator does not manage a NetworkPolicy.
-Cluster ingress authentication, authorization, certificates, and public DNS
-remain deployment responsibilities.
+Cluster ingress certificates and public DNS remain deployment responsibilities.
 
 ## Lifecycle and failure handling
 
@@ -342,9 +410,10 @@ images that could read their credential Secret.
 ## Status and observability
 
 `kubectl get rad` shows readiness, URL, bucket, and age. Conditions distinguish
-claim acceptance, credentials, workload readiness, route readiness, and final
-readiness. Dependency failures also emit Kubernetes warning Events; successful
-claim acquisition, rollouts, readiness, and finalization emit normal Events.
+claim acceptance, public authentication, storage credentials, workload
+readiness, route readiness, and final readiness. Dependency failures also emit
+Kubernetes warning Events; successful claim acquisition, rollouts, readiness,
+and finalization emit normal Events.
 
 The manager serves controller-runtime metrics plus:
 
@@ -369,6 +438,14 @@ Important manager flags are:
 --ingress-class
 --gateway-namespace
 --gateway-pod-selector
+--auth
+--auth-issuer
+--auth-audience
+--auth-jwks-url
+--auth-profile
+--auth-query-scopes
+--auth-mutate-scopes
+--auth-catalog-scopes
 --dependency-poll-interval
 --credential-poll-interval
 --max-concurrent-reconciles

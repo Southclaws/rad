@@ -149,7 +149,7 @@ func TestLoggingPolicyReachesWriterAndReaders(t *testing.T) {
 
 func TestOperatorWorkloadsDefaultToJSONLogs(t *testing.T) {
 	database := testDatabase("alpha", "alpha-bucket", "alpha.rad.localhost", "alpha-s3", time.Unix(1, 0))
-	values := environmentMap(databaseEnvironment(database, internalTransport{}, writeRole))
+	values := environmentMap(databaseEnvironment(database, nil, internalTransport{}, writeRole))
 	if values["RAD_LOG_LEVEL"] != "info" || values["RAD_LOG_FORMAT"] != "json" || values["RAD_LOG_PROGRAMS"] != "false" {
 		t.Fatalf("default logging environment = %#v", values)
 	}
@@ -200,7 +200,7 @@ func TestTelemetryPolicyReachesWriterAndReaders(t *testing.T) {
 
 func TestTelemetryDefaultsToSummaryWithoutAnExporter(t *testing.T) {
 	database := testDatabase("alpha", "alpha-bucket", "alpha.rad.localhost", "alpha-s3", time.Unix(1, 0))
-	values := environmentMap(databaseEnvironment(database, internalTransport{}, writeRole))
+	values := environmentMap(databaseEnvironment(database, nil, internalTransport{}, writeRole))
 	if values["RAD_DIAGNOSTICS"] != "summary" {
 		t.Fatalf("default diagnostic environment = %#v", values)
 	}
@@ -218,7 +218,7 @@ func TestTelemetryDefaultsToSummaryWithoutAnExporter(t *testing.T) {
 func TestTelemetryExporterUsesTheDefaultTraceSampleRatio(t *testing.T) {
 	database := testDatabase("alpha", "alpha-bucket", "alpha.rad.localhost", "alpha-s3", time.Unix(1, 0))
 	database.Spec.Telemetry.Endpoint = "http://collector:4318"
-	values := environmentMap(databaseEnvironment(database, internalTransport{}, writeRole))
+	values := environmentMap(databaseEnvironment(database, nil, internalTransport{}, writeRole))
 	if values["OTEL_TRACES_SAMPLER"] != "parentbased_traceidratio" || values["OTEL_TRACES_SAMPLER_ARG"] != "0.01" {
 		t.Fatalf("default trace sampler environment = %#v", values)
 	}
@@ -250,7 +250,7 @@ func TestSlateSettingsReachPods(t *testing.T) {
 			Preload:           "l0",
 		},
 	}
-	values := environmentMap(databaseEnvironment(database, internalTransport{}, writeRole))
+	values := environmentMap(databaseEnvironment(database, nil, internalTransport{}, writeRole))
 	want := map[string]string{
 		"RAD_SLATE_DECODED_CACHE_SIZE_MIB":          "256",
 		"RAD_SLATE_SCAN_CACHE_BLOCKS":               "true",
@@ -281,6 +281,7 @@ func TestSlateSettingsReachPods(t *testing.T) {
 	pod := (&DatabaseReconciler{}).radPodSpec(
 		database,
 		resolvedAuthentication{secretName: "alpha-s3"},
+		nil,
 		internalTransport{},
 		writeRole,
 	)
@@ -296,13 +297,13 @@ func TestSlateSettingsReachPods(t *testing.T) {
 func TestMetricScrapeAnnotationsFollowTheMetricPolicy(t *testing.T) {
 	database := testDatabase("alpha", "alpha-bucket", "alpha.rad.localhost", "alpha-s3", time.Unix(1, 0))
 	authentication := resolvedAuthentication{secretName: "alpha-s3", versionAnnotation: "one"}
-	annotations := workloadAnnotations(database, authentication)
+	annotations := workloadAnnotations(database, authentication, nil)
 	if annotations["prometheus.io/scrape"] != "true" || annotations["prometheus.io/path"] != "/metrics" || annotations["prometheus.io/port"] != "7237" {
 		t.Fatalf("metric scrape annotations = %#v", annotations)
 	}
 	metrics := false
 	database.Spec.Telemetry.Metrics = &metrics
-	annotations = workloadAnnotations(database, authentication)
+	annotations = workloadAnnotations(database, authentication, nil)
 	if _, configured := annotations["prometheus.io/scrape"]; configured {
 		t.Fatalf("disabled metric scrape annotations = %#v", annotations)
 	}

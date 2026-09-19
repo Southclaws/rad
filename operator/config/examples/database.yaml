@@ -11,6 +11,19 @@ spec:
       credentialsSecretRef:
         name: example-rad-s3
   catalogMode: schema
+  authentication:
+    issuer: https://auth.example.com/
+    audience: example-rad
+    profile: rfc9068
+    queryScopes:
+      - rad:read
+      - rad:admin
+    mutateScopes:
+      - rad:write
+      - rad:admin
+    catalogScopes:
+      - rad:catalog
+      - rad:admin
   readers: 2
   logging:
     level: info

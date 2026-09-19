@@ -19,11 +19,12 @@ type InternalTransportStatus struct {
 }
 
 const (
-	ConditionClaimsAccepted   = "ClaimsAccepted"
-	ConditionCredentialsReady = "CredentialsReady"
-	ConditionWorkloadReady    = "WorkloadReady"
-	ConditionRouteReady       = "RouteReady"
-	ConditionReady            = "Ready"
+	ConditionClaimsAccepted      = "ClaimsAccepted"
+	ConditionAuthenticationReady = "AuthenticationReady"
+	ConditionCredentialsReady    = "CredentialsReady"
+	ConditionWorkloadReady       = "WorkloadReady"
+	ConditionRouteReady          = "RouteReady"
+	ConditionReady               = "Ready"
 	// ConditionInternalTLSReady reports the statistics channel's transport
 	// security. It is deliberately separate from Ready: losing the channel
 	// costs the fleet a better planner, not availability.
@@ -334,10 +335,16 @@ type InternalTLS struct {
 
 // DatabaseSpec is the desired state for one Rad process and one physical S3
 // bucket.
+// +kubebuilder:validation:XValidation:rule="!has(self.authentication) || self.route.scheme == 'https'",message="authentication requires route scheme https"
 type DatabaseSpec struct {
 	// The physical storage fields are immutable, while authentication may be
 	// rotated or migrated between supported identity mechanisms.
 	Storage S3Storage `json:"storage"`
+
+	// Authentication enables OAuth JWT access-token validation. Omission uses
+	// the operator-wide setting, or disables authentication when none exists.
+	// +optional
+	Authentication *JWTAuthentication `json:"authentication,omitempty"`
 
 	// CatalogMode is immutable after the database is initialized.
 	// +kubebuilder:default=schema

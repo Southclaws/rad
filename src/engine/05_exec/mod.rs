@@ -34,9 +34,9 @@ pub use events::{
 pub use frames::shape_frames;
 pub(crate) use program::resolve_default;
 pub use program::{
-    CatalogExpectation, CatalogPolicy, DefaultSpec, PreparedStatementEstimate, Program,
-    ProgramOptions, ProgramResult, Statement, StatementPlan, StatementPlanMeasurement,
-    StatementResult,
+    Capability, CatalogExpectation, CatalogPolicy, DefaultSpec, ExecutionPolicy,
+    PreparedStatementEstimate, Program, ProgramOptions, ProgramResult, Statement, StatementPlan,
+    StatementPlanMeasurement, StatementResult,
 };
 pub use query::{Executor, Limits};
 pub use reference::ReferenceExecutor;

@@ -214,7 +214,7 @@ func TestDependencyFailureMarksDownstreamConditionsUnknown(t *testing.T) {
 
 	reconciler.setDependencyCondition(database, radv1alpha1.ConditionClaimsAccepted, "BucketClaimConflict", "bucket")
 
-	for _, conditionType := range []string{radv1alpha1.ConditionCredentialsReady, radv1alpha1.ConditionWorkloadReady, radv1alpha1.ConditionRouteReady} {
+	for _, conditionType := range []string{radv1alpha1.ConditionAuthenticationReady, radv1alpha1.ConditionCredentialsReady, radv1alpha1.ConditionWorkloadReady, radv1alpha1.ConditionRouteReady} {
 		condition := meta.FindStatusCondition(database.Status.Conditions, conditionType)
 		if condition == nil || condition.Status != metav1.ConditionUnknown {
 			t.Fatalf("%s = %#v, want Unknown after an upstream failure", conditionType, condition)

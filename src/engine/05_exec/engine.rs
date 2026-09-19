@@ -735,7 +735,8 @@ impl Engine {
         if effectful {
             self.require_write()?;
         }
-        let result_name = super::program::validate(program, catalog_policy)?;
+        let result_name =
+            super::program::validate(program, catalog_policy, super::ExecutionPolicy::allow_all())?;
         let _execution_permit = self.admit_execution().await;
         let execution_grant = if effectful {
             super::parallel::ExecutionGrant::serial()
@@ -821,7 +822,7 @@ impl Engine {
         if effectful {
             self.require_write()?;
         }
-        let result_name = super::program::validate(&program, options.catalog)?;
+        let result_name = super::program::validate(&program, options.catalog, options.execution)?;
         let _execution_permit = self.admit_execution().await;
         let execution_grant = if effectful {
             super::parallel::ExecutionGrant::serial()

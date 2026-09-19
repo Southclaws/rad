@@ -33,6 +33,8 @@ those.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `Health` | The server is alive. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
 
 #### `GET` `/info`
@@ -50,6 +52,8 @@ development and administrative tooling.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `DatabaseInfo` | Metadata about the database behind this endpoint. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
 
 #### `GET` `/statistics`
@@ -79,6 +83,8 @@ does not collect" is distinguishable from "nothing observed yet".
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `Statistics` | The planner statistics this instance currently holds. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `404` | application/problem+json `Problem` | The addressed resource, such as a transaction, does not exist. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
 
@@ -97,6 +103,8 @@ Use this to introspect a running server without access to the original
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TableList` | The current set of tables. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
 
 ### Probes
@@ -194,6 +202,8 @@ Verify an exact generated-client schema identity.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `204` | No body | The operation succeeded and there is no body to return. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
 
@@ -216,6 +226,8 @@ migration; diff does not return durable transition handles.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `SchemaDiffResult` | The semantic diff, catalog PIR, and preflight findings. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
 
@@ -242,7 +254,8 @@ never be bypassed.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `SchemaMigrateResult` | The committed accepted schema and its identity. |
-| `403` | application/problem+json `Problem` | The operation requires a write instance. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -256,6 +269,8 @@ Return the committed canonical schema together with its monotonic version and ca
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `SchemaState` | The current accepted schema and identity. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
 
 ### Administration
@@ -289,7 +304,8 @@ program and is available in both catalog management modes.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TransitionControl` | The transition's durable administrative state. |
-| `403` | application/problem+json `Problem` | The operation requires a write instance. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `404` | application/problem+json `Problem` | The addressed resource, such as a transaction, does not exist. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
@@ -312,6 +328,8 @@ coherent storage snapshot and does not claim or advance a worker.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TransitionControl` | The transition's durable administrative state. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `404` | application/problem+json `Problem` | The addressed resource, such as a transaction, does not exist. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
 
@@ -335,6 +353,8 @@ in both direct and schema-managed catalog modes.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TransitionList` | A coherent snapshot of durable schema transitions. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
 
 ### Catalog
@@ -371,7 +391,8 @@ schema-managed database this operation is always rejected.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TableInfo` | The table's definition after the mutation was applied. |
-| `403` | application/problem+json `Problem` | The operation requires a write instance. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -403,7 +424,8 @@ always rejected.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TableInfo` | The table's definition after the mutation was applied. |
-| `403` | application/problem+json `Problem` | The operation requires a write instance. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -433,7 +455,8 @@ is always rejected.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TableInfo` | The table's definition after the mutation was applied. |
-| `403` | application/problem+json `Problem` | The operation requires a write instance. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -457,7 +480,8 @@ operation is always rejected.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TableInfo` | The table's definition after the mutation was applied. |
-| `403` | application/problem+json `Problem` | The operation requires a write instance. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -488,7 +512,8 @@ it. On a schema-managed database this operation is always rejected.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TableInfo` | The table's definition after the mutation was applied. |
-| `403` | application/problem+json `Problem` | The operation requires a write instance. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -512,7 +537,8 @@ schema-managed database this operation is always rejected.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `204` | No body | The operation succeeded and there is no body to return. |
-| `403` | application/problem+json `Problem` | The operation requires a write instance. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -543,7 +569,8 @@ always rejected.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TableInfo` | The table's definition after the mutation was applied. |
-| `403` | application/problem+json `Problem` | The operation requires a write instance. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -576,7 +603,8 @@ rejected.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `200` | application/json `TableInfo` | The table's definition after the mutation was applied. |
-| `403` | application/problem+json `Problem` | The operation requires a write instance. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -647,7 +675,8 @@ earlier statements).
 | --- | --- | --- |
 | `200` | application/json `ProgramResult` | The result statement's datum plus a per-statement summary. |
 | `400` | application/problem+json `Problem` | The request body was malformed or could not be decoded. |
-| `403` | application/problem+json `Problem` | The operation requires a write instance. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `409` | application/problem+json `Problem` | The write lost an optimistic race; an immediate retry may win. |
 | `422` | application/problem+json `Problem` | The request was well formed but failed validation against the catalog. |
 | `default` | application/problem+json `Problem` | Something went wrong inside the server that was not the caller's fault. |
@@ -679,6 +708,8 @@ relation or serializing its result.
 | `200` | application/json `Value` | The query result changed or no matching entity tag was supplied. |
 | `304` | No body | The supplied entity tag matches the current query representation. |
 | `400` | application/problem+json `Problem` | The request body was malformed or could not be decoded. |
+| `401` | application/problem+json `UnauthenticatedProblem` | A bearer access token is missing or invalid. |
+| `403` | application/problem+json `Problem` | The process or access token does not permit the operation. |
 | `406` | application/problem+json `Problem` | The Accept header does not permit the query result representation. |
 | `413` | application/problem+json `Problem` | The request body exceeds the server limit. |
 | `415` | application/problem+json `Problem` | The request content type is not the LIR query media type. |
@@ -794,6 +825,10 @@ The physical execution identity available at failure.
 
 
 
+#### `ForbiddenProblem`
+
+
+
 #### `ForeignKeyAction`
 
 The action applied to referencing rows when the referenced row is deleted.
@@ -869,7 +904,7 @@ An RFC 7807 Problem Details object. Every non-2xx response carries one.
 `code` is the stable top-level discriminator; `reason` is the
 fine-grained semantic identity within that class.
 
-**Variants:** `InvalidProblem`, `ExecutionFailedProblem`, `NotFoundProblem`, `ConflictProblem`, `InternalProblem`
+**Variants:** `UnauthenticatedProblem`, `ForbiddenProblem`, `InvalidProblem`, `ExecutionFailedProblem`, `NotFoundProblem`, `ConflictProblem`, `InternalProblem`
 
 #### `ProblemBase`
 
@@ -1435,6 +1470,10 @@ The durable lifecycle state of online schema work.
 
 Advisory retained-work pressure. `write_gated` means affected writes
 are temporarily rejected until the worker catches up or terminates.
+
+#### `UnauthenticatedProblem`
+
+
 
 #### `Value`
 

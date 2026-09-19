@@ -75,6 +75,8 @@ pub(super) async fn log_request(request: Request, next: Next) -> Response {
         transaction_id: String::new(),
         client_ip: client_ip.clone(),
         application_name: application_name.clone(),
+        principal_issuer: String::new(),
+        principal_subject: String::new(),
         transaction_state: "none",
         trace_id: trace_id.clone(),
         span_id: span_id.clone(),
@@ -87,6 +89,9 @@ pub(super) async fn log_request(request: Request, next: Next) -> Response {
         crate::logging::with_request_context(context, next.run(request).instrument(span.clone()))
             .await;
     let status = response.status().as_u16();
+    let principal = response.extensions().get::<crate::auth::Principal>();
+    let principal_issuer = principal.map_or("", |principal| principal.issuer.as_str());
+    let principal_subject = principal.map_or("", |principal| principal.subject.as_str());
     let duration = started.elapsed();
     span.record("http.response.status_code", status);
     if status >= 500 {
@@ -102,6 +107,8 @@ pub(super) async fn log_request(request: Request, next: Next) -> Response {
         span_id,
         client_ip,
         application_name,
+        principal_issuer,
+        principal_subject,
         method = %method,
         path,
         status,

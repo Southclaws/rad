@@ -56,6 +56,22 @@ pub enum SchemaTransitionsListState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServeAuth {
+    #[value(name = r"none")]
+    None,
+    #[value(name = r"jwt")]
+    Jwt,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServeAuthProfile {
+    #[value(name = r"rfc9068")]
+    Rfc9068,
+    #[value(name = r"compatible")]
+    Compatible,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ServeCatalogMode {
     #[value(name = r"direct")]
     Direct,
@@ -543,6 +559,72 @@ pub struct ServeArgs {
     )]
     pub addr: String,
     #[arg(
+        id = r"admin-addr",
+        long = r"admin-addr",
+        help = r"Administration HTTP listen address; JWT mode requires loopback.",
+        env = r"RAD_ADMIN_ADDR"
+    )]
+    pub admin_addr: Option<String>,
+    #[arg(
+        id = r"auth",
+        long = r"auth",
+        help = r"Public HTTP authentication mode; JWT requires at least one scope setting.",
+        env = r"RAD_AUTH",
+        default_value = r"none",
+        value_enum
+    )]
+    pub auth: ServeAuth,
+    #[arg(
+        id = r"auth-issuer",
+        long = r"auth-issuer",
+        help = r"Trusted JWT issuer; required with --auth jwt.",
+        env = r"RAD_AUTH_ISSUER"
+    )]
+    pub auth_issuer: Option<String>,
+    #[arg(
+        id = r"auth-audience",
+        long = r"auth-audience",
+        help = r"Audience that identifies this Rad deployment; required with --auth jwt.",
+        env = r"RAD_AUTH_AUDIENCE"
+    )]
+    pub auth_audience: Option<String>,
+    #[arg(
+        id = r"auth-jwks-url",
+        long = r"auth-jwks-url",
+        help = r"Trusted JWKS URL; omission uses OIDC discovery from the issuer.",
+        env = r"RAD_AUTH_JWKS_URL"
+    )]
+    pub auth_jwks_url: Option<String>,
+    #[arg(
+        id = r"auth-profile",
+        long = r"auth-profile",
+        help = r"JWT validation profile; omission selects rfc9068 in JWT mode.",
+        env = r"RAD_AUTH_PROFILE",
+        value_enum
+    )]
+    pub auth_profile: Option<ServeAuthProfile>,
+    #[arg(
+        id = r"auth-query-scopes",
+        long = r"auth-query-scopes",
+        help = r"Space-separated OAuth scopes; any listed scope grants query access and omission denies it.",
+        env = r"RAD_AUTH_QUERY_SCOPES"
+    )]
+    pub auth_query_scopes: Option<String>,
+    #[arg(
+        id = r"auth-mutate-scopes",
+        long = r"auth-mutate-scopes",
+        help = r"Space-separated OAuth scopes; any listed scope grants data mutation access and omission denies it.",
+        env = r"RAD_AUTH_MUTATE_SCOPES"
+    )]
+    pub auth_mutate_scopes: Option<String>,
+    #[arg(
+        id = r"auth-catalog-scopes",
+        long = r"auth-catalog-scopes",
+        help = r"Space-separated OAuth scopes; any listed scope grants catalog mutation access and omission denies it.",
+        env = r"RAD_AUTH_CATALOG_SCOPES"
+    )]
+    pub auth_catalog_scopes: Option<String>,
+    #[arg(
         id = r"role",
         long = r"role",
         help = r"Slate access role; omission selects write.",
@@ -985,6 +1067,13 @@ pub struct DoctorArgs {
         default_value = r"rad.schema.yaml"
     )]
     pub file: std::path::PathBuf,
+    #[arg(
+        id = r"access-token-file",
+        long = r"access-token-file",
+        help = r"File holding the bearer access token; Rad reads it before each request.",
+        env = r"RAD_ACCESS_TOKEN_FILE"
+    )]
+    pub access_token_file: Option<std::path::PathBuf>,
 }
 
 impl DoctorArgs {
@@ -1026,6 +1115,13 @@ pub struct SchemaOptions {
         default_value = r"rad.schema.yaml"
     )]
     pub file: std::path::PathBuf,
+    #[arg(
+        id = r"access-token-file",
+        long = r"access-token-file",
+        help = r"File holding the bearer access token; Rad reads it before each request.",
+        env = r"RAD_ACCESS_TOKEN_FILE"
+    )]
+    pub access_token_file: Option<std::path::PathBuf>,
 }
 
 impl SchemaArgs {

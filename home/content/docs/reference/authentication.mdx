@@ -1,0 +1,170 @@
+---
+title: Authentication
+description: Configure OAuth2 JWT access-token validation for the Rad HTTP API.
+---
+
+Rad can validate JWT access tokens from one OAuth2 or OIDC authorization
+server. Authentication is disabled by default.
+
+## Start Rad with JWT authentication
+
+Set one issuer and one audience:
+
+```sh
+rad serve \
+  --auth jwt \
+  --auth-issuer https://auth.example.com/ \
+  --auth-audience rad-production \
+  --auth-query-scopes rad:read
+```
+
+Rad reads the OIDC discovery document from
+`<issuer>/.well-known/openid-configuration`. The discovery document must
+contain the exact configured issuer. Rad then loads the configured JWKS.
+
+Use `--auth-jwks-url` to skip discovery:
+
+```sh
+rad serve \
+  --auth jwt \
+  --auth-issuer https://auth.example.com/ \
+  --auth-audience rad-production \
+  --auth-jwks-url https://auth.example.com/keys \
+  --auth-query-scopes rad:read
+```
+
+The issuer and JWKS URL must use HTTPS. They must not contain credentials or a
+fragment. The issuer must not contain a query.
+
+Rad accepts `RS256`, `ES256`, and `EdDSA` signatures. Each token must contain a
+key ID. Rad rejects token headers that supply a key or a key URL.
+
+JWT mode uses the `rfc9068` validation profile by default. This profile requires
+these values:
+
+- A `typ` header with `at+jwt` or `application/at+jwt`.
+- An exact `iss` string.
+- An `aud` string or array that contains the configured audience.
+- Numeric `exp` and `iat` claims.
+- Non-empty `sub`, `client_id`, and `jti` strings.
+- A valid numeric `nbf` claim when it is present.
+
+Rad uses a fixed 60-second clock allowance. It rejects an `iat` value that is
+more than 60 seconds in the future.
+
+Use the `compatible` profile when the authorization server does not issue RFC
+9068 access tokens:
+
+```sh
+rad serve \
+  --auth jwt \
+  --auth-profile compatible \
+  --auth-issuer https://auth.example.com/ \
+  --auth-audience rad-production \
+  --auth-query-scopes rad:read
+```
+
+The matching environment variable is `RAD_AUTH_PROFILE=compatible`. This
+profile accepts an absent `typ` header and the values `JWT`, `at+jwt`, and
+`application/at+jwt`. It does not require `client_id`, `iat`, or `jti`. It
+keeps the signature, key, issuer, audience, expiry, subject, and optional
+not-before checks. Rad does not change profiles in response to token content.
+
+## Restrict operations by scope
+
+Rad maps the standard JWT `scope` claim to three capabilities. JWT mode
+requires one or more scope settings:
+
+```sh
+RAD_AUTH_QUERY_SCOPES="rad:read rad:admin"
+RAD_AUTH_MUTATE_SCOPES="rad:write rad:admin"
+RAD_AUTH_CATALOG_SCOPES="rad:catalog rad:admin"
+```
+
+The matching flags use the same values:
+
+```sh
+rad serve \
+  --auth jwt \
+  --auth-issuer https://auth.example.com/ \
+  --auth-audience rad-production \
+  --auth-query-scopes "rad:read rad:admin" \
+  --auth-mutate-scopes "rad:write rad:admin" \
+  --auth-catalog-scopes "rad:catalog rad:admin"
+```
+
+Each setting is a space-separated OAuth scope list. Scope values are
+case-sensitive. Do not use commas. Any configured value grants its capability.
+The same value can grant more than one capability.
+
+The capabilities control these operations:
+
+- `query` controls query programs, read-only HTTP operations, and `/metrics`.
+- `mutate` controls create, update, and delete statements for table data.
+- `catalog` controls catalog statements and catalog HTTP operations.
+
+A program must have every capability that its statements require. Rad checks
+the complete program before it applies an effect.
+
+Rad rejects JWT configuration when no scope setting is present. Each capability
+without a configured scope list is denied. Full authority requires explicit
+scope settings for all three capabilities. A token without a `scope` claim
+authenticates but has no capabilities. The `scope` claim must be a
+space-separated JSON string.
+
+An authenticated request without a required capability receives HTTP `403`
+with `code: forbidden` and `reason: insufficient_scope`. The response includes
+this challenge:
+
+```text
+WWW-Authenticate: Bearer realm="rad", error="insufficient_scope"
+```
+
+This format follows the scope syntax in
+[RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html#section-3.3), the JWT
+scope claim in
+[RFC 9068](https://www.rfc-editor.org/rfc/rfc9068.html#section-2.2.3), and the
+`insufficient_scope` response in
+[RFC 6750](https://www.rfc-editor.org/rfc/rfc6750.html#section-3.1).
+
+## Send an access token
+
+Send the token in the HTTP authorization header:
+
+```text
+Authorization: Bearer <access-token>
+```
+
+All public HTTP operations and `/metrics` require the token. `/startupz`,
+`/readyz`, `/livez`, and HTTP `OPTIONS` do not require the token.
+
+For CLI commands, put the token in a file:
+
+```sh
+rad schema --access-token-file /run/secrets/rad-token status
+rad doctor --access-token-file /run/secrets/rad-token
+```
+
+You can also set `RAD_ACCESS_TOKEN_FILE`. Rad reads the file before each
+request. This behavior supports projected token rotation. Project
+configuration does not store the token.
+
+The Go client accepts a fixed token:
+
+```go
+client, err := rad.Dial(endpoint, rad.WithBearerToken(token))
+```
+
+Use `rad.WithHTTPClient` with a custom transport when the client must refresh
+tokens automatically.
+
+## Authority and network requirements
+
+The process role can further restrict data writes. The catalog mode can
+further restrict catalog changes.
+
+JWT mode does not support the PostgreSQL frontend. JWT mode also requires the
+separate administration listener to use a loopback IP address.
+
+Rad serves plain HTTP. Put Rad behind a TLS proxy and use `rads://` when bearer
+authentication is enabled.

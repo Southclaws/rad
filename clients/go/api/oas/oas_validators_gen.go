@@ -28,14 +28,6 @@ func (s ColumnCreateConflict) Validate() error {
 	return nil
 }
 
-func (s ColumnCreateForbidden) Validate() error {
-	alias := (Problem)(s)
-	if err := alias.Validate(); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (s ColumnCreateUnprocessableEntity) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
@@ -159,14 +151,6 @@ func (s ColumnDeleteConflict) Validate() error {
 	return nil
 }
 
-func (s ColumnDeleteForbidden) Validate() error {
-	alias := (Problem)(s)
-	if err := alias.Validate(); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (s ColumnDeleteUnprocessableEntity) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
@@ -227,14 +211,6 @@ func (s *ColumnInfo) Validate() error {
 }
 
 func (s ColumnUpdateConflict) Validate() error {
-	alias := (Problem)(s)
-	if err := alias.Validate(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s ColumnUpdateForbidden) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
 		return err
@@ -527,14 +503,6 @@ func (s ExecuteConflict) Validate() error {
 	return nil
 }
 
-func (s ExecuteForbidden) Validate() error {
-	alias := (Problem)(s)
-	if err := alias.Validate(); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (s ExecuteUnprocessableEntity) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
@@ -646,6 +614,141 @@ func (s ExecutionFailedProblemType) Validate() error {
 	}
 }
 
+func (s *ForbiddenHeaders) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Response.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "Response",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s *ForbiddenProblem) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Type.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "type",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if err := s.Title.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "title",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if err := s.Status.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "status",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if err := s.Reason.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "reason",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if err := s.Code.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "code",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s ForbiddenProblemCode) Validate() error {
+	switch s {
+	case "forbidden":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s ForbiddenProblemReason) Validate() error {
+	switch s {
+	case "insufficient_scope":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s ForbiddenProblemStatus) Validate() error {
+	switch s {
+	case 403:
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s ForbiddenProblemTitle) Validate() error {
+	switch s {
+	case "Access Forbidden":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s ForbiddenProblemType) Validate() error {
+	switch s {
+	case "urn:rad:problem:forbidden":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
 func (s ForeignKeyAction) Validate() error {
 	switch s {
 	case "restrict":
@@ -737,14 +840,6 @@ func (s IndexCreateConflict) Validate() error {
 	return nil
 }
 
-func (s IndexCreateForbidden) Validate() error {
-	alias := (Problem)(s)
-	if err := alias.Validate(); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (s IndexCreateUnprocessableEntity) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
@@ -754,14 +849,6 @@ func (s IndexCreateUnprocessableEntity) Validate() error {
 }
 
 func (s IndexDeleteConflict) Validate() error {
-	alias := (Problem)(s)
-	if err := alias.Validate(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s IndexDeleteForbidden) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
 		return err
@@ -1212,6 +1299,16 @@ func (s NotFoundProblemType) Validate() error {
 
 func (s Problem) Validate() error {
 	switch s.Type {
+	case UnauthenticatedProblemProblem:
+		if err := s.UnauthenticatedProblem.Validate(); err != nil {
+			return err
+		}
+		return nil
+	case ForbiddenProblemProblem:
+		if err := s.ForbiddenProblem.Validate(); err != nil {
+			return err
+		}
+		return nil
 	case InvalidProblemProblem:
 		if err := s.InvalidProblem.Validate(); err != nil {
 			return err
@@ -1545,14 +1642,6 @@ func (s SchemaMigrateConflict) Validate() error {
 	return nil
 }
 
-func (s SchemaMigrateForbidden) Validate() error {
-	alias := (Problem)(s)
-	if err := alias.Validate(); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (s *SchemaMigrateRequest) Validate() error {
 	if s == nil {
 		return validate.ErrNilPointer
@@ -1727,14 +1816,6 @@ func (s *SchemaState) Validate() error {
 }
 
 func (s SchemaTransitionCancelConflict) Validate() error {
-	alias := (Problem)(s)
-	if err := alias.Validate(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s SchemaTransitionCancelForbidden) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
 		return err
@@ -2418,14 +2499,6 @@ func (s TableCreateConflict) Validate() error {
 	return nil
 }
 
-func (s TableCreateForbidden) Validate() error {
-	alias := (Problem)(s)
-	if err := alias.Validate(); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (s TableCreateUnprocessableEntity) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
@@ -2564,14 +2637,6 @@ func (s *TableDef) Validate() error {
 }
 
 func (s TableDeleteConflict) Validate() error {
-	alias := (Problem)(s)
-	if err := alias.Validate(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s TableDeleteForbidden) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
 		return err
@@ -2750,14 +2815,6 @@ func (s *TableList) Validate() error {
 }
 
 func (s TableUpdateConflict) Validate() error {
-	alias := (Problem)(s)
-	if err := alias.Validate(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s TableUpdateForbidden) Validate() error {
 	alias := (Problem)(s)
 	if err := alias.Validate(); err != nil {
 		return err
@@ -3018,4 +3075,141 @@ func (s TransitionWorkState) Validate() error {
 	default:
 		return errors.Errorf("invalid value: %v", s)
 	}
+}
+
+func (s *UnauthenticatedProblem) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Type.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "type",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if err := s.Title.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "title",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if err := s.Status.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "status",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if err := s.Reason.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "reason",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if err := s.Code.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "code",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s UnauthenticatedProblemCode) Validate() error {
+	switch s {
+	case "unauthenticated":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s UnauthenticatedProblemReason) Validate() error {
+	switch s {
+	case "missing_token":
+		return nil
+	case "invalid_token":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s UnauthenticatedProblemStatus) Validate() error {
+	switch s {
+	case 401:
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s UnauthenticatedProblemTitle) Validate() error {
+	switch s {
+	case "Authentication Required":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s UnauthenticatedProblemType) Validate() error {
+	switch s {
+	case "urn:rad:problem:unauthenticated":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s *UnauthorizedHeaders) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Response.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "Response",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
 }

@@ -29,6 +29,7 @@ func (r *DatabaseReconciler) reconcileReaders(
 	ctx context.Context,
 	database *radv1alpha1.Database,
 	authentication resolvedAuthentication,
+	clientAuthentication *radv1alpha1.JWTAuthentication,
 	transport internalTransport,
 ) error {
 	if desiredReaders(database) == 0 {
@@ -40,7 +41,7 @@ func (r *DatabaseReconciler) reconcileReaders(
 	if err := r.reconcileReaderDisruptionBudget(ctx, database); err != nil {
 		return err
 	}
-	return r.reconcileReaderDeployment(ctx, database, authentication, transport)
+	return r.reconcileReaderDeployment(ctx, database, authentication, clientAuthentication, transport)
 }
 
 func (r *DatabaseReconciler) removeReaders(ctx context.Context, database *radv1alpha1.Database) error {
@@ -105,6 +106,7 @@ func (r *DatabaseReconciler) reconcileReaderDeployment(
 	ctx context.Context,
 	database *radv1alpha1.Database,
 	authentication resolvedAuthentication,
+	clientAuthentication *radv1alpha1.JWTAuthentication,
 	transport internalTransport,
 ) error {
 	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: readerResourceName(database.Name), Namespace: database.Namespace}}
@@ -131,9 +133,9 @@ func (r *DatabaseReconciler) reconcileReaderDeployment(
 		deployment.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels:      roleLabelsFor(database, readRole),
-				Annotations: workloadAnnotations(database, authentication),
+				Annotations: workloadAnnotations(database, authentication, clientAuthentication),
 			},
-			Spec: r.radPodSpec(database, authentication, transport, readRole),
+			Spec: r.radPodSpec(database, authentication, clientAuthentication, transport, readRole),
 		}
 		return nil
 	})

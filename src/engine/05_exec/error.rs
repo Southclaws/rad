@@ -3,6 +3,7 @@ use std::error::Error as StdError;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorKind {
     ReadOnly,
+    Forbidden,
     InvalidInput,
     ConstraintViolation,
     DataLossAcceptance,
@@ -23,6 +24,7 @@ impl ErrorKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ReadOnly => "read_only",
+            Self::Forbidden => "forbidden",
             Self::InvalidInput => "invalid_input",
             Self::ConstraintViolation => "constraint_violation",
             Self::DataLossAcceptance => "data_loss_acceptance",
@@ -49,6 +51,7 @@ impl ErrorKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorReason {
     ReadOnly,
+    InsufficientScope,
     Invalid,
     SchemaViolation,
     UnknownTable,
@@ -92,6 +95,7 @@ impl ErrorReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ReadOnly => "read_only",
+            Self::InsufficientScope => "insufficient_scope",
             Self::Invalid => "invalid",
             Self::SchemaViolation => "schema_violation",
             Self::UnknownTable => "unknown_table",
@@ -313,6 +317,7 @@ fn catalog_error_class(kind: crate::engine::catalog::ErrorKind) -> (ErrorKind, E
 fn default_reason(kind: ErrorKind) -> ErrorReason {
     match kind {
         ErrorKind::ReadOnly => ErrorReason::ReadOnly,
+        ErrorKind::Forbidden => ErrorReason::InsufficientScope,
         ErrorKind::InvalidInput => ErrorReason::Invalid,
         ErrorKind::ConstraintViolation => ErrorReason::ConstraintViolation,
         ErrorKind::DataLossAcceptance => ErrorReason::SchemaDataLossAcceptanceRequired,

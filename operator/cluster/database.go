@@ -30,6 +30,21 @@ type LogFormat string
 // DiagnosticLevel selects the maximum Rad response diagnostic level.
 type DiagnosticLevel string
 
+// JWTProfile selects a JWT access-token validation profile.
+type JWTProfile string
+
+// JWTAuthentication configures OAuth JWT access-token validation and scope
+// authorization for one database.
+type JWTAuthentication struct {
+	Issuer        string
+	Audience      string
+	JWKSURL       string
+	Profile       JWTProfile
+	QueryScopes   []string
+	MutateScopes  []string
+	CatalogScopes []string
+}
+
 const (
 	CatalogModeDirect CatalogMode = "direct"
 	CatalogModeSchema CatalogMode = "schema"
@@ -47,6 +62,9 @@ const (
 	DiagnosticLevelSummary  DiagnosticLevel = "summary"
 	DiagnosticLevelDetailed DiagnosticLevel = "detailed"
 	DiagnosticLevelFull     DiagnosticLevel = "full"
+
+	JWTProfileRFC9068    JWTProfile = "rfc9068"
+	JWTProfileCompatible JWTProfile = "compatible"
 )
 
 // DatabaseSpec is the product-level description of one tenant database. The
@@ -73,6 +91,10 @@ type DatabaseSpec struct {
 	// ServiceAccount names an existing ServiceAccount configured for
 	// provider-native workload identity such as EKS IRSA.
 	ServiceAccount string
+
+	// Authentication replaces the operator-wide JWT setting for this database.
+	// Nil uses the operator-wide setting.
+	Authentication *JWTAuthentication
 
 	// CatalogMode defaults to schema and is immutable after initialization.
 	CatalogMode CatalogMode
@@ -162,6 +184,9 @@ type Database struct {
 	Bucket   string
 	Endpoint string
 	Hostname string
+	// Authentication is the database-specific JWT setting. Nil means that the
+	// database uses the operator-wide setting or has no authentication.
+	Authentication *JWTAuthentication
 
 	// URL is the external base URL once the route is published.
 	URL string
@@ -315,6 +340,13 @@ func (c *Client) resource(spec DatabaseSpec) (*radv1alpha1.Database, error) {
 	default:
 		return nil, fmt.Errorf("database %s: one of CredentialsSecret or ServiceAccount is required", spec.Name)
 	}
+	clientAuthentication, err := authenticationResource(spec.Authentication)
+	if err != nil {
+		return nil, fmt.Errorf("database %s: %w", spec.Name, err)
+	}
+	if clientAuthentication != nil && defaultValue(spec.Scheme, "https") != "https" {
+		return nil, fmt.Errorf("database %s: JWT authentication requires scheme https", spec.Name)
+	}
 	diagnostics := spec.Diagnostics
 	if diagnostics == "" {
 		diagnostics = DiagnosticLevelSummary
@@ -334,8 +366,9 @@ func (c *Client) resource(spec DatabaseSpec) (*radv1alpha1.Database, error) {
 				Endpoint:       spec.Endpoint,
 				Authentication: authentication,
 			},
-			CatalogMode: radv1alpha1.CatalogMode(spec.CatalogMode),
-			Readers:     spec.Readers,
+			Authentication: clientAuthentication,
+			CatalogMode:    radv1alpha1.CatalogMode(spec.CatalogMode),
+			Readers:        spec.Readers,
 			Logging: radv1alpha1.Logging{
 				Level:    radv1alpha1.LogLevel(spec.LogLevel),
 				Format:   radv1alpha1.LogFormat(spec.LogFormat),
@@ -359,6 +392,33 @@ func (c *Client) resource(spec DatabaseSpec) (*radv1alpha1.Database, error) {
 			},
 		},
 	}, nil
+}
+
+func authenticationResource(authentication *JWTAuthentication) (*radv1alpha1.JWTAuthentication, error) {
+	if authentication == nil {
+		return nil, nil
+	}
+	resource := &radv1alpha1.JWTAuthentication{
+		Issuer:        authentication.Issuer,
+		Audience:      authentication.Audience,
+		JWKSURL:       authentication.JWKSURL,
+		Profile:       radv1alpha1.JWTProfile(authentication.Profile),
+		QueryScopes:   scopeResource(authentication.QueryScopes),
+		MutateScopes:  scopeResource(authentication.MutateScopes),
+		CatalogScopes: scopeResource(authentication.CatalogScopes),
+	}
+	if err := resource.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid JWT authentication: %w", err)
+	}
+	return resource, nil
+}
+
+func scopeResource(scopes []string) []radv1alpha1.OAuthScope {
+	result := make([]radv1alpha1.OAuthScope, len(scopes))
+	for index, scope := range scopes {
+		result[index] = radv1alpha1.OAuthScope(scope)
+	}
+	return result
 }
 
 func relationCacheResource(options RelationCacheOptions) radv1alpha1.RelationCache {
@@ -452,6 +512,7 @@ func databaseView(resource *radv1alpha1.Database) Database {
 		Bucket:         resource.Spec.Storage.Bucket,
 		Endpoint:       resource.Spec.Storage.Endpoint,
 		Hostname:       resource.Spec.Route.Hostname,
+		Authentication: authenticationView(resource.Spec.Authentication),
 		URL:            resource.Status.URL,
 		DesiredImage:   resource.Status.DesiredImage,
 		ObservedImage:  resource.Status.ObservedImage,
@@ -492,4 +553,27 @@ func databaseView(resource *radv1alpha1.Database) Database {
 		database.Message = "the operator has not observed this database yet"
 	}
 	return database
+}
+
+func authenticationView(authentication *radv1alpha1.JWTAuthentication) *JWTAuthentication {
+	if authentication == nil {
+		return nil
+	}
+	return &JWTAuthentication{
+		Issuer:        authentication.Issuer,
+		Audience:      authentication.Audience,
+		JWKSURL:       authentication.JWKSURL,
+		Profile:       JWTProfile(authentication.EffectiveProfile()),
+		QueryScopes:   scopeView(authentication.QueryScopes),
+		MutateScopes:  scopeView(authentication.MutateScopes),
+		CatalogScopes: scopeView(authentication.CatalogScopes),
+	}
+}
+
+func scopeView(scopes []radv1alpha1.OAuthScope) []string {
+	result := make([]string, len(scopes))
+	for index, scope := range scopes {
+		result[index] = string(scope)
+	}
+	return result
 }

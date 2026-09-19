@@ -23,3 +23,35 @@ spec:
     spec:
       priorityClassName: your-controllers-priority
 ```
+
+Set an operator-wide JWT policy by patching the manager Deployment environment:
+
+```yaml
+spec:
+  template:
+    spec:
+      containers:
+        - name: manager
+          env:
+            - name: RAD_AUTH
+              value: jwt
+            - name: RAD_AUTH_ISSUER
+              value: https://auth.example.com/
+            - name: RAD_AUTH_AUDIENCE
+              value: rad-production
+            - name: RAD_AUTH_PROFILE
+              value: rfc9068
+            - name: RAD_AUTH_QUERY_SCOPES
+              value: rad:read rad:admin
+            - name: RAD_AUTH_MUTATE_SCOPES
+              value: rad:write rad:admin
+            - name: RAD_AUTH_CATALOG_SCOPES
+              value: rad:catalog rad:admin
+```
+
+The matching manager flags use lower-case names, such as `--auth-issuer` and
+`--auth-profile`. The profile defaults to `rfc9068`. Set it to `compatible` for
+authorization servers that do not issue RFC 9068 access tokens. At least one
+scope setting is required in JWT mode. Missing capability settings deny those
+capabilities. A `Database` with `spec.authentication` replaces this default. A
+`Database` without that field inherits this default and cannot disable it.

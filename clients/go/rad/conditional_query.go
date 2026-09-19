@@ -191,6 +191,10 @@ func (c *Client) queryResponseBody(
 	case *oas.QueryUnprocessableEntity:
 		c.schema.invalidate()
 		return "", false, apiError(oas.Problem(*response))
+	case *oas.ForbiddenHeaders:
+		return "", false, forbiddenError(response)
+	case *oas.UnauthorizedHeaders:
+		return "", false, unauthenticatedError(response)
 	case *oas.InternalServerErrorStatusCode:
 		return "", false, apiError(response.Response)
 	default:
