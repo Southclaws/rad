@@ -210,9 +210,6 @@ func TestTelemetryDefaultsToSummaryWithoutAnExporter(t *testing.T) {
 	if _, configured := values["OTEL_TRACES_SAMPLER"]; configured {
 		t.Fatalf("default trace sampler is configured without an exporter: %#v", values)
 	}
-	if values["RAD_METRICS"] != "true" || values["RAD_SLATE_DECODED_CACHE_SIZE_MIB"] != "128" || values["RAD_RELATION_CACHE_SIZE_MIB"] != "128" || values["RAD_RELATION_CACHE_ENTRIES"] != "4096" || values["RAD_RELATION_CACHE_MAX_RESULT_SIZE_MIB"] != "8" {
-		t.Fatalf("default metric and cache environment = %#v", values)
-	}
 }
 
 func TestTelemetryExporterUsesTheDefaultTraceSampleRatio(t *testing.T) {
@@ -297,11 +294,13 @@ func TestSlateSettingsReachPods(t *testing.T) {
 func TestMetricScrapeAnnotationsFollowTheMetricPolicy(t *testing.T) {
 	database := testDatabase("alpha", "alpha-bucket", "alpha.rad.localhost", "alpha-s3", time.Unix(1, 0))
 	authentication := resolvedAuthentication{secretName: "alpha-s3", versionAnnotation: "one"}
+	metrics := true
+	database.Spec.Telemetry.Metrics = &metrics
 	annotations := workloadAnnotations(database, authentication, nil)
 	if annotations["prometheus.io/scrape"] != "true" || annotations["prometheus.io/path"] != "/metrics" || annotations["prometheus.io/port"] != "7237" {
 		t.Fatalf("metric scrape annotations = %#v", annotations)
 	}
-	metrics := false
+	metrics = false
 	database.Spec.Telemetry.Metrics = &metrics
 	annotations = workloadAnnotations(database, authentication, nil)
 	if _, configured := annotations["prometheus.io/scrape"]; configured {

@@ -99,18 +99,6 @@ impl SnapshotCatalogCache {
             .map(|table| table.map(|table| (*table).clone()))
     }
 
-    pub(super) async fn table_matches(
-        &self,
-        view: &dyn KvView,
-        name: &str,
-        id: &catalog::identity::TableId,
-        definition_generation: catalog::identity::DefinitionGeneration,
-    ) -> catalog::Result<bool> {
-        Ok(self.get_table_arc(view, name).await?.is_some_and(|table| {
-            table.id == *id && table.definition_generation == definition_generation
-        }))
-    }
-
     async fn get_table_arc(
         &self,
         view: &dyn KvView,

@@ -394,7 +394,7 @@ impl Engine {
         self.events
             .reach(EngineEvent::ConditionalQueryPrepared)
             .await;
-        let validator = prepared.relation_key.query_validator();
+        let validator = prepared.relation_key.key().query_validator();
         crate::telemetry::conditional_query_validator_finished(validator_started.elapsed());
         let unchanged = validator_matches(&validator);
         self.events
@@ -427,10 +427,11 @@ impl Engine {
         let execute_started = self.runtime.monotonic();
         let output = &plan.output;
         let cardinality = plan.cardinality;
-        let subrelation_root_key = prepared.relation_key.clone();
+        let (relation_key, dependency_admission) = prepared.relation_key.into_parts();
+        let subrelation_root_key = relation_key.clone();
         let mut cached = self
             .relation_cache
-            .get_or_fill(prepared.relation_key, output, || async {
+            .get_or_fill(relation_key, output, || async {
                 let observed = super::observe::ObservedView::new(view, &counters);
                 let mut executor = Executor::new(&observed, self.limits);
                 executor.set_execution_grant(execution_grant);
@@ -440,7 +441,9 @@ impl Engine {
                     self.cache_events_enabled.then_some(&self.events),
                 );
                 let started = Instant::now();
-                let frames = executor.run_frames(plan).await?;
+                let frames = executor
+                    .run_frames_after_admission(plan, dependency_admission)
+                    .await?;
                 super::frames::validate_frame_cardinality(cardinality, frames.len())?;
                 Ok((
                     frames,
@@ -506,34 +509,44 @@ impl Engine {
             .as_ref()
             .map(|provider| provider.planning_stats());
         self.relation_cache
-            .get_or_prepare_read(view, query, statistics.as_deref(), options, || async {
-                let bound = bind::bind(
-                    &ViewCatalog {
-                        view,
-                        relation_cache: Some(&self.relation_cache),
-                    },
-                    query.clone(),
-                )
-                .await?;
-                let planned = plan_query_with_context(
-                    &bound,
+            .get_or_prepare_read(
+                view,
+                super::relation_cache::PreparedReadRequest::new(
+                    query,
+                    statistics.as_deref(),
                     options,
-                    PlanningContext {
-                        statistics: statistics.as_deref(),
-                    },
-                );
-                let result_output = bound.root.output().clone();
-                let result_cardinality = bound.cardinality;
-                Ok(BoundStatement {
-                    name: "query".to_owned(),
-                    result_output,
-                    result_cardinality,
-                    bound,
-                    plan: Some(planned.plan),
-                    estimate: planned.estimate,
-                    target: None,
-                })
-            })
+                    DependencyValidation::Snapshot,
+                ),
+                None,
+                || async {
+                    let bound = bind::bind(
+                        &ViewCatalog {
+                            view,
+                            relation_cache: Some(&self.relation_cache),
+                        },
+                        query.clone(),
+                    )
+                    .await?;
+                    let planned = plan_query_with_context(
+                        &bound,
+                        options,
+                        PlanningContext {
+                            statistics: statistics.as_deref(),
+                        },
+                    );
+                    let result_output = bound.root.output().clone();
+                    let result_cardinality = bound.cardinality;
+                    Ok(BoundStatement {
+                        name: "query".to_owned(),
+                        result_output,
+                        result_cardinality,
+                        bound,
+                        plan: Some(planned.plan),
+                        estimate: planned.estimate,
+                        target: None,
+                    })
+                },
+            )
             .await
     }
 
@@ -673,8 +686,9 @@ impl Engine {
     pub(crate) async fn begin_frontend_transaction(
         &self,
         isolation: TransactionIsolation,
+        reuse_dependency_validation: bool,
     ) -> Result<EngineTransaction> {
-        EngineTransaction::begin(self, isolation).await
+        EngineTransaction::begin(self, isolation, reuse_dependency_validation).await
     }
 
     pub(crate) async fn execute_frontend_statement(
@@ -687,10 +701,11 @@ impl Engine {
         if transaction.isolation() == TransactionIsolation::Serializable {
             let result = self
                 .execute_program_in_transaction(
-                    transaction,
+                    &*transaction,
                     program,
                     catalog_policy,
                     relation_cache_eligible,
+                    transaction.dependency_cache(),
                 )
                 .await?;
             transaction.finish_statement();
@@ -704,10 +719,11 @@ impl Engine {
         loop {
             let result = self
                 .execute_program_in_transaction(
-                    transaction,
+                    &*transaction,
                     program,
                     catalog_policy,
                     relation_cache_eligible,
+                    transaction.dependency_cache(),
                 )
                 .await?;
             if transaction
@@ -724,12 +740,13 @@ impl Engine {
         }
     }
 
-    pub(crate) async fn execute_program_in_transaction(
+    async fn execute_program_in_transaction(
         &self,
-        transaction: &mut dyn Transaction,
+        transaction: &dyn Transaction,
         program: &Program,
         catalog_policy: CatalogPolicy,
         relation_cache_eligible: bool,
+        transaction_dependencies: Option<&super::relation_cache::TransactionDependencyCache>,
     ) -> Result<ProgramResult> {
         let effectful = program.statements.iter().any(super::Statement::effectful);
         if effectful {
@@ -743,7 +760,7 @@ impl Engine {
         } else {
             self.execution_scheduler.enter()
         };
-        let mut view = TransactionView(&*transaction);
+        let mut view = TransactionView(transaction);
         let statistics = self
             .statistics
             .as_ref()
@@ -759,6 +776,7 @@ impl Engine {
                 observation: self.observation(),
                 relation_cache: relation_cache_eligible.then_some(&self.relation_cache),
                 dependency_validation: DependencyValidation::Transaction,
+                transaction_dependencies,
                 statistics,
                 plan_options: PlanOptions {
                     mode: self.planner_mode,
@@ -918,6 +936,7 @@ impl Engine {
                                 && cache_access == CacheAccess::Enabled)
                                 .then_some(&self.relation_cache),
                             dependency_validation: DependencyValidation::Snapshot,
+                            transaction_dependencies: None,
                             statistics: statistics.clone(),
                             plan_options,
                             collect_plan: options.collect_plan,
@@ -1232,14 +1251,16 @@ async fn execute_on_view(
         return executor.execute(&planned.plan).await;
     };
     let fingerprints = lir::fingerprint::query(&bound);
-    let key = relation_cache
+    let admitted_key = relation_cache
         .key_for_view(
             fingerprints.exact,
             view,
             &planned.plan.dependencies,
             DependencyValidation::Snapshot,
+            None,
         )
         .await?;
+    let (key, dependency_admission) = admitted_key.into_parts();
     let output = &planned.plan.output;
     let cardinality = planned.plan.cardinality;
     let subrelation_root_key = key.clone();
@@ -1251,7 +1272,9 @@ async fn execute_on_view(
             executor.set_execution_grant(execution_grant);
             executor.use_subrelation_cache(relation_cache, subrelation_root_key, cache_events);
             let started = Instant::now();
-            let frames = executor.run_frames(&planned.plan).await?;
+            let frames = executor
+                .run_frames_after_admission(&planned.plan, dependency_admission)
+                .await?;
             super::frames::validate_frame_cardinality(cardinality, frames.len())?;
             Ok((
                 frames,
@@ -3151,6 +3174,7 @@ mod tests {
                 &program,
                 CatalogPolicy::Forbidden,
                 true,
+                None,
             )
             .await
             .unwrap();
@@ -3160,6 +3184,7 @@ mod tests {
                 &program,
                 CatalogPolicy::Forbidden,
                 true,
+                None,
             )
             .await
             .unwrap();
@@ -3169,8 +3194,8 @@ mod tests {
         assert_eq!(engine.relation_cache.stats().hits, 1);
         assert_eq!(engine.relation_cache.stats().catalog_hits, 0);
         assert_eq!(engine.relation_cache.stats().catalog_misses, 0);
-        assert_eq!(engine.relation_cache.stats().prepared_hits, 0);
-        assert_eq!(engine.relation_cache.stats().prepared_misses, 0);
+        assert_eq!(engine.relation_cache.stats().prepared_hits, 1);
+        assert_eq!(engine.relation_cache.stats().prepared_misses, 1);
 
         engine
             .create(
@@ -3193,6 +3218,7 @@ mod tests {
                 &program,
                 CatalogPolicy::Forbidden,
                 true,
+                None,
             )
             .await
             .unwrap();
@@ -3212,6 +3238,7 @@ mod tests {
                 &program,
                 CatalogPolicy::Forbidden,
                 true,
+                None,
             )
             .await
             .unwrap();

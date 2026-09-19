@@ -24,6 +24,8 @@ spec:
     catalogScopes:
       - rad:catalog
       - rad:admin
+    adminScopes:
+      - rad:admin
   readers: 2
   logging:
     level: info

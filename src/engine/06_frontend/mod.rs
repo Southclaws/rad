@@ -36,7 +36,24 @@ impl Tx {
         engine: Arc<Engine>,
         isolation: TransactionIsolation,
     ) -> crate::engine::exec::Result<Self> {
-        let transaction = engine.begin_frontend_transaction(isolation).await?;
+        Self::begin_with_dependency_cache(engine, isolation, true).await
+    }
+
+    pub(crate) async fn begin_implicit(
+        engine: Arc<Engine>,
+        isolation: TransactionIsolation,
+    ) -> crate::engine::exec::Result<Self> {
+        Self::begin_with_dependency_cache(engine, isolation, false).await
+    }
+
+    async fn begin_with_dependency_cache(
+        engine: Arc<Engine>,
+        isolation: TransactionIsolation,
+        reuse_dependency_validation: bool,
+    ) -> crate::engine::exec::Result<Self> {
+        let transaction = engine
+            .begin_frontend_transaction(isolation, reuse_dependency_validation)
+            .await?;
         let id = uuid::Uuid::new_v4().to_string();
         let span = tracing::info_span!(
             target: "rad::telemetry",

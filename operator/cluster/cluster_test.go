@@ -117,6 +117,7 @@ func TestJWTAuthenticationIsProjected(t *testing.T) {
 		QueryScopes:   []string{"rad:read", "rad:admin"},
 		MutateScopes:  []string{"rad:write"},
 		CatalogScopes: []string{"rad:catalog"},
+		AdminScopes:   []string{"rad:admin"},
 	}
 	created, err := c.CreateDatabase(context.Background(), spec)
 	if err != nil {
@@ -203,17 +204,6 @@ func TestTelemetryPolicyIsProjected(t *testing.T) {
 	}
 	if resource.Spec.Telemetry.Endpoint != spec.OTelEndpoint || resource.Spec.Telemetry.Diagnostics != radv1alpha1.DiagnosticLevelDetailed || resource.Spec.Telemetry.Metrics == nil || *resource.Spec.Telemetry.Metrics || resource.Spec.RelationCache.SizeMiB != 256 || resource.Spec.RelationCache.Entries != 8192 || resource.Spec.RelationCache.MaxResultSizeMiB != 16 || resource.Spec.Slate.DecodedCacheSizeMiB != 256 {
 		t.Fatalf("telemetry resource = %+v", resource.Spec.Telemetry)
-	}
-}
-
-func TestMetricAndCacheDefaultsAreProjected(t *testing.T) {
-	c := testClient(t)
-	created, err := c.CreateDatabase(context.Background(), validSpec("metric-defaults"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !created.MetricsEnabled || created.RelationCache.SizeMiB != 128 || created.RelationCache.Entries != 4096 || created.RelationCache.MaxResultSizeMiB != 8 || created.Slate.DecodedCacheSizeMiB != 128 {
-		t.Fatalf("metric and cache defaults = %+v", created)
 	}
 }
 

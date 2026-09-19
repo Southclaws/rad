@@ -12,6 +12,7 @@ func TestAuthenticationFromValuesRequiresExplicitJWTSettings(t *testing.T) {
 		"",
 		"",
 		"",
+		"",
 	)
 	if err == nil {
 		t.Fatal("JWT mode accepted no scope settings")
@@ -28,6 +29,7 @@ func TestAuthenticationFromValuesParsesOAuthScopeLists(t *testing.T) {
 		"rad:read rad:admin",
 		"rad:write rad:admin",
 		"rad:catalog rad:admin",
+		"rad:admin",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -35,13 +37,16 @@ func TestAuthenticationFromValuesParsesOAuthScopeLists(t *testing.T) {
 	if len(authentication.QueryScopes) != 2 || authentication.QueryScopes[1] != "rad:admin" {
 		t.Fatalf("query scopes = %v", authentication.QueryScopes)
 	}
+	if len(authentication.AdminScopes) != 1 || authentication.AdminScopes[0] != "rad:admin" {
+		t.Fatalf("admin scopes = %v", authentication.AdminScopes)
+	}
 	if authentication.EffectiveProfile() != "rfc9068" {
 		t.Fatalf("profile = %q", authentication.EffectiveProfile())
 	}
 }
 
 func TestAuthenticationFromValuesRejectsJWTSettingsInNoneMode(t *testing.T) {
-	_, err := authenticationFromValues("none", "https://auth.example.com/", "", "", "", "", "", "")
+	_, err := authenticationFromValues("none", "https://auth.example.com/", "", "", "", "", "", "", "")
 	if err == nil {
 		t.Fatal("none mode accepted JWT settings")
 	}
@@ -55,6 +60,7 @@ func TestAuthenticationFromValuesRejectsInvalidScopeSpacing(t *testing.T) {
 		"",
 		"",
 		"rad:read  rad:admin",
+		"",
 		"",
 		"",
 	)
@@ -73,11 +79,32 @@ func TestAuthenticationFromValuesAcceptsTheCompatibleProfile(t *testing.T) {
 		"rad:read",
 		"",
 		"",
+		"",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if authentication.Profile != "compatible" {
+		t.Fatalf("profile = %q", authentication.Profile)
+	}
+}
+
+func TestAuthenticationFromValuesAcceptsTheCloudflareAccessProfile(t *testing.T) {
+	authentication, err := authenticationFromValues(
+		"jwt",
+		"https://team.cloudflareaccess.com",
+		"application-audience",
+		"https://team.cloudflareaccess.com/cdn-cgi/access/certs",
+		"cloudflare-access",
+		"authenticated",
+		"authenticated",
+		"authenticated",
+		"authenticated",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authentication.Profile != "cloudflare-access" {
 		t.Fatalf("profile = %q", authentication.Profile)
 	}
 }
@@ -90,6 +117,7 @@ func TestAuthenticationFromValuesRejectsAnUnknownProfile(t *testing.T) {
 		"",
 		"simple",
 		"rad:read",
+		"",
 		"",
 		"",
 	)

@@ -3447,7 +3447,7 @@ fn probe_hash_rows(input: HashProbeInput) -> Result<Vec<Env>> {
     Ok(output)
 }
 
-fn join_predicate_is_keys(predicate: &bound::Expr, keys: &[EquiJoinKey]) -> bool {
+pub(super) fn join_predicate_is_keys(predicate: &bound::Expr, keys: &[EquiJoinKey]) -> bool {
     if keys.is_empty() {
         return false;
     }
@@ -3486,6 +3486,7 @@ fn join_predicate_is_keys(predicate: &bound::Expr, keys: &[EquiJoinKey]) -> bool
     })
 }
 
+#[inline]
 fn evaluate_join_predicate(
     predicate: &bound::Expr,
     keys: &[EquiJoinKey],
@@ -3719,10 +3720,36 @@ fn decoded_scalar_type(value: super::codec::DecodedValueRef<'_>) -> ScalarType {
 
 pub(super) fn join_key(frame: &Env, keys: &[EquiJoinKey], left: bool) -> Result<Option<Vec<u8>>> {
     let mut output = Vec::new();
+    if !join_key_into(frame, keys, left, &mut output)? {
+        return Ok(None);
+    }
+    Ok(Some(output))
+}
+
+pub(super) fn join_keys_present(frame: &Env, keys: &[EquiJoinKey], left: bool) -> Result<bool> {
+    for key in keys {
+        let field = if left { &key.left } else { &key.right };
+        if frame
+            .scalar_ref_at(field.slot, &field.name, &field.value_type)?
+            .is_none()
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+pub(super) fn join_key_into(
+    frame: &Env,
+    keys: &[EquiJoinKey],
+    left: bool,
+    output: &mut Vec<u8>,
+) -> Result<bool> {
+    output.clear();
     for key in keys {
         let field = if left { &key.left } else { &key.right };
         let Some(value) = frame.scalar_ref_at(field.slot, &field.name, &field.value_type)? else {
-            return Ok(None);
+            return Ok(false);
         };
         match value {
             Value::Text(value) => {
@@ -3754,7 +3781,7 @@ pub(super) fn join_key(frame: &Env, keys: &[EquiJoinKey], left: bool) -> Result<
             Value::Null(_) => unreachable!("null join keys return before encoding"),
         }
     }
-    Ok(Some(output))
+    Ok(true)
 }
 
 pub(super) fn frame_retained_bytes(frame: &Env) -> u64 {

@@ -38,6 +38,22 @@ async fn scoped_authenticated_router(
     scopes: crate::auth::ScopeConfig,
     token_scope: Option<&str>,
 ) -> (axum::Router, String) {
+    let (authenticator, token) = test_authentication(scopes, token_scope);
+    let store = Arc::new(Store::memory(name).await.unwrap());
+    let router = super::router_with_health_and_auth(
+        Arc::new(Engine::new(store)),
+        Mode::Direct,
+        "memory:///authenticated",
+        Health::serving(),
+        Some(authenticator),
+    );
+    (router, token)
+}
+
+fn test_authentication(
+    scopes: crate::auth::ScopeConfig,
+    token_scope: Option<&str>,
+) -> (Arc<crate::auth::Authenticator>, String) {
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
     let encoding = EncodingKey::from_ec_der(&key.serialize_der());
     let mut jwk = Jwk::from_encoding_key(&encoding, Algorithm::ES256).unwrap();
@@ -65,15 +81,7 @@ async fn scoped_authenticated_router(
         claims["scope"] = json!(scope);
     }
     let token = encode(&header, &claims, &encoding).unwrap();
-    let store = Arc::new(Store::memory(name).await.unwrap());
-    let router = super::router_with_health_and_auth(
-        Arc::new(Engine::new(store)),
-        Mode::Direct,
-        "memory:///authenticated",
-        Health::serving(),
-        Some(Arc::new(authenticator)),
-    );
-    (router, token)
+    (Arc::new(authenticator), token)
 }
 
 fn with_bearer(mut request: Request<Body>, token: &str) -> Request<Body> {
@@ -93,6 +101,16 @@ fn scope_config(
         query.map(str::to_owned),
         mutate.map(str::to_owned),
         catalog.map(str::to_owned),
+    )
+    .unwrap()
+}
+
+fn admin_scope_config() -> crate::auth::ScopeConfig {
+    crate::auth::ScopeConfig::from_values_with_admin(
+        Some("rad:read".into()),
+        Some("rad:write".into()),
+        Some("rad:catalog".into()),
+        Some("rad:admin".into()),
     )
     .unwrap()
 }
@@ -905,6 +923,39 @@ async fn jwt_router_accepts_a_valid_token() {
             post_json("/execute", one_row_program()),
             &token,
         ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn jwt_admin_router_requires_the_admin_scope() {
+    let store = Arc::new(Store::memory("http-auth-admin-scope").await.unwrap());
+    let (authenticator, query_token) = test_authentication(admin_scope_config(), Some("rad:read"));
+    let router = crate::admin::router_with_statistics_and_auth(store, None, Some(authenticator));
+
+    let missing = router
+        .clone()
+        .oneshot(request(Method::GET, "/"))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+    let forbidden = router
+        .oneshot(with_bearer(request(Method::GET, "/"), &query_token))
+        .await
+        .unwrap();
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn jwt_admin_router_accepts_the_admin_scope() {
+    let store = Arc::new(Store::memory("http-auth-admin-valid").await.unwrap());
+    let (authenticator, token) = test_authentication(admin_scope_config(), Some("rad:admin"));
+    let router = crate::admin::router_with_statistics_and_auth(store, None, Some(authenticator));
+
+    let response = router
+        .oneshot(with_bearer(request(Method::GET, "/"), &token))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);

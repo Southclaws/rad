@@ -111,7 +111,7 @@ type Telemetry struct {
 
 	// Metrics enables OTEL metric export and the metrics HTTP route.
 	// +optional
-	// +kubebuilder:default=true
+	// +kubebuilder:default=false
 	Metrics *bool `json:"metrics,omitempty"`
 }
 
@@ -376,7 +376,7 @@ type DatabaseSpec struct {
 
 	// Telemetry applies the same export and diagnostic policy to all pods.
 	// +optional
-	// +kubebuilder:default={diagnostics: summary, metrics: true}
+	// +kubebuilder:default={diagnostics: summary, metrics: false}
 	Telemetry Telemetry `json:"telemetry,omitempty"`
 
 	// RelationCache applies the same materialized result limits to all pods.

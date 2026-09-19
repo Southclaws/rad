@@ -115,7 +115,7 @@ commands:
         envVar: RAD_ADDR
         default: 0.0.0.0:7237
       - name: admin-addr
-        description: Administration HTTP listen address; JWT mode requires loopback.
+        description: Administration HTTP listen address; JWT mode requires an administration scope.
         envVar: RAD_ADMIN_ADDR
       - name: auth
         description: Public HTTP authentication mode; JWT requires at least one scope setting.
@@ -132,18 +132,21 @@ commands:
         description: Trusted JWKS URL; omission uses OIDC discovery from the issuer.
         envVar: RAD_AUTH_JWKS_URL
       - name: auth-profile
-        description: JWT validation profile; omission selects rfc9068 in JWT mode.
+        description: JWT validation profile. Omission selects rfc9068 in JWT mode.
         envVar: RAD_AUTH_PROFILE
-        choices: [rfc9068, compatible]
+        choices: [rfc9068, compatible, cloudflare-access]
       - name: auth-query-scopes
-        description: Space-separated OAuth scopes; any listed scope grants query access and omission denies it.
+        description: Space-separated authorization values. Any listed value grants query access. Omission denies access.
         envVar: RAD_AUTH_QUERY_SCOPES
       - name: auth-mutate-scopes
-        description: Space-separated OAuth scopes; any listed scope grants data mutation access and omission denies it.
+        description: Space-separated authorization values. Any listed value grants data mutation access. Omission denies access.
         envVar: RAD_AUTH_MUTATE_SCOPES
       - name: auth-catalog-scopes
-        description: Space-separated OAuth scopes; any listed scope grants catalog mutation access and omission denies it.
+        description: Space-separated authorization values. Any listed value grants catalog mutation access. Omission denies access.
         envVar: RAD_AUTH_CATALOG_SCOPES
+      - name: auth-admin-scopes
+        description: Space-separated authorization values. Any listed value grants administration access. Omission denies access.
+        envVar: RAD_AUTH_ADMIN_SCOPES
       - name: role
         description: Slate access role; omission selects write.
         envVar: RAD_ROLE
@@ -210,7 +213,7 @@ commands:
         description: Enable or disable OTEL metrics and the GET /metrics route.
         envVar: RAD_METRICS
         choices: ["true", "false"]
-        default: "true"
+        default: "false"
       - name: relation-cache-size-mib
         description: Total memory capacity for materialized relation results.
         type: integer
@@ -251,6 +254,11 @@ commands:
         envVar: RAD_SLATE_COMMIT_DURABILITY
         choices: [durable, memory]
         default: durable
+      - name: slate-wal-enabled
+        description: Enable the Slate WAL. Disable it only when process failure can lose unflushed data.
+        envVar: RAD_SLATE_WAL_ENABLED
+        choices: ["true", "false"]
+        default: "true"
       - name: slate-flush-interval-ms
         description: Interval between automatic WAL flush attempts.
         type: integer

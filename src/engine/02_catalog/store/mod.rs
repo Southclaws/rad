@@ -50,8 +50,10 @@ pub(crate) fn prefix_range(prefix: &[u8]) -> KeyRange {
 }
 
 pub(crate) fn parse_u64(kind: &str, id: Option<&str>, raw: &[u8]) -> Result<u64> {
-    let identity = id.map_or_else(String::new, |id| format!(" for {id:?}"));
-    let message = || format!("catalog: corrupt {kind}{identity} {raw:?}");
+    let message = || {
+        let identity = id.map_or_else(String::new, |id| format!(" for {id:?}"));
+        format!("catalog: corrupt {kind}{identity} {raw:?}")
+    };
     let value = std::str::from_utf8(raw)
         .map_err(|error| Error::source(ErrorKind::CatalogCorrupt, message(), error))?;
     value

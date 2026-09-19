@@ -46,6 +46,7 @@ pub enum Capability {
     Query,
     Mutate,
     Catalog,
+    Admin,
 }
 
 impl Capability {
@@ -54,6 +55,7 @@ impl Capability {
             Self::Query => "query",
             Self::Mutate => "mutate",
             Self::Catalog => "catalog",
+            Self::Admin => "admin",
         }
     }
 
@@ -62,6 +64,7 @@ impl Capability {
             Self::Query => 1,
             Self::Mutate => 2,
             Self::Catalog => 4,
+            Self::Admin => 8,
         }
     }
 }
@@ -71,7 +74,7 @@ pub struct ExecutionPolicy(u8);
 
 impl ExecutionPolicy {
     pub const fn allow_all() -> Self {
-        Self(7)
+        Self(15)
     }
 
     pub const fn deny_all() -> Self {
@@ -604,6 +607,7 @@ pub(super) struct RunContext<'a> {
     pub observation: super::observe::Observation<'a>,
     pub relation_cache: Option<&'a super::relation_cache::RelationCache>,
     pub dependency_validation: super::relation_cache::DependencyValidation,
+    pub transaction_dependencies: Option<&'a super::relation_cache::TransactionDependencyCache>,
     pub statistics: Option<Arc<crate::engine::planner::models::PlannerStats>>,
     pub plan_options: crate::engine::planner::PlanOptions,
     pub collect_plan: bool,
@@ -635,6 +639,7 @@ pub(super) async fn run(
         context.execution_grant,
         context.relation_cache,
         context.dependency_validation,
+        context.transaction_dependencies,
         context.cache_events,
     ))
     .await
@@ -664,6 +669,7 @@ pub(super) async fn run_reference(
         None,
         super::relation_cache::DependencyValidation::Transaction,
         None,
+        None,
     ))
     .await
 }
@@ -684,6 +690,7 @@ async fn run_with_path(
     execution_grant: super::parallel::ExecutionGrant,
     relation_cache: Option<&super::relation_cache::RelationCache>,
     dependency_validation: super::relation_cache::DependencyValidation,
+    transaction_dependencies: Option<&super::relation_cache::TransactionDependencyCache>,
     cache_events: Option<&Arc<dyn super::EngineEventHook>>,
 ) -> Result<ProgramResult> {
     let mut binder = ProgramBinder::new(relational_names(program))?;
@@ -713,6 +720,7 @@ async fn run_with_path(
         &execution_grant,
         relation_cache,
         dependency_validation,
+        transaction_dependencies,
         cache_events,
         &mut plans,
     ))
@@ -765,6 +773,7 @@ async fn run_statements(
     execution_grant: &super::parallel::ExecutionGrant,
     relation_cache: Option<&super::relation_cache::RelationCache>,
     dependency_validation: super::relation_cache::DependencyValidation,
+    transaction_dependencies: Option<&super::relation_cache::TransactionDependencyCache>,
     cache_events: Option<&Arc<dyn super::EngineEventHook>>,
     plans: &mut Vec<StatementPlan>,
 ) -> Result<()> {
@@ -827,8 +836,7 @@ async fn run_statements(
                 // A prepared-read hit does not advance ProgramBinder state. This is
                 // safe only when the program contains one query statement because
                 // no subsequent statement can depend on that binder state.
-                dependency_validation == super::relation_cache::DependencyValidation::Snapshot
-                    && matches!(path, ExecutionPath::Production)
+                matches!(path, ExecutionPath::Production)
             });
             let prepared = if let (
                 Some(prepared_cache),
@@ -839,18 +847,28 @@ async fn run_statements(
             {
                 let bind_span = statement_span.clone();
                 prepared_cache
-                    .get_or_prepare_read(&*view, query, statistics.as_deref(), plan_options, || {
-                        let binding = statement
-                            .binder_statement()
-                            .expect("a relational statement has binder input");
-                        async {
-                            binder
-                                .bind(&catalog, binding)
-                                .instrument(bind_span)
-                                .await
-                                .map_err(Into::into)
-                        }
-                    })
+                    .get_or_prepare_read(
+                        &*view,
+                        super::relation_cache::PreparedReadRequest::new(
+                            query,
+                            statistics.as_deref(),
+                            plan_options,
+                            dependency_validation,
+                        ),
+                        transaction_dependencies,
+                        || {
+                            let binding = statement
+                                .binder_statement()
+                                .expect("a relational statement has binder input");
+                            async {
+                                binder
+                                    .bind(&catalog, binding)
+                                    .instrument(bind_span)
+                                    .await
+                                    .map_err(Into::into)
+                            }
+                        },
+                    )
                     .await
                     .map(|result| {
                         (
@@ -894,29 +912,29 @@ async fn run_statements(
                 (observing || cache.is_some())
                     .then(|| Arc::new(crate::engine::lir::fingerprint::query(&bound.bound)))
             });
-            let cache_key = if let Some(cache) = cache {
-                Some((
-                    cache,
-                    match prepared_relation_key {
-                        Some(key) => key,
-                        None => {
-                            let plan = bound.plan.as_ref().expect("production plan is present");
-                            cache
-                                .key_for_view(
-                                    fingerprints
-                                        .as_ref()
-                                        .expect("cache fingerprint is present")
-                                        .exact,
-                                    &*view,
-                                    &plan.dependencies,
-                                    dependency_validation,
-                                )
-                                .await?
-                        }
-                    },
-                ))
+            let (cache_key, dependency_admission) = if let Some(cache) = cache {
+                let admitted_key = match prepared_relation_key {
+                    Some(key) => key,
+                    None => {
+                        let plan = bound.plan.as_ref().expect("production plan is present");
+                        cache
+                            .key_for_view(
+                                fingerprints
+                                    .as_ref()
+                                    .expect("cache fingerprint is present")
+                                    .exact,
+                                &*view,
+                                &plan.dependencies,
+                                dependency_validation,
+                                transaction_dependencies,
+                            )
+                            .await?
+                    }
+                };
+                let (key, admission) = admitted_key.into_parts();
+                (Some((cache, key)), Some(admission))
             } else {
-                None
+                (None, None)
             };
             let execute_started = measuring.then(|| runtime.monotonic());
             let counters = (measuring || cache_key.is_some())
@@ -948,6 +966,7 @@ async fn run_statements(
                         &mut operators,
                         execution_grant,
                         subrelation_cache.clone(),
+                        dependency_admission,
                     )
                     .await
                 } else {
@@ -968,6 +987,7 @@ async fn run_statements(
                         &mut operators,
                         execution_grant,
                         subrelation_cache.clone(),
+                        dependency_admission,
                     )
                     .await
                 }
@@ -1345,6 +1365,7 @@ async fn run_relational(
     operators: &mut Vec<super::observe::OperatorMeasurement>,
     execution_grant: &super::parallel::ExecutionGrant,
     subrelation_cache: Option<SubrelationCacheExecution<'_>>,
+    dependency_admission: Option<super::relation_cache::CatalogDependencyAdmission>,
 ) -> Result<Vec<Env>> {
     let input = match path {
         ExecutionPath::Production => {
@@ -1367,7 +1388,10 @@ async fn run_relational(
                 executor.enable_operator_measurements();
             }
             executor.seed_bindings(bindings.clone());
-            let frames = executor.run_frames(plan).await?;
+            let frames = match dependency_admission {
+                Some(admission) => executor.run_frames_after_admission(plan, admission).await?,
+                None => executor.run_frames(plan).await?,
+            };
             for binding in &plan.bindings {
                 if let Some(rows) = executor.binding_cardinality(&binding.name) {
                     binding_rows.push((binding.name.clone(), rows));
@@ -2171,7 +2195,7 @@ mod tests {
         let (store, _engine, catalog) = setup("pir-prepared-read-statistics").await;
         catalog.create_table(tasks_table()).await.unwrap();
         let mut first = crate::engine::planner::models::PlannerStats::empty();
-        first.snapshot_identity = "first".into();
+        first.planning_identity = "first".into();
         let provider = Arc::new(SwappingStats(std::sync::RwLock::new(Arc::new(first))));
         let engine = Engine::new(store).with_statistics_provider(provider.clone());
         let read = scan_program("tasks");
@@ -2185,7 +2209,7 @@ mod tests {
             .await
             .unwrap();
         let mut second = crate::engine::planner::models::PlannerStats::empty();
-        second.snapshot_identity = "second".into();
+        second.planning_identity = "second".into();
         *provider.0.write().expect("statistics write lock") = Arc::new(second);
         engine
             .execute_program(read, CatalogPolicy::Forbidden)

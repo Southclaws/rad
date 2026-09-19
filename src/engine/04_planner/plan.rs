@@ -1491,7 +1491,8 @@ impl Planner<'_> {
                 chosen: false,
             },
         ];
-        let structural_fallback = if recursive_indexed_lookup { 2 } else { 0 };
+        let cost_reference = if recursive_indexed_lookup { 2 } else { 0 };
+        let structural_fallback = if lookup_plan.is_ok() { 2 } else { 0 };
         let strict_chosen = (self.options.mode == PlannerMode::Cost
             && !self.options.full_scan_only)
             .then(|| strict_join_cost_winner(&candidates))
@@ -1499,7 +1500,7 @@ impl Planner<'_> {
         let robust_chosen = (self.options.mode == PlannerMode::Cost
             && !self.options.full_scan_only
             && strict_chosen.is_none())
-        .then(|| robust_join_cost_winner(&candidates, structural_fallback))
+        .then(|| robust_join_cost_winner(&candidates, cost_reference))
         .flatten();
         let stable_recursive_hash_build =
             super::memo::contains_recursive_reference(left) && materialization_is_safe(right);
@@ -1507,13 +1508,7 @@ impl Planner<'_> {
             && !self.options.full_scan_only
             && strict_chosen.is_none()
             && robust_chosen.is_none())
-        .then(|| {
-            bounded_hash_join_winner(
-                &candidates,
-                structural_fallback,
-                stable_recursive_hash_build,
-            )
-        })
+        .then(|| bounded_hash_join_winner(&candidates, cost_reference, stable_recursive_hash_build))
         .flatten();
         let chosen = if recursive_indexed_lookup {
             structural_fallback
@@ -1525,27 +1520,34 @@ impl Planner<'_> {
         } else {
             structural_fallback
         };
+        let selected_structurally = recursive_indexed_lookup
+            || (strict_chosen.is_none()
+                && robust_chosen.is_none()
+                && bounded_hash_chosen.is_none());
         candidates[chosen].chosen = true;
-        candidates[chosen].decision_basis = Some(if chosen == structural_fallback {
+        candidates[chosen].rejection_reason = None;
+        candidates[chosen].decision_basis = Some(if recursive_indexed_lookup {
             JoinDecisionBasis::Structural
-        } else if bounded_hash_chosen == Some(chosen) {
-            JoinDecisionBasis::BoundedBuild
+        } else if strict_chosen == Some(chosen) {
+            JoinDecisionBasis::CostDominance
         } else if robust_chosen == Some(chosen) {
             JoinDecisionBasis::MinimaxRegret
+        } else if bounded_hash_chosen == Some(chosen) {
+            JoinDecisionBasis::BoundedBuild
         } else {
-            JoinDecisionBasis::CostDominance
+            JoinDecisionBasis::Structural
         });
         let winner = candidates[chosen].cost;
         let maximum_regrets = join_maximum_regrets(&candidates);
-        let structural_cost = candidates[structural_fallback].cost;
+        let structural_cost = candidates[cost_reference].cost;
         let winner_regret = maximum_regrets[chosen];
         for (index, candidate) in candidates.iter_mut().enumerate() {
             if index == chosen || candidate.rejection_reason.is_some() {
                 continue;
             }
-            candidate.rejection_reason = Some(
-                if chosen == structural_fallback || index == structural_fallback {
-                    if chosen == structural_fallback {
+            candidate.rejection_reason =
+                Some(if selected_structurally || index == cost_reference {
+                    if selected_structurally {
                         JoinRejectionReason::StructuralFallback
                     } else if join_cost_is_more_expensive(candidate.cost, winner) {
                         JoinRejectionReason::MoreExpensive
@@ -1573,8 +1575,7 @@ impl Planner<'_> {
                     JoinRejectionReason::MoreExpensive
                 } else {
                     JoinRejectionReason::OverlappingCost
-                },
-            );
+                });
         }
         let decision = JoinDecision {
             candidates,
@@ -4808,8 +4809,8 @@ mod tests {
         let decision = decision.unwrap();
         let transfer = decision.candidates[2].cost.unwrap();
         assert_eq!(transfer.filtered_rows, Some(AccessQuantity::exact(0)));
-        assert_eq!(transfer.filter_paths, Some(4));
-        assert_eq!(transfer.pruned_filter_paths, Some(2));
+        assert_eq!(transfer.filter_paths, Some(3));
+        assert_eq!(transfer.pruned_filter_paths, Some(3));
         assert_eq!(transfer.filter_schedule_root, Some(0));
         assert_eq!(
             decision.candidates[2].rejection_reason,
@@ -5111,6 +5112,38 @@ mod tests {
         assert_eq!(
             decision.candidates[2].decision_basis,
             Some(JoinDecisionBasis::CostDominance)
+        );
+    }
+
+    #[test]
+    fn cold_cost_mode_uses_an_available_primary_key_lookup() {
+        let left = join_table(10, "left-table", "left_items");
+        let right = join_table(20, "right-table", "right_items");
+        let query = join_relation(left, right, "board_id", "id", lir::JoinKind::Inner);
+        let statistics = PlannerStats::empty();
+        let planned = plan_query_with_context(
+            &query,
+            PlanOptions {
+                mode: PlannerMode::Cost,
+                ..PlanOptions::default()
+            },
+            PlanningContext {
+                statistics: Some(&statistics),
+            },
+        );
+
+        let NodeKind::IndexedLookupJoin {
+            decision, right, ..
+        } = &planned.plan.root.kind
+        else {
+            panic!("expected indexed lookup join")
+        };
+        assert!(matches!(right.kind, NodeKind::PrimaryKeyGet { .. }));
+        assert_eq!(decision.structural_fallback, 2);
+        assert_eq!(decision.candidates[2].rejection_reason, None);
+        assert_eq!(
+            decision.candidates[2].decision_basis,
+            Some(JoinDecisionBasis::Structural)
         );
     }
 
@@ -5795,7 +5828,7 @@ mod tests {
     }
 
     #[test]
-    fn hash_memory_limit_and_structural_mode_keep_nested_loop() {
+    fn hash_memory_limit_keeps_costed_nested_loop_and_structural_mode_uses_lookup() {
         let left = join_table(10, "left-table", "left_items");
         let right = join_table(20, "right-table", "right_items");
         let query = join_relation(
@@ -5847,7 +5880,7 @@ mod tests {
         );
         assert!(matches!(
             structural.plan.root.kind,
-            NodeKind::NestedLoopJoin { .. }
+            NodeKind::IndexedLookupJoin { .. }
         ));
     }
 

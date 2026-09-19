@@ -74,6 +74,7 @@ impl Env {
         self.segments.push(Arc::new(segment));
     }
 
+    #[inline]
     pub fn get(&self, slot: SlotId) -> Option<&Datum> {
         self.segments
             .iter()
@@ -196,6 +197,7 @@ pub(crate) fn evaluate_join_predicate(
     evaluate_predicate_in(expression, &JoinedEnv { left, right })
 }
 
+#[inline(always)]
 pub(crate) fn evaluate_join_key_equality(
     left_slot: SlotId,
     right_slot: SlotId,
@@ -207,6 +209,7 @@ pub(crate) fn evaluate_join_key_equality(
     compare_direct(BinaryOp::Eq, left, right)
 }
 
+#[inline(always)]
 fn direct_datum_scalar(slot: SlotId, datum: Option<&Datum>) -> Result<DirectScalar<'_>> {
     match datum {
         Some(Datum::Scalar(value)) if value.is_null() => Ok(DirectScalar::Null),
@@ -354,6 +357,7 @@ fn direct_scalar<'a>(
     }
 }
 
+#[inline(always)]
 fn compare_direct(
     operation: BinaryOp,
     left: DirectScalar<'_>,
@@ -361,9 +365,28 @@ fn compare_direct(
 ) -> Result<TriBool> {
     match (left, right) {
         (DirectScalar::Null, _) | (_, DirectScalar::Null) => Ok(TriBool::Unknown),
-        (DirectScalar::Value(left), DirectScalar::Value(right)) => {
-            compare_values(operation, left, right)
+        (DirectScalar::Value(left), DirectScalar::Value(right)) => match operation {
+            BinaryOp::Eq => equal_values(left, right).map(TriBool::from_bool),
+            BinaryOp::Ne => equal_values(left, right).map(|equal| TriBool::from_bool(!equal)),
+            _ => compare_values(operation, left, right),
+        },
+    }
+}
+
+#[inline(always)]
+fn equal_values(left: &Value, right: &Value) -> Result<bool> {
+    match (left, right) {
+        (Value::Text(left), Value::Text(right)) => Ok(left == right),
+        (Value::Int64(left), Value::Int64(right)) => Ok(left == right),
+        (Value::Float64(left), Value::Float64(right)) => {
+            Ok(left == right || (left.is_nan() && right.is_nan()))
         }
+        (Value::Bool(left), Value::Bool(right)) => Ok(left == right),
+        (Value::Bytes(left), Value::Bytes(right)) => Ok(left == right),
+        _ => left
+            .compare(right)
+            .map(|ordering| ordering == Ordering::Equal)
+            .map_err(|error| EvalError::internal(format!("exec: {error}"))),
     }
 }
 

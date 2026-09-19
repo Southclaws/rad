@@ -1185,6 +1185,7 @@ fn distill_with_persisted(
         stats.workload_frequency.record_at_least(family, *count);
     }
     stats.snapshot_identity = planner_statistics_identity(&stats);
+    stats.planning_identity = planning_statistics_identity(&stats);
     stats
 }
 
@@ -1212,6 +1213,7 @@ fn distill_persisted_only(
     for (family, count) in &persisted.frequencies {
         stats.workload_frequency.record_at_least(family, *count);
     }
+    stats.planning_identity = planning_statistics_identity(&stats);
     stats
 }
 
@@ -1251,6 +1253,7 @@ impl HotRegistry {
     fn distill(&self, collector: CollectorReport, published_at: Duration) -> PlannerStats {
         let mut stats = PlannerStats {
             snapshot_identity: String::new(),
+            planning_identity: String::new(),
             scope: crate::engine::planner::models::StatisticsScope::WriterLive,
             feedback_models: self
                 .models
@@ -1285,6 +1288,7 @@ impl HotRegistry {
             published_at,
         };
         stats.snapshot_identity = planner_statistics_identity(&stats);
+        stats.planning_identity = planning_statistics_identity(&stats);
         stats
     }
 }
@@ -1549,6 +1553,26 @@ fn planner_statistics_identity(stats: &PlannerStats) -> String {
         &mut hash,
         &serde_json::to_vec(&stats.workload_frequency).expect("frequency sketch serializes"),
     );
+    statistics_hash_identity(hash)
+}
+
+fn planning_statistics_identity(stats: &PlannerStats) -> String {
+    use sha2::{Digest as _, Sha256};
+
+    let mut hash = Sha256::new();
+    hash.update(b"rad-planning-statistics-v1");
+    hash.update(STATISTICS_SYNOPSIS_FORMAT.to_be_bytes());
+    let mut synopses = stats.synopsis_models.values().cloned().collect::<Vec<_>>();
+    for synopsis in &mut synopses {
+        canonicalize_synopsis_model(synopsis);
+    }
+    synopses.sort_by_key(|model| model.table);
+    for synopsis in synopses {
+        hash_statistics_record(
+            &mut hash,
+            &serde_json::to_vec(&synopsis).expect("synopsis model serializes"),
+        );
+    }
     statistics_hash_identity(hash)
 }
 

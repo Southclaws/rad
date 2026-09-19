@@ -46,6 +46,7 @@ func main() {
 		authQueryScopes         string
 		authMutateScopes        string
 		authCatalogScopes       string
+		authAdminScopes         string
 		dependencyPollInterval  time.Duration
 		credentialPollInterval  time.Duration
 		maxConcurrentReconciles int
@@ -66,6 +67,7 @@ func main() {
 	flag.StringVar(&authQueryScopes, "auth-query-scopes", os.Getenv("RAD_AUTH_QUERY_SCOPES"), "Default space-separated OAuth scopes that grant query access; omission denies it.")
 	flag.StringVar(&authMutateScopes, "auth-mutate-scopes", os.Getenv("RAD_AUTH_MUTATE_SCOPES"), "Default space-separated OAuth scopes that grant data mutation access; omission denies it.")
 	flag.StringVar(&authCatalogScopes, "auth-catalog-scopes", os.Getenv("RAD_AUTH_CATALOG_SCOPES"), "Default space-separated OAuth scopes that grant catalog mutation access; omission denies it.")
+	flag.StringVar(&authAdminScopes, "auth-admin-scopes", os.Getenv("RAD_AUTH_ADMIN_SCOPES"), "Default space-separated OAuth scopes that grant administration access; omission denies it.")
 	flag.DurationVar(&dependencyPollInterval, "dependency-poll-interval", 30*time.Second, "Polling interval for missing credentials and conflicting claims.")
 	flag.DurationVar(&credentialPollInterval, "credential-poll-interval", time.Minute, "Polling interval for credential and workload identity rotation.")
 	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 4, "Maximum Database reconciliations in flight.")
@@ -99,6 +101,7 @@ func main() {
 		authQueryScopes,
 		authMutateScopes,
 		authCatalogScopes,
+		authAdminScopes,
 	)
 	if err != nil {
 		setupLog.Error(err, "configure default database authentication")

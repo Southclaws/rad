@@ -13,8 +13,8 @@ use super::generated::{
     SchemaTransitionsListKind, SchemaTransitionsListState, SchemaTransitionsOptions,
     SchemaTransitionsWaitArgs, ServeArgs, ServeAuth, ServeAuthProfile, ServeCatalogMode,
     ServeDiagnostics, ServeFrontend, ServeLogFormat, ServeLogLevel, ServeMetrics, ServeRole,
-    ServeSlateCommitDurability, ServeSlateObjectCachePreload, ServeStorage, SkillsGetArgs,
-    SkillsListArgs, SkillsOptions, SkillsPathArgs, SpecArgs, ValidateArgs,
+    ServeSlateCommitDurability, ServeSlateObjectCachePreload, ServeSlateWalEnabled, ServeStorage,
+    SkillsGetArgs, SkillsListArgs, SkillsOptions, SkillsPathArgs, SpecArgs, ValidateArgs,
 };
 use super::output::{self, CliError};
 use super::project::{Project, read_schema_file};
@@ -162,6 +162,10 @@ impl Handler for App {
                     crate::engine::kv::slatedb::CommitDurability::Memory
                 }
             },
+            wal: crate::engine::kv::slatedb::WalMode::from(matches!(
+                args.slate_wal_enabled,
+                ServeSlateWalEnabled::True
+            )),
             decoded_cache_size_mib: positive_u64(
                 args.slate_decoded_cache_size_mib,
                 "--slate-decoded-cache-size-mib",
@@ -283,10 +287,11 @@ impl Handler for App {
             .ok()
             .filter(|value| *value > 0)
             .ok_or("--reader-poll-interval-ms must be greater than zero")?;
-        let auth_scopes = crate::auth::ScopeConfig::from_values(
+        let auth_scopes = crate::auth::ScopeConfig::from_values_with_admin(
             args.auth_query_scopes,
             args.auth_mutate_scopes,
             args.auth_catalog_scopes,
+            args.auth_admin_scopes,
         )?;
         let auth = crate::auth::AuthConfig::from_values(
             match args.auth {
@@ -299,6 +304,7 @@ impl Handler for App {
             args.auth_profile.map(|profile| match profile {
                 ServeAuthProfile::Rfc9068 => crate::auth::JwtProfile::Rfc9068,
                 ServeAuthProfile::Compatible => crate::auth::JwtProfile::Compatible,
+                ServeAuthProfile::CloudflareAccess => crate::auth::JwtProfile::CloudflareAccess,
             }),
             auth_scopes,
         )?;
