@@ -26,6 +26,9 @@ export const metadata: Metadata = {
   title,
   description,
   metadataBase: new URL("https://www.radengine.dev"),
+  alternates: {
+    types: { "application/rss+xml": "https://www.radengine.dev/rss.xml" },
+  },
   openGraph: { title, description, type: "website" },
   twitter: { card: "summary_large_image", title, description },
 };

@@ -33,7 +33,6 @@ export default function BlogIndex() {
         <section className="section">
           <p className="slabel">blog</p>
           <h1 className="stitle">Notes from the build.</h1>
-
           {posts.length === 0 ? (
             <p className="prose" style={{ marginTop: "1.5rem" }}>
               Nothing here yet. Check back soon.
@@ -59,6 +58,9 @@ export default function BlogIndex() {
               ))}
             </ul>
           )}
+          <p className="prose" style={{ marginTop: "1rem" }}>
+            <a href="/rss.xml">Subscribe via RSS</a>
+          </p>
         </section>
       </main>
     </div>
