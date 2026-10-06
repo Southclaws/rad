@@ -26,6 +26,9 @@ struct PlanningKey {
     full_scan_only: bool,
     mode: u8,
     hash_join_memory_limit_bytes: u64,
+    relation_cache_materialization_budget_bytes: u64,
+    relation_cache_hash_builds: bool,
+    relation_cache_grouped_dimensions: bool,
     max_groups: u32,
     max_alternatives_per_group: u32,
     max_total_alternatives: u32,
@@ -49,6 +52,10 @@ impl From<PlanOptions> for PlanningKey {
                 PlannerMode::Cost => 2,
             },
             hash_join_memory_limit_bytes: options.hash_join_memory_limit_bytes,
+            relation_cache_materialization_budget_bytes: options
+                .relation_cache_materialization_budget_bytes,
+            relation_cache_hash_builds: options.relation_cache_hash_builds,
+            relation_cache_grouped_dimensions: options.relation_cache_grouped_dimensions,
             max_groups,
             max_alternatives_per_group,
             max_total_alternatives,
@@ -339,9 +346,10 @@ impl PreparedReadCache {
                     let fingerprints = Arc::new(lir::fingerprint::query(&statement.bound));
                     let relation_key = match relation_cache
                         .key_for_view(
-                            fingerprints.exact,
+                            (fingerprints.exact, fingerprints.family),
                             view,
                             &plan.dependencies,
+                            &plan.data_dependencies,
                             validation,
                             transaction_dependencies,
                         )
@@ -426,9 +434,10 @@ impl PreparedReadCache {
         let fingerprints = Arc::new(lir::fingerprint::query(&statement.bound));
         let relation_key = relation_cache
             .key_for_view(
-                fingerprints.exact,
+                (fingerprints.exact, fingerprints.family),
                 view,
                 &plan.dependencies,
+                &plan.data_dependencies,
                 validation,
                 transaction_dependencies,
             )
@@ -506,9 +515,13 @@ impl PreparedReadCache {
                 .expect("a cached prepared read has a physical plan");
             match relation_cache
                 .key_for_view(
-                    entry.prepared.fingerprints.exact,
+                    (
+                        entry.prepared.fingerprints.exact,
+                        entry.prepared.fingerprints.family,
+                    ),
                     view,
                     &plan.dependencies,
+                    &plan.data_dependencies,
                     validation,
                     transaction_dependencies,
                 )
@@ -631,13 +644,20 @@ mod tests {
     use tokio::sync::Notify;
 
     use crate::engine::exec::Error;
-    use crate::engine::exec::relation_cache::RelationCacheLimits;
+    use crate::engine::exec::relation_cache::{RelationCacheConfig, RelationCacheLimits};
     use crate::engine::kv::slatedb::Store;
     use crate::engine::kv::{IsolationLevel, TransactionView, TransactionalKv};
     use crate::engine::lir::{Kind, RawScalar, Relation, RootCardinality, RowsColumn};
     use crate::engine::planner::bind::{ProgramBinder, ProgramStatement};
 
     use super::*;
+
+    fn cache_config(limits: RelationCacheLimits) -> RelationCacheConfig {
+        RelationCacheConfig {
+            limits,
+            ..RelationCacheConfig::default()
+        }
+    }
 
     fn query() -> lir::Query {
         query_with_value("value")
@@ -684,7 +704,7 @@ mod tests {
         let view = TransactionView(&*transaction);
         let query = query();
         let prepared = Arc::new(prepared_statement(&view, query.clone()).await);
-        let cache = RelationCache::new(RelationCacheLimits::default());
+        let cache = RelationCache::new(RelationCacheConfig::default());
         let calls = Arc::new(AtomicUsize::new(0));
         let requests = (0..16)
             .map(|_| {
@@ -739,7 +759,7 @@ mod tests {
         let second_query = query_with_value("second");
         let first = prepared_statement(&view, first_query.clone()).await;
         let second = prepared_statement(&view, second_query.clone()).await;
-        let cache = RelationCache::new(RelationCacheLimits::default());
+        let cache = RelationCache::new(RelationCacheConfig::default());
         let calls = AtomicUsize::new(0);
 
         for (query, prepared) in [(&first_query, first), (&second_query, second)] {
@@ -777,7 +797,7 @@ mod tests {
         let transaction = store.begin(IsolationLevel::Snapshot).await.unwrap();
         let view = TransactionView(&*transaction);
         let query = query();
-        let cache = RelationCache::new(RelationCacheLimits::default());
+        let cache = RelationCache::new(RelationCacheConfig::default());
         let calls = AtomicUsize::new(0);
 
         for _ in 0..2 {
@@ -820,10 +840,10 @@ mod tests {
         let second_query = query_with_value("second");
         let first = prepared_statement(&view, first_query.clone()).await;
         let second = prepared_statement(&view, second_query.clone()).await;
-        let cache = RelationCache::new(RelationCacheLimits {
+        let cache = RelationCache::new(cache_config(RelationCacheLimits {
             entry_limit: 1,
             ..RelationCacheLimits::default()
-        });
+        }));
         let calls = AtomicUsize::new(0);
 
         for (query, prepared) in [
@@ -865,11 +885,11 @@ mod tests {
         let view = TransactionView(&*transaction);
         let query = query();
         let prepared = prepared_statement(&view, query.clone()).await;
-        let cache = RelationCache::new(RelationCacheLimits {
+        let cache = RelationCache::new(cache_config(RelationCacheLimits {
             byte_limit: 8,
             result_byte_limit: 8,
             ..RelationCacheLimits::default()
-        });
+        }));
         let calls = AtomicUsize::new(0);
 
         for _ in 0..2 {
@@ -908,7 +928,7 @@ mod tests {
         let query = query();
         let prepared = prepared_statement(&setup_view, query.clone()).await;
         setup.rollback();
-        let cache = Arc::new(RelationCache::new(RelationCacheLimits::default()));
+        let cache = Arc::new(RelationCache::new(RelationCacheConfig::default()));
         let started = Arc::new(Notify::new());
         let first = {
             let store = store.clone();
@@ -1109,7 +1129,6 @@ impl Drop for FlightOwner<'_> {
     }
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct PreparedReadStats {
     pub hits: u64,
@@ -1123,7 +1142,6 @@ pub(super) struct PreparedReadStats {
     pub retained_bytes: u64,
 }
 
-#[cfg(test)]
 impl PreparedReadCache {
     pub(super) fn stats(&self) -> PreparedReadStats {
         let state = self

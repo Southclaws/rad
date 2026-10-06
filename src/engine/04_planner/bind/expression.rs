@@ -181,9 +181,21 @@ impl Binder<'_> {
         right: lir::Expr,
     ) -> Result<bound::Expr> {
         if matches!(operation, lir::BinaryOp::And | lir::BinaryOp::Or) {
-            let left = self.bind_expression(left).await?;
-            let right = self.bind_expression(right).await?;
-            for expression in [&left, &right] {
+            let mut pending = vec![right, left];
+            let mut operands = Vec::new();
+            while let Some(expression) = pending.pop() {
+                match expression {
+                    lir::Expr::Binary { op, left, right } if op == operation => {
+                        pending.push(*right);
+                        pending.push(*left);
+                    }
+                    expression => operands.push(expression),
+                }
+            }
+
+            let mut expressions = Vec::with_capacity(operands.len());
+            for operand in operands {
+                let expression = self.bind_expression(operand).await?;
                 if expression.value_type().kind != Kind::Bool {
                     return Err(invalid(
                         Reason::TypeMismatch,
@@ -193,8 +205,9 @@ impl Binder<'_> {
                         ),
                     ));
                 }
+                expressions.push(expression);
             }
-            return Ok(bound::Expr::binary(operation, left, right));
+            return Ok(fold_logical(expressions, operation));
         }
 
         let (left, right) = self.bind_operands(left, right).await?;
@@ -313,6 +326,24 @@ impl Binder<'_> {
         }
         Ok(bound::Expr::branch(bound_arms, otherwise))
     }
+}
+
+fn fold_logical(mut expressions: Vec<bound::Expr>, operation: lir::BinaryOp) -> bound::Expr {
+    while expressions.len() > 1 {
+        let mut level = Vec::with_capacity(expressions.len().div_ceil(2));
+        let mut current = expressions.into_iter();
+        while let Some(left) = current.next() {
+            level.push(if let Some(right) = current.next() {
+                bound::Expr::binary(operation, left, right)
+            } else {
+                left
+            });
+        }
+        expressions = level;
+    }
+    expressions
+        .pop()
+        .expect("a logical binary expression has at least two operands")
 }
 
 pub(super) fn coerce_literal(raw: RawScalar, wanted: &Type) -> Result<bound::Expr> {

@@ -179,7 +179,7 @@ fn rad_metric_view(instrument: &Instrument) -> Option<Stream> {
                 262_144.0,
                 1_048_576.0,
             ]),
-            "rad.relation.cache.shadow.candidate.work" => Some(vec![
+            "rad.relation.cache.policy.candidate.work" => Some(vec![
                 4_096.0,
                 16_384.0,
                 65_536.0,
@@ -191,7 +191,8 @@ fn rad_metric_view(instrument: &Instrument) -> Option<Stream> {
                 268_435_456.0,
                 1_073_741_824.0,
             ]),
-            "rad.relation.cache.shadow.candidate.density" => Some(vec![
+            "rad.relation.cache.policy.candidate.density"
+            | "rad.relation.cache.cohort.value.density" => Some(vec![
                 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 256.0, 1024.0,
             ]),
             "rad.relation.cache.result.bytes" | "rad.relation.cache.prepared.candidate.bytes" => {
@@ -294,10 +295,21 @@ struct Instruments {
     relation_cache_reuse_opportunities: Counter<u64>,
     relation_cache_cohort_transitions: Counter<u64>,
     relation_cache_cohort_reuse: Histogram<u64>,
-    relation_cache_shadow_decisions: Counter<u64>,
-    relation_cache_shadow_candidate_work: Histogram<u64>,
-    relation_cache_shadow_candidate_density: Histogram<f64>,
-    relation_cache_shadow_rejected_reuse: Counter<u64>,
+    relation_cache_cohort_requests: Histogram<u64>,
+    relation_cache_cohort_hits: Histogram<u64>,
+    relation_cache_cohort_coalesced: Histogram<u64>,
+    relation_cache_cohort_fills: Histogram<u64>,
+    relation_cache_cohort_lifetime: Histogram<f64>,
+    relation_cache_cohort_fill_work: Histogram<u64>,
+    relation_cache_cohort_retained_bytes: Histogram<u64>,
+    relation_cache_cohort_resident_avoided_work: Histogram<u64>,
+    relation_cache_cohort_coalesced_avoided_work: Histogram<u64>,
+    relation_cache_cohort_value_density: Histogram<f64>,
+    relation_cache_admission_rejection_gates: Counter<u64>,
+    relation_cache_policy_decisions: Counter<u64>,
+    relation_cache_policy_candidate_work: Histogram<u64>,
+    relation_cache_policy_candidate_density: Histogram<f64>,
+    relation_cache_policy_rejected_reuse: Counter<u64>,
     relation_cache_evidence_evictions: Counter<u64>,
     kv_operations: Counter<u64>,
     kv_operation_duration: Histogram<f64>,
@@ -675,25 +687,77 @@ impl Instruments {
                     "Reuse opportunities observed before a dependency cohort is superseded",
                 )
                 .build(),
-            relation_cache_shadow_decisions: meter
-                .u64_counter("rad.relation.cache.shadow.decisions")
+            relation_cache_cohort_requests: meter
+                .u64_histogram("rad.relation.cache.cohort.requests")
+                .with_description("Successful requests observed in one relation cache cohort")
+                .build(),
+            relation_cache_cohort_hits: meter
+                .u64_histogram("rad.relation.cache.cohort.resident.hits")
+                .with_description("Resident hits observed in one relation cache cohort")
+                .build(),
+            relation_cache_cohort_coalesced: meter
+                .u64_histogram("rad.relation.cache.cohort.coalesced.reuses")
+                .with_description("Coalesced reuses observed in one relation cache cohort")
+                .build(),
+            relation_cache_cohort_fills: meter
+                .u64_histogram("rad.relation.cache.cohort.fills")
+                .with_description("Fills observed in one relation cache cohort")
+                .build(),
+            relation_cache_cohort_lifetime: meter
+                .f64_histogram("rad.relation.cache.cohort.observed.lifetime")
+                .with_unit("s")
                 .with_description(
-                    "Relation cache admission decisions from the inactive policy scorer",
+                    "Time from first successful observation to observed cohort completion",
                 )
                 .build(),
-            relation_cache_shadow_candidate_work: meter
-                .u64_histogram("rad.relation.cache.shadow.candidate.work")
+            relation_cache_cohort_fill_work: meter
+                .u64_histogram("rad.relation.cache.cohort.fill.work")
+                .with_description("Deterministic fill work units for one relation cache cohort")
+                .build(),
+            relation_cache_cohort_retained_bytes: meter
+                .u64_histogram("rad.relation.cache.cohort.retained.bytes")
+                .with_unit("By")
+                .with_description("Retained bytes for one relation cache cohort")
+                .build(),
+            relation_cache_cohort_resident_avoided_work: meter
+                .u64_histogram("rad.relation.cache.cohort.resident.avoided.work")
+                .with_description(
+                    "Work units avoided by resident hits in one relation cache cohort",
+                )
+                .build(),
+            relation_cache_cohort_coalesced_avoided_work: meter
+                .u64_histogram("rad.relation.cache.cohort.coalesced.avoided.work")
+                .with_description(
+                    "Work units avoided by coalesced fills in one relation cache cohort",
+                )
+                .build(),
+            relation_cache_cohort_value_density: meter
+                .f64_histogram("rad.relation.cache.cohort.value.density")
+                .with_description(
+                    "Realized avoided work per retained byte in one relation cache cohort",
+                )
+                .build(),
+            relation_cache_admission_rejection_gates: meter
+                .u64_counter("rad.relation.cache.admission.rejection.gates")
+                .with_description("Relation cache admission rejections by gate")
+                .build(),
+            relation_cache_policy_decisions: meter
+                .u64_counter("rad.relation.cache.policy.decisions")
+                .with_description("Relation cache admission policy decisions")
+                .build(),
+            relation_cache_policy_candidate_work: meter
+                .u64_histogram("rad.relation.cache.policy.candidate.work")
                 .with_description(
                     "Deterministic work units for relation cache admission candidates",
                 )
                 .build(),
-            relation_cache_shadow_candidate_density: meter
-                .f64_histogram("rad.relation.cache.shadow.candidate.density")
+            relation_cache_policy_candidate_density: meter
+                .f64_histogram("rad.relation.cache.policy.candidate.density")
                 .with_description("Deterministic work units per retained candidate byte")
                 .build(),
-            relation_cache_shadow_rejected_reuse: meter
-                .u64_counter("rad.relation.cache.shadow.rejected.reuse")
-                .with_description("Reuse opportunities after the shadow policy rejects a candidate")
+            relation_cache_policy_rejected_reuse: meter
+                .u64_counter("rad.relation.cache.policy.rejected.reuse")
+                .with_description("Reuse opportunities after the policy rejects a candidate")
                 .build(),
             relation_cache_evidence_evictions: meter
                 .u64_counter("rad.relation.cache.evidence.evictions")
@@ -1446,26 +1510,114 @@ pub fn relation_cache_reuse_opportunity() {
     instruments.relation_cache_reuse_opportunities.add(1, &[]);
 }
 
-pub fn relation_cache_cohort_transition(cause: &'static str) {
+pub fn relation_cache_cohort_transition(
+    materialization: &'static str,
+    policy_mode: &'static str,
+    cause: &'static str,
+) {
     let Some(instruments) = INSTRUMENTS.get() else {
         return;
     };
-    instruments
-        .relation_cache_cohort_transitions
-        .add(1, &[KeyValue::new("rad.cache.cause", cause)]);
-}
-
-pub fn relation_cache_cohort_reuse(reuse_opportunities: u64, outcome: &'static str) {
-    let Some(instruments) = INSTRUMENTS.get() else {
-        return;
-    };
-    instruments.relation_cache_cohort_reuse.record(
-        reuse_opportunities,
-        &[KeyValue::new("rad.cache.cohort.outcome", outcome)],
+    instruments.relation_cache_cohort_transitions.add(
+        1,
+        &[
+            KeyValue::new("rad.cache.materialization", materialization),
+            KeyValue::new("rad.cache.policy.mode", policy_mode),
+            KeyValue::new("rad.cache.dependency.transition", cause),
+        ],
     );
 }
 
-pub fn relation_cache_shadow_decision(
+#[allow(clippy::too_many_arguments)]
+pub fn relation_cache_cohort_summary(
+    materialization: &'static str,
+    policy_mode: &'static str,
+    completion: &'static str,
+    transition: &'static str,
+    admission_outcome: &'static str,
+    admission_reason: &'static str,
+    evidence_source: &'static str,
+    successful_requests: u64,
+    reuse_opportunities: u64,
+    cache_hits: u64,
+    coalesced_reuses: u64,
+    fills: u64,
+    observed_cohort_lifetime: Duration,
+    fill_work_units: u64,
+    retained_bytes: u64,
+    resident_avoided_work: u64,
+    coalesced_avoided_work: u64,
+) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    let attributes = [
+        KeyValue::new("rad.cache.materialization", materialization),
+        KeyValue::new("rad.cache.policy.mode", policy_mode),
+        KeyValue::new("rad.cache.cohort.completion", completion),
+        KeyValue::new("rad.cache.dependency.transition", transition),
+        KeyValue::new("rad.cache.admission.outcome", admission_outcome),
+        KeyValue::new("rad.cache.admission.reason", admission_reason),
+        KeyValue::new("rad.cache.evidence.source", evidence_source),
+    ];
+    instruments
+        .relation_cache_cohort_requests
+        .record(successful_requests, &attributes);
+    instruments
+        .relation_cache_cohort_reuse
+        .record(reuse_opportunities, &attributes);
+    instruments
+        .relation_cache_cohort_hits
+        .record(cache_hits, &attributes);
+    instruments
+        .relation_cache_cohort_coalesced
+        .record(coalesced_reuses, &attributes);
+    instruments
+        .relation_cache_cohort_fills
+        .record(fills, &attributes);
+    instruments
+        .relation_cache_cohort_lifetime
+        .record(observed_cohort_lifetime.as_secs_f64(), &attributes);
+    instruments
+        .relation_cache_cohort_fill_work
+        .record(fill_work_units, &attributes);
+    instruments
+        .relation_cache_cohort_retained_bytes
+        .record(retained_bytes, &attributes);
+    instruments
+        .relation_cache_cohort_resident_avoided_work
+        .record(resident_avoided_work, &attributes);
+    instruments
+        .relation_cache_cohort_coalesced_avoided_work
+        .record(coalesced_avoided_work, &attributes);
+    let value_density = resident_avoided_work.saturating_add(coalesced_avoided_work) as f64
+        / retained_bytes.max(1) as f64;
+    instruments
+        .relation_cache_cohort_value_density
+        .record(value_density, &attributes);
+}
+
+pub fn relation_cache_admission_rejection_gate(
+    materialization: &'static str,
+    policy_mode: &'static str,
+    gate: &'static str,
+) {
+    let Some(instruments) = INSTRUMENTS.get() else {
+        return;
+    };
+    instruments.relation_cache_admission_rejection_gates.add(
+        1,
+        &[
+            KeyValue::new("rad.cache.materialization", materialization),
+            KeyValue::new("rad.cache.policy.mode", policy_mode),
+            KeyValue::new("rad.cache.rejection.gate", gate),
+        ],
+    );
+}
+
+pub fn relation_cache_policy_decision(
+    materialization: &'static str,
+    policy_mode: &'static str,
     decision: &'static str,
     reason: &'static str,
     evidence: &'static str,
@@ -1473,33 +1625,53 @@ pub fn relation_cache_shadow_decision(
     let Some(instruments) = INSTRUMENTS.get() else {
         return;
     };
-    instruments.relation_cache_shadow_decisions.add(
+    instruments.relation_cache_policy_decisions.add(
         1,
         &[
-            KeyValue::new("rad.cache.decision", decision),
-            KeyValue::new("rad.cache.reason", reason),
-            KeyValue::new("rad.cache.evidence", evidence),
+            KeyValue::new("rad.cache.materialization", materialization),
+            KeyValue::new("rad.cache.policy.mode", policy_mode),
+            KeyValue::new("rad.cache.admission.outcome", decision),
+            KeyValue::new("rad.cache.admission.reason", reason),
+            KeyValue::new("rad.cache.evidence.source", evidence),
         ],
     );
 }
 
-pub fn relation_cache_shadow_candidate(work_units: u64, density: f64) {
+pub fn relation_cache_policy_candidate(
+    materialization: &'static str,
+    policy_mode: &'static str,
+    work_units: u64,
+    density: f64,
+) {
     let Some(instruments) = INSTRUMENTS.get() else {
         return;
     };
+    let attributes = [
+        KeyValue::new("rad.cache.materialization", materialization),
+        KeyValue::new("rad.cache.policy.mode", policy_mode),
+    ];
     instruments
-        .relation_cache_shadow_candidate_work
-        .record(work_units, &[]);
+        .relation_cache_policy_candidate_work
+        .record(work_units, &attributes);
     instruments
-        .relation_cache_shadow_candidate_density
-        .record(density, &[]);
+        .relation_cache_policy_candidate_density
+        .record(density, &attributes);
 }
 
-pub fn relation_cache_shadow_rejected_reuse() {
+pub fn relation_cache_policy_rejected_reuse(
+    materialization: &'static str,
+    policy_mode: &'static str,
+) {
     let Some(instruments) = INSTRUMENTS.get() else {
         return;
     };
-    instruments.relation_cache_shadow_rejected_reuse.add(1, &[]);
+    instruments.relation_cache_policy_rejected_reuse.add(
+        1,
+        &[
+            KeyValue::new("rad.cache.materialization", materialization),
+            KeyValue::new("rad.cache.policy.mode", policy_mode),
+        ],
+    );
 }
 
 pub fn relation_cache_evidence_eviction(cause: &'static str) {

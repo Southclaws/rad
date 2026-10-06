@@ -3,6 +3,8 @@
 //! scans and unbatched nested correlation, and through the independent
 //! reference executor.
 
+#![allow(clippy::large_futures)]
+
 mod generative;
 #[path = "oracle/exact.rs"]
 mod exact;
@@ -15,10 +17,11 @@ use std::time::{Duration, Instant};
 
 use generative::{
     CacheCase, Case, ModelCase, ProgramCase, SemanticModelCase, check, check_cache,
-    check_cache_file, check_invalid, check_invalid_program, check_metamorphic, check_model,
-    check_program, check_semantic_model, emit_fixture, minimize, minimize_cache, minimize_invalid,
-    minimize_invalid_program, minimize_metamorphic, minimize_model, minimize_program,
-    minimize_semantic_model, nested_identity_case, recursive_case, recursive_from_decisions,
+    check_cache_enforced, check_cache_file, check_invalid, check_invalid_program,
+    check_metamorphic, check_model, check_program, check_semantic_model, emit_fixture, minimize,
+    minimize_cache, minimize_invalid, minimize_invalid_program, minimize_metamorphic,
+    minimize_model, minimize_program, minimize_semantic_model, nested_identity_case,
+    recursive_case, recursive_from_decisions,
 };
 
 #[tokio::test]
@@ -453,6 +456,23 @@ async fn generated_subrelation_cache_matches_in_file_storage() {
         }
     }
     println!("checked {cases} file subrelation-cache cases from seed {base_seed}");
+}
+
+#[tokio::test]
+async fn generated_subrelation_cache_matches_with_enforced_policy() {
+    if env::var_os("RAD_GEN_REPLAY").is_some() {
+        return;
+    }
+    let cases = env_usize("RAD_GEN_CACHE_ENFORCED_CASES", 12);
+    let base_seed = env_u64("RAD_GEN_CACHE_ENFORCED_SEED", 0x656e_666f_7263_6564);
+    for offset in 0..cases as u64 {
+        let seed = base_seed.wrapping_add(offset);
+        let case = CacheCase::for_kind(offset as usize % 6, seed);
+        if let Err(error) = check_cache_enforced(&case).await {
+            panic!("enforced subrelation-cache differential failed at seed {seed}: {error}");
+        }
+    }
+    println!("checked {cases} enforced subrelation-cache cases from seed {base_seed}");
 }
 
 #[derive(Clone, Copy)]

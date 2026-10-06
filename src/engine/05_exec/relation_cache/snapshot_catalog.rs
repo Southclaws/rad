@@ -523,7 +523,6 @@ impl Drop for FlightOwner<'_> {
     }
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct SnapshotCatalogStats {
     pub hits: u64,
@@ -535,7 +534,6 @@ pub(super) struct SnapshotCatalogStats {
     pub retained_bytes: u64,
 }
 
-#[cfg(test)]
 impl SnapshotCatalogCache {
     pub(super) fn stats(&self) -> SnapshotCatalogStats {
         let state = self

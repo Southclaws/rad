@@ -3,31 +3,49 @@
 use crate::engine::catalog::model::{CatalogDependencies, Column, Table};
 use crate::engine::lir::bound::{self, SlotSet};
 
-use super::physical::{BindingPlanKind, NodeKind, Plan};
+use super::analysis::ConstValue;
+use super::physical::{
+    BindingPlanKind, NodeKind, Plan, RelationDataDependencies, TableDataDependency,
+    TableDataDependencyScope,
+};
 
 pub(super) fn prepare_catalog_dependencies(plan: &mut Plan) {
     let required = required_slots(plan);
+    let (dependencies, data_dependencies) = collect_dependencies(plan, &required);
+    plan.dependencies = dependencies;
+    plan.data_dependencies = data_dependencies;
+    prepare_materialization_dependencies(plan);
+}
+
+fn collect_dependencies(
+    plan: &mut Plan,
+    required: &SlotSet,
+) -> (CatalogDependencies, RelationDataDependencies) {
     let mut dependencies = CatalogDependencies::default();
+    let mut data_dependencies = RelationDataDependencies::default();
     plan.walk_mut(&mut |node| match &mut node.kind {
         NodeKind::PrimaryKeyGet {
             scan,
+            key,
             decode_columns,
             ..
         } => {
-            *decode_columns = decode_columns_for(scan, &required);
+            *decode_columns = decode_columns_for(scan, required);
             let table = scan.scan_table();
             let mut columns = decode_columns.clone();
             append_named_columns(&mut columns, table, &table.primary_key);
             dependencies.add_table_read(table, &columns);
+            add_primary_key_dependency(&mut data_dependencies, table, key);
         }
         NodeKind::TableScan {
             scan,
             decode_columns,
             ..
         } => {
-            *decode_columns = decode_columns_for(scan, &required);
+            *decode_columns = decode_columns_for(scan, required);
             let table = scan.scan_table();
             dependencies.add_table_read(table, decode_columns);
+            add_complete_table_dependency(&mut data_dependencies, &table.id);
         }
         NodeKind::IndexRangeScan {
             scan,
@@ -35,7 +53,7 @@ pub(super) fn prepare_catalog_dependencies(plan: &mut Plan) {
             decode_columns,
             ..
         } => {
-            *decode_columns = decode_columns_for(scan, &required);
+            *decode_columns = decode_columns_for(scan, required);
             let table = scan.scan_table();
             let mut columns = decode_columns.clone();
             let names = table
@@ -45,19 +63,92 @@ pub(super) fn prepare_catalog_dependencies(plan: &mut Plan) {
                 .collect::<Vec<_>>();
             append_named_columns(&mut columns, table, &names);
             dependencies.add_index_read(table, index, &columns);
+            add_complete_table_dependency(&mut data_dependencies, &table.id);
         }
         _ => {}
     });
-    plan.dependencies = dependencies;
+    (dependencies, data_dependencies)
+}
+
+fn prepare_materialization_dependencies(plan: &mut Plan) {
     plan.walk_mut(&mut |node| {
         if node.materialization.is_none() {
             return;
         }
         let dependencies = dependencies_for_node(node);
-        node.materialization
+        let data_dependencies = data_dependencies_for_node(node);
+        let materialization = node
+            .materialization
             .as_mut()
-            .expect("materialization candidate is present")
-            .dependencies = dependencies;
+            .expect("materialization candidate is present");
+        materialization.dependencies = dependencies;
+        materialization.data_dependencies = data_dependencies;
+    });
+}
+
+fn data_dependencies_for_node(node: &super::physical::Node) -> RelationDataDependencies {
+    let mut dependencies = RelationDataDependencies::default();
+    node.walk(&mut |node| match &node.kind {
+        NodeKind::PrimaryKeyGet { scan, key, .. } => {
+            add_primary_key_dependency(&mut dependencies, scan.scan_table(), key);
+        }
+        NodeKind::TableScan { scan, .. } | NodeKind::IndexRangeScan { scan, .. } => {
+            add_complete_table_dependency(&mut dependencies, &scan.scan_table().id);
+        }
+        _ => {}
+    });
+    dependencies
+}
+
+fn add_primary_key_dependency(
+    dependencies: &mut RelationDataDependencies,
+    table: &Table,
+    key: &[ConstValue],
+) {
+    let Some(key) = key
+        .iter()
+        .map(|value| match value {
+            ConstValue::Literal(value) => Some(value.clone()),
+            ConstValue::Outer(_) => None,
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        add_complete_table_dependency(dependencies, &table.id);
+        return;
+    };
+    let Some(dependency) = dependencies
+        .tables
+        .iter_mut()
+        .find(|dependency| dependency.table_id == table.id)
+    else {
+        dependencies.tables.push(TableDataDependency {
+            table_id: table.id.clone(),
+            scope: TableDataDependencyScope::PrimaryKeys(vec![key]),
+        });
+        return;
+    };
+    if let TableDataDependencyScope::PrimaryKeys(keys) = &mut dependency.scope
+        && !keys.contains(&key)
+    {
+        keys.push(key);
+    }
+}
+
+fn add_complete_table_dependency(
+    dependencies: &mut RelationDataDependencies,
+    table_id: &crate::engine::catalog::identity::TableId,
+) {
+    if let Some(dependency) = dependencies
+        .tables
+        .iter_mut()
+        .find(|dependency| &dependency.table_id == table_id)
+    {
+        dependency.scope = TableDataDependencyScope::All;
+        return;
+    }
+    dependencies.tables.push(TableDataDependency {
+        table_id: table_id.clone(),
+        scope: TableDataDependencyScope::All,
     });
 }
 
@@ -233,10 +324,12 @@ fn append_named_columns(columns: &mut Vec<Column>, table: &Table, names: &[Strin
 #[cfg(test)]
 mod tests {
     use crate::engine::lir::bound::{self, BoundAggregateTerm, ProjectField};
-    use crate::engine::lir::{AggregateFunction, Kind, SlotId, Type};
-    use crate::engine::planner::physical::NodeKind;
+    use crate::engine::lir::{AggregateFunction, BinaryOp, Kind, SlotId, Type, Value};
+    use crate::engine::planner::physical::{NodeKind, TableDataDependencyScope};
     use crate::engine::planner::test_support::{column, query, scan};
     use crate::engine::planner::{PlanOptions, plan_query};
+
+    use super::{ConstValue, RelationDataDependencies, add_primary_key_dependency};
 
     #[test]
     fn projection_decodes_and_fences_only_observed_columns() {
@@ -254,6 +347,11 @@ mod tests {
 
         assert_eq!(plan.dependencies.table_existence.len(), 1);
         assert_eq!(plan.dependencies.index_access.len(), 0);
+        assert_eq!(plan.data_dependencies.tables.len(), 1);
+        assert_eq!(
+            plan.data_dependencies.tables[0].scope,
+            TableDataDependencyScope::All
+        );
         assert_eq!(
             plan.dependencies
                 .column_values
@@ -301,6 +399,35 @@ mod tests {
             panic!("expected table scan")
         };
         assert!(decode_columns.is_empty());
+    }
+
+    #[test]
+    fn literal_primary_key_get_uses_a_primary_key_data_dependency() {
+        let scan = scan();
+        let predicate = bound::Expr::binary(
+            BinaryOp::Eq,
+            column(&scan, "id"),
+            bound::Expr::literal(Value::Text("task-1".into())),
+        );
+        let plan = plan_query(
+            &query(bound::Relation::filter(scan, predicate), 3),
+            PlanOptions::default(),
+        );
+
+        assert_eq!(
+            plan.data_dependencies.tables[0].scope,
+            TableDataDependencyScope::PrimaryKeys(vec![vec![Value::Text("task-1".into())]])
+        );
+    }
+
+    #[test]
+    fn correlated_primary_key_get_uses_a_complete_table_data_dependency() {
+        let table = scan().scan_table().clone();
+        let mut dependencies = RelationDataDependencies::default();
+
+        add_primary_key_dependency(&mut dependencies, &table, &[ConstValue::Outer(SlotId(99))]);
+
+        assert_eq!(dependencies.tables[0].scope, TableDataDependencyScope::All);
     }
 
     #[test]

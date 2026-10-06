@@ -31,7 +31,7 @@ pub(super) enum ExecutionPath {
 type SubrelationCacheExecution<'a> = (
     &'a super::relation_cache::RelationCache,
     super::relation_cache::RelationCacheKey,
-    Option<&'a Arc<dyn super::EngineEventHook>>,
+    Option<&'a dyn super::EngineEventHook>,
 );
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -612,7 +612,7 @@ pub(super) struct RunContext<'a> {
     pub plan_options: crate::engine::planner::PlanOptions,
     pub collect_plan: bool,
     pub execution_grant: super::parallel::ExecutionGrant,
-    pub cache_events: Option<&'a Arc<dyn super::EngineEventHook>>,
+    pub cache_events: Option<&'a dyn super::EngineEventHook>,
 }
 
 pub(super) async fn run(
@@ -691,7 +691,7 @@ async fn run_with_path(
     relation_cache: Option<&super::relation_cache::RelationCache>,
     dependency_validation: super::relation_cache::DependencyValidation,
     transaction_dependencies: Option<&super::relation_cache::TransactionDependencyCache>,
-    cache_events: Option<&Arc<dyn super::EngineEventHook>>,
+    cache_events: Option<&dyn super::EngineEventHook>,
 ) -> Result<ProgramResult> {
     let mut binder = ProgramBinder::new(relational_names(program))?;
     let mut bindings = HashMap::<String, Vec<Env>>::new();
@@ -774,7 +774,7 @@ async fn run_statements(
     relation_cache: Option<&super::relation_cache::RelationCache>,
     dependency_validation: super::relation_cache::DependencyValidation,
     transaction_dependencies: Option<&super::relation_cache::TransactionDependencyCache>,
-    cache_events: Option<&Arc<dyn super::EngineEventHook>>,
+    cache_events: Option<&dyn super::EngineEventHook>,
     plans: &mut Vec<StatementPlan>,
 ) -> Result<()> {
     let mut catalog_changed = false;
@@ -919,12 +919,15 @@ async fn run_statements(
                         let plan = bound.plan.as_ref().expect("production plan is present");
                         cache
                             .key_for_view(
-                                fingerprints
-                                    .as_ref()
-                                    .expect("cache fingerprint is present")
-                                    .exact,
+                                {
+                                    let fingerprints = fingerprints
+                                        .as_ref()
+                                        .expect("cache fingerprint is present");
+                                    (fingerprints.exact, fingerprints.family)
+                                },
                                 &*view,
                                 &plan.dependencies,
+                                &plan.data_dependencies,
                                 dependency_validation,
                                 transaction_dependencies,
                             )
@@ -1937,7 +1940,15 @@ mod tests {
         let (store, _engine, catalog) = setup("pir-relation-cache").await;
         catalog.create_table(tasks_table()).await.unwrap();
         let observer = Arc::new(RecordingObserver::default());
-        let engine = Engine::new(store).with_observer(observer.clone());
+        let engine = Engine::new(store)
+            .with_relation_cache_config(crate::engine::exec::RelationCacheConfig {
+                policy: crate::engine::exec::RelationCachePolicyConfig {
+                    mode: crate::engine::exec::RelationCachePolicyMode::Foyer,
+                    ..crate::engine::exec::RelationCachePolicyConfig::default()
+                },
+                ..crate::engine::exec::RelationCacheConfig::default()
+            })
+            .with_observer(observer.clone());
         engine
             .execute_program(
                 Program {
@@ -1998,7 +2009,7 @@ mod tests {
         );
         assert_eq!(observations[1].kv, super::super::observe::KvWork::default());
         assert!(observations[1].operators.is_empty());
-        let cache = engine.relation_cache_stats();
+        let cache = engine.relation_cache_statistics();
         assert_eq!(cache.prepared_misses, 1);
         assert_eq!(cache.prepared_hits, 1);
         assert_eq!(cache.prepared_admissions, 1);
@@ -2034,7 +2045,7 @@ mod tests {
 
         assert_eq!(first.statements[0].name, "first");
         assert_eq!(second.statements[0].name, "second");
-        assert_eq!(engine.relation_cache_stats().prepared_hits, 1);
+        assert_eq!(engine.relation_cache_statistics().prepared_hits, 1);
     }
 
     #[tokio::test]
@@ -2075,7 +2086,7 @@ mod tests {
 
         assert!(matches!(first.result, Datum::Array(ref rows) if rows.len() == 1));
         assert!(matches!(second.result, Datum::Array(ref rows) if rows.len() == 2));
-        let cache = engine.relation_cache_stats();
+        let cache = engine.relation_cache_statistics();
         assert_eq!(cache.prepared_misses, 1);
         assert_eq!(cache.prepared_hits, 1);
         assert_eq!(cache.prepared_entries, 1);
@@ -2113,7 +2124,7 @@ mod tests {
             .unwrap();
 
         assert!(matches!(result.result, Datum::Array(ref rows) if rows.is_empty()));
-        let cache = engine.relation_cache_stats();
+        let cache = engine.relation_cache_statistics();
         assert_eq!(cache.prepared_misses, 2);
         assert_eq!(cache.prepared_hits, 0);
         assert_eq!(cache.prepared_admissions, 2);
@@ -2216,7 +2227,7 @@ mod tests {
             .await
             .unwrap();
 
-        let cache = engine.relation_cache_stats();
+        let cache = engine.relation_cache_statistics();
         assert_eq!(cache.prepared_misses, 2);
         assert_eq!(cache.prepared_hits, 1);
         assert_eq!(cache.prepared_admissions, 2);

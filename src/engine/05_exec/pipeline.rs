@@ -594,7 +594,9 @@ async fn build<'a>(
                         context.root_key.for_physical_subrelation(
                             MaterializationDomain::GroupedHashJoinDimension,
                             candidate.exact,
+                            candidate.family,
                             &candidate.dependencies,
+                            &candidate.data_dependencies,
                             candidate.representation.identity_bytes(),
                         )?,
                     ))
@@ -861,7 +863,9 @@ async fn build<'a>(
                         context.root_key.for_physical_subrelation(
                             MaterializationDomain::HashJoinBuild,
                             candidate.exact,
+                            candidate.family,
                             &candidate.dependencies,
+                            &candidate.data_dependencies,
                             candidate.representation.identity_bytes(),
                         )?,
                     ))
@@ -1207,9 +1211,12 @@ async fn build_materialized<'a>(
     // The root key and this candidate come from one physical plan and one
     // pinned view. Selecting a subset of the root vector keeps this lookup on
     // that view without a second catalog or data-generation read.
-    let key = context
-        .root_key
-        .for_subrelation(candidate.exact, &candidate.dependencies)?;
+    let key = context.root_key.for_subrelation(
+        candidate.exact,
+        candidate.family,
+        &candidate.dependencies,
+        &candidate.data_dependencies,
+    )?;
     let mut fill_resources = resources.clone();
     fill_resources.bypass_materialization = true;
     let lookup_started = measure_operators.then(Instant::now);

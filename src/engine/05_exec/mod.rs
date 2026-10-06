@@ -40,7 +40,14 @@ pub use program::{
 };
 pub use query::{Executor, Limits};
 pub use reference::ReferenceExecutor;
-pub use relation_cache::{QueryValidator, RelationCacheLimits};
+pub use relation_cache::{
+    AdmissionDecision, AdmissionOutcome, AdmissionReason, EvidenceSource, QueryValidator,
+    RelationCacheCohortStatistics, RelationCacheConfig, RelationCacheDomainStatistics,
+    RelationCacheDomainStatisticsSet, RelationCacheDomains, RelationCacheLimits,
+    RelationCachePolicyConfig, RelationCachePolicyCounters, RelationCachePolicyMode,
+    RelationCachePolicyStatistics, RelationCachePrior, RelationCacheQuantiles,
+    RelationCacheReuseAdmission, RelationCacheStatistics,
+};
 pub(crate) use transaction::EngineTransaction;
 pub use transaction::TransactionIsolation;
 

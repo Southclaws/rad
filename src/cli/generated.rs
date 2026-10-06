@@ -130,6 +130,36 @@ pub enum ServeMetrics {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServeRelationCachePolicy {
+    #[value(name = r"foyer")]
+    Foyer,
+    #[value(name = r"shadow")]
+    Shadow,
+    #[value(name = r"enforced")]
+    Enforced,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServeRelationCachePolicyPrior {
+    #[value(name = r"none")]
+    None,
+    #[value(name = r"generation-rate")]
+    GenerationRate,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServeRelationCachePolicyReuseAdmission {
+    #[value(name = r"second-touch")]
+    SecondTouch,
+    #[value(name = r"third-touch")]
+    ThirdTouch,
+    #[value(name = r"value-density")]
+    ValueDensity,
+    #[value(name = r"family-conversion")]
+    FamilyConversion,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ServeRole {
     #[value(name = r"read")]
     Read,
@@ -146,14 +176,6 @@ pub enum ServeSlateCommitDurability {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-pub enum ServeSlateWalEnabled {
-    #[value(name = r"true")]
-    True,
-    #[value(name = r"false")]
-    False,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ServeSlateObjectCachePreload {
     #[value(name = r"none")]
     None,
@@ -161,6 +183,14 @@ pub enum ServeSlateObjectCachePreload {
     L0,
     #[value(name = r"all")]
     All,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServeSlateWalEnabled {
+    #[value(name = r"true")]
+    True,
+    #[value(name = r"false")]
+    False,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -789,6 +819,105 @@ pub struct ServeArgs {
         default_value = r"8"
     )]
     pub relation_cache_max_result_size_mib: i64,
+    #[arg(
+        id = r"relation-cache-policy",
+        long = r"relation-cache-policy",
+        help = r"Relation cache admission policy mode.",
+        env = r"RAD_RELATION_CACHE_POLICY",
+        default_value = r"enforced",
+        value_enum
+    )]
+    pub relation_cache_policy: ServeRelationCachePolicy,
+    #[arg(
+        id = r"relation-cache-policy-reuse-admission",
+        long = r"relation-cache-policy-reuse-admission",
+        help = r"Reuse evidence required for relation cache admission.",
+        env = r"RAD_RELATION_CACHE_POLICY_REUSE_ADMISSION",
+        default_value = r"family-conversion",
+        value_enum
+    )]
+    pub relation_cache_policy_reuse_admission: ServeRelationCachePolicyReuseAdmission,
+    #[arg(
+        id = r"relation-cache-policy-family-min-observations",
+        long = r"relation-cache-policy-family-min-observations",
+        help = r"Minimum second-touch observations for family conversion admission.",
+        env = r"RAD_RELATION_CACHE_POLICY_FAMILY_MIN_OBSERVATIONS",
+        default_value = r"1"
+    )]
+    pub relation_cache_policy_family_min_observations: i64,
+    #[arg(
+        id = r"relation-cache-policy-min-cohorts",
+        long = r"relation-cache-policy-min-cohorts",
+        help = r"Completed cohort count required for learned admission.",
+        env = r"RAD_RELATION_CACHE_POLICY_MIN_COHORTS",
+        default_value = r"3"
+    )]
+    pub relation_cache_policy_min_cohorts: i64,
+    #[arg(
+        id = r"relation-cache-policy-zero-reuse-percent",
+        long = r"relation-cache-policy-zero-reuse-percent",
+        help = r"Maximum zero-reuse cohort percentage for learned admission.",
+        env = r"RAD_RELATION_CACHE_POLICY_ZERO_REUSE_PERCENT",
+        default_value = r"75"
+    )]
+    pub relation_cache_policy_zero_reuse_percent: i64,
+    #[arg(
+        id = r"relation-cache-policy-probation-min-work",
+        long = r"relation-cache-policy-probation-min-work",
+        help = r"Minimum fill work for probationary admission.",
+        env = r"RAD_RELATION_CACHE_POLICY_PROBATION_MIN_WORK",
+        default_value = r"4194304"
+    )]
+    pub relation_cache_policy_probation_min_work: i64,
+    #[arg(
+        id = r"relation-cache-policy-probation-min-work-per-byte",
+        long = r"relation-cache-policy-probation-min-work-per-byte",
+        help = r"Minimum fill work per retained byte for probationary admission.",
+        env = r"RAD_RELATION_CACHE_POLICY_PROBATION_MIN_WORK_PER_BYTE",
+        default_value = r"4"
+    )]
+    pub relation_cache_policy_probation_min_work_per_byte: i64,
+    #[arg(
+        id = r"relation-cache-policy-cohorts-per-relation",
+        long = r"relation-cache-policy-cohorts-per-relation",
+        help = r"Maximum cohort evidence count for each exact relation.",
+        env = r"RAD_RELATION_CACHE_POLICY_COHORTS_PER_RELATION",
+        default_value = r"4"
+    )]
+    pub relation_cache_policy_cohorts_per_relation: i64,
+    #[arg(
+        id = r"relation-cache-policy-prior",
+        long = r"relation-cache-policy-prior",
+        help = r"Cold-start prior for relation cache admission.",
+        env = r"RAD_RELATION_CACHE_POLICY_PRIOR",
+        default_value = r"none",
+        value_enum
+    )]
+    pub relation_cache_policy_prior: ServeRelationCachePolicyPrior,
+    #[arg(
+        id = r"relation-cache-policy-rate-half-life-seconds",
+        long = r"relation-cache-policy-rate-half-life-seconds",
+        help = r"Half-life for request and supersession rates.",
+        env = r"RAD_RELATION_CACHE_POLICY_RATE_HALF_LIFE_SECONDS",
+        default_value = r"30"
+    )]
+    pub relation_cache_policy_rate_half_life_seconds: i64,
+    #[arg(
+        id = r"relation-cache-domains",
+        long = r"relation-cache-domains",
+        help = r"Comma-separated relation cache domains or none.",
+        env = r"RAD_RELATION_CACHE_DOMAINS",
+        default_value = r"query,hash-build,grouped-dimension"
+    )]
+    pub relation_cache_domains: String,
+    #[arg(
+        id = r"relation-cache-plan-materialization-budget-mib",
+        long = r"relation-cache-plan-materialization-budget-mib",
+        help = r"Planner byte budget for relation cache candidates.",
+        env = r"RAD_RELATION_CACHE_PLAN_MATERIALIZATION_BUDGET_MIB",
+        default_value = r"8"
+    )]
+    pub relation_cache_plan_materialization_budget_mib: i64,
     #[arg(
         id = r"slate-decoded-cache-size-mib",
         long = r"slate-decoded-cache-size-mib",

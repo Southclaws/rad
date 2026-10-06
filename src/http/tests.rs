@@ -13,7 +13,9 @@ use tower::ServiceExt;
 
 use super::{router, router_with_location, serve};
 use crate::engine::catalog::model::Mode;
-use crate::engine::exec::{Engine, EngineEvent, EngineEventHook, RelationCacheLimits};
+use crate::engine::exec::{
+    Engine, EngineEvent, EngineEventHook, RelationCacheConfig, RelationCacheLimits,
+};
 use crate::engine::kv::fault::{FaultAction, FaultController, FaultRule, FaultingKv, Operation};
 use crate::engine::kv::slatedb::Store;
 use crate::engine::kv::{ErrorKind as KvErrorKind, TransactionalKv};
@@ -503,10 +505,13 @@ async fn query_fingerprint_covers_literals_and_root_cardinality() {
 #[tokio::test]
 async fn query_validator_survives_relation_cache_eviction() {
     let store = Arc::new(Store::memory("http-query-cache-eviction").await.unwrap());
-    let engine = Engine::new(store).with_relation_cache_limits(RelationCacheLimits {
-        byte_limit: 1024 * 1024,
-        entry_limit: 1,
-        result_byte_limit: 1024,
+    let engine = Engine::new(store).with_relation_cache_config(RelationCacheConfig {
+        limits: RelationCacheLimits {
+            byte_limit: 1024 * 1024,
+            entry_limit: 1,
+            result_byte_limit: 1024,
+        },
+        ..RelationCacheConfig::default()
     });
     let router = router(Arc::new(engine), Mode::Direct);
     let first = router

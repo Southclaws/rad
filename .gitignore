@@ -9,6 +9,9 @@ ui/node_modules/
 # Generative run dumps (RAD_GEN_DUMP)
 tests/gen/runs/
 
+# Local relation cache benchmark runs
+tests/benchmarks/relation_cache/runs/
+
 # local stuff
 tasks
 notes

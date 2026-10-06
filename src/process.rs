@@ -14,7 +14,9 @@ use slatedb::object_store::memory::InMemory;
 
 use crate::engine::catalog::Catalog;
 use crate::engine::catalog::model::Mode;
-use crate::engine::exec::{Engine, RelationCacheLimits};
+use crate::engine::exec::{
+    Engine, RelationCacheConfig, RelationCacheLimits, RelationCachePolicyConfig,
+};
 use crate::engine::kv::slatedb::{
     ObjectCachePreload, Options as SlateOptions, ReaderStore, Store as SlateStore, WalMode,
 };
@@ -88,7 +90,7 @@ pub struct Config {
     /// close can lose commits that use memory durability.
     pub close_timeout: Option<Duration>,
     pub reader_poll_interval: Duration,
-    pub relation_cache: RelationCacheLimits,
+    pub relation_cache: RelationCacheConfig,
     pub capture_workload_corpus: bool,
     /// Listen address for the instance-to-instance API. Requires
     /// `relay_token_file`: an unauthenticated port that accepts evidence is
@@ -160,7 +162,7 @@ impl Config {
         if reader_poll_interval.is_zero() {
             return Err("RAD_READER_POLL_INTERVAL_MS must be greater than zero".into());
         }
-        let relation_cache = relation_cache_limits_from_env()?;
+        let relation_cache = relation_cache_config_from_env()?;
         let capture_workload_corpus = matches!(
             env::var("RAD_CAPTURE_WORKLOAD_CORPUS").ok().as_deref(),
             Some("1" | "true" | "yes")
@@ -243,7 +245,7 @@ impl Config {
     /// send is refused for.
     pub fn validate(&self) -> Result<()> {
         validate_slate_options(&self.slate)?;
-        validate_relation_cache_limits(self.relation_cache)?;
+        validate_relation_cache_config(self.relation_cache)?;
         self.auth.validate()?;
         if self.auth.is_jwt() && self.frontend == Some(Frontend::Postgres) {
             return Err("JWT authentication does not support the PostgreSQL frontend".into());
@@ -690,7 +692,7 @@ async fn open_runtime(
         Role::Write => Engine::new(store.clone()),
     }
     .with_planner_mode(planner_mode)
-    .with_relation_cache_limits(config.relation_cache)
+    .with_relation_cache_config(config.relation_cache)
     .with_execution_capacity(
         execution_concurrency_for(execution_cpu_limit, execution_cpu_limit),
         execution_cpu_limit,
@@ -1226,16 +1228,66 @@ fn slate_options_from_env() -> Result<SlateOptions> {
     })
 }
 
-fn relation_cache_limits_from_env() -> Result<RelationCacheLimits> {
+fn relation_cache_config_from_env() -> Result<RelationCacheConfig> {
     let byte_limit_mib = parse_env::<usize>("RAD_RELATION_CACHE_SIZE_MIB", "128")?;
     let result_byte_limit_mib = parse_env::<usize>("RAD_RELATION_CACHE_MAX_RESULT_SIZE_MIB", "8")?;
-    Ok(RelationCacheLimits {
-        byte_limit: mib_to_bytes("RAD_RELATION_CACHE_SIZE_MIB", byte_limit_mib)?,
-        entry_limit: parse_env("RAD_RELATION_CACHE_ENTRIES", "4096")?,
-        result_byte_limit: mib_to_bytes(
-            "RAD_RELATION_CACHE_MAX_RESULT_SIZE_MIB",
-            result_byte_limit_mib,
-        )?,
+    let plan_budget_mib =
+        parse_env::<u64>("RAD_RELATION_CACHE_PLAN_MATERIALIZATION_BUDGET_MIB", "8")?;
+    Ok(RelationCacheConfig {
+        limits: RelationCacheLimits {
+            byte_limit: mib_to_bytes("RAD_RELATION_CACHE_SIZE_MIB", byte_limit_mib)?,
+            entry_limit: parse_env("RAD_RELATION_CACHE_ENTRIES", "4096")?,
+            result_byte_limit: mib_to_bytes(
+                "RAD_RELATION_CACHE_MAX_RESULT_SIZE_MIB",
+                result_byte_limit_mib,
+            )?,
+        },
+        policy: RelationCachePolicyConfig {
+            mode: env_or("RAD_RELATION_CACHE_POLICY", "shadow").parse()?,
+            reuse_admission: env_or(
+                "RAD_RELATION_CACHE_POLICY_REUSE_ADMISSION",
+                "second-touch",
+            )
+            .parse()?,
+            family_minimum_observations: parse_env(
+                "RAD_RELATION_CACHE_POLICY_FAMILY_MIN_OBSERVATIONS",
+                "1",
+            )?,
+            minimum_completed_cohorts: parse_env(
+                "RAD_RELATION_CACHE_POLICY_MIN_COHORTS",
+                "3",
+            )?,
+            zero_reuse_percent: parse_env(
+                "RAD_RELATION_CACHE_POLICY_ZERO_REUSE_PERCENT",
+                "75",
+            )?,
+            probation_minimum_work_units: parse_env(
+                "RAD_RELATION_CACHE_POLICY_PROBATION_MIN_WORK",
+                "1048576",
+            )?,
+            probation_minimum_work_per_byte: parse_env(
+                "RAD_RELATION_CACHE_POLICY_PROBATION_MIN_WORK_PER_BYTE",
+                "4",
+            )?,
+            cohorts_per_exact_relation: parse_env(
+                "RAD_RELATION_CACHE_POLICY_COHORTS_PER_RELATION",
+                "4",
+            )?,
+            prior: env_or("RAD_RELATION_CACHE_POLICY_PRIOR", "none").parse()?,
+            rate_half_life: Duration::from_secs(parse_env(
+                "RAD_RELATION_CACHE_POLICY_RATE_HALF_LIFE_SECONDS",
+                "30",
+            )?),
+        },
+        domains: env_or(
+            "RAD_RELATION_CACHE_DOMAINS",
+            "query,hash-build,grouped-dimension",
+        )
+        .parse()?,
+        plan_materialization_budget_bytes: plan_budget_mib
+            .checked_mul(1024 * 1024)
+            .filter(|bytes| *bytes > 0)
+            .ok_or("RAD_RELATION_CACHE_PLAN_MATERIALIZATION_BUDGET_MIB must be greater than zero and fit in memory")?,
     })
 }
 
@@ -1313,7 +1365,8 @@ fn validate_slate_options(options: &SlateOptions) -> Result {
     Ok(())
 }
 
-fn validate_relation_cache_limits(limits: RelationCacheLimits) -> Result {
+fn validate_relation_cache_config(config: RelationCacheConfig) -> Result {
+    let limits = config.limits;
     if limits.byte_limit == 0 {
         return Err("Relation cache size must be greater than zero".into());
     }
@@ -1325,6 +1378,26 @@ fn validate_relation_cache_limits(limits: RelationCacheLimits) -> Result {
     }
     if limits.result_byte_limit > limits.byte_limit {
         return Err("Relation cache result size limit must not exceed its total size".into());
+    }
+    if config.plan_materialization_budget_bytes == 0 {
+        return Err("Relation cache plan materialization budget must be greater than zero".into());
+    }
+    if config.policy.cohorts_per_exact_relation == 0 {
+        return Err("Relation cache cohort capacity must be greater than zero".into());
+    }
+    if config.policy.family_minimum_observations == 0 {
+        return Err("Relation cache family observation minimum must be greater than zero".into());
+    }
+    if config.policy.minimum_completed_cohorts > config.policy.cohorts_per_exact_relation {
+        return Err(
+            "Relation cache minimum completed cohorts must not exceed cohort capacity".into(),
+        );
+    }
+    if config.policy.zero_reuse_percent > 100 {
+        return Err("Relation cache zero reuse percentage must not exceed 100".into());
+    }
+    if config.policy.rate_half_life.is_zero() {
+        return Err("Relation cache rate half-life must be greater than zero".into());
     }
     Ok(())
 }
@@ -1442,22 +1515,94 @@ mod tests {
     }
 
     #[test]
-    fn relation_cache_limits_are_positive_and_nested() {
-        assert!(validate_relation_cache_limits(RelationCacheLimits::default()).is_ok());
+    fn relation_cache_configuration_is_validated() {
+        assert!(validate_relation_cache_config(RelationCacheConfig::default()).is_ok());
+        for invalid in [
+            RelationCacheConfig {
+                limits: RelationCacheLimits {
+                    byte_limit: 0,
+                    ..RelationCacheLimits::default()
+                },
+                ..RelationCacheConfig::default()
+            },
+            RelationCacheConfig {
+                limits: RelationCacheLimits {
+                    entry_limit: 0,
+                    ..RelationCacheLimits::default()
+                },
+                ..RelationCacheConfig::default()
+            },
+            RelationCacheConfig {
+                limits: RelationCacheLimits {
+                    result_byte_limit: 0,
+                    ..RelationCacheLimits::default()
+                },
+                ..RelationCacheConfig::default()
+            },
+            RelationCacheConfig {
+                limits: RelationCacheLimits {
+                    byte_limit: 4,
+                    result_byte_limit: 5,
+                    ..RelationCacheLimits::default()
+                },
+                ..RelationCacheConfig::default()
+            },
+            RelationCacheConfig {
+                plan_materialization_budget_bytes: 0,
+                ..RelationCacheConfig::default()
+            },
+            RelationCacheConfig {
+                policy: RelationCachePolicyConfig {
+                    cohorts_per_exact_relation: 0,
+                    ..RelationCachePolicyConfig::default()
+                },
+                ..RelationCacheConfig::default()
+            },
+            RelationCacheConfig {
+                policy: RelationCachePolicyConfig {
+                    family_minimum_observations: 0,
+                    ..RelationCachePolicyConfig::default()
+                },
+                ..RelationCacheConfig::default()
+            },
+            RelationCacheConfig {
+                policy: RelationCachePolicyConfig {
+                    minimum_completed_cohorts: 5,
+                    cohorts_per_exact_relation: 4,
+                    ..RelationCachePolicyConfig::default()
+                },
+                ..RelationCacheConfig::default()
+            },
+            RelationCacheConfig {
+                policy: RelationCachePolicyConfig {
+                    zero_reuse_percent: 101,
+                    ..RelationCachePolicyConfig::default()
+                },
+                ..RelationCacheConfig::default()
+            },
+            RelationCacheConfig {
+                policy: RelationCachePolicyConfig {
+                    rate_half_life: Duration::ZERO,
+                    ..RelationCachePolicyConfig::default()
+                },
+                ..RelationCacheConfig::default()
+            },
+        ] {
+            assert!(validate_relation_cache_config(invalid).is_err());
+        }
+
         assert!(
-            validate_relation_cache_limits(RelationCacheLimits {
-                entry_limit: 0,
-                ..RelationCacheLimits::default()
+            validate_relation_cache_config(RelationCacheConfig {
+                policy: RelationCachePolicyConfig {
+                    minimum_completed_cohorts: 0,
+                    probation_minimum_work_units: 0,
+                    probation_minimum_work_per_byte: 0,
+                    ..RelationCachePolicyConfig::default()
+                },
+                plan_materialization_budget_bytes: u64::MAX,
+                ..RelationCacheConfig::default()
             })
-            .is_err()
-        );
-        assert!(
-            validate_relation_cache_limits(RelationCacheLimits {
-                byte_limit: 4,
-                result_byte_limit: 5,
-                ..RelationCacheLimits::default()
-            })
-            .is_err()
+            .is_ok()
         );
     }
 
@@ -1478,7 +1623,7 @@ mod tests {
             internal_tls_certificate: None,
             internal_tls_key: None,
             reader_poll_interval: Duration::from_millis(10),
-            relation_cache: RelationCacheLimits::default(),
+            relation_cache: RelationCacheConfig::default(),
             relay_authority: None,
             relay_target: None,
             relay_token_file: None,
@@ -1513,7 +1658,7 @@ mod tests {
                 internal_tls_certificate: None,
                 internal_tls_key: None,
                 reader_poll_interval: Duration::from_millis(10),
-                relation_cache: RelationCacheLimits::default(),
+                relation_cache: RelationCacheConfig::default(),
                 relay_authority: None,
                 relay_target: None,
                 relay_token_file: None,
@@ -1541,7 +1686,7 @@ mod tests {
                 internal_tls_certificate: None,
                 internal_tls_key: None,
                 reader_poll_interval: Duration::from_millis(10),
-                relation_cache: RelationCacheLimits::default(),
+                relation_cache: RelationCacheConfig::default(),
                 relay_authority: None,
                 relay_target: None,
                 relay_token_file: None,
@@ -1571,7 +1716,7 @@ mod tests {
             internal_tls_key: None,
             postgres_address: "127.0.0.1:0".into(),
             reader_poll_interval: Duration::from_millis(10),
-            relation_cache: RelationCacheLimits::default(),
+            relation_cache: RelationCacheConfig::default(),
             relay_authority: None,
             relay_target: target.map(str::to_owned),
             relay_token_file: token.map(PathBuf::from),

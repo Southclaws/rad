@@ -8,8 +8,9 @@ use rad::engine::catalog;
 use rad::engine::catalog::identity::SchemaId;
 use rad::engine::catalog::model::{ColumnDef, ScalarType, Table, TableDef};
 use rad::engine::exec::{
-    Engine, EngineEvent, EngineEventHook, RelationCacheAdmissionResult, RelationCacheEvictionCause,
-    RelationCacheLimits, RelationCacheLookupResult, RelationCacheMaterialization,
+    Engine, EngineEvent, EngineEventHook, RelationCacheAdmissionResult, RelationCacheConfig,
+    RelationCacheEvictionCause, RelationCacheLimits, RelationCacheLookupResult,
+    RelationCacheMaterialization, RelationCachePolicyConfig, RelationCachePolicyMode,
 };
 use rad::engine::kv::TransactionalKv;
 use rad::engine::kv::slatedb::Store;
@@ -255,6 +256,13 @@ async fn run_scenario(scenario: Scenario) -> ScenarioTrace {
     let gate = Arc::new(FillGate::new(scenario == Scenario::CancelWokenWaiter));
     let engine = Arc::new(
         Engine::new(store.clone())
+            .with_relation_cache_config(RelationCacheConfig {
+                policy: RelationCachePolicyConfig {
+                    mode: RelationCachePolicyMode::Foyer,
+                    ..RelationCachePolicyConfig::default()
+                },
+                ..RelationCacheConfig::default()
+            })
             .with_statistics_provider(Arc::new(FixedPlannerStats(Arc::new(statistics))))
             .with_event_hook(gate.clone()),
     );
@@ -406,10 +414,17 @@ async fn run_capacity_scenario() -> ScenarioTrace {
     let engine = Engine::new(store.clone())
         .with_statistics_provider(Arc::new(FixedPlannerStats(Arc::new(statistics))))
         .with_event_hook(recorder.clone())
-        .with_relation_cache_limits(RelationCacheLimits {
-            byte_limit: 64 * 1024,
-            entry_limit: 1,
-            result_byte_limit: 4 * 1024,
+        .with_relation_cache_config(RelationCacheConfig {
+            limits: RelationCacheLimits {
+                byte_limit: 64 * 1024,
+                entry_limit: 1,
+                result_byte_limit: 4 * 1024,
+            },
+            policy: RelationCachePolicyConfig {
+                mode: RelationCachePolicyMode::Foyer,
+                ..RelationCachePolicyConfig::default()
+            },
+            ..RelationCacheConfig::default()
         });
     engine
         .create_many("stable", vec![join_row("s1", "a"), join_row("s2", "b")])
