@@ -1,21 +1,9 @@
-import {
-  IRDiagram,
-  StackDiagram,
-  ToolchainDiagram,
-} from "@/components/blog-diagrams";
-import {
-  AbstractionCurve,
-  ClauseOrder,
-  CompilerPipeline,
-  LLVMHourglass,
-  SharedIR,
-} from "@/components/relational-ir-diagrams";
+import { blogDiagrams, Callout } from "@/components/blog-components";
 import { SiteNav } from "@/components/site-nav";
 import { blogSource } from "@/lib/source";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { ReactNode } from "react";
 
 // Blog posts are flat (content/blog/*.mdx), so the fumadocs array slug is a
 // single segment — collapse it to a string for the [slug] route.
@@ -32,17 +20,6 @@ export async function generateMetadata({
   const page = blogSource.getPage([slug]);
   if (!page) return {};
   return { title: `${page.data.title} — rad blog`, description: page.data.description };
-}
-
-function Callout({ children }: { children: ReactNode }) {
-  return (
-    <div className="callout" role="note">
-      <span className="callout__tag" aria-hidden="true">
-        note
-      </span>
-      <div>{children}</div>
-    </div>
-  );
 }
 
 function fmtDate(date?: string) {
@@ -88,14 +65,7 @@ export default async function BlogPost({
             <MDX
               components={{
                 Callout,
-                ToolchainDiagram,
-                StackDiagram,
-                IRDiagram,
-                CompilerPipeline,
-                LLVMHourglass,
-                ClauseOrder,
-                SharedIR,
-                AbstractionCurve,
+                ...blogDiagrams,
               }}
             />
           </div>
