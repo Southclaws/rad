@@ -86,6 +86,7 @@ tasks:
       - cargo test --locked --test differential_corpus shared_e2e_relation_cache_hits_match_uncached_execution_exactly {{.CLI_ARGS}}
       - cargo test --locked --test generative_differential generated_queries_match_all_execution_paths {{.CLI_ARGS}}
       - cargo test --locked --test generative_differential generated_subrelation_cache_matches_uncached_and_reference_execution {{.CLI_ARGS}}
+      - cargo test --locked --test generative_differential generated_subrelation_cache_matches_with_enforced_policy {{.CLI_ARGS}}
       - cargo test --locked --test generative_differential generated_subrelation_cache_matches_in_file_storage {{.CLI_ARGS}}
       - cargo test --locked --test relation_cache_determinism {{.CLI_ARGS}}
 
@@ -173,6 +174,100 @@ tasks:
       RAD_BENCHMARK_PROFILE: smoke
     cmds:
       - cargo test --release --locked --test s3_http_benchmark -- --ignored --nocapture --test-threads=1 {{.CLI_ARGS}}
+
+  benchmark:relation-cache:
+    desc: Run the core relation cache workload suite and policy threshold sweeps
+    env:
+      RAD_RELATION_CACHE_BENCHMARK_SUITE: core
+    cmds:
+      - cargo test --release --locked --test relation_cache_policy_benchmark relation_cache_policy_matrix_records_structured_results -- --exact --ignored --nocapture --test-threads=1 {{.CLI_ARGS}}
+      - cargo test --release --locked --test relation_cache_policy_benchmark relation_cache_primary_key_invalidation_meets_targets -- --exact --ignored --nocapture --test-threads=1 {{.CLI_ARGS}}
+      - cargo test --release --locked --test relation_cache_policy_benchmark relation_cache_policy_threshold_sweep_records_structured_results -- --exact --ignored --nocapture --test-threads=1 {{.CLI_ARGS}}
+
+  benchmark:relation-cache:record:
+    desc: Record one deterministic relation cache benchmark phase
+    requires:
+      vars: [PHASE]
+    env:
+      RAD_RELATION_CACHE_BENCHMARK_PHASE: "{{.PHASE}}"
+      RAD_RELATION_CACHE_BENCHMARK_OUTPUT: "tests/benchmarks/relation_cache/runs/{{.PHASE}}.json"
+      RAD_RELATION_CACHE_BENCHMARK_SUITE: '{{.SUITE | default "core"}}'
+    cmds:
+      - cargo test --release --locked --test relation_cache_policy_benchmark relation_cache_policy_matrix_records_structured_results -- --exact --ignored --nocapture --test-threads=1
+
+  benchmark:relation-cache:reuse-admission:
+    desc: Compare relation cache reuse admission rules
+    env:
+      RAD_RELATION_CACHE_BENCHMARK_PHASE: '{{.PHASE | default "phase-07-reuse-admission-experiment"}}'
+      RAD_RELATION_CACHE_BENCHMARK_OUTPUT: 'tests/benchmarks/relation_cache/runs/{{.PHASE | default "phase-07-reuse-admission-experiment"}}.json'
+    cmds:
+      - cargo test --release --locked --test relation_cache_policy_benchmark relation_cache_reuse_admission_experiment_records_structured_results -- --exact --ignored --nocapture --test-threads=1 {{.CLI_ARGS}}
+
+  benchmark:relation-cache:family-conversion:
+    desc: Compare relation cache family conversion observation minimums
+    env:
+      RAD_RELATION_CACHE_BENCHMARK_PHASE: '{{.PHASE | default "phase-16-family-conversion-experiment"}}'
+      RAD_RELATION_CACHE_BENCHMARK_OUTPUT: 'tests/benchmarks/relation_cache/runs/{{.PHASE | default "phase-16-family-conversion-experiment"}}.json'
+    cmds:
+      - cargo test --release --locked --test relation_cache_policy_benchmark relation_cache_family_conversion_experiment_records_structured_results -- --exact --ignored --nocapture --test-threads=1 {{.CLI_ARGS}}
+
+  benchmark:relation-cache:family-candidate:
+    desc: Record the family conversion candidate on the core workload suite
+    env:
+      RAD_RELATION_CACHE_BENCHMARK_PHASE: '{{.PHASE | default "phase-12-family-conversion-candidate"}}'
+      RAD_RELATION_CACHE_BENCHMARK_OUTPUT: 'tests/benchmarks/relation_cache/runs/{{.PHASE | default "phase-12-family-conversion-candidate"}}.json'
+      RAD_RELATION_CACHE_BENCHMARK_SUITE: core
+    cmds:
+      - cargo test --release --locked --test relation_cache_policy_benchmark relation_cache_family_conversion_candidate_records_structured_results -- --exact --ignored --nocapture --test-threads=1 {{.CLI_ARGS}}
+
+  benchmark:relation-cache:falsification:
+    desc: Run the pairwise relation cache policy falsification corpus
+    env:
+      RAD_RELATION_CACHE_BENCHMARK_PHASE: '{{.PHASE | default "phase-17-policy-falsification-corpus"}}'
+      RAD_RELATION_CACHE_BENCHMARK_OUTPUT: 'tests/benchmarks/relation_cache/runs/{{.PHASE | default "phase-17-policy-falsification-corpus"}}.json'
+      RAD_RELATION_CACHE_BENCHMARK_REPORT: 'tests/benchmarks/relation_cache/runs/{{.PHASE | default "phase-17-policy-falsification-corpus"}}-summary.md'
+    cmds:
+      - cargo test --release --locked --test relation_cache_policy_benchmark falsification::relation_cache_falsification_corpus_meets_targets -- --exact --ignored --nocapture --test-threads=1 {{.CLI_ARGS}}
+
+  benchmark:relation-cache:default:
+    desc: Record and verify the default relation cache policy
+    env:
+      RAD_RELATION_CACHE_BENCHMARK_PHASE: '{{.PHASE | default "phase-19-enforced-family-default"}}'
+      RAD_RELATION_CACHE_BENCHMARK_OUTPUT: 'tests/benchmarks/relation_cache/runs/{{.PHASE | default "phase-19-enforced-family-default"}}.json'
+      RAD_RELATION_CACHE_BENCHMARK_REPORT: 'tests/benchmarks/relation_cache/runs/{{.PHASE | default "phase-19-enforced-family-default"}}-summary.md'
+    cmds:
+      - cargo test --release --locked --test relation_cache_policy_benchmark falsification::relation_cache_default_policy_meets_targets -- --exact --ignored --nocapture --test-threads=1 {{.CLI_ARGS}}
+
+  benchmark:relation-cache:invalidation:
+    desc: Record the primary-key invalidation workload pair
+    env:
+      RAD_RELATION_CACHE_BENCHMARK_PHASE: '{{.PHASE | default "phase-22-primary-key-invalidation"}}'
+      RAD_RELATION_CACHE_BENCHMARK_OUTPUT: 'tests/benchmarks/relation_cache/runs/{{.PHASE | default "phase-22-primary-key-invalidation"}}.json'
+      RAD_RELATION_CACHE_BENCHMARK_SCENARIOS: unrelated_point_updates,relevant_point_updates
+    cmds:
+      - cargo test --release --locked --test relation_cache_policy_benchmark relation_cache_policy_matrix_records_structured_results -- --exact --ignored --nocapture --test-threads=1 {{.CLI_ARGS}}
+      - cargo test --release --locked --test relation_cache_policy_benchmark relation_cache_primary_key_invalidation_meets_targets -- --exact --ignored --nocapture --test-threads=1 {{.CLI_ARGS}}
+
+  benchmark:relation-cache:compare:
+    desc: Compare two recorded relation cache benchmark phases
+    requires:
+      vars: [BASELINE, CANDIDATE]
+    env:
+      RAD_RELATION_CACHE_BENCHMARK_BASELINE: "tests/benchmarks/relation_cache/runs/{{.BASELINE}}.json"
+      RAD_RELATION_CACHE_BENCHMARK_CANDIDATE: "tests/benchmarks/relation_cache/runs/{{.CANDIDATE}}.json"
+      RAD_RELATION_CACHE_BENCHMARK_COMPARISON_OUTPUT: "tests/benchmarks/relation_cache/runs/{{.CANDIDATE}}-vs-{{.BASELINE}}.md"
+    cmds:
+      - cargo test --release --locked --test relation_cache_policy_benchmark relation_cache_benchmark_runs_compare -- --exact --ignored --nocapture --test-threads=1
+
+  benchmark:relation-cache:rustfs:
+    desc: Run representative relation cache workloads against RustFS
+    cmds:
+      - cargo test --release --locked --test relation_cache_policy_benchmark relation_cache_representative_scenarios_run_against_rustfs -- --exact --ignored --nocapture --test-threads=1 {{.CLI_ARGS}}
+
+  benchmark:relation-cache:latency:
+    desc: Run one relation cache workload through the RustFS latency profiles
+    cmds:
+      - cargo test --release --locked --test relation_cache_policy_benchmark relation_cache_workloads_run_across_storage_latency_profiles -- --exact --ignored --nocapture --test-threads=1 {{.CLI_ARGS}}
 
   generate:storage:
     desc: Regenerate storage format artifacts from the normative keyform specification

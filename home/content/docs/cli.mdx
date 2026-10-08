@@ -99,6 +99,18 @@ Documentation: https://www.radengine.dev/docs/cli#rad-serve
 | `--relation-cache-size-mib <value>` | Total memory capacity for materialized relation results. | `128` | `RAD_RELATION_CACHE_SIZE_MIB` |
 | `--relation-cache-entries <value>` | Maximum materialized relation result count. | `4096` | `RAD_RELATION_CACHE_ENTRIES` |
 | `--relation-cache-max-result-size-mib <value>` | Maximum size of one materialized relation result. | `8` | `RAD_RELATION_CACHE_MAX_RESULT_SIZE_MIB` |
+| `--relation-cache-policy <foyer\|shadow\|enforced>` | Relation cache admission policy mode. Choices: foyer, shadow, enforced. | `enforced` | `RAD_RELATION_CACHE_POLICY` |
+| `--relation-cache-policy-reuse-admission <second-touch\|third-touch\|value-density\|family-conversion>` | Reuse evidence required for relation cache admission. Choices: second-touch, third-touch, value-density, family-conversion. | `family-conversion` | `RAD_RELATION_CACHE_POLICY_REUSE_ADMISSION` |
+| `--relation-cache-policy-family-min-observations <value>` | Minimum second-touch observations for family conversion admission. | `1` | `RAD_RELATION_CACHE_POLICY_FAMILY_MIN_OBSERVATIONS` |
+| `--relation-cache-policy-min-cohorts <value>` | Completed cohort count required for learned admission. | `3` | `RAD_RELATION_CACHE_POLICY_MIN_COHORTS` |
+| `--relation-cache-policy-zero-reuse-percent <value>` | Maximum zero-reuse cohort percentage for learned admission. | `75` | `RAD_RELATION_CACHE_POLICY_ZERO_REUSE_PERCENT` |
+| `--relation-cache-policy-probation-min-work <value>` | Minimum fill work for probationary admission. | `4194304` | `RAD_RELATION_CACHE_POLICY_PROBATION_MIN_WORK` |
+| `--relation-cache-policy-probation-min-work-per-byte <value>` | Minimum fill work per retained byte for probationary admission. | `4` | `RAD_RELATION_CACHE_POLICY_PROBATION_MIN_WORK_PER_BYTE` |
+| `--relation-cache-policy-cohorts-per-relation <value>` | Maximum cohort evidence count for each exact relation. | `4` | `RAD_RELATION_CACHE_POLICY_COHORTS_PER_RELATION` |
+| `--relation-cache-policy-prior <none\|generation-rate>` | Cold-start prior for relation cache admission. Choices: none, generation-rate. | `none` | `RAD_RELATION_CACHE_POLICY_PRIOR` |
+| `--relation-cache-policy-rate-half-life-seconds <value>` | Half-life for request and supersession rates. | `30` | `RAD_RELATION_CACHE_POLICY_RATE_HALF_LIFE_SECONDS` |
+| `--relation-cache-domains <value>` | Comma-separated relation cache domains or none. | `query,hash-build,grouped-dimension` | `RAD_RELATION_CACHE_DOMAINS` |
+| `--relation-cache-plan-materialization-budget-mib <value>` | Planner byte budget for relation cache candidates. | `8` | `RAD_RELATION_CACHE_PLAN_MATERIALIZATION_BUDGET_MIB` |
 | `--slate-decoded-cache-size-mib <value>` | Total memory capacity for decoded Slate data blocks and metadata. | `128` | `RAD_SLATE_DECODED_CACHE_SIZE_MIB` |
 | `--slate-scan-cache-blocks` | Add blocks from throughput scans to the decoded cache. | `false` | `RAD_SLATE_SCAN_CACHE_BLOCKS` |
 | `--slate-scan-read-ahead-kib <value>` | Read-ahead target for each throughput scan. | `256` | `RAD_SLATE_SCAN_READ_AHEAD_KIB` |

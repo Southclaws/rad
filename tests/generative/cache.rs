@@ -7,7 +7,8 @@ use rad::engine::catalog;
 use rad::engine::catalog::identity::SchemaId;
 use rad::engine::catalog::model::{ColumnDef, IndexDef, ScalarType, Table, TableDef};
 use rad::engine::exec::{
-    Engine, EngineEvent, EngineEventHook, RelationCacheLookupResult, RelationCacheMaterialization,
+    Engine, EngineEvent, EngineEventHook, RelationCacheConfig, RelationCacheLookupResult,
+    RelationCacheMaterialization, RelationCachePolicyConfig, RelationCachePolicyMode,
 };
 use rad::engine::kv::TransactionalKv;
 use rad::engine::kv::slatedb::Store;
@@ -118,8 +119,17 @@ impl StatisticsProvider for FixedPlannerStats {
 }
 
 pub async fn check_cache(case: &CacheCase) -> TestResult<()> {
+    check_cache_with_policy(case, CachePolicyLane::Shadow).await
+}
+
+pub async fn check_cache_enforced(case: &CacheCase) -> TestResult<()> {
+    check_cache_with_policy(case, CachePolicyLane::Enforced).await
+}
+
+async fn check_cache_with_policy(case: &CacheCase, lane: CachePolicyLane) -> TestResult<()> {
     let name = format!(
-        "generated-cache-{}",
+        "generated-cache-{}-{}",
+        lane.name(),
         STORE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     );
     let store = Arc::new(
@@ -127,7 +137,7 @@ pub async fn check_cache(case: &CacheCase) -> TestResult<()> {
             .await
             .map_err(|error| error.to_string())?,
     );
-    check_cache_in_store(&store, case).await?;
+    check_cache_in_store(&store, case, lane).await?;
     store.close().await.map_err(|error| error.to_string())
 }
 
@@ -145,24 +155,62 @@ pub async fn check_cache_file(case: &CacheCase) -> TestResult<()> {
             .await
             .map_err(|error| error.to_string())?,
     );
-    check_cache_in_store(&store, case).await?;
+    check_cache_in_store(&store, case, CachePolicyLane::Shadow).await?;
     store.close().await.map_err(|error| error.to_string())
 }
 
-async fn check_cache_in_store(store: &Arc<Store>, case: &CacheCase) -> TestResult<()> {
-    match case.kind {
-        CacheCaseKind::HashBuild => check_hash_build(store, case).await,
-        CacheCaseKind::GroupedDimension => check_grouped_dimension(store, case).await,
-        CacheCaseKind::RecursiveBuild => check_recursive_build(store, case).await,
-        CacheCaseKind::SiblingHashBuilds => check_sibling_hash_builds(store, case).await,
-        CacheCaseKind::NestedHashBuild => check_nested_hash_build(store, case).await,
-        CacheCaseKind::DerivedBindingHashBuild => {
-            check_derived_binding_hash_build(store, case).await
+#[derive(Clone, Copy)]
+enum CachePolicyLane {
+    Shadow,
+    Enforced,
+}
+
+impl CachePolicyLane {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Shadow => "shadow",
+            Self::Enforced => "enforced",
+        }
+    }
+
+    fn config(self) -> RelationCacheConfig {
+        RelationCacheConfig {
+            policy: RelationCachePolicyConfig {
+                mode: match self {
+                    Self::Shadow => RelationCachePolicyMode::Shadow,
+                    Self::Enforced => RelationCachePolicyMode::Enforced,
+                },
+                probation_minimum_work_units: 0,
+                probation_minimum_work_per_byte: 0,
+                ..RelationCachePolicyConfig::default()
+            },
+            ..RelationCacheConfig::default()
         }
     }
 }
 
-async fn check_hash_build(store: &Arc<Store>, case: &CacheCase) -> TestResult<()> {
+async fn check_cache_in_store(
+    store: &Arc<Store>,
+    case: &CacheCase,
+    lane: CachePolicyLane,
+) -> TestResult<()> {
+    match case.kind {
+        CacheCaseKind::HashBuild => check_hash_build(store, case, lane).await,
+        CacheCaseKind::GroupedDimension => check_grouped_dimension(store, case, lane).await,
+        CacheCaseKind::RecursiveBuild => check_recursive_build(store, case, lane).await,
+        CacheCaseKind::SiblingHashBuilds => check_sibling_hash_builds(store, case, lane).await,
+        CacheCaseKind::NestedHashBuild => check_nested_hash_build(store, case, lane).await,
+        CacheCaseKind::DerivedBindingHashBuild => {
+            check_derived_binding_hash_build(store, case, lane).await
+        }
+    }
+}
+
+async fn check_hash_build(
+    store: &Arc<Store>,
+    case: &CacheCase,
+    lane: CachePolicyLane,
+) -> TestResult<()> {
     let (stable, probe) = create_join_tables(store, "dimensions", "facts").await?;
     let mut statistics = complete_stats(&stable, case.stable_rows as u64);
     statistics
@@ -170,6 +218,7 @@ async fn check_hash_build(store: &Arc<Store>, case: &CacheCase) -> TestResult<()
         .extend(complete_stats(&probe, 5_000).synopsis_models);
     let events = Arc::new(RecordingEvents::default());
     let engine = Engine::new(store.clone())
+        .with_relation_cache_config(lane.config())
         .with_statistics_provider(Arc::new(FixedPlannerStats(Arc::new(statistics))))
         .with_event_hook(events.clone());
     seed_join_rows(&engine, case, "dimensions", "facts").await?;
@@ -299,7 +348,11 @@ async fn check_hash_build(store: &Arc<Store>, case: &CacheCase) -> TestResult<()
     )
 }
 
-async fn check_grouped_dimension(store: &Arc<Store>, case: &CacheCase) -> TestResult<()> {
+async fn check_grouped_dimension(
+    store: &Arc<Store>,
+    case: &CacheCase,
+    lane: CachePolicyLane,
+) -> TestResult<()> {
     let (dimension, fact) = create_join_tables(store, "customers", "orders").await?;
     let mut statistics = complete_stats(&dimension, case.stable_rows as u64);
     statistics
@@ -307,6 +360,7 @@ async fn check_grouped_dimension(store: &Arc<Store>, case: &CacheCase) -> TestRe
         .extend(complete_stats(&fact, 5_000).synopsis_models);
     let events = Arc::new(RecordingEvents::default());
     let engine = Engine::new(store.clone())
+        .with_relation_cache_config(lane.config())
         .with_statistics_provider(Arc::new(FixedPlannerStats(Arc::new(statistics))))
         .with_event_hook(events.clone());
     seed_grouped_rows(&engine, case).await?;
@@ -365,7 +419,11 @@ async fn check_grouped_dimension(store: &Arc<Store>, case: &CacheCase) -> TestRe
     )
 }
 
-async fn check_recursive_build(store: &Arc<Store>, case: &CacheCase) -> TestResult<()> {
+async fn check_recursive_build(
+    store: &Arc<Store>,
+    case: &CacheCase,
+    lane: CachePolicyLane,
+) -> TestResult<()> {
     let catalog = catalog::Catalog::new(store.clone());
     catalog
         .create_table(join_table(10, "seeds"))
@@ -377,6 +435,7 @@ async fn check_recursive_build(store: &Arc<Store>, case: &CacheCase) -> TestResu
         .map_err(|error| error.to_string())?;
     let events = Arc::new(RecordingEvents::default());
     let engine = Engine::new(store.clone())
+        .with_relation_cache_config(lane.config())
         .with_statistics_provider(Arc::new(FixedPlannerStats(Arc::new(complete_stats(
             &edges,
             case.stable_rows as u64,
@@ -461,7 +520,11 @@ async fn check_recursive_build(store: &Arc<Store>, case: &CacheCase) -> TestResu
     )
 }
 
-async fn check_sibling_hash_builds(store: &Arc<Store>, case: &CacheCase) -> TestResult<()> {
+async fn check_sibling_hash_builds(
+    store: &Arc<Store>,
+    case: &CacheCase,
+    lane: CachePolicyLane,
+) -> TestResult<()> {
     let catalog = catalog::Catalog::new(store.clone());
     let stable_a = catalog
         .create_table(join_table(10, "stable_a"))
@@ -491,6 +554,7 @@ async fn check_sibling_hash_builds(store: &Arc<Store>, case: &CacheCase) -> Test
         .extend(complete_stats(&probe_b, 5_000).synopsis_models);
     let events = Arc::new(RecordingEvents::default());
     let engine = Engine::new(store.clone())
+        .with_relation_cache_config(lane.config())
         .with_statistics_provider(Arc::new(FixedPlannerStats(Arc::new(statistics))))
         .with_event_hook(events.clone());
     seed_join_rows(&engine, case, "stable_a", "probe_a").await?;
@@ -558,7 +622,11 @@ async fn check_sibling_hash_builds(store: &Arc<Store>, case: &CacheCase) -> Test
     )
 }
 
-async fn check_nested_hash_build(store: &Arc<Store>, case: &CacheCase) -> TestResult<()> {
+async fn check_nested_hash_build(
+    store: &Arc<Store>,
+    case: &CacheCase,
+    lane: CachePolicyLane,
+) -> TestResult<()> {
     let (stable, probe) = create_join_tables(store, "dimensions", "facts").await?;
     let mut statistics = complete_stats(&stable, case.stable_rows as u64);
     statistics
@@ -566,6 +634,7 @@ async fn check_nested_hash_build(store: &Arc<Store>, case: &CacheCase) -> TestRe
         .extend(complete_stats(&probe, 5_000).synopsis_models);
     let events = Arc::new(RecordingEvents::default());
     let engine = Engine::new(store.clone())
+        .with_relation_cache_config(lane.config())
         .with_statistics_provider(Arc::new(FixedPlannerStats(Arc::new(statistics))))
         .with_event_hook(events.clone());
     seed_join_rows(&engine, case, "dimensions", "facts").await?;
@@ -622,7 +691,11 @@ async fn check_nested_hash_build(store: &Arc<Store>, case: &CacheCase) -> TestRe
     )
 }
 
-async fn check_derived_binding_hash_build(store: &Arc<Store>, case: &CacheCase) -> TestResult<()> {
+async fn check_derived_binding_hash_build(
+    store: &Arc<Store>,
+    case: &CacheCase,
+    lane: CachePolicyLane,
+) -> TestResult<()> {
     let (stable, probe) = create_join_tables(store, "dimensions", "facts").await?;
     let mut statistics = complete_stats(&stable, case.stable_rows as u64);
     statistics
@@ -630,6 +703,7 @@ async fn check_derived_binding_hash_build(store: &Arc<Store>, case: &CacheCase) 
         .extend(complete_stats(&probe, 5_000).synopsis_models);
     let events = Arc::new(RecordingEvents::default());
     let engine = Engine::new(store.clone())
+        .with_relation_cache_config(lane.config())
         .with_statistics_provider(Arc::new(FixedPlannerStats(Arc::new(statistics))))
         .with_event_hook(events.clone());
     seed_join_rows(&engine, case, "dimensions", "facts").await?;

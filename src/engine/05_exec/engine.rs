@@ -102,6 +102,7 @@ impl Engine {
     }
 
     pub fn with_runtime(store: Arc<dyn TransactionalKv>, runtime: Arc<dyn RuntimeEffects>) -> Self {
+        let relation_cache = RelationCache::new_with_runtime(Default::default(), runtime.clone());
         Self {
             store,
             read_only: false,
@@ -115,7 +116,7 @@ impl Engine {
             execution_admission: None,
             execution_scheduler: ExecutionScheduler::adaptive(1),
             write_intents: Arc::new(WriteIntentRegistry::default()),
-            relation_cache: RelationCache::default(),
+            relation_cache,
             catalog_observers: RwLock::new(Vec::new()),
         }
     }
@@ -149,6 +150,7 @@ impl Engine {
         limits: Limits,
         runtime: Arc<dyn RuntimeEffects>,
     ) -> Self {
+        let relation_cache = RelationCache::new_with_runtime(Default::default(), runtime.clone());
         Self {
             store,
             read_only: false,
@@ -162,21 +164,20 @@ impl Engine {
             execution_admission: None,
             execution_scheduler: ExecutionScheduler::adaptive(1),
             write_intents: Arc::new(WriteIntentRegistry::default()),
-            relation_cache: RelationCache::default(),
+            relation_cache,
             catalog_observers: RwLock::new(Vec::new()),
         }
     }
 
-    pub fn with_relation_cache_limits(mut self, limits: super::RelationCacheLimits) -> Self {
-        self.relation_cache = RelationCache::new(limits);
+    pub fn with_relation_cache_config(mut self, config: super::RelationCacheConfig) -> Self {
+        self.relation_cache = RelationCache::new_with_runtime(config, self.runtime.clone());
         if self.cache_events_enabled {
             self.relation_cache.enable_semantic_events();
         }
         self
     }
 
-    #[cfg(test)]
-    pub(super) fn relation_cache_stats(&self) -> super::relation_cache::RelationCacheStats {
+    pub fn relation_cache_statistics(&self) -> super::RelationCacheStatistics {
         self.relation_cache.stats()
     }
 
@@ -210,6 +211,21 @@ impl Engine {
     pub(crate) fn with_planner_mode(mut self, planner_mode: PlannerMode) -> Self {
         self.planner_mode = planner_mode;
         self
+    }
+
+    fn plan_options(&self) -> PlanOptions {
+        self.plan_options_with_mode(self.planner_mode)
+    }
+
+    fn plan_options_with_mode(&self, mode: PlannerMode) -> PlanOptions {
+        let config = self.relation_cache.config();
+        PlanOptions {
+            mode,
+            relation_cache_materialization_budget_bytes: config.plan_materialization_budget_bytes,
+            relation_cache_hash_builds: config.domains.hash_build_enabled(),
+            relation_cache_grouped_dimensions: config.domains.grouped_dimension_enabled(),
+            ..PlanOptions::default()
+        }
     }
 
     pub(crate) fn with_execution_capacity(
@@ -255,19 +271,17 @@ impl Engine {
         }
     }
 
-    pub fn observer(&self) -> Option<&Arc<dyn super::observe::ExecutionObserver>> {
-        self.observer.as_ref()
+    pub fn observer(&self) -> Option<&dyn super::observe::ExecutionObserver> {
+        self.observer.as_deref()
     }
 
-    pub fn statistics(
-        &self,
-    ) -> Option<&Arc<dyn crate::engine::planner::estimator::StatisticsProvider>> {
-        self.statistics.as_ref()
+    pub fn statistics(&self) -> Option<&dyn crate::engine::planner::estimator::StatisticsProvider> {
+        self.statistics.as_deref()
     }
 
     fn observation(&self) -> super::observe::Observation<'_> {
         super::observe::Observation {
-            observer: self.observer.as_ref(),
+            observer: self.observer.as_deref(),
         }
     }
 
@@ -383,10 +397,7 @@ impl Engine {
     where
         F: FnOnce(&super::QueryValidator) -> bool,
     {
-        let options = PlanOptions {
-            mode: self.planner_mode,
-            ..PlanOptions::default()
-        };
+        let options = self.plan_options();
         let validator_started = Instant::now();
         let bind_started = self.runtime.monotonic();
         let prepared = self.prepare_conditional_read(view, &query, options).await?;
@@ -438,7 +449,7 @@ impl Engine {
                 executor.use_subrelation_cache(
                     &self.relation_cache,
                     subrelation_root_key,
-                    self.cache_events_enabled.then_some(&self.events),
+                    self.cache_events_enabled.then_some(self.events.as_ref()),
                 );
                 let started = Instant::now();
                 let frames = executor
@@ -455,7 +466,7 @@ impl Engine {
             })
             .await?;
         super::relation_cache::reach_semantic_events(
-            self.cache_events_enabled.then_some(&self.events),
+            self.cache_events_enabled.then_some(self.events.as_ref()),
             cached.take_events(),
         )
         .await;
@@ -615,17 +626,39 @@ impl Engine {
         execute_on_view(
             &view,
             query,
-            PlanOptions {
-                mode: self.planner_mode,
-                ..PlanOptions::default()
-            },
+            self.plan_options(),
             false,
             self.limits,
             self.statistics
                 .as_ref()
                 .map(|provider| provider.planning_stats()),
             execution_grant,
+            DependencyValidation::Transaction,
             None,
+            None,
+        )
+        .await
+    }
+
+    pub async fn execute_cached_in(
+        &self,
+        transaction: &mut dyn Transaction,
+        query: lir::Query,
+    ) -> Result<Datum> {
+        let execution_grant = self.execution_scheduler.enter();
+        let view = TransactionView(&*transaction);
+        execute_on_view(
+            &view,
+            query,
+            self.plan_options(),
+            false,
+            self.limits,
+            self.statistics
+                .as_ref()
+                .map(|provider| provider.planning_stats()),
+            execution_grant,
+            DependencyValidation::Transaction,
+            Some(&self.relation_cache),
             None,
         )
         .await
@@ -778,13 +811,10 @@ impl Engine {
                 dependency_validation: DependencyValidation::Transaction,
                 transaction_dependencies,
                 statistics,
-                plan_options: PlanOptions {
-                    mode: self.planner_mode,
-                    ..PlanOptions::default()
-                },
+                plan_options: self.plan_options(),
                 collect_plan: false,
                 execution_grant,
-                cache_events: self.cache_events_enabled.then_some(&self.events),
+                cache_events: self.cache_events_enabled.then_some(self.events.as_ref()),
             },
         )
         .await
@@ -857,10 +887,7 @@ impl Engine {
             .statistics
             .as_ref()
             .map(|provider| provider.planning_stats());
-        let plan_options = PlanOptions {
-            mode: self.planner_mode,
-            ..PlanOptions::default()
-        };
+        let plan_options = self.plan_options();
         let plans = if effectful || options.dry_run || reference {
             let preflight = self
                 .store
@@ -941,7 +968,7 @@ impl Engine {
                             plan_options,
                             collect_plan: options.collect_plan,
                             execution_grant,
-                            cache_events: self.cache_events_enabled.then_some(&self.events),
+                            cache_events: self.cache_events_enabled.then_some(self.events.as_ref()),
                         },
                     )
                     .await
@@ -1008,10 +1035,7 @@ impl Engine {
                 true,
                 &self.runtime,
                 Some(statistics),
-                PlanOptions {
-                    mode: planner_mode,
-                    ..PlanOptions::default()
-                },
+                self.plan_options_with_mode(planner_mode),
             )
             .await
             .map(|preflight| preflight.estimates)
@@ -1132,6 +1156,20 @@ impl Engine {
                 query,
                 PlanOptions {
                     mode: self.planner_mode,
+                    relation_cache_materialization_budget_bytes: self
+                        .relation_cache
+                        .config()
+                        .plan_materialization_budget_bytes,
+                    relation_cache_hash_builds: self
+                        .relation_cache
+                        .config()
+                        .domains
+                        .hash_build_enabled(),
+                    relation_cache_grouped_dimensions: self
+                        .relation_cache
+                        .config()
+                        .domains
+                        .grouped_dimension_enabled(),
                     ..options
                 },
                 force_nested,
@@ -1140,8 +1178,9 @@ impl Engine {
                     .as_ref()
                     .map(|provider| provider.planning_stats()),
                 execution_grant,
+                DependencyValidation::Snapshot,
                 relation_cache,
-                self.cache_events_enabled.then_some(&self.events),
+                self.cache_events_enabled.then_some(self.events.as_ref()),
             )
             .await
         };
@@ -1226,8 +1265,9 @@ async fn execute_on_view(
     limits: Limits,
     statistics: Option<Arc<crate::engine::planner::models::PlannerStats>>,
     execution_grant: super::parallel::ExecutionGrant,
+    dependency_validation: DependencyValidation,
     relation_cache: Option<&RelationCache>,
-    cache_events: Option<&Arc<dyn EngineEventHook>>,
+    cache_events: Option<&dyn EngineEventHook>,
 ) -> Result<Datum> {
     let bound = bind::bind(
         &ViewCatalog {
@@ -1253,10 +1293,11 @@ async fn execute_on_view(
     let fingerprints = lir::fingerprint::query(&bound);
     let admitted_key = relation_cache
         .key_for_view(
-            fingerprints.exact,
+            (fingerprints.exact, fingerprints.family),
             view,
             &planned.plan.dependencies,
-            DependencyValidation::Snapshot,
+            &planned.plan.data_dependencies,
+            dependency_validation,
             None,
         )
         .await?;
@@ -1325,7 +1366,10 @@ mod tests {
     };
     use crate::engine::exec::codec;
     use crate::engine::exec::row_store;
-    use crate::engine::exec::{ErrorKind, ErrorReason, Statement};
+    use crate::engine::exec::{
+        ErrorKind, ErrorReason, RelationCacheConfig, RelationCacheDomains,
+        RelationCachePolicyConfig, RelationCachePolicyMode, Statement,
+    };
     use crate::engine::kv::Kv;
     use crate::engine::kv::slatedb::Store;
     use crate::engine::lir::{
@@ -1335,6 +1379,16 @@ mod tests {
     use crate::runtime::RuntimeEffects;
 
     use super::*;
+
+    fn foyer_relation_cache_config() -> RelationCacheConfig {
+        RelationCacheConfig {
+            policy: RelationCachePolicyConfig {
+                mode: RelationCachePolicyMode::Foyer,
+                ..RelationCachePolicyConfig::default()
+            },
+            ..RelationCacheConfig::default()
+        }
+    }
 
     struct DeterministicRuntime {
         now: DateTime<Utc>,
@@ -2696,7 +2750,13 @@ mod tests {
             })
             .await
             .unwrap();
-        let engine = Engine::new(store.clone());
+        let engine = Engine::new(store.clone()).with_relation_cache_config(RelationCacheConfig {
+            policy: crate::engine::exec::RelationCachePolicyConfig {
+                mode: crate::engine::exec::RelationCachePolicyMode::Foyer,
+                ..crate::engine::exec::RelationCachePolicyConfig::default()
+            },
+            ..RelationCacheConfig::default()
+        });
         engine
             .create(
                 "items",
@@ -2799,6 +2859,137 @@ mod tests {
         store.close().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn primary_key_cache_dependency_ignores_a_different_generation_stripe() {
+        let store = Arc::new(
+            Store::memory("exec-relation-cache-primary-key-scope")
+                .await
+                .unwrap(),
+        );
+        let catalog = catalog::Catalog::new(store.clone());
+        catalog
+            .create_table(TableDef {
+                id: SchemaId::new(1).unwrap(),
+                name: "items".into(),
+                columns: vec![
+                    ColumnDef {
+                        id: SchemaId::new(1).unwrap(),
+                        name: "id".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                    ColumnDef {
+                        id: SchemaId::new(2).unwrap(),
+                        name: "status".into(),
+                        scalar_type: ScalarType::Text,
+                        nullable: false,
+                        format: String::new(),
+                        default: None,
+                    },
+                ],
+                primary_key: vec!["id".into()],
+                indexes: Vec::new(),
+                foreign_keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let cached_id = "cached".to_owned();
+        let cached_key = codec::encode_tuple(&[Value::Text(cached_id.clone())]).unwrap();
+        let cached_stripe = catalog::store::data_generation_stripe(&cached_key);
+        let unrelated_id = (0..=u16::MAX)
+            .map(|value| format!("other-{value}"))
+            .find(|value| {
+                let key = codec::encode_tuple(&[Value::Text(value.clone())]).unwrap();
+                catalog::store::data_generation_stripe(&key) != cached_stripe
+            })
+            .unwrap();
+        let engine = Engine::new(store.clone()).with_relation_cache_config(RelationCacheConfig {
+            policy: crate::engine::exec::RelationCachePolicyConfig {
+                mode: crate::engine::exec::RelationCachePolicyMode::Shadow,
+                ..crate::engine::exec::RelationCachePolicyConfig::default()
+            },
+            ..RelationCacheConfig::default()
+        });
+        engine
+            .create_many(
+                "items",
+                vec![
+                    Row::from([
+                        ("id".into(), Value::Text(cached_id.clone())),
+                        ("status".into(), Value::Text("cached-open".into())),
+                    ]),
+                    Row::from([
+                        ("id".into(), Value::Text(unrelated_id.clone())),
+                        ("status".into(), Value::Text("other-open".into())),
+                    ]),
+                ],
+            )
+            .await
+            .unwrap();
+        let query = projected_column("items", "status", Some(("id", &cached_id)));
+
+        let first = engine.execute(query.clone()).await.unwrap();
+        assert_eq!(engine.execute(query.clone()).await.unwrap(), first);
+        assert_eq!(engine.relation_cache.stats().misses, 1);
+        assert_eq!(engine.relation_cache.stats().hits, 1);
+
+        engine
+            .update_many(
+                "items",
+                text_input_type(&["id", "status"]),
+                vec![Row::from([
+                    ("id".into(), Value::Text(unrelated_id)),
+                    ("status".into(), Value::Text("other-closed".into())),
+                ])],
+            )
+            .await
+            .unwrap();
+        assert_eq!(engine.execute(query.clone()).await.unwrap(), first);
+        assert_eq!(engine.relation_cache.stats().misses, 1);
+        assert_eq!(engine.relation_cache.stats().hits, 2);
+
+        engine
+            .update_many(
+                "items",
+                text_input_type(&["id", "status"]),
+                vec![Row::from([
+                    ("id".into(), Value::Text(cached_id)),
+                    ("status".into(), Value::Text("cached-closed".into())),
+                ])],
+            )
+            .await
+            .unwrap();
+        assert_ne!(engine.execute(query).await.unwrap(), first);
+        assert_eq!(engine.relation_cache.stats().misses, 2);
+        assert_eq!(engine.relation_cache.stats().hits, 2);
+
+        let missing_id = "created-later";
+        let missing_query = projected_column("items", "status", Some(("id", missing_id)));
+        let missing = engine.execute(missing_query.clone()).await.unwrap();
+        assert_eq!(
+            engine.execute(missing_query.clone()).await.unwrap(),
+            missing
+        );
+        assert!(matches!(missing, Datum::Array(ref rows) if rows.is_empty()));
+        engine
+            .create(
+                "items",
+                Row::from([
+                    ("id".into(), Value::Text(missing_id.into())),
+                    ("status".into(), Value::Text("new".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        let created = engine.execute(missing_query).await.unwrap();
+        assert!(matches!(created, Datum::Array(ref rows) if rows.len() == 1));
+        assert_eq!(engine.relation_cache.stats().misses, 4);
+        assert_eq!(engine.relation_cache.stats().hits, 3);
+        store.close().await.unwrap();
+    }
+
     async fn assert_stable_hash_build_reuses_artifact_after_probe_data_changes(store: Arc<Store>) {
         let catalog = catalog::Catalog::new(store.clone());
         let customers = catalog
@@ -2811,6 +3002,7 @@ mod tests {
             .unwrap();
         let statistics = complete_join_stats(&customers, 3);
         let engine = Engine::new(store.clone())
+            .with_relation_cache_config(foyer_relation_cache_config())
             .with_statistics_provider(Arc::new(FixedPlannerStats(Arc::new(statistics))));
         engine
             .create_many(
@@ -2861,7 +3053,7 @@ mod tests {
         assert!(matches!(first, Datum::Array(ref rows) if rows.len() == 2));
         assert!(matches!(second, Datum::Array(ref rows) if rows.len() == 4));
         assert_eq!(second, uncached);
-        let cache = engine.relation_cache_stats();
+        let cache = engine.relation_cache_statistics();
         assert_eq!(cache.misses, 2);
         assert_eq!(cache.subrelation_misses, 1);
         assert_eq!(cache.subrelation_admissions, 1);
@@ -2879,7 +3071,7 @@ mod tests {
         let third = engine.execute(query.clone()).await.unwrap();
         assert!(matches!(third, Datum::Array(ref rows) if rows.len() == 6));
         assert_eq!(third, engine.execute_uncached(query).await.unwrap());
-        let cache = engine.relation_cache_stats();
+        let cache = engine.relation_cache_statistics();
         assert_eq!(cache.misses, 3);
         assert_eq!(cache.subrelation_misses, 2);
         assert_eq!(cache.subrelation_admissions, 2);
@@ -2907,6 +3099,71 @@ mod tests {
         assert_stable_hash_build_reuses_artifact_after_probe_data_changes(store).await;
     }
 
+    #[tokio::test]
+    async fn disabled_query_domain_keeps_hash_build_reuse() {
+        let store = Arc::new(
+            Store::memory("exec-query-disabled-hash-build-cache")
+                .await
+                .unwrap(),
+        );
+        let catalog = catalog::Catalog::new(store.clone());
+        let customers = catalog
+            .create_table(join_cache_table(10, "customers"))
+            .await
+            .unwrap();
+        catalog
+            .create_table(join_cache_table(20, "orders"))
+            .await
+            .unwrap();
+        let statistics = complete_join_stats(&customers, 2);
+        let engine = Engine::new(store.clone())
+            .with_relation_cache_config(RelationCacheConfig {
+                domains: "hash-build".parse::<RelationCacheDomains>().unwrap(),
+                ..foyer_relation_cache_config()
+            })
+            .with_statistics_provider(Arc::new(FixedPlannerStats(Arc::new(statistics))));
+        engine
+            .create_many(
+                "customers",
+                vec![
+                    Row::from([
+                        ("id".into(), Value::Text("c1".into())),
+                        ("customer_id".into(), Value::Text("shared".into())),
+                    ]),
+                    Row::from([
+                        ("id".into(), Value::Text("c2".into())),
+                        ("customer_id".into(), Value::Text("shared".into())),
+                    ]),
+                ],
+            )
+            .await
+            .unwrap();
+        engine
+            .create(
+                "orders",
+                Row::from([
+                    ("id".into(), Value::Text("o1".into())),
+                    ("customer_id".into(), Value::Text("shared".into())),
+                ]),
+            )
+            .await
+            .unwrap();
+        let query = customer_orders_query();
+
+        let first = engine.execute(query.clone()).await.unwrap();
+        let second = engine.execute(query).await.unwrap();
+
+        assert_eq!(first, second);
+        let cache = engine.relation_cache_statistics();
+        assert_eq!(cache.hits, 0);
+        assert_eq!(cache.misses, 0);
+        assert_eq!(cache.admissions, 0);
+        assert_eq!(cache.subrelation_misses, 1);
+        assert_eq!(cache.subrelation_admissions, 1);
+        assert_eq!(cache.subrelation_hits, 1);
+        store.close().await.unwrap();
+    }
+
     async fn assert_recursive_step_reuses_stable_hash_build(store: Arc<Store>) {
         let catalog = catalog::Catalog::new(store.clone());
         catalog
@@ -2919,6 +3176,7 @@ mod tests {
             .unwrap();
         let statistics = complete_join_stats(&edges, 3);
         let engine = Engine::new(store.clone())
+            .with_relation_cache_config(foyer_relation_cache_config())
             .with_statistics_provider(Arc::new(FixedPlannerStats(Arc::new(statistics))));
         engine
             .create(
@@ -2954,7 +3212,7 @@ mod tests {
 
         let first = engine.execute(query.clone()).await.unwrap();
         assert!(matches!(first, Datum::Array(ref rows) if rows.len() == 4));
-        let first_cache = engine.relation_cache_stats();
+        let first_cache = engine.relation_cache_statistics();
         assert_eq!(first_cache.subrelation_misses, 1);
         assert_eq!(first_cache.subrelation_admissions, 1);
         assert_eq!(first_cache.subrelation_hits, 3);
@@ -2979,7 +3237,7 @@ mod tests {
             second,
             engine.execute_reference(query.clone()).await.unwrap()
         );
-        let second_cache = engine.relation_cache_stats();
+        let second_cache = engine.relation_cache_statistics();
         assert_eq!(second_cache.misses, 2);
         assert_eq!(second_cache.subrelation_misses, 1);
         assert_eq!(second_cache.subrelation_admissions, 1);
@@ -2999,7 +3257,7 @@ mod tests {
         assert!(matches!(third, Datum::Array(ref rows) if rows.len() == 6));
         assert_eq!(third, engine.execute_uncached(query.clone()).await.unwrap());
         assert_eq!(third, engine.execute_reference(query).await.unwrap());
-        let third_cache = engine.relation_cache_stats();
+        let third_cache = engine.relation_cache_statistics();
         assert_eq!(third_cache.misses, 3);
         assert_eq!(third_cache.subrelation_misses, 2);
         assert_eq!(third_cache.subrelation_admissions, 2);
@@ -3047,6 +3305,7 @@ mod tests {
             .synopsis_models
             .extend(complete_join_stats(&orders, 5_000).synopsis_models);
         let engine = Engine::new(store.clone())
+            .with_relation_cache_config(foyer_relation_cache_config())
             .with_statistics_provider(Arc::new(FixedPlannerStats(Arc::new(statistics))));
         engine
             .create_many(
@@ -3093,7 +3352,7 @@ mod tests {
         assert!(matches!(first, Datum::Array(ref rows) if rows.len() == 1));
         assert!(matches!(second, Datum::Array(ref rows) if rows.len() == 2));
         assert_eq!(second, uncached);
-        let cache = engine.relation_cache_stats();
+        let cache = engine.relation_cache_statistics();
         assert_eq!(cache.subrelation_misses, 1);
         assert_eq!(cache.subrelation_admissions, 1);
         assert_eq!(cache.subrelation_hits, 1);
@@ -3109,7 +3368,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(engine.execute(query).await.unwrap(), second);
-        let cache = engine.relation_cache_stats();
+        let cache = engine.relation_cache_statistics();
         assert_eq!(cache.subrelation_misses, 2);
         assert_eq!(cache.subrelation_admissions, 2);
         assert_eq!(cache.subrelation_hits, 1);
@@ -3148,7 +3407,13 @@ mod tests {
             })
             .await
             .unwrap();
-        let engine = Engine::new(store.clone());
+        let engine = Engine::new(store.clone()).with_relation_cache_config(RelationCacheConfig {
+            policy: crate::engine::exec::RelationCachePolicyConfig {
+                mode: crate::engine::exec::RelationCachePolicyMode::Foyer,
+                ..crate::engine::exec::RelationCachePolicyConfig::default()
+            },
+            ..RelationCacheConfig::default()
+        });
         engine
             .create(
                 "items",
@@ -3989,7 +4254,8 @@ mod tests {
             catalog::store::read_table_data_generation(&*store, &table.id)
                 .await
                 .unwrap()
-                .stripes()
+                .complete_stripes()
+                .unwrap()
                 .iter()
                 .map(|generation| generation.get())
                 .sum::<u64>()

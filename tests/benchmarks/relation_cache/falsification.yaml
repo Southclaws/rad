@@ -1,0 +1,26 @@
+format: rad-relation-cache-falsification-v1
+name: relation-cache-policy-falsification
+description: Deterministic pairwise workloads for relation cache admission and adaptation.
+family_size: 40
+included_scenarios:
+  - cache_pollution
+  - false_second_hit
+  - huge_shiny_object
+  - competing_materialization_domains
+  - thundering_herd
+  - stable_hash_build
+axes:
+  conversion_percent: [0, 25, 50, 75, 100]
+  future_reuses: [1, 5, 20]
+  result_profile: [point_small, point_large, range, aggregate_range]
+  cohort_count: [1, 4]
+  phase_delay_milliseconds: [0, 30000, 120000]
+  cache_pressure: [fits, double, quadruple]
+  conversion_order: [cold_first, hot_first, alternating]
+targets:
+  max_wasteful_to_useful_admission_percent: 3
+  min_useful_work_retained_percent: 99
+  min_useful_scenario_work_retained_percent: 95
+  min_pollution_work_retained_percent: 99
+  protected_work:
+    - { scenario: stable_hash_build, domain: hash_build }

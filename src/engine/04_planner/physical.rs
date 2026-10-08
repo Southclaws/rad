@@ -3,6 +3,7 @@
 use serde::Serialize;
 use smallvec::{SmallVec, smallvec};
 
+use crate::engine::catalog::identity::TableId;
 use crate::engine::catalog::model::{CatalogDependencies, Column, Index};
 use crate::engine::lir::bound::{self, BoundAggregateTerm, BoundGroupTerm, BoundOrderTerm};
 use crate::engine::lir::{
@@ -18,9 +19,27 @@ pub struct Plan {
     pub cardinality: RootCardinality,
     pub output: RowType,
     pub dependencies: CatalogDependencies,
+    pub data_dependencies: RelationDataDependencies,
     pub materialization_selection: MaterializationSelection,
     pub next_slot: SlotId,
     pub memo: super::memo::MemoReport,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RelationDataDependencies {
+    pub tables: Vec<TableDataDependency>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TableDataDependency {
+    pub table_id: TableId,
+    pub scope: TableDataDependencyScope,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TableDataDependencyScope {
+    All,
+    PrimaryKeys(Vec<Vec<lir::Value>>),
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -466,8 +485,10 @@ pub struct MaterializationCandidate {
     // This metadata does not make cache residency part of the prepared plan.
     // Execution always keeps `Node::kind` as the complete fallback path.
     pub exact: lir::fingerprint::Fingerprint,
+    pub family: lir::fingerprint::Fingerprint,
     pub output: RowType,
     pub dependencies: CatalogDependencies,
+    pub data_dependencies: RelationDataDependencies,
     pub estimated_rows: u64,
     pub estimated_avoided_work: u64,
     pub estimated_retained_bytes: u64,
@@ -1277,6 +1298,7 @@ mod tests {
             cardinality: RootCardinality::Many,
             output,
             dependencies: CatalogDependencies::default(),
+            data_dependencies: RelationDataDependencies::default(),
             materialization_selection: MaterializationSelection::default(),
             next_slot: SlotId(4),
             memo: crate::engine::planner::memo::MemoReport::default(),

@@ -779,7 +779,17 @@ mod tests {
             .await
             .unwrap();
         let observer = Arc::new(ProgramObserver::default());
-        let engine = Arc::new(Engine::new(store).with_observer(observer.clone()));
+        let engine = Arc::new(
+            Engine::new(store)
+                .with_relation_cache_config(crate::engine::exec::RelationCacheConfig {
+                    policy: crate::engine::exec::RelationCachePolicyConfig {
+                        mode: crate::engine::exec::RelationCachePolicyMode::Foyer,
+                        ..crate::engine::exec::RelationCachePolicyConfig::default()
+                    },
+                    ..crate::engine::exec::RelationCacheConfig::default()
+                })
+                .with_observer(observer.clone()),
+        );
         engine
             .create(
                 "tasks",

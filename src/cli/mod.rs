@@ -157,6 +157,30 @@ mod tests {
         assert_eq!(serve.relation_cache_size_mib, 128);
         assert_eq!(serve.relation_cache_entries, 4096);
         assert_eq!(serve.relation_cache_max_result_size_mib, 8);
+        assert_eq!(
+            serve.relation_cache_policy,
+            ServeRelationCachePolicy::Enforced
+        );
+        assert_eq!(
+            serve.relation_cache_policy_reuse_admission,
+            ServeRelationCachePolicyReuseAdmission::FamilyConversion
+        );
+        assert_eq!(serve.relation_cache_policy_min_cohorts, 3);
+        assert_eq!(serve.relation_cache_policy_family_min_observations, 1);
+        assert_eq!(serve.relation_cache_policy_zero_reuse_percent, 75);
+        assert_eq!(serve.relation_cache_policy_probation_min_work, 4_194_304);
+        assert_eq!(serve.relation_cache_policy_probation_min_work_per_byte, 4);
+        assert_eq!(serve.relation_cache_policy_cohorts_per_relation, 4);
+        assert_eq!(
+            serve.relation_cache_policy_prior,
+            ServeRelationCachePolicyPrior::None
+        );
+        assert_eq!(serve.relation_cache_policy_rate_half_life_seconds, 30);
+        assert_eq!(
+            serve.relation_cache_domains,
+            "query,hash-build,grouped-dimension"
+        );
+        assert_eq!(serve.relation_cache_plan_materialization_budget_mib, 8);
         assert_eq!(serve.slate_decoded_cache_size_mib, 128);
         assert!(!serve.slate_scan_cache_blocks);
         assert_eq!(serve.slate_scan_read_ahead_kib, 256);
@@ -197,6 +221,98 @@ mod tests {
         assert!(Cli::try_parse_from(["rad", "serve", "--log-level", "trace"]).is_err());
         assert!(Cli::try_parse_from(["rad", "serve", "--log-format", "pretty"]).is_err());
         assert!(Cli::try_parse_from(["rad", "serve", "--diagnostics", "trace"]).is_err());
+    }
+
+    #[test]
+    fn generated_serve_accepts_relation_cache_policy_controls() {
+        let cli = Cli::try_parse_from([
+            "rad",
+            "serve",
+            "--relation-cache-policy",
+            "enforced",
+            "--relation-cache-policy-reuse-admission",
+            "family-conversion",
+            "--relation-cache-policy-family-min-observations",
+            "5",
+            "--relation-cache-policy-min-cohorts",
+            "6",
+            "--relation-cache-policy-zero-reuse-percent",
+            "80",
+            "--relation-cache-policy-probation-min-work",
+            "0",
+            "--relation-cache-policy-probation-min-work-per-byte",
+            "0",
+            "--relation-cache-policy-cohorts-per-relation",
+            "8",
+            "--relation-cache-policy-prior",
+            "generation-rate",
+            "--relation-cache-policy-rate-half-life-seconds",
+            "45",
+            "--relation-cache-domains",
+            "query,hash-build",
+            "--relation-cache-plan-materialization-budget-mib",
+            "16",
+        ])
+        .unwrap();
+        let RootCommand::Serve(serve) = cli.command else {
+            panic!("expected serve command");
+        };
+
+        assert_eq!(
+            serve.relation_cache_policy,
+            ServeRelationCachePolicy::Enforced
+        );
+        assert_eq!(
+            serve.relation_cache_policy_reuse_admission,
+            ServeRelationCachePolicyReuseAdmission::FamilyConversion
+        );
+        assert_eq!(serve.relation_cache_policy_family_min_observations, 5);
+        assert_eq!(serve.relation_cache_policy_min_cohorts, 6);
+        assert_eq!(serve.relation_cache_policy_zero_reuse_percent, 80);
+        assert_eq!(serve.relation_cache_policy_probation_min_work, 0);
+        assert_eq!(serve.relation_cache_policy_probation_min_work_per_byte, 0);
+        assert_eq!(serve.relation_cache_policy_cohorts_per_relation, 8);
+        assert_eq!(
+            serve.relation_cache_policy_prior,
+            ServeRelationCachePolicyPrior::GenerationRate
+        );
+        assert_eq!(serve.relation_cache_policy_rate_half_life_seconds, 45);
+        assert_eq!(serve.relation_cache_domains, "query,hash-build");
+        assert_eq!(serve.relation_cache_plan_materialization_budget_mib, 16);
+        assert!(
+            Cli::try_parse_from(["rad", "serve", "--relation-cache-policy", "automatic"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "rad",
+                "serve",
+                "--relation-cache-policy-reuse-admission",
+                "fourth-touch"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "rad",
+                "serve",
+                "--relation-cache-policy-prior",
+                "write-rate"
+            ])
+            .is_err()
+        );
+
+        let default_cli = Cli::try_parse_from(["rad", "serve"]).unwrap();
+        let RootCommand::Serve(default_serve) = default_cli.command else {
+            panic!("expected serve command");
+        };
+        assert_eq!(
+            default_serve.relation_cache_policy_reuse_admission,
+            ServeRelationCachePolicyReuseAdmission::FamilyConversion
+        );
+        assert_eq!(
+            default_serve.relation_cache_policy_family_min_observations,
+            1
+        );
     }
 
     #[test]

@@ -6,7 +6,6 @@
 //! outside this executor.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
 
 use async_recursion::async_recursion;
@@ -222,7 +221,7 @@ impl<'a> Executor<'a> {
         &mut self,
         cache: &'a super::relation_cache::RelationCache,
         root_key: super::relation_cache::RelationCacheKey,
-        events: Option<&'a Arc<dyn super::EngineEventHook>>,
+        events: Option<&'a dyn super::EngineEventHook>,
     ) {
         self.subrelation_cache = Some(super::relation_cache::SubrelationCacheContext::new(
             cache,

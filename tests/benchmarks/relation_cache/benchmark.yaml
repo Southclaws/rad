@@ -1,0 +1,568 @@
+format: rad-relation-cache-benchmark-v2
+name: relation-cache-policy
+description: Deterministic relation cache policy workloads with explicit generation and request schedules.
+scenarios:
+  - name: stable_dimension
+    expected: useful
+    shape: { mutation_pattern: none, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - { type: query, query: stable, count: 100 }
+  - name: useful_hot_feed
+    expected: useful
+    shape: { mutation_pattern: append, read_pattern: range_tail, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 20
+        steps:
+          - { type: mutation, table: items, count: 1, payload_bytes: 32 }
+          - { type: commit }
+          - { type: query, query: tail, count: 5 }
+          - { type: time_advance, milliseconds: 50 }
+  - name: wasteful_hot_feed
+    expected: wasteful
+    shape: { mutation_pattern: append, read_pattern: range_tail, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 20
+        steps:
+          - { type: mutation, table: items, count: 1, payload_bytes: 32 }
+          - { type: commit }
+          - { type: query, query: tail, count: 1 }
+          - { type: time_advance, milliseconds: 50 }
+  - name: unrelated_point_updates
+    expected: useful
+    shape: { mutation_pattern: uniform_point, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 20
+        steps:
+          - { type: mutation, table: items, mutation_pattern: uniform_point, count: 1, payload_bytes: 16 }
+          - { type: commit }
+          - { type: query, query: point-0000, count: 5 }
+  - name: relevant_point_updates
+    expected: useful
+    shape: { mutation_pattern: hot_set, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 20
+        steps:
+          - { type: mutation, table: items, mutation_pattern: hot_set, hot_set_size: 1, count: 1, payload_bytes: 16 }
+          - { type: commit }
+          - { type: query, query: point-0000, count: 5 }
+  - name: closed_append_range
+    expected: useful
+    shape: { mutation_pattern: append, read_pattern: historical_range, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 20
+        steps:
+          - { type: mutation, table: items, count: 1, payload_bytes: 16 }
+          - { type: commit }
+          - { type: query, query: closed-range, count: 5 }
+  - name: moving_append_tail
+    expected: useful
+    shape: { mutation_pattern: append, read_pattern: range_tail, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 20
+        steps:
+          - { type: mutation, table: items, count: 1, payload_bytes: 16 }
+          - { type: commit }
+          - { type: query, query: tail, count: 5 }
+  - name: burst_mutation
+    expected: useful
+    shape: { mutation_pattern: burst, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - { type: mutation, table: items, count: 100, payload_bytes: 16 }
+      - { type: commit }
+      - { type: query, query: stable, count: 20 }
+  - name: continuous_mutation
+    expected: wasteful
+    shape: { mutation_pattern: append, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 20
+        steps:
+          - { type: mutation, table: items, count: 5, payload_bytes: 16 }
+          - { type: commit }
+          - { type: query, query: stable, count: 1 }
+  - name: domain_split
+    expected: useful
+    shape: { mutation_pattern: append, read_pattern: join, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 20
+        steps:
+          - { type: mutation, table: facts, count: 1, payload_bytes: 16 }
+          - { type: commit }
+          - { type: query, query: join, count: 3 }
+  - name: density_pair
+    expected: mixed
+    shape: { mutation_pattern: none, read_pattern: mixed, literal_distribution: constant }
+    steps:
+      - { type: query, query: point-0000, count: 10 }
+      - { type: query, query: stable, count: 10 }
+  - name: literal_fanout
+    expected: mixed
+    shape: { mutation_pattern: none, read_pattern: mixed, literal_distribution: monotonic }
+    steps:
+      - type: repeat
+        count: 100
+        steps:
+          - { type: query, query: next-point, count: 1 }
+      - type: repeat
+        count: 10
+        steps:
+          - { type: query, query: point-0000, count: 1 }
+  - name: concurrent_fill
+    expected: useful
+    shape: { mutation_pattern: none, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - { type: concurrent_query, query: stable, count: 32 }
+      - { type: barrier }
+  - name: multiple_dependencies
+    expected: useful
+    shape: { mutation_pattern: append, read_pattern: join, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 10
+        steps:
+          - { type: mutation, table: facts, count: 1, payload_bytes: 16 }
+          - { type: commit }
+          - { type: query, query: join, count: 4 }
+  - name: pinned_snapshot
+    expected: safe
+    shape: { mutation_pattern: append, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - { type: pin_snapshot }
+      - { type: pinned_query, query: stable, count: 2 }
+      - { type: mutation, table: items, count: 1, payload_bytes: 16 }
+      - { type: commit }
+      - { type: query, query: stable, count: 2 }
+      - { type: time_advance, milliseconds: 100 }
+      - { type: pinned_query, query: stable, count: 2 }
+      - { type: release_snapshot }
+      - { type: query, query: stable, count: 2 }
+  - name: capacity_competition
+    expected: mixed
+    shape: { mutation_pattern: none, read_pattern: mixed, literal_distribution: constant }
+    cache_capacity_bytes: 32768
+    cache_entry_limit: 2
+    result_limit_bytes: 16384
+    steps:
+      - { type: query, query: stable, count: 2 }
+      - { type: query, query: join, count: 2 }
+      - { type: query, query: tail, count: 2 }
+      - { type: query, query: point-0000, count: 2 }
+  - name: hard_result_limit
+    expected: rejected
+    shape: { mutation_pattern: append, read_pattern: exact_repeat, literal_distribution: constant }
+    result_limit_bytes: 128
+    steps:
+      - { type: mutation, table: items, count: 10, payload_bytes: 4096 }
+      - { type: commit }
+      - { type: query, query: stable, count: 3 }
+  - name: useful_to_wasteful
+    expected: mixed
+    shape: { mutation_pattern: append, read_pattern: range_tail, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 8
+        steps:
+          - { type: mutation, table: items, count: 1, payload_bytes: 32 }
+          - { type: commit }
+          - { type: query, query: tail, count: 5 }
+          - { type: time_advance, milliseconds: 50 }
+      - { type: checkpoint, name: useful_phase }
+      - type: repeat
+        count: 12
+        steps:
+          - { type: mutation, table: items, count: 1, payload_bytes: 32 }
+          - { type: commit }
+          - { type: query, query: tail, count: 1 }
+          - { type: time_advance, milliseconds: 50 }
+  - name: wasteful_to_useful
+    expected: mixed
+    shape: { mutation_pattern: append, read_pattern: range_tail, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 8
+        steps:
+          - { type: mutation, table: items, count: 1, payload_bytes: 32 }
+          - { type: commit }
+          - { type: query, query: tail, count: 1 }
+          - { type: time_advance, milliseconds: 50 }
+      - { type: checkpoint, name: wasteful_phase }
+      - type: repeat
+        count: 12
+        steps:
+          - { type: mutation, table: items, count: 1, payload_bytes: 32 }
+          - { type: commit }
+          - { type: query, query: tail, count: 5 }
+          - { type: time_advance, milliseconds: 50 }
+  - name: hot_point_lookup
+    expected: useful
+    dataset_rows: 1000
+    shape: { mutation_pattern: uniform_point, read_pattern: hot_set, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 20
+        steps:
+          - { type: query, query: point-0000, count: 5, interval_milliseconds: 20 }
+          - { type: mutation, table: items, mutation_pattern: uniform_point, count: 1, payload_bytes: 32 }
+          - { type: commit }
+  - name: uniform_point_lookup
+    expected: wasteful
+    dataset_rows: 1000
+    shape: { mutation_pattern: none, read_pattern: uniform, literal_distribution: uniform }
+    steps:
+      - { type: query_series, query: point, count: 200, literal_distribution: uniform, literal_cardinality: 1000 }
+  - name: zipfian_point_lookup
+    expected: useful
+    dataset_rows: 1000
+    shape: { mutation_pattern: none, read_pattern: zipf, literal_distribution: zipf }
+    steps:
+      - { type: query_series, query: point, count: 300, literal_distribution: zipf, literal_cardinality: 1000 }
+  - name: random_update_oltp
+    expected: wasteful
+    dataset_rows: 500
+    shape: { mutation_pattern: uniform_point, read_pattern: uniform, literal_distribution: uniform }
+    steps:
+      - type: repeat
+        count: 20
+        steps:
+          - { type: mutation, table: items, mutation_pattern: uniform_point, count: 1, payload_bytes: 32 }
+          - { type: commit }
+          - { type: query_series, query: point, count: 3, literal_distribution: uniform, literal_cardinality: 500 }
+  - name: hot_row_updates
+    expected: mixed
+    dataset_rows: 500
+    shape: { mutation_pattern: hot_set, read_pattern: hot_set, literal_distribution: zipf }
+    steps:
+      - type: repeat
+        count: 20
+        steps:
+          - { type: mutation, table: items, mutation_pattern: hot_set, hot_set_size: 5, count: 1, payload_bytes: 32 }
+          - { type: commit }
+          - { type: query_series, query: point, count: 5, literal_distribution: zipf, literal_cardinality: 10 }
+  - name: periodic_batch_rebuild
+    expected: useful
+    dataset_rows: 500
+    shape: { mutation_pattern: periodic_batch, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 3
+        steps:
+          - { type: query, query: stable, count: 20, interval_milliseconds: 1000 }
+          - { type: mutation, table: items, mutation_pattern: periodic_batch, count: 50, payload_bytes: 32 }
+          - { type: commit }
+          - { type: time_advance, milliseconds: 40000 }
+  - name: write_once_read_many
+    expected: useful
+    dataset_rows: 100
+    shape: { mutation_pattern: append, read_pattern: exact_repeat, literal_distribution: monotonic }
+    steps:
+      - type: repeat
+        count: 20
+        steps:
+          - { type: mutation, table: items, mutation_pattern: append, count: 1, payload_bytes: 32 }
+          - { type: commit }
+          - { type: query_series, query: point, count: 1, repeat_each: 5, literal_distribution: monotonic, literal_cardinality: 20, literal_offset: 10000 }
+  - name: mostly_cold_then_viral
+    expected: mixed
+    dataset_rows: 1000
+    shape: { mutation_pattern: none, read_pattern: mixed, literal_distribution: monotonic }
+    steps:
+      - { type: query_series, query: point, count: 100, literal_distribution: monotonic, literal_cardinality: 1000 }
+      - { type: query, query: point-0042, count: 100 }
+  - name: hot_set_phase_shift
+    expected: mixed
+    dataset_rows: 1000
+    cache_entry_limit: 32
+    shape: { mutation_pattern: none, read_pattern: hot_set, literal_distribution: constant }
+    steps:
+      - { type: query, query: point-0001, count: 50 }
+      - { type: checkpoint, name: first_hot_set }
+      - { type: query, query: point-0900, count: 50 }
+  - name: scan_aggregate
+    expected: useful
+    dataset_rows: 2000
+    shape: { mutation_pattern: none, read_pattern: aggregate, literal_distribution: constant }
+    steps:
+      - { type: query, query: aggregate, count: 20 }
+  - name: cheap_but_popular
+    expected: useful
+    dataset_rows: 1000
+    shape: { mutation_pattern: none, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - { type: query, query: point-0000, count: 200 }
+  - name: expensive_but_rare
+    expected: useful
+    dataset_rows: 2000
+    shape: { mutation_pattern: none, read_pattern: aggregate, literal_distribution: constant }
+    steps:
+      - { type: query, query: aggregate, count: 2 }
+  - name: large_result_high_reuse
+    expected: useful
+    dataset_rows: 1000
+    seed_payload_bytes: 4096
+    cache_capacity_bytes: 16777216
+    result_limit_bytes: 8388608
+    shape: { mutation_pattern: none, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - { type: query, query: stable, count: 10 }
+  - name: tiny_result_high_work
+    expected: useful
+    dataset_rows: 2000
+    seed_payload_bytes: 256
+    shape: { mutation_pattern: none, read_pattern: aggregate, literal_distribution: constant }
+    steps:
+      - { type: query, query: aggregate, count: 10 }
+  - name: stable_hash_build
+    expected: useful
+    dimension_rows: 20
+    fact_rows: 200
+    shape: { mutation_pattern: uniform_point, read_pattern: join, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 10
+        steps:
+          - { type: mutation, table: facts, mutation_pattern: uniform_point, count: 1, payload_bytes: 32 }
+          - { type: commit }
+          - { type: query, query: join, count: 3 }
+  - name: competing_materialization_domains
+    expected: mixed
+    dataset_rows: 100
+    dimension_rows: 20
+    fact_rows: 100
+    cache_capacity_bytes: 65536
+    cache_entry_limit: 8
+    result_limit_bytes: 32768
+    shape: { mutation_pattern: uniform_point, read_pattern: mixed, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 10
+        steps:
+          - { type: query, query: stable, count: 2 }
+          - { type: query, query: join, count: 2 }
+          - { type: query, query: aggregate, count: 2 }
+          - { type: mutation, table: facts, mutation_pattern: uniform_point, count: 1, payload_bytes: 32 }
+          - { type: commit }
+  - name: reuse_pressure_r100_g1
+    suite: extended
+    expected: useful
+    shape: { mutation_pattern: append, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 5
+        steps:
+          - { type: query, query: point-0000, count: 100, interval_milliseconds: 10 }
+          - { type: mutation, table: items, count: 1, payload_bytes: 16 }
+          - { type: commit }
+  - name: reuse_pressure_r100_g10
+    suite: extended
+    expected: useful
+    shape: { mutation_pattern: append, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 10
+        steps:
+          - { type: query, query: point-0000, count: 10, interval_milliseconds: 10 }
+          - { type: mutation, table: items, count: 1, payload_bytes: 16 }
+          - { type: commit }
+  - name: reuse_pressure_r100_g100
+    suite: extended
+    expected: wasteful
+    shape: { mutation_pattern: append, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 20
+        steps:
+          - { type: query, query: point-0000, count: 1, interval_milliseconds: 10 }
+          - { type: mutation, table: items, count: 1, payload_bytes: 16 }
+          - { type: commit }
+  - name: reuse_pressure_r1_g10
+    suite: extended
+    expected: wasteful
+    shape: { mutation_pattern: append, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 5
+        steps:
+          - type: repeat
+            count: 10
+            steps:
+              - { type: mutation, table: items, count: 1, payload_bytes: 16 }
+              - { type: commit }
+              - { type: time_advance, milliseconds: 100 }
+          - { type: query, query: point-0000, count: 1 }
+  - name: reuse_pressure_r10_g10
+    suite: extended
+    expected: wasteful
+    shape: { mutation_pattern: append, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 20
+        steps:
+          - { type: mutation, table: items, count: 1, payload_bytes: 16 }
+          - { type: commit }
+          - { type: query, query: point-0000, count: 1, interval_milliseconds: 100 }
+  - name: reuse_pressure_r100_g10_control
+    suite: extended
+    expected: useful
+    shape: { mutation_pattern: append, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - type: repeat
+        count: 10
+        steps:
+          - { type: mutation, table: items, count: 1, payload_bytes: 16 }
+          - { type: commit }
+          - { type: query, query: point-0000, count: 10, interval_milliseconds: 10 }
+  - name: literals_constant
+    suite: extended
+    expected: useful
+    dataset_rows: 1000
+    shape: { mutation_pattern: none, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - { type: query_series, query: point, count: 100, literal_distribution: constant, literal_cardinality: 1 }
+  - name: literals_small_uniform
+    suite: extended
+    expected: useful
+    dataset_rows: 1000
+    shape: { mutation_pattern: none, read_pattern: uniform, literal_distribution: uniform }
+    steps:
+      - { type: query_series, query: point, count: 100, literal_distribution: uniform, literal_cardinality: 10 }
+  - name: literals_zipf
+    suite: extended
+    expected: mixed
+    dataset_rows: 1000
+    shape: { mutation_pattern: none, read_pattern: zipf, literal_distribution: zipf }
+    steps:
+      - { type: query_series, query: point, count: 100, literal_distribution: zipf, literal_cardinality: 1000 }
+  - name: literals_uniform
+    suite: extended
+    expected: wasteful
+    dataset_rows: 1000
+    shape: { mutation_pattern: none, read_pattern: uniform, literal_distribution: uniform }
+    steps:
+      - { type: query_series, query: point, count: 100, literal_distribution: uniform, literal_cardinality: 1000 }
+  - name: literals_monotonic
+    suite: extended
+    expected: wasteful
+    dataset_rows: 1000
+    shape: { mutation_pattern: none, read_pattern: uniform, literal_distribution: monotonic }
+    steps:
+      - { type: query_series, query: point, count: 100, literal_distribution: monotonic, literal_cardinality: 1000 }
+  - name: cache_pollution
+    suite: extended
+    expected: mixed
+    dataset_rows: 1000
+    cache_entry_limit: 128
+    shape: { mutation_pattern: none, read_pattern: mixed, literal_distribution: monotonic }
+    steps:
+      - type: repeat
+        count: 200
+        steps:
+          - { type: query, query: point-0000, count: 1 }
+          - { type: query, query: next-point, count: 1 }
+  - name: sequential_scan_pollution
+    suite: extended
+    expected: wasteful
+    dataset_rows: 2000
+    shape: { mutation_pattern: none, read_pattern: historical_range, literal_distribution: monotonic }
+    steps:
+      - { type: query_series, query: range, count: 100, literal_distribution: monotonic, literal_cardinality: 100, repeat_each: 1 }
+  - name: false_second_hit
+    suite: extended
+    expected: wasteful
+    dataset_rows: 1000
+    shape: { mutation_pattern: none, read_pattern: uniform, literal_distribution: monotonic }
+    steps:
+      - { type: query_series, query: point, count: 100, repeat_each: 2, literal_distribution: monotonic, literal_cardinality: 1000 }
+  - name: huge_shiny_object
+    suite: extended
+    expected: mixed
+    dataset_rows: 1900
+    seed_payload_bytes: 4096
+    cache_capacity_bytes: 8388608
+    result_limit_bytes: 8290304
+    shape: { mutation_pattern: none, read_pattern: exact_repeat, literal_distribution: constant }
+    steps:
+      - { type: query_series, query: point, count: 200, literal_distribution: zipf, literal_cardinality: 100 }
+      - { type: query, query: stable, count: 2 }
+      - { type: query_series, query: point, count: 200, literal_distribution: zipf, literal_cardinality: 100 }
+  - name: hot_set_rotation
+    suite: extended
+    expected: mixed
+    dataset_rows: 1000
+    cache_entry_limit: 64
+    shape: { mutation_pattern: none, read_pattern: hot_set, literal_distribution: uniform }
+    steps:
+      - { type: query_series, query: point, count: 200, literal_distribution: uniform, literal_cardinality: 20 }
+      - { type: checkpoint, name: first_rotation }
+      - { type: query_series, query: point, count: 200, literal_distribution: uniform, literal_cardinality: 20, literal_offset: 500 }
+  - name: thundering_herd
+    suite: extended
+    expected: useful
+    dataset_rows: 20
+    dimension_rows: 20
+    fact_rows: 200
+    seed_payload_bytes: 256
+    shape: { mutation_pattern: uniform_point, read_pattern: join, literal_distribution: constant }
+    steps:
+      - { type: query, query: join, count: 1 }
+      - { type: mutation, table: facts, mutation_pattern: uniform_point, count: 1, payload_bytes: 256 }
+      - { type: commit }
+      - { type: concurrent_query, query: join, count: 100, gate_fill: true }
+      - { type: barrier }
+      - { type: mutation, table: facts, mutation_pattern: uniform_point, count: 1, payload_bytes: 256 }
+      - { type: commit }
+      - { type: query, query: join, count: 1 }
+  - name: family_all_convert
+    suite: extended
+    expected: useful
+    dataset_rows: 1000
+    shape: { mutation_pattern: none, read_pattern: uniform, literal_distribution: monotonic }
+    steps:
+      - { type: query_series, query: point, count: 40, repeat_each: 4, literal_distribution: monotonic, literal_cardinality: 1000 }
+  - name: family_false_second
+    suite: extended
+    expected: wasteful
+    dataset_rows: 1000
+    shape: { mutation_pattern: none, read_pattern: uniform, literal_distribution: monotonic }
+    steps:
+      - { type: query_series, query: point, count: 100, repeat_each: 2, literal_distribution: monotonic, literal_cardinality: 1000 }
+  - name: family_mixed_conversion
+    suite: extended
+    expected: mixed
+    dataset_rows: 1000
+    shape: { mutation_pattern: none, read_pattern: mixed, literal_distribution: monotonic }
+    steps:
+      - { type: query_series, query: point, count: 60, repeat_each: 2, literal_distribution: monotonic, literal_cardinality: 1000 }
+      - { type: query_series, query: point, count: 20, repeat_each: 5, literal_distribution: monotonic, literal_cardinality: 1000, literal_offset: 500 }
+  - name: family_hot_to_cold
+    suite: extended
+    expected: mixed
+    dataset_rows: 1000
+    shape: { mutation_pattern: none, read_pattern: uniform, literal_distribution: monotonic }
+    steps:
+      - { type: query_series, query: point, count: 20, repeat_each: 5, literal_distribution: monotonic, literal_cardinality: 1000 }
+      - { type: time_advance, milliseconds: 30000 }
+      - { type: query_series, query: point, count: 60, repeat_each: 2, literal_distribution: monotonic, literal_cardinality: 1000, literal_offset: 500 }
+  - name: family_cold_to_hot
+    suite: extended
+    expected: mixed
+    dataset_rows: 1000
+    shape: { mutation_pattern: none, read_pattern: uniform, literal_distribution: monotonic }
+    steps:
+      - { type: query_series, query: point, count: 60, repeat_each: 2, literal_distribution: monotonic, literal_cardinality: 1000 }
+      - { type: time_advance, milliseconds: 30000 }
+      - { type: query_series, query: point, count: 20, repeat_each: 5, literal_distribution: monotonic, literal_cardinality: 1000, literal_offset: 500 }
+  - name: family_single_hot_exact
+    suite: extended
+    expected: mixed
+    dataset_rows: 1000
+    shape: { mutation_pattern: none, read_pattern: mixed, literal_distribution: monotonic }
+    steps:
+      - { type: query, query: point-0000, count: 200 }
+      - { type: query_series, query: point, count: 100, repeat_each: 2, literal_distribution: monotonic, literal_cardinality: 1000, literal_offset: 500 }

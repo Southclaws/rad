@@ -229,6 +229,65 @@ commands:
         type: integer
         envVar: RAD_RELATION_CACHE_MAX_RESULT_SIZE_MIB
         default: 8
+      - name: relation-cache-policy
+        description: Relation cache admission policy mode.
+        envVar: RAD_RELATION_CACHE_POLICY
+        choices: [foyer, shadow, enforced]
+        default: enforced
+      - name: relation-cache-policy-reuse-admission
+        description: Reuse evidence required for relation cache admission.
+        envVar: RAD_RELATION_CACHE_POLICY_REUSE_ADMISSION
+        choices: [second-touch, third-touch, value-density, family-conversion]
+        default: family-conversion
+      - name: relation-cache-policy-family-min-observations
+        description: Minimum second-touch observations for family conversion admission.
+        type: integer
+        envVar: RAD_RELATION_CACHE_POLICY_FAMILY_MIN_OBSERVATIONS
+        default: 1
+      - name: relation-cache-policy-min-cohorts
+        description: Completed cohort count required for learned admission.
+        type: integer
+        envVar: RAD_RELATION_CACHE_POLICY_MIN_COHORTS
+        default: 3
+      - name: relation-cache-policy-zero-reuse-percent
+        description: Maximum zero-reuse cohort percentage for learned admission.
+        type: integer
+        envVar: RAD_RELATION_CACHE_POLICY_ZERO_REUSE_PERCENT
+        default: 75
+      - name: relation-cache-policy-probation-min-work
+        description: Minimum fill work for probationary admission.
+        type: integer
+        envVar: RAD_RELATION_CACHE_POLICY_PROBATION_MIN_WORK
+        default: "4194304"
+      - name: relation-cache-policy-probation-min-work-per-byte
+        description: Minimum fill work per retained byte for probationary admission.
+        type: integer
+        envVar: RAD_RELATION_CACHE_POLICY_PROBATION_MIN_WORK_PER_BYTE
+        default: 4
+      - name: relation-cache-policy-cohorts-per-relation
+        description: Maximum cohort evidence count for each exact relation.
+        type: integer
+        envVar: RAD_RELATION_CACHE_POLICY_COHORTS_PER_RELATION
+        default: 4
+      - name: relation-cache-policy-prior
+        description: Cold-start prior for relation cache admission.
+        envVar: RAD_RELATION_CACHE_POLICY_PRIOR
+        choices: [none, generation-rate]
+        default: none
+      - name: relation-cache-policy-rate-half-life-seconds
+        description: Half-life for request and supersession rates.
+        type: integer
+        envVar: RAD_RELATION_CACHE_POLICY_RATE_HALF_LIFE_SECONDS
+        default: 30
+      - name: relation-cache-domains
+        description: Comma-separated relation cache domains or none.
+        envVar: RAD_RELATION_CACHE_DOMAINS
+        default: query,hash-build,grouped-dimension
+      - name: relation-cache-plan-materialization-budget-mib
+        description: Planner byte budget for relation cache candidates.
+        type: integer
+        envVar: RAD_RELATION_CACHE_PLAN_MATERIALIZATION_BUDGET_MIB
+        default: 8
       - name: slate-decoded-cache-size-mib
         description: Total memory capacity for decoded Slate data blocks and metadata.
         type: integer

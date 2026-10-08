@@ -27,7 +27,7 @@ use rad::engine::kv::slatedb::Store;
 use rad::engine::lir::{Datum, Query, Row};
 use rad::service::result_json;
 
-pub use cache::{CacheCase, check_cache, check_cache_file};
+pub use cache::{CacheCase, check_cache, check_cache_enforced, check_cache_file};
 pub use fixture::emit_fixture;
 pub use model::{ModelCase, check_model};
 pub use nested_identity::nested_identity_case;

@@ -16,7 +16,10 @@ mod exact;
 use rad::engine::catalog;
 use rad::engine::catalog::model::ScalarType;
 use rad::engine::exec::observe::{ExecutionObserver, StatementObservation, StatementSource};
-use rad::engine::exec::{self, CatalogPolicy, ConditionalQueryResult, Engine, ProgramOptions};
+use rad::engine::exec::{
+    self, CatalogPolicy, ConditionalQueryResult, Engine, ProgramOptions, RelationCacheConfig,
+    RelationCachePolicyConfig, RelationCachePolicyMode,
+};
 use rad::engine::kv::TransactionalKv;
 use rad::engine::kv::slatedb::Store;
 use rad::engine::lir::{Row, Value};
@@ -477,7 +480,15 @@ async fn run_cache_oracle_case(
             .map_err(|error| format!("open cache oracle store: {error}"))?,
     );
     let observer = Arc::new(CacheOracleObserver::default());
-    let engine = Engine::new(store.clone()).with_observer(observer.clone());
+    let engine = Engine::new(store.clone())
+        .with_relation_cache_config(RelationCacheConfig {
+            policy: RelationCachePolicyConfig {
+                mode: RelationCachePolicyMode::Foyer,
+                ..RelationCachePolicyConfig::default()
+            },
+            ..RelationCacheConfig::default()
+        })
+        .with_observer(observer.clone());
     let directory = fixture_path
         .parent()
         .ok_or_else(|| format!("fixture {} has no parent", fixture_path.display()))?;

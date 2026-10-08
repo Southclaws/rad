@@ -12,9 +12,11 @@ use super::generated::{
     SchemaTransitionsCancelArgs, SchemaTransitionsGetArgs, SchemaTransitionsListArgs,
     SchemaTransitionsListKind, SchemaTransitionsListState, SchemaTransitionsOptions,
     SchemaTransitionsWaitArgs, ServeArgs, ServeAuth, ServeAuthProfile, ServeCatalogMode,
-    ServeDiagnostics, ServeFrontend, ServeLogFormat, ServeLogLevel, ServeMetrics, ServeRole,
-    ServeSlateCommitDurability, ServeSlateObjectCachePreload, ServeSlateWalEnabled, ServeStorage,
-    SkillsGetArgs, SkillsListArgs, SkillsOptions, SkillsPathArgs, SpecArgs, ValidateArgs,
+    ServeDiagnostics, ServeFrontend, ServeLogFormat, ServeLogLevel, ServeMetrics,
+    ServeRelationCachePolicy, ServeRelationCachePolicyPrior,
+    ServeRelationCachePolicyReuseAdmission, ServeRole, ServeSlateCommitDurability,
+    ServeSlateObjectCachePreload, ServeSlateWalEnabled, ServeStorage, SkillsGetArgs,
+    SkillsListArgs, SkillsOptions, SkillsPathArgs, SpecArgs, ValidateArgs,
 };
 use super::output::{self, CliError};
 use super::project::{Project, read_schema_file};
@@ -145,14 +147,7 @@ impl Handler for App {
             ServeRole::Read => Role::Read,
             ServeRole::Write => Role::Write,
         });
-        let relation_cache = crate::engine::exec::RelationCacheLimits {
-            byte_limit: positive_mib(args.relation_cache_size_mib, "--relation-cache-size-mib")?,
-            entry_limit: positive_usize(args.relation_cache_entries, "--relation-cache-entries")?,
-            result_byte_limit: positive_mib(
-                args.relation_cache_max_result_size_mib,
-                "--relation-cache-max-result-size-mib",
-            )?,
-        };
+        let relation_cache = relation_cache_config(&args)?;
         let slate = crate::engine::kv::slatedb::Options {
             commit_durability: match args.slate_commit_durability {
                 ServeSlateCommitDurability::Durable => {
@@ -799,6 +794,88 @@ impl Handler for App {
     }
 }
 
+fn relation_cache_config(args: &ServeArgs) -> Result<crate::engine::exec::RelationCacheConfig> {
+    Ok(crate::engine::exec::RelationCacheConfig {
+        limits: crate::engine::exec::RelationCacheLimits {
+            byte_limit: positive_mib(args.relation_cache_size_mib, "--relation-cache-size-mib")?,
+            entry_limit: positive_usize(args.relation_cache_entries, "--relation-cache-entries")?,
+            result_byte_limit: positive_mib(
+                args.relation_cache_max_result_size_mib,
+                "--relation-cache-max-result-size-mib",
+            )?,
+        },
+        policy: crate::engine::exec::RelationCachePolicyConfig {
+            mode: match args.relation_cache_policy {
+                ServeRelationCachePolicy::Foyer => {
+                    crate::engine::exec::RelationCachePolicyMode::Foyer
+                }
+                ServeRelationCachePolicy::Shadow => {
+                    crate::engine::exec::RelationCachePolicyMode::Shadow
+                }
+                ServeRelationCachePolicy::Enforced => {
+                    crate::engine::exec::RelationCachePolicyMode::Enforced
+                }
+            },
+            reuse_admission: match args.relation_cache_policy_reuse_admission {
+                ServeRelationCachePolicyReuseAdmission::SecondTouch => {
+                    crate::engine::exec::RelationCacheReuseAdmission::SecondTouch
+                }
+                ServeRelationCachePolicyReuseAdmission::ThirdTouch => {
+                    crate::engine::exec::RelationCacheReuseAdmission::ThirdTouch
+                }
+                ServeRelationCachePolicyReuseAdmission::ValueDensity => {
+                    crate::engine::exec::RelationCacheReuseAdmission::ValueDensity
+                }
+                ServeRelationCachePolicyReuseAdmission::FamilyConversion => {
+                    crate::engine::exec::RelationCacheReuseAdmission::FamilyConversion
+                }
+            },
+            family_minimum_observations: positive_usize(
+                args.relation_cache_policy_family_min_observations,
+                "--relation-cache-policy-family-min-observations",
+            )?,
+            minimum_completed_cohorts: nonnegative_usize(
+                args.relation_cache_policy_min_cohorts,
+                "--relation-cache-policy-min-cohorts",
+            )?,
+            zero_reuse_percent: percent(
+                args.relation_cache_policy_zero_reuse_percent,
+                "--relation-cache-policy-zero-reuse-percent",
+            )?,
+            probation_minimum_work_units: nonnegative_u64(
+                args.relation_cache_policy_probation_min_work,
+                "--relation-cache-policy-probation-min-work",
+            )?,
+            probation_minimum_work_per_byte: nonnegative_u64(
+                args.relation_cache_policy_probation_min_work_per_byte,
+                "--relation-cache-policy-probation-min-work-per-byte",
+            )?,
+            cohorts_per_exact_relation: positive_usize(
+                args.relation_cache_policy_cohorts_per_relation,
+                "--relation-cache-policy-cohorts-per-relation",
+            )?,
+            prior: match args.relation_cache_policy_prior {
+                ServeRelationCachePolicyPrior::None => {
+                    crate::engine::exec::RelationCachePrior::None
+                }
+                ServeRelationCachePolicyPrior::GenerationRate => {
+                    crate::engine::exec::RelationCachePrior::GenerationRate
+                }
+            },
+            rate_half_life: positive_duration(
+                args.relation_cache_policy_rate_half_life_seconds,
+                "--relation-cache-policy-rate-half-life-seconds",
+                Duration::from_secs,
+            )?,
+        },
+        domains: args.relation_cache_domains.parse()?,
+        plan_materialization_budget_bytes: positive_mib_u64(
+            args.relation_cache_plan_materialization_budget_mib,
+            "--relation-cache-plan-materialization-budget-mib",
+        )?,
+    })
+}
+
 fn positive_u64(value: i64, name: &str) -> Result<u64> {
     u64::try_from(value)
         .ok()
@@ -817,6 +894,27 @@ fn positive_mib(value: i64, name: &str) -> Result<usize> {
     positive_usize(value, name)?
         .checked_mul(1024 * 1024)
         .ok_or_else(|| format!("{name} must fit in memory").into())
+}
+
+fn positive_mib_u64(value: i64, name: &str) -> Result<u64> {
+    positive_u64(value, name)?
+        .checked_mul(1024 * 1024)
+        .ok_or_else(|| format!("{name} must fit in u64").into())
+}
+
+fn nonnegative_u64(value: i64, name: &str) -> Result<u64> {
+    u64::try_from(value).map_err(|_| format!("{name} must not be negative").into())
+}
+
+fn nonnegative_usize(value: i64, name: &str) -> Result<usize> {
+    usize::try_from(value).map_err(|_| format!("{name} must not be negative").into())
+}
+
+fn percent(value: i64, name: &str) -> Result<u8> {
+    u8::try_from(value)
+        .ok()
+        .filter(|value| *value <= 100)
+        .ok_or_else(|| format!("{name} must be from 0 through 100").into())
 }
 
 fn positive_u32(value: i64, name: &str) -> Result<u32> {

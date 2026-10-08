@@ -10,7 +10,8 @@ use rad::engine::catalog;
 use rad::engine::catalog::identity::SchemaId;
 use rad::engine::catalog::model::{ColumnDef, ScalarType, Table, TableDef};
 use rad::engine::exec::{
-    Engine, EngineEvent, EngineEventHook, RelationCacheLookupResult, RelationCacheMaterialization,
+    Engine, EngineEvent, EngineEventHook, RelationCacheConfig, RelationCacheLookupResult,
+    RelationCacheMaterialization, RelationCachePolicyConfig, RelationCachePolicyMode,
 };
 use rad::engine::kv::TransactionalKv;
 use rad::engine::kv::slatedb::Store;
@@ -97,6 +98,13 @@ async fn run_case(data: &[u8]) {
         .extend(complete_stats(&changing, 5_000).synopsis_models);
     let events = Arc::new(RecordingEvents::default());
     let engine = Engine::new(store.clone())
+        .with_relation_cache_config(RelationCacheConfig {
+            policy: RelationCachePolicyConfig {
+                mode: RelationCachePolicyMode::Foyer,
+                ..RelationCachePolicyConfig::default()
+            },
+            ..RelationCacheConfig::default()
+        })
         .with_statistics_provider(Arc::new(FixedPlannerStats(Arc::new(statistics))))
         .with_event_hook(events.clone());
 

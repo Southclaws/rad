@@ -19,6 +19,7 @@ use super::physical::{
 };
 
 pub(super) const DEFAULT_HASH_JOIN_MEMORY_LIMIT_BYTES: u64 = 8 * 1024 * 1024;
+const DEFAULT_RELATION_CACHE_MATERIALIZATION_BUDGET_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_MATERIALIZATIONS_PER_PLAN: usize = 4;
 const MATERIALIZATION_SELECTION_BYTE_BUCKETS: u64 = 256;
 
@@ -59,6 +60,9 @@ pub struct PlanOptions {
     pub full_scan_only: bool,
     pub mode: PlannerMode,
     pub hash_join_memory_limit_bytes: u64,
+    pub relation_cache_materialization_budget_bytes: u64,
+    pub relation_cache_hash_builds: bool,
+    pub relation_cache_grouped_dimensions: bool,
     pub memo_limits: MemoLimits,
 }
 
@@ -68,6 +72,10 @@ impl Default for PlanOptions {
             full_scan_only: false,
             mode: PlannerMode::Structural,
             hash_join_memory_limit_bytes: DEFAULT_HASH_JOIN_MEMORY_LIMIT_BYTES,
+            relation_cache_materialization_budget_bytes:
+                DEFAULT_RELATION_CACHE_MATERIALIZATION_BUDGET_BYTES,
+            relation_cache_hash_builds: true,
+            relation_cache_grouped_dimensions: true,
             memo_limits: MemoLimits::default(),
         }
     }
@@ -157,6 +165,7 @@ fn plan_query_inner(
         cardinality: query.cardinality,
         output: query.root.output().clone(),
         dependencies: Default::default(),
+        data_dependencies: Default::default(),
         materialization_selection: MaterializationSelection::default(),
         next_slot: planner.next_slot,
         memo: memo.finish(),
@@ -172,8 +181,32 @@ fn plan_query_inner(
         }
     }
     prepare_catalog_dependencies(&mut plan);
-    select_materializations(&mut plan, options.hash_join_memory_limit_bytes);
+    filter_materialization_domains(&mut plan, options);
+    select_materializations(
+        &mut plan,
+        options.relation_cache_materialization_budget_bytes,
+    );
     plan
+}
+
+fn filter_materialization_domains(plan: &mut Plan, options: PlanOptions) {
+    plan.walk_mut(&mut |node| {
+        let enabled =
+            node.materialization
+                .as_ref()
+                .is_none_or(|candidate| match candidate.representation {
+                    MaterializationRepresentation::Rows => false,
+                    MaterializationRepresentation::HashJoinBuild { .. } => {
+                        options.relation_cache_hash_builds
+                    }
+                    MaterializationRepresentation::GroupedHashJoinDimension { .. } => {
+                        options.relation_cache_grouped_dimensions
+                    }
+                });
+        if !enabled {
+            node.materialization = None;
+        }
+    });
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -196,7 +229,7 @@ struct MaterializationDescriptor {
 fn select_materializations(plan: &mut Plan, estimated_byte_limit: u64) {
     // Byte buckets bound planner work for large join trees. Every candidate
     // rounds up, so quantization cannot admit more estimated bytes than the
-    // existing hash-join memory limit.
+    // configured materialization budget.
     let byte_quantum = estimated_byte_limit
         .saturating_add(MATERIALIZATION_SELECTION_BYTE_BUCKETS - 1)
         .checked_div(MATERIALIZATION_SELECTION_BYTE_BUCKETS)
@@ -1618,10 +1651,13 @@ impl Planner<'_> {
                         memo_physical_metrics(build_relation, &planned_right, &[])
                             .logical_row_operations
                             .map_or(hash.cost.build_rows.central, |work| work.central);
+                    let fingerprints = lir::fingerprint::relation_fingerprints(build_relation);
                     planned_right.materialization = Some(MaterializationCandidate {
-                        exact: lir::fingerprint::relation_fingerprints(build_relation).exact,
+                        exact: fingerprints.exact,
+                        family: fingerprints.family,
                         output: build_relation.output().clone(),
                         dependencies: Default::default(),
+                        data_dependencies: Default::default(),
                         estimated_rows: hash.cost.build_rows.central,
                         estimated_avoided_work: estimated_subtree_work
                             .saturating_add(hash.cost.build_rows.central),
@@ -3551,20 +3587,37 @@ mod tests {
         estimated_work: u64,
         estimated_bytes: u64,
     ) -> MaterializationCandidate {
+        materialization_candidate_with_representation(
+            marker,
+            estimated_work,
+            estimated_bytes,
+            MaterializationRepresentation::HashJoinBuild {
+                key_positions: Vec::new(),
+            },
+        )
+    }
+
+    fn materialization_candidate_with_representation(
+        marker: u64,
+        estimated_work: u64,
+        estimated_bytes: u64,
+        representation: MaterializationRepresentation,
+    ) -> MaterializationCandidate {
         let relation = scan();
         let table = relation.scan_table();
         let mut dependencies = crate::engine::catalog::model::CatalogDependencies::default();
         dependencies.add_table_read(table, &table.columns);
+        let fingerprints = lir::fingerprint::relation_fingerprints(&relation);
         MaterializationCandidate {
-            exact: lir::fingerprint::relation_fingerprints(&relation).exact,
+            exact: fingerprints.exact,
+            family: fingerprints.family,
             output: relation.output().clone(),
             dependencies,
+            data_dependencies: Default::default(),
             estimated_rows: marker,
             estimated_avoided_work: estimated_work,
             estimated_retained_bytes: estimated_bytes,
-            representation: MaterializationRepresentation::HashJoinBuild {
-                key_positions: Vec::new(),
-            },
+            representation,
         }
     }
 
@@ -3591,6 +3644,7 @@ mod tests {
             cardinality: lir::RootCardinality::Many,
             output: scan().output().clone(),
             dependencies: Default::default(),
+            data_dependencies: Default::default(),
             materialization_selection: MaterializationSelection::default(),
             next_slot: SlotId(3),
             memo: MemoSession::new(MemoLimits::default()).finish(),
@@ -3675,6 +3729,108 @@ mod tests {
         assert_eq!(selected_materialization_markers(&plan), vec![2, 3]);
         assert_eq!(plan.materialization_selection.estimated_bytes, 60);
         assert_eq!(plan.materialization_selection.budget_rejected, 1);
+    }
+
+    #[test]
+    fn hash_memory_limit_does_not_change_materialization_selection() {
+        let select = |hash_join_memory_limit_bytes| {
+            let mut plan = materialization_plan(materialization_branch(
+                None,
+                vec![
+                    materialization_branch(Some(materialization_candidate(1, 100, 40)), Vec::new()),
+                    materialization_branch(Some(materialization_candidate(2, 90, 40)), Vec::new()),
+                ],
+            ));
+            let options = PlanOptions {
+                hash_join_memory_limit_bytes,
+                relation_cache_materialization_budget_bytes: 40,
+                ..PlanOptions::default()
+            };
+            filter_materialization_domains(&mut plan, options);
+            select_materializations(
+                &mut plan,
+                options.relation_cache_materialization_budget_bytes,
+            );
+            selected_materialization_markers(&plan)
+        };
+
+        assert_eq!(select(1), vec![1]);
+        assert_eq!(select(u64::MAX), vec![1]);
+    }
+
+    #[test]
+    fn materialization_budget_changes_selection() {
+        let select = |budget| {
+            let mut plan = materialization_plan(materialization_branch(
+                None,
+                vec![
+                    materialization_branch(Some(materialization_candidate(1, 100, 40)), Vec::new()),
+                    materialization_branch(Some(materialization_candidate(2, 90, 40)), Vec::new()),
+                ],
+            ));
+            let options = PlanOptions {
+                relation_cache_materialization_budget_bytes: budget,
+                ..PlanOptions::default()
+            };
+            filter_materialization_domains(&mut plan, options);
+            select_materializations(
+                &mut plan,
+                options.relation_cache_materialization_budget_bytes,
+            );
+            selected_materialization_markers(&plan)
+        };
+
+        assert_eq!(select(40), vec![1]);
+        assert_eq!(select(80), vec![1, 2]);
+    }
+
+    #[test]
+    fn materialization_domains_filter_candidates_before_selection() {
+        let mut plan = materialization_plan(materialization_branch(
+            None,
+            vec![
+                materialization_branch(Some(materialization_candidate(1, 100, 10)), Vec::new()),
+                materialization_branch(
+                    Some(materialization_candidate_with_representation(
+                        2,
+                        90,
+                        10,
+                        MaterializationRepresentation::GroupedHashJoinDimension {
+                            key_positions: Vec::new(),
+                            groups: crate::engine::lir::fingerprint::Fingerprint {
+                                canonicalization_version: 1,
+                                hash_algorithm: 1,
+                                digest: [2; 16],
+                            },
+                        },
+                    )),
+                    Vec::new(),
+                ),
+                materialization_branch(
+                    Some(materialization_candidate_with_representation(
+                        3,
+                        80,
+                        10,
+                        MaterializationRepresentation::Rows,
+                    )),
+                    Vec::new(),
+                ),
+            ],
+        ));
+        let options = PlanOptions {
+            relation_cache_hash_builds: false,
+            relation_cache_grouped_dimensions: true,
+            ..PlanOptions::default()
+        };
+
+        filter_materialization_domains(&mut plan, options);
+        select_materializations(
+            &mut plan,
+            options.relation_cache_materialization_budget_bytes,
+        );
+
+        assert_eq!(selected_materialization_markers(&plan), vec![2]);
+        assert_eq!(plan.materialization_selection.selected, 1);
     }
 
     #[test]

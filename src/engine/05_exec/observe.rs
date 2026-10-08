@@ -6,7 +6,6 @@
 //! skips fingerprint computation entirely when the installed observer says
 //! collection is disabled.
 
-use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -968,7 +967,7 @@ pub trait ExecutionObserver: Send + Sync {
 /// the engine skips the observation work.
 #[derive(Clone, Copy, Default)]
 pub struct Observation<'a> {
-    pub observer: Option<&'a Arc<dyn ExecutionObserver>>,
+    pub observer: Option<&'a dyn ExecutionObserver>,
 }
 
 impl Observation<'_> {

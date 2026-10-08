@@ -564,6 +564,77 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn binding_large_logical_expression_uses_bounded_stack() {
+        let thread = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        let predicate = (0..4096).fold(None, |left, value| {
+                            let equality = lir::Expr::Binary {
+                                op: lir::BinaryOp::Eq,
+                                left: Box::new(column("id")),
+                                right: Box::new(lir::Expr::Literal(lir::Literal {
+                                    raw: RawScalar::Text(value.to_string()),
+                                    kind: None,
+                                })),
+                            };
+                            Some(match left {
+                                Some(left) => lir::Expr::Binary {
+                                    op: lir::BinaryOp::Or,
+                                    left: Box::new(left),
+                                    right: Box::new(equality),
+                                },
+                                None => equality,
+                            })
+                        });
+                        let root = lir::Relation::Order {
+                            input: Box::new(lir::Relation::Filter {
+                                input: Box::new(scan()),
+                                predicate: predicate.unwrap(),
+                            }),
+                            terms: vec![lir::OrderTerm {
+                                expression: column("id"),
+                                descending: false,
+                            }],
+                        };
+                        let bound = bind(
+                            &FixtureCatalog(table()),
+                            query(root, lir::RootCardinality::Many),
+                        )
+                        .await
+                        .unwrap();
+                        let RelationNode::Order { input, .. } = &bound.root.node else {
+                            panic!("expected order")
+                        };
+                        let RelationNode::Filter { predicate, .. } = &input.node else {
+                            panic!("expected filter")
+                        };
+                        let mut pending = vec![(predicate, 1usize)];
+                        let mut depth = 0;
+                        while let Some((expression, current)) = pending.pop() {
+                            depth = depth.max(current);
+                            if let bound::Expr::Binary {
+                                op: lir::BinaryOp::Or,
+                                left,
+                                right,
+                                ..
+                            } = expression
+                            {
+                                pending.push((left, current + 1));
+                                pending.push((right, current + 1));
+                            }
+                        }
+                        assert!(depth <= 13, "logical expression depth was {depth}");
+                    });
+            })
+            .unwrap();
+        thread.join().unwrap();
+    }
+
     #[tokio::test]
     async fn bare_column_group_inherits_its_column_name() {
         let catalog = FixtureCatalog(table());
